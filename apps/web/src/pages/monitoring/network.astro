@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import MonitoringPage from '../../components/monitoring/MonitoringPage';
+---
+
+<DashboardLayout titleKey="titles.monitoringNetwork">
+  <MonitoringPage client:load />
+</DashboardLayout>

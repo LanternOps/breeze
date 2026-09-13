@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Posture du parc",
     "dashboard": "Tableau de bord",
-    "devices": "Dispositifs",
+    "devices": "Dispositifs et actifs",
     "alerts": "Alertes",
     "approvals": "Approbations",
     "pendingApprovals": "{{count}} approbations en attente",
@@ -20,6 +20,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "IA pour Office",
     "networkMonitor": "Moniteur réseau",
+    "jobs": "Tâches",
+    "monitoring": "Supervision",
     "networkDiscovery": "Découverte du réseau",
     "edr": "EDR",
     "dnsSecurity": "DNS Sécurité",
@@ -47,9 +49,11 @@
     "billing": "Facturation",
     "organizations": "Organisations",
     "aiUsageBudget": "Utilisation et budget de l’IA",
+    "scriptAuthoring": "Rédaction de scripts",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
     "aiImpact": "Impact de l’IA",
+    "fleetDesign": "Conception de flotte",
     "customFields": "Champs personnalisés",
     "savedFilters": "Filtres enregistrés",
     "users": "Utilisateurs",
@@ -713,7 +717,19 @@
         "scripts": "Scénarios",
         "alerts": "Alertes",
         "users": "Utilisateurs",
-        "settings": "Paramètres"
+        "settings": "Paramètres",
+        "recent-devices": "Dispositifs récents",
+        "recent-pages": "Consultés récemment"
+      },
+      "actions": {
+        "newDevice": "Nouveau dispositif",
+        "newDeviceDescription": "Ajouter un dispositif à votre parc",
+        "runScript": "Exécuter un script",
+        "runScriptDescription": "Exécuter un script sur des dispositifs",
+        "alertRules": "Règles d'alerte",
+        "alertRulesDescription": "Gérer les alertes dans les politiques de configuration",
+        "keyboardShortcuts": "Raccourcis clavier",
+        "keyboardShortcutsDescription": "Toutes les touches et séquences sur une seule carte"
       }
     },
     "notifications": {
@@ -753,7 +769,10 @@
       "collapse": "Réduire la barre latérale",
       "expand": "Agrandir la barre latérale",
       "collapseSections": "Réduire toutes les sections",
-      "closeMenu": "Fermer le menu"
+      "closeMenu": "Fermer le menu",
+      "recentDevices": "Dispositifs récents",
+      "hideRecentDevices": "Masquer les dispositifs récents",
+      "showRecentDevices": "Afficher les dispositifs récents"
     },
     "orgRequired": {
       "title": "Sélectionnez une organisation",
@@ -764,6 +783,20 @@
       "title": "Impossible de charger vos organisations",
       "description": "Une erreur s'est produite lors du chargement de la liste des organisations. Vérifiez votre connexion et réessayez.",
       "retry": "Réessayer"
+    },
+    "shortcuts": {
+      "title": "Raccourcis clavier",
+      "general": "Général",
+      "goTo": "Aller à",
+      "goToHint": "Appuyez sur g, relâchez, puis la touche.",
+      "then": "puis",
+      "search": "Rechercher dans Breeze",
+      "searchSlash": "Recherche (s'ouvre aussi avec cette touche)",
+      "cycleSidebar": "Changer le mode de la barre latérale",
+      "help": "Ouvrir le panneau d'aide",
+      "showThis": "Afficher cette carte",
+      "close": "Fermer une boîte de dialogue ou un menu",
+      "typingNote": "Les raccourcis à une touche sont suspendus pendant la saisie dans un champ."
     }
   },
   "migrationBanner": {
@@ -2443,5 +2476,10 @@
     "approximateUnavailableStale": "≈ total non disponible — le taux de change vers {{target}} pour {{codes}} est trop ancien",
     "approximateUnavailableMixed": "≈ total non disponible — impossible de convertir {{codes}} en {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} et {{more}} autres"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Votre rôle nécessitera l’authentification à deux facteurs. Configurez-la avant le {{date}}.",
+    "cta": "Configurer la 2FA",
+    "dismiss": "Ignorer le rappel d’authentification à deux facteurs"
   }
 }

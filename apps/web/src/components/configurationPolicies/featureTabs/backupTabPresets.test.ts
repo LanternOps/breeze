@@ -62,4 +62,21 @@ describe('createWholeMachinePresets', () => {
       expect(WINDOWS_WHOLE_MACHINE_EXCLUDES).toContain(must);
     }
   });
+
+  // #5581: a whole-machine backup must never capture the agent's own
+  // live checkpoint-journal (or bare-metal rebuild scratch) state — a
+  // journal file GROWS across the very run that is backing it up, which is
+  // exactly the "manifest describes stale bytes" failure mode. Defense in
+  // depth alongside the agent's own hard-exclude of its resolved journal
+  // directory (agent/internal/backup/backup.go, collectBackupFilesFromPaths):
+  // this preset-level exclude is what protects a custom (non-whole-machine)
+  // path selection that happens to include /var/lib/breeze, and keeps the
+  // whole-machine preset itself clean even if an operator inspects the glob
+  // list rather than relying on the agent-side guard.
+  it('excludes the agent\'s own checkpoint-journal and rebuild-scratch state (#5581)', () => {
+    for (const must of ['/var/lib/breeze/backup-journal/**', '/var/lib/breeze/rebuild/**']) {
+      expect(LINUX_WHOLE_MACHINE_EXCLUDES).toContain(must);
+    }
+    expect(WINDOWS_WHOLE_MACHINE_EXCLUDES).toContain('/ProgramData/Breeze/data/backup-journal/**');
+  });
 });

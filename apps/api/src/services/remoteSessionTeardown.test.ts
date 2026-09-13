@@ -58,11 +58,17 @@ const h = vi.hoisted(() => {
 
 // Capture drizzle operator calls as inspectable tagged objects so a test can
 // assert WHICH status predicate the UPDATE targets (active-only vs ne-disconnected).
+// `sql` is a fake tagged-template stand-in: `terminalIntentSet` (SEC-038 W03)
+// calls it to build the generation-bump / termination-phase SQL fragments that
+// ride along in every terminal `.set()` — without it, `terminalIntentSet`
+// throws "No sql export" and every disconnect silently degrades to
+// TEARDOWN_FAILED.
 vi.mock('drizzle-orm', () => ({
   and: (...args: unknown[]) => ({ op: 'and', args }),
   eq: (col: unknown, val: unknown) => ({ op: 'eq', col, val }),
   ne: (col: unknown, val: unknown) => ({ op: 'ne', col, val }),
   inArray: (col: unknown, vals: unknown) => ({ op: 'inArray', col, vals }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings: [...strings], values }),
 }));
 
 vi.mock('../db', () => ({
@@ -79,6 +85,11 @@ vi.mock('../db/schema', () => ({
     userId: 'remote_sessions.user_id',
     status: 'remote_sessions.status',
     endedAt: 'remote_sessions.ended_at',
+    // SEC-038 W03 terminal-intent contract columns — `terminalIntentSet` reads
+    // these to build the `sql` fragments in every terminal `.set()`.
+    desktopStartGeneration: 'remote_sessions.desktop_start_generation',
+    terminalGeneration: 'remote_sessions.terminal_generation',
+    terminationPhase: 'remote_sessions.termination_phase',
   },
   tunnelSessions: {
     id: 'tunnel_sessions.id',
@@ -125,12 +136,30 @@ import {
 /**
  * Seed the UPDATE ... RETURNING result (disconnected rows) and the device
  * SELECT ... WHERE result (agent resolution).
+ *
+ * `toTerminalSessionRow` (SEC-038 W03) throws if a returned row has no
+ * `terminalGeneration`, so every row gets a default bigint generation and
+ * `pending` phase unless the caller overrides them.
  */
 function seed(
-  rows: Array<{ id: string; type: string; deviceId: string }>,
+  rows: Array<{
+    id: string;
+    type: string;
+    deviceId: string;
+    status?: string;
+    terminalGeneration?: bigint;
+    terminationPhase?: string;
+  }>,
   deviceRows: Array<{ id: string; agentId: string | null }>,
 ) {
-  h.chain.returning.mockResolvedValueOnce(rows);
+  h.chain.returning.mockResolvedValueOnce(
+    rows.map((row) => ({
+      status: 'disconnected',
+      terminalGeneration: 1n,
+      terminationPhase: 'pending',
+      ...row,
+    })),
+  );
   h.state.deviceRowsResult = deviceRows;
 }
 
@@ -192,22 +221,33 @@ describe('terminateUserRemoteSessions', () => {
 
     expect(result).toBe(2);
     expect(h.chain.update).toHaveBeenCalledTimes(2);
+    // SEC-038 W03: every terminal `.set()` now also carries the generation-bump
+    // and termination-phase fragments from `terminalIntentSet` alongside the
+    // writer's own columns.
     expect(h.chain.set).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'disconnected' }),
+      expect.objectContaining({
+        status: 'disconnected',
+        endedAt: expect.any(Date),
+        desktopStartGeneration: expect.anything(),
+        terminalGeneration: expect.anything(),
+        terminationPhase: expect.anything(),
+      }),
     );
     expect(h.revokeViewerSession).toHaveBeenCalledTimes(2);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s2');
     expect(h.dispatchCommandToAgent).toHaveBeenCalledTimes(2);
+    // The stop command id/payload now bind the terminal generation the row
+    // committed at (SEC-038 W03) — `1` here is the seeded default generation.
     expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
-      id: 'desk-stop-s1',
+      id: 'desk-stop-s1-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's1' },
+      payload: { sessionId: 's1', terminalGeneration: '1' },
     });
     expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-2', {
-      id: 'desk-stop-s2',
+      id: 'desk-stop-s2-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's2' },
+      payload: { sessionId: 's2', terminalGeneration: '1' },
     });
     expect(h.captureException).not.toHaveBeenCalled();
   });
@@ -488,9 +528,9 @@ describe('terminateDeviceRemoteSessions', () => {
     expect(result).toBe(1);
     expect(h.revokeViewerSession).toHaveBeenCalledWith('s1');
     expect(h.dispatchCommandToAgent).toHaveBeenCalledWith('agent-1', {
-      id: 'desk-stop-s1',
+      id: 'desk-stop-s1-1',
       type: 'stop_desktop',
-      payload: { sessionId: 's1' },
+      payload: { sessionId: 's1', terminalGeneration: '1' },
     });
   });
 

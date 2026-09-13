@@ -10,7 +10,7 @@ const selectLimitMock = vi.fn();
 // C1 (final review #4191): recorder for tx.delete(ticketDrafts).where(w).
 const txDeleteWhereMock = vi.fn();
 
-const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
+const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, assigneeEligibleMock, dbMocks, configMocks, formMocks, ctxMocks, matchContactMock, assertTicketCreationAllowedMock } = vi.hoisted(() => {
   const insertReturning = vi.fn();
   const updateReturning = vi.fn();
   const selectResult = vi.fn();
@@ -22,7 +22,8 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
     auditMock: vi.fn().mockResolvedValue(undefined),
     allocateMock: vi.fn().mockResolvedValue('T-2026-0042'),
     guardMock: vi.fn().mockResolvedValue(null),
-    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning },
+    assigneeEligibleMock: vi.fn().mockResolvedValue(true),
+    dbMocks: { insertReturning, updateReturning, selectResult, txExecuteMock, txUpdateReturning, txPinnedOccurrences: vi.fn((): unknown[] => []) },
     // #3258 W03 review I6: SPIES, not passthrough arrows. The system-context
     // escape opens a SECOND pooled connection that cannot see the caller's
     // uncommitted rows, so "which reads take it" is a correctness property
@@ -58,6 +59,10 @@ const { emitMock, emitTriageFeedbackMock, auditMock, allocateMock, guardMock, db
 });
 
 vi.mock('./ticketEvents', () => ({ emitTicketEvent: emitMock }));
+vi.mock('./ticketPush', async () => {
+  const actual = await vi.importActual<typeof import('./ticketPush')>('./ticketPush');
+  return { ...actual, isEligibleTicketRecipient: assigneeEligibleMock };
+});
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
@@ -192,12 +197,19 @@ vi.mock('../db', () => ({
         // INSIDE the transaction, so the tx stub needs a select chain that also
         // terminates on `.for('share')`.
         select: vi.fn(() => ({
-          from: vi.fn(() => ({
+          from: vi.fn((table: unknown) => ({
             where: vi.fn((w: unknown) => {
               selectWhereMock(w);
               return {
                 limit: vi.fn((l: unknown) => {
                   selectLimitMock(l);
+                  // #5573 W02: the deliverable-pin precondition reads
+                  // service_deliverable_occurrences; answer it from its own
+                  // queue (default: unpinned) so it never consumes a slot of
+                  // the org-lookup sequence the move tests queue up.
+                  if ((table as Record<symbol, unknown> | undefined)?.[Symbol.for('drizzle:Name')] === 'service_deliverable_occurrences') {
+                    return Promise.resolve(dbMocks.txPinnedOccurrences());
+                  }
                   const r = dbMocks.selectResult();
                   return Object.assign(Promise.resolve(r), { for: vi.fn(() => Promise.resolve(r)) });
                 }),
@@ -285,6 +297,7 @@ describe('createTicket', () => {
     setMock.mockClear();
     allocateMock.mockResolvedValue('T-2026-0042');
     assertTicketCreationAllowedMock.mockReset().mockResolvedValue(undefined);
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   // #5075 W04 — Service Management 'off' withdraws NEW ticket creation. This is
@@ -366,6 +379,26 @@ describe('createTicket', () => {
 
     const insertPayload = valuesMock.mock.calls[0]![0];
     expect(insertPayload).toMatchObject({ status: 'open', assignedTo: 'u-99' });
+  });
+
+  it('rejects an ineligible assignee before number allocation or any write', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'u-99', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await createTicket({ orgId: 'o-1', subject: 'Secret subject', source: 'manual', assigneeId: 'u-99' }, actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-99', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      undefined,
+    );
+    expect(allocateMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   it('rejects a deviceId belonging to a different org with a 400 TicketServiceError', async () => {
@@ -700,7 +733,20 @@ describe('createTicket', () => {
     await createTicket({ orgId: 'o-1', subject: 'SLA test', source: 'manual', categoryId: 'cat-1', priority: 'urgent' }, actor);
 
     const insertPayload = valuesMock.mock.calls[0]![0];
-    expect(insertPayload).toMatchObject({ responseSlaMinutes: 30, resolutionSlaMinutes: 120 });
+    expect(insertPayload).toMatchObject({ responseSlaMinutes: 30, resolutionSlaMinutes: 120, workKind: 'support' });
+  });
+
+  it('#5573 W02: a deliverable ticket stores work_kind and NO SLA even when the category has one', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 'o-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: 'cat-1', partnerId: 'p-1', responseSlaMinutes: 30, resolutionSlaMinutes: 120 }]);
+    configMocks.getOrgSlaOverride.mockResolvedValueOnce({ responseMinutes: 120, resolutionMinutes: 480 });
+    dbMocks.insertReturning.mockResolvedValue([{ id: 't-dlv-1', orgId: 'o-1', internalNumber: 'T-2026-0043', status: 'new' }]);
+
+    await createTicket({ orgId: 'o-1', subject: 'Sign-in log review — Oct 2026', source: 'api', workKind: 'deliverable', categoryId: 'cat-1', priority: 'urgent' }, actor);
+
+    const insertPayload = valuesMock.mock.calls[0]![0];
+    expect(insertPayload).toMatchObject({ workKind: 'deliverable', responseSlaMinutes: null, resolutionSlaMinutes: null });
   });
 
   it('falls back to priority defaults when the category has no SLA', async () => {
@@ -1436,6 +1482,7 @@ describe('assignTicket', () => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
+    assigneeEligibleMock.mockResolvedValue(true);
   });
 
   it('updates assignee, writes an assignment feed entry, emits ticket.assigned', async () => {
@@ -1462,6 +1509,26 @@ describe('assignTicket', () => {
       eventType: 'ticket.assignee_changed',
       dedupeKey: 'assignedTo:null:"u-2"',
     }));
+  });
+
+  it('rejects an ineligible same-partner assignee before ticket mutation or event emission', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', deviceId: 'd-hidden', status: 'new', assignedTo: null }])
+      .mockResolvedValueOnce([{ id: 'u-2', partnerId: 'p-1' }]);
+    assigneeEligibleMock.mockResolvedValueOnce(false);
+
+    const err = await assignTicket('t-1', 'u-2', actor).catch(e => e);
+    expect(err).toBeInstanceOf(TicketServiceError);
+    expect(err.code).toBe('ASSIGNEE_NOT_ELIGIBLE');
+    expect(assigneeEligibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'u-2', partnerId: 'p-1' }),
+      'p-1',
+      'o-1',
+      'd-hidden',
+    );
+    expect(setMock).not.toHaveBeenCalled();
+    expect(valuesMock).not.toHaveBeenCalled();
+    expect(emitMock).not.toHaveBeenCalled();
   });
 
   // #3828 wave-6-3 task 2: in-transaction ticket_outbox write, id-only payload.
@@ -3671,6 +3738,24 @@ describe('moveTicketOrg', () => {
     // — same 6 tables as the 'moves ticket to a same-partner org' test below).
     expect(texts).toHaveLength(7);
     expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
+  });
+
+  it('#5573 W02: refuses to move a ticket pinned to a deliverable occurrence, before the ticket UPDATE', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: null }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txPinnedOccurrences.mockReturnValueOnce([{ id: 'o1' }]);
+
+    await expect(moveTicketOrg('t1', 'oB', { userId: 'admin' }))
+      .rejects.toMatchObject({ status: 409, code: 'DELIVERABLE_TICKET_PINNED' });
+    expect(setMock).not.toHaveBeenCalled();
+    expect(executedTableNames()).toEqual([]);
+    expect(auditMock).not.toHaveBeenCalled();
   });
 
   it('moves ticket to a same-partner org, detaches device, re-stamps child org_id on 6 tables including ticket_email_links', async () => {

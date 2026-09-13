@@ -278,7 +278,8 @@
     "loadMore": "Mehr laden",
     "couldnTLoadMore": "Konnte nicht mehr laden.",
     "viewAllActivity2": "Alle Aktivitäten anzeigen",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Vorschlag ansehen"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Der Alarmverlauf konnte nicht abgerufen werden",
@@ -930,6 +931,23 @@
     "role": "Rolle",
     "changeRole": "Rolle wechseln",
     "source": "Quelle",
+    "function": "Funktion",
+    "changeFunction": "Funktion wechseln",
+    "functionNone": "Nicht bewertet",
+    "functionSource": {
+      "ai": "KI",
+      "manual": "Manuell"
+    },
+    "functionConfidence": "{{pct}} % Konfidenz",
+    "functionEvidence": "Warum der Designer das annimmt",
+    "functionEvidenceUnavailable": "Die Bewertungsdetails konnten nicht geladen werden.",
+    "functionCustom": "Benutzerdefiniert…",
+    "functionCustomSlug": "benutzerdefinierter Schlüssel (a-z, 0-9, -)",
+    "functionCustomLabel": "Etikett",
+    "functionClear": "Löschen",
+    "functionSaved": "Gerätefunktion gespeichert",
+    "functionCleared": "Gerätefunktion gelöscht",
+    "functionSaveFailed": "Gerätefunktion konnte nicht gespeichert werden",
     "operatingSystem": "Betriebssystem",
     "osType": "Betriebssystemtyp",
     "osVersion": "Betriebssystemversion",
@@ -1877,7 +1895,7 @@
     "refresh": "Aktualisieren",
     "selectedOrganization": "die ausgewählte Organisation",
     "subtitle": "Verwalten und überwachen Sie Ihre Flotte.",
-    "title": "Geräte",
+    "title": "Geräte & Assets",
     "toasts": {
       "actionFailed": "{{action}} auf {{hostname}} fehlgeschlagen",
       "advancedFilterFailed": "Erweiterter Filter konnte nicht geladen werden – es werden keine Geräte angezeigt. Bearbeiten oder löschen Sie den Filter, um es erneut zu versuchen.",

@@ -204,11 +204,13 @@ function agentAuthFor(deviceId: string | null): AuthContext {
 
 function hostilePromptContext(): AgentRunPromptContext {
   return {
-    // No sweep or narrative context: this suite drives the FULL profile's
-    // hostile-prompt surface, and each of those profiles has its own
-    // dedicated turn (buildSweepTaskPrompt / buildNarrativeTaskPrompt).
+    // No sweep, narrative or design context: this suite drives the FULL
+    // profile's hostile-prompt surface, and each of those profiles has its
+    // own dedicated turn (buildSweepTaskPrompt / buildNarrativeTaskPrompt /
+    // buildFleetDesignTaskPrompt).
     sweep: null,
     narrative: null,
+    design: null,
     agent: { name: 'Red Team Agent', kind: 'triage' },
     run: { id: 'run-1', mode: 'act', triggerKind: 'alert' },
     device: {
@@ -760,8 +762,10 @@ describe('H. prompt text cannot reach authorization', () => {
     const fullPrompt = `${buildAgentRunSystemPrompt(ctx)}\n${buildAgentRunTaskPrompt(ctx)}`;
     expect(fullPrompt).toContain('manage_services:restart');
 
-    // Prose is not among these three parameters: tool name, input, policy.
-    expect(checkAgentGuardrails.length).toBe(3);
+    // Prose is not among these four parameters: tool name, input, policy, and
+    // the optional DB-free GuardrailContext (a persisted proposal risk tier,
+    // never model text — see services/scriptProposals/guardrailContext.ts).
+    expect(checkAgentGuardrails.length).toBe(4);
     const verdict = checkAgentGuardrails(
       'manage_services',
       { action: 'restart' },

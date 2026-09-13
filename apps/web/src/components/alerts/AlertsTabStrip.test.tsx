@@ -28,4 +28,9 @@ describe('AlertsTabStrip', () => {
     expect(screen.getByRole('link', { name: 'Regras' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Canais' })).toBeInTheDocument();
   });
+
+  it('points the rules tab at the Monitoring hub Legacy rules page (#5289)', () => {
+    render(<AlertsTabStrip />);
+    expect(screen.getByRole('link', { name: 'Rules' })).toHaveAttribute('href', '/monitoring/rules');
+  });
 });

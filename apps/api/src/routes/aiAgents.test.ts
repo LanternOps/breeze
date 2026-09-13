@@ -27,6 +27,10 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+// Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
+// below) — needed so a PATCH test can construct the exact instance
+// `updateAgentMock` rejects with.
+import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 
 const {
   selectMock,
@@ -171,11 +175,21 @@ vi.mock('../services/aiAgents/agentService', () => ({
     }
   },
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
+  // Fleet Designer (W01) — faithful to the real class: `mapError` reads
+  // `.code` off it (see the `AgentKindConflictError` comment above for why
+  // that matters).
+  ModeNotAllowedForKindError: class ModeNotAllowedForKindError extends Error {
+    readonly code = 'mode_not_allowed_for_kind';
+    constructor(mode: string, kind: string) {
+      super(`mode ${mode} is not available for a ${kind} agent`);
+      this.name = 'ModeNotAllowedForKindError';
+    }
+  },
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
   SupervisedKeysGrantOnlyError,
   createAgent: vi.fn(),
-  updateAgent: vi.fn(),
+  updateAgent: updateAgentMock,
   disableAgent: vi.fn(),
   listAgents: listAgentsMock,
   getAgent: getAgentMock,
@@ -287,7 +301,7 @@ const dbCtxMock = vi.hoisted(() => ({
 // GET / 's batched last-run probe and POST /:id/enable 's UPDATE. Kept OUT of
 // the shared `selectMock` so an enable test's UPDATE can never be satisfied by
 // a stray SELECT chain queued by another test.
-const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock } = vi.hoisted(() => ({
+const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock, updateAgentMock } = vi.hoisted(() => ({
   selectDistinctOnMock: vi.fn(),
   updateMock: vi.fn(),
   withAgentRowLockedMock: vi.fn(),
@@ -295,6 +309,10 @@ const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMut
   // records. Its own coverage is agentService.test.ts; here it exists so
   // POST /:id/enable can be proven to record the SAME way disable does.
   recordAgentMutationMock: vi.fn(),
+  // Fleet Designer (W01): PATCH /:id's own route test needs to control what
+  // `updateAgent` throws — a bare inline `vi.fn()` in the factory below is
+  // not referenceable from a test body.
+  updateAgentMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: { select: selectMock, selectDistinctOn: selectDistinctOnMock, update: updateMock },
@@ -336,7 +354,12 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
-import { AI_AGENT_GRADUATION_BY_ORG_BATCH, aiAgentsRoutes, mapError } from './aiAgents';
+import {
+  AI_AGENT_GRADUATION_BY_ORG_BATCH,
+  aiAgentsRoutes,
+  mapError,
+  runSiteScopeCondition,
+} from './aiAgents';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 
 const AGENT_ID = '11111111-1111-4111-8111-111111111111';
@@ -347,6 +370,7 @@ const PARTNER_ID = '55555555-5555-4555-8555-555555555555';
 const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const INTENT_ID = '88888888-8888-4888-8888-888888888888';
+const SITE_ID = '99999999-9999-4999-8999-999999999999';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -407,7 +431,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -481,6 +505,22 @@ beforeEach(() => {
 });
 
 describe('POST /ai-agents/:id/runs', () => {
+  it('refuses a designer agent outright — it has no device-bound lane (Fleet Designer W01)', async () => {
+    getAgentMock.mockResolvedValue({ ...agent(), kind: 'designer', name: 'Fleet Designer' });
+
+    const res = await trigger(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'kind_not_device_triggerable' });
+    // Never admitted: a designer admitted here would default to the FULL
+    // profile, where none of the read-only design machinery applies.
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'failure', action: 'ai_agent.run.manual_trigger' }),
+    );
+  });
+
   it('queues a manual run and audits the accountable human actor', async () => {
     const res = await trigger(buildApp());
 
@@ -654,6 +694,17 @@ describe('POST /ai-agents/:id/runs', () => {
 // The route now projects through the same `mapRunListItem` mapper as the
 // org-wide `GET /runs` list.
 describe('GET /ai-agents/:id/runs (legacy per-agent list, review fix #3828)', () => {
+  it('pushes the organization user site ceiling into SQL before limiting history', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/${AGENT_ID}/runs?limit=1`);
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request(`/ai-agents/${AGENT_ID}/runs`);
@@ -870,6 +921,27 @@ function sqlParams(predicate: unknown): unknown[] {
   return dialect.sqlToQuery(predicate as SQL).params;
 }
 
+describe('runSiteScopeCondition', () => {
+  it('keeps unrestricted callers unchanged', () => {
+    expect(runSiteScopeCondition({ allowedSiteIds: undefined })).toBeUndefined();
+  });
+
+  it('fails closed for an explicit empty ceiling', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [] })!);
+    expect(query.sql).toContain('false');
+    expect(query.params).toEqual([]);
+  });
+
+  it('requires a same-org current device in an allowed site', () => {
+    const query = dialect.sqlToQuery(runSiteScopeCondition({ allowedSiteIds: [SITE_ID] })!);
+    expect(query.sql).toContain('EXISTS');
+    expect(query.sql).toContain('"run_scope_device"."id"');
+    expect(query.sql).toContain('"run_scope_device"."org_id"');
+    expect(query.sql).toContain('"run_scope_device"."site_id"');
+    expect(query.params).toContain(SITE_ID);
+  });
+});
+
 // Strict response-shape schemas (DTO rule, Global Constraints): a route that
 // starts spreading a raw row again — pulling in dedupeKey, policySnapshot,
 // the outcome column itself, sessionId, intentIds, or any tool-input field —
@@ -1045,6 +1117,18 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
+    // Fleet Designer W01 (#5651), Task 9: `null` for every non-design run
+    // and for a design run that produced nothing.
+    fleetDesign: z.object({
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      generatedAt: z.string().nullable(),
+      functionCount: z.number(),
+      watchCount: z.number(),
+      ruleCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1123,6 +1207,18 @@ function runRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
+  it('applies the site ceiling to the initial run lookup before any subsidiary trace read', async () => {
+    let where: unknown;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request(`/ai-agents/runs/${RUN_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+  });
+
   it('returns 404 for a run outside the caller\'s org (or that does not exist)', async () => {
     selectMock.mockReturnValueOnce(selectChain([]));
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
@@ -1440,6 +1536,108 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.reportRunId).toBeNull();
   });
 
+  /**
+   * Fleet Designer W01 (#5651), Task 9 — the design artifact read. Direct
+   * sibling of the narrative artifact test above: same org-pinned join
+   * shape, different projection (`fleetDesignArtifactProjection`), and
+   * gated on `run.profile === 'design'` rather than firing for every run
+   * that merely links a `report_runs` row (a design run's linked artifact
+   * carries `summary.fleetDesign`, not `summary.narrative`).
+   */
+  it('reads the linked fleet design artifact through an org-pinned join and projects downloadPath', async () => {
+    const DESIGN_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'design',
+        scheduleId: DESIGN_SCHEDULE_ID,
+        triggerRef: { scheduleId: DESIGN_SCHEDULE_ID, occurrenceKey: '2026-09-12T07:00:00Z', kind: 'design' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          fleetDesign: {
+            schemaVersion: 1,
+            generatedAt: '2026-09-12T07:00:00.000Z',
+            markdown: '# Fleet Design',
+            thresholds: { confidence: 0.6, precursors: {} },
+            sections: {
+              found: { summary: [], findings: [] },
+              functions: [{ functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] }],
+              monitoring: [],
+              retired: [],
+              automation: [],
+              legacy: [],
+              baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+              unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+            },
+          },
+          fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      // The existing (narrative) artifact query still fires unconditionally
+      // on `reportRunId` alone (see the sibling "skips" test below) — it
+      // finds nothing for a design run's projection.
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          generatedAt: '2026-09-12T07:00:00.000Z',
+          evidenceTruncated: false,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Three selects: the run row, the (empty) narrative-projection query and
+    // the fleet design artifact. No session, no intent ids and no sweep
+    // findings, so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.fleetDesign).toMatchObject({
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      functionCount: 1,
+      evidenceTruncated: false,
+    });
+  });
+
+  it('skips the fleet design artifact read for a non-design run, even with a reportRunId set', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+        },
+      })]))
+      // The existing (narrative) artifact query still fires — reportRunId
+      // alone gates it — but it finds nothing for this row's projection.
+      .mockReturnValueOnce(selectChain([]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.fleetDesign).toBeNull();
+  });
+
   it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
     let hostnameWhere: unknown;
     selectMock
@@ -1654,6 +1852,20 @@ describe('POST /ai-agents/verdicts/:verdictId/feedback', () => {
 });
 
 describe('GET /ai-agents/runs (org-wide keyset list, #3828)', () => {
+  it('pushes the site ceiling into the keyset query before limit and cursor selection', async () => {
+    let where: unknown;
+    let limit: number | undefined;
+    selectMock.mockReturnValueOnce(selectChain([], (predicate) => { where = predicate; }, (value) => { limit = value; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] })
+      .request('/ai-agents/runs?limit=1');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+    expect(limit).toBe(2);
+    expect(await res.json()).toEqual({ data: [], nextCursor: null });
+  });
+
   it('is gated on ai_agents:read', async () => {
     hasPermMock.mockReturnValue(false);
     const res = await buildApp().request('/ai-agents/runs');
@@ -3258,6 +3470,16 @@ describe('GET /ai-agents', () => {
     selectDistinctOnMock.mockReturnValue(distinctChain([]));
   });
 
+  it('selects the latest site-visible run rather than the latest org-visible run', async () => {
+    let where: unknown;
+    selectDistinctOnMock.mockReturnValueOnce(distinctChain([], (predicate) => { where = predicate; }));
+
+    const res = await buildApp(false, { allowedSiteIds: [SITE_ID] }).request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect(sqlParams(where)).toContain(SITE_ID);
+  });
+
   it('projects the latest run per agent from ONE batched query', async () => {
     selectDistinctOnMock.mockReturnValueOnce(distinctChain([
       {
@@ -3449,6 +3671,31 @@ describe('GET /ai-agents — hasPartnerBaseline (#4170)', () => {
     const body = await res.json();
     expect(body.data.find((row: { id: string }) => row.id === AGENT_ID).hasPartnerBaseline).toBe(true);
     expect(body.data.find((row: { id: string }) => row.id === OTHER_ORG_ID).hasPartnerBaseline).toBe(false);
+  });
+});
+
+// Fleet Designer (W01) — `kind` cannot be patched, so `updateAgent`
+// (agentService.ts) is the only place that can catch a mode not allowed for
+// the row's EXISTING kind; this route test proves the service's rejection
+// reaches the client as a 400 with the stable `mode_not_allowed_for_kind`
+// code, distinct from the 422 `UnsupportedAgentModeError` case.
+describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
+  function patchAgent(app: Hono, body: unknown, id = AGENT_ID) {
+    return app.request(`/ai-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s mode_not_allowed_for_kind when the service rejects a shadow mode for a designer agent', async () => {
+    updateAgentMock.mockRejectedValueOnce(new ModeNotAllowedForKindError('shadow', 'designer'));
+
+    const res = await patchAgent(buildApp(), { mode: 'shadow' });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
   });
 });
 
@@ -3727,6 +3974,28 @@ function previewRequest(app: Hono, body: Record<string, unknown>) {
     body: JSON.stringify(body),
   });
 }
+
+// Fleet Designer (W01) — `createAiAgentSchema`'s `superRefine` runs
+// `assertModeAllowedForKind` (packages/shared/validators/aiAgents.ts) BEFORE
+// the route handler ever sees the body, so this is a pure zValidator 400 —
+// `createAgent` is never called.
+describe('POST /ai-agents (create)', () => {
+  function createAgentRequest(app: Hono, body: Record<string, unknown>) {
+    return app.request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s a designer agent created with mode shadow (mode not allowed for kind)', async () => {
+    const res = await createAgentRequest(buildApp(), { kind: 'designer', mode: 'shadow', name: 'Fleet Designer' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { details: { fieldErrors: Record<string, string[]> } };
+    expect(body.details.fieldErrors.mode?.[0]).toMatch(/not available for a designer agent/);
+  });
+});
 
 describe('POST /ai-agents/preview', () => {
   it('evaluates a draft policy against the mocked catalog', async () => {

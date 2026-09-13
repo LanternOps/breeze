@@ -46,6 +46,7 @@ import type {
   AiAgentPolicy,
   AiAgentRunProfile,
   AiSweepKind,
+  FleetDesignOutcomeRefs,
 } from '@breeze/shared';
 import { AI_SWEEP_KINDS } from '@breeze/shared';
 import { envFlag } from '../../config/env';
@@ -69,10 +70,15 @@ import type { PostToolUseCallback, PreToolUseCallback } from '../aiAgentSdkTools
 import { calculateCostCents, recordSessionlessSdkUsage } from '../aiCostTracker';
 import type { AiBillingSource } from '../aiCostTracker';
 import {
+  markAiBudgetReservationIndeterminate,
+  reserveAiBudget,
+} from '../aiBudgetReservations';
+import {
   checkAgentGuardrails,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
 } from '../aiGuardrails';
+import { loadProposalGuardrailContext } from '../scriptProposals';
 import { publishEvent } from '../eventBus';
 import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
@@ -116,6 +122,7 @@ import {
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
   type AgentRunAnomalyPromptContext,
+  type AgentRunDesignPromptContext,
   type AgentRunNarrativePromptContext,
   type AgentRunPromptContext,
   type AgentRunSweepPromptContext,
@@ -132,7 +139,9 @@ import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdict
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
+import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
 import {
+  finalizeFleetDesign,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -161,6 +170,7 @@ export type {
 } from './runLoopTypes';
 import { loadSweepEvidence } from './sweepEvidence';
 import { loadNarrativeContext } from './narrativeContext';
+import { designBaselineNumbers, loadDesignEvidence } from './designEvidence';
 
 /** `ai_agent_runs.summary` is `text`, but a reviewer reads the first screen. */
 const RUN_SUMMARY_MAX_CHARS = 2000;
@@ -445,6 +455,34 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       };
     }
 
+    // Fleet Designer W01 (#5651). Runs INSIDE this same system context, exactly
+    // like the sweep/narrative loads above — `loadDesignEvidence` manages no
+    // context of its own, so the `org_id` predicate every one of its
+    // statements carries is the only thing keeping one tenant's fleet out of
+    // another's design. `trigger_ref` is read DEFENSIVELY for the same reason
+    // the sweep/narrative blocks read it that way.
+    //
+    // Unlike sweep/narrative, a design run CAN fail here: the spec's own rule
+    // is "a run only fails when the device section itself cannot be
+    // assembled" — every other section degrades to an `unavailable` entry the
+    // prompt renders as "(not measured)", but a design with NO devices at all
+    // has nothing to design for.
+    let design: RunContext['design'] = null;
+    if (isDesignProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; siteId?: unknown };
+      const siteId = typeof ref.siteId === 'string' ? ref.siteId : null;
+      const evidence = await loadDesignEvidence(run.orgId, { siteId });
+      if (evidence.devices.length === 0 && evidence.unavailable.includes('devices')) {
+        throw new AgentRunError('design_evidence_unavailable', `device evidence was unavailable for org ${run.orgId}`);
+      }
+      design = {
+        scheduleId: run.scheduleId ?? null,
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : null,
+        siteId,
+        evidence,
+      };
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -456,6 +494,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       correlationGroup,
       sweep,
       narrative,
+      design,
       sessionId: null,
     };
   });
@@ -516,10 +555,21 @@ export function createAgentRunPreToolUse(args: {
    * SDK's `abortController` (which this synchronous hook does not observe).
    */
   deadlineMs: number;
+  /**
+   * Fleet Designer W01 (#5651) — the SAME refs `postToolUse` receives,
+   * needed here too: `validateOutcomeToolInput('submit_fleet_design', ...)`
+   * throws unconditionally when its third argument is omitted (see its own
+   * switch case), so without this the pre-hook's own validate-only check
+   * below denied EVERY `submit_fleet_design` call before the SDK's real tool
+   * handler (which already has `design` via `buildOutcomeSdkTools`) ever
+   * ran — a design run could never actually submit. `undefined` on every
+   * non-design run, where the switch never reaches that case.
+   */
+  design?: FleetDesignOutcomeRefs;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design,
   } = args;
 
   /**
@@ -753,14 +803,15 @@ export function createAgentRunPreToolUse(args: {
         return { allowed: false, error: 'not available on this run' };
       }
       try {
-        validateOutcomeToolInput(toolName, input);
+        validateOutcomeToolInput(toolName, input, design);
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
       return { allowed: true };
     }
 
-    const check = checkAgentGuardrails(toolName, input, guardrailPolicy);
+    const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
+    const check = checkAgentGuardrails(toolName, input, guardrailPolicy, guardrailContext);
 
     if (check.disposition === 'deny') {
       const reason = check.reason ?? 'Denied by agent guardrails';
@@ -806,8 +857,17 @@ export function createAgentRunPreToolUse(args: {
     // anyway. A triage run's real output channel is `submit_ticket_proposal`
     // (an outcome tool, handled above this branch, never reaching here) —
     // nothing reads `outcome.proposedActions` for this profile either.
+    //
+    // Fleet Designer W01 (#5651): design joins them too. Its tool floor
+    // (`DESIGN_TOOL_ALLOWLIST`) is NOT empty — unlike narrative/triage it has
+    // a handful of read-only drill-down tools — but `designLimits` still
+    // pins `maxActionsPerRun: 0`, and every one of those tools is read-only
+    // by construction, so a 'propose'/'act' disposition reaching here is the
+    // same class of upstream miss this branch exists to catch. Its real
+    // output channel is `submit_fleet_design`, handled above this branch.
     if (
-      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run))
+      (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
+        || isDesignProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -973,8 +1033,17 @@ export function createAgentRunPostToolUse(args: {
   };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
+  /**
+   * Fleet Designer W01 (#5651) — the refs `submit_fleet_design`'s validation
+   * needs (the evidence's device-id set and the server-computed baseline).
+   * Set only for a `design`-profile run; computed ONCE by `driveSdkLoop` and
+   * reused for the SDK tool build below, so the referential pass and the
+   * tool's own schema can never see two different device-id sets for the
+   * same run.
+   */
+  design?: FleetDesignOutcomeRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
     // Outcome tools (Phase 2 wave P2-1): never went through
@@ -1017,6 +1086,18 @@ export function createAgentRunPostToolUse(args: {
           // `finishRun` before the task's wake ever fires.
           case 'submit_task_step':
             outcome.taskStep = validateOutcomeToolInput(toolName, input);
+            break;
+          // Fleet Designer W01 (#5651) — what lands here is the SERVER-BUILT
+          // `FleetDesignOutcome` (every itemRef attached, baseline numbers
+          // computed, markdown derived), not the model's submission — see
+          // `validateOutcomeToolInput`'s design overload. `design` is always
+          // set whenever this case can be reached: the pre-hook denies
+          // `submit_fleet_design` for any non-design run (`outcomeToolsForRun`
+          // gate), and a design run always has `ctx.design` populated by the
+          // context loader before the SDK tool is even built.
+          case 'submit_fleet_design':
+            if (!design) throw new Error('[aiAgentRunLoop] submit_fleet_design captured with no design refs');
+            outcome.fleetDesign = validateOutcomeToolInput(toolName, input, design);
             break;
           default: {
             const exhaustive: never = toolName;
@@ -1306,6 +1387,38 @@ function narrativePromptContext(
   };
 }
 
+/**
+ * Named-field projection, like `narrativePromptContext` above — a field added
+ * to `RunContext.design` cannot reach the model until someone puts it here
+ * too. `evidence` is passed by reference (already bounded and sanitized by
+ * `designEvidence.ts`) and the renderer reads scalars off it — it is never
+ * serialized. See `buildFleetDesignTaskPrompt`.
+ */
+function designPromptContext(
+  design: NonNullable<RunContext['design']>,
+): AgentRunDesignPromptContext {
+  return {
+    trigger: design.scheduleId ? 'schedule' : 'manual',
+    occurrenceKey: design.occurrenceKey,
+    evidence: design.evidence,
+  };
+}
+
+/**
+ * Fleet Designer W01 (#5651) — the refs `submit_fleet_design`'s validation
+ * needs, computed ONCE per run from `ctx.design` so the post-hook capture and
+ * the SDK tool build below always agree on the same device-id set and
+ * baseline numbers. `undefined` for every non-design run.
+ */
+function designOutcomeRefs(ctx: RunContext): FleetDesignOutcomeRefs | undefined {
+  if (!ctx.design) return undefined;
+  return {
+    deviceIds: ctx.design.evidence.deviceIds,
+    baseline: designBaselineNumbers(ctx.design.evidence),
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -1321,6 +1434,7 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     correlationGroup: ctx.correlationGroup,
     sweep: ctx.sweep ? sweepPromptContext(ctx.sweep) : null,
     narrative: ctx.narrative ? narrativePromptContext(ctx.narrative) : null,
+    design: ctx.design ? designPromptContext(ctx.design) : null,
   };
 }
 
@@ -1366,6 +1480,13 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   const sweep = isSweepProfile(run);
   const narrative = isNarrativeProfile(run);
   const triage = isTriageProfile(run);
+  // Fleet Designer W01 (#5651) added the sixth arm. A design run's
+  // `profileAllowlist` is NOT the outcome tool alone — `DESIGN_TOOL_ALLOWLIST`
+  // gives it a small read-only drill-down floor, same shape as
+  // verdict/sweep's — but `designLimits`, like narrative/triage/verdict/sweep,
+  // still zeroes `maxActionsPerRun`: a design run is read-only by
+  // construction (Global Constraints), never just by convention.
+  const design = isDesignProfile(run);
   const runLimits = verdict
     ? verdictLimits(limits)
     : sweep
@@ -1374,7 +1495,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
         ? narrativeLimits(limits)
         : triage
           ? triageLimits(limits)
-          : limits;
+          : design
+            ? designLimits(limits)
+            : limits;
   const profileAllowlist = verdict
     ? verdictToolAllowlist(effective.toolAllowlist)
     : sweep
@@ -1383,7 +1506,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
         ? narrativeToolAllowlist(effective.toolAllowlist)
         : triage
           ? triageToolAllowlist(effective.toolAllowlist)
-          : null;
+          : design
+            ? designToolAllowlist(effective.toolAllowlist)
+            : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1492,10 +1617,16 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // Shared across every act-mode call in THIS run — see actRevalidation.ts.
   const actReservation: ActReservationState = { count: 0 };
 
+  // Fleet Designer W01 (#5651) — computed ONCE here (not inside either hook)
+  // and reused for BOTH the pre-hook's validate-only check and the post-hook
+  // capture below, so the referential pass and the tool's own schema can
+  // never see two different device-id sets or two different `generatedAt`
+  // timestamps for the same run.
+  const designRefs = designOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs,
+    actReservation, deadlineMs, design: designRefs,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
@@ -1504,6 +1635,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       profile: run.profile, taskId: run.taskId,
     },
     agentUserId: agentAuth.user.id,
+    design: designRefs,
   });
 
   // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
@@ -1544,10 +1676,25 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(outcomeToolsForRun(run)),
+    buildOutcomeSdkTools(outcomeToolsForRun(run), designRefs ? { design: designRefs } : undefined),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
+  // S8: the ONE surface with a genuinely stable request identity — the agent
+  // run's own id. Re-driving a run therefore rejoins its existing reservation
+  // instead of taking a second hold on the org's cap.
+  const reservation = await reserveAiBudget({
+    orgId: run.orgId,
+    idempotencyKey: `ai-agent-run:${run.id}`,
+    billingSource,
+  });
+  if (reservation.kind === 'denied') {
+    throw new AgentRunError('org_budget_exceeded', reservation.message);
+  }
+  const reservationId = reservation.reservationId;
+  const maxBudgetCents = reservation.kind === 'reserved'
+    ? Math.min(runLimits.maxBudgetCentsPerRun, reservation.reservedCostCents)
+    : runLimits.maxBudgetCentsPerRun;
   const abortController = new AbortController();
   let wallClockExceeded = false;
   let budgetExceeded = false;
@@ -1563,6 +1710,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   let maxTurnsExceeded = false;
   let costCents = 0;
   let turnCount = 0;
+  let receivedResult = false;
   const usage: SdkUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -1580,7 +1728,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
           maxTurns: Math.max(1, runLimits.maxTurnsPerRun),
           // Belt to the mid-stream braces below: the SDK stops itself, and the
           // loop stops the SDK if a result lands over budget anyway.
-          maxBudgetUsd: runLimits.maxBudgetCentsPerRun / 100,
+          maxBudgetUsd: maxBudgetCents / 100,
           tools: [],
           allowedTools: [...new Set(exposedNames)],
           mcpServers: { breeze: mcpServer },
@@ -1602,6 +1750,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             continue;
           }
           if (message.type !== 'result') continue;
+          receivedResult = true;
 
           turnCount += message.num_turns;
           const messageUsage = message.usage as unknown as SdkUsage;
@@ -1643,7 +1792,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             break;
           }
 
-          if (costCents > runLimits.maxBudgetCentsPerRun) {
+          if (costCents > maxBudgetCents) {
             budgetExceeded = true;
             abortController.abort();
             break;
@@ -1692,19 +1841,29 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // kept admitting runs after the credits were gone. Best-effort: an accounting
   // failure never redefines the run's outcome.
   try {
-    await recordSessionlessSdkUsage(
-      run.orgId,
-      {
-        costCents,
-        usage,
-        numTurns: turnCount,
-        toolExecutionCount: outcome.toolExecutionCount,
-        model,
-      },
-      billingSource,
-    );
+    if (receivedResult) {
+      await recordSessionlessSdkUsage(
+        run.orgId,
+        {
+          costCents,
+          usage,
+          numTurns: turnCount,
+          toolExecutionCount: outcome.toolExecutionCount,
+          model,
+        },
+        billingSource,
+        reservationId,
+      );
+    } else {
+      await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId });
+    }
   } catch (error) {
     console.error('[aiAgentRunLoop] failed to record org AI usage', { runId: run.id, error });
+    await markAiBudgetReservationIndeterminate({ orgId: run.orgId, reservationId })
+      .catch((markError) => console.error('[aiAgentRunLoop] failed to retain indeterminate AI reservation', {
+        runId: run.id,
+        error: markError,
+      }));
   }
 
   return {
@@ -1811,6 +1970,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // narrative / triage, so at most one of the four error codes below is
     // ever non-null.
     const ticketTriageErrorCode = await finalizeTicketTriage(ctx, result);
+    // Fleet Designer W01 (#5651) — fifth in the same row and for the same
+    // reason: it persists the design as a system-authored report artifact and
+    // links `ai_agent_runs.report_run_id` BEFORE the awaiting_approval/
+    // completed decision below. A run is exactly one of verdict / sweep /
+    // narrative / triage / design, so at most one of the five error codes
+    // below is ever non-null.
+    const fleetDesignErrorCode = await finalizeFleetDesign(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -1859,6 +2025,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // produce (a proposal task A8 still has to turn into anything), and
       // must not be counted a ceiling failure against the circuit breaker.
       || outcome.ticketProposal !== undefined
+      // Fleet Designer W01 (#5651) — same rule again for a design run's ONE
+      // job: a run that called `submit_fleet_design` and only then hit
+      // `error_max_turns` has produced exactly what it was admitted to
+      // produce, and must not be counted a ceiling failure against the
+      // agent's circuit breaker (which, per Global Constraints, treats a
+      // design run's success as circuit-neutral anyway — see `agentCircuit.ts`).
+      || outcome.fleetDesign !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -1889,7 +2062,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     await finishRun(
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
-      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode,
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode,
       result,
     );
   } catch (error) {
@@ -2117,8 +2290,14 @@ async function finishRun(
   // executes nothing, and there is no fix whose regression `scheduleFixWatch`
   // could watch for.
   const notifies = !isVerdictProfile(ctx.run);
+  // Fleet Designer W01 (#5651): `watches` gains the design exclusion, same
+  // reasoning as sweep/narrative/triage — a design run executes nothing (its
+  // tool floor is read-only and `designLimits` pins `maxActionsPerRun: 0`),
+  // so there is no fix whose regression `scheduleFixWatch` could watch for.
+  // `notifies` is unaffected: a design run is not excluded (only `verdict`
+  // is), so it already falls on the "does notify" side.
   const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run)
-    && !isTriageProfile(ctx.run);
+    && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run);
 
   if (notifies) {
     try {

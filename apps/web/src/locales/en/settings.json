@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support usage",
           "description": "Show month-to-date billable support-time totals."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Show scheduled deliverables, what was delivered, and key dates."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Let customers download the documents you have shared with them."
         }
       }
     },
@@ -1502,11 +1510,13 @@
       "timezone": "Timezone",
       "kinds": {
         "sweep": "Sweep",
-        "narrative": "Weekly report"
+        "narrative": "Weekly report",
+        "design": "Fleet design"
       },
       "kindsLabel": "Checks to run",
       "kind": "Schedule type",
       "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
+      "monthlyOrRarerHint": "A fleet design fires at most once a month: a literal minute, hour and day-of-month (1-28), month as * or a comma list of literal months, and * for day-of-week. For example 0 6 1 1,4,7,10 * runs quarterly on the 1st at 06:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
       "override": "Override for this org",
@@ -1546,6 +1556,7 @@
         "baselineAgentMismatch": "That baseline belongs to a different agent.",
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
         "agentKindNotTriage": "Only a triage agent can be scheduled.",
+        "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
         "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
       }
@@ -1556,7 +1567,8 @@
     "kindHints": {
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
-      "helpdesk": "Picks up tickets and proposes replies and next steps."
+      "helpdesk": "Picks up tickets and proposes replies and next steps.",
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -1571,7 +1583,8 @@
       "shadowConsequence": "Observes and proposes; a human approves everything.",
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
-      "actUnavailable": "Not available for this agent yet."
+      "actUnavailable": "Not available for this agent yet.",
+      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
@@ -1685,7 +1698,8 @@
     "kinds": {
       "triage": "Alert triage",
       "patch": "Patching",
-      "helpdesk": "Help desk"
+      "helpdesk": "Help desk",
+      "designer": "Fleet designer"
     },
     "modes": {
       "off": "Off",
@@ -1820,7 +1834,8 @@
       "profile": {
         "sweep": "Sweep",
         "narrative": "Weekly report",
-        "triage": "Ticket triage"
+        "triage": "Ticket triage",
+        "design": "Fleet design"
       },
       "sweep": {
         "title": "Sweep findings",
@@ -1867,6 +1882,14 @@
         "openReport": "Open report",
         "download": "Download PDF",
         "downloadFailed": "Could not download the PDF."
+      },
+      "fleetDesign": {
+        "title": "Fleet Design",
+        "counts": "{{functions}} functions · {{watches}} watches · {{rules}} alert rules",
+        "openReport": "Open report",
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF.",
+        "truncatedNote": "The evidence was cut short — this design did not see the whole fleet."
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
@@ -2235,6 +2258,10 @@
         "scripts_commands": {
           "label": "Scripts and commands",
           "description": "Run scripts, playbooks and system commands, and manage the processes, scheduled tasks and registry entries they touch."
+        },
+        "author_scripts": {
+          "label": "Author scripts",
+          "description": "Write a new script as a proposal for independent review. Nothing an agent writes runs until it has been reviewed and approved."
         },
         "tickets": {
           "label": "Helpdesk tickets",
@@ -2685,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} logged proposals",
       "unattendedCount_one": "{{count}} unattended",
       "unattendedCount_other": "{{count}} unattended",
-      "scriptGateNote": "Stays an approval request until a script is authorized for this agent."
+      "scriptGateNote": "Stays an approval request until a script is authorized for this agent.",
+      "designerReadOnly": "The Fleet designer reaches every read-only tool and one report tool. It has no mutating capabilities to choose."
     },
     "summary": {
       "edit": "Edit",
@@ -2786,6 +2814,11 @@
           "blurb": "Works tickets as they're created, replied to, or resolved.",
           "runsWhen": "a ticket is created, gets its first reply, or is marked resolved",
           "recommended": "restarting services and clearing disk space to resolve common requests"
+        },
+        "designer": {
+          "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+          "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
+          "recommended": "a clean-slate migration, or a quarterly configuration audit"
         }
       },
       "kindCard": {
@@ -2939,7 +2972,9 @@
     "loadingApproverDevices": "Loading approver devices…",
     "tryAgain": "Try again",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "No approver devices registered yet. Sign in to the Breeze mobile app on your phone and it appears here automatically, or register this browser below to approve with a biometric.",
-    "platformBound": "Platform-bound",
+    "hardwareAttested": "Hardware-attested",
+    "notAttested": "Not attested",
+    "notAttestedTooltip": "Critical approvals aren't available from this device until it's re-registered on an attested app build.",
     "registered": "Registered",
     "lastUsed": "Last used",
     "cancel": "Cancel",
@@ -4427,27 +4462,10 @@
       "suspended": "Suspended",
       "churned": "Churned",
       "offboarding": "Offboarding"
+    },
+    "help": {
+      "slug": "Generated from the name. Unique within your account; used by the API and integrations."
     }
-  },
-  "organizationList": {
-    "title": "Organizations",
-    "count": "{{filtered}} of {{total}} organizations",
-    "searchPlaceholder": "Search organizations",
-    "allStatuses": "All statuses",
-    "status": {
-      "active": "Active",
-      "trial": "Trial",
-      "suspended": "Suspended",
-      "churned": "Churned",
-      "offboarding": "Offboarding",
-      "merging": "Merging…",
-      "archived": "Archived",
-      "purging": "Purging"
-    },
-    "columns": {
-      "devices": "Devices"
-    },
-    "empty": "No organizations found. Try adjusting your search or filters."
   },
   "bulkOrgImport": {
     "title": "Bulk import",
@@ -4512,7 +4530,7 @@
   },
   "organizationsPage": {
     "loading": "Loading organizations...",
-    "title": "Organizations & Sites",
+    "title": "Organizations",
     "description": "Manage organizations and their sites.",
     "actions": {
       "addOrganization": "Add organization",
@@ -4521,7 +4539,10 @@
       "archiveOrganization": "Archive organization",
       "deleting": "Deleting...",
       "openRecord": "Open record",
-      "openSettings": "Settings"
+      "openSettings": "Settings",
+      "openSettingsFor": "Settings for {{name}}",
+      "openRecordFor": "Open record for {{name}}",
+      "more": "More actions"
     },
     "errors": {
       "fetchOrganizations": "Failed to fetch organizations",
@@ -4545,17 +4566,31 @@
     "deviceCount": "{{count}} devices",
     "list": {
       "title": "Organizations",
-      "searchPlaceholder": "Search...",
       "empty": "No organizations found.",
-      "noMatches": "No organizations match your search.",
-      "dragToReorder": "Drag to reorder"
+      "noMatches": "No organizations match your search or filter.",
+      "dragToReorder": "Drag to reorder",
+      "searchLabel": "Search organizations",
+      "reorderHandle": "Reorder {{name}}",
+      "reorderHint": "Use the up and down arrow keys to move this organization.",
+      "movedAnnouncement": "{{name}} moved to position {{position}} of {{total}}",
+      "workspaceMarker": "Workspace",
+      "sort": {
+        "label": "Sort",
+        "manual": "Manual order",
+        "name": "A to Z",
+        "devices": "Most devices"
+      },
+      "filter": {
+        "label": "Filter by status",
+        "all": "All"
+      }
     },
     "sites": {
       "loading": "Loading sites..."
     },
     "emptySelection": {
       "title": "No organization selected",
-      "description": "Select an organization from the list to view its sites."
+      "description": "Select an organization to see its status, sites, and actions."
     },
     "add": {
       "title": "Add Organization",
@@ -4576,8 +4611,9 @@
     },
     "deleteSite": {
       "title": "Delete Site",
-      "messagePrefix": "Are you sure you want to delete",
-      "messageSuffix": " This action cannot be undone."
+      "message": "Delete {{name}}? This removes the site permanently and cannot be undone.",
+      "blockedMessage_one": "{{name}} still has {{count}} device. Move it to another site before deleting this one.",
+      "blockedMessage_other": "{{name}} still has {{count}} devices. Move them to another site before deleting this one."
     },
     "merge": {
       "openButton": "Merge into another organization",
@@ -4678,6 +4714,9 @@
         "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
         "purging": "This organization is already being permanently deleted and can no longer be restored."
       }
+    },
+    "scope": {
+      "hint": "Your workspace is set to {{orgName}}. Actions on this page apply to the organization selected here."
     }
   },
   "siteDetailPage": {
@@ -4775,7 +4814,9 @@
     "count": "{{filtered}} of {{total}} sites",
     "searchPlaceholder": "Search sites",
     "actions": {
-      "add": "Add site"
+      "add": "Add site",
+      "editSite": "Edit {{name}}",
+      "deleteSite": "Delete {{name}}"
     },
     "columns": {
       "timezone": "Timezone",
@@ -5305,5 +5346,82 @@
       "update": "Could not save the contact.",
       "delete": "Could not delete the contact."
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Script authoring",
+    "subtitle": "Let the assistant and your agents write, review and — when you allow it — run scripts without a card.",
+    "partnerCard": {
+      "title": "Partner ceiling",
+      "description": "The widest setting any organization under this partner may use. Individual organizations can only narrow it.",
+      "readOnly": "Only a partner administrator with full organization access can change the ceiling.",
+      "missing": "Your partner has not granted a ceiling yet, so the unattended lane cannot be enabled here."
+    },
+    "orgCard": {
+      "title": "This organization",
+      "description": "An explicit grant. The unattended lane stays off until both the partner ceiling and this switch allow it.",
+      "noOrgSelected": "Select an organization to manage its script authoring settings."
+    },
+    "fields": {
+      "proposingEnabled": "Allow the AI to propose scripts",
+      "unattendedAllowed": "Allow organizations to use the unattended lane",
+      "unattendedEnabled": "Run approved low-risk scripts without an approval card",
+      "maxRiskTier": "Highest risk tier allowed unattended",
+      "allowedClasses": "What an unattended script may touch",
+      "perHour": "Maximum unattended runs per hour",
+      "reviewerModel": "Reviewer model",
+      "reviewerModelHint": "Leave empty to use the platform default.",
+      "protectedResources": "Never touch these",
+      "protectedServices": "Services",
+      "protectedPaths": "Paths",
+      "protectedRegistryKeys": "Registry keys",
+      "protectedDeviceTags": "Device tags"
+    },
+    "tier": {
+      "low": "Low",
+      "medium": "Medium"
+    },
+    "class": {
+      "registry": "Registry",
+      "services": "Services",
+      "processes": "Processes",
+      "files_system": "System files",
+      "files_user": "User files",
+      "temp_files": "Temporary files",
+      "network_egress": "Outbound network",
+      "firewall": "Firewall",
+      "credentials": "Credentials",
+      "users_groups": "Users and groups",
+      "packages": "Packages",
+      "scheduled_tasks": "Scheduled tasks",
+      "disk": "Disk",
+      "boot": "Boot configuration",
+      "security_tooling": "Security tooling",
+      "dns_cache": "DNS cache",
+      "printing": "Printing",
+      "browser": "Browsers",
+      "shell_eval": "Dynamic code"
+    },
+    "windowsOnly": "Windows only",
+    "hardDenied": "Never available unattended, whatever the ceiling says.",
+    "aboveCeiling": "Your partner does not allow this.",
+    "lane": {
+      "closedTitle": "Unattended lane is running normally",
+      "openTitle": "Unattended lane is paused",
+      "openBody": "{{reason}} Unattended runs are refused until an approver resets the lane. Approvals still work normally.",
+      "reset": "Reset the lane",
+      "resetStepUpBody": "Resetting the unattended lane needs a fresh security check.",
+      "resetSuccess": "The unattended lane is running again.",
+      "resetFailed": "The lane could not be reset."
+    },
+    "stepUp": {
+      "title": "Confirm it is you",
+      "body": "Enabling unattended runs needs a fresh security check."
+    },
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Script authoring settings saved.",
+    "saveFailed": "Those settings could not be saved.",
+    "loading": "Loading…",
+    "loadFailed": "Script authoring settings could not be loaded."
   }
 }

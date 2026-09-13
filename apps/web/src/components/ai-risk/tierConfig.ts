@@ -103,6 +103,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'get_script_details', description: 'Script content, versions, and stats', category: 'Scripts & Automation' },
       { name: 'get_script_execution_history', description: 'Past execution results for a script', category: 'Scripts & Automation' },
       { name: 'get_script_execution', description: 'One script execution with its output', category: 'Scripts & Automation' },
+      // AI script authoring (behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED). A
+      // proposal is inert: nothing runs until run_script consumes it (Tier 3).
+      { name: 'propose_script', description: 'Author a script as a proposal for independent review', category: 'Scripts & Automation' },
+      { name: 'get_script_proposal', description: 'Read a script proposal, its scan and its review', category: 'Scripts & Automation' },
       { name: 'list_playbooks', description: 'List self-healing playbooks', category: 'Scripts & Automation' },
       { name: 'get_playbook_history', description: 'Playbook execution history', category: 'Scripts & Automation' },
       // Configuration Policies
@@ -127,6 +131,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_monitors (get)', description: 'Monitor details and history', category: 'Monitoring & Analytics' },
       { name: 'query_analytics', description: 'SLA compliance and capacity predictions', category: 'Monitoring & Analytics' },
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8) — distinct from the network-monitor
+      // `query_monitors` / `manage_monitors` above: a monitor definition is the
+      // authored condition+severity+delivery object that compiles into a
+      // managed alert rule/automation.
+      { name: 'list_monitors', description: 'List monitor definitions visible to the caller', category: 'Monitoring & Analytics' },
+      { name: 'get_monitor', description: 'Get a monitor definition with its policy attachments', category: 'Monitoring & Analytics' },
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
@@ -236,6 +246,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
+      // (create/update/delete/enable/disable/attach/detach) — supervised, same
+      // class as the software/browser/peripheral policy tools.
+      { name: 'manage_monitor_definitions', description: 'Create, update, delete, or attach/detach a monitor definition', category: 'Monitoring & Analytics' },
       // Integrations
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },
@@ -409,6 +423,8 @@ export const RBAC_MAPPINGS: Record<string, string | Record<string, string>> = {
   // Scripts
   search_script_library: 'scripts.read',
   get_script_details: 'scripts.read',
+  propose_script: 'scripts.execute',
+  get_script_proposal: 'scripts.read',
   // Software & playbooks
   list_playbooks: 'devices.read',
   execute_playbook: 'devices.execute',

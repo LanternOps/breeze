@@ -55,6 +55,8 @@ import {
 } from '../../services/filesystemAnalysis';
 import { recordSoftwarePolicyAudit } from '../../services/softwarePolicyService';
 import { resolvePatchConfigForDevice } from '../../services/featureConfigResolver';
+import { resolveEffectiveWarrantyInlineSettings } from '../../services/warrantyPolicyResolution';
+import { warrantyHpCmslCollectionEffective } from '@breeze/shared/validators';
 import { policyOwnershipCondition } from '../../services/configPolicyOwnership';
 import { resolveUserGroupMembershipCached } from '../../services/onedriveGraph';
 import { captureException } from '../../services/sentry';
@@ -2860,6 +2862,38 @@ export interface PatchSourceSettings {
 export async function buildPatchSourceConfigUpdate(deviceId: string): Promise<PatchSourceSettings> {
   const patch = await resolvePatchConfigForDevice(deviceId);
   return { exclusiveWindowsUpdate: patch?.exclusiveWindowsUpdate ?? false };
+}
+
+// ============================================
+// HP CMSL Warranty Collection Config (#5511 W02)
+// ============================================
+
+export interface WarrantySettings {
+  /**
+   * When true the (Windows-only) agent may collect HP warranty data on the
+   * device via HP's CMSL. False explicitly tells the agent to stop — so
+   * unassigning the policy, or a nearer policy replacing the link without an
+   * hpCmsl block, cleanly revokes collection.
+   */
+  hpCmslEnabled: boolean;
+}
+
+/**
+ * Resolves the warranty feature link for the device and surfaces the HP CMSL
+ * collection flag for the heartbeat config push. A device with no warranty
+ * policy assigned resolves to `false`, which the agent treats as "stop
+ * collecting". The caller (heartbeat) omits the block entirely on a resolver
+ * error so a transient failure never revokes collection fleet-wide — which is
+ * why this function deliberately does NOT catch.
+ *
+ * `warrantyHpCmslCollectionEffective` additionally requires an acceptance
+ * recorded against the CURRENT HP_CMSL_EULA_ID: an enabled block with no
+ * consent, or one naming superseded terms, delivers `false` (contract D2/D3).
+ * Collection never runs on an acceptance we cannot point at.
+ */
+export async function buildWarrantyConfigUpdate(deviceId: string): Promise<WarrantySettings> {
+  const inlineSettings = await resolveEffectiveWarrantyInlineSettings(deviceId);
+  return { hpCmslEnabled: warrantyHpCmslCollectionEffective(inlineSettings) };
 }
 
 // ============================================

@@ -262,8 +262,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
-  'backup_chains', 'backup_jobs', 'backup_sla_events',
-  'backup_snapshots', 'backup_verifications',
+  'backup_chains', 'backup_jobs', 'backup_sla_events', 'backup_snapshot_retirements',
+  'backup_snapshots', 'backup_verifications', 'bare_metal_recoveries',
   'brain_device_context', 'browser_extensions', 'browser_policy_violations',
   'capacity_predictions',
   'cis_baseline_results', 'cis_remediation_actions',
@@ -273,6 +273,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
+  'device_function_assessments',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
@@ -475,11 +476,12 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
   // so delete them first, then restore_jobs → backup_snapshots → backup_jobs
   'recovery_tokens', 'backup_chains',
-  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs',
+  'restore_jobs', 'backup_verifications', 'backup_snapshots', 'backup_jobs', 'backup_snapshot_retirements',
   // Application backup & DR
   'sql_instances', 'local_vaults', 'hyperv_vms',
   // Deployment invites (FK device_id → devices.id; no cascade)
@@ -504,6 +506,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // custom-field values (#3257 W05) — FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
   'device_custom_field_values',
+  // device function assessments (Fleet Designer W02, #5652) — FK
+  // (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE; leaf table,
+  // no children.
+  'device_function_assessments',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software
@@ -936,6 +942,8 @@ coreRoutes.get(
         osType: devices.osType,
         deviceRole: devices.deviceRole,
         deviceRoleSource: devices.deviceRoleSource,
+        deviceFunction: devices.deviceFunction,
+        deviceFunctionSource: devices.deviceFunctionSource,
         osVersion: devices.osVersion,
         osBuild: devices.osBuild,
         architecture: devices.architecture,
@@ -1137,6 +1145,8 @@ coreRoutes.get(
         osType: d.osType,
         deviceRole: d.deviceRole,
         deviceRoleSource: d.deviceRoleSource,
+        deviceFunction: d.deviceFunction,
+        deviceFunctionSource: d.deviceFunctionSource,
         osVersion: d.osVersion,
         osBuild: d.osBuild,
         architecture: d.architecture,

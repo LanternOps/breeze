@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Postura de la flota",
     "dashboard": "Panel",
-    "devices": "Dispositivos",
+    "devices": "Dispositivos y activos",
     "alerts": "Alertas",
     "approvals": "Aprobaciones",
     "pendingApprovals": "{{count}} aprobaciones pendientes",
@@ -20,6 +20,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "AI para Office",
     "networkMonitor": "Monitor de red",
+    "jobs": "Trabajos",
+    "monitoring": "Monitoreo",
     "networkDiscovery": "Descubrimiento de red",
     "edr": "EDR",
     "dnsSecurity": "DNS Seguridad",
@@ -47,9 +49,11 @@
     "billing": "Facturación",
     "organizations": "Organizaciones",
     "aiUsageBudget": "AI Uso y presupuesto",
+    "scriptAuthoring": "Creación de scripts",
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Ejecuciones de agentes de IA",
     "aiImpact": "Impacto de IA",
+    "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "users": "Usuarios",
@@ -713,7 +717,19 @@
         "scripts": "Scripts",
         "alerts": "Alertas",
         "users": "Usuarios",
-        "settings": "Configuración"
+        "settings": "Configuración",
+        "recent-devices": "Dispositivos recientes",
+        "recent-pages": "Visitados recientemente"
+      },
+      "actions": {
+        "newDevice": "Nuevo dispositivo",
+        "newDeviceDescription": "Agregar un dispositivo a tu flota",
+        "runScript": "Ejecutar script",
+        "runScriptDescription": "Ejecutar un script en dispositivos",
+        "alertRules": "Reglas de alerta",
+        "alertRulesDescription": "Administrar alertas en Políticas de configuración",
+        "keyboardShortcuts": "Atajos de teclado",
+        "keyboardShortcutsDescription": "Todas las teclas y combinaciones en una tarjeta"
       }
     },
     "notifications": {
@@ -753,7 +769,10 @@
       "collapse": "Contraer barra lateral",
       "expand": "Expandir barra lateral",
       "collapseSections": "Contraer todas las secciones",
-      "closeMenu": "Cerrar menú"
+      "closeMenu": "Cerrar menú",
+      "recentDevices": "Dispositivos recientes",
+      "hideRecentDevices": "Ocultar dispositivos recientes",
+      "showRecentDevices": "Mostrar dispositivos recientes"
     },
     "orgRequired": {
       "title": "Selecciona una organización",
@@ -764,6 +783,20 @@
       "title": "No se pudieron cargar tus organizaciones",
       "description": "Ocurrió un error al cargar la lista de organizaciones. Verifica tu conexión e inténtalo de nuevo.",
       "retry": "Reintentar"
+    },
+    "shortcuts": {
+      "title": "Atajos de teclado",
+      "general": "Generales",
+      "goTo": "Ir a",
+      "goToHint": "Presiona g, suelta y luego la tecla.",
+      "then": "luego",
+      "search": "Buscar en Breeze",
+      "searchSlash": "Buscar (también se abre con esta tecla)",
+      "cycleSidebar": "Cambiar el modo de la barra lateral",
+      "help": "Abrir el panel de ayuda",
+      "showThis": "Mostrar esta tarjeta",
+      "close": "Cerrar un diálogo o menú",
+      "typingNote": "Los atajos de una sola tecla se pausan mientras escribes en un campo."
     }
   },
   "migrationBanner": {
@@ -2443,5 +2476,10 @@
     "approximateUnavailableStale": "≈ total no disponible — el tipo de cambio a {{target}} para {{codes}} es demasiado antiguo",
     "approximateUnavailableMixed": "≈ total no disponible — {{codes}} no se pudo convertir a {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} y {{more}} más"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Tu rol requerirá autenticación de dos factores. Configúrala antes del {{date}}.",
+    "cta": "Configurar 2FA",
+    "dismiss": "Descartar el recordatorio de autenticación de dos factores"
   }
 }

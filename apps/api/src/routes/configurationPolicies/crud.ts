@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
 import type { AuthContext } from '../../middleware/auth';
-import { hasSatisfiedMfa, requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
+import { checkHpCmslWriteAllowed } from './hpCmslGate';
 import { db } from '../../db';
 import { organizations } from '../../db/schema';
 import {
@@ -14,15 +15,14 @@ import {
   updateConfigPolicy,
   deleteConfigPolicy,
   listEligibleParentPolicies,
-  getParentLinkFeatureTypes,
   canManagePartnerWidePolicies,
   PartnerWideWriteDeniedError,
   InvalidParentPolicyError,
   PolicyHasChildrenError,
+  parentPolicyEnablesHpCmslCollection,
 } from '../../services/configurationPolicy';
 import { invalidateRemoteAccessCache } from '../../services/remoteAccessPolicy';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { MFA_GATED_FEATURE_TYPES } from './featureLinks';
 import {
   createConfigPolicySchema,
   updateConfigPolicySchema,
@@ -62,6 +62,7 @@ crudRoutes.post(
   '/',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('json', createConfigPolicySchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;
@@ -70,16 +71,15 @@ crudRoutes.post(
     }
     const data = c.req.valid('json');
 
-    // MFA follows EFFECTIVENESS, not the verb (#5080). Creating a child of a
-    // parent that carries a patch or maintenance link makes that link effective
-    // on the new policy immediately — the same capability the direct
-    // POST /:id/features gate protects, reached through a second door.
-    // Session-claim strength (hasSatisfiedMfa), matching the adjacent gates.
-    if (data.parentPolicyId) {
-      const parentTypes = await getParentLinkFeatureTypes(data.parentPolicyId);
-      if (parentTypes.some((t) => MFA_GATED_FEATURE_TYPES.has(t)) && !hasSatisfiedMfa(auth)) {
-        return c.json({ error: 'MFA required' }, 403);
-      }
+    // #5511 W02 (contract D4): gating follows EFFECTIVENESS, not the verb.
+    // Creating a child of a parent whose warranty link collects HP warranty
+    // data makes that collection effective on the new policy immediately — the
+    // same capability POST /:id/features gates, reached through a second door.
+    // parentPolicyId is create-only (the update schema strips it), so this is
+    // the only re-parenting door there is.
+    if (data.parentPolicyId && await parentPolicyEnablesHpCmslCollection(data.parentPolicyId)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
     }
 
     // Partner-wide / all-orgs policy (#1724). The partner is ALWAYS derived from
@@ -248,6 +248,7 @@ crudRoutes.patch(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', updateConfigPolicySchema),
   async (c) => {
@@ -291,6 +292,7 @@ crudRoutes.delete(
   '/:id',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

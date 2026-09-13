@@ -5,6 +5,6 @@ import AlertTemplateEditor from '../../../components/alerts/AlertTemplateEditor'
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Alert Template">
+<DashboardLayout titleKey="titles.settingsAlertTemplatesDetail">
   <AlertTemplateEditor templateId={id} client:load />
 </DashboardLayout>

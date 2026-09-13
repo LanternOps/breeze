@@ -3,6 +3,7 @@ import * as dbModule from '../../db';
 import {
   backupJobs as backupJobsTable,
   deviceCommands,
+  devices,
   backupVerifications as backupVerificationsTable,
   RESTORABLE_BACKUP_JOB_STATUSES,
 } from '../../db/schema';
@@ -267,18 +268,25 @@ async function findPendingVerificationByCommandId(commandId: string): Promise<Ba
   }
 }
 
-async function collectDevicesToRecompute(orgId?: string): Promise<Map<string, string> | null> {
+async function collectDevicesToRecompute(orgId?: string, allowedSiteIds?: readonly string[]): Promise<Map<string, string> | null> {
   if (orgId && !isUuid(orgId)) return null;
+  if (allowedSiteIds?.length === 0) return new Map();
   try {
     const [jobRows, verificationRows] = await Promise.all([
       runWithSystemDbAccess(() => db
         .select({ orgId: backupJobsTable.orgId, deviceId: backupJobsTable.deviceId })
         .from(backupJobsTable)
-        .where(orgId ? eq(backupJobsTable.orgId, orgId) : undefined)),
+        .where(and(
+          orgId ? eq(backupJobsTable.orgId, orgId) : undefined,
+          allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupJobsTable.deviceId} and ${devices.orgId} = ${backupJobsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
+        ))),
       runWithSystemDbAccess(() => db
         .select({ orgId: backupVerificationsTable.orgId, deviceId: backupVerificationsTable.deviceId })
         .from(backupVerificationsTable)
-        .where(orgId ? eq(backupVerificationsTable.orgId, orgId) : undefined)),
+        .where(and(
+          orgId ? eq(backupVerificationsTable.orgId, orgId) : undefined,
+          allowedSiteIds ? sql`exists (select 1 from ${devices} where ${devices.id} = ${backupVerificationsTable.deviceId} and ${devices.orgId} = ${backupVerificationsTable.orgId} and ${inArray(devices.siteId, [...allowedSiteIds])})` : undefined,
+        ))),
     ]);
 
     const map = new Map<string, string>();
@@ -288,6 +296,7 @@ async function collectDevicesToRecompute(orgId?: string): Promise<Map<string, st
     return map;
   } catch (error) {
     console.warn('[backupVerification] DB readiness scan failed; falling back to memory:', error);
+    if (allowedSiteIds) return new Map();
     return null;
   }
 }
@@ -583,10 +592,10 @@ export async function runWeeklyTestRestore(orgId?: string): Promise<number> {
   return queued;
 }
 
-export async function recalculateReadinessScores(orgId?: string): Promise<number> {
-  const devicesToOrg = await collectDevicesToRecompute(orgId) ?? new Map<string, string>();
+export async function recalculateReadinessScores(orgId?: string, allowedSiteIds?: readonly string[]): Promise<number> {
+  const devicesToOrg = await collectDevicesToRecompute(orgId, allowedSiteIds) ?? new Map<string, string>();
 
-  if (devicesToOrg.size === 0) {
+  if (devicesToOrg.size === 0 && allowedSiteIds === undefined) {
     for (const job of backupJobs) {
       const targetOrg = jobOrgById.get(job.id);
       if (!targetOrg || !UUID_RE.test(targetOrg)) {

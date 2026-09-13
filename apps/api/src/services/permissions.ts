@@ -87,13 +87,14 @@ async function bumpSharedPermissionCacheVersion(userId?: string): Promise<void> 
 
 export async function getUserPermissions(
   userId: string,
-  context: { partnerId?: string; orgId?: string }
+  context: { partnerId?: string; orgId?: string },
+  options?: { bypassCache?: boolean },
 ): Promise<UserPermissions | null> {
   const cacheKey = userId + ':' + (context.partnerId || '') + ':' + (context.orgId || '');
   const versions = await getPermissionCacheVersions(userId);
   const cached = permissionCache.get(cacheKey);
 
-  if (cached && cached.expiresAt > Date.now() && cacheVersionsMatch(cached.versions, versions)) {
+  if (!options?.bypassCache && cached && cached.expiresAt > Date.now() && cacheVersionsMatch(cached.versions, versions)) {
     return cached.userPerms;
   }
 
@@ -198,11 +199,13 @@ export async function getUserPermissions(
   }
 
   // Cache the result
-  permissionCache.set(cacheKey, {
-    userPerms,
-    expiresAt: Date.now() + CACHE_TTL,
-    versions,
-  });
+  if (!options?.bypassCache) {
+    permissionCache.set(cacheKey, {
+      userPerms,
+      expiresAt: Date.now() + CACHE_TTL,
+      versions,
+    });
+  }
 
   return userPerms;
 }

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { timingSafeEqual } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { zValidator } from '../../lib/validation';
 import { and, eq, notInArray } from 'drizzle-orm';
@@ -12,7 +13,9 @@ import {
   deviceMetrics,
   agentLogs,
   onedriveDeviceState,
+  bareMetalRecoveries,
 } from '../../db/schema';
+import { hashRecoveryNonce } from '../../services/bareMetalRecoveryCodes';
 import type { BatteryStatus, DesktopAccessState } from '@breeze/shared';
 import { promotePendingAgentCredentials } from '../../services/agentTokenPromotion';
 import { writeAuditEvent } from '../../services/auditEvents';
@@ -29,6 +32,7 @@ import {
   buildPamConfigUpdate,
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
+  buildWarrantyConfigUpdate,
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
   agentAcceptsServedEdition,
@@ -273,6 +277,13 @@ export function desktopAccessMeaningfullyChanged(
     (before.reason ?? null) !== (after.reason ?? null) ||
     (before.remoteDesktopPermission ?? null) !== (after.remoteDesktopPermission ?? null)
   );
+}
+
+// Bare-metal recovery W04a: the recovery marker's nonce is effectively a
+// bearer credential for completing a recovery, so compare it in constant
+// time rather than with a plain string/hash equality check.
+function timingSafeEqualHex(a: string, b: string): boolean {
+  return a.length === b.length && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 }
 
 export const heartbeatRoutes = new Hono();
@@ -1040,6 +1051,64 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     deviceUpdates.batteryStatus = battery;
   }
 
+  // Bare-metal recovery W04a: the rebuild engine writes a one-time marker
+  // (recoveryId + nonce) into the restored disk before reboot; the agent
+  // sends it on every heartbeat until acked. A nonce match while the
+  // recovery is in {restoring, validated, rebooted} completes the check-in
+  // (the console may lose the network before ever posting `rebooted`); a
+  // match on an already `checked_in` recovery just re-acks idempotently so
+  // the agent can safely delete its local marker file. Comparison is
+  // timing-safe since the nonce is effectively a bearer credential for this
+  // one-time completion.
+  let recoveryMarkerAck = false;
+  if (data.recoveryMarker) {
+    const marker = data.recoveryMarker;
+    const [rec] = await db
+      .select()
+      .from(bareMetalRecoveries)
+      .where(and(
+        eq(bareMetalRecoveries.id, marker.recoveryId),
+        eq(bareMetalRecoveries.deviceId, device.id),
+        eq(bareMetalRecoveries.orgId, agent.orgId),
+      ))
+      .limit(1);
+    const nonceOk = rec !== undefined && timingSafeEqualHex(rec.nonceHash, hashRecoveryNonce(marker.nonce));
+    if (rec && nonceOk && rec.status === 'checked_in') {
+      recoveryMarkerAck = true;
+    } else if (rec && nonceOk && rec.identity === 'original' && ['restoring', 'validated', 'rebooted'].includes(rec.status)) {
+      const checkedInNow = new Date();
+      await db.update(bareMetalRecoveries).set({
+        status: 'checked_in',
+        checkedInAt: checkedInNow,
+        rebootedAt: rec.rebootedAt ?? checkedInNow,
+        updatedAt: checkedInNow,
+      }).where(eq(bareMetalRecoveries.id, rec.id));
+      deviceUpdates.recoveredAt = checkedInNow;
+      deviceUpdates.recoveredFromSnapshotId = rec.snapshotId;
+      recoveryMarkerAck = true;
+      writeAuditEvent(c, {
+        orgId: agent.orgId,
+        action: 'bmr.recovery.checked_in',
+        resourceType: 'bare_metal_recovery',
+        resourceId: rec.id,
+        result: 'success',
+        details: { deviceId: device.id, snapshotId: rec.snapshotId, from: rec.status },
+      });
+    } else {
+      writeAuditEvent(c, {
+        orgId: agent.orgId,
+        action: 'bmr.recovery.checked_in',
+        resourceType: 'bare_metal_recovery',
+        resourceId: marker.recoveryId,
+        result: 'failure',
+        details: {
+          deviceId: device.id,
+          reason: !rec ? 'not_found' : !nonceOk ? 'nonce_mismatch' : `status_${rec.status}`,
+        },
+      });
+    }
+  }
+
   // agentAuthMiddleware 403s quarantined devices and every decommissioned
   // device EXCEPT one inside the #3986 device-remove uninstall drain, but a
   // decommission landing mid-request (between the auth fetch and this write)
@@ -1752,6 +1821,11 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       // closes — see the #1105 comment below. uacInterceptionEnabled likewise
       // (#2930): the pam resolver moved out with the other policy readers.
       manageRemoteManagement: manageRemoteManagement || undefined,
+      // Bare-metal recovery W04a: only present (and only ever `true`) when a
+      // recoveryMarker in this beat matched — its absence tells the agent
+      // nothing (no ack yet, or no marker was sent), same shape as the other
+      // undefined-when-inactive fields above.
+      ...(recoveryMarkerAck ? { recoveryMarkerAck: true } : {}),
     },
   };
     },
@@ -1904,7 +1978,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // derived from the device the agent already authenticated as, so this cannot
   // pivot tenants.
   //
-  // All four share ONE context on purpose. They previously shared the org
+  // All of them (plus #5511's warranty reader) share ONE context on
+  // purpose. The first four previously shared the org
   // transaction, so a DB error already poisoned the others; giving each its own
   // system transaction would cost four connection acquisitions per heartbeat
   // against the 25-connection production ceiling for no isolation gain. The
@@ -1923,12 +1998,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: Record<string, unknown> | null;
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
+    warrantySettings: { hpCmslEnabled: boolean } | null;
   };
   let policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
     monitoringSettings: null,
     pamSettings: null,
     patchSourceSettings: null,
+    warrantySettings: null,
   };
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
@@ -1936,6 +2013,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let monitoringSettings: Record<string, unknown> | null = null;
       let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
       let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
+      let warrantySettings: { hpCmslEnabled: boolean } | null = null;
 
       // Sentry on all four, not just pam/patch_source. Losing an event_log or
       // monitoring policy is precisely the invisible failure #2930 is about:
@@ -1981,7 +2059,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
-      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings };
+      // #5511 W02: device-side HP CMSL warranty collection. Same shape and same
+      // reason as patch_source above — omit the block on a resolver error so a
+      // transient failure never stops collection on a consented fleet; a
+      // successful resolve with no warranty policy (or a nearer policy that
+      // replaced the link without an hpCmsl block, contract D5) returns false
+      // → the agent stops. Last in the shared context on purpose: an earlier
+      // resolver's SQL error aborts the transaction, which makes this one throw
+      // too — and throwing here only ever omits the block, never revokes.
+      try {
+        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build warranty config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings };
     });
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
@@ -1990,7 +2083,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
     captureException(err);
   }
-  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings } = policyConfigs;
+  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings } = policyConfigs;
 
   const policyConfigUpdate: Record<string, unknown> = {};
   if (eventLogSettings) {
@@ -2001,6 +2094,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (patchSourceSettings) {
     policyConfigUpdate.patch_source_settings = patchSourceSettings;
+  }
+  // Snake_case inside the block as well as outside (contract D6): this
+  // assembly is where camelCase resolver output becomes wire keys, and the
+  // agent's inner parse accepts either spelling.
+  if (warrantySettings) {
+    policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 

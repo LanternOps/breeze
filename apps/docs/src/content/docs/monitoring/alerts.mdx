@@ -59,6 +59,7 @@ The file `monitoring/rules/breeze-rules.yml` ships with these rules:
 | `FailedLoginSpike` | warning | More than 50 failed logins in 5 minutes for one tenant — possible credential stuffing or brute force |
 | `EnrollmentSpike` | warning | More than 100 agent enrollments in 10 minutes for one tenant — verify it matches an expected rollout before assuming a leaked enrollment key |
 | `CommandDispatchSpike` | warning | More than 200 commands dispatched in 5 minutes for one tenant — possible compromised account fanning out commands |
+| `AuthenticatorL4BasisDenied` | warning | A sustained non-zero rate of critical-tier (L4) approval denials on a given platform-bound basis for 15 minutes — technicians on that basis are stuck unable to approve privileged-access or destructive-action requests from mobile until they update the app and re-enroll. See [Approval Security](/features/approval-security/#enrolling-an-approver-device) for the "Not attested" badge this tracks. |
 
 <Aside type="tip">
   These thresholds are deliberately coarse starting points — tune them once you have real production baselines. The `tenant` label collapses to a single series unless `METRICS_INCLUDE_ORG_ID` is enabled; the alerts still fire on the aggregate either way.

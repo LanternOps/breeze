@@ -20,6 +20,7 @@ import type {
   AiAgentTriggerKind,
   AiSweepKind,
   AlertVerdictOutcome,
+  FleetDesignOutcome,
   NarrativeOutcome,
   SweepFindingsOutcome,
   TicketTriageProposal,
@@ -29,6 +30,7 @@ import type {
 import type { AuthContext } from '../../middleware/auth';
 import type { AlertVerdictIntentInfo } from './alertVerdicts';
 import type { AnomalyRunContext } from './anomalyContext';
+import type { DesignEvidence } from './designEvidence';
 import type { NarrativeContext } from './narrativeContext';
 import type { SweepEvidence } from './sweepEvidence';
 import type { SweepProposalRecord } from './sweepFindings';
@@ -245,6 +247,34 @@ export interface AgentRunOutcome {
    * alone of the weekly context, on the run row.
    */
   narrativeReport?: { reportId: string; reportRunId: string };
+  /**
+   * Fleet Designer W01 (#5651) — the validated, server-built design,
+   * captured by the post-tool-use hook on a `design`-profile run. Set at
+   * most once (the outcome tool's description and the design task turn both
+   * tell the model to call it exactly once); absent for every other profile,
+   * which never has the design outcome tool exposed at all.
+   *
+   * NOT the raw tool input, same split as `narrative` above: the model
+   * submits a `FleetDesignSubmission` and the SERVER attaches every
+   * `itemRef`, computes `baseline.numbers` and derives the markdown
+   * (`fleetDesignOutcomeFromSubmission`, reached through
+   * `validateOutcomeToolInput`).
+   *
+   * `finalizeFleetDesign` persists it as a system-authored report artifact
+   * and links `ai_agent_runs.report_run_id` — NOTHING here executes.
+   */
+  fleetDesign?: FleetDesignOutcome;
+  /**
+   * Fleet Designer W01 (#5651) — the report the design was materialised
+   * into, written by `finalizeFleetDesign` once `persistFleetDesignReport`'s
+   * transaction committed. Absent for every other profile, for a design run
+   * that produced nothing, and for one whose persistence lost the CAS (in
+   * which case the run's `error_code` says so).
+   *
+   * TWO ids and nothing else — same shape and same reasoning as
+   * `narrativeReport` above.
+   */
+  fleetDesignReport?: { reportId: string; reportRunId: string };
 }
 
 export interface RunRow {
@@ -356,6 +386,22 @@ export interface RunContext {
     scheduleId: string;
     occurrenceKey: string;
     context: NarrativeContext;
+  } | null;
+  /**
+   * Fleet Designer W01 (#5651) — the schedule occurrence (or manual trigger)
+   * and the bounded, system-assembled fleet evidence a `design`-profile run
+   * writes about. Set only for `profile: 'design'`; `null` everywhere else.
+   *
+   * `scheduleId` is `null` for a manually triggered design run — unlike
+   * `narrative`'s `''` sentinel, `finalizeFleetDesign` treats a missing
+   * schedule as a perfectly normal case (manual runs persist too), so there
+   * is no analogous "no schedule" error code here.
+   */
+  design: {
+    scheduleId: string | null;
+    occurrenceKey: string | null;
+    siteId: string | null;
+    evidence: DesignEvidence;
   } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,

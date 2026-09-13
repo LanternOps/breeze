@@ -147,6 +147,11 @@ x-api-env: &api-env
   # Durable event dispatch (wave 3.5c, #4085; optional, defaults to off).
   EVENT_DISPATCH_MODE: ${EVENT_DISPATCH_MODE:-off}
   EVENT_DISPATCH_QUEUE_SUBSCRIBERS: ${EVENT_DISPATCH_QUEUE_SUBSCRIBERS:-}
+  # Fail-closed Stripe Checkout session revocation (SEC-150). enforce (default)
+  # refuses a reset/payment/void it cannot prove killed the open payment link;
+  # observe de-escalates to log-only. Rollback is a flip to observe, never a
+  # migration revert.
+  STRIPE_SESSION_REVOCATION_MODE: ${STRIPE_SESSION_REVOCATION_MODE:-enforce}
   # Native APNs push for the iOS app (all optional; unset = push disabled).
   # All-or-none: setting ANY of these makes the four credentials required,
   # so a half-configured relay fails at boot instead of silently at first
@@ -279,6 +284,11 @@ x-api-env: &api-env
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  # AI script authoring (#5612) — ON by default since W03; must agree with
+  # aiScriptAuthoringEnabled()'s code default (config/env.ts).
+  BREEZE_AI_SCRIPT_AUTHORING_ENABLED: ${BREEZE_AI_SCRIPT_AUTHORING_ENABLED:-true}
+  # Reviewer model for AI script proposals (#5612 W02); empty = platform default.
+  BREEZE_AI_SCRIPT_REVIEWER_MODEL: ${BREEZE_AI_SCRIPT_REVIEWER_MODEL:-}
   # BYO-LLM partner provider catalog (#3922 W01–W04) — off by default.
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # MCP OAuth (off by default, opt-in via env)
@@ -377,6 +387,10 @@ x-api-env: &api-env
   C2C_M365_CLIENT_SECRET: ${C2C_M365_CLIENT_SECRET:-}
   M365_GRAPH_READ_TOOLS_ENABLED: ${M365_GRAPH_READ_TOOLS_ENABLED:-}
   M365_GRAPH_READ_TOOLS_ORG_IDS: ${M365_GRAPH_READ_TOOLS_ORG_IDS:-}
+  M365_TENANT_SYNC_ENABLED: ${M365_TENANT_SYNC_ENABLED:-false}
+  M365_SYNC_CONCURRENCY: ${M365_SYNC_CONCURRENCY:-4}
+  M365_SYNC_MAX_BACKLOG: ${M365_SYNC_MAX_BACKLOG:-500}
+  M365_SYNC_TICK_BATCH: ${M365_SYNC_TICK_BATCH:-200}
   # Cloudflare mTLS (API Shield client certificates)
   CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
   CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}

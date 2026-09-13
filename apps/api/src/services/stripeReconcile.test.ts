@@ -32,6 +32,22 @@ const stmts = vi.hoisted(() => ({ list: [] as Array<{ kind: string; table?: unkn
 // this boundary, not about mock call counts.
 const ctxEvents = vi.hoisted(() => ({ list: [] as string[] }));
 
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('./stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -82,6 +98,13 @@ vi.mock('./auditEvents', () => ({
   requestLikeFromSnapshot: () => ({ req: { header: () => undefined } }),
 }));
 
+const { processPendingReversals } = vi.hoisted(() => ({
+  processPendingReversals: vi.fn().mockResolvedValue(0),
+}));
+vi.mock('./stripeReversalState', () => ({
+  processPendingStripeFinancialEventsForPayment: processPendingReversals,
+}));
+
 // The Phase D2 payment push/delete REQUEST helpers (Task 3). Mocked so this
 // suite asserts the DELEGATION and its ordering, not a second copy of the
 // coordinator's own suite. `partialRefundDivergenceMessage` is kept REAL via
@@ -128,6 +151,7 @@ beforeEach(() => {
   requestPaymentDelete.mockReset(); requestPaymentDelete.mockResolvedValue(null);
   enqueuePaymentPush.mockReset(); enqueuePaymentPush.mockResolvedValue(true);
   enqueuePaymentDelete.mockReset(); enqueuePaymentDelete.mockResolvedValue(true);
+  processPendingReversals.mockReset(); processPendingReversals.mockResolvedValue(0);
 });
 
 describe('recordStripePayment', () => {
@@ -614,6 +638,20 @@ describe('Phase D2 — QuickBooks payment push/delete hooks', () => {
     queueCapture();
 
     await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+  });
+
+  it('never 500s the webhook when applying pending reversals throws after the capture committed', async () => {
+    // The capture is already committed; a throw here would 500 the webhook and
+    // Stripe's retry short-circuits on the existing mapping, so the reversal
+    // would be skipped until the ten-minute sweep.
+    processPendingReversals.mockRejectedValue(new Error('reversal apply exploded'));
+    queueCapture();
+
+    await expect(recordStripePayment(captureInput())).resolves.toEqual({ invoiceId: 'inv1' });
+    expect(insertValues.calls.some((v) => (v as { method?: string }).method === 'card')).toBe(true);
+    expect(capture).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({
+      stripe_reconcile_stage: 'settle-pending-reversals',
+    }));
   });
 
   it('never 500s the webhook on a committed refund because Redis is down', async () => {

@@ -113,7 +113,7 @@
     <Launch Condition="NOT OTHEREDITIONFOUND" Message="A different edition of the Breeze Agent is already installed. Uninstall it before installing this edition." />
     <!-- Stock InstallExecuteSequence numbers are LaunchConditions 100,
          FindRelatedProducts 200, AppSearch 400, so on a silent install
-         OTHEREDITIONFOUND (above) and WindowsCurrentMajorVersion (below)
+         OTHEREDITIONFOUND (above) and WINDOWS_CURRENT_MAJOR_VERSION (below)
          would both still be empty when the Launch conditions are evaluated
          — the cross-edition guard would never fire and the OS floor would
          refuse everything. (InstallUISequence already puts AppSearch at 50,
@@ -156,22 +156,22 @@
          So "the value exists" is exactly the Windows-10/Server-2016 floor.
          `Installed OR` keeps repair/upgrade/uninstall of an already-installed
          product from ever being blocked by this check (WiX guidance for
-         OS-floor launch conditions). The property is deliberately PRIVATE
-         (mixed case): a public one could be preset on the msiexec command
-         line to defeat the floor, and AppSearch does not clear a preset
-         value when the search finds nothing. Both LaunchConditions
-         evaluations are client-side immediate, so it never needs to cross
-         into the elevated server process. If the HKLM read itself fails
-         (locked-down ACL), the user sees this same legacy-OS message. -->
-    <Property Id="WindowsCurrentMajorVersion">
-      <RegistrySearch Id="WindowsCurrentMajorVersionSearch"
+         OS-floor launch conditions). The property must be PUBLIC (all
+         uppercase): WiX refuses a lowercase search property (WIX0012),
+         because AppSearch can only populate public properties. That means
+         `msiexec /i ... WINDOWS_CURRENT_MAJOR_VERSION=1` can satisfy the
+         floor by hand — an admin bypassing a guard on their own machine,
+         accepted. If the HKLM read itself fails (locked-down ACL), the user
+         sees this same legacy-OS message. -->
+    <Property Id="WINDOWS_CURRENT_MAJOR_VERSION">
+      <RegistrySearch Id="WINDOWS_CURRENT_MAJOR_VERSIONSearch"
                       Root="HKLM"
                       Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
                       Name="CurrentMajorVersionNumber"
                       Type="raw"
                       Bitness="always64" />
     </Property>
-    <Launch Condition="Installed OR WindowsCurrentMajorVersion" Message="Breeze Agent requires Windows 10 or Windows Server 2016 or later. Legacy Windows versions (7, 8, 8.1, Server 2008 R2 through 2012 R2) are not supported." />
+    <Launch Condition="Installed OR WINDOWS_CURRENT_MAJOR_VERSION" Message="Breeze Agent requires Windows 10 or Windows Server 2016 or later. Legacy Windows versions (7, 8, 8.1, Server 2008 R2 through 2012 R2) are not supported." />
     <Launch Condition="(NOT SERVER_URL AND NOT ENROLLMENT_KEY) OR (SERVER_URL AND ENROLLMENT_KEY)" Message="SERVER_URL and ENROLLMENT_KEY must be provided together." />
 
     <?ifdef ServerUrlDefault ?>

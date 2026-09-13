@@ -162,6 +162,8 @@ export default defineConfig({
       // roll back as ONE system-scoped transaction, and probes that an org-B
       // context still cannot read org A's system-scoped intent (RLS unchanged).
       'src/services/actionIntents/createIntentAtomicity.integration.test.ts',
+      // #5612 W04: live-DB race proving the lane hourly cap reserves under the advisory lock.
+      'src/services/actionIntents/scriptLaneHourlyCap.integration.test.ts',
       // Co-located real-DB integration test for headless Google Tier-3 dispatch
       // (Phase 2): drives an approved google_suspend_user intent through the real
       // release worker with only the Google SDK client mocked, proving it

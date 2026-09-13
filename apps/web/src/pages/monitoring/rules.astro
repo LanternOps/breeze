@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import LegacyRulesPage from '../../components/monitoring/LegacyRulesPage';
+---
+
+<DashboardLayout titleKey="titles.monitoringRules">
+  <LegacyRulesPage client:load />
+</DashboardLayout>

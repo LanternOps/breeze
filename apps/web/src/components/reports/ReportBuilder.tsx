@@ -172,7 +172,12 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // exists only to keep this Record exhaustive and to make
   // `reportTypeSurvivesBuilder('ai_org_narrative')` false, so any code path
   // that did reach the builder degrades to a data source rather than crashing.
-  ai_org_narrative: 'activity'
+  ai_org_narrative: 'activity',
+  // Fleet Designer (W01) — same reasoning as `ai_org_narrative` immediately
+  // above: the AI schedule owns `ai_fleet_design` end to end, the builder
+  // never offers it, and the entry exists only to keep this Record
+  // exhaustive and `reportTypeSurvivesBuilder('ai_fleet_design')` false.
+  ai_fleet_design: 'activity'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

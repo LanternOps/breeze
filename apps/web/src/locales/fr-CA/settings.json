@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Utilisation du soutien",
           "description": "Affiche le total du temps de soutien facturable pour le mois en cours."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Affiche les livrables planifiés, ce qui a été livré et les dates clés."
+        },
+        "enableDocuments": {
+          "label": "Documents",
+          "description": "Permet aux clients de télécharger les documents partagés."
         }
       }
     },
@@ -1502,11 +1510,13 @@
       "timezone": "Fuseau horaire",
       "kinds": {
         "sweep": "Balayage",
-        "narrative": "Rapport hebdomadaire"
+        "narrative": "Rapport hebdomadaire",
+        "design": "Conception du parc"
       },
       "kindsLabel": "Contrôles à exécuter",
       "kind": "Type de planification",
       "weeklyOnlyHint": "Un rapport hebdomadaire se déclenche exactement une fois par semaine : une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine de 0 à 6. Par exemple, 0 7 * * 1 s'exécute chaque lundi à 7 h.",
+      "monthlyOrRarerHint": "Une conception du parc se déclenche au plus une fois par mois : une minute, une heure et un jour-du-mois (1-28) littéraux, le mois étant * ou une liste de mois littéraux séparés par des virgules, et * pour le jour de la semaine. Par exemple, 0 6 1 1,4,7,10 * s'exécute chaque trimestre le 1er à 6 h.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
       "override": "Déroger pour cette organisation",
@@ -1546,6 +1556,7 @@
         "baselineAgentMismatch": "Cette référence appartient à un autre agent.",
         "agentNotPartnerWide": "Les horaires de balayage exigent un agent valable pour tout le partenaire.",
         "agentKindNotTriage": "Seul un agent de triage peut être planifié.",
+        "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
         "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
       }
@@ -1556,7 +1567,8 @@
     "kindHints": {
       "triage": "Examine les nouvelles alertes et propose quoi faire.",
       "patch": "Revoit les correctifs manquants et propose quoi installer.",
-      "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes."
+      "helpdesk": "Prend les billets en charge et propose des réponses et des prochaines étapes.",
+      "designer": "Lit l’ensemble du parc et rédige une conception de surveillance justifiée qu’un technicien doit approuver."
     },
     "emptyState": {
       "title": "Aucun agent pour l’instant",
@@ -1571,7 +1583,8 @@
       "shadowConsequence": "Observe et propose; une personne approuve tout.",
       "act": "Action",
       "actConsequence": "Exécute les opérations autorisées sans clic. Aucune annulation automatique.",
-      "actUnavailable": "Pas encore disponible pour cet agent."
+      "actUnavailable": "Pas encore disponible pour cet agent.",
+      "shadowUnavailableForKind": "Cet agent ne fait que lire et écrire des rapports — il n'y a rien à observer en mode ombre."
     },
     "allOrgs": "Toutes les organisations",
     "allOrgsHint": "À l’échelle du partenaire : s’applique à chaque organisation, sauf si une organisation la restreint.",
@@ -1685,7 +1698,8 @@
     "kinds": {
       "triage": "Tri des alertes",
       "patch": "Correctifs",
-      "helpdesk": "Service d’assistance"
+      "helpdesk": "Service d’assistance",
+      "designer": "Concepteur du parc"
     },
     "modes": {
       "off": "Désactivé",
@@ -1820,7 +1834,8 @@
       "profile": {
         "sweep": "Balayage",
         "narrative": "Rapport hebdomadaire",
-        "triage": "Triage des tickets"
+        "triage": "Triage des tickets",
+        "design": "Conception du parc"
       },
       "sweep": {
         "title": "Constats du balayage",
@@ -1867,6 +1882,14 @@
         "openReport": "Ouvrir le rapport",
         "download": "Télécharger le PDF",
         "downloadFailed": "Impossible de télécharger le PDF."
+      },
+      "fleetDesign": {
+        "title": "Conception du parc",
+        "counts": "{{functions}} fonctions · {{watches}} surveillances · {{rules}} règles d'alerte",
+        "openReport": "Ouvrir le rapport",
+        "download": "Télécharger le PDF",
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "truncatedNote": "Les preuves ont été tronquées — cette conception n'a pas vu l'ensemble du parc."
       },
       "noAgent": "Agent inconnu",
       "loading": "Chargement des exécutions…",
@@ -2235,6 +2258,10 @@
         "scripts_commands": {
           "label": "Scripts et commandes",
           "description": "Exécuter des scripts, des playbooks et des commandes système, et gérer les processus, tâches planifiées et entrées de registre concernés."
+        },
+        "author_scripts": {
+          "label": "Rédiger des scripts",
+          "description": "Rédiger un nouveau script sous forme de proposition soumise à une révision indépendante. Rien de ce qu'un agent rédige ne s'exécute avant d'avoir été révisé et approuvé."
         },
         "tickets": {
           "label": "Billets d'assistance",
@@ -2685,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} propositions consignées",
       "unattendedCount_one": "{{count}} sans intervention",
       "unattendedCount_other": "{{count}} sans intervention",
-      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent."
+      "scriptGateNote": "Reste une demande d'approbation tant qu'aucun script n'est autorisé pour cet agent.",
+      "designerReadOnly": "Le Concepteur du parc accède à tous les outils en lecture seule et à un outil de rapport. Il n'a aucune capacité de modification à choisir."
     },
     "summary": {
       "edit": "Modifier",
@@ -2786,6 +2814,11 @@
           "blurb": "Traite les tickets dès leur création, leur première réponse ou leur résolution.",
           "runsWhen": "un ticket est créé, reçoit sa première réponse, ou est marqué résolu",
           "recommended": "redémarrer les services et libérer de l'espace disque pour résoudre les demandes courantes"
+        },
+        "designer": {
+          "blurb": "Lit l'ensemble du parc et rédige une conception de surveillance justifiée qu'un technicien doit approuver.",
+          "runsWhen": "vous lancez une Conception du parc pour une organisation, ou selon une planification trimestrielle",
+          "recommended": "une migration à partir de zéro, ou un audit de configuration trimestriel"
         }
       },
       "kindCard": {
@@ -2939,7 +2972,9 @@
     "loadingApproverDevices": "Chargement des appareils d’approbation...",
     "tryAgain": "Réessayer",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Aucun appareil d’approbation n’est encore enregistré. Connectez-vous à l’application mobile Breeze sur votre téléphone et elle apparaît automatiquement ici, ou inscrivez-vous à ce navigateur ci-dessous pour approuver avec une biométrie.",
-    "platformBound": "En direction du quai",
+    "hardwareAttested": "Attesté matériellement",
+    "notAttested": "Non attesté",
+    "notAttestedTooltip": "Les approbations critiques ne sont pas offertes sur cet appareil tant qu'il n'est pas réenregistré avec une version attestée de l'application.",
     "registered": "Enregistré",
     "lastUsed": "Dernière utilisation",
     "cancel": "Annuler",
@@ -4422,27 +4457,10 @@
       "suspended": "Suspendu",
       "churned": "Tourné",
       "offboarding": "Départ en cours"
+    },
+    "help": {
+      "slug": "Généré à partir du nom. Unique dans votre compte; utilisé par l'API et les intégrations."
     }
-  },
-  "organizationList": {
-    "title": "Organisations",
-    "count": "{{filtered}} de {{total}} organisations",
-    "searchPlaceholder": "Rechercher des organisations",
-    "allStatuses": "Tous les statuts",
-    "status": {
-      "active": "Active",
-      "trial": "Procès",
-      "suspended": "Suspendu",
-      "churned": "Tourné",
-      "offboarding": "Départ en cours",
-      "merging": "Fusion en cours",
-      "archived": "Archivé",
-      "purging": "Purge en cours"
-    },
-    "columns": {
-      "devices": "Appareils"
-    },
-    "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
   },
   "bulkOrgImport": {
     "title": "Import en masse",
@@ -4507,7 +4525,7 @@
   },
   "organizationsPage": {
     "loading": "Chargement des organisations...",
-    "title": "Organisations & Sites",
+    "title": "Organisations",
     "description": "Gérer les organisations et leurs sites.",
     "actions": {
       "addOrganization": "Ajouter l’organisation",
@@ -4516,7 +4534,10 @@
       "archiveOrganization": "Archiver l'organisation",
       "deleting": "Suppression…",
       "openRecord": "Ouvrir la fiche",
-      "openSettings": "Paramètres"
+      "openSettings": "Paramètres",
+      "openSettingsFor": "Paramètres de {{name}}",
+      "openRecordFor": "Ouvrir la fiche de {{name}}",
+      "more": "Autres actions"
     },
     "errors": {
       "fetchOrganizations": "Impossible de récupérer des organisations",
@@ -4540,17 +4561,31 @@
     "deviceCount": "{{count}} appareils",
     "list": {
       "title": "Organisations",
-      "searchPlaceholder": "Rechercher...",
       "empty": "Aucune organisation trouvée.",
-      "noMatches": "Aucune organisation ne correspond à votre recherche.",
-      "dragToReorder": "De la traînée à la réorganisation"
+      "noMatches": "Aucune organisation ne correspond à votre recherche ou à votre filtre.",
+      "dragToReorder": "De la traînée à la réorganisation",
+      "searchLabel": "Rechercher des organisations",
+      "reorderHandle": "Réorganiser {{name}}",
+      "reorderHint": "Utilisez les flèches vers le haut et vers le bas pour déplacer cette organisation.",
+      "movedAnnouncement": "{{name}} déplacée à la position {{position}} de {{total}}",
+      "workspaceMarker": "Espace de travail",
+      "sort": {
+        "label": "Trier",
+        "manual": "Ordre manuel",
+        "name": "De A à Z",
+        "devices": "Le plus d'appareils"
+      },
+      "filter": {
+        "label": "Filtrer par statut",
+        "all": "Toutes"
+      }
     },
     "sites": {
       "loading": "Chargement des sites..."
     },
     "emptySelection": {
       "title": "Aucune organisation sélectionnée",
-      "description": "Sélectionnez une organisation parmi la liste pour consulter ses sites."
+      "description": "Sélectionnez une organisation pour consulter son statut, ses sites et ses actions."
     },
     "add": {
       "title": "Ajouter l’organisation",
@@ -4571,8 +4606,9 @@
     },
     "deleteSite": {
       "title": "Supprimer le site",
-      "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
-      "messageSuffix": " Cette action ne peut être annulée."
+      "message": "Supprimer {{name}}? Le site sera supprimé de façon permanente et ne pourra pas être récupéré.",
+      "blockedMessage_one": "{{name}} compte encore {{count}} appareil. Déplacez-le vers un autre site avant de supprimer celui-ci.",
+      "blockedMessage_other": "{{name}} compte encore {{count}} appareils. Déplacez-les vers un autre site avant de supprimer celui-ci."
     },
     "merge": {
       "openButton": "Fusionner avec une autre organisation",
@@ -4673,6 +4709,9 @@
         "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
         "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
       }
+    },
+    "scope": {
+      "hint": "Votre espace de travail est réglé sur {{orgName}}. Les actions de cette page s'appliquent à l'organisation sélectionnée ici."
     }
   },
   "siteDetailPage": {
@@ -4770,7 +4809,9 @@
     "count": "{{filtered}} de {{total}} sites",
     "searchPlaceholder": "Rechercher des sites",
     "actions": {
-      "add": "Ajouter le site"
+      "add": "Ajouter le site",
+      "editSite": "Modifier {{name}}",
+      "deleteSite": "Supprimer {{name}}"
     },
     "columns": {
       "timezone": "Fuse horaire",
@@ -5305,5 +5346,82 @@
       "conflict": "Conflit",
       "orgNotFound": "Organisation introuvable"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Rédaction de scripts",
+    "subtitle": "Permettez à l'assistant et à vos agents d'écrire, de vérifier et — lorsque vous l'autorisez — d'exécuter des scripts sans carte d'approbation.",
+    "partnerCard": {
+      "title": "Plafond du partenaire",
+      "description": "Le paramètre le plus large que toute organisation de ce partenaire peut utiliser. Chaque organisation ne peut que le restreindre.",
+      "readOnly": "Seul un administrateur partenaire disposant d'un accès complet aux organisations peut modifier le plafond.",
+      "missing": "Votre partenaire n'a pas encore défini de plafond ; la voie non supervisée ne peut donc pas être activée ici."
+    },
+    "orgCard": {
+      "title": "Cette organisation",
+      "description": "Une autorisation explicite. La voie non supervisée reste désactivée tant que le plafond du partenaire et cet interrupteur ne l'autorisent pas tous les deux.",
+      "noOrgSelected": "Sélectionnez une organisation pour gérer ses paramètres de rédaction de scripts."
+    },
+    "fields": {
+      "proposingEnabled": "Autoriser l'IA à proposer des scripts",
+      "unattendedAllowed": "Autoriser les organisations à utiliser la voie non supervisée",
+      "unattendedEnabled": "Exécuter les scripts approuvés à faible risque sans carte d'approbation",
+      "maxRiskTier": "Niveau de risque maximal autorisé en mode non supervisé",
+      "allowedClasses": "Ce qu'un script non supervisé peut toucher",
+      "perHour": "Nombre maximal d'exécutions non supervisées par heure",
+      "reviewerModel": "Modèle de vérification",
+      "reviewerModelHint": "Laissez vide pour utiliser la valeur par défaut de la plateforme.",
+      "protectedResources": "Ne jamais toucher à ceci",
+      "protectedServices": "Services",
+      "protectedPaths": "Chemins",
+      "protectedRegistryKeys": "Clés de registre",
+      "protectedDeviceTags": "Balises d'appareil"
+    },
+    "tier": {
+      "low": "Faible",
+      "medium": "Moyen"
+    },
+    "class": {
+      "registry": "Registre",
+      "services": "Services",
+      "processes": "Processus",
+      "files_system": "Fichiers système",
+      "files_user": "Fichiers utilisateur",
+      "temp_files": "Fichiers temporaires",
+      "network_egress": "Trafic réseau sortant",
+      "firewall": "Pare-feu",
+      "credentials": "Identifiants",
+      "users_groups": "Utilisateurs et groupes",
+      "packages": "Paquets",
+      "scheduled_tasks": "Tâches planifiées",
+      "disk": "Disque",
+      "boot": "Configuration de démarrage",
+      "security_tooling": "Outils de sécurité",
+      "dns_cache": "Cache DNS",
+      "printing": "Impression",
+      "browser": "Navigateurs",
+      "shell_eval": "Code dynamique"
+    },
+    "windowsOnly": "Windows uniquement",
+    "hardDenied": "Jamais disponible en mode non supervisé, quel que soit le plafond.",
+    "aboveCeiling": "Votre partenaire n'autorise pas cela.",
+    "lane": {
+      "closedTitle": "La voie non supervisée fonctionne normalement",
+      "openTitle": "La voie non supervisée est en pause",
+      "openBody": "{{reason}} Les exécutions non supervisées sont refusées tant qu'un approbateur n'a pas réinitialisé la voie. Les approbations continuent de fonctionner normalement.",
+      "reset": "Réinitialiser la voie",
+      "resetStepUpBody": "La réinitialisation du couloir sans surveillance exige une nouvelle vérification de sécurité.",
+      "resetSuccess": "La voie non supervisée fonctionne de nouveau.",
+      "resetFailed": "Impossible de réinitialiser la voie."
+    },
+    "stepUp": {
+      "title": "Confirmez que c'est bien vous",
+      "body": "L'activation des exécutions non supervisées nécessite une nouvelle vérification de sécurité."
+    },
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Paramètres de rédaction de scripts enregistrés.",
+    "saveFailed": "Ces paramètres n'ont pas pu être enregistrés.",
+    "loading": "Chargement…",
+    "loadFailed": "Les paramètres de rédaction de scripts n'ont pas pu être chargés."
   }
 }

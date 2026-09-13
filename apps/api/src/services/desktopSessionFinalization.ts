@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, withSystemDbAccessContext } from '../db';
 import { auditLogs, deviceCommands, remoteSessions } from '../db/schema';
@@ -11,6 +11,7 @@ import {
   type RemoteWsSharedLeaseManager,
 } from './remoteWsSharedLease';
 import { ensureDesktopStreamStopped } from './desktopSessionStop';
+import { commitDesktopTerminalIntent } from './remoteDesktopTerminalIntent';
 import { revokeViewerSession } from './viewerTokenRevocation';
 
 const connectionIdentitySchema = z.object({
@@ -178,22 +179,23 @@ export async function finalizeDesktopSessionOnce(
   const frameBytes = clampNonnegativeInteger(input.frameBytes);
 
   return withSystemDbAccessContext(async () => {
-    const [updated] = await db
-      .update(remoteSessions)
-      .set({
+    // Through the terminal-intent contract (SEC-038 W03). The phase is
+    // 'confirmed' straight away: `ensureDesktopStreamStopped` above only
+    // returns once the agent's stop proof is in hand, so there is nothing left
+    // for the endpoint to acknowledge.
+    const committed = await commitDesktopTerminalIntent({
+      sessionId: input.sessionId,
+      write: {
         status: input.terminalStatus,
         endedAt,
         durationSeconds,
         bytesTransferred: BigInt(frameBytes),
         errorMessage: input.terminalStatus === 'failed' ? input.reason : null,
-      })
-      .where(and(
-        eq(remoteSessions.id, input.sessionId),
-        inArray(remoteSessions.status, ['pending', 'connecting', 'active']),
-      ))
-      .returning({ id: remoteSessions.id });
+      },
+      phase: 'confirmed',
+    });
 
-    if (!updated) return 'already_finalized';
+    if (!committed.ok) return 'already_finalized';
 
     await db.insert(auditLogs).values({
       orgId: input.orgId,

@@ -113,6 +113,101 @@ describe('agent logs routes', () => {
     app.route('/agents', logsRoutes);
   });
 
+  it('clamps excessive future event time and records server-authored provenance', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
+    try {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [makeLogEntry({
+            timestamp: '2099-01-01T00:00:00.000Z',
+            fields: { sequence: 7, timestampClamped: false },
+          })],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(values).toHaveBeenCalledWith([
+        expect.objectContaining({
+          timestamp: new Date('2026-05-01T12:00:00.000Z'),
+          fields: {
+            sequence: 7,
+            originalTimestamp: '2099-01-01T00:00:00.000Z',
+            timestampClamped: true,
+          },
+        }),
+      ]);
+      expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.objectContaining({ timestampClampedCount: 1 }),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('strips agent-forged clamp provenance from a row the server did not clamp', async () => {
+    // redactAgentLogFields redacts values but preserves unknown keys, so an
+    // agent shipping its own timestampClamped/originalTimestamp on an ordinary
+    // in-window row would otherwise fabricate server-authored provenance.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-01T12:00:00.000Z'));
+    try {
+      mockDeviceLookup(true);
+      const values = mockInsertSuccess();
+
+      const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          logs: [makeLogEntry({
+            timestamp: '2026-05-01T11:59:00.000Z',
+            fields: {
+              sequence: 7,
+              timestampClamped: true,
+              originalTimestamp: '2099-01-01T00:00:00.000Z',
+            },
+          })],
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const row = values.mock.calls[0]![0][0];
+      expect(row.timestamp).toEqual(new Date('2026-05-01T11:59:00.000Z'));
+      expect(row.fields).toEqual({ sequence: 7 });
+      expect(row.fields).not.toHaveProperty('timestampClamped');
+      expect(row.fields).not.toHaveProperty('originalTimestamp');
+      expect(writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        details: expect.not.objectContaining({ timestampClampedCount: expect.anything() }),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores an agent-supplied createdAt — receipt time is server-assigned', async () => {
+    mockDeviceLookup(true);
+    const values = mockInsertSuccess();
+
+    const res = await app.request(`/agents/${AGENT_ID}/logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        logs: [makeLogEntry({ createdAt: '2099-01-01T00:00:00.000Z' })],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const row = values.mock.calls[0]![0][0];
+    // Nothing named createdAt reaches the insert; the column defaults to now()
+    // in the database, so an agent cannot pre-date or post-date its receipt.
+    expect(row).not.toHaveProperty('createdAt');
+  });
+
   describe('POST /agents/:id/logs — batch size limit', () => {
     it('accepts a batch with exactly 200 entries (at the cap)', async () => {
       mockDeviceLookup(true);

@@ -11,7 +11,7 @@ import './setup';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
-import { partners, organizations, users, invoices, invoiceStripePayments } from '../../db/schema';
+import { partners, organizations, users, invoices, invoiceStripePayments, stripeConnectAccounts } from '../../db/schema';
 
 // issueInvoice enqueues a PDF render + emits events — stub the BullMQ side effects.
 vi.mock('../../services/invoiceEvents', () => ({ emitInvoiceEvent: vi.fn().mockResolvedValue(undefined) }));
@@ -33,10 +33,15 @@ vi.mock('../../services/partnerStripe', () => ({
 }));
 
 import * as svc from '../../services/invoiceService';
-import { createInvoicePayLink } from '../../services/invoiceCheckout';
+import { createInvoicePayLink, checkoutSessionExpiry } from '../../services/invoiceCheckout';
 import type { InvoiceActor } from '../../services/invoiceTypes';
 
 interface Fixture { partnerId: string; orgId: string; userId: string }
+
+// createInvoicePayLink re-checks the durable stripe_connect_accounts row inside the
+// mapping transaction (SEC-151): the account the mock reports must exist for the seeded
+// partner, and stripe_account_id is globally unique, so each partner gets its own id.
+let currentAccountId = 'acct_test';
 
 async function seedFixture(): Promise<Fixture> {
   return withSystemDbAccessContext(async () => {
@@ -50,6 +55,11 @@ async function seedFixture(): Promise<Fixture> {
     const [u] = await db.insert(users)
       .values({ partnerId: p!.id, orgId: o!.id, email: `c-${sfx}@x.io`, name: 'C', status: 'active' })
       .returning({ id: users.id });
+    currentAccountId = `acct_ichk_${sfx}`;
+    await db.insert(stripeConnectAccounts).values({
+      partnerId: p!.id, stripeAccountId: currentAccountId,
+      apiKey: 'enc:synthetic', keyLast4: 'test', livemode: false,
+    });
     return { partnerId: p!.id, orgId: o!.id, userId: u!.id };
   });
 }
@@ -68,7 +78,7 @@ const runDb = it.runIf(!!process.env.DATABASE_URL);
 describe('createInvoicePayLink (breeze_app, real DB)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getClientMock.mockResolvedValue({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: 'acct_test' });
+    getClientMock.mockImplementation(async () => ({ stripe: { checkout: { sessions: { create: sessionsCreateMock } } }, stripeAccountId: currentAccountId }));
     sessionsCreateMock.mockResolvedValue({ id: 'cs_test_123', url: 'https://checkout.stripe.com/c/pay/abc', payment_intent: null });
   });
 
@@ -90,7 +100,12 @@ describe('createInvoicePayLink (breeze_app, real DB)', () => {
     expect(call[0].line_items[0].price_data.unit_amount).toBe(10000);
     // #2245 deposit invoicing: the idempotency key now carries a _dep/_bal
     // suffix. A plain payable (non-deposit) invoice charges the balance → `_bal`.
-    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal`);
+    // SEC-150 appends the hour quantum of the requested `expires_at`, because
+    // Stripe refuses an idempotent replay whose parameters moved — asserted
+    // through checkoutSessionExpiry() so a drift between the two would fail here
+    // rather than as an idempotency_key_in_use in production.
+    expect(call[1].idempotencyKey).toBe(`inv_${inv.id}_10000_bal_e${checkoutSessionExpiry().quantum}`);
+    expect(call[0].expires_at).toBe(checkoutSessionExpiry().expiresAt);
 
     const mappings = await withSystemDbAccessContext(() =>
       db.select().from(invoiceStripePayments).where(eq(invoiceStripePayments.invoiceId, inv.id)));

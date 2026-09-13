@@ -625,6 +625,10 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // AI script authoring (W01b). Read at runtime by aiScriptAuthoringEnabled()
+    // in env.ts. Validated here for boolean format only.
+    BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
+
     // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
     // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
     // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
@@ -670,6 +674,18 @@ const envObjectSchema = z
     // silently disabling the tools an operator believed they had enabled) and so
     // the APP_ENCRYPTION_KEY_ID pairing rule below is schema-derived.
     M365_GRAPH_ACTIONS_TOOLS_ENABLED: z.string().optional(),
+
+    // M365 tenant sync (wave 04). Dark by default; read at runtime by
+    // isM365TenantSyncEnabled() in env.ts. Declared here so the format is
+    // guarded — a typo reads as OFF at the runtime flag parser, silently
+    // leaving the scheduler dark for an operator who believed they enabled it.
+    M365_TENANT_SYNC_ENABLED: z.string().optional(),
+    // Capacity dials for the sync worker/ticker. Format-guarded only: the
+    // runtime accessors clamp, so a valid-but-silly value is an operator
+    // choice, but a non-numeric value is a typo and must fail boot.
+    M365_SYNC_CONCURRENCY: z.string().optional(),
+    M365_SYNC_MAX_BACKLOG: z.string().optional(),
+    M365_SYNC_TICK_BATCH: z.string().optional(),
 
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
@@ -1821,6 +1837,19 @@ const envSchema = envObjectSchema
       });
     }
 
+    // BREEZE_AI_SCRIPT_AUTHORING_ENABLED (AI script authoring W01b). Same
+    // treatment: a typo must be caught at boot rather than silently reading as
+    // off. Mirrors aiScriptAuthoringEnabled() in env.ts.
+    const scriptAuthoringRaw = (data.BREEZE_AI_SCRIPT_AUTHORING_ENABLED ?? '').trim().toLowerCase();
+    if (scriptAuthoringRaw && !boolValues.has(scriptAuthoringRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_SCRIPT_AUTHORING_ENABLED'],
+        message:
+          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (W03 #5612); set false to keep AI script authoring dark.',
+      });
+    }
+
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
     // reader (services/clientIp.ts) treats any unrecognized value as OFF, so a
     // typo on a Cloudflare-fronted deploy silently resolves every client IP from
@@ -1867,6 +1896,26 @@ const envSchema = envObjectSchema
       });
     }
 
+    const tenantSyncRaw = (data.M365_TENANT_SYNC_ENABLED ?? '').trim().toLowerCase();
+    if (tenantSyncRaw && !boolValues.has(tenantSyncRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['M365_TENANT_SYNC_ENABLED'],
+        message:
+          'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
+      });
+    }
+    for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && !/^\d+$/.test(raw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
+    }
+
     // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a
     // process is split into 'api' or 'worker', cross-process agent command
     // dispatch goes through agentCommandRelay.ts, which seals every relay job
@@ -1889,6 +1938,7 @@ const envSchema = envObjectSchema
           'APP_ENCRYPTION_KEY_ID is required when BREEZE_ROLE is "api" or "worker" (the cross-process agent command relay envelope requires AAD-bound v3 ciphertext).',
       });
     }
+
 
     // --- Native APNs push (all-or-none) ---
     // Push is optional, so an empty APNS_* set is fine. But a partial set
@@ -2037,6 +2087,40 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
     // (AGENT_ENROLLMENT_SECRET is now a hard error in production — see the
     // schema superRefine. No warning needed here; the validator throws if
     // it's missing or weak.)
+
+    // Integration compatibility settings ↔ APP_ENCRYPTION_KEY_ID (SEC-065).
+    //
+    // /integrations/{communication,monitoring,ticketing,psa} seal every
+    // credential-shaped provider field with AAD-bound enc:v3 ciphertext and
+    // REFUSE to seal without a key id: encryptSecret silently drops the `aad`
+    // option and writes non-AAD enc:v1 when none is configured, which would
+    // leave the family/organization/path binding absent with nothing to signal
+    // it. sealIntegrationSettings therefore throws and the routes return 503.
+    //
+    // This is a WARNING, not a boot refusal, for the same reason as the
+    // TRUST_CF_CONNECTING_IP rule above: hard-failing would break every
+    // existing self-hosted upgrade and every fresh guided install.
+    // scripts/guided-setup.sh generates APP_ENCRYPTION_KEY but has never
+    // generated APP_ENCRYPTION_KEY_ID, so a refusal here would brick installs
+    // that are otherwise healthy — the integration compatibility routes are a
+    // small, optional surface and are not worth taking the whole API down for.
+    // The hosted droplets set the key id; self-hosts generally do not.
+    //
+    // The failure is therefore deferred and loud at the point of use rather
+    // than at boot. Note this is a warning only about the INTEGRATION seal —
+    // BREEZE_ROLE api|worker and M365_GRAPH_ACTIONS_TOOLS_ENABLED=true still
+    // refuse boot without the key id (see the schema superRefine).
+    if (!(env.APP_ENCRYPTION_KEY_ID ?? '').trim()) {
+      warnings.push({
+        key: 'APP_ENCRYPTION_KEY_ID',
+        message:
+          'APP_ENCRYPTION_KEY_ID is not set. It is required for integration credential sealing: '
+          + 'saving provider credentials on /integrations/{communication,monitoring,ticketing,psa} '
+          + 'will return 503 until it is set, because those credentials are sealed with AAD-bound '
+          + 'enc:v3 ciphertext and fail closed rather than degrade to unbound enc:v1. Set it '
+          + 'alongside APP_ENCRYPTION_KEY and map it through the api service environment block.',
+      });
+    }
 
     // SR2-16: a prod deploy that trusts proxy headers but leaves
     // TRUST_CF_CONNECTING_IP off resolves client IPs from X-Forwarded-For only.

@@ -35,8 +35,9 @@ const REPORT_TYPES: readonly ReportType[] = [
 ];
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
- *  only ever read back — there is no query that could reproduce it. */
-const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative'];
+ *  only ever read back — there is no query that could reproduce it. Fleet
+ *  Designer W01 (#5651) added the second, same shape. */
+const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
 
 const capturedWhere: SQL[] = [];
 

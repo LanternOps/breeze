@@ -264,6 +264,13 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       // blocks above: `AiAgentLimits` requires it, and nothing on the
       // policy-decision path reads the promotion threshold.
       promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+      // v10 (Fleet Designer W01) design-profile caps — same reason as the
+      // v6/v7/v8/v9 blocks above: `AiAgentLimits` requires them, and nothing
+      // on the policy-decision path reads a design limit.
+      maxConcurrentDesignRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentDesignRuns,
+      maxDesignRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
+      designBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
+      designMaxTurns: AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

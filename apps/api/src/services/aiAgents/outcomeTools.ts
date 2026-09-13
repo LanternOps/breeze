@@ -18,18 +18,25 @@ import {
   AI_ALERT_VERDICT_CLASSIFICATIONS,
   AI_SWEEP_KINDS,
   AI_SWEEP_SEVERITIES,
+  DEVICE_FUNCTION_KEYS,
+  FLEET_DESIGN_CONFIDENCE_THRESHOLD,
   NARRATIVE_BULLETS_PER_SECTION_MAX,
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
   NARRATIVE_SECTION_KEYS,
   TICKET_TRIAGE_PRIORITIES,
   alertVerdictOutcomeSchema,
+  fleetDesignOutcomeFromSubmission,
+  fleetDesignSubmissionSchema,
   narrativeOutcomeFromSubmission,
   narrativeSubmissionSchema,
   sweepFindingsOutcomeSchema,
   ticketTriageProposalSchema,
   type AiAgentRunProfile,
   type AlertVerdictOutcome,
+  type FleetDesignOutcome,
+  type FleetDesignOutcomeRefs,
+  type FleetDesignSubmission,
   type NarrativeOutcome,
   type SweepFindingsOutcome,
   type TicketTriageProposal,
@@ -44,6 +51,9 @@ import {
 
 export const OUTCOME_TOOL_NAMES = [
   'submit_alert_verdict', 'submit_sweep_findings', 'submit_narrative', 'submit_ticket_proposal',
+  // Fleet Designer W01 (#5651) — the fifth profile-mapped outcome tool. See
+  // `outcomeToolsForProfile`'s `'design'` arm below.
+  'submit_fleet_design',
   // #5205 W06. Unlike the four above, this one is NOT selected by run profile
   // — a task-linked run uses the `full` profile (spec §6.2) and
   // `outcomeToolsForProfile('full')` is deliberately `[]`. It is selected by
@@ -65,6 +75,7 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_sweep_findings: 'mcp__breeze__submit_sweep_findings',
   submit_narrative: 'mcp__breeze__submit_narrative',
   submit_ticket_proposal: 'mcp__breeze__submit_ticket_proposal',
+  submit_fleet_design: 'mcp__breeze__submit_fleet_design',
 };
 
 export function isOutcomeTool(toolName: string): toolName is OutcomeToolName {
@@ -126,6 +137,12 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // exposure here does not, on its own, create a triage run.
     case 'triage':
       return ['submit_ticket_proposal'];
+    // Fleet Designer W01 (#5651) — a design run's ONLY tool other than its
+    // small read-only drill-down floor (`designProfile.ts`'s
+    // `DESIGN_TOOL_ALLOWLIST`, which is not an outcome tool and so is never
+    // returned here).
+    case 'design':
+      return ['submit_fleet_design'];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -162,16 +179,35 @@ export function validateOutcomeToolInput(toolName: 'submit_ticket_proposal', inp
  * module, as ever, touches no database.
  */
 export function validateOutcomeToolInput(toolName: 'submit_task_step', input: unknown): SubmitTaskStepPayload;
+/**
+ * Fleet Designer W01 (#5651) — `submit_fleet_design`'s validated outcome is
+ * the SERVER-BUILT `FleetDesignOutcome` (`baseline.numbers` computed, every
+ * `itemRef` attached, `markdown` derived), never the raw submission — same
+ * split as `submit_narrative`. Unlike every sibling overload, this one takes
+ * a THIRD, required argument: the run's device-id/baseline refs the
+ * referential pass needs (`fleetDesignOutcomeFromSubmission`). There is no
+ * run-independent way to validate a design submission, which is exactly why
+ * `buildOutcomeSdkTools` refuses to build this tool without them (see
+ * below).
+ */
+export function validateOutcomeToolInput(
+  toolName: 'submit_fleet_design', input: unknown, refs: FleetDesignOutcomeRefs,
+): FleetDesignOutcome;
 // The union overload the run loop's hooks call through: `toolName` there is
 // the `OutcomeToolName` the SDK handed them, not a literal, so none of the
 // narrow overloads above would apply. Callers that need the concrete type
-// narrow on the name first (see the post-hook's switch).
+// narrow on the name first (see the post-hook's switch). `refs` is optional
+// here — it is REQUIRED only for `submit_fleet_design`, which the
+// implementation enforces at runtime (a caller reaching that branch without
+// `refs` gets a thrown error, not a silently invalid outcome).
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload;
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs,
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
+  | FleetDesignOutcome;
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown,
-): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload {
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs,
+): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
+  | FleetDesignOutcome {
   switch (toolName) {
     case 'submit_task_step':
       return validateSubmitTaskStep(input);
@@ -186,6 +222,21 @@ export function validateOutcomeToolInput(
       return narrativeOutcomeFromSubmission(narrativeSubmissionSchema.parse(input));
     case 'submit_ticket_proposal':
       return ticketTriageProposalSchema.parse(input);
+    case 'submit_fleet_design': {
+      if (!refs) throw new Error('[validateOutcomeToolInput] submit_fleet_design needs design refs');
+      // `.parse` first (the message names the offending path — the model
+      // reads it back as the tool error), then the referential pass, which
+      // throws `FleetDesignReferenceError` with the same path discipline.
+      //
+      // The cast is the same boundary `fleetDesign.test.ts` (packages/shared)
+      // documents on its own `asSubmission` helper: the zod schema's
+      // `.refine()`-based `functionKey` check narrows at RUNTIME but not at
+      // the type level, so `.parse()`'s inferred output keeps `functionKey:
+      // string` rather than the real union `FleetDesignSubmission` declares.
+      // The schema has already rejected anything `parseFunctionKey` would
+      // reject by the time this line runs.
+      return fleetDesignOutcomeFromSubmission(fleetDesignSubmissionSchema.parse(input) as FleetDesignSubmission, refs);
+    }
     default: {
       const exhaustive: never = toolName;
       throw new Error(`[validateOutcomeToolInput] Unknown outcome tool: ${String(exhaustive)}`);
@@ -391,7 +442,143 @@ const SUBMIT_TICKET_PROPOSAL_SHAPE = {
   ),
 };
 
-export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool[] {
+/**
+ * Fleet Designer W01 (#5651) — the model-facing mirror of
+ * `fleetDesignSubmissionSchema` (packages/shared/src/validators/fleetDesign.ts).
+ * Same split as `SUBMIT_NARRATIVE_SHAPE`/`SUBMIT_TICKET_PROPOSAL_SHAPE`: this
+ * shape carries NO authority of its own — `validateOutcomeToolInput`'s
+ * `.parse()` through the real shared schema (plus the referential pass) is
+ * the only place a submission is actually accepted or rejected, including
+ * every `.strict()` unknown-key reject, the confidence-threshold check, the
+ * one-function-per-device check and the device-id-in-evidence check a raw
+ * Zod shape cannot express. Keys only, mirroring the submission's TOP-LEVEL
+ * shape — the eight sections — with enough nested structure for the model to
+ * submit something shaped right the first time.
+ */
+const FLEET_DESIGN_FUNCTION_KEY_SHAPE = z.string().max(48).describe(
+  `One of ${DEVICE_FUNCTION_KEYS.join(', ')}, or a custom key shaped custom:<slug> (2-40 lowercase `
+  + 'letters/digits/hyphens), which REQUIRES a label.',
+);
+
+const FLEET_DESIGN_FUNCTION_ENTRY_SHAPE = z.object({
+  functionKey: FLEET_DESIGN_FUNCTION_KEY_SHAPE,
+  label: z.string().max(80).optional().describe('Required when functionKey is a custom: key; the display name.'),
+  deviceIds: z.array(z.string().uuid()).describe(
+    'Device ids copied VERBATIM from the evidence device table. A device belongs to at most one function.',
+  ),
+  confidence: z.number().min(0).max(1).describe(
+    `Your honest confidence. Below ${FLEET_DESIGN_CONFIDENCE_THRESHOLD} this entry is rejected here — put it `
+    + 'in unsure.lowConfidenceFunctions instead.',
+  ),
+  evidence: z.array(z.string()).describe('Short evidence lines that justify this function assignment.'),
+});
+
+const FLEET_DESIGN_WATCH_SHAPE = z.object({
+  watchType: z.enum(['service', 'process']).describe('Whether this watches a service or a plain process.'),
+  name: z.string().max(255).describe('The exact service or process name to watch.'),
+  alertOnStop: z.boolean().describe('Whether stopping should raise an alert.'),
+  autoRestart: z.boolean().describe('Whether the agent should try to restart it automatically.'),
+  rationale: z.string().describe('Why THIS fleet needs this watch. REQUIRED — never leave blank.'),
+});
+
+const FLEET_DESIGN_RULE_SHAPE = z.object({
+  name: z.string().max(200).describe('A short, human-readable rule name.'),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).describe('How urgent a firing of this rule is.'),
+  conditions: z.array(z.record(z.string(), z.unknown())).describe(
+    'One or more alert-rule conditions, in the shape the alert rule system already uses.',
+  ),
+  cooldownMinutes: z.number().int().min(1).max(1440).describe('Minutes to wait before re-alerting on the same condition.'),
+  rationale: z.string().describe('Why THIS fleet needs this rule. REQUIRED — never leave blank.'),
+  action: z.union([
+    z.literal('none').describe('Alert only, no automated response.'),
+    z.object({
+      kind: z.enum(['playbook', 'script']),
+      ref: z.string().max(200).describe('The playbook or script name/id this rule runs.'),
+    }),
+  ]).describe('An automated response to run when this rule fires, or "none".'),
+  paging: z.enum(['none', 'business_hours', 'always']).describe('When a technician should be paged for this rule.'),
+  sourceTemplateId: z.string().uuid().optional().describe('The alert template id this rule was adapted from, if any.'),
+});
+
+const SUBMIT_FLEET_DESIGN_SHAPE = {
+  found: z.object({
+    summary: z.array(z.string()).describe('A handful of plain-text lines: what this fleet is, its topology, who else manages it.'),
+    findings: z.array(z.object({
+      title: z.string().max(160).describe('One short finding title.'),
+      deviceCount: z.number().int().min(0).describe('How many devices this finding affects.'),
+      evidence: z.array(z.string()).describe('Short evidence lines backing this finding.'),
+    })).describe('Fleet-wide findings, ranked by device count.'),
+  }).describe('What the fleet is: roles, sites, topology, and the fleet-wide findings, ranked by device count.'),
+  functions: z.array(FLEET_DESIGN_FUNCTION_ENTRY_SHAPE).describe(
+    `One entry per device function you are confident about (>= ${FLEET_DESIGN_CONFIDENCE_THRESHOLD}). Every `
+    + 'device belongs to at most one function.',
+  ),
+  monitoring: z.array(z.object({
+    functionKey: FLEET_DESIGN_FUNCTION_KEY_SHAPE,
+    watches: z.array(FLEET_DESIGN_WATCH_SHAPE).describe('Service/process watches for this function.'),
+    alertRules: z.array(FLEET_DESIGN_RULE_SHAPE).describe('Alert rules for this function.'),
+  })).describe('What to watch, and why — one entry per function key named in `functions`.'),
+  retired: z.array(z.object({
+    kind: z.enum(['watch', 'rule']).describe('Whether the retired item was a watch or an alert rule.'),
+    policyId: z.string().uuid().describe('The id of the existing configuration policy this item came from.'),
+    policyName: z.string().max(255).describe('The policy name, copied verbatim.'),
+    itemName: z.string().max(255).describe('The watch or rule name, copied verbatim.'),
+    reason: z.string().describe('Why this design does not carry the item forward.'),
+  })).describe('Watches/rules in the current configuration this design drops. An empty array is valid.'),
+  automation: z.array(z.object({
+    functionKey: FLEET_DESIGN_FUNCTION_KEY_SHAPE,
+    playbooks: z.array(z.union([
+      z.object({ builtInName: z.string().max(255).describe('The exact name of an existing built-in playbook.') }),
+      z.object({
+        custom: z.object({
+          name: z.string().max(255),
+          description: z.string().max(2000),
+          steps: z.array(z.string()).describe('Plain-text steps, in order.'),
+          triggeredBy: z.string().max(200).describe('What triggers this custom playbook.'),
+        }),
+      }),
+    ])).describe('Automation for this function: built-in playbooks by name, or a described custom one.'),
+    scripts: z.array(z.object({
+      name: z.string().max(255),
+      purpose: z.string().max(2000).describe('What this script does and why this fleet needs it.'),
+      osTypes: z.array(z.enum(['windows', 'macos', 'linux'])).describe('Which operating systems this script targets.'),
+      language: z.enum(['powershell', 'bash', 'python', 'cmd']),
+      content: z.string().describe('The full script content.'),
+    })).describe('New scripts proposed for this function, with full content.'),
+  })).describe('Automation — built-in playbooks, custom playbooks and scripts — per function.'),
+  legacy: z.array(z.object({
+    scriptId: z.string().uuid().describe('The id of an existing script tagged legacy-import.'),
+    scriptName: z.string().max(255),
+    intent: z.string().describe('What this legacy script appears to be for.'),
+    bucket: z.enum(['obsolete', 'covered', 'needed']).describe(
+      'obsolete = no longer needed; covered = superseded by something this design proposes; needed = keep it.',
+    ),
+    coveredBy: z.string().max(255).optional().describe('What covers it, when bucket is "covered".'),
+    notes: z.string(),
+  })).describe('One entry per script tagged legacy-import. An empty array is valid when there are none.'),
+  baseline: z.object({
+    notes: z.array(z.string()).describe(
+      'Plain-text notes about the baseline. The NUMBERS are computed by the system — do not submit them.',
+    ),
+  }).describe('Baseline notes only — the system computes the numbers.'),
+  unsure: z.object({
+    lowConfidenceFunctions: z.array(FLEET_DESIGN_FUNCTION_ENTRY_SHAPE).describe('Function guesses below the confidence threshold.'),
+    unreachableDevices: z.array(z.string().uuid()).describe('Device ids, copied from the evidence, that you could not assess.'),
+    needsHuman: z.array(z.string()).describe('Anything else that needs a human decision.'),
+    roleCorrections: z.array(z.object({
+      deviceId: z.string().uuid(),
+      currentRole: z.string().max(30),
+      proposedRole: z.string().max(30),
+      evidence: z.array(z.string()),
+      billingRelevant: z.literal(true).describe('Always true — a coarse role correction is always billing-relevant.'),
+    })).describe('Coarse device_role corrections. Billing-relevant — flag for a human, never applied automatically.'),
+  }).describe('What the designer is unsure about: low-confidence functions, unreachable devices, anything needing a human.'),
+};
+
+export function buildOutcomeSdkTools(
+  names: readonly OutcomeToolName[],
+  refs?: { design?: FleetDesignOutcomeRefs },
+): SdkTool[] {
   return names.map((name) => {
     switch (name) {
       case 'submit_task_step':
@@ -462,6 +649,28 @@ export function buildOutcomeSdkTools(names: readonly OutcomeToolName[]): SdkTool
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;
+      case 'submit_fleet_design': {
+        // Unlike every sibling case above, this tool cannot be built without
+        // run-specific refs (the evidence's device-id set and the
+        // server-computed baseline numbers) — there is no run-independent way
+        // to validate a design submission. Refusing to build it here (rather
+        // than building a tool whose handler always throws) makes a caller
+        // that forgets to pass `refs` fail at wiring time, not at the model's
+        // first tool call three turns into a live run.
+        const design = refs?.design;
+        if (!design) throw new Error('[buildOutcomeSdkTools] submit_fleet_design requires design refs');
+        return tool(
+          'submit_fleet_design',
+          'Record the Fleet Design for this organization: all eight sections exactly once. Every watch and '
+          + 'alert rule needs a rationale. Device ids must come from the evidence. Call exactly once, as '
+          + 'your last action.',
+          SUBMIT_FLEET_DESIGN_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_fleet_design', input, design); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      }
       default: {
         const exhaustive: never = name;
         throw new Error(`[buildOutcomeSdkTools] Unknown outcome tool: ${String(exhaustive)}`);

@@ -1415,6 +1415,11 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // doing its job, not a data-integrity bug.
   max_concurrent_triage_runs: false,
   triage_rate: false,
+  // Fleet Designer (W01) — the design-profile equivalents. Same
+  // classification again: a design run being declined for volume is a cap
+  // doing its job, not a data-integrity bug.
+  max_concurrent_design_runs: false,
+  design_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

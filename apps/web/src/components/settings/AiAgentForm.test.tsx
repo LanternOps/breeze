@@ -124,7 +124,7 @@ const CATALOG: AgentToolCatalogDto = {
       operations: [{ key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false }],
     },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
   unreachableTools: ['manage_ai_agents'],
 };
 

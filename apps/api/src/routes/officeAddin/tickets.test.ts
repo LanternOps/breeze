@@ -30,7 +30,15 @@ const { authRef, mockDb, hoisted } = vi.hoisted(() => ({
     getOrgPolicy: vi.fn(),
     applyDlp: vi.fn(),
     draftTicketFromEmail: vi.fn(),
+    checkBudgetDetailed: vi.fn(),
+    deductBillingCredits: vi.fn(),
+    calculateCostCents: vi.fn(() => 12.5),
+    calculateCatalogCostCents: vi.fn(() => 7.25),
     recordUsage: vi.fn(),
+    reserveAiBudget: vi.fn(),
+    markAiBudgetReservationIndeterminate: vi.fn(),
+    releaseUnusedAiBudgetReservation: vi.fn(),
+    captureException: vi.fn(),
     getAnthropicClientForPartner: vi.fn(),
     resolveWireModel: vi.fn<(resolved: unknown, model: string) => { model: string; catalogPricing?: unknown }>((_resolved: unknown, model: string) => ({ model })),
     anthropicClient: { messages: { create: vi.fn() } },
@@ -90,7 +98,21 @@ vi.mock('../../db/schema', () => ({
 }));
 
 vi.mock('../../services/aiCostTracker', () => ({
+  checkBudgetDetailed: hoisted.checkBudgetDetailed,
+  deductBillingCredits: hoisted.deductBillingCredits,
+  calculateCostCents: hoisted.calculateCostCents,
+  calculateCatalogCostCents: hoisted.calculateCatalogCostCents,
   recordUsage: hoisted.recordUsage,
+}));
+
+vi.mock('../../services/aiBudgetReservations', () => ({
+  reserveAiBudget: hoisted.reserveAiBudget,
+  markAiBudgetReservationIndeterminate: hoisted.markAiBudgetReservationIndeterminate,
+  releaseUnusedAiBudgetReservation: hoisted.releaseUnusedAiBudgetReservation,
+}));
+
+vi.mock('../../services/sentry', () => ({
+  captureException: hoisted.captureException,
 }));
 
 vi.mock('../../services/ticketService', async (importOriginal) => ({
@@ -272,6 +294,21 @@ function ticketRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hoisted.reserveAiBudget.mockResolvedValue({
+    kind: 'unlimited',
+    reservationId: '12121212-1212-4121-8121-121212121212',
+    dailyPeriodKey: '2026-09-06',
+    monthlyPeriodKey: '2026-09-01',
+    status: 'active',
+  });
+  hoisted.markAiBudgetReservationIndeterminate.mockResolvedValue({
+    kind: 'indeterminate',
+    reservationId: '12121212-1212-4121-8121-121212121212',
+  });
+  hoisted.releaseUnusedAiBudgetReservation.mockResolvedValue({
+    kind: 'released',
+    reservationId: '12121212-1212-4121-8121-121212121212',
+  });
   authRef.current = { accessibleOrgIds: null };
   ticketSelectQueue = [];
   updateSets = [];
@@ -306,6 +343,10 @@ beforeEach(() => {
     inputTokens: 100,
     outputTokens: 50,
   });
+  hoisted.checkBudgetDetailed.mockResolvedValue(null);
+  hoisted.deductBillingCredits.mockResolvedValue(undefined);
+  hoisted.calculateCostCents.mockReturnValue(12.5);
+  hoisted.calculateCatalogCostCents.mockReturnValue(7.25);
   hoisted.recordUsage.mockResolvedValue(undefined);
 });
 
@@ -852,6 +893,58 @@ const draftBody = {
 };
 
 describe('POST /tickets/draft', () => {
+  it.each([
+    ['ai_disabled', true],
+    ['daily_budget', false],
+    ['monthly_budget', false],
+    ['credits_exhausted', false],
+  ])('402s on %s before DLP, reservation or provider work', async (reason, permanent) => {
+    hoisted.checkBudgetDetailed.mockResolvedValueOnce({
+      reason,
+      permanent,
+      message: 'AI budget unavailable',
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(402);
+    expect(await res.json()).toEqual({ error: 'AI budget unavailable' });
+    expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'platform');
+    expect(hoisted.getOrgPolicy).not.toHaveBeenCalled();
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.reserveAiBudget).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the budget lookup errors, before DLP or provider work', async () => {
+    hoisted.checkBudgetDetailed.mockRejectedValueOnce(new Error('budget database unavailable'));
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(500);
+    expect(hoisted.getOrgPolicy).not.toHaveBeenCalled();
+    expect(hoisted.applyDlp).not.toHaveBeenCalled();
+    expect(hoisted.reserveAiBudget).not.toHaveBeenCalled();
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+  });
+
+  it('does not call the provider after durable budget admission denies', async () => {
+    hoisted.reserveAiBudget.mockResolvedValueOnce({
+      kind: 'denied', reason: 'daily_budget', message: 'Daily AI budget exhausted ($1.00)',
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(429);
+    expect(hoisted.draftTicketFromEmail).not.toHaveBeenCalled();
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+  });
+
   it('returns a draft on the happy path, sending the DLP-redacted text to the model', async () => {
     const res = await postDraft(draftBody);
     expect(res.status).toBe(200);
@@ -873,6 +966,7 @@ describe('POST /tickets/draft', () => {
       })
     );
     expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'platform');
     // Usage accounting: sessionless (null session id), org-scoped, real token counts.
     expect(hoisted.recordUsage).toHaveBeenCalledWith(
       null,
@@ -883,7 +977,10 @@ describe('POST /tickets/draft', () => {
       false,
       'platform',
       undefined,
+      '12121212-1212-4121-8121-121212121212',
     );
+    expect(hoisted.calculateCostCents).toHaveBeenCalledWith('claude-x', 100, 50);
+    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
   });
 
   it('sends the WIRE model to the drafter and meters catalog traffic at revision rates', async () => {
@@ -911,7 +1008,10 @@ describe('POST /tickets/draft', () => {
     );
     expect(hoisted.recordUsage).toHaveBeenCalledWith(
       null, ORG_A, 'claude-x', 100, 50, false, 'platform', CATALOG_PRICING,
+      '12121212-1212-4121-8121-121212121212',
     );
+    expect(hoisted.calculateCatalogCostCents).toHaveBeenCalledWith(CATALOG_PRICING, 100, 50);
+    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 7.25);
   });
 
   /**
@@ -994,6 +1094,8 @@ describe('POST /tickets/draft', () => {
       client: hoisted.anthropicClient,
     }));
     expect(hoisted.getAnthropicClientForPartner).toHaveBeenCalledTimes(1);
+    expect(hoisted.checkBudgetDetailed).toHaveBeenCalledWith(ORG_A, 'partner_key');
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
   });
 
   it('503s before DLP when the partner LLM config is unavailable', async () => {
@@ -1062,7 +1164,9 @@ describe('POST /tickets/draft', () => {
       false,
       'platform',
       undefined,
+      '12121212-1212-4121-8121-121212121212',
     );
+    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
     errSpy.mockRestore();
   });
 
@@ -1096,7 +1200,9 @@ describe('POST /tickets/draft', () => {
       false,
       'partner_key',
       undefined,
+      '12121212-1212-4121-8121-121212121212',
     );
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
     errSpy.mockRestore();
   });
 
@@ -1113,7 +1219,7 @@ describe('POST /tickets/draft', () => {
     errSpy.mockRestore();
   });
 
-  it('skips failure-path metering when the failed draft burned zero tokens', async () => {
+  it('releases the reservation, unmetered, when a known failure burned zero tokens', async () => {
     hoisted.draftTicketFromEmail.mockRejectedValue(
       new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: api down', 0, 0)
     );
@@ -1121,7 +1227,49 @@ describe('POST /tickets/draft', () => {
     const res = await postDraft(draftBody);
     expect(res.status).toBe(503);
     expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    // The provider answered and nothing was spent: the ONE case where reserved
+    // capacity may be handed back.
+    expect(hoisted.releaseUnusedAiBudgetReservation).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      reservationId: '12121212-1212-4121-8121-121212121212',
+    });
+    expect(hoisted.markAiBudgetReservationIndeterminate).not.toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it('keeps an ambiguous transport failure indeterminate instead of releasing it', async () => {
+    hoisted.draftTicketFromEmail.mockRejectedValue(
+      new EmailDraftFailedError('Failed to draft ticket from email: attempt 1: socket hang up', 0, 0, true)
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await postDraft(draftBody);
+    expect(res.status).toBe(503);
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      reservationId: '12121212-1212-4121-8121-121212121212',
+    });
+    errSpy.mockRestore();
+  });
+
+  it('passes the reserved remainder to the drafter as a provider token ceiling', async () => {
+    hoisted.reserveAiBudget.mockResolvedValueOnce({
+      kind: 'reserved',
+      reservedCostCents: 42.5,
+      reservationId: '12121212-1212-4121-8121-121212121212',
+      dailyPeriodKey: '2026-09-06',
+      monthlyPeriodKey: '2026-09-01',
+      status: 'active',
+    });
+
+    const res = await postDraft(draftBody);
+
+    expect(res.status).toBe(200);
+    expect(hoisted.draftTicketFromEmail).toHaveBeenCalledWith(expect.objectContaining({
+      budgetCents: 42.5,
+      calculateCostCents: expect.any(Function),
+    }));
   });
 
   it('503s when the model call exceeds the timeout', async () => {
@@ -1135,6 +1283,44 @@ describe('POST /tickets/draft', () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body).toEqual({ error: 'ai_unavailable' });
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    // Unknown outcome: capacity is RETAINED (indeterminate), never released.
+    expect(hoisted.markAiBudgetReservationIndeterminate).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      reservationId: '12121212-1212-4121-8121-121212121212',
+    });
+    expect(hoisted.releaseUnusedAiBudgetReservation).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.runAllTicks();
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null, ORG_A, 'claude-x', 0, 0, false, 'platform', undefined,
+      '12121212-1212-4121-8121-121212121212',
+    );
+    expect(hoisted.deductBillingCredits).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('meters a late token-bearing failure after the response timeout', async () => {
+    vi.useFakeTimers();
+    hoisted.draftTicketFromEmail.mockImplementation(
+      () => new Promise((_resolve, reject) => setTimeout(
+        () => reject(new EmailDraftFailedError('late provider result', 80, 20)),
+        30_000,
+      )),
+    );
+
+    const resPromise = postDraft(draftBody);
+    await vi.advanceTimersByTimeAsync(20_001);
+    expect((await resPromise).status).toBe(503);
+    expect(hoisted.recordUsage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.runAllTicks();
+    expect(hoisted.recordUsage).toHaveBeenCalledWith(
+      null, ORG_A, 'claude-x', 80, 20, false, 'platform', undefined,
+      '12121212-1212-4121-8121-121212121212',
+    );
+    expect(hoisted.deductBillingCredits).toHaveBeenCalledWith(ORG_A, 12.5);
     vi.useRealTimers();
   });
 

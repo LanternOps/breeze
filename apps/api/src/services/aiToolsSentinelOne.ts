@@ -68,6 +68,30 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
+      // Site is an app-layer authorization axis. Recompute every status facet
+      // from mapped devices visible to the caller; null/unmapped device rows
+      // cannot be attributed to an allowed site and therefore fail closed.
+      const allowedDeviceIds = await resolveSiteAllowedDeviceIds(orgId, auth);
+      if (allowedDeviceIds?.length === 0) {
+        return JSON.stringify({
+          configured: true,
+          integration,
+          summary: {
+            totalAgents: 0,
+            mappedDevices: 0,
+            infectedAgents: 0,
+            reportedThreatCount: 0,
+            activeThreats: 0,
+            highOrCriticalThreats: 0,
+            pendingActions: 0,
+            completedActions: 0,
+            failedActions: 0
+          },
+          recentActions: [],
+          scopeNote: SITE_SCOPE_EMPTY_NOTE
+        });
+      }
+
       const agentConditions: SQL[] = [eq(s1Agents.integrationId, integration.id)];
       const agentOrgCond = auth.orgCondition(s1Agents.orgId);
       if (agentOrgCond) agentConditions.push(agentOrgCond);
@@ -79,6 +103,12 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
       const actionConditions: SQL[] = [eq(s1Actions.orgId, integration.orgId)];
       const actionOrgCond = auth.orgCondition(s1Actions.orgId);
       if (actionOrgCond) actionConditions.push(actionOrgCond);
+
+      if (allowedDeviceIds) {
+        agentConditions.push(inArray(s1Agents.deviceId, allowedDeviceIds));
+        threatConditions.push(inArray(s1Threats.deviceId, allowedDeviceIds));
+        actionConditions.push(inArray(s1Actions.deviceId, allowedDeviceIds));
+      }
 
       const [agentSummary, threatSummary, actionSummary, recentActions] = await Promise.all([
         db

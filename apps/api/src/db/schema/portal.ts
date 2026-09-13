@@ -6,6 +6,8 @@ import { users } from './users';
 export const ticketStatusEnum = pgEnum('ticket_status', ['new', 'open', 'pending', 'on_hold', 'resolved', 'closed']);
 export const ticketPriorityEnum = pgEnum('ticket_priority', ['low', 'normal', 'high', 'urgent']);
 export const ticketSourceEnum = pgEnum('ticket_source', ['portal', 'email', 'alert', 'manual', 'api', 'ai']);
+// Spec #5573 §4.8: planned work (service deliverables, project tasks) is typed, not tagged.
+export const ticketWorkKindEnum = pgEnum('ticket_work_kind', ['support', 'deliverable', 'project_task']);
 export const ticketCommentTypeEnum = pgEnum('ticket_comment_type', ['comment', 'internal', 'status_change', 'assignment', 'time_entry', 'system']);
 
 export const portalBranding = pgTable('portal_branding', {
@@ -38,6 +40,10 @@ export const portalBranding = pgTable('portal_branding', {
   enableBackups: boolean('enable_backups').notNull().default(false),
   enableReports: boolean('enable_reports').notNull().default(false),
   enableSupportUsage: boolean('enable_support_usage').notNull().default(false),
+  // Service deliverables W04 (spec §4.7, D10): the Service scorecard and the
+  // org document library. Same fail-closed shape as the five flags above.
+  enableService: boolean('enable_service').notNull().default(false),
+  enableDocuments: boolean('enable_documents').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -146,6 +152,7 @@ export const tickets = pgTable('tickets', {
   slaPausedAt: timestamp('sla_paused_at'),
   slaPausedMinutes: integer('sla_paused_minutes').default(0),
   source: ticketSourceEnum('source').notNull().default('portal'),
+  workKind: ticketWorkKindEnum('work_kind').notNull().default('support'),
   internalNumber: varchar('internal_number', { length: 20 }),
   emailMessageId: text('email_message_id'),
   emailThreadKey: text('email_thread_key'),

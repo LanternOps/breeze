@@ -280,6 +280,7 @@ const EXPECTED_NAMES = [
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
+  'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
@@ -288,21 +289,26 @@ const EXPECTED_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
-  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
+  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
-  'recoveryMediaWorker', 'recoveryBootMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
+  'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
   'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker', 'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep',
+  'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
   'ticketSlaWorker', 'inboundEmailWorker', 'ticketMailboxPollWorker', 'invoiceWorker',
-  'metricAnomalyIncidentPublisher', 'contractWorker', 'aiUnattendedExposureRetention',
+  'metricAnomalyIncidentPublisher', 'contractWorker', 'deliverableWorker', 'aiUnattendedExposureRetention',
   'alertVerdictScheduler', 'aiAgentSweepScheduler', 'accountingSyncWorker', 'accountingReconcileWorker',
   'aiAgentImpactRollup',
   'aiAgentGraduation',
+  'scriptReviewWorker',
+  'scriptVerifyWorker',
+  'aiBudgetReservationSweep',
+  'mfaEnrollmentNoticeWorker',
 ];
 
 // ---------------------------------------------------------------------------
@@ -454,7 +460,8 @@ describe('workerEntrypointClosure contract (#4086 Task 5)', () => {
 
   describe('global-placement entries never reach socket-local dispatch', () => {
     const entries = parseRegistrySource();
-    expect(entries.length).toBe(128); // sanity: the source-parsing regex itself must find all 127
+    // sanity: the source-parsing regex itself must find every registry entry
+    expect(entries.length).toBe(EXPECTED_NAMES.length);
 
     const globalEntries = entries.filter((e) => e.placement === 'global');
     expect(globalEntries.length).toBeGreaterThan(0);

@@ -14,7 +14,7 @@ import {
   TIER3_SUPERVISED_ACTIONS, TIER3_SUPERVISED_TOOLS,
   TIER3_INPUT_AWARE_ACTIONS, TIER3_INPUT_AWARE_TOOLS,
   TOOL_ACTION_INPUT_KEYS,
-  checkGuardrails, resolveApprovalScope,
+  checkGuardrails, resolveApprovalScope, isInputAwareTier3,
 } from './aiGuardrails';
 import { toolActionEnum } from './aiToolActions';
 import { getToolTier, getAllRegisteredToolNames, getToolDefinitions } from './aiTools';
@@ -392,6 +392,31 @@ describe('tier-3 approval scope classification', () => {
     const patch = checkGuardrails('manage_policy_feature_link', { action: 'add', featureType: 'patch' });
     expect(patch.tier).toBe(2);
     expect(patch.approvalScope).toBeUndefined();
+  });
+
+  it('manage_policy_feature_link resolves supervised for an hpCmsl-enabling write on both add and update (#5511 W02)', () => {
+    const enabling = { inlineSettings: { hpCmsl: { enabled: true } } };
+    expect(resolveApprovalScope('manage_policy_feature_link', 'add', enabling)).toBe('supervised');
+    expect(resolveApprovalScope('manage_policy_feature_link', 'update', enabling)).toBe('supervised');
+    // ...and the escalation is what routes it there. Without the tier arm the
+    // pair is in NEITHER static scope table and would reach the per-tool
+    // four_eyes fail-safe, so this assertion is load-bearing, not decorative.
+    expect(isInputAwareTier3('manage_policy_feature_link', 'add', enabling)).toBe(true);
+    expect(isInputAwareTier3('manage_policy_feature_link', 'update', enabling)).toBe(true);
+  });
+
+  it('checkGuardrails surfaces the hpCmsl escalation on both branches (#5511 W02)', () => {
+    const enabling = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', inlineSettings: { hpCmsl: { enabled: true } },
+    });
+    expect(enabling.tier).toBe(3);
+    expect(enabling.approvalScope).toBe('supervised');
+
+    const thresholds = checkGuardrails('manage_policy_feature_link', {
+      action: 'add', featureType: 'warranty', inlineSettings: { warnDays: 90 },
+    });
+    expect(thresholds.tier).toBe(2);
+    expect(thresholds.approvalScope).toBeUndefined();
   });
 
   it('checkGuardrails surfaces the scope on tier-3 results', () => {

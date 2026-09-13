@@ -278,7 +278,8 @@
     "loadMore": "Load more",
     "couldnTLoadMore": "Couldn't load more.",
     "viewAllActivity2": "View all activity",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "View proposal"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",
@@ -930,6 +931,23 @@
     "role": "Role",
     "changeRole": "Change role",
     "source": "Source",
+    "function": "Function",
+    "changeFunction": "Change function",
+    "functionNone": "Not assessed",
+    "functionSource": {
+      "ai": "AI",
+      "manual": "Manual"
+    },
+    "functionConfidence": "{{pct}}% confidence",
+    "functionEvidence": "Why the designer thinks so",
+    "functionEvidenceUnavailable": "Could not load the assessment details.",
+    "functionCustom": "Custom…",
+    "functionCustomSlug": "custom key (a-z, 0-9, -)",
+    "functionCustomLabel": "Label",
+    "functionClear": "Clear",
+    "functionSaved": "Device function saved",
+    "functionCleared": "Device function cleared",
+    "functionSaveFailed": "Failed to save device function",
     "operatingSystem": "Operating System",
     "osType": "OS Type",
     "osVersion": "OS Version",
@@ -1881,7 +1899,7 @@
     "refresh": "Refresh",
     "selectedOrganization": "the selected organization",
     "subtitle": "Manage and monitor your fleet.",
-    "title": "Devices",
+    "title": "Devices & Assets",
     "toasts": {
       "actionFailed": "{{action}} failed on {{hostname}}",
       "advancedFilterFailed": "Advanced filter failed to load — showing no devices. Edit or clear the filter to try again.",

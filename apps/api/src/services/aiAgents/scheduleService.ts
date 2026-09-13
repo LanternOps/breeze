@@ -21,6 +21,7 @@ import {
   canonicalizeTimezone,
   createAiAgentScheduleSchema,
   isHourlyFloorCron,
+  isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
   updateAiAgentScheduleSchema,
@@ -58,6 +59,9 @@ export type ScheduleValidationCode =
   | 'kinds_not_empty'
   | 'agent_not_partner_wide'
   | 'agent_kind_not_triage'
+  // Fleet Designer (W01), the mirror of `agent_kind_not_triage` for a
+  // `design` schedule: it must target a `designer` agent.
+  | 'agent_kind_not_designer'
   | 'invalid_cron'
   // P2-3: structurally fine and inside the hourly floor, but wrong for THIS
   // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
@@ -128,6 +132,18 @@ function assertValidCron(cron: string, kind: AiAgentScheduleKind): void {
       `a narrative schedule must fire exactly once a week — literal minute and hour, \`*\` day-of-month and month, and a single day-of-week 0-6: ${cron}`,
     );
   }
+  // Fleet Designer (W01). A design run assembles a whole-org evidence bundle
+  // and produces an eight-section report — meaningful at most monthly, never
+  // as a background loop. `isMonthlyOrRarerLiteralCron` is strictly narrower
+  // than the hourly floor above, same ordering rationale as the narrative
+  // check: it only decides which code a client sees, never whether a bad
+  // cron gets through.
+  if (kind === 'design' && !isMonthlyOrRarerLiteralCron(cron)) {
+    throw new ScheduleValidationError(
+      'invalid_cron_for_kind',
+      `a design schedule fires at most once a month — literal minute, hour and day-of-month (or a divisor-of-12 month step), \`*\` day-of-week: ${cron}`,
+    );
+  }
 }
 
 /**
@@ -144,11 +160,14 @@ function assertValidCron(cron: string, kind: AiAgentScheduleKind): void {
  * already rejects every non-empty list.
  */
 function assertPartnerKindsForScheduleKind(kind: AiAgentScheduleKind, sweepKinds: AiSweepKind[]): void {
-  if (kind === 'narrative') {
+  // Fleet Designer (W01) behaves exactly like `narrative` here: a design run
+  // evaluates no sweep kinds either — its whole input is the system-assembled
+  // evidence bundle, not a sweep-kind-scoped finding pass.
+  if (kind === 'narrative' || kind === 'design') {
     if (sweepKinds.length > 0) {
       throw new ScheduleValidationError(
         'kinds_not_empty',
-        'A narrative schedule evaluates no sweep kinds; sweepKinds must be empty',
+        `A ${kind} schedule evaluates no sweep kinds; sweepKinds must be empty`,
       );
     }
     return;
@@ -318,12 +337,18 @@ function assertKindsSubset(baseline: AiAgentScheduleRow, sweepKinds: AiSweepKind
 }
 
 /**
- * A partner baseline may only target a PARTNER-WIDE, non-deleted `triage`
- * agent under the caller's own partner (spec: sweeps run the triage agent's
- * sweep profile; an org-owned agent has no authority over the partner's other
- * orgs).
+ * A partner baseline may only target a PARTNER-WIDE, non-deleted agent of the
+ * KIND its own schedule kind requires, under the caller's own partner: a
+ * `sweep`/`narrative` schedule needs a `triage` agent (spec: sweeps run the
+ * triage agent's sweep/narrative profile), a `design` schedule needs a
+ * `designer` agent (Fleet Designer W01) — an org-owned agent has no authority
+ * over the partner's other orgs either way.
  */
-async function assertPartnerWideTriageAgent(agentId: string, partnerId: string): Promise<void> {
+async function assertPartnerWideScheduledAgent(
+  agentId: string,
+  partnerId: string,
+  kind: AiAgentScheduleKind,
+): Promise<void> {
   const [agent] = await db
     .select({
       orgId: aiAgents.orgId,
@@ -341,8 +366,12 @@ async function assertPartnerWideTriageAgent(agentId: string, partnerId: string):
       'Schedules require a partner-wide agent belonging to this partner',
     );
   }
-  if (agent.kind !== 'triage') {
-    throw new ScheduleValidationError('agent_kind_not_triage', 'Only a triage agent can be scheduled');
+  const required = kind === 'design' ? 'designer' : 'triage';
+  if (agent.kind !== required) {
+    throw new ScheduleValidationError(
+      required === 'designer' ? 'agent_kind_not_designer' : 'agent_kind_not_triage',
+      required === 'designer' ? 'A design schedule must target a designer agent' : 'Only a triage agent can be scheduled',
+    );
   }
 }
 
@@ -402,7 +431,7 @@ export async function createSchedule(
     assertValidCron(input.cron, input.kind);
     assertPartnerKindsForScheduleKind(input.kind, input.sweepKinds);
     const timezone = canonicalTimezoneOrThrow(input.timezone);
-    await assertPartnerWideTriageAgent(input.agentId, partnerId);
+    await assertPartnerWideScheduledAgent(input.agentId, partnerId, input.kind);
 
     const [row] = await db
       .insert(aiAgentSchedules)
@@ -664,7 +693,7 @@ export async function listSchedules(
         isNull(aiAgents.orgId),
         eq(aiAgents.partnerId, orgPartnerId),
         eq(aiAgents.kind, 'triage'),
-        // Same predicate as assertPartnerWideTriageAgent: a soft-deleted agent
+        // Same predicate as assertPartnerWideScheduledAgent: a soft-deleted agent
         // can no longer be scheduled, so its baselines are not offered either.
         isNull(aiAgents.disabledAt),
       ));

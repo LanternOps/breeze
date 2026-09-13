@@ -160,10 +160,11 @@ export const reportDefinitionMetadataProjection = {
  *
  * TWO independent signals, deliberately OR-ed. `execution_scope_principal_kind
  * = 'system'` is the provenance the scheduled-report worker also keys on;
- * `type = 'ai_org_narrative'` is the report's identity. Either alone would
- * leave a gap: a row whose principal was somehow rewritten to 'user' is still a
- * narrative nobody can regenerate, and a future system-managed report of an
- * ordinary type would still have no acting user to mutate on behalf of.
+ * `type = 'ai_org_narrative'` (or, since Fleet Designer W01 #5651,
+ * `'ai_fleet_design'`) is the report's identity. Either alone would leave a
+ * gap: a row whose principal was somehow rewritten to 'user' is still a
+ * narrative/design nobody can regenerate, and a future system-managed report
+ * of an ordinary type would still have no acting user to mutate on behalf of.
  *
  * Reads and downloads never consult this — a system-managed report exists to be
  * read. Only the four mutation routes do.
@@ -171,7 +172,9 @@ export const reportDefinitionMetadataProjection = {
 export function isSystemManagedReportDefinition(
   row: { type: string | null; executionScopePrincipalKind: string | null },
 ): boolean {
-  return row.executionScopePrincipalKind === 'system' || row.type === 'ai_org_narrative';
+  return row.executionScopePrincipalKind === 'system'
+    || row.type === 'ai_org_narrative'
+    || row.type === 'ai_fleet_design';
 }
 
 export function tenantAuthorizedReportCondition(

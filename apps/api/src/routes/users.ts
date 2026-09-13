@@ -645,7 +645,14 @@ userRoutes.patch('/me', zValidator('json', updateMeSchema), async (c) => {
         orgId: auth.orgId,
         partnerId: auth.partnerId,
       });
-      if (policy.required && !(await userIsMfaProtected(auth.user.id))) {
+      // #5306: an OPEN enrolment grace window counts as "MFA is owed" here, even
+      // though it makes policy.required false everywhere else. The window's whole
+      // point is to keep an unenrolled user working while they are nudged — but
+      // repointing the recovery address is the one thing this gate exists to deny
+      // to a pre-enrollment session, and a 14-day window would otherwise hand a
+      // stolen session exactly that. Enrol first, then change the address.
+      const mfaOwed = policy.required || policy.source.graceWindow === 'active';
+      if (mfaOwed && !(await userIsMfaProtected(auth.user.id))) {
         return c.json({ error: 'mfa_enrollment_required', enrollUrl: '/auth/mfa/setup' }, 403);
       }
 

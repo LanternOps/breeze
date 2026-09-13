@@ -812,6 +812,7 @@ describe('POST /tickets/:id/comments', () => {
     id: 'cccccccc-1111-2222-3333-444455556666',
     authorName: PORTAL_USER.name,
     authorType: 'portal',
+    senderPortalUserId: PORTAL_USER.id,
     content: 'Still happening',
     createdAt: new Date('2026-09-08T00:00:00.000Z'),
   };
@@ -860,6 +861,26 @@ describe('POST /tickets/:id/comments', () => {
     expect(res.status).toBe(201);
     const body = await res.json() as { comment: Record<string, unknown> };
     expect(body.comment).toHaveProperty('authorType', 'portal');
+  });
+
+  /**
+   * author_type alone cannot tell a customer's emailed reply from a
+   * technician's own reply linked through the Outlook add-in — both are stored
+   * as 'email' (services/inboundEmail/emailComments.ts hardcodes it). Only the
+   * resolved portal sender separates them, so the portal's "Customer email"
+   * badge keys on this column. Dropping it from the projection would silently
+   * relabel the IT team's reply as the customer's.
+   */
+  it('includes senderPortalUserId in the immediate response', async () => {
+    const res = await app.request(`/tickets/${TICKET_ID}/comments`, {
+      method: 'POST',
+      headers: portalJsonHeaders,
+      body: JSON.stringify({ content: 'Still happening' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json() as { comment: Record<string, unknown> };
+    expect(body.comment).toHaveProperty('senderPortalUserId', PORTAL_USER.id);
   });
 
   it('still returns id, authorName, content, createdAt (no regression)', async () => {

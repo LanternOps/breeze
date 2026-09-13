@@ -46,6 +46,17 @@ vi.mock('../../services/auditEvents', () => ({
 vi.mock('../../db', () => ({
   runOutsideDbContext: vi.fn(async (callback: () => unknown) => callback()),
   withSystemDbAccessContext: vi.fn(async (callback: () => unknown) => callback()),
+  db: {},
+}));
+
+// SEC-150: the settings response now also carries Checkout-session revocation
+// health so the card can warn about links that could not be killed. This suite
+// covers the CONNECTION snapshot; the health query itself is proved against real
+// Postgres in stripeSessionRevocation.integration.test.ts.
+vi.mock('../../services/stripeSessionRevocation', () => ({
+  getPartnerRevocationHealth: vi.fn(async () => ({
+    blocked: 0, credentialUnavailable: 0, chargedRepair: 0, pending: 0,
+  })),
 }));
 
 // Re-export the real PartnerStripeError so the route's `instanceof` check matches.
@@ -105,6 +116,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: new Date('2026-08-22T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'fresh',
       error: null,
     });
@@ -130,6 +143,7 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'EUR',
       accountCountry: 'DE',
       accountRefreshedAt: '2026-08-22T00:00:00.000Z',
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
     });
     expect(savePartnerStripeKey).toHaveBeenCalledWith({
       partnerId: 'partner-1',
@@ -169,6 +183,10 @@ describe('stripe-connect (API-key) routes', () => {
       cacheState: 'fresh',
       stale: false,
       error: null,
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
+      // SEC-150: revocation health rides on the SAME response as the
+      // connection so the card can warn about links that could not be killed.
+      sessionRevocation: { blocked: 0, credentialUnavailable: 0, chargedRepair: 0, pending: 0 },
     });
     expect(getPartnerStripeAccountSnapshot).toHaveBeenCalledWith('partner-1');
   });
@@ -182,6 +200,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'USD',
       accountCountry: 'US',
       accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'stale',
       error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
     });
@@ -198,6 +218,8 @@ describe('stripe-connect (API-key) routes', () => {
       cacheState: 'stale',
       stale: true,
       error: { code: 'STRIPE_UNAVAILABLE', message: 'Could not reach Stripe right now — try again in a moment.' },
+      reconciliation: { state: 'pending', lastPolledAt: null, error: null },
+      sessionRevocation: { blocked: 0, credentialUnavailable: 0, chargedRepair: 0, pending: 0 },
     });
   });
 
@@ -210,6 +232,8 @@ describe('stripe-connect (API-key) routes', () => {
       defaultCurrency: 'USD',
       accountCountry: 'US',
       accountRefreshedAt: new Date('2026-08-01T00:00:00.000Z'),
+      financialEventLastPolledAt: null,
+      financialEventLastError: null,
       cacheState: 'reconnect_required',
       error: { code: 'INVALID_STRIPE_KEY', message: 'Stripe rejected the stored key — reconnect Stripe.' },
     });
@@ -280,7 +304,9 @@ describe('stripe-connect (API-key) routes', () => {
     const res = await stripeConnectRoutes.request('/', { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ status: 'disconnected' });
-    expect(disconnectPartnerStripe).toHaveBeenCalledWith('partner-1');
+    // SEC-150: the acting user rides along so a stuck revocation intent can be
+    // traced to whoever pulled the integration.
+    expect(disconnectPartnerStripe).toHaveBeenCalledWith('partner-1', '11111111-1111-1111-1111-111111111111');
     expect(writeRouteAudit).toHaveBeenCalled();
   });
 

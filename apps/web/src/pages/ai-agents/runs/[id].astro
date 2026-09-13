@@ -5,6 +5,6 @@ import RunDetailPage from '../../../components/aiAgents/RunDetailPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Run Detail">
+<DashboardLayout titleKey="titles.aiAgentsRunsDetail">
   <RunDetailPage runId={id!} client:load />
 </DashboardLayout>

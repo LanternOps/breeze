@@ -84,7 +84,6 @@ function collectScannedFiles(): string[] {
   for (const name of [
     'recoveryDownloadService.ts',
     'recoveryMediaService.ts',
-    'recoveryBootMediaService.ts',
     'guardedS3Client.ts',
   ]) {
     files.push(join(SERVICES_DIR, name));

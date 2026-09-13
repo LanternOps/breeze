@@ -10,7 +10,7 @@ import {
   networkChangeEvents,
   sites
 } from '../db/schema';
-import { authMiddleware, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { writeRouteAudit } from '../services/auditEvents';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import {
@@ -294,6 +294,12 @@ networkChangeRoutes.post(
   '/:id/link-device',
   requireScope('organization', 'partner', 'system'),
   requirePermission('devices', 'write'),
+  // MFA is required here but deliberately not on acknowledge/bulk-acknowledge:
+  // this route is the only one that takes a caller-supplied device id and
+  // rewrites the associated alert's device attribution, matching the
+  // neighbouring discovery asset-link route. Acknowledgement only flips a flag
+  // on an event the caller can already see and creates no new relationship.
+  requireMfa(),
   zValidator('json', linkDeviceSchema),
   async (c) => {
     const auth = c.get('auth');
@@ -311,13 +317,36 @@ networkChangeRoutes.post(
     if (orgCond) deviceConditions.push(orgCond);
 
     const [device] = await db
-      .select({ id: devices.id, orgId: devices.orgId })
+      .select({ id: devices.id, orgId: devices.orgId, siteId: devices.siteId })
       .from(devices)
       .where(and(...deviceConditions))
       .limit(1);
 
     if (!device || device.orgId !== event.orgId) {
       return c.json({ error: 'Device not found in the same organization' }, 404);
+    }
+    // Site is an app-layer authorization axis — Postgres RLS does not defend
+    // it — so it only constrains callers that actually have a site ceiling.
+    // Unrestricted organization, partner and system callers already see every
+    // site in the org and are deliberately NOT gated here: `devices.site_id`
+    // and `network_change_events.site_id` are both NOT NULL, so a same-site
+    // requirement for them would add no authorization and would permanently
+    // block a legitimate roaming asset (scanned on one site's subnet, recorded
+    // against another site) from ever being linked by anyone.
+    if (perms?.allowedSiteIds) {
+      // Keep an inaccessible target opaque — the same 404 a wrong-org device
+      // gets — so this mutation is not a hidden-device existence oracle. The
+      // `typeof` arm is a fail-closed belt: the column is NOT NULL today, and
+      // a future nullable site must deny rather than fall through.
+      if (typeof device.siteId !== 'string' || !canAccessSite(perms, device.siteId)) {
+        return c.json({ error: 'Device not found in the same organization' }, 404);
+      }
+      // Both records are inside the ceiling at this point; a restricted caller
+      // still may not stitch two of their sites together, which is the
+      // attribution rewrite this repair exists to stop.
+      if (device.siteId !== event.siteId) {
+        return c.json({ error: 'Device does not belong to the same site as this network change event' }, 403);
+      }
     }
 
     const [updated] = await db

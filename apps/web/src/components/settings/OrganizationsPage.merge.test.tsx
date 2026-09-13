@@ -15,8 +15,16 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 const storeFetchOrganizations = vi.fn().mockResolvedValue(undefined);
+// Workspace scope the page reads through the store selector; the scope tests
+// set these, everything else leaves the workspace unset (fleet view).
+const mockStoreCurrentOrgId: string | null = null;
+const mockStoreOrganizations: Array<{ id: string; name: string }> = [];
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  useOrgStore: Object.assign(
+    (selector?: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown) =>
+      selector ? selector({ currentOrgId: mockStoreCurrentOrgId, organizations: mockStoreOrganizations }) : undefined,
+    { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  ),
 }));
 
 // Mutable per-test knob for the merge launcher's partner-scope gating.
@@ -98,6 +106,11 @@ async function selectLoser() {
   await flush();
 }
 
+/** Merge lives in the detail header's More menu; open it so its items render. */
+function openMoreMenu() {
+  fireEvent.click(screen.getByTestId('org-more-actions'));
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   fetchMock.mockReset();
@@ -123,6 +136,8 @@ describe('OrganizationsPage — merge launcher partner gating', () => {
     await selectLoser();
 
     expect(screen.getByRole('heading', { level: 2, name: 'Acme Legacy' })).toBeInTheDocument();
+    openMoreMenu();
+    expect(screen.getByTestId('org-archive-open')).toBeInTheDocument();
     expect(screen.queryByTestId('org-merge-open')).not.toBeInTheDocument();
   });
 
@@ -133,6 +148,7 @@ describe('OrganizationsPage — merge launcher partner gating', () => {
     await flush();
 
     await selectLoser();
+    openMoreMenu();
 
     expect(screen.getByTestId('org-merge-open')).toBeInTheDocument();
   });
@@ -145,6 +161,7 @@ describe('OrganizationsPage — merge completion stays on the summary until the 
     await flush();
 
     await selectLoser();
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('org-merge-open'));
 
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });

@@ -238,6 +238,22 @@ describe('service principal routes', () => {
   });
 
   describe('POST /service-principals/:id/rotate', () => {
+    it('keeps the sibling site-restriction gate on key rotation', async () => {
+      permissionMockState.permissions.allowedSiteIds = ['site-a'];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: [] }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/rotate`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(rotateServicePrincipalKey).not.toHaveBeenCalled();
+    });
+
     it('404s when the principal does not exist (org-access gate query returns nothing)', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) })
@@ -313,6 +329,76 @@ describe('service principal routes', () => {
   });
 
   describe('POST /service-principals/:id/disable', () => {
+    it.each([
+      [['site-a'], 'one selected site'],
+      [[], 'no selected sites'],
+    ] as const)(
+      'rejects a site-restricted caller with %s (%s) before revoking the principal keys',
+      async (allowedSiteIds, _label) => {
+        permissionMockState.permissions = {
+          permissions: [{ resource: '*', action: '*' }],
+          partnerId: null,
+          orgId: ORG_ID,
+          roleId: 'role-1',
+          scope: 'organization',
+          allowedSiteIds,
+        } as any;
+        vi.mocked(db.select).mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                id: PRINCIPAL_ID,
+                orgId: ORG_ID,
+                scopes: ['devices:execute'],
+              }]),
+            }),
+          }),
+        } as any);
+
+        const res = await app.request(`/service-principals/${PRINCIPAL_ID}/disable`, { method: 'POST' });
+
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({
+          error: 'Site-restricted users cannot manage service principals, which are organization-wide',
+        });
+        expect(disableServicePrincipal).not.toHaveBeenCalled();
+      },
+    );
+
+    it('allows an unrestricted admin to disable a principal whose scopes exceed their own', async () => {
+      permissionMockState.permissions = {
+        permissions: [{ resource: 'organizations', action: 'write' }],
+        partnerId: null,
+        orgId: ORG_ID,
+        roleId: 'role-1',
+        scope: 'organization',
+        allowedSiteIds: undefined,
+      } as any;
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              id: PRINCIPAL_ID,
+              orgId: ORG_ID,
+              scopes: ['devices:execute'],
+            }]),
+          }),
+        }),
+      } as any);
+      vi.mocked(disableServicePrincipal).mockResolvedValue({
+        id: PRINCIPAL_ID,
+        orgId: ORG_ID,
+        name: 'CI bot',
+        status: 'disabled',
+        scopes: ['devices:execute'],
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/disable`, { method: 'POST' });
+
+      expect(res.status).toBe(200);
+      expect(disableServicePrincipal).toHaveBeenCalledWith(PRINCIPAL_ID, 'user-123');
+    });
+
     it('disables the principal (cascade revoke happens in the service layer)', async () => {
       vi.mocked(db.select).mockReturnValue({
         from: vi.fn().mockReturnValue({
@@ -352,6 +438,26 @@ describe('service principal routes', () => {
   });
 
   describe('POST /service-principals/:id/migrate-key', () => {
+    it('keeps the sibling site-restriction gate on key migration', async () => {
+      permissionMockState.permissions.allowedSiteIds = ['site-a'];
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: PRINCIPAL_ID, orgId: ORG_ID, scopes: [] }]),
+          }),
+        }),
+      } as any);
+
+      const res = await app.request(`/service-principals/${PRINCIPAL_ID}/migrate-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId: KEY_ID }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(migrateHumanKeyToServicePrincipal).not.toHaveBeenCalled();
+    });
+
     // Guard-bite (c): migrateHumanKeyToServicePrincipal requires org-admin —
     // a non-admin actor gets 403. This is the only route that flips
     // api_keys.principal_type; if requirePermission were ever removed from

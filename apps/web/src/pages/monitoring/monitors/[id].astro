@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import MonitorEditor from '../../../components/monitoring/MonitorEditor';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.monitoringMonitorDetail">
+  <MonitorEditor monitorId={id} client:load />
+</DashboardLayout>

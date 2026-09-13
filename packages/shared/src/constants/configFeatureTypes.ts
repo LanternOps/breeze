@@ -24,6 +24,9 @@ export const CONFIG_FEATURE_TYPES = [
   'compliance', 'automation', 'event_log', 'software_policy', 'sensitive_data',
   'peripheral_control', 'warranty', 'helper', 'remote_access', 'pam', 'onedrive_helper',
   'vulnerability', 'device_lifecycle',
+  // #5289 — monitor definitions attached to a policy. Deliberately the plural:
+  // 'monitoring' above is the service/process watch feature.
+  'monitors',
 ] as const;
 
 export type ConfigFeatureType = typeof CONFIG_FEATURE_TYPES[number];

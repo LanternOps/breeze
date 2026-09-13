@@ -53,10 +53,90 @@
  * at module load. This is NOT secrecy — it only keeps byte-for-byte token
  * matches out of build artifacts.
  */
+import type { ScriptLanguage } from '../types';
+
 const OBFUSCATION_KEY = 0x5a;
 
 function decodeObfuscated(bytes: readonly number[]): string {
   return bytes.map((byte) => String.fromCharCode(byte ^ OBFUSCATION_KEY)).join('');
+}
+
+/**
+ * Web/API mirror of the agent's BASIC-level patterns
+ * (`agent/internal/executor/security.go`, `basicPatterns`).
+ *
+ * BASIC patterns are UNCONDITIONAL on the device: unlike STRICT they can never
+ * be acknowledged, so this mirror carries no `explanation` — there is no
+ * acknowledgement UI for it. Its only consumer is the proposal scanner, which
+ * rejects a proposal outright on a hit (spec §4.4) rather than sending it to a
+ * reviewer or a human.
+ *
+ * The same fail-safe argument as the STRICT mirror holds in both directions: a
+ * BASIC pattern this file misses is still blocked by the agent at execution
+ * (the proposal simply fails on the device instead of at authoring time), and a
+ * pattern only this file matches rejects a harmless proposal early. Neither
+ * direction can loosen the agent.
+ */
+export type BasicScriptPattern = {
+  /** The regex source, mirroring the Go pattern verbatim, matched with `(?i)`. */
+  readonly source: string;
+  /** The agent's description string, byte-for-byte. */
+  readonly description: string;
+};
+
+export const BASIC_SCRIPT_PATTERNS: readonly BasicScriptPattern[] = [
+  // Unix dangerous patterns
+  { source: String.raw`rm\s+-[rR]f?\s+/\s*$`, description: 'recursive delete on root directory' },
+  { source: String.raw`rm\s+-[rR]f?\s+/\*`, description: 'recursive delete on root wildcard' },
+  { source: String.raw`rm\s+-[rR]f?\s+/[a-z]+\s*$`, description: 'recursive delete on system directory' },
+  { source: String.raw`mkfs\s+`, description: 'filesystem format command' },
+  { source: String.raw`dd\s+.*of=/dev/[hs]d`, description: 'direct disk write to block device' },
+  { source: String.raw`>\s*/dev/[hs]d`, description: 'redirect to block device' },
+  { source: String.raw`chmod\s+-[rR]\s+[0-7]*777\s+/`, description: 'dangerous recursive chmod on root' },
+  { source: String.raw`chown\s+-[rR]\s+.*\s+/\s*$`, description: 'dangerous recursive chown on root' },
+  { source: String.raw`:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`, description: 'fork bomb pattern' },
+  { source: String.raw`/dev/null\s*>\s*/etc/passwd`, description: 'attempt to destroy passwd file' },
+  { source: String.raw`echo\s+.*>\s*/etc/shadow`, description: 'attempt to modify shadow file' },
+
+  // Windows dangerous patterns
+  { source: String.raw`format\s+[a-zA-Z]:`, description: 'disk format command' },
+  { source: String.raw`del\s+/[fFsS]\s+[a-zA-Z]:\\Windows`, description: 'Windows system file deletion' },
+  { source: String.raw`rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:\\Windows`, description: 'Windows directory deletion' },
+  { source: String.raw`rd\s+/[sS]\s+/[qQ]\s+[a-zA-Z]:\\Program`, description: 'Program Files deletion' },
+  { source: String.raw`attrib\s+.*[a-zA-Z]:\\Windows`, description: 'modify Windows file attributes' },
+
+  // PowerShell dangerous patterns
+  { source: String.raw`Remove-Item\s+-Recurse\s+-Force\s+[A-Z]:\\Windows`, description: 'PowerShell Windows deletion' },
+  { source: String.raw`Remove-Item\s+-Recurse\s+-Force\s+/`, description: 'PowerShell root deletion' },
+  { source: String.raw`Format-Volume`, description: 'PowerShell volume format' },
+  { source: String.raw`Clear-Disk`, description: 'PowerShell disk clear' },
+  { source: String.raw`Initialize-Disk`, description: 'PowerShell disk initialize' },
+] as const;
+
+export const BASIC_SCRIPT_PATTERN_DESCRIPTIONS: readonly string[] = [
+  ...new Set(BASIC_SCRIPT_PATTERNS.map((pattern) => pattern.description)),
+];
+
+const COMPILED_BASIC_PATTERNS: readonly { regex: RegExp; description: string }[] =
+  BASIC_SCRIPT_PATTERNS.map((pattern) => ({
+    // `i` mirrors the agent's `(?i)` prefix. No `s` flag, same reason as STRICT.
+    regex: new RegExp(pattern.source, 'i'),
+    description: pattern.description,
+  }));
+
+/** The BASIC-level descriptions this content matches, deduped, in the agent's order. */
+export function detectBasicScriptPatterns(content: string): string[] {
+  if (!content) return [];
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  for (const { regex, description } of COMPILED_BASIC_PATTERNS) {
+    if (seen.has(description)) continue;
+    if (regex.test(content)) {
+      seen.add(description);
+      matched.push(description);
+    }
+  }
+  return matched;
 }
 
 export type StrictScriptPattern = {
@@ -314,4 +394,147 @@ export function detectStrictScriptPatterns(content: string): string[] {
     }
   }
   return matched;
+}
+
+// ---------------------------------------------------------------------------
+// Proposal scanner: touch classifier + single scan entry point (spec §4.3).
+// ---------------------------------------------------------------------------
+
+/**
+ * Version tag stamped on every proposal and carried in the intent evidence.
+ * BUMP THIS whenever a pattern or a classifier rule changes: an unattended
+ * decision (W04) records the version it was made under, and a proposal scanned
+ * by an older scanner must not be treated as if it had been classified by this
+ * one.
+ */
+export const SCANNER_VERSION = '2026-09-11.1';
+
+/** Closed vocabulary of resource classes a script may touch (spec §4.3). */
+export const TOUCH_CLASSES = [
+  'registry', 'services', 'processes', 'files_system', 'files_user', 'temp_files',
+  'network_egress', 'firewall', 'credentials', 'users_groups', 'packages', 'scheduled_tasks',
+  'disk', 'boot', 'security_tooling', 'dns_cache', 'printing', 'browser', 'shell_eval',
+] as const;
+export type TouchClass = (typeof TOUCH_CLASSES)[number];
+
+/**
+ * Classes the unattended lane may NEVER run, whatever a policy or a reviewer
+ * says (spec §4.6 invariant 6). Exported here, beside the classifier that
+ * produces the classes, so the enforcement set cannot drift from the vocabulary.
+ */
+export const LANE_HARD_DENIED_CLASSES: ReadonlySet<TouchClass> = new Set<TouchClass>([
+  'credentials', 'security_tooling', 'boot', 'disk', 'shell_eval', 'users_groups', 'firewall',
+]);
+
+type TouchRule = { readonly regex: RegExp; readonly touchClass: TouchClass };
+
+/**
+ * Conservative and ADDITIVE: an unknown construct matches nothing. That is the
+ * safe direction, because the lane requires a NON-EMPTY class set within an
+ * allowlist (spec §4.6 invariant 6) — content the classifier cannot place goes
+ * to a human instead of running unattended.
+ */
+const TOUCH_RULES: readonly TouchRule[] = [
+  { regex: /\b(?:reg(?:\.exe)?\s+(?:add|delete|import)|New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|Set-Item\s+-Path\s+HK|HKLM[:\\]|HKCU[:\\]|HKEY_[A-Z_]+)/i, touchClass: 'registry' },
+  { regex: /\b(?:(?:Start|Stop|Restart|Set|New|Remove)-Service|sc(?:\.exe)?\s+(?:start|stop|config|create|delete)|net\s+(?:start|stop)|systemctl\s+(?:start|stop|restart|enable|disable|mask)|service\s+\S+\s+(?:start|stop|restart))\b/i, touchClass: 'services' },
+  { regex: /\b(?:Stop-Process|Start-Process|taskkill|\bkill\s+-9\b|pkill|Get-Process\s+.*\|\s*Stop-Process)\b/i, touchClass: 'processes' },
+  // No leading `\b`: `/etc/` and `%SystemRoot%` start with non-word characters.
+  { regex: /(?:\bC:\\Windows|\bC:\\Program Files|%SystemRoot%|\/etc\/|\/usr\/|\/var\/(?!tmp)|\/opt\/|\/bin\/|\/sbin\/)/i, touchClass: 'files_system' },
+  { regex: /(?:C:\\Users\\|%USERPROFILE%|\$env:USERPROFILE|\/home\/|\/Users\/|~\/)/i, touchClass: 'files_user' },
+  { regex: /(?:%TEMP%|%TMP%|\$env:TEMP|C:\\Windows\\Temp|\/tmp\/|\/var\/tmp\/|Get-ChildItem\s+.*Temp)/i, touchClass: 'temp_files' },
+  { regex: /\b(?:Invoke-WebRequest|Invoke-RestMethod|curl|wget|New-Object\s+Net\.WebClient|System\.Net\.Http|nc\s+-|Test-NetConnection)\b/i, touchClass: 'network_egress' },
+  { regex: /\b(?:netsh\s+advfirewall|New-NetFirewallRule|Set-NetFirewallRule|Remove-NetFirewallRule|iptables|nft\s|ufw\s|firewall-cmd)\b/i, touchClass: 'firewall' },
+  // No leading `\b`: `/etc/shadow` starts with a non-word character.
+  { regex: /(?:\bConvertTo-SecureString\b|\bGet-Credential\b|\bcmdkey\b|\/etc\/shadow\b|\/etc\/passwd\b|\bExport-PfxCertificate\b|\bcertutil\s+-exportPFX\b|\bvaultcmd\b|\bGet-StoredCredential\b)/i, touchClass: 'credentials' },
+  { regex: /\b(?:New-LocalUser|Set-LocalUser|Remove-LocalUser|Add-LocalGroupMember|net\s+(?:user|localgroup)|useradd|usermod|userdel|groupadd|gpasswd|Add-ADGroupMember)\b/i, touchClass: 'users_groups' },
+  { regex: /\b(?:winget|choco|msiexec|Install-Package|Uninstall-Package|Install-Module|apt-get|apt\s+install|yum\s|dnf\s|zypper|brew\s+install|Start-Process\s+.*\.msi)\b/i, touchClass: 'packages' },
+  { regex: /\b(?:schtasks|New-ScheduledTask|Register-ScheduledTask|Unregister-ScheduledTask|Set-ScheduledTask|crontab|systemd-run\s+--on)\b/i, touchClass: 'scheduled_tasks' },
+  { regex: /\b(?:diskpart|Format-Volume|Clear-Disk|Initialize-Disk|New-Partition|Remove-Partition|Set-Partition|mkfs|fdisk|parted|chkdsk\s+\/[fFrR])\b/i, touchClass: 'disk' },
+  { regex: /\b(?:bcdedit|bootrec|Set-BootOrder|grub-install|update-grub|efibootmgr|Restart-Computer|shutdown\s+\/r)\b/i, touchClass: 'boot' },
+  { regex: /\b(?:Set-MpPreference|Add-MpPreference|Remove-MpPreference|Set-MpComputerStatus|Stop-Service\s+.*(?:WinDefend|Sense|SentinelAgent)|mpcmdrun|Uninstall-WindowsFeature\s+Windows-Defender|Disable-WindowsOptionalFeature\s+.*Defender)\b/i, touchClass: 'security_tooling' },
+  { regex: /\b(?:ipconfig\s+\/flushdns|Clear-DnsClientCache|resolvectl\s+flush-caches|dscacheutil\s+-flushcache|systemd-resolve\s+--flush-caches)\b/i, touchClass: 'dns_cache' },
+  { regex: /\b(?:Get-Printer|Add-Printer|Remove-Printer|Restart-Service\s+.*Spooler|net\s+stop\s+spooler|lpadmin|cupsenable|cupsdisable)\b/i, touchClass: 'printing' },
+  { regex: /\b(?:chrome\.exe|msedge\.exe|firefox|Google\\Chrome\\User Data|Microsoft\\Edge\\User Data|Mozilla\\Firefox\\Profiles|Library\/Application Support\/Google\/Chrome)\b/i, touchClass: 'browser' },
+  // No leading `\b` here: `-EncodedCommand` and `|bash` start with a
+  // non-word character, so a boundary assertion before them never matches.
+  { regex: /(?:\bInvoke-Expression\b|\biex\b|-EncodedCommand\b|\benc\b\s+[A-Za-z0-9+/=]{16,}|\bFromBase64String\b|\beval\s*\(|\bbase64\s+-d\b|\|\s*(?:bash|sh|powershell)\b|\bDownloadString\b)/i, touchClass: 'shell_eval' },
+];
+
+/** Service names in the shapes the service rules above recognise. */
+const SERVICE_NAME_RULES: readonly RegExp[] = [
+  /(?:Start|Stop|Restart|Set|Remove)-Service\s+(?:-Name\s+)?["']?([A-Za-z0-9._$-]+)["']?/gi,
+  /\bnet\s+(?:start|stop)\s+["']?([A-Za-z0-9._$-]+)["']?/gi,
+  /\bsc(?:\.exe)?\s+(?:start|stop|config|create|delete)\s+["']?([A-Za-z0-9._$-]+)["']?/gi,
+  /\bsystemctl\s+(?:start|stop|restart|enable|disable|mask)\s+["']?([A-Za-z0-9._@$-]+)["']?/gi,
+];
+
+/** Absolute Windows and POSIX paths, quoted or bare. */
+const PATH_RULES: readonly RegExp[] = [
+  /(?:^|["'\s=])([A-Za-z]:\\[^"'\s|;,)]+)/g,
+  /(?:^|["'\s=])(\/(?:etc|usr|var|opt|bin|sbin|home|Users|tmp|Library)\/[^"'\s|;,)]*)/g,
+];
+
+/** Registry keys, hive-rooted, in either `HKLM\…` or `HKLM:\…` notation. */
+const REGISTRY_KEY_RULES: readonly RegExp[] = [
+  /\b(HK(?:LM|CU|CR|U|CC)|HKEY_[A-Z_]+):?\\([^"'\s|;,)]+)/g,
+];
+
+function collect(content: string, rules: readonly RegExp[], join: (m: RegExpExecArray) => string): string[] {
+  const found = new Set<string>();
+  for (const rule of rules) {
+    // Fresh RegExp per call: the module-level literals carry /g and therefore
+    // `lastIndex` state, which would make a second call skip early matches.
+    const regex = new RegExp(rule.source, rule.flags);
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(content)) !== null) {
+      if (match[0].length === 0) { regex.lastIndex += 1; continue; }
+      const value = join(match).trim();
+      if (value) found.add(value);
+    }
+  }
+  return [...found].sort();
+}
+
+export interface ScriptScanResult {
+  scannerVersion: string;
+  basicHits: string[];
+  strictHits: string[];
+  touchClasses: TouchClass[];
+  touchedNames: { services: string[]; paths: string[]; registryKeys: string[] };
+}
+
+/**
+ * The single scan entry point for a proposal: BASIC hits, STRICT hits, touch
+ * classes, and the named resources the classes refer to (used by the lane's
+ * protected-resource check in W04 — `aiGuardrails` only ever inspects named
+ * input fields, never script content, so the names have to come from here).
+ *
+ * `language` is accepted and stamped through the caller's row rather than used
+ * to narrow the rule set: the agent compiles ONE pattern list for every
+ * language, and a classifier that ignored, say, Windows rules for a `bash`
+ * proposal would miss a bash script that shells out to `reg.exe` under Wine or
+ * writes a Windows path over a share.
+ */
+export function scanScriptContent(content: string, language: ScriptLanguage): ScriptScanResult {
+  void language;
+  // CRLF is normalised because the agent's own patterns are anchored with `$`
+  // under `(?i)` and no `(?s)`: a trailing \r would defeat an end-anchored
+  // match here while the device (which receives \n-normalised content through
+  // the dispatch payload) would still match it.
+  const normalized = (content ?? '').replace(/\r\n/g, '\n');
+  const classes = new Set<TouchClass>();
+  for (const { regex, touchClass } of TOUCH_RULES) {
+    if (regex.test(normalized)) classes.add(touchClass);
+  }
+  return {
+    scannerVersion: SCANNER_VERSION,
+    basicHits: detectBasicScriptPatterns(normalized),
+    strictHits: detectStrictScriptPatterns(normalized),
+    touchClasses: [...classes].sort(),
+    touchedNames: {
+      services: collect(normalized, SERVICE_NAME_RULES, (m) => m[1] ?? ''),
+      paths: collect(normalized, PATH_RULES, (m) => m[1] ?? ''),
+      registryKeys: collect(normalized, REGISTRY_KEY_RULES, (m) => `${m[1]}\\${m[2]}`),
+    },
+  };
 }

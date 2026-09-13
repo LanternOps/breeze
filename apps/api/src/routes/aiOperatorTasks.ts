@@ -67,6 +67,7 @@ import {
   encodeOperatorTasksCursor,
   operatorTasksCursorFromRow,
 } from '../services/aiOperator/operatorTasksListCursor';
+import { runSiteScopeCondition } from '../services/aiAgentRunSiteScope';
 
 export const aiOperatorTasksRoutes = new Hono();
 aiOperatorTasksRoutes.use('*', authMiddleware);
@@ -461,7 +462,16 @@ aiOperatorTasksRoutes.get('/tasks/:id', scopes, requireAiRead, async (c) => {
         resolvedModel: aiAgentRuns.resolvedModel,
       })
       .from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.taskId, task.id), eq(aiAgentRuns.orgId, task.orgId)))
+      // A device-less task IS visible to a site-restricted caller (see
+      // `siteVisibilityCondition`), but its linked runs carry their OWN
+      // device target, which the task's null site says nothing about. Reuse
+      // the run-scope predicate from `routes/aiAgents.ts` so this projection
+      // can never disclose a run against a device outside the caller's sites.
+      .where(and(
+        eq(aiAgentRuns.taskId, task.id),
+        eq(aiAgentRuns.orgId, task.orgId),
+        runSiteScopeCondition(auth),
+      ))
       .orderBy(desc(aiAgentRuns.queuedAt))
       .limit(500),
   ]);

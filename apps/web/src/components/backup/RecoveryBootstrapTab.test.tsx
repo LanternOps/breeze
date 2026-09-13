@@ -16,6 +16,7 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
     status,
     statusText: ok ? 'OK' : 'ERROR',
     json: vi.fn().mockResolvedValue(payload),
+    blob: vi.fn().mockResolvedValue(new Blob()),
   }) as unknown as Response;
 
 describe('RecoveryBootstrapTab', () => {
@@ -79,30 +80,28 @@ describe('RecoveryBootstrapTab', () => {
       }
 
       if (url === '/backup/bmr/boot-media?limit=100' && method === 'GET') {
+        // W04b: GET /bmr/boot-media is now the static, release-built Linux
+        // recovery ISO catalog (agent/recovery-media/) — no longer a
+        // per-token artifact list.
         return makeJsonResponse({
           data: [
             {
-              id: 'boot-media-verified',
-              tokenId: 'token-1',
-              snapshotId: 'snapshot-1',
-              bundleArtifactId: 'media-verified',
               platform: 'linux',
-              architecture: 'amd64',
-              mediaType: 'iso',
-              status: 'ready_signed',
-              checksumSha256: 'boot-checksum',
-              signatureFormat: 'minisign',
-              signingKeyId: 'current',
-              signedAt: '2026-03-31T10:09:00Z',
-              metadata: {
-                bootTemplateId: 'linux-iso-template',
-                bootTemplateVersion: '2026.03.31',
-                bootTemplateSourceRef: '/opt/recovery/template',
-                bootTemplateSha256: 'template-checksum',
-                bootTemplateManifestVersion: '1',
-              },
-              downloadPath: '/backup/bmr/boot-media/boot-media-verified/download',
-              signatureDownloadPath: '/backup/bmr/boot-media/boot-media-verified/signature',
+              arch: 'amd64',
+              version: '0.112.0',
+              filename: 'breeze-recovery-linux-amd64.iso',
+              downloadUrl: '/api/v1/agents/download/recovery-iso/linux/amd64',
+              sha256: 'a'.repeat(64),
+              size: 419430400,
+            },
+            {
+              platform: 'linux',
+              arch: 'arm64',
+              version: '0.112.0',
+              filename: 'breeze-recovery-linux-arm64.iso',
+              downloadUrl: '/api/v1/agents/download/recovery-iso/linux/arm64',
+              sha256: null,
+              size: null,
             },
           ],
         });
@@ -246,24 +245,6 @@ describe('RecoveryBootstrapTab', () => {
         }, true, 202);
       }
 
-      if (url === '/backup/bmr/boot-media' && method === 'POST') {
-        return makeJsonResponse({
-          id: 'boot-media-1',
-          tokenId: 'token-1',
-          snapshotId: 'snapshot-1',
-          bundleArtifactId: 'media-1',
-          platform: 'linux',
-          architecture: 'amd64',
-          mediaType: 'iso',
-          status: 'pending',
-          createdAt: '2026-03-31T10:07:00Z',
-          completedAt: null,
-          metadata: {},
-          downloadPath: null,
-          signatureDownloadPath: null,
-        }, true, 202);
-      }
-
       return makeJsonResponse({}, false, 404);
     });
   });
@@ -313,7 +294,10 @@ describe('RecoveryBootstrapTab', () => {
     expect(screen.getByText('snapshots/provider-snap-1')).toBeTruthy();
     expect(screen.getByText('Bootable recovery media')).toBeTruthy();
     expect(screen.getByText(/helperBinaryDigestVerified:/)).toBeTruthy();
-    expect(screen.getByText(/bootTemplateVersion:/)).toBeTruthy();
+    // W04b: the boot-media catalog is the static release ISO list — its
+    // rows carry a sha256 (rendered directly), not the old per-artifact
+    // bootTemplate* trust metadata.
+    expect(screen.getByText('breeze-recovery-linux-amd64.iso')).toBeTruthy();
   });
 
   it('filters the browser-local token catalog and revokes a token', async () => {
@@ -364,7 +348,7 @@ describe('RecoveryBootstrapTab', () => {
     });
   });
 
-  it('refreshes recovery artifact catalogs after bundle and ISO creation', async () => {
+  it('refreshes the recovery bundle catalog after bundle creation', async () => {
     render(<RecoveryBootstrapTab />);
 
     await screen.findByText('Manual recovery environment');
@@ -379,14 +363,32 @@ describe('RecoveryBootstrapTab', () => {
       );
       expect(mediaRefreshCalls.length).toBeGreaterThan(1);
     });
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: /Create ISO/i }));
+  // W04b: booting recovery media is no longer built per-token — it's the
+  // static, release-built breeze-recovery-linux-{amd64,arm64}.iso catalog,
+  // shown with a Download button and no "create" action.
+  it('renders the release-built linux recovery media catalog with a download action', async () => {
+    render(<RecoveryBootstrapTab />);
+
+    await screen.findByText('Manual recovery environment');
+    fireEvent.click(screen.getByRole('button', { name: /Create token/i }));
+    await screen.findByText(/Recovery token created/i);
+
+    expect(await screen.findByText('breeze-recovery-linux-amd64.iso')).toBeInTheDocument();
+    expect(screen.getByText('breeze-recovery-linux-arm64.iso')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Create ISO/i })).toBeNull();
+
+    const downloadButtons = screen.getAllByRole('button', { name: /Download ISO/i });
+    expect(downloadButtons).toHaveLength(2);
+
+    fireEvent.click(downloadButtons[0]!);
 
     await waitFor(() => {
-      const bootMediaRefreshCalls = fetchMock.mock.calls.filter(
-        ([url, init]) => String(url) === '/backup/bmr/boot-media?limit=100' && ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET'
+      const downloadCalls = fetchMock.mock.calls.filter(
+        ([url]) => String(url) === '/api/v1/agents/download/recovery-iso/linux/amd64'
       );
-      expect(bootMediaRefreshCalls.length).toBeGreaterThan(1);
+      expect(downloadCalls.length).toBeGreaterThan(0);
     });
   });
 });

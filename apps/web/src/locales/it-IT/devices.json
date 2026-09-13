@@ -278,7 +278,8 @@
     "loadMore": "Carica altro",
     "couldnTLoadMore": "Impossibile caricare altri elementi.",
     "viewAllActivity2": "Visualizza tutta l'attività",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Visualizza proposta"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossibile recuperare la cronologia degli avvisi",
@@ -930,6 +931,23 @@
     "role": "Ruolo",
     "changeRole": "Cambia ruolo",
     "source": "Origine",
+    "function": "Funzione",
+    "changeFunction": "Cambia funzione",
+    "functionNone": "Non valutata",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manuale"
+    },
+    "functionConfidence": "{{pct}}% di confidenza",
+    "functionEvidence": "Perché il progettista lo pensa",
+    "functionEvidenceUnavailable": "Impossibile caricare i dettagli della valutazione.",
+    "functionCustom": "Personalizzato…",
+    "functionCustomSlug": "chiave personalizzata (a-z, 0-9, -)",
+    "functionCustomLabel": "Etichetta",
+    "functionClear": "Cancella",
+    "functionSaved": "Funzione del dispositivo salvata",
+    "functionCleared": "Funzione del dispositivo cancellata",
+    "functionSaveFailed": "Impossibile salvare la funzione del dispositivo",
     "operatingSystem": "Sistema operativo",
     "osType": "Tipo di sistema operativo",
     "osVersion": "Versione OS",
@@ -1880,7 +1898,7 @@
     "refresh": "Aggiorna",
     "selectedOrganization": "l'organizzazione selezionata",
     "subtitle": "Gestisci e monitora la tua flotta.",
-    "title": "Dispositivi",
+    "title": "Dispositivi e asset",
     "toasts": {
       "actionFailed": "{{action}} non riuscito su {{hostname}}",
       "advancedFilterFailed": "Impossibile caricare il filtro avanzato: nessun dispositivo visualizzato. Modifica o cancella il filtro per riprovare.",

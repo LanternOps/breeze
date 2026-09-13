@@ -33,6 +33,7 @@ vi.mock('../db/schema', () => ({
     siteId: 'device.siteId',
     isEphemeral: 'device.isEphemeral',
     peripheralPolicyProtocolVersion: 'device.peripheralPolicyProtocolVersion',
+    status: 'device.status',
   },
   organizations: { id: 'organization.id', partnerId: 'organization.partnerId', type: 'organization.type' },
   peripheralEvents: {},
@@ -48,6 +49,8 @@ vi.mock('../services/peripheralPolicyState', () => ({
   reconcilePeripheralPolicyDevice: vi.fn(),
 }));
 
+import { and, eq, ne } from 'drizzle-orm';
+import { devices } from '../db/schema';
 import {
   processPeripheralPolicyReconciliationSweep,
   resolvePeripheralPolicyDeviceIds,
@@ -145,6 +148,25 @@ describe('schedulePeripheralPolicyDevice', () => {
       ['device-2', 'periodic_drift'],
       ['device-3', 'periodic_drift'],
     ]);
+  });
+
+  it('never sweeps decommissioned devices in the default fleet page query', async () => {
+    const where = vi.fn().mockReturnValue({
+      orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    selectMock.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+
+    await expect(processPeripheralPolicyReconciliationSweep({
+      pageSize: 50,
+      reconcile: vi.fn(),
+    })).resolves.toEqual({ scanned: 0, queued: 0, coalesced: 0, incompatible: 0 });
+
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(where.mock.calls[0]?.[0]).toEqual(and(
+      eq(devices.isEphemeral, false),
+      eq(devices.peripheralPolicyProtocolVersion, 2),
+      ne(devices.status, 'decommissioned'),
+    ));
   });
 
   it('installs one jittered recurring sweep instead of synchronized fleet work', async () => {

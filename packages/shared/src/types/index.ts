@@ -7,6 +7,7 @@ export * from './deviceOptions';
 export * from './agentHealth';
 export * from './scriptAdmission';
 export * from './softwareInventoryObservation';
+export * from './scriptProposals';
 
 // ============================================
 // Multi-Tenancy Types
@@ -809,6 +810,9 @@ export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
 export * from './orgNarrativeReport';
+export * from './fleetDesign';
+export * from './fleetDesignApply';
+export * from './deviceFunction';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 
@@ -843,6 +847,7 @@ export * from './executiveSummaryReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalService';
 
 // ============================================
 // Public login-context wire contract (#2183)

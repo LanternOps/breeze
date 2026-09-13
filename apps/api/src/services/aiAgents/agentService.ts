@@ -1,5 +1,12 @@
 import { and, desc, eq, isNull, or } from 'drizzle-orm';
-import type { AiAgentActAssets, AiAgentRecipients, CreateAiAgentInput, UpdateAiAgentInput } from '@breeze/shared';
+import {
+  allowedModesForKind,
+  type AiAgentActAssets,
+  type AiAgentKind,
+  type AiAgentRecipients,
+  type CreateAiAgentInput,
+  type UpdateAiAgentInput,
+} from '@breeze/shared';
 import { db } from '../../db';
 import { aiAgents, type AiAgentRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
@@ -25,6 +32,26 @@ export class UnsupportedAgentModeError extends Error {
   constructor(mode: string) {
     super(`mode_not_supported: ${mode}`);
     this.name = 'UnsupportedAgentModeError';
+  }
+}
+
+/**
+ * Fleet Designer (W01) — distinct from `UnsupportedAgentModeError` above:
+ * `shadow` IS a generally-supported mode (`isSupportedAgentMode` passes it),
+ * it is just not available for a `designer` agent specifically
+ * (`allowedModesForKind`, packages/shared/types/aiAgents.ts). `kind` cannot
+ * be patched, so the only place this can be checked is against the
+ * EXISTING row's kind — `updateAgent` below is that one place. Same
+ * `createAiAgentSchema`/`allowedModesForKind` single source of truth the
+ * create route's zod `superRefine` uses, so create and update can never
+ * disagree about which modes a kind allows.
+ */
+export class ModeNotAllowedForKindError extends Error {
+  readonly code = 'mode_not_allowed_for_kind';
+
+  constructor(mode: string, kind: string) {
+    super(`mode ${mode} is not available for a ${kind} agent`);
+    this.name = 'ModeNotAllowedForKindError';
   }
 }
 
@@ -192,6 +219,7 @@ function assertSupervisedActionKeysValid(keys: string[] | undefined): void {
 async function assertActPrerequisites(
   owner: AgentOwner,
   resolved: {
+    kind: AiAgentKind;
     mode: string;
     toolAllowlist: string[];
     actAssets: Partial<AiAgentActAssets>;
@@ -203,7 +231,12 @@ async function assertActPrerequisites(
   const missing: Array<'recipient' | 'act_eligible_tool'> = [];
   const hasRecipient = await hasResolvableAgentRecipient(owner, resolved.recipients);
   if (!hasRecipient) missing.push('recipient');
-  if (!hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
+  // Fleet Designer (W01): `act` for a designer means "run and write reports" —
+  // the profile has no mutating surface by construction (designProfile.ts, a
+  // floor of read-only tools plus submit_fleet_design), so requiring an
+  // act-eligible tool would make the kind unreachable. The recipient
+  // requirement stays: the finished design is delivered to someone.
+  if (resolved.kind !== 'designer' && !hasActEligibleSurface(resolved.toolAllowlist, resolved.actAssets)) {
     missing.push('act_eligible_tool');
   }
   if (missing.length > 0) throw new ActPrerequisitesNotMetError(missing);
@@ -585,6 +618,7 @@ export async function createAgent(
   // exactly what THIS create will persist (input's own fields are already
   // complete: createAiAgentSchema materializes every nested default).
   await assertActPrerequisites(owner, {
+    kind: input.kind,
     mode: input.mode,
     toolAllowlist: input.toolAllowlist,
     actAssets: input.actAssets,
@@ -652,6 +686,19 @@ export async function updateAgent(
     }
     assertAgentWriteAllowed(auth, existing);
 
+    // Fleet Designer (W01): `kind` is immutable on PATCH, so this is the
+    // only place a mode-vs-kind mismatch can be caught for an update — the
+    // create route's zod schema handles it there via `allowedModesForKind`
+    // in its `superRefine`, but that never runs for a PATCH body. Gated on
+    // `isSupportedAgentMode` first so an outright-bogus mode (never a real
+    // `AiAgentMode` at all) still surfaces as `UnsupportedAgentModeError`
+    // from `scalarPolicyColumns` below, not this kind-specific error — the
+    // two checks answer different questions and must not race for which one
+    // throws first.
+    if (input.mode !== undefined && isSupportedAgentMode(input.mode) && !allowedModesForKind(existing.kind).includes(input.mode)) {
+      throw new ModeNotAllowedForKindError(input.mode, existing.kind);
+    }
+
     const stored = normalizeAgentPolicy(existing);
     const owner: AgentOwner = { orgId: existing.orgId, partnerId: existing.partnerId };
 
@@ -696,6 +743,7 @@ export async function updateAgent(
     // passes; a PATCH that narrows the allowlist/actAssets/recipients out from
     // under an existing act-mode agent is refused before the UPDATE runs.
     await assertActPrerequisites(owner, {
+      kind: existing.kind,
       mode: input.mode ?? stored.mode,
       toolAllowlist: input.toolAllowlist ?? stored.toolAllowlist,
       actAssets: input.actAssets === undefined ? stored.actAssets : { ...stored.actAssets, ...input.actAssets },

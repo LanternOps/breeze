@@ -5,6 +5,6 @@ import DeviceDetailPage from '../../components/devices/DeviceDetailPage';
 const { id } = Astro.params;
 ---
 
-<DashboardLayout title="Device Details">
+<DashboardLayout titleKey="titles.devicesDetail">
   <DeviceDetailPage deviceId={id!} client:load />
 </DashboardLayout>

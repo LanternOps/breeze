@@ -6,6 +6,7 @@ import {
 } from '@breeze/shared/m365';
 import { and, eq } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
+import { isM365TenantSyncEnabled } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema';
 import {
@@ -20,8 +21,10 @@ import {
 } from '../services/m365ControlPlane/browserBinding';
 import {
   applyIdentityVerificationResult,
+  applyUpgradeVerificationResult,
   markConsentAttemptFailed,
   transitionAdminConsentToIdentity,
+  transitionUpgradeConsentToIdentity,
   type M365ConnectionSnapshot,
   type M365ConsentAttemptSnapshot,
 } from '../services/m365ControlPlane/connectionService';
@@ -29,6 +32,9 @@ import {
   consumeConsentSession,
   hashTenantHint,
   prepareIdentityVerificationSession,
+  readConsentSessionPurpose,
+  type ConsentSessionPurposeLookup,
+  type M365ConsentPurpose,
   type M365ConsentSession,
   type M365ConsentSessionProfile,
   type PreparedIdentityVerificationSession,
@@ -51,6 +57,7 @@ import {
   recordM365CustomerGraphReadEvent,
   recordM365CustomerGraphReadMetric,
 } from '../services/m365ControlPlane/metrics';
+import { onConnectionConsented, onConnectionUpgraded } from '../services/m365Sync/lifecycle';
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -178,6 +185,15 @@ interface CallbackConnectionServiceLike {
     input: CallbackAttemptSnapshot,
     result: CompleteConsentResult,
   ): Promise<CallbackConnectionSnapshot>;
+  transitionUpgradeConsentToIdentity(input: {
+    attempt: CallbackAttemptSnapshot;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{ connection: CallbackConnectionSnapshot; actorId: string }>;
+  applyUpgradeVerificationResult(
+    input: CallbackAttemptSnapshot,
+    result: CompleteConsentResult,
+  ): Promise<{ connection: CallbackConnectionSnapshot; failureCode: string | null }>;
 }
 
 interface CallbackEventNames {
@@ -209,6 +225,22 @@ interface CallbackDependencies {
   clearBindingCookie(): string;
   loadAttempt(binding: M365ConsentBrowserBinding): Promise<CallbackAttemptSnapshot | null>;
   consumeSession(input: Parameters<typeof consumeConsentSession>[0]): Promise<M365ConsentSession | null>;
+  /**
+   * Reads which flow this callback is resuming without consuming the session.
+   * Needed BEFORE the attempt status is validated, because an upgrade session
+   * expects an executable connection and a first-time session expects
+   * pending-consent/verifying (spec §2.2).
+   */
+  readSessionPurpose(input: ConsentSessionPurposeLookup): Promise<M365ConsentPurpose | null>;
+  transitionUpgradePhase(input: {
+    attempt: CallbackAttemptSnapshot;
+    rawAdminState: string;
+    prepared: PreparedIdentityVerificationSession;
+  }): Promise<{ connection: CallbackConnectionSnapshot; actorId: string }>;
+  applyUpgradeResult(
+    input: CallbackAttemptSnapshot,
+    result: CompleteConsentResult,
+  ): Promise<{ connection: CallbackConnectionSnapshot; failureCode: string | null }>;
   markAttemptFailed(input: CallbackAttemptSnapshot, outcome: string): Promise<CallbackConnectionSnapshot>;
   prepareIdentitySession(input: { tenantHint: string }): PreparedIdentityVerificationSession;
   buildIdentityUrl(input: Parameters<typeof buildMicrosoftIdentityAuthorizationUrl>[0]): string;
@@ -223,6 +255,32 @@ interface CallbackDependencies {
   correlationId(): string;
   audit(c: Context, input: CallbackAuditInput): void;
   metric(event: string, outcome: PublicOutcome): void;
+  /**
+   * Tenant-sync lifecycle (W05, spec §5.8). A verified first-time/re-consent
+   * seeds the sync; an upgrade that promoted the manifest re-arms domains
+   * parked on needs_consent. No-ops for the actions profile: the sync reads
+   * exclusively through the customer-graph-read connection.
+   */
+  onSyncConsented(conn: { id: string; orgId: string; tenantId: string; status: 'active' | 'degraded' }): Promise<void>;
+  onSyncUpgraded(conn: { id: string; orgId: string }): Promise<void>;
+}
+
+const NO_SYNC_HOOK = async (): Promise<void> => {};
+
+/**
+ * Spec §10.1: every sync entry point is flag-gated, and a Microsoft consent
+ * that actually succeeded must never redirect the administrator to a failure
+ * page because our scheduler had a bad minute. The lifecycle hooks already log
+ * and never throw by contract; this is the belt to that brace, and the ticker's
+ * reconciliation re-seeds on the next tick either way.
+ */
+async function runSyncLifecycleHook(label: string, run: () => Promise<void>): Promise<void> {
+  if (!isM365TenantSyncEnabled()) return;
+  try {
+    await run();
+  } catch (err) {
+    console.error(`[m365ConsentCallback] ${label} failed:`, err);
+  }
 }
 
 /** Fixed per-profile event names — the audit/metric event enums are profile-scoped siblings. */
@@ -307,7 +365,13 @@ function defaultCreateExecutorClient(
 function defaultConnectionService(profile: CallbackProfile): CallbackConnectionServiceLike {
   return profile === 'customer-graph-actions'
     ? actionsConnectionService
-    : { markConsentAttemptFailed, transitionAdminConsentToIdentity, applyIdentityVerificationResult };
+    : {
+      markConsentAttemptFailed,
+      transitionAdminConsentToIdentity,
+      applyIdentityVerificationResult,
+      transitionUpgradeConsentToIdentity,
+      applyUpgradeVerificationResult,
+    };
 }
 
 /**
@@ -356,6 +420,9 @@ function buildDefaultDependencies(
     clearBindingCookie: () => binding.buildClear(),
     loadAttempt: buildLoadAttemptFromBinding(profile),
     consumeSession: consumeConsentSession,
+    readSessionPurpose: readConsentSessionPurpose,
+    transitionUpgradePhase: connectionService.transitionUpgradeConsentToIdentity,
+    applyUpgradeResult: connectionService.applyUpgradeVerificationResult,
     markAttemptFailed: connectionService.markConsentAttemptFailed,
     prepareIdentitySession: prepareIdentityVerificationSession,
     buildIdentityUrl: buildMicrosoftIdentityAuthorizationUrl,
@@ -369,6 +436,8 @@ function buildDefaultDependencies(
     correlationId: randomUUID,
     audit: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsEvent : recordM365CustomerGraphReadEvent,
     metric: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsMetric : recordM365CustomerGraphReadMetric,
+    onSyncConsented: profile === 'customer-graph-read' ? onConnectionConsented : NO_SYNC_HOOK,
+    onSyncUpgraded: profile === 'customer-graph-read' ? onConnectionUpgraded : NO_SYNC_HOOK,
   };
 }
 
@@ -384,6 +453,44 @@ function outcomeFromConnection(value: CallbackConnectionSnapshot): PublicOutcome
   return PUBLIC_OUTCOMES.has(value.lastErrorCode as PublicOutcome)
     ? value.lastErrorCode as PublicOutcome
     : 'executor_unavailable';
+}
+
+/** Statuses a callback may legally act on, per flow and phase. */
+function statusAllowed(
+  status: string,
+  isUpgrade: boolean,
+  phase: M365ConsentBindingPhase,
+): boolean {
+  // An upgrade never moved the connection, so it is still executable in BOTH
+  // phases. A first-time consent walks pending-consent -> verifying.
+  if (isUpgrade) return status === 'active' || status === 'degraded';
+  return status === (phase === 'admin_consent' ? 'pending-consent' : 'verifying');
+}
+
+/**
+ * An upgrade leaves an executable connection executable even when it fails, so
+ * status alone would report `active` for an approval that granted nothing.
+ * Whether the stored manifest version actually moved is the real outcome.
+ *
+ * `failureCode` is the reason the apply returned in band. It matters because
+ * every upgrade failure is a deliberate no-op on the row: without it a
+ * wrong-tenant or wrong-application consent would be reported to the
+ * administrator with the same generic "manifest is stale" copy as never having
+ * started, and the specific per-cause copy the UI already ships would be
+ * unreachable.
+ */
+function upgradeOutcome(
+  value: CallbackConnectionSnapshot,
+  currentManifestVersion: number,
+  failureCode: string | null,
+): PublicOutcome {
+  if (value.permissionManifestVersion !== currentManifestVersion) {
+    for (const candidate of [failureCode, value.lastErrorCode]) {
+      if (PUBLIC_OUTCOMES.has(candidate as PublicOutcome)) return candidate as PublicOutcome;
+    }
+    return 'manifest_stale';
+  }
+  return outcomeFromConnection(value);
 }
 
 function errorOutcome(error: unknown): PublicOutcome {
@@ -466,6 +573,17 @@ export function createM365ConsentCallbackRoutes(
       return terminalFailure('consent_state_mismatch');
     }
 
+    const purpose = await dependencies.readSessionPurpose({
+      rawState: binding.rawState,
+      phase: binding.phase,
+      connectionId: binding.connectionId,
+      consentAttemptId: binding.consentAttemptId,
+      profile: dependencies.profile,
+    });
+    // A missing session is not an upgrade; the consume below fails it anyway.
+    const isUpgrade = purpose === 'upgrade';
+    const currentManifestVersion = M365_PERMISSION_PROFILES[dependencies.profile].version;
+
     if (binding.phase === 'admin_consent' && parsed.kind === 'admin_success') {
       let prepared: PreparedIdentityVerificationSession;
       let preparedCookie: string;
@@ -495,12 +613,15 @@ export function createM365ConsentCallbackRoutes(
       }
 
       const attempt = await dependencies.loadAttempt(binding);
-      if (!attempt || attempt.status !== 'pending-consent') {
+      if (!attempt || !statusAllowed(attempt.status, isUpgrade, binding.phase)) {
         return terminalFailure('consent_state_mismatch');
       }
       let actorId: string;
       try {
-        const transitioned = await dependencies.transitionAdminPhase({
+        const transition = isUpgrade
+          ? dependencies.transitionUpgradePhase
+          : dependencies.transitionAdminPhase;
+        const transitioned = await transition({
           attempt,
           rawAdminState: binding.rawState,
           prepared,
@@ -530,8 +651,7 @@ export function createM365ConsentCallbackRoutes(
     }
 
     const attempt = await dependencies.loadAttempt(binding);
-    const expectedStatus = binding.phase === 'admin_consent' ? 'pending-consent' : 'verifying';
-    if (!attempt || attempt.status !== expectedStatus) {
+    if (!attempt || !statusAllowed(attempt.status, isUpgrade, binding.phase)) {
       return terminalFailure('consent_state_mismatch');
     }
 
@@ -546,10 +666,15 @@ export function createM365ConsentCallbackRoutes(
     if (!session) return terminalFailure('consent_state_mismatch', attempt);
 
     if (parsed.kind === 'provider_error') {
-      try {
-        await dependencies.markAttemptFailed(attempt, 'consent_cancelled');
-      } catch {
-        return terminalFailure('consent_state_mismatch', attempt, session.userId);
+      // An upgrade must leave the connection exactly as it was — and
+      // markAttemptFailed writes status = 'pending-consent', which would take a
+      // live connection out of service on a CANCEL (spec §2.2).
+      if (!isUpgrade) {
+        try {
+          await dependencies.markAttemptFailed(attempt, 'consent_cancelled');
+        } catch {
+          return terminalFailure('consent_state_mismatch', attempt, session.userId);
+        }
       }
       return terminalFailure('consent_cancelled', attempt, session.userId);
     }
@@ -580,17 +705,61 @@ export function createM365ConsentCallbackRoutes(
         redirectUri: dependencies.loadConfig().callbackUrl,
       });
     } catch {
-      try {
-        await dependencies.markAttemptFailed(attempt, 'executor_unavailable');
-      } catch {
-        return terminalFailure('consent_state_mismatch', attempt, session.userId);
+      if (!isUpgrade) {
+        try {
+          await dependencies.markAttemptFailed(attempt, 'executor_unavailable');
+        } catch {
+          return terminalFailure('consent_state_mismatch', attempt, session.userId);
+        }
       }
       return terminalFailure('executor_unavailable', attempt, session.userId);
     }
 
     try {
-      const applied = await dependencies.applyIdentityResult(attempt, result);
-      const outcome = outcomeFromConnection(applied);
+      let applied: CallbackConnectionSnapshot;
+      let outcome: PublicOutcome;
+      let upgradeFailureCode: string | null = null;
+      if (isUpgrade) {
+        const upgraded = await dependencies.applyUpgradeResult(attempt, result);
+        applied = upgraded.connection;
+        upgradeFailureCode = upgraded.failureCode;
+        // Spec §5.8: the in-place promotion may have granted the scopes some
+        // domains were parked on needs_consent for; re-arm them. Only when the
+        // apply did not fail in band (a failed upgrade is a deliberate no-op on
+        // the row). Idempotent: it touches only rows that are BOTH unscheduled
+        // and needs_consent, so an approval that granted nothing costs one
+        // indexed UPDATE of zero rows.
+        if (upgradeFailureCode === null) {
+          await runSyncLifecycleHook(
+            `sync re-seed for connection=${attempt.id}`,
+            () => dependencies.onSyncUpgraded({ id: attempt.id, orgId: attempt.orgId }),
+          );
+        }
+        outcome = upgradeOutcome(applied, currentManifestVersion, upgradeFailureCode);
+      } else {
+        applied = await dependencies.applyIdentityResult(attempt, result);
+        // A verified first-time (or re-)consent seeds all six domains due now
+        // at priority 1, for `degraded` as well as `active` — a connection
+        // missing one optional grant still syncs every other domain.
+        const seededStatus = applied.status;
+        const seededTenant = applied.tenantId;
+        if (result.success && seededTenant && (seededStatus === 'active' || seededStatus === 'degraded')) {
+          await runSyncLifecycleHook(
+            `sync seeding for connection=${attempt.id}`,
+            () => dependencies.onSyncConsented({
+              id: attempt.id, orgId: attempt.orgId, tenantId: seededTenant, status: seededStatus,
+            }),
+          );
+        }
+        outcome = outcomeFromConnection(applied);
+      }
+      // An upgrade that did not promote is a FAILED verification even though
+      // the executor reported success and the connection is still executable —
+      // reporting it as tenant_binding_verified would log a wrong-tenant
+      // consent attempt as a verified binding.
+      if (isUpgrade && upgradeFailureCode !== null) {
+        return terminalFailure(outcome, attempt, session.userId);
+      }
       if (result.success && (applied.status === 'active' || applied.status === 'degraded')) {
         const driftOutcome = applied.lastErrorCode === 'grant_missing'
           || applied.lastErrorCode === 'grant_unexpected'

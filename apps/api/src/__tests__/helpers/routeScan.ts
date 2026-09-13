@@ -123,6 +123,15 @@ const CANONICAL_GATE_NAMES = [
   // prevent.
   'alertsDeviceSiteCondition',
   'alertsMultiOrgDeviceCondition',
+  // AI-agent run history site gate (SEC-2026-09-05-052), extracted to
+  // services/aiAgentRunSiteScope.ts so routes/aiOperatorTasks.ts's linked-run
+  // projection can reuse it without importing another route module. Same
+  // trajectory as ticketSiteScopeCondition above: it was file-local to
+  // routes/aiAgents.ts and picked up by findLocalGateWrappers until a second
+  // caller appeared. It EMITS the predicate (an `EXISTS` over devices keyed on
+  // the run's device and org), so it applies the scope rather than merely
+  // resolving it.
+  'runSiteScopeCondition',
   // NOTE: `getDeviceWithOrgCheck` (routes/remote/helpers.ts) is a cross-file
   // site-aware resolver, but it is deliberately NOT listed as a gate token.
   // It gates only the code path where a deviceId is supplied — e.g.

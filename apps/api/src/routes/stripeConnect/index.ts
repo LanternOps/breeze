@@ -9,6 +9,8 @@ import {
 } from '../../services/partnerWideAccess';
 import { PERMISSIONS } from '../../services/permissions';
 import { writeRouteAudit } from '../../services/auditEvents';
+import { runOutsideDbContext, withSystemDbAccessContext } from '../../db';
+import { getPartnerRevocationHealth } from '../../services/stripeSessionRevocation';
 import {
   savePartnerStripeKey,
   getPartnerStripeAccountSnapshot,
@@ -62,6 +64,7 @@ stripeConnectRoutes.post(
         defaultCurrency: result.defaultCurrency,
         accountCountry: result.accountCountry,
         accountRefreshedAt: result.accountRefreshedAt.toISOString(),
+        reconciliation: { state: 'pending', lastPolledAt: null, error: null },
       });
     } catch (err) {
       // A rejected/unreadable key is a user-actionable 400/409/500 with a clear
@@ -88,8 +91,17 @@ stripeConnectRoutes.get(
     // `reconnect_required` = the stored key no longer works and the partner
     // must paste a new one — reported as such, never as "connected" (review F4).
     const snap = await getPartnerStripeAccountSnapshot(auth.partnerId);
-    if (!snap.connected) return c.json({ status: 'disconnected', last4: snap.last4 });
+    // SEC-150: revocation health rides on the SAME response as the connection so
+    // the card can tell the partner that some payment links could not be killed.
+    // System context — invoice_stripe_payments is org-axis, and a partner token
+    // reading it under its own scope would silently return zero rows (#1375).
+    const revocation = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(() => getPartnerRevocationHealth(auth.partnerId!)));
+    if (!snap.connected) {
+      return c.json({ status: 'disconnected', last4: snap.last4, sessionRevocation: revocation });
+    }
     return c.json({
+      sessionRevocation: revocation,
       status: snap.cacheState === 'reconnect_required' ? 'reconnect_required' : 'connected',
       stripeAccountId: snap.stripeAccountId,
       livemode: snap.livemode,
@@ -100,6 +112,11 @@ stripeConnectRoutes.get(
       cacheState: snap.cacheState,
       stale: snap.cacheState !== 'fresh',
       error: snap.error,
+      reconciliation: {
+        state: snap.financialEventLastError ? 'error' : snap.financialEventLastPolledAt ? 'healthy' : 'pending',
+        lastPolledAt: snap.financialEventLastPolledAt?.toISOString() ?? null,
+        error: snap.financialEventLastError,
+      },
     });
   }
 );
@@ -152,7 +169,9 @@ stripeConnectRoutes.delete(
     const auth = c.get('auth');
     if (!auth?.partnerId) throw new HTTPException(403, { message: 'Partner context required' });
     if (!canManagePartnerWidePolicies(auth)) throw new HTTPException(403, { message: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
-    await disconnectPartnerStripe(auth.partnerId);
+    // SEC-150: the actor is recorded on the revocation intent the disconnect
+    // stamps, so a stuck session can be traced to who pulled the integration.
+    await disconnectPartnerStripe(auth.partnerId, auth.user?.id ?? null);
     writeRouteAudit(c, {
       orgId: null,
       action: 'stripe_connect.disconnected',

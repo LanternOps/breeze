@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    No permissions of its own. Android KeyStore, BiometricPrompt and Play
+    Integrity all operate without one; USE_BIOMETRIC is already declared by the
+    app itself (apps/mobile/app.json -> expo.android.permissions), so declaring
+    it again here would only widen the merged manifest for no benefit.
+  -->
+</manifest>

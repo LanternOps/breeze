@@ -23,6 +23,8 @@ import {
 // Direct module import, not the schema barrel — see the same note in runService.
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
+import { isDesignProfile } from './designProfile';
+import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistSweepFindings } from './sweepFindings';
@@ -291,6 +293,73 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
     }
     console.error('[aiAgentRunLoop] failed to persist the narrative report', { runId: ctx.run.id, error });
     return 'narrative_persist_failed';
+  }
+}
+
+/**
+ * Fleet Designer W01 (#5651) — the design sibling of `finalizeVerdict`/
+ * `finalizeSweep`/`finalizeNarrative` above. Persists the validated
+ * `FleetDesignOutcome` as a system-authored report artifact and links
+ * `ai_agent_runs.report_run_id`.
+ *
+ * UNLIKE `finalizeNarrative`, a missing schedule is NOT an error: a Fleet
+ * Design definition is keyed on the ORG (`reports_ai_fleet_design_org_uniq`),
+ * not on `(org_id, source_ai_agent_schedule_id)`, so a manually triggered
+ * design run — `POST /ai/fleet-design/runs` has no schedule at all — finds
+ * or creates the same org-scoped definition exactly like a scheduled one
+ * does. There is no `design_no_schedule` error code because there is nothing
+ * that condition would ever refuse.
+ */
+export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isDesignProfile(ctx.run)) return null;
+  const { outcome } = result;
+
+  if (!outcome.fleetDesign) return 'design_missing';
+  if (!ctx.design) return 'design_missing';
+
+  // Same IMPORTANT-4 re-read every sibling above carries: the stall reaper
+  // (`reapStalledAgentRuns`) or a second executor may have moved this run out
+  // of `running` while the SDK loop was in flight. Skip rather than publish a
+  // customer-facing artifact under a run nobody owns any more. (A tiny window
+  // remains between this read and the transaction below — closed properly
+  // there, by the `FOR UPDATE` lock plus the `report_run_id IS NULL` CAS.)
+  const stillRunning = await isRunStillRunning(ctx.run.id, ctx.run.orgId);
+  if (!stillRunning) {
+    console.warn('[aiAgentRunLoop] skipped fleet design persistence — run left `running` before it could be persisted', {
+      runId: ctx.run.id,
+    });
+    return null;
+  }
+
+  try {
+    const { reportId, reportRunId } = await persistFleetDesignReport({
+      run: {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.design.scheduleId,
+      },
+      agent: { id: ctx.agent.id, name: ctx.agent.name },
+      evidence: ctx.design.evidence,
+      outcome: outcome.fleetDesign,
+    });
+    // TWO ids, never the evidence or the outcome again — see the field's
+    // docstring on `AgentRunOutcome.fleetDesignReport`.
+    outcome.fleetDesignReport = { reportId, reportRunId };
+    return null;
+  } catch (error) {
+    if (error instanceof FleetDesignPersistConflictError) {
+      // A race that resolved correctly (another executor linked an artifact,
+      // or the run moved) — logged at warn, not error, and given its own
+      // code so it is distinguishable from a genuine write failure on the
+      // run row.
+      console.warn('[aiAgentRunLoop] fleet design artifact was not linked to this run', {
+        runId: ctx.run.id, reason: (error as Error).message,
+      });
+      return 'design_persist_conflict';
+    }
+    console.error('[aiAgentRunLoop] failed to persist the fleet design report', { runId: ctx.run.id, error });
+    return 'design_persist_failed';
   }
 }
 

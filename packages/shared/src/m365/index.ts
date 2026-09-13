@@ -1,6 +1,7 @@
 export * from './profiles';
 export * from './executorContracts';
 export * from './readActions';
+export * from './sync';
 export * from './writeActions';
 // commsActions / commsEffect / commsPlan are pure and safe for the root barrel.
 // commsDigests is NOT exported here on purpose: it imports node:crypto, and this barrel

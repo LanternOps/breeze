@@ -152,6 +152,7 @@ import {
   ActPrerequisitesNotMetError,
   AgentKindConflictError,
   InvalidSupervisedActionKeysError,
+  ModeNotAllowedForKindError,
   SupervisedKeysGrantOnlyError,
   UnsupportedAgentModeError,
   assertOrgRowSupervisedKeysGrantOnly,
@@ -577,6 +578,15 @@ describe('agent mutations', () => {
     expect(state.updatedValues).toBeNull();
   });
 
+  it('rejects shadow mode for a designer agent with ModeNotAllowedForKindError (Fleet Designer W01)', async () => {
+    state.currentRow = { ...storedRow, kind: 'designer' };
+
+    await expect(updateAgent(auth(), 'a1', { mode: 'shadow' } as never))
+      .rejects.toBeInstanceOf(ModeNotAllowedForKindError);
+    expect(state.updatedValues).toBeNull();
+  });
+
+
   describe('act-mode activation prerequisites (Task 6, #3826)', () => {
     it('accepts an update to act mode when the merged row already has a resolvable recipient and an act-eligible surface', async () => {
       const actReady = {
@@ -602,6 +612,26 @@ describe('agent mutations', () => {
       const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
       expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
       expect((err as ActPrerequisitesNotMetError).missing).toEqual(['act_eligible_tool']);
+      expect(state.updatedValues).toBeNull();
+    });
+
+    it('a designer agent needs a recipient but no act-eligible surface — it only writes reports (Fleet Designer W01)', async () => {
+      const designer = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.currentRow = designer;
+      state.returnedRow = { ...designer, mode: 'act' };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(true);
+
+      await updateAgent(auth(), 'a1', { mode: 'act' } as never);
+      expect(state.updatedValues).toMatchObject({ mode: 'act' });
+    });
+
+    it('a designer agent without a resolvable recipient is still refused act mode (Fleet Designer W01)', async () => {
+      state.currentRow = { ...storedRow, kind: 'designer', toolAllowlist: [], actAssets: { scriptIds: [] } };
+      state.hasResolvableAgentRecipient.mockResolvedValueOnce(false);
+
+      const err = await updateAgent(auth(), 'a1', { mode: 'act' } as never).catch((e) => e);
+      expect(err).toBeInstanceOf(ActPrerequisitesNotMetError);
+      expect((err as ActPrerequisitesNotMetError).missing).toEqual(['recipient']);
       expect(state.updatedValues).toBeNull();
     });
 

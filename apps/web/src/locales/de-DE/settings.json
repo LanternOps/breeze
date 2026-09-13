@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Support-Nutzung",
           "description": "Zeigt die abrechenbare Supportzeit des Monats bis heute an."
+        },
+        "enableService": {
+          "label": "Service",
+          "description": "Zeigt geplante Leistungen, Erbrachtes und wichtige Termine."
+        },
+        "enableDocuments": {
+          "label": "Dokumente",
+          "description": "Ermöglicht Kunden den Download freigegebener Dokumente."
         }
       }
     },
@@ -1502,11 +1510,13 @@
       "timezone": "Zeitzone",
       "kinds": {
         "sweep": "Prüflauf",
-        "narrative": "Wochenbericht"
+        "narrative": "Wochenbericht",
+        "design": "Flottendesign"
       },
       "kindsLabel": "Auszuführende Prüfungen",
       "kind": "Zeitplantyp",
       "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
+      "monthlyOrRarerHint": "Ein Flottendesign wird höchstens einmal im Monat ausgelöst: feste Minute, Stunde und Tag-des-Monats (1–28), Monat als * oder eine durch Kommas getrennte Liste fester Monate, sowie * für den Wochentag. Beispiel: 0 6 1 1,4,7,10 * läuft vierteljährlich am 1. um 06:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
       "override": "Für diese Organisation überschreiben",
@@ -1546,6 +1556,7 @@
         "baselineAgentMismatch": "Diese Basis gehört zu einem anderen Agenten.",
         "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
         "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
+        "agentKindNotDesigner": "Ein Flottendesign-Zeitplan muss auf einen Flottendesigner-Agenten abzielen.",
         "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
         "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
       }
@@ -1556,7 +1567,8 @@
     "kindHints": {
       "triage": "Untersucht neue Warnungen und schlägt vor, was zu tun ist.",
       "patch": "Prüft fehlende Patches und schlägt vor, was installiert werden soll.",
-      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor."
+      "helpdesk": "Nimmt Tickets auf und schlägt Antworten und nächste Schritte vor.",
+      "designer": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker."
     },
     "emptyState": {
       "title": "Noch keine Agenten",
@@ -1571,7 +1583,8 @@
       "shadowConsequence": "Beobachtet und schlägt vor; ein Mensch genehmigt alles.",
       "act": "Aktion",
       "actConsequence": "Führt erlaubte Vorgänge ohne Klick aus. Kein automatisches Zurücksetzen.",
-      "actUnavailable": "Für diesen Agenten noch nicht verfügbar."
+      "actUnavailable": "Für diesen Agenten noch nicht verfügbar.",
+      "shadowUnavailableForKind": "Dieser Agent liest und schreibt nur Berichte — es gibt nichts zu beobachten."
     },
     "allOrgs": "Alle Organisationen",
     "allOrgsHint": "Partnerweit: gilt für jede Organisation, sofern eine Organisation die Richtlinie nicht verschärft.",
@@ -1685,7 +1698,8 @@
     "kinds": {
       "triage": "Alarm-Triage",
       "patch": "Patch-Verwaltung",
-      "helpdesk": "Helpdesk"
+      "helpdesk": "Helpdesk",
+      "designer": "Flottendesigner"
     },
     "modes": {
       "off": "Aus",
@@ -1820,7 +1834,8 @@
       "profile": {
         "sweep": "Prüflauf",
         "narrative": "Wochenbericht",
-        "triage": "Ticket-Triage"
+        "triage": "Ticket-Triage",
+        "design": "Flottendesign"
       },
       "sweep": {
         "title": "Ergebnisse des Prüflaufs",
@@ -1867,6 +1882,14 @@
         "openReport": "Bericht öffnen",
         "download": "PDF herunterladen",
         "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
+      },
+      "fleetDesign": {
+        "title": "Flottendesign",
+        "counts": "{{functions}} Funktionen · {{watches}} Überwachungen · {{rules}} Alarmregeln",
+        "openReport": "Bericht öffnen",
+        "download": "PDF herunterladen",
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "truncatedNote": "Die Nachweise wurden gekürzt — dieses Design hat nicht die gesamte Flotte gesehen."
       },
       "noAgent": "Unbekannter Agent",
       "loading": "Läufe werden geladen…",
@@ -2235,6 +2258,10 @@
         "scripts_commands": {
           "label": "Skripte und Befehle",
           "description": "Skripte, Playbooks und Systembefehle ausführen und die dabei betroffenen Prozesse, geplanten Aufgaben und Registrierungseinträge verwalten."
+        },
+        "author_scripts": {
+          "label": "Skripte verfassen",
+          "description": "Ein neues Skript als Vorschlag für eine unabhängige Prüfung schreiben. Nichts, was ein Agent verfasst, wird ausgeführt, bevor es geprüft und freigegeben wurde."
         },
         "tickets": {
           "label": "Helpdesk-Tickets",
@@ -2685,7 +2712,8 @@
       "loggedProposalCount_other": "{{count}} protokollierte Vorschläge",
       "unattendedCount_one": "{{count}} unbeaufsichtigt",
       "unattendedCount_other": "{{count}} unbeaufsichtigt",
-      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist."
+      "scriptGateNote": "Bleibt eine Genehmigungsanfrage, bis ein Skript für diesen Agenten autorisiert ist.",
+      "designerReadOnly": "Der Flottendesigner erreicht jedes schreibgeschützte Werkzeug und ein Berichtswerkzeug. Er hat keine veränderbaren Funktionen zur Auswahl."
     },
     "summary": {
       "edit": "Bearbeiten",
@@ -2786,6 +2814,11 @@
           "blurb": "Bearbeitet Tickets, sobald sie erstellt, beantwortet oder gelöst werden.",
           "runsWhen": "ein Ticket erstellt wird, seine erste Antwort erhält oder als gelöst markiert wird",
           "recommended": "Dienste neu starten und Speicherplatz freigeben, um häufige Anfragen zu lösen"
+        },
+        "designer": {
+          "blurb": "Liest die gesamte Flotte und erstellt ein begründetes Überwachungsdesign zur Freigabe durch einen Techniker.",
+          "runsWhen": "Sie ein Flottendesign für eine Organisation starten oder nach einem vierteljährlichen Zeitplan",
+          "recommended": "eine Neueinrichtung von Grund auf oder ein vierteljährliches Konfigurationsaudit"
         }
       },
       "kindCard": {
@@ -2939,7 +2972,9 @@
     "loadingApproverDevices": "Genehmigergeräte werden geladen…",
     "tryAgain": "Versuchen Sie es erneut",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Es sind noch keine genehmigenden Geräte registriert. Melden Sie sich auf Ihrem Telefon bei der mobilen Breeze-App an und sie wird hier automatisch angezeigt, oder registrieren Sie diesen Browser unten, um die Genehmigung mit einer Biometrie zu erhalten.",
-    "platformBound": "Plattformgebunden",
+    "hardwareAttested": "Hardware-attestiert",
+    "notAttested": "Nicht attestiert",
+    "notAttestedTooltip": "Kritische Freigaben sind auf diesem Gerät erst verfügbar, nachdem es mit einem attestierten App-Build neu registriert wurde.",
     "registered": "Registriert",
     "lastUsed": "Zuletzt verwendet",
     "cancel": "Abbrechen",
@@ -4374,27 +4409,10 @@
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
       "offboarding": "Abmeldung läuft"
+    },
+    "help": {
+      "slug": "Wird aus dem Namen erzeugt. Innerhalb Ihres Kontos eindeutig; von der API und Integrationen verwendet."
     }
-  },
-  "organizationList": {
-    "title": "Organisationen",
-    "count": "{{filtered}} von {{total}} Organisationen",
-    "searchPlaceholder": "Organisationen suchen",
-    "allStatuses": "Alle Status",
-    "status": {
-      "active": "Aktiv",
-      "trial": "Prozess",
-      "suspended": "Suspendiert",
-      "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft",
-      "merging": "Zusammenführung läuft",
-      "archived": "Archiviert",
-      "purging": "Löschung läuft"
-    },
-    "columns": {
-      "devices": "Geräte"
-    },
-    "empty": "Keine Organisationen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen."
   },
   "bulkOrgImport": {
     "title": "Massenimport",
@@ -4459,7 +4477,7 @@
   },
   "organizationsPage": {
     "loading": "Organisationen werden geladen...",
-    "title": "Organisationen und Standorte",
+    "title": "Organisationen",
     "description": "Verwalten Sie Organisationen und ihre Standorte.",
     "actions": {
       "addOrganization": "Organisation hinzufügen",
@@ -4468,7 +4486,10 @@
       "archiveOrganization": "Organisation archivieren",
       "deleting": "Löschen...",
       "openRecord": "Datensatz öffnen",
-      "openSettings": "Einstellungen"
+      "openSettings": "Einstellungen",
+      "openSettingsFor": "Einstellungen für {{name}}",
+      "openRecordFor": "Datensatz für {{name}} öffnen",
+      "more": "Weitere Aktionen"
     },
     "errors": {
       "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
@@ -4492,17 +4513,31 @@
     "deviceCount": "{{count}} Geräte",
     "list": {
       "title": "Organisationen",
-      "searchPlaceholder": "Suchen...",
       "empty": "Keine Organisationen gefunden.",
-      "noMatches": "Keine Organisationen entsprechen Ihrer Suche.",
-      "dragToReorder": "Zum Neuanordnen ziehen"
+      "noMatches": "Keine Organisationen entsprechen Ihrer Suche oder Ihrem Filter.",
+      "dragToReorder": "Zum Neuanordnen ziehen",
+      "searchLabel": "Organisationen durchsuchen",
+      "reorderHandle": "{{name}} neu anordnen",
+      "reorderHint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
+      "movedAnnouncement": "{{name}} wurde an Position {{position}} von {{total}} verschoben",
+      "workspaceMarker": "Arbeitsbereich",
+      "sort": {
+        "label": "Sortieren",
+        "manual": "Manuelle Reihenfolge",
+        "name": "A bis Z",
+        "devices": "Meiste Geräte"
+      },
+      "filter": {
+        "label": "Nach Status filtern",
+        "all": "Alle"
+      }
     },
     "sites": {
       "loading": "Seiten werden geladen..."
     },
     "emptySelection": {
       "title": "Keine Organisation ausgewählt",
-      "description": "Wählen Sie eine Organisation aus der Liste aus, um deren Standorte anzuzeigen."
+      "description": "Wählen Sie eine Organisation aus, um Status, Standorte und Aktionen zu sehen."
     },
     "add": {
       "title": "Organisation hinzufügen",
@@ -4523,8 +4558,9 @@
     },
     "deleteSite": {
       "title": "Standort löschen",
-      "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
-      "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+      "message": "{{name}} löschen? Der Standort wird dauerhaft entfernt; dies kann nicht rückgängig gemacht werden.",
+      "blockedMessage_one": "{{name}} hat noch {{count}} Gerät. Verschieben Sie es an einen anderen Standort, bevor Sie diesen löschen.",
+      "blockedMessage_other": "{{name}} hat noch {{count}} Geräte. Verschieben Sie sie an einen anderen Standort, bevor Sie diesen löschen."
     },
     "merge": {
       "openButton": "In eine andere Organisation zusammenführen",
@@ -4625,6 +4661,9 @@
         "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
         "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
       }
+    },
+    "scope": {
+      "hint": "Ihr Arbeitsbereich ist auf {{orgName}} eingestellt. Aktionen auf dieser Seite gelten für die hier ausgewählte Organisation."
     }
   },
   "siteDetailPage": {
@@ -4722,7 +4761,9 @@
     "count": "{{filtered}} von {{total}} Standorte",
     "searchPlaceholder": "Standorte suchen",
     "actions": {
-      "add": "Standort hinzufügen"
+      "add": "Standort hinzufügen",
+      "editSite": "{{name}} bearbeiten",
+      "deleteSite": "{{name}} löschen"
     },
     "columns": {
       "timezone": "Zeitzone",
@@ -5305,5 +5346,82 @@
       "conflict": "Konflikt",
       "orgNotFound": "Organisation nicht gefunden"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Skripterstellung",
+    "subtitle": "Lassen Sie den Assistenten und Ihre Agenten Skripte schreiben, prüfen und – wenn Sie es zulassen – ohne Karte ausführen.",
+    "partnerCard": {
+      "title": "Partner-Obergrenze",
+      "description": "Die weiteste Einstellung, die eine Organisation dieses Partners verwenden darf. Einzelne Organisationen können sie nur einschränken.",
+      "readOnly": "Nur ein Partneradministrator mit vollem Organisationszugriff kann die Obergrenze ändern.",
+      "missing": "Ihr Partner hat noch keine Obergrenze festgelegt, daher kann die unbeaufsichtigte Ausführung hier nicht aktiviert werden."
+    },
+    "orgCard": {
+      "title": "Diese Organisation",
+      "description": "Eine ausdrückliche Freigabe. Die unbeaufsichtigte Ausführung bleibt deaktiviert, bis sowohl die Partner-Obergrenze als auch dieser Schalter es erlauben.",
+      "noOrgSelected": "Wählen Sie eine Organisation aus, um deren Einstellungen für die Skripterstellung zu verwalten."
+    },
+    "fields": {
+      "proposingEnabled": "Der KI erlauben, Skripte vorzuschlagen",
+      "unattendedAllowed": "Organisationen die unbeaufsichtigte Ausführung erlauben",
+      "unattendedEnabled": "Genehmigte risikoarme Skripte ohne Genehmigungskarte ausführen",
+      "maxRiskTier": "Höchste unbeaufsichtigt erlaubte Risikostufe",
+      "allowedClasses": "Worauf ein unbeaufsichtigtes Skript zugreifen darf",
+      "perHour": "Maximale unbeaufsichtigte Ausführungen pro Stunde",
+      "reviewerModel": "Prüfmodell",
+      "reviewerModelHint": "Leer lassen, um die Plattformvorgabe zu verwenden.",
+      "protectedResources": "Diese niemals anfassen",
+      "protectedServices": "Dienste",
+      "protectedPaths": "Pfade",
+      "protectedRegistryKeys": "Registrierungsschlüssel",
+      "protectedDeviceTags": "Geräte-Tags"
+    },
+    "tier": {
+      "low": "Niedrig",
+      "medium": "Mittel"
+    },
+    "class": {
+      "registry": "Registrierung",
+      "services": "Dienste",
+      "processes": "Prozesse",
+      "files_system": "Systemdateien",
+      "files_user": "Benutzerdateien",
+      "temp_files": "Temporäre Dateien",
+      "network_egress": "Ausgehender Netzwerkverkehr",
+      "firewall": "Firewall",
+      "credentials": "Anmeldedaten",
+      "users_groups": "Benutzer und Gruppen",
+      "packages": "Pakete",
+      "scheduled_tasks": "Geplante Aufgaben",
+      "disk": "Datenträger",
+      "boot": "Startkonfiguration",
+      "security_tooling": "Sicherheitstools",
+      "dns_cache": "DNS-Cache",
+      "printing": "Drucken",
+      "browser": "Browser",
+      "shell_eval": "Dynamischer Code"
+    },
+    "windowsOnly": "Nur Windows",
+    "hardDenied": "Unbeaufsichtigt nie verfügbar, unabhängig von der Obergrenze.",
+    "aboveCeiling": "Ihr Partner erlaubt dies nicht.",
+    "lane": {
+      "closedTitle": "Die unbeaufsichtigte Ausführung läuft normal",
+      "openTitle": "Die unbeaufsichtigte Ausführung ist pausiert",
+      "openBody": "{{reason}} Unbeaufsichtigte Ausführungen werden verweigert, bis ein Genehmiger die Ausführung zurücksetzt. Genehmigungen funktionieren weiterhin normal.",
+      "reset": "Ausführung zurücksetzen",
+      "resetStepUpBody": "Das Zurücksetzen der unbeaufsichtigten Spur erfordert eine erneute Sicherheitsprüfung.",
+      "resetSuccess": "Die unbeaufsichtigte Ausführung läuft wieder.",
+      "resetFailed": "Die Ausführung konnte nicht zurückgesetzt werden."
+    },
+    "stepUp": {
+      "title": "Bestätigen Sie, dass Sie es sind",
+      "body": "Das Aktivieren unbeaufsichtigter Ausführungen erfordert eine erneute Sicherheitsprüfung."
+    },
+    "save": "Speichern",
+    "saving": "Wird gespeichert…",
+    "saved": "Einstellungen zur Skripterstellung gespeichert.",
+    "saveFailed": "Diese Einstellungen konnten nicht gespeichert werden.",
+    "loading": "Wird geladen…",
+    "loadFailed": "Die Einstellungen zur Skripterstellung konnten nicht geladen werden."
   }
 }

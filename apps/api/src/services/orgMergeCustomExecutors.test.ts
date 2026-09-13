@@ -22,7 +22,8 @@ vi.mock('../db', () => ({
   db: { execute: (...args: unknown[]) => executeMock(...args) },
 }));
 
-import { CUSTOM_EXECUTORS } from './orgMergeCustomExecutors';
+import { CUSTOM_EXECUTORS, CUSTOM_RESOLVE_EXECUTORS, CUSTOM_WOULD_DROP_COUNTS } from './orgMergeCustomExecutors';
+import { getOrgMergePolicies } from './orgMergeRegistry';
 
 const dialect = new PgDialect();
 const L = '11111111-1111-1111-1111-111111111111';
@@ -47,12 +48,16 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
       .mockResolvedValueOnce({ rowCount: 1 }) // colliding recipient delete
       .mockResolvedValueOnce({ rowCount: 1 }) // non-colliding recipient re-home
       .mockResolvedValueOnce({ rowCount: 1 }) // portal duplicate delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design recipient re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design duplicate delete
       .mockResolvedValueOnce({ rowCount: 2 }); // remaining reports repoint
 
     const outcome = await mergeReports(L, S);
 
     expect(outcome).toMatchObject({ moved: 2, dropped: 1 });
-    expect(executeMock).toHaveBeenCalledTimes(9);
+    expect(executeMock).toHaveBeenCalledTimes(13);
 
     const reportRunSql = dialect.sqlToQuery(executeMock.mock.calls[4]![0] as SQL).sql;
     const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[5]![0] as SQL).sql;
@@ -79,11 +84,15 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
       .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient delete
       .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient re-home
       .mockResolvedValueOnce({ rowCount: 0 }) // portal duplicate delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design recipient re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // fleet-design duplicate delete
       .mockResolvedValueOnce({ rowCount: 3 }); // remaining reports repoint
 
     const outcome = await mergeReports(L, S);
 
-    expect(executeMock).toHaveBeenCalledTimes(9);
+    expect(executeMock).toHaveBeenCalledTimes(13);
     const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql;
     const recipientRepointSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql;
     const reportDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[3]![0] as SQL).sql;
@@ -98,6 +107,44 @@ describe('mergeReports — dedupes portal self-service definitions and recipient
     expect(outcome.notes.join('\n')).toMatch(
       /report_schedule_recipients: 1 deduplicated, 2 re-homed/,
     );
+  });
+
+  it('dedupes ai_fleet_design definitions by type when both orgs have one', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative recipient re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // narrative duplicate delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient delete
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal recipient re-home
+      .mockResolvedValueOnce({ rowCount: 0 }) // portal duplicate delete
+      .mockResolvedValueOnce({ rowCount: 1 }) // fleet-design report_runs re-home
+      .mockResolvedValueOnce({ rowCount: 1 }) // fleet-design colliding recipient delete
+      .mockResolvedValueOnce({ rowCount: 1 }) // fleet-design non-colliding recipient re-home
+      .mockResolvedValueOnce({ rowCount: 1 }) // fleet-design duplicate delete
+      .mockResolvedValueOnce({ rowCount: 2 }); // remaining reports repoint
+
+    const outcome = await mergeReports(L, S);
+
+    expect(outcome).toMatchObject({ moved: 2, dropped: 1 });
+    expect(executeMock).toHaveBeenCalledTimes(13);
+
+    const reportRunSql = dialect.sqlToQuery(executeMock.mock.calls[8]![0] as SQL).sql;
+    const recipientDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[9]![0] as SQL).sql;
+    const recipientRepointSql = dialect.sqlToQuery(executeMock.mock.calls[10]![0] as SQL).sql;
+    const reportDeleteSql = dialect.sqlToQuery(executeMock.mock.calls[11]![0] as SQL).sql;
+
+    for (const statement of [reportRunSql, recipientDeleteSql, recipientRepointSql, reportDeleteSql]) {
+      expect(statement).toMatch(/t\.type\s*=\s*'ai_fleet_design'/i);
+      expect(statement).toMatch(/s\.type\s*=\s*'ai_fleet_design'/i);
+    }
+    expect(recipientDeleteSql).toMatch(/delete from "?report_schedule_recipients"?/i);
+    expect(recipientDeleteSql).toMatch(/contact_id/i);
+    expect(recipientRepointSql).toMatch(/update "?report_schedule_recipients"?/i);
+    expect(reportDeleteSql).toMatch(/delete from "?reports"?/i);
+    expect(outcome.notes.join('\n')).toMatch(/Fleet Design/);
+    expect(outcome.notes.join('\n')).toMatch(/report_schedule_recipients: 1 deduplicated, 1 re-homed/);
   });
 });
 
@@ -297,5 +344,48 @@ describe('mergeCustomFieldDefinitions — reconciles duplicate field_key instead
     expect(compiled.sql).toMatch(/s\.field_key\s*=\s*t\.field_key/i);
     expect(compiled.sql).not.toMatch(/\btype\b/i);
     expect(compiled.sql).not.toMatch(/s\.name\s*=\s*t\.name/i);
+  });
+});
+describe('m365 tenant sync merge disposition', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('classifies all seven tables, deleting snapshots and preserving history', () => {
+    const policies = getOrgMergePolicies();
+    for (const table of [
+      'm365_sync_state', 'm365_users', 'm365_intune_devices',
+      'm365_ca_policies', 'm365_license_skus',
+    ]) {
+      expect(policies.get(table)?.kind, `${table} must be custom`).toBe('custom');
+      expect(CUSTOM_EXECUTORS[table], `${table} needs a move half`).toBeDefined();
+      expect(CUSTOM_RESOLVE_EXECUTORS[table], `${table} needs a resolve half`).toBeDefined();
+      expect(CUSTOM_WOULD_DROP_COUNTS[table], `${table} must be visible in the preview`).toBeDefined();
+    }
+    expect(policies.get('m365_secure_score_snapshots')).toEqual({
+      kind: 'repoint-dedupe', key: ['score_date'],
+    });
+    expect(policies.get('m365_posture_rollups')).toEqual({
+      kind: 'repoint-dedupe', key: ['rollup_date'],
+    });
+  });
+
+  it('the resolve half deletes every loser-org row and the move half is a no-op', async () => {
+    executeMock.mockResolvedValueOnce({ rowCount: 3 });
+
+    const resolved = await CUSTOM_RESOLVE_EXECUTORS.m365_sync_state!(L, S);
+    expect(resolved).toMatchObject({ moved: 0, dropped: 3 });
+
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    expect(compiled.sql).toMatch(/delete from "?m365_sync_state"?/i);
+    expect(compiled.sql).toMatch(/org_id\s*=/i);
+    // Assert on the BOUND param, not on the SQL text — the org id is a
+    // placeholder in the compiled statement, so a text-only assertion would
+    // pass against a statement that deletes the survivor's rows.
+    expect(compiled.params).toContain(L);
+
+    const moved = await CUSTOM_EXECUTORS.m365_sync_state!(L, S);
+    expect(moved).toEqual({ moved: 0, dropped: 0, notes: [] });
+    expect(executeMock, 'the move half must issue no SQL').toHaveBeenCalledTimes(1);
   });
 });

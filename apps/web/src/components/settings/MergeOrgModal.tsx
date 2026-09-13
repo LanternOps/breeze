@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction, handleActionError } from '@/lib/runAction';
+import { Dialog } from '../shared/Dialog';
+
+const TITLE_ID = 'org-merge-dialog-title';
+const noop = () => {};
 
 /** Poll cadence for `GET /orgs/organizations/merge-runs/:jobId` while a merge
  *  job is queued/running. Exported for the test's fake-timer advances. */
@@ -310,13 +314,25 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
   const nameMatches = confirmName === loserOrg.name;
   const canSubmit = Boolean(survivorId) && Boolean(preview) && preview?.verdict === 'ok' && nameMatches && !submitting;
 
+  // Escape / backdrop: dismiss from pick/failed (never mid-request), inert
+  // while the merge job runs (the summary must be seen, and there is nothing
+  // to cancel client-side), and on done behave like the explicit Close
+  // button, which also clears the page's now-merged-away selection.
+  const handleDialogClose =
+    phase === 'done' ? onDoneClose : phase === 'progress' || submitting ? noop : onClose;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs"
-        data-testid="org-merge-modal"
-      >
-        <h2 className="text-lg font-semibold">{t('organizationsPage.merge.title')}</h2>
+    <Dialog
+      open
+      onClose={handleDialogClose}
+      title={t('organizationsPage.merge.title')}
+      labelledBy={TITLE_ID}
+      maxWidth="lg"
+      alignTop
+      className="p-6"
+    >
+      <div data-testid="org-merge-modal">
+        <h2 id={TITLE_ID} className="text-lg font-semibold">{t('organizationsPage.merge.title')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           {t('organizationsPage.merge.description', { name: loserOrg.name })}
         </p>
@@ -518,6 +534,6 @@ export default function MergeOrgModal({ loserOrg, orgs, onClose, onMerged, onDon
           </div>
         )}
       </div>
-    </div>
+    </Dialog>
   );
 }

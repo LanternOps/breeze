@@ -1,17 +1,19 @@
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { describe, expect, it } from 'vitest';
-import { createEdDsaInternalRequestAuthenticator } from './internalAuth';
+import { createEdDsaInternalRequestAuthenticator, type ExecutorOperation } from './internalAuth';
 
 const CORRELATION_ID = '11111111-1111-4111-8111-111111111111';
 
-async function fixture(overrides: { iat?: number; exp?: number; audience?: string | string[] } = {}) {
+async function fixture(
+  overrides: { iat?: number; exp?: number; audience?: string | string[]; operation?: ExecutorOperation } = {},
+) {
   const { publicKey, privateKey } = await generateKeyPair('EdDSA');
   const publicJwk = { ...await exportJWK(publicKey), kid: 'api-key-1' };
   const body = new TextEncoder().encode(`{"correlationId":"${CORRELATION_ID}"}`);
   const digest = await crypto.subtle.digest('SHA-256', body);
   const now = Math.floor(Date.now() / 1000);
   const token = await new SignJWT({
-    operation: 'complete-consent',
+    operation: overrides.operation ?? 'complete-consent',
     correlationId: CORRELATION_ID,
     bodySha256: Buffer.from(digest).toString('base64url'),
   })
@@ -51,6 +53,15 @@ describe('executor internal request authentication', () => {
       await expect(authenticator.verify({ authorization: `Bearer ${token}`, ...input }))
         .rejects.toMatchObject({ code: 'internal_request_unauthorized', message: 'internal_request_unauthorized' });
     }
+  });
+
+  it('rejects a read-action token presented at sync-action', async () => {
+    const { authenticator, body, token } = await fixture({ operation: 'read-action' });
+    await expect(authenticator.verify({
+      authorization: `Bearer ${token}`,
+      operation: 'sync-action',
+      rawBody: body,
+    })).rejects.toMatchObject({ code: 'internal_request_unauthorized', message: 'internal_request_unauthorized' });
   });
 
   it('rejects a token issued in the future even when its total lifetime is bounded', async () => {

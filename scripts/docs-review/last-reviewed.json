@@ -1,5 +1,5 @@
 {
-  "lastReviewedRef": "v0.111.1",
-  "reviewedAt": "2026-09-09",
-  "notes": "v0.111.1 hotfix sweep: added the discovered_assets backfill lock-hierarchy crash-loop to deploy/upgrades.mdx as a new v0.111.1 section ahead of v0.111.0, with the danger callout, the fix-forward SQL copied from docs/release-notes/next-release-draft.md, and the recovery steps. No other doc surface affected."
+  "lastReviewedRef": "v0.113.0",
+  "reviewedAt": "2026-09-13",
+  "notes": "v0.113.0 release sync (docs/v0.113.0-sync): new env vars BREEZE_AI_SCRIPT_AUTHORING_ENABLED (default true) / BREEZE_AI_SCRIPT_REVIEWER_MODEL / STRIPE_SESSION_REVOCATION_MODE / APP_ENCRYPTION_KEY_ID boot rules / executor M365_SYNC_* knobs (environment), full v0.113.0 section in deploy/upgrades (22 migrations, Strict-proposal approval bar, unattended lane off, Jobs + Monitoring renames), Fleet Designer kind (ai-agents), device function (devices), service deliverables (contracts, portal), step-up grant (approval-security), MFA enrolment grace (users-and-roles, hardening), backup GC prefix reclamation (backup/storage). AI script authoring, monitors, Jobs nav, mobile attestation and BMR pages had already landed with their PRs."
 }

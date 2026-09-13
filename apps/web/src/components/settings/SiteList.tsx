@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -10,15 +10,31 @@ export type Site = {
   deviceCount: number;
 };
 
+/**
+ * Below this many sites the list needs neither a count nor a search box: the
+ * eye takes in the rows faster than it could type a filter, and the chrome
+ * ("1 of 1 sites", an empty search field) read as an unfinished page. Mirrors
+ * `OrgSwitcher`'s `SEARCH_THRESHOLD`. Exported for the test.
+ */
+export const SITE_SEARCH_THRESHOLD = 6;
+
 type SiteListProps = {
   sites: Site[];
   onAddSite?: () => void;
   onEdit?: (site: Site) => void;
   onDelete?: (site: Site) => void;
   onSiteClick?: (site: Site) => void;
+  /**
+   * `card` (default): a standalone bordered card with its own h2, always
+   * showing count and search — the organization record's Sites tab.
+   * `section`: flat, for a host that is already a card (the Organizations
+   * page's detail panel): h3 heading, count and search only from
+   * `SITE_SEARCH_THRESHOLD` rows up, no card-in-card.
+   */
+  variant?: 'card' | 'section';
 };
 
-export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteClick }: SiteListProps) {
+export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteClick, variant = 'card' }: SiteListProps) {
   const { t } = useTranslation('settings');
   const [query, setQuery] = useState('');
 
@@ -31,6 +47,17 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
 
     return sites.filter(site => site.name.toLowerCase().includes(normalizedQuery));
   }, [query, sites]);
+
+  const isSection = variant === 'section';
+  const showListChrome = !isSection || sites.length >= SITE_SEARCH_THRESHOLD;
+  const Heading = isSection ? 'h3' : 'h2';
+
+  // When the list shrinks below the threshold the search box unmounts; a
+  // query typed before that must not keep filtering a list the operator can
+  // no longer see a filter for (five real sites behind "No sites").
+  useEffect(() => {
+    if (!showListChrome) setQuery('');
+  }, [showListChrome]);
 
   // Row pieces shared by the desktop table and the mobile cards.
   const renderSiteName = (site: Site) =>
@@ -51,14 +78,16 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       <button
         type="button"
         onClick={() => onSiteClick ? onSiteClick(site) : onEdit?.(site)}
-        className="rounded-md border px-3 py-1 text-xs font-medium hover:bg-muted"
+        aria-label={t('siteList.actions.editSite', { name: site.name })}
+        className="inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium hover:bg-muted"
       >
         {t('common:actions.edit')}
       </button>
       <button
         type="button"
         onClick={() => onDelete?.(site)}
-        className="rounded-md border border-destructive/40 px-3 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+        aria-label={t('siteList.actions.deleteSite', { name: site.name })}
+        className="inline-flex h-8 items-center rounded-md border border-destructive/40 px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10"
       >
         {t('common:actions.delete')}
       </button>
@@ -66,26 +95,33 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
   );
 
   return (
-    <div className="rounded-lg border bg-card p-6 shadow-xs">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className={isSection ? '' : 'rounded-lg border bg-card p-6 shadow-xs'}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold">{t('siteList.title')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {t('siteList.count', { filtered: filteredSites.length, total: sites.length })}
-          </p>
+          <Heading className={isSection ? 'text-sm font-semibold' : 'text-lg font-semibold'}>
+            {t('siteList.title')}
+          </Heading>
+          {showListChrome && (
+            <p className="text-sm text-muted-foreground">
+              {t('siteList.count', { filtered: filteredSites.length, total: sites.length })}
+            </p>
+          )}
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            type="search"
-            placeholder={t('siteList.searchPlaceholder')}
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
-          />
+          {showListChrome && (
+            <input
+              type="search"
+              placeholder={t('siteList.searchPlaceholder')}
+              aria-label={t('siteList.searchPlaceholder')}
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-56"
+            />
+          )}
           <button
             type="button"
             onClick={onAddSite}
-            className="flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
+            className="flex h-9 w-full items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 sm:w-auto"
           >
             {t('siteList.actions.add')}
           </button>
@@ -93,7 +129,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
       </div>
 
       <ResponsiveTable
-        className="mt-6"
+        className={isSection ? 'mt-3' : 'mt-6'}
         table={
           <table className="min-w-full divide-y">
             <thead className="bg-muted/40">
@@ -116,7 +152,7 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
                   <tr key={site.id} className="transition hover:bg-muted/40">
                     <td className="px-4 py-3 text-sm font-medium">{renderSiteName(site)}</td>
                     <td className="px-4 py-3 text-sm">{site.timezone}</td>
-                    <td className="px-4 py-3 text-sm">{site.deviceCount}</td>
+                    <td className="px-4 py-3 text-sm tabular-nums">{site.deviceCount}</td>
                     <td className="px-4 py-3 text-right">{renderActions(site)}</td>
                   </tr>
                 ))

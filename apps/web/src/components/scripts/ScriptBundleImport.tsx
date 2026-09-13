@@ -243,6 +243,7 @@ export function ScriptBundleImportModal({
   const [preview, setPreview] = useState<PreviewEntry[] | null>(null);
   const [mode, setMode] = useState<ImportMode>('skip');
   const [partnerWide, setPartnerWide] = useState(false);
+  const [tagLegacy, setTagLegacy] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
@@ -264,6 +265,7 @@ export function ScriptBundleImportModal({
     setResult(null);
     setPartnerWide(false);
     setMode('skip');
+    setTagLegacy(false);
   };
 
   const handleClose = () => {
@@ -332,7 +334,12 @@ export function ScriptBundleImportModal({
         request: () =>
           fetchWithAuth('/scripts/bundle/import', {
             method: 'POST',
-            body: JSON.stringify({ bundle, mode, ...targetBody() })
+            body: JSON.stringify({
+              bundle,
+              mode,
+              ...targetBody(),
+              ...(tagLegacy ? { tags: ['legacy-import'] } : {})
+            })
           }),
         errorFallback: t('bundle.importFailed'),
         successMessage: res =>
@@ -509,6 +516,19 @@ export function ScriptBundleImportModal({
                   <option value="rename">{t('bundle.modeRename')}</option>
                   <option value="new-version">{t('bundle.modeNewVersion')}</option>
                 </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={tagLegacy}
+                    onChange={e => setTagLegacy(e.target.checked)}
+                    data-testid="bundle-import-tag-legacy"
+                  />
+                  {t('bundle.tagLegacy')}
+                </label>
+                <p className="pl-6 text-xs text-muted-foreground">{t('bundle.tagLegacyHint')}</p>
               </div>
 
               {showPartnerWide && (

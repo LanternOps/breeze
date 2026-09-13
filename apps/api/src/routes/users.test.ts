@@ -72,7 +72,8 @@ const {
   getEffectiveMfaPolicyMock: vi.fn().mockResolvedValue({
     required: false,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+    pendingEnrollment: null,
+    source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
   }),
   // SR2-17: default the pending-email service succeeds and returns a raw token.
   requestPendingEmailChangeMock: vi.fn().mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 }),
@@ -363,7 +364,8 @@ describe('user routes', () => {
     getEffectiveMfaPolicyMock.mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
     });
     requestPendingEmailChangeMock.mockResolvedValue({ rawToken: 'raw-token-mock', emailEpoch: 5 });
     isPasswordAuthDisabledBySsoMock.mockResolvedValue(false);
@@ -1641,6 +1643,29 @@ describe('user routes', () => {
       );
     });
 
+    // #5306 — an OPEN grace window makes policy.required false everywhere else,
+    // but this gate must still refuse: a session stolen before enrollment would
+    // otherwise get 14 days in which to repoint the recovery address.
+    it('SR2-18 + #5306: an unenrolled user inside the MFA grace window still cannot move the recovery address', async () => {
+      orgScopeAuth();
+      mockSelf({ email: 'old@example.com', passwordHash: 'hash' });
+      mockUpdate(updatedRow());
+      getEffectiveMfaPolicyMock.mockResolvedValue({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: { deadline: new Date(Date.now() + 10 * 86_400_000).toISOString() },
+        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'active' as const }
+      });
+      userIsMfaProtectedMock.mockResolvedValue(false);
+
+      const res = await patchMe({ email: 'new@example.com', currentPassword: 'pw' });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ error: 'mfa_enrollment_required' });
+      expect(requestPendingEmailChangeMock).not.toHaveBeenCalled();
+      expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+    });
+
     it('SR2-18: a forced-enrollment user (policy required, unenrolled) cannot move the recovery address', async () => {
       orgScopeAuth();
       mockSelf({ email: 'old@example.com', passwordHash: 'hash' });
@@ -1648,7 +1673,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
       userIsMfaProtectedMock.mockResolvedValue(false);
 
@@ -1668,7 +1694,8 @@ describe('user routes', () => {
       getEffectiveMfaPolicyMock.mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true }
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const }
       });
 
       const res = await patchMe({ email: 'new@example.com' });

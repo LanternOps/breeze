@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import type { AuthContext } from '../../middleware/auth';
-import { requirePermission, requireScope } from '../../middleware/auth';
+import { requireMfa, requirePermission, requireScope } from '../../middleware/auth';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { PERMISSIONS } from '../../services/permissions';
 import {
@@ -24,6 +24,9 @@ import {
   idParamSchema,
   assignmentIdParamSchema,
 } from './schemas';
+
+import type { UserPermissions } from '../../services/permissions';
+import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 
 export const assignmentRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -66,6 +69,7 @@ assignmentRoutes.post(
   '/:id/assignments',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', idParamSchema),
   zValidator('json', assignPolicySchema),
   async (c) => {
@@ -123,6 +127,24 @@ assignmentRoutes.post(
       return c.json({ error: siteAuth.error }, 403);
     }
 
+    // #5511 W02 (contract D4): an assignment is how a policy that already
+    // enables HP CMSL collection REACHES devices, so assigning one is the same
+    // capability as authoring it, reached through a second door. The effective
+    // warranty link is the policy's own, else the one it inherits (whole link,
+    // no merge — D5). An unresolvable parent fails CLOSED, as on the
+    // feature-link delete route: "can't tell" must not read as "no parent".
+    const ownsWarrantyLink = !!policy.featureLinks?.some(
+      (l: { featureType: string }) => l.featureType === 'warranty',
+    );
+    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
+    const assignmentStartsHpCmslCollection = ownsWarrantyLink
+      ? warrantyLinkEnablesCollection(policy.featureLinks)
+      : parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks);
+    if (assignmentStartsHpCmslCollection) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
     // assignPolicy returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -162,6 +184,7 @@ assignmentRoutes.delete(
   '/:id/assignments/:aid',
   requireScope('organization', 'partner', 'system'),
   requireConfigPolicyWrite,
+  requireMfa(),
   zValidator('param', assignmentIdParamSchema),
   async (c) => {
     const auth = c.get('auth') as AuthContext;

@@ -1,0 +1,260 @@
+{
+  "managed": {
+    "readOnly": "Managed by a monitor",
+    "description": "This record is generated from a monitor and can't be edited directly. Manage it from the monitor instead.",
+    "open": "Open monitor",
+    "badge": "Monitor-managed",
+    "badgeHint": "Managed by a monitor — edit it from the monitor instead.",
+    "monitorLabel": "Monitor"
+  },
+  "hub": {
+    "title": "Monitoring & Automation",
+    "tabs": {
+      "monitors": "Monitors",
+      "network": "Network",
+      "delivery": "Delivery",
+      "legacyRules": "Legacy rules"
+    },
+    "ariaLabel": "Monitoring sections"
+  },
+  "list": {
+    "title": "Monitors",
+    "description": "Watch a condition, respond on the device, notify, and escalate when it keeps happening.",
+    "new": "New monitor",
+    "empty": "No monitors yet.",
+    "columns": {
+      "name": "Name",
+      "kind": "Kind",
+      "severity": "Severity",
+      "deployedTo": "Deployed to",
+      "enabled": "Enabled",
+      "owner": "Owner"
+    },
+    "allOrgs": "All orgs",
+    "policiesCount_one": "{{count}} policy",
+    "policiesCount_other": "{{count}} policies",
+    "notDeployed": "Not deployed",
+    "errors": {
+      "fetch": "Failed to load monitors",
+      "delete": "Failed to delete monitor",
+      "toggle": "Failed to update monitor"
+    },
+    "deleteConfirm": "Delete monitor {{name}}? Its alert rule and response automation are removed too."
+  },
+  "editor": {
+    "titleNew": "New monitor",
+    "titleEdit": "Edit monitor",
+    "breadcrumb": {
+      "monitors": "Monitors",
+      "new": "New monitor"
+    },
+    "sections": {
+      "watch": "What to watch",
+      "noise": "Severity & noise",
+      "respond": "Respond",
+      "notify": "Notify",
+      "escalate": "Escalate to a human",
+      "deployed": "Deployed to"
+    },
+    "fields": {
+      "name": "Name",
+      "description": "Description",
+      "kind": "Kind",
+      "severity": "Severity",
+      "cooldownMinutes": "Cooldown (minutes)",
+      "autoResolve": "Auto-resolve when the condition clears",
+      "deliveryMode": "Delivery",
+      "channels": "Channels",
+      "escalationPolicy": "Escalation policy",
+      "recurrenceThreshold": "Escalate after",
+      "recurrenceWindowDays": "episodes within (days)",
+      "pauseResponses": "Pause automatic responses until a person resets",
+      "aiAgent": "AI agent (enables AI triage responses)"
+    },
+    "deliveryModes": {
+      "inherit": "Use routing rules",
+      "channels": "Routing rules plus these channels",
+      "none": "Do not notify"
+    },
+    "agentDeliveredHint": "This watch runs on the device and must also exist in the policy's Service & Process Monitoring tab until that is unified.",
+    "responsesHint": "Responses run on the device that breached, in order.",
+    "recurrenceHint": "Counted in breach episodes: a new episode starts only after the condition recovered.",
+    "ownerScope": {
+      "legend": "Owner",
+      "partner": "All organizations (partner-wide)",
+      "organization": "This organization only"
+    },
+    "actions": {
+      "save": "Save monitor",
+      "saving": "Saving…",
+      "create": "Create monitor",
+      "test": "Test on a device",
+      "deploy": "Deploy to…",
+      "delete": "Delete"
+    },
+    "errors": {
+      "load": "Failed to load monitor",
+      "save": "Failed to save monitor",
+      "delete": "Failed to delete monitor",
+      "test": "Test failed",
+      "generic": "Something went wrong"
+    },
+    "loading": "Loading monitor…",
+    "noAttachments": "Not deployed to any policy yet.",
+    "testResult": {
+      "triggered": "Condition met on {{device}}",
+      "notTriggered": "Condition not met on {{device}}"
+    },
+    "testDialog": {
+      "title": "Test on a device",
+      "selectDevice": "Device",
+      "run": "Run test"
+    }
+  },
+  "kinds": {
+    "cpu": "CPU usage",
+    "memory": "Memory usage",
+    "disk": "Disk usage",
+    "offline": "Device offline",
+    "event_log": "Event log",
+    "patch_compliance": "Patch compliance",
+    "service": "Service stopped",
+    "process": "Process stopped",
+    "process_resource": "Process resource",
+    "cert_expiry": "Certificate expiry",
+    "bandwidth": "Bandwidth",
+    "disk_io": "Disk I/O",
+    "network_errors": "Network errors"
+  },
+  "fields": {
+    "operator": "Comparison",
+    "value": "Value",
+    "durationMinutes": "For at least (minutes)",
+    "category": "Category",
+    "level": "Level",
+    "sourcePattern": "Source matches",
+    "messagePattern": "Message matches",
+    "countThreshold": "Occurrences",
+    "windowMinutes": "Within (minutes)",
+    "serviceName": "Service name",
+    "processName": "Process name",
+    "consecutiveFailures": "Consecutive failures",
+    "resource": "Resource",
+    "withinDays": "Expires within (days)",
+    "direction": "Direction",
+    "errorType": "Error direction",
+    "interfaceName": "Interface (optional)"
+  },
+  "operators": {
+    "gt": "greater than",
+    "gte": "at least",
+    "lt": "less than",
+    "lte": "at most",
+    "eq": "equal to",
+    "neq": "not equal to"
+  },
+  "severities": {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "info": "Info"
+  },
+  "eventCategories": {
+    "security": "Security",
+    "hardware": "Hardware",
+    "application": "Application",
+    "system": "System"
+  },
+  "eventLevels": {
+    "warning": "Warning",
+    "error": "Error",
+    "critical": "Critical"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Memory"
+  },
+  "directions": {
+    "in": "In",
+    "out": "Out",
+    "read": "Read",
+    "write": "Write",
+    "total": "Total"
+  },
+  "deploy": {
+    "title": "Deploy monitor",
+    "existingPolicy": "Attach to an existing configuration policy",
+    "newPolicy": "Create a policy for",
+    "levels": {
+      "organization": "this organization",
+      "site": "a site",
+      "device_group": "a device group"
+    },
+    "selectPolicy": "Configuration policy",
+    "selectTarget": "Target",
+    "policyName": "Policy name",
+    "attach": "Attach",
+    "cancel": "Cancel",
+    "detachConfirm": "Detach from {{policy}}?",
+    "errors": {
+      "attach": "Failed to attach monitor",
+      "detach": "Failed to detach monitor"
+    }
+  },
+  "policyTab": {
+    "title": "Monitors",
+    "description": "Monitors attached to this policy. Disabled rows switch a monitor off for this policy's scope; overrides change thresholds for it.",
+    "attachExisting": "Attach existing",
+    "createNew": "Create monitor",
+    "empty": "No monitors attached.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Kind",
+      "enabled": "Enabled",
+      "overrides": "Overrides",
+      "source": "Source"
+    },
+    "inherited": "Inherited from parent",
+    "overrideEditor": {
+      "title": "Override for this policy",
+      "clear": "Clear overrides"
+    },
+    "save": "Save",
+    "errors": {
+      "save": "Failed to save monitors"
+    }
+  },
+  "legacy": {
+    "title": "Legacy alert rules",
+    "description": "Standalone alert rules that are not managed by a monitor. Convert them to get responses, delivery and escalation in one place.",
+    "empty": "No legacy rules.",
+    "columns": {
+      "name": "Name",
+      "template": "Template",
+      "target": "Target",
+      "owner": "Owner",
+      "active": "Active"
+    },
+    "convert": "Convert to monitor",
+    "converted": "Converted",
+    "notConvertible": "This rule's conditions cannot be expressed as a single monitor.",
+    "errors": {
+      "fetch": "Failed to load alert rules",
+      "convert": "Failed to convert rule"
+    }
+  },
+  "devices": {
+    "title": "Devices",
+    "columns": {
+      "device": "Device",
+      "enabled": "Enabled",
+      "overrides": "Overrides",
+      "source": "Source policy"
+    },
+    "empty": "No devices are covered by this monitor yet.",
+    "errors": {
+      "fetch": "Failed to load devices"
+    }
+  }
+}

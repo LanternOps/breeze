@@ -1,4 +1,5 @@
 import { lockMfaPolicySettings, countMfaPolicyLockouts, mfaPolicyLockoutResponse } from '../services/mfaPolicyActivation';
+import { MFA_ENROLLMENT_GRACE_DAYS_MAX } from '../services/mfaEnrollmentGrace';
 import { isDeepStrictEqual } from 'node:util';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -626,6 +627,19 @@ const partnerSettingsSchema = z.object({
     complexity: z.enum(['standard', 'strict', 'passphrase']).optional(),
     expirationDays: z.number().int().min(0).optional(),
     requireMfa: z.boolean().optional(),
+    // #5306 — how long a user whose ROLE forces MFA (roles.force_mfa) may keep
+    // working before enrolment is enforced. Optional on purpose: a PATCH that
+    // omits it must not overwrite a configured window with the default. 0 means
+    // enforce immediately; the 30-day ceiling is deliberate — a longer standing
+    // exception is a policy decision, not a grace period. Lowering it SHORTENS
+    // windows already granted (services/mfaEnrollmentGrace.ts takes the min);
+    // raising it only affects grants made afterwards.
+    mfaEnrollmentGraceDays: z
+      .number()
+      .int()
+      .min(0)
+      .max(MFA_ENROLLMENT_GRACE_DAYS_MAX)
+      .optional(),
     allowedMethods: z.object({ totp: z.boolean().optional(), sms: z.boolean().optional() }).optional(),
     // Legacy input alias. Accepted so older clients don't 400, folded into
     // `allowedMethods` at write time (foldAllowedMfaMethodsAlias) and never

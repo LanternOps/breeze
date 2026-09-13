@@ -40,6 +40,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
+import { assertDeviceTicketsNotPinnedToDeliverable, TicketServiceError } from '../../services/ticketService';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -262,6 +263,13 @@ moveOrgRoutes.post(
         if (!lockedTarget) throw new OrgVanishedDuringMoveError('target');
         if (!lockedSource) throw new OrgVanishedDuringMoveError('source');
         await assertPamDeviceOrgMoveAllowed(tx, { deviceId, sourceOrgId });
+        // #5573 W02 — a ticket on this device that is a service deliverable's
+        // work item pins it to the deliverable's org. `tickets` is in
+        // getDeviceOrgDenormalizedTables(), so the loop below would re-stamp
+        // its org_id and trip sd_occ_ticket_org_fk (deliberately NOT deferred
+        // by name above) as an opaque 23503. Cheap precondition, same 409 the
+        // ticket-level move answers with.
+        await assertDeviceTicketsNotPinnedToDeliverable(tx, deviceId);
         const lockedSourceCurrency = lockedSource.currencyCode;
         const lockedTargetCurrency = lockedTarget.currencyCode;
 
@@ -330,6 +338,33 @@ moveOrgRoutes.post(
         await tx.execute(
           sql`UPDATE manual_assets SET linked_device_id = NULL
               WHERE linked_device_id = ${deviceId}::uuid`,
+        );
+
+        // #5329 (M365 tenant sync, spec §3.4) — m365_intune_devices links a
+        // Breeze device to its Intune record via the composite FK
+        // (breeze_device_id, org_id) -> devices(id, org_id). Once the device
+        // leaves the org that link is not merely stale but unrepresentable, so
+        // null it. The ROW survives: it is the SOURCE org's Intune snapshot and
+        // must outlive the link. The next Intune run in the NEW org re-links the
+        // device if it is managed there.
+        //
+        // Placement is load-bearing, exactly as for manual_assets above: the FK
+        // is DEFERRABLE INITIALLY IMMEDIATE, so its check fires at the end of
+        // the `UPDATE devices SET org_id` statement immediately below.
+        //
+        // Unlike the manual_assets case there is no trigger-side mirror at all:
+        // breeze_device_child_orgid_tables() requires a column literally named
+        // `device_id`, and this one is `breeze_device_id`, so
+        // breeze_cascade_device_org_id() never sees the table. This statement is
+        // the only detach on any path.
+        //
+        // Scoped to the SOURCE org as well as the device. An org MERGE never
+        // reaches this route: it deletes the loser org's m365_intune_devices
+        // rows outright in the resolve phase (services/orgMergeCustomExecutors.ts).
+        await tx.execute(
+          sql`UPDATE m365_intune_devices SET breeze_device_id = NULL
+              WHERE breeze_device_id = ${deviceId}::uuid
+                AND org_id = ${sourceOrgId}::uuid`,
         );
 
         // Flip the device row first so any concurrent agent heartbeat
@@ -1042,6 +1077,11 @@ moveOrgRoutes.post(
       // failed-move audit.
       if (err instanceof TicketMoveCurrencyBlockedError) {
         return c.json({ error: err.message, code: err.code, details: err.details }, 409);
+      }
+      // #5573 W02 — same shape: the transaction rolled back untouched, so this
+      // is an explainable refusal, not a failure worth Sentry.
+      if (err instanceof TicketServiceError && err.code === 'DELIVERABLE_TICKET_PINNED') {
+        return c.json({ error: err.message, code: err.code }, 409);
       }
       // A row deleted under us is a lost race, not an exception: the
       // transaction rolled back, so answer exactly as the pre-transaction

@@ -70,6 +70,7 @@ export default function PurposeStep({
       <ModeChoice
         mode={draft.mode}
         onChange={(mode) => patch({ mode })}
+        kind={draft.kind}
         actSupported={actSupported}
         enteringActMode={enteringActMode}
         actAck={actAck}
@@ -98,7 +99,13 @@ export default function PurposeStep({
                 role="radio"
                 aria-checked={selected}
                 disabled={taken}
-                onClick={() => patch({ kind })}
+                // Fleet Designer (W01): the designer kind has no shadow mode
+                // (`allowedModesForKind`) — a draft left in shadow from a
+                // previous kind selection would otherwise become
+                // unauthorable, so switching to designer while shadow is
+                // selected falls back to off, the same safe default `Draft`
+                // never picks for act.
+                onClick={() => patch(kind === 'designer' && draft.mode === 'shadow' ? { kind, mode: 'off' } : { kind })}
                 className={`flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   selected ? 'border-primary bg-primary/10 ring-1 ring-primary' : 'bg-background hover:border-primary/50 hover:bg-muted/40'
                 }`}

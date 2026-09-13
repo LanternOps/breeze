@@ -49,6 +49,11 @@ const validEnv = {
   // never guesses its compatibility posture. Tests that assert the
   // missing/invalid throw override this.
   EVENT_PERMISSION_EPOCH_MODE: 'compat',
+  // Production-required (SEC-065): integration provider credentials are sealed
+  // with AAD-bound enc:v3 ciphertext and fail closed without an active key id.
+  // Supplied here so the suite's production happy-path tests don't trip it; the
+  // test that asserts the throw overrides it explicitly.
+  APP_ENCRYPTION_KEY_ID: 'app-test-key-1',
 };
 
 describe('validateConfig', () => {
@@ -280,6 +285,64 @@ describe('validateConfig', () => {
       }, () => {
         expect(() => validateConfig()).toThrow(/M365_CUSTOMER_GRAPH_ACTIONS_CLIENT_ID/);
       });
+    });
+
+    it('warns (but does not refuse boot) when APP_ENCRYPTION_KEY_ID is unset in production', () => {
+      // No feature flag gates /integrations/{communication,monitoring,ticketing,psa}
+      // — they are mounted unconditionally under the default BREEZE_ROLE 'all' —
+      // but this is deliberately a WARNING, not a hard error: guided-setup.sh
+      // has never generated APP_ENCRYPTION_KEY_ID, so refusing boot would brick
+      // every existing self-hosted upgrade and every fresh guided install. The
+      // failure lands at the point of use instead (503 from the seal site).
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'false',
+        APP_ENCRYPTION_KEY_ID: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('APP_ENCRYPTION_KEY_ID'),
+        );
+        const sealWarnings = warnSpy.mock.calls
+          .flat()
+          .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID'));
+        expect(sealWarnings.join('\n')).toContain('503');
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn about APP_ENCRYPTION_KEY_ID outside production, or when it is set', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'development',
+        APP_ENCRYPTION_KEY_ID: '',
+      }, () => {
+        expect(() => validateConfig()).not.toThrow();
+        expect(
+          warnSpy.mock.calls
+            .flat()
+            .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID')),
+        ).toHaveLength(0);
+      });
+      warnSpy.mockClear();
+      withEnv({
+        ...validEnv,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+        TRUST_PROXY_HEADERS: 'false',
+      }, () => {
+        validateConfig();
+        expect(
+          warnSpy.mock.calls
+            .flat()
+            .filter((m) => typeof m === 'string' && m.includes('APP_ENCRYPTION_KEY_ID')),
+        ).toHaveLength(0);
+      });
+      warnSpy.mockRestore();
     });
 
     it('requires APP_ENCRYPTION_KEY_ID when write-action tools are enabled', () => {
@@ -3074,4 +3137,33 @@ describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
       });
     },
   );
+});
+
+describe('M365_TENANT_SYNC_ENABLED + sync knobs (wave 04)', () => {
+  it('declares every sync key in the schema so buildEnvParseInput sees it', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('M365_TENANT_SYNC_ENABLED');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_CONCURRENCY');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_MAX_BACKLOG');
+    expect(ENV_SCHEMA_KEYS).toContain('M365_SYNC_TICK_BATCH');
+  });
+
+  it('refuses boot on a non-boolean M365_TENANT_SYNC_ENABLED (a typo must not read as OFF)', () => {
+    withEnv({ ...validEnv, M365_TENANT_SYNC_ENABLED: 'tru' }, () => {
+      expect(() => validateConfig()).toThrow(/M365_TENANT_SYNC_ENABLED must be a boolean/);
+    });
+  });
+
+  it('accepts every recognised boolean spelling', () => {
+    for (const raw of ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']) {
+      withEnv({ ...validEnv, M365_TENANT_SYNC_ENABLED: raw }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    }
+  });
+
+  it('refuses boot on a non-integer sync knob', () => {
+    withEnv({ ...validEnv, M365_SYNC_TICK_BATCH: 'lots' }, () => {
+      expect(() => validateConfig()).toThrow(/M365_SYNC_TICK_BATCH/);
+    });
+  });
 });

@@ -1,6 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { getAnthropicClientForPartner, resolveWireModel } from './llm/llmConfigResolver';
+import { maxOutputTokensForAiBudget } from './aiBudgetReservations';
 
 export interface DraftInput {
   messages: Array<{ role: string; content: string | null }>;
@@ -15,6 +16,9 @@ export interface DraftInput {
    */
   orgId?: string | null;
   client?: Anthropic;
+  /** Finite amount reserved for the complete two-attempt operation. */
+  budgetCents?: number;
+  calculateCostCents?: (inputTokens: number, outputTokens: number) => number;
 }
 export interface DraftResult {
   subject: string;
@@ -27,6 +31,18 @@ export interface DraftResult {
 }
 export class ThinTranscriptError extends Error {
   constructor() { super('Not enough conversation to draft a ticket'); this.name = 'ThinTranscriptError'; }
+}
+export class TicketDraftFailedError extends Error {
+  constructor(
+    message: string,
+    public readonly inputTokens: number,
+    public readonly outputTokens: number,
+    public readonly providerOutcomeUnknown: boolean,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = 'TicketDraftFailedError';
+  }
 }
 
 const llmSchema = z.object({
@@ -82,19 +98,43 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
     wireModel = resolveWireModel(llm.resolved, input.model).model;
   }
   const userContent = buildUserContent(input);
+  const maxTokens = input.budgetCents === undefined
+    ? 1024
+    : maxOutputTokensForAiBudget({
+      prompt: `${SYSTEM_PROMPT}\n${userContent}`,
+      requestedMaxOutputTokens: 1024,
+      // Either attempt may consume its full output ceiling.
+      budgetCents: input.budgetCents / 2,
+      calculateCostCents: input.calculateCostCents
+        ?? (() => { throw new Error('Budgeted ticket draft requires pricing'); }),
+    });
+  if (maxTokens === null) {
+    throw new TicketDraftFailedError('Ticket draft prompt exceeds the reserved budget', 0, 0, false);
+  }
   let lastErr: unknown;
   let inTok = 0;
   let outTok = 0;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const resp = await client.messages.create({
-      model: wireModel,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
-    });
-    inTok = resp.usage?.input_tokens ?? 0;
-    outTok = resp.usage?.output_tokens ?? 0;
+    let resp;
+    try {
+      resp = await client.messages.create({
+        model: wireModel,
+        max_tokens: maxTokens,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: userContent }],
+      });
+    } catch (error) {
+      throw new TicketDraftFailedError(
+        'Ticket draft provider outcome is unknown',
+        inTok,
+        outTok,
+        true,
+        { cause: error },
+      );
+    }
+    inTok += resp.usage?.input_tokens ?? 0;
+    outTok += resp.usage?.output_tokens ?? 0;
     const text = lastTextBlock(resp.content);
     if (text) {
       try {
@@ -111,5 +151,10 @@ export async function draftTicketFromTranscript(input: DraftInput): Promise<Draf
       } catch (err) { lastErr = err; }
     }
   }
-  throw new Error(`Failed to draft ticket from transcript: ${String(lastErr)}`);
+  throw new TicketDraftFailedError(
+    `Failed to draft ticket from transcript: ${String(lastErr)}`,
+    inTok,
+    outTok,
+    false,
+  );
 }

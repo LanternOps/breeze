@@ -9,6 +9,7 @@ import {
   TICKET_TRIAGE_PRIVATE_NOTE_DISCLAIMER,
   buildAgentRunSystemPrompt,
   buildAgentRunTaskPrompt,
+  buildFleetDesignTaskPrompt,
   buildNarrativeTaskPrompt,
   buildSweepTaskPrompt,
   buildTriageTaskPrompt,
@@ -16,7 +17,8 @@ import {
   sanitizeSweepText,
   type AgentRunPromptContext,
 } from './runnerPrompt';
-import { NARRATIVE_SECTION_KEYS } from '@breeze/shared';
+import { FLEET_DESIGN_SECTION_KEYS, NARRATIVE_SECTION_KEYS } from '@breeze/shared';
+import type { DesignEvidence } from './designEvidence';
 import type { NarrativeContext } from './narrativeContext';
 
 function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
@@ -32,6 +34,7 @@ function ctx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptCont
     correlationGroup: null,
     sweep: null,
     narrative: null,
+    design: null,
     ...overrides,
   };
 }
@@ -1086,5 +1089,124 @@ describe('buildTriageTaskPrompt (P2-4)', () => {
 
   it('buildAgentRunTaskPrompt dispatches a triage-profile run to the triage turn', () => {
     expect(buildAgentRunTaskPrompt(triageCtx())).toBe(buildTriageTaskPrompt(triageCtx()));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fleet Designer W01 (#5651) — `buildFleetDesignTaskPrompt`
+// ---------------------------------------------------------------------------
+
+const DESIGN_DEVICE_ID = '00000000-0000-4000-8000-0000000000e1';
+
+/** A minimal `DesignEvidence`, shaped like `designEvidence.ts`'s assembler
+ *  output (sanitized names, one device). */
+function designEvidence(overrides: Partial<DesignEvidence> = {}): DesignEvidence {
+  return {
+    org: { name: 'Acme Dental', partnerName: 'Northwind IT', timezone: 'Europe/Berlin', siteName: null },
+    window: { start: '2026-06-14T00:00:00.000Z', end: '2026-09-12T00:00:00.000Z' },
+    devices: [{
+      id: DESIGN_DEVICE_ID, hostname: 'FS-01', osType: 'windows', osVersion: '2022', role: 'server',
+      roleSource: 'agent', lastSeenAt: '2026-09-11T00:00:00.000Z', status: 'online', siteName: 'HQ',
+      groupNames: ['File servers'], tags: ['prod'], customFields: 'dept=ops', pendingReboot: false,
+      reliabilityScore: 0.98,
+    }],
+    deviceIds: new Set([DESIGN_DEVICE_ID]),
+    devicesTotal: 1,
+    devicesNotAssessed: 0,
+    software: [],
+    services: [],
+    network: { assets: [], topology: [], baselines: 0, openChanges: [] },
+    posture: [],
+    health: { reliabilityWorst: [], fleetFindings: [], vulnerability: null, patching: null, backups: null, cis: null },
+    configuration: { policies: [], assignments: [], alertTemplates: [] },
+    automation: { playbooks: [], scripts: [] },
+    logs: [],
+    counts: { alerts90d: 0, tickets90d: 0, endpoints: 1 },
+    precursors: {
+      diskOver: 0, rebootPending: 0, rebootPendingOver: 0, patchAgeOver: 0,
+      certificateExpiring: null, backupMissed: 0, serviceRestartsOver: 0,
+    },
+    thresholds: {
+      diskUsedPercent: 80, rebootPendingDays: 7, patchAgeDays: 30, certificateDays: 30, serviceRestartsPer30d: 2,
+    },
+    unavailable: [],
+    truncated: false,
+    ...overrides,
+  };
+}
+
+function designCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunPromptContext {
+  return ctx({
+    run: { id: 'run-11', mode: 'shadow', triggerKind: 'schedule' },
+    device: null,
+    alert: null,
+    profile: 'design',
+    design: { trigger: 'manual', occurrenceKey: null, evidence: designEvidence() },
+    ...overrides,
+  });
+}
+
+describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
+  it('renders counts and precursors as "not measured" — never as zeros — when their loaders were unavailable', () => {
+    const out = buildFleetDesignTaskPrompt(designCtx({
+      design: { trigger: 'manual', occurrenceKey: null, evidence: designEvidence({ unavailable: ['counts', 'precursors'] }) },
+    }));
+    expect(out).not.toMatch(/alerts \(90d\): 0/);
+    expect(out).not.toMatch(/backups missed: 0/);
+    expect(out).toMatch(/## Counts\nnot measured/);
+    expect(out).toMatch(/## Precursors[^\n]*\nnot measured/);
+    expect(out).toContain('Not measured: counts, precursors');
+  });
+
+  it('states a manual trigger by default', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    expect(text).toContain('Trigger: manual fleet design');
+  });
+
+  it('states a schedule trigger with its occurrence', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx({
+      design: { trigger: 'schedule', occurrenceKey: '2026-09-12T00:00:00.000Z', evidence: designEvidence() },
+    }));
+    expect(text).toContain('Trigger: design schedule (2026-09-12T00:00:00.000Z)');
+  });
+
+  it('lists the eight section keys, in FLEET_DESIGN_SECTION_KEYS order', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    const indices = FLEET_DESIGN_SECTION_KEYS.map((key) => text.indexOf(`${key}:`));
+    for (const index of indices) expect(index).toBeGreaterThan(-1);
+    for (let i = 1; i < indices.length; i += 1) expect(indices[i]!).toBeGreaterThan(indices[i - 1]!);
+  });
+
+  it('requires a rationale on every watch and rule', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    expect(text).toContain('Rationale is required on every watch and rule');
+  });
+
+  it('never dumps the raw evidence object (no internal jsonb field names)', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    expect(text).not.toContain('managementPosture');
+  });
+
+  it('ends with the exactly-once submission instruction', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    expect(text).toContain('Call submit_fleet_design exactly once, then stop.');
+  });
+
+  it('renders the device table with the evidence device', () => {
+    const text = buildFleetDesignTaskPrompt(designCtx());
+    expect(text).toContain(DESIGN_DEVICE_ID);
+    expect(text).toContain('FS-01');
+  });
+
+  it('gets its own mode section instead of the shadow/act one', () => {
+    const prompt = buildAgentRunSystemPrompt(designCtx());
+    expect(prompt).toContain('## Mode: fleet design');
+    expect(prompt).not.toContain('## Mode: shadow');
+    expect(prompt).not.toContain('## Mode: act');
+    expect(prompt).toContain('submit_fleet_design');
+  });
+
+  it('buildAgentRunTaskPrompt dispatches a design-profile run to the design turn', () => {
+    expect(buildAgentRunTaskPrompt(designCtx())).toBe(buildFleetDesignTaskPrompt(designCtx()));
   });
 });

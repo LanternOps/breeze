@@ -57,6 +57,8 @@ const EXPECTED_OUTCOME: Record<AgentRunSkipReason, 'succeeded' | 'failed'> = {
   narrative_rate: 'succeeded',
   max_concurrent_triage_runs: 'succeeded',
   triage_rate: 'succeeded',
+  max_concurrent_design_runs: 'succeeded',
+  design_rate: 'succeeded',
   ownership_mismatch: 'failed',
   device_not_in_org: 'failed',
 };

@@ -63,6 +63,7 @@ vi.mock('../db/schema', () => ({
   devices: {
     id: 'id',
     orgId: 'org_id',
+    siteId: 'site_id',
   },
   alerts: {
     id: 'id',
@@ -85,6 +86,7 @@ vi.mock('../middleware/auth', () => ({
   }),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
   requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
 }));
 
 import { db } from '../db';
