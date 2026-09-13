@@ -15,8 +15,10 @@ import {
 } from '../middleware/auth';
 import {
   deriveGrantHealth,
+  type GrantHealthState,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   listCustomerGraphReadConnections,
   retestCustomerGraphReadConnection,
   type CustomerGraphReadConnectionSnapshot,
@@ -71,7 +73,16 @@ export interface CustomerGraphReadConnectionDto {
   clientId: string | null;
   displayName: string | null;
   status: CustomerGraphReadConnectionSnapshot['status'];
+  /**
+   * Derived health, not stored status. `manifest-stale` is the state the
+   * upgrade-consent banner keys off: the connection is executing fine on the
+   * grants it has, but the code manifest has moved on (spec §2.2).
+   */
+  grantHealth: GrantHealthState;
+  /** Manifest version stored on the row. */
   manifestVersion: number;
+  /** Manifest version this build requires. */
+  currentManifestVersion: number;
   observedGrants: CanonicalAppRoleAssignment[];
   missingGrants: CanonicalAppRoleAssignment[];
   unexpectedGrants: CanonicalAppRoleAssignment[];
@@ -84,7 +95,9 @@ export interface CustomerGraphReadEnvelope {
   profile: {
     id: typeof PROFILE_ID;
     displayName: string;
-    manifestVersion: 2;
+    // Was a hard-coded literal, which stops compiling the moment the manifest
+    // moves. The manifest is the single source; the DTO reports it.
+    manifestVersion: number;
     requiredGrants: M365ApplicationGrant[];
   };
   onboardingEnabled: boolean;
@@ -107,7 +120,9 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphReadConnecti
     clientId: value.clientId === '' ? null : value.clientId,
     displayName: value.displayName,
     status: value.status,
+    grantHealth: health.state,
     manifestVersion: value.permissionManifestVersion,
+    currentManifestVersion: profileManifest.version,
     observedGrants: [...health.observedGrants],
     missingGrants: [...health.missingGrants],
     unexpectedGrants: [...health.unexpectedGrants],
@@ -189,6 +204,12 @@ function lifecycleFailure(c: Context, error: unknown) {
     || code === 'tenant_already_bound') {
     return c.json({ error: 'Connection not found' }, 404);
   }
+  if (code === 'manifest_current') {
+    // Reachable by racing the banner (two tabs, double click). Saying so beats
+    // the generic message, because the correct next step is "reload", not
+    // "retry".
+    return c.json({ error: 'The connection already uses the current permission manifest' }, 409);
+  }
   return c.json({ error: 'Connection operation could not be completed' }, 409);
 }
 
@@ -232,6 +253,57 @@ m365CustomerGraphReadRoutes.post(
       const auth = c.get('auth');
       recordM365CustomerGraphReadEvent(c, {
         event: 'm365.customer_graph_read.consent_initiated',
+        orgId: resolved.orgId,
+        connectionId: initiated.connection.id,
+        profile: PROFILE_ID,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        manifestVersion: profileManifest.version,
+        outcome: 'initiated',
+        correlationId,
+        actorId: auth.user.id,
+        actorEmail: auth.user.email,
+      });
+      return c.json({ adminConsentUrl: initiated.consentUrl });
+    } catch (error) {
+      return lifecycleFailure(c, error);
+    }
+  },
+);
+
+/**
+ * Starts a manifest upgrade on an existing connection (spec §2.2). Unlike the
+ * consent route above, this one does not move the connection to
+ * pending-consent — reads keep working on the grants the customer already
+ * approved for the whole duration of the Microsoft round trip, including if
+ * the administrator abandons it.
+ */
+m365CustomerGraphReadRoutes.post(
+  '/connections/:id/upgrade-consent',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    const { id } = c.req.valid('param');
+    try {
+      const correlationId = randomUUID();
+      const initiated = await initiateCustomerGraphReadUpgradeConsent({
+        connectionId: id,
+        orgId: resolved.orgId,
+        auth: c.get('auth'),
+      });
+      c.header('Set-Cookie', buildM365ConsentBindingCookie({
+        phase: 'admin_consent',
+        rawState: initiated.rawState,
+        connectionId: initiated.connection.id,
+        consentAttemptId: initiated.connection.consentAttemptId,
+        tenantHint: null,
+      }), { append: true });
+      const auth = c.get('auth');
+      recordM365CustomerGraphReadEvent(c, {
+        event: 'm365.customer_graph_read.upgrade_consent_initiated',
         orgId: resolved.orgId,
         connectionId: initiated.connection.id,
         profile: PROFILE_ID,

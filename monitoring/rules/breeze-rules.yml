@@ -252,6 +252,24 @@ groups:
           description: "{{ $value }} commands dispatched in 5m for tenant {{ $labels.tenant }} — possible compromised account fanning out commands"
           runbook_url: "https://docs.breeze.local/runbooks/command-dispatch-spike"
 
+      # #1374 / #5162 (W07 Task 3): after W05/W06 ship, a mobile approver device
+      # is expected to hold an L4-trusted attestation basis. A SUSTAINED
+      # non-zero denial rate means technicians are stuck unable to approve
+      # critical-tier requests (PAM elevation, destructive/blocklist overrides)
+      # from mobile — most likely because they haven't re-enrolled on an
+      # attested app build yet. `basis` distinguishes which non-trusted basis is
+      # driving it (`unattested`, `legacy_unattested`, `ios_keychain_rsa_app_attest`).
+      - alert: AuthenticatorL4BasisDenied
+        expr: |
+          breeze:authenticator_l4_basis:rate15m{outcome="denied"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Critical-tier approvals denied on platform_bound_basis={{ $labels.basis }}"
+          description: "A sustained non-zero rate of L4 (critical-tier) approval denials on basis {{ $labels.basis }} over the last 15m. Technicians on this basis cannot approve privileged access / destructive actions from mobile until re-enrolled on an attested app build (#1374)."
+          runbook_url: "https://docs.breeze.local/runbooks/authenticator-l4-basis-denied"
+
   - name: breeze-backup-alerts
     interval: 60s
     rules:
@@ -357,3 +375,11 @@ groups:
 
       - record: breeze:commands_dispatched:increase5m
         expr: sum(increase(breeze_commands_dispatched_total{job=~"breeze-api.*"}[5m])) by (type, actor, tenant)
+
+      # #1374 / #5162 (W07 Task 3): backs both AuthenticatorL4BasisDenied above
+      # and the Grafana "L4 basis outcomes" panel — `denied` for what's actually
+      # blocking approvals today, `would_deny` for the SAME signal on a fleet
+      # where BREEZE_AUTHENTICATOR_ATTESTATION_ENFORCED is (or is ever reverted
+      # to) false, so the blast radius of the flag stays visible either way.
+      - record: breeze:authenticator_l4_basis:rate15m
+        expr: sum(rate(breeze_authenticator_l4_basis_total[15m])) by (basis, outcome)

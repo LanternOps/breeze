@@ -37,6 +37,22 @@ const { dbResults, insertValuesMock } = vi.hoisted(() => ({
   dbResults: [] as unknown[][],
   insertValuesMock: vi.fn(),
 }));
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('../../services/stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};
@@ -120,6 +136,8 @@ function boundParams(node: unknown, out: unknown[] = [], seen = new Set<unknown>
   for (const c of n.queryChunks ?? []) boundParams(c, out, seen);
   return out;
 }
+
+import { checkoutSessionExpiry } from '../../services/invoiceCheckout';
 
 describe('portal invoices routes', () => {
   beforeEach(() => { vi.clearAllMocks(); dbResults.length = 0; insertValuesMock.mockReset(); });
@@ -291,6 +309,7 @@ describe('portal invoices routes', () => {
         // never arrives 'unpaid' from an async method.
         payment_method_types: ['card'],
         // metadata key matches the design spec (section 6 step 3).
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '10000' }),
         // The return URL must carry {CHECKOUT_SESSION_ID} for verify-on-return settle.
         success_url: expect.stringContaining('session_id={CHECKOUT_SESSION_ID}'),
@@ -298,7 +317,7 @@ describe('portal invoices routes', () => {
       // No Connect stripeAccount option — the client is already the partner's. Only an
       // idempotency key keyed on (invoice, balance, phase) so a double-click reuses
       // the session.
-      { idempotencyKey: `inv_${INV_ID}_10000_bal` },
+      { idempotencyKey: `inv_${INV_ID}_10000_bal_e${checkoutSessionExpiry().quantum}` },
     );
     // the Stripe object → payment mapping row is recorded
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -324,9 +343,10 @@ describe('portal invoices routes', () => {
         line_items: [expect.objectContaining({
           price_data: expect.objectContaining({ unit_amount: 1000, currency: 'jpy' }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '1000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_1000_bal` },
+      { idempotencyKey: `inv_${INV_ID}_1000_bal_e${checkoutSessionExpiry().quantum}` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({
       stripeObjectId: 'cs_jpy', amount: '1000.00', currency: 'JPY',
@@ -353,9 +373,10 @@ describe('portal invoices routes', () => {
             product_data: { name: 'Deposit — Invoice INV-DEP' },
           }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '300000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_300000_dep` },
+      { idempotencyKey: `inv_${INV_ID}_300000_dep_e${checkoutSessionExpiry().quantum}` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '3000.00' }));
   });
@@ -380,9 +401,10 @@ describe('portal invoices routes', () => {
             product_data: { name: 'Invoice INV-DEP' },
           }),
         })],
+        expires_at: checkoutSessionExpiry().expiresAt,
         metadata: expect.objectContaining({ invoice_balance_cents: '700000' }),
       }),
-      { idempotencyKey: `inv_${INV_ID}_700000_bal` },
+      { idempotencyKey: `inv_${INV_ID}_700000_bal_e${checkoutSessionExpiry().quantum}` },
     );
     expect(insertValuesMock).toHaveBeenCalledWith(expect.objectContaining({ amount: '7000.00' }));
   });
@@ -401,7 +423,7 @@ describe('portal invoices routes', () => {
     dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const depositKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep`);
+    expect(depositKey).toBe(`inv_${INV_ID}_500000_dep_e${checkoutSessionExpiry().quantum}`);
 
     vi.clearAllMocks();
     dbResults.push([{
@@ -414,7 +436,7 @@ describe('portal invoices routes', () => {
     dbResults.push([{ id: 'connection' }]);
     await app().request(`/invoices/${INV_ID}/pay`, { method: 'POST' });
     const balanceKey = (sessionsCreateMock.mock.calls[0]?.[1] as { idempotencyKey: string }).idempotencyKey;
-    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal`);
+    expect(balanceKey).toBe(`inv_${INV_ID}_500000_bal_e${checkoutSessionExpiry().quantum}`);
 
     expect(depositKey).not.toBe(balanceKey);
   });

@@ -42,6 +42,9 @@
       "unknownPermission": "Bilinmeyen izin (rol {{appRoleId}})",
       "grantsVerifiedAt": "İzinler doğrulandı"
     },
+    "upgrade": {
+      "banner": "Koşullu Erişim, Güvenli Puan ve yönetici rolü görünürlüğü için yeni Microsoft 365 izinleri gereklidir. Bunları bir Genel Yönetici onaylamalıdır."
+    },
     "actions": {
       "connect": "Bağlan",
       "reconsent": "Yeniden onay ver",
@@ -53,7 +56,9 @@
       "retestSucceeded": "Bağlantının yeniden testi tamamlandı.",
       "disconnectWarning": "Bağlantının kesilmesi Breeze'nin bu bağlantıyı kullanmasını durdurur. Microsoft kiracı çapında izin, bir müşteri yöneticisi bunu Microsoft Entra'da kaldırıncaya kadar kalır.",
       "disconnectFailed": "Bağlantı kesilemedi.",
-      "disconnectSucceeded": "Breeze bağlantısı kesildi."
+      "disconnectSucceeded": "Breeze bağlantısı kesildi.",
+      "approveNewPermissions": "Yeni izinleri onayla",
+      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı."
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",
@@ -875,7 +880,10 @@
     "notCached": "Para birimi henüz önbelleğe alınmadı — Stripe'tan almak için yenileyin.",
     "staleCache": "Stripe'a ulaşılamadı — önbelleğe alınan son hesap ayrıntıları gösteriliyor.",
     "reconnectRequired": "Kayıtlı Stripe anahtarınız (•••• {{last4}}) artık çalışmıyor: {{reason}} Yeniden bağlanmak için yeni bir anahtar yapıştırın; o zamana kadar çevrimiçi ödemeler başarısız olur.",
-    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin."
+    "reconciliationError": "Ödeme ters ibraz mutabakatı çalışmıyor: {{reason}} Stripe anahtarını Olayları okuyabilen bir anahtarla değiştirin.",
+    "revocationCredentialUnavailable": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi çünkü bunları oluşturan Stripe anahtarı artık kullanılamıyor. Bu bağlantılar Stripe üzerinde hâlâ ödenebilir olabilir — Stripe panonuzdan iptal edin ve faturaları yeniden düzenleyin.",
+    "revocationChargedRepair": "{{count}} çevrimiçi ödeme bağlantısı, Breeze Stripe'tan iptal etmesini istedikten sonra ödendi. Para gerçek — bu ödemeleri mutabık kılın (ve fatura başka bir yolla zaten kapatıldıysa iade edin).",
+    "revocationBlocked": "{{count}} çevrimiçi ödeme bağlantısı iptal edilemedi — Stripe, kayıtlı anahtarla yapılan isteği reddetti. Yeniden denemek için çalışan bir Stripe anahtarı kaydedin veya bağlantıları Stripe panonuzdan iptal edin."
   },
   "unifiIntegration": {
     "failedToSaveSiteMappings": "Site eşlemeleri kaydedilemedi.",

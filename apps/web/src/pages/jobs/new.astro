@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import AutomationEditPage from '../../components/automations/AutomationEditPage';
+---
+
+<DashboardLayout titleKey="titles.jobsNew">
+  <AutomationEditPage isNew={true} client:load />
+</DashboardLayout>

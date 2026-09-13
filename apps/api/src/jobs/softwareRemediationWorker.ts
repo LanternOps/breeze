@@ -315,7 +315,7 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
     : { authorized: false, requestedByUserId: null };
   const trigger: SoftwareRemediationTrigger = manualAuth.authorized ? 'manual' : 'auto';
 
-  const arming = evaluateSoftwarePolicyArming(policy);
+  const arming = evaluateSoftwarePolicyArming(policy, 'uninstall');
   // A verified manual action overrides `enforce_mode_off` / `auto_uninstall_off`
   // ONLY — NEVER `audit_mode` (#3553). A policy flipped to audit mode after the
   // operator authorized must not be bypassed; audit_mode falls through to the

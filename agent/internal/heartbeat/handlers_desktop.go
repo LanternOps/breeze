@@ -137,6 +137,33 @@ func handleStartDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		}
 	}
 
+	// SEC-038 start fence. Checked before ANY side effect — before leases,
+	// before the consent prompt, before capture — so a superseded or
+	// post-terminal start cannot spawn a helper, show a banner, or take a
+	// lease on its way to being refused.
+	fenceInput, genErr := parseDesktopStartGeneration(cmd.Payload)
+	if genErr != nil {
+		// Fail closed: a generation we cannot compare is one we cannot honour.
+		log.Warn("refusing start_desktop with a malformed start generation",
+			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
+		return tools.NewErrorResult(
+			desktopStartFenceError(desktopFenceReasonMalformed, genErr.Error()),
+			time.Since(start).Milliseconds())
+	}
+	fenceInput.CommandID = cmd.ID
+	if decision := h.desktopStartFence.admitStart(sessionID, fenceInput); !decision.Admitted {
+		log.Warn("refusing start_desktop at the desktop start fence",
+			"sessionId", sessionID,
+			"commandId", cmd.ID,
+			"reason", string(decision.Reason),
+			"generation", fenceInput.Generation,
+			"highWater", decision.HighWater,
+		)
+		return tools.NewErrorResult(
+			desktopStartFenceError(decision.Reason, ""),
+			time.Since(start).Milliseconds())
+	}
+
 	// Parse optional ICE servers from payload
 	var iceServers []desktop.ICEServerConfig
 	if raw, ok := cmd.Payload["iceServers"].([]interface{}); ok {
@@ -394,6 +421,28 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 		errResult.DurationMs = time.Since(start).Milliseconds()
 		return *errResult
 	}
+
+	// SEC-038 terminal tombstone. Installed FIRST, and unconditionally —
+	// including when no session is running under this id. A stop can overtake
+	// the start it was meant to cancel, and before this the unknown-session
+	// stop was a silent no-op that let the late start run. A malformed
+	// terminalGeneration does not block the tombstone: the stop is still an
+	// unambiguous terminal decision, only its generation is unusable.
+	stopInput, genErr := parseDesktopTerminalGeneration(cmd.Payload)
+	if genErr != nil {
+		// Log-only, deliberately. The defect cannot be reported in the command
+		// result: desktopCommandResultSchema (apps/api/src/routes/agentWs.ts)
+		// is .strict(), so an extra key would make the API drop the whole stop
+		// confirmation as malformed — and W03's pending -> confirmed phase
+		// transition is driven by exactly that confirmation. Surfacing it needs
+		// an allowed field on the server side first; tracked with W03/W05.
+		// A malformed generation is in any case only reachable from a buggy or
+		// tampered server, and it never weakens the fence: the tombstone below
+		// is installed regardless.
+		log.Warn("stop_desktop carried a malformed terminal generation; tombstoning anyway",
+			"sessionId", sessionID, "commandId", cmd.ID, "error", genErr.Error())
+	}
+	h.desktopStartFence.noteStop(sessionID, stopInput)
 
 	// Drop any on-demand helper leases first: the lease is what keeps the
 	// helper alive, and it must be released even if the stop below fails.

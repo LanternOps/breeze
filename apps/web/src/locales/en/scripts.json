@@ -7,7 +7,7 @@
     },
     "loading": "Loading automation...",
     "breadcrumb": {
-      "automations": "Automations",
+      "automations": "Jobs",
       "new": "New Automation",
       "edit": "Edit Automation"
     },
@@ -341,8 +341,8 @@
       "delete": "Failed to delete automation"
     },
     "loading": "Loading automations...",
-    "title": "Automations",
-    "description": "Create and manage automated workflows.",
+    "title": "Jobs",
+    "description": "Scheduled, on-demand, webhook and event-driven automations.",
     "actions": {
       "new": "New Automation",
       "deleting": "Deleting..."
@@ -351,6 +351,14 @@
       "title": "Delete Automation",
       "confirmPrefix": "Are you sure you want to delete",
       "confirmSuffix": "This action cannot be undone."
+    },
+    "tabs": {
+      "ariaLabel": "Job types",
+      "all": "All",
+      "scheduled": "Scheduled",
+      "on-demand": "On demand",
+      "webhooks": "Webhooks",
+      "event-rules": "Event rules"
     }
   },
   "complianceDashboard": {

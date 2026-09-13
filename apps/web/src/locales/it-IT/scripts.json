@@ -7,7 +7,7 @@
     },
     "loading": "Caricamento automazione...",
     "breadcrumb": {
-      "automations": "Automazioni",
+      "automations": "Attività",
       "new": "Nuova automazione",
       "edit": "Modifica automazione"
     },
@@ -341,8 +341,8 @@
       "delete": "Impossibile eliminare l'automazione"
     },
     "loading": "Caricamento automazioni...",
-    "title": "Automazioni",
-    "description": "Crea e gestisci workflow automatizzati.",
+    "title": "Attività",
+    "description": "Automazioni pianificate, su richiesta, via webhook e basate su eventi.",
     "actions": {
       "new": "Nuova automazione",
       "deleting": "Eliminazione..."
@@ -351,6 +351,14 @@
       "title": "Elimina automazione",
       "confirmPrefix": "Vuoi davvero eliminare",
       "confirmSuffix": "Questa azione non può essere annullata."
+    },
+    "tabs": {
+      "ariaLabel": "Tipi di attività",
+      "all": "Tutte",
+      "scheduled": "Pianificate",
+      "on-demand": "Su richiesta",
+      "webhooks": "Webhook",
+      "event-rules": "Regole evento"
     }
   },
   "complianceDashboard": {

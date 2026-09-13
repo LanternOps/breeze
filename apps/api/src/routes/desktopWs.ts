@@ -24,6 +24,14 @@ import {
   buildRemoteSessionPromptPayload,
   createDesktopStartCommandId,
 } from './remote/helpers';
+import {
+  assertDesktopStartIntentCurrent,
+  commitDesktopStartIntent,
+  commitDesktopStreamStartIntent,
+  formatDesktopGeneration,
+  startIntentDenialCode,
+  startIntentDenialMessage,
+} from '../services/remoteDesktopStartIntent';
 import { webrtcOfferSchema } from './remote/schemas';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess, resolveDesktopSessionPolicy } from '../services/remoteAccessPolicy';
@@ -917,26 +925,40 @@ function createDesktopWsHandlers(
           return;
         }
 
-        // Update only a still-open row. A prior owner may have made the row
-        // terminal after validation but before this exact lease was bound.
-        const [activated] = await withSystemDbAccessContext(() =>
-          db.update(remoteSessions)
-            .set({ status: 'active', startedAt: new Date() })
-            .where(and(
-              eq(remoteSessions.id, sessionId),
-              inArray(remoteSessions.status, ['pending', 'connecting']),
-            ))
-            .returning({ id: remoteSessions.id })
+        // Update only a still-open row, under the same row-locked start-intent
+        // commit the WebRTC paths use (SEC-038 W02). A prior owner may have made
+        // the row terminal after validation but before this exact lease was
+        // bound, and the generation orders this start against that decision.
+        const streamIntent = await withSystemDbAccessContext(() =>
+          commitDesktopStreamStartIntent(sessionId)
         );
-        if (
-          !activated
-          || !ownsSafeRemoteConnection(
-            activeDesktopSessions,
-            sessionId,
-            boundIdentity,
-            ws,
-          )
-        ) {
+        // A denial is told to the viewer, with the reason, exactly as the lease
+        // and re-read failures below are. Dropping the socket without a frame
+        // is indistinguishable from a network blip, and the viewer then has
+        // nothing to render and nothing to branch on.
+        if (!streamIntent.ok) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: startIntentDenialCode(streamIntent.reason),
+            message: startIntentDenialMessage(streamIntent.reason),
+          }));
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          ws.close(4003, 'Session not startable');
+          return;
+        }
+
+        if (!ownsSafeRemoteConnection(
+          activeDesktopSessions,
+          sessionId,
+          boundIdentity,
+          ws,
+        )) {
           await closeDesktopSessionLifecycle(sessionId, {
             expectedWs: ws,
             connection: boundIdentity,
@@ -980,12 +1002,34 @@ function createDesktopWsHandlers(
           type: 'desktop_stream_start',
           payload: {
             sessionId,
+            startGeneration: formatDesktopGeneration(streamIntent.generation),
             quality: 60,
             scaleFactor: 1.0,
             maxFps: 15,
             revocationLease: streamLease.lease
           }
         };
+
+        // Pre-publication re-read — the twin of the check on both /offer routes.
+        const streamStillCurrent = await withSystemDbAccessContext(() =>
+          assertDesktopStartIntentCurrent(sessionId, streamIntent.generation)
+        );
+        if (!streamStillCurrent.ok) {
+          ws.send(JSON.stringify({
+            type: 'error',
+            code: startIntentDenialCode(streamStillCurrent.reason),
+            message: startIntentDenialMessage(streamStillCurrent.reason),
+          }));
+          await closeDesktopSessionLifecycle(sessionId, {
+            expectedWs: ws,
+            connection: boundIdentity,
+            reason: 'setup_failed',
+            terminalStatus: 'failed',
+            notifyAgent: true,
+          });
+          ws.close(4003, 'Session superseded');
+          return;
+        }
 
         if (!ownsSafeRemoteConnection(
           activeDesktopSessions,
@@ -1612,39 +1656,65 @@ export function createDesktopWsRoutes(
 
       const promptMode = prompt?.mode === 'consent' || prompt?.mode === 'notify' ? prompt.mode : 'off';
       const startCommandId = createDesktopStartCommandId(sessionId);
-      const [updated] = await withSystemDbAccessContext(() =>
-        db.update(remoteSessions)
-          .set({
-            webrtcOffer: data.offer,
-            webrtcAnswer: null,
-            desktopStartCommandId: startCommandId,
-            desktopPromptMode: promptMode,
-            status: 'connecting',
-            ...(access.session.status === 'active' ? { endedAt: null } : {}),
-          })
-          .where(and(
-            eq(remoteSessions.id, sessionId),
-            inArray(remoteSessions.status, ['pending', 'connecting', 'active']),
-          ))
-          .returning()
+      // Row-locked start decision (SEC-038 W02): refuses a session whose
+      // terminal intent has already committed, and bumps the generation the
+      // agent fences on.
+      const startIntent = await withSystemDbAccessContext(() =>
+        commitDesktopStartIntent({
+          sessionId,
+          startCommandId,
+          promptMode,
+          offer: data.offer,
+        })
       );
 
-      if (!updated) {
+      if (!startIntent.ok) {
+        if (startIntent.reason === 'not_found') {
+          return c.json({ error: 'Session not found' }, 404);
+        }
+        if (startIntent.reason === 'terminal') {
+          return c.json({
+            error: 'This session has already been ended',
+            code: 'SESSION_TERMINAL',
+          }, 409);
+        }
         return c.json({ error: 'Session state changed while submitting offer' }, 409);
       }
+
+      const startGeneration = startIntent.generation;
 
       await logSessionAudit(
         'session_offer_submitted',
         access.user.id,
         access.device.orgId,
-        { sessionId, type: access.session.type, via: 'viewer_token', startCommandId, promptMode },
+        {
+          sessionId,
+          type: access.session.type,
+          via: 'viewer_token',
+          startCommandId,
+          promptMode,
+          startGeneration: formatDesktopGeneration(startGeneration),
+        },
         getTrustedClientIp(c, 'unknown')
       );
+
+      // Pre-publication re-read — see the twin check on the JWT offer route.
+      const stillCurrent = await withSystemDbAccessContext(() =>
+        assertDesktopStartIntentCurrent(sessionId, startGeneration)
+      );
+      if (!stillCurrent.ok) {
+        return c.json({
+          error: 'This session was ended while the stream was starting',
+          code: startIntentDenialCode(stillCurrent.reason),
+        }, 409);
+      }
+
       const agentReachable = sendCommandToAgent(access.device.agentId, {
         id: startCommandId,
         type: 'start_desktop',
         payload: {
           sessionId,
+          startGeneration: formatDesktopGeneration(startGeneration),
           offer: data.offer,
           iceServers: getIceServers({
             sessionId,
@@ -1667,9 +1737,9 @@ export function createDesktopWsRoutes(
       }
 
       return c.json({
-        id: updated.id,
-        status: updated.status,
-        webrtcOffer: updated.webrtcOffer,
+        id: sessionId,
+        status: 'connecting',
+        webrtcOffer: data.offer,
       });
     }
   );

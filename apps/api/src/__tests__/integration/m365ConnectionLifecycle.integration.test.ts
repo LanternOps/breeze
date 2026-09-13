@@ -6,9 +6,12 @@ import { db, withSystemDbAccessContext } from '../../db';
 import { m365Connections, m365ConsentSessions } from '../../db/schema';
 import { consumeConsentSession } from '../../services/m365ControlPlane/consentSessionService';
 import {
+  applyUpgradeVerificationResult,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
+  initiateCustomerGraphReadUpgradeConsent,
   loadRetestSnapshot,
+  retestCustomerGraphReadConnection,
 } from '../../services/m365ControlPlane/connectionService';
 import { createOrganization, createPartner, createUser } from './db-utils';
 import { getTestDb } from './setup';
@@ -95,7 +98,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
     await withSystemDbAccessContext(() => db.update(m365Connections).set({
       tenantId,
       displayName: 'Contoso',
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       observedGrants: requiredGrants,
       grantsVerifiedAt: verifiedAt,
       lastVerifiedAt: verifiedAt,
@@ -113,7 +116,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       tenantId: null,
       clientId: '',
       displayName: null,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       observedGrants: [],
       grantsVerifiedAt: null,
       lastVerifiedAt: null,
@@ -126,7 +129,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       tenantId: null,
       clientId: '',
       displayName: null,
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       observedGrants: [],
       grantsVerifiedAt: null,
       lastVerifiedAt: null,
@@ -164,7 +167,7 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       credentialDomain: 'customer-graph-read',
       vaultRef: 'akv://vault.example/m365-customer-graph-read/0123456789abcdef0123456789abcdef',
       credentialVersion: '0123456789abcdef0123456789abcdef',
-      permissionManifestVersion: 2,
+      permissionManifestVersion: 3,
       observedGrants: requiredGrants,
       consentAttemptId: crypto.randomUUID(),
       grantsVerifiedAt: verifiedAt,
@@ -262,5 +265,175 @@ describe('customer Graph-read lifecycle transaction integration', () => {
       connectionId: original.connection.id,
       consentAttemptId: original.connection.consentAttemptId,
     });
+  });
+});
+
+
+describe('customer Graph-read upgrade consent integration', () => {
+  function authContextFor(fixture: { orgId: string; actorId: string }) {
+    return {
+      scope: 'organization',
+      orgId: fixture.orgId,
+      accessibleOrgIds: [fixture.orgId],
+      partnerId: null,
+      user: { id: fixture.actorId },
+    } as never;
+  }
+
+  async function executableConnection() {
+    const owner = await ownerFixture();
+    const initiated = await initiateCustomerGraphReadConsent({
+      orgId: owner.orgId,
+      actorId: owner.actorId,
+    });
+    const tenantId = crypto.randomUUID();
+    const verifiedAt = new Date('2026-09-01T16:00:00.000Z');
+    await withSystemDbAccessContext(() => db.update(m365Connections).set({
+      tenantId,
+      displayName: 'Contoso',
+      permissionManifestVersion: 2,
+      observedGrants: [],
+      grantsVerifiedAt: verifiedAt,
+      lastVerifiedAt: verifiedAt,
+      consentedAt: verifiedAt,
+      status: 'active',
+      lastErrorCode: null,
+    }).where(eq(m365Connections.id, initiated.connection.id)));
+    return { ...owner, connectionId: initiated.connection.id, tenantId };
+  }
+
+  runDb('binds an upgrade session to the existing attempt and leaves the connection active', async () => {
+    const fixture = await executableConnection();
+    const before = await currentConnection(fixture.orgId);
+
+    const initiated = await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: fixture.connectionId,
+      orgId: fixture.orgId,
+      auth: authContextFor(fixture),
+    });
+
+    const after = await currentConnection(fixture.orgId);
+    expect(after?.status).toBe('active');
+    expect(after?.consentAttemptId).toBe(before?.consentAttemptId);
+    expect(after?.permissionManifestVersion).toBe(2);
+
+    const sessions = await withSystemDbAccessContext(() => db.select()
+      .from(m365ConsentSessions)
+      .where(eq(m365ConsentSessions.connectionId, fixture.connectionId)));
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.purpose).toBe('upgrade');
+    expect(sessions[0]!.consentAttemptId).toBe(before?.consentAttemptId);
+    expect(initiated.consentUrl).toContain('adminconsent');
+  });
+
+  runDb('rejects a purpose outside the two legal values', async () => {
+    const fixture = await executableConnection();
+    const conn = await currentConnection(fixture.orgId);
+
+    // Drizzle wraps the driver error as "Failed query: …" and hangs the real
+    // PostgresError off `cause`, so assert on the constraint name there rather
+    // than on the outer message.
+    const rejection = await withSystemDbAccessContext(() => db.execute(sql`
+      INSERT INTO m365_consent_sessions
+        (state_hash, phase, purpose, connection_id, org_id, profile, consent_attempt_id, user_id, expires_at)
+      VALUES (
+        ${'f'.repeat(64)}, 'admin_consent', 'sideways', ${conn!.id}, ${fixture.orgId},
+        'customer-graph-read', ${conn!.consentAttemptId}, ${fixture.actorId}, now() + interval '10 minutes'
+      )
+    `)).then(() => null, (error: unknown) => error);
+    expect(rejection).not.toBeNull();
+    const cause = (rejection as { cause?: { code?: string; constraint_name?: string } }).cause;
+    expect(cause?.code).toBe('23514');
+    expect(cause?.constraint_name).toBe('m365_consent_sessions_purpose_check');
+  });
+
+  runDb('promotes the manifest in place and bumps the consent generation on a full approval', async () => {
+    const fixture = await executableConnection();
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: fixture.connectionId,
+      orgId: fixture.orgId,
+      auth: authContextFor(fixture),
+    });
+    const conn = await currentConnection(fixture.orgId);
+    const manifest = M365_PERMISSION_PROFILES['customer-graph-read'];
+
+    const applied = await applyUpgradeVerificationResult({
+      id: conn!.id,
+      orgId: fixture.orgId,
+      profile: 'customer-graph-read',
+      consentAttemptId: conn!.consentAttemptId!,
+      status: 'active',
+    }, {
+      success: true,
+      tenantId: fixture.tenantId,
+      applicationId: '55555555-5555-4555-8555-555555555555',
+      organizationDisplayName: 'Contoso',
+      manifestVersion: manifest.version,
+      verifiedAt: '2026-09-08T10:00:00.000Z',
+      grantReconciliation: 'complete',
+      grantsVerifiedAt: '2026-09-08T10:00:01.000Z',
+      // The DB CHECK breeze_m365_observed_grants_are_canonical requires
+      // (resourceApplicationId, appRoleId) order; the manifest is listed
+      // alphabetically by scope value, and the executor canonicalises what it
+      // returns, so the fixture has to do the same.
+      observedGrants: [...(manifest.applicationPermissionAssignments ?? [])]
+        .sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right))),
+    } as never);
+
+    expect(applied.failureCode).toBeNull();
+    expect(applied.connection.permissionManifestVersion).toBe(manifest.version);
+    expect(applied.connection.status).toBe('active');
+    const after = await currentConnection(fixture.orgId);
+    expect(after?.consentGeneration).toBe((conn?.consentGeneration ?? 0) + 1);
+  });
+
+  runDb('leaves an abandoned upgrade executing on the old manifest', async () => {
+    const fixture = await executableConnection();
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: fixture.connectionId,
+      orgId: fixture.orgId,
+      auth: authContextFor(fixture),
+    });
+    const conn = await currentConnection(fixture.orgId);
+
+    const applied = await applyUpgradeVerificationResult({
+      id: conn!.id,
+      orgId: fixture.orgId,
+      profile: 'customer-graph-read',
+      consentAttemptId: conn!.consentAttemptId!,
+      status: 'active',
+    }, { success: false, errorCode: 'consent_cancelled' } as never);
+
+    expect(applied.failureCode).toBe('consent_cancelled');
+    const after = await currentConnection(fixture.orgId);
+    expect(after?.status).toBe('active');
+    expect(after?.permissionManifestVersion).toBe(2);
+    expect(after?.consentGeneration).toBe(conn?.consentGeneration);
+    expect(after?.lastVerifiedAt).toEqual(conn?.lastVerifiedAt);
+  });
+
+  runDb('lets a retest rotate the attempt while an upgrade session is live', async () => {
+    // Before the retest fix this raised 23503: the consent-session composite
+    // FK has ON DELETE CASCADE but no ON UPDATE CASCADE.
+    const fixture = await executableConnection();
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId: fixture.connectionId,
+      orgId: fixture.orgId,
+      auth: authContextFor(fixture),
+    });
+
+    await expect(retestCustomerGraphReadConnection({
+      id: fixture.connectionId,
+      orgId: fixture.orgId,
+      auth: authContextFor(fixture),
+      executorClient: {
+        retestCustomerGraphRead: async () => ({ success: false, errorCode: 'credential_unavailable' }),
+      } as never,
+    })).resolves.toBeDefined();
+
+    const sessions = await withSystemDbAccessContext(() => db.select()
+      .from(m365ConsentSessions)
+      .where(eq(m365ConsentSessions.connectionId, fixture.connectionId)));
+    expect(sessions).toHaveLength(0);
   });
 });

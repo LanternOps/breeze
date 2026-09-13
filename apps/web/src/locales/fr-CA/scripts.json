@@ -7,7 +7,7 @@
     },
     "loading": "Chargement de l’automatisation...",
     "breadcrumb": {
-      "automations": "Automatisations",
+      "automations": "Tâches",
       "new": "Nouvelle automatisation",
       "edit": "Modifier l’automatisation"
     },
@@ -341,8 +341,8 @@
       "delete": "Impossible de supprimer l’automatisation"
     },
     "loading": "Chargement des automatisations...",
-    "title": "Automatisations",
-    "description": "Créez et gérez des flux de travail automatisés.",
+    "title": "Tâches",
+    "description": "Automatisations planifiées, sur demande, par webhook et par événement.",
     "actions": {
       "new": "Nouvelle automatisation",
       "deleting": "Suppression…"
@@ -351,6 +351,14 @@
       "title": "Supprimer l’automatisation",
       "confirmPrefix": "Voulez-vous vraiment supprimer",
       "confirmSuffix": "Cette action est irréversible."
+    },
+    "tabs": {
+      "ariaLabel": "Types de tâches",
+      "all": "Toutes",
+      "scheduled": "Planifiées",
+      "on-demand": "Sur demande",
+      "webhooks": "Webhooks",
+      "event-rules": "Règles d'événement"
     }
   },
   "complianceDashboard": {
