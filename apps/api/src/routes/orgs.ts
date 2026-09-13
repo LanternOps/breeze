@@ -534,7 +534,9 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
       .returning(partnerPublicColumns());
     if (newPartner) {
       await seedSystemTicketStatuses(tx, newPartner.id);
-      await ensureBuiltInMonitorsForPartner(newPartner.id, { createdBy: auth.user?.id ?? null, exec: tx });
+      // createdBy stays NULL: the platform admin creating this partner is a
+      // foreign tenant identifier here, and users.id has no ON DELETE on this FK.
+      await ensureBuiltInMonitorsForPartner(newPartner.id, { createdBy: null, exec: tx });
     }
     return [newPartner];
   });

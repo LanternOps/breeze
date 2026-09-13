@@ -248,7 +248,7 @@ describe('ensureBuiltInMonitorsForAllPartners', () => {
         .where(and(eq(monitorDefinitions.partnerId, done.id), eq(monitorDefinitions.builtinKey, 'disk_full'))),
     );
 
-    const summary = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForAllPartners());
+    const summary = await ensureBuiltInMonitorsForAllPartners();
     expect(summary.failed).toBe(0);
     expect(summary.provisioned).toBeGreaterThanOrEqual(1);
 
@@ -261,7 +261,7 @@ describe('ensureBuiltInMonitorsForAllPartners', () => {
     const prev = process.env.BREEZE_BUILTIN_MONITORS_AUTOSEED;
     process.env.BREEZE_BUILTIN_MONITORS_AUTOSEED = 'false';
     try {
-      const summary = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForAllPartners());
+      const summary = await ensureBuiltInMonitorsForAllPartners();
       expect(summary).toEqual({ provisioned: 0, skipped: 0, failed: 0 });
       expect(await builtInsFor(partner.id)).toHaveLength(0);
     } finally {

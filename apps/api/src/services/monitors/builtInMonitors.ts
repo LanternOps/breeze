@@ -14,12 +14,12 @@
  * rewrite a partner's existing rows.
  *
  * Runs in three places: createPartner() (inside its transaction), the
- * system-scope POST /orgs/partners route, and the API boot backfill
- * (ensureBuiltInMonitorsForAllPartners, opt-out via
+ * system-scope POST /orgs/partners route, and a detached post-listen backfill
+ * at API boot (ensureBuiltInMonitorsForAllPartners, opt-out via
  * BREEZE_BUILTIN_MONITORS_AUTOSEED=false).
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
   configPolicyAssignments,
   configPolicyFeatureLinks,
@@ -149,8 +149,12 @@ export async function ensureBuiltInMonitorsForPartner(
           builtinKey: def.key,
         })
         // The partial unique index (partner_id, builtin_key) makes a concurrent
-        // double-provision a no-op instead of a duplicate.
-        .onConflictDoNothing()
+        // double-provision a no-op instead of a duplicate. Targeted, so any
+        // future unique constraint on the table still surfaces as an error.
+        .onConflictDoNothing({
+          target: [monitorDefinitions.partnerId, monitorDefinitions.builtinKey],
+          where: sql`${monitorDefinitions.builtinKey} IS NOT NULL`,
+        })
         .returning();
       if (!created) continue;
       await compileMonitorInTx(tx, created);
@@ -173,17 +177,20 @@ export async function ensureBuiltInMonitorsForPartner(
         .returning({ id: configurationPolicies.id });
       policyId = policy!.id;
 
+      const items = monitorIds.map((monitorId, idx) => ({ monitorId, enabled: true, overrides: null, sortOrder: idx }));
+      // inline_settings mirrors what addFeatureLink() stores for a 'monitors'
+      // link ({ items }); config_policy_monitors is the normalized copy readers use.
       const [link] = await tx
         .insert(configPolicyFeatureLinks)
-        .values({ configPolicyId: policyId, featureType: 'monitors' })
+        .values({ configPolicyId: policyId, featureType: 'monitors', inlineSettings: { items } })
         .returning({ id: configPolicyFeatureLinks.id });
       await tx.insert(configPolicyMonitors).values(
-        monitorIds.map((monitorId, idx) => ({
+        items.map((item) => ({
           featureLinkId: link!.id,
-          monitorId,
-          enabled: true,
-          overrides: null,
-          sortOrder: idx,
+          monitorId: item.monitorId,
+          enabled: item.enabled,
+          overrides: item.overrides,
+          sortOrder: item.sortOrder,
         })),
       );
       await tx
@@ -214,8 +221,11 @@ export async function ensureBuiltInMonitorsForPartner(
 
 /**
  * Boot-time backfill: provision every live partner that has never been
- * provisioned. Each partner commits independently so one failure never blocks
- * the rest. Caller wraps this in a system DB access context.
+ * provisioned. Each partner runs in its OWN system context and therefore its
+ * own top-level transaction (runOutsideDbContext + withSystemDbAccessContext),
+ * so nothing here piggybacks on an ambient transaction: one failure never
+ * blocks the rest, and a crash mid-loop keeps every partner already done.
+ * Call it WITHOUT an enclosing DB context, after the HTTP listener is up.
  */
 export async function ensureBuiltInMonitorsForAllPartners(): Promise<{
   provisioned: number;
@@ -224,16 +234,22 @@ export async function ensureBuiltInMonitorsForAllPartners(): Promise<{
 }> {
   if (!autoseedEnabled()) return { provisioned: 0, skipped: 0, failed: 0 };
 
-  const rows = await db
-    .select({ id: partners.id })
-    .from(partners)
-    .where(and(isNull(partners.deletedAt), sql`${partners.settings} -> 'builtInMonitors' IS NULL`));
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ id: partners.id })
+        .from(partners)
+        .where(and(isNull(partners.deletedAt), sql`${partners.settings} -> 'builtInMonitors' IS NULL`)),
+    ),
+  );
 
   let provisioned = 0;
   let failed = 0;
   for (const row of rows) {
     try {
-      const result = await ensureBuiltInMonitorsForPartner(row.id);
+      const result = await runOutsideDbContext(() =>
+        withSystemDbAccessContext(() => ensureBuiltInMonitorsForPartner(row.id)),
+      );
       if (result.provisioned) provisioned += 1;
     } catch (err) {
       failed += 1;

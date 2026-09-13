@@ -1670,21 +1670,6 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to ensure system script library:', err);
   }
 
-  // Built-in CPU / memory / disk monitors for partners created before the
-  // feature shipped. One-time per partner (partners.settings marker); opt out
-  // with BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
-  try {
-    await runWithSystemDbAccess(async () => {
-      const result = await ensureBuiltInMonitorsForAllPartners();
-      if (result.provisioned > 0 || result.failed > 0) {
-        console.log(
-          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
-        );
-      }
-    });
-  } catch (err) {
-    console.error('[startup] Failed to provision built-in monitors:', err);
-  }
 
   try {
     await runWithSystemDbAccess(async () => {
@@ -1759,6 +1744,23 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Built-in CPU / memory / disk monitors for partners created before the
+  // feature shipped. Detached and AFTER the listener is up: hundreds of
+  // partners × ~40 queries each must never delay /health. One-time per partner
+  // (partners.settings marker), each partner its own transaction; opt out with
+  // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
+  void ensureBuiltInMonitorsForAllPartners()
+    .then((result) => {
+      if (result.provisioned > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to provision built-in monitors:', err);
+    });
 
   // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
   // loads `jobs/aiAgentRunner` for a process that runs global workers, so an
