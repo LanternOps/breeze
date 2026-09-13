@@ -63,6 +63,7 @@ function mockApi() {
     if (url.startsWith('/orgs/organizations?') && !init?.method) return jsonResponse({ data: [ALPHA, BETA] });
     if (url === '/orgs/partners/me') return jsonResponse({ settings: {} });
     if (url.startsWith('/orgs/sites?organizationId=')) return jsonResponse({ data: [] });
+    if (url.endsWith('/summary')) return jsonResponse({ orgId: ALPHA.id, sites: { count: 0 } });
     return jsonResponse({ data: [] });
   });
 }

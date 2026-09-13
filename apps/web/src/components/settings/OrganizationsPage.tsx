@@ -21,6 +21,9 @@ import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import { Dialog } from '../shared/Dialog';
 import { ActionMenu } from '../shared/ActionMenu';
 import { applyOrgSwitch } from '@/lib/orgSwitch';
+import { makeOrgFetch, useLatest, type OrgSummary } from '../organizations/record/orgRecordFetch';
+import { formatDate } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
 import { Building2, ChevronRight, GripVertical, Settings } from 'lucide-react';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
@@ -209,6 +212,33 @@ export default function OrganizationsPage() {
   // Sites state — CRUD state and handlers moved to `useSiteCrud` (#5075 W02) so
   // the organization record's Sites tab can share the exact same behaviour.
   const siteCrud = useSiteCrud(selectedOrg?.id ?? null, { onUnauthorized: handleSessionExpired, t });
+
+  // The selected org's summary counts (`GET /orgs/organizations/:id/summary`,
+  // the same read the record page's overview tiles use). "N devices" was the
+  // only fleet fact this page had; a manager could not read health from it
+  // and a tech could not triage from it. Sections the caller cannot read are
+  // absent from the payload, so the strip hides a tile rather than showing a
+  // false zero. Latest-wins guarded: arrowing through rows fires overlapping
+  // reads, and a slow one must not repaint a stale customer's counts.
+  const [summary, setSummary] = useState<OrgSummary | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
+  const summaryLatest = useLatest<OrgSummary | null>();
+  const loadSummary = useCallback(
+    async (orgId: string) => {
+      const next = await summaryLatest.run(
+        makeOrgFetch(orgId)(`/orgs/organizations/${orgId}/summary`)
+          .then(async (res) => (res.ok ? ((await res.json()) as OrgSummary) : null))
+          .catch(() => null),
+      );
+      if (next === undefined) return; // superseded by a newer selection
+      // A payload without the always-present `sites` block is not a summary
+      // (e.g. an unexpected envelope); treat it as unavailable, not as empty.
+      const usable = next && typeof next === 'object' && next.sites ? next : null;
+      setSummary(usable);
+      setSummaryFailed(usable === null);
+    },
+    [summaryLatest],
+  );
   // Partner's configured timezone, used to pre-select the timezone for new sites
   // instead of falling back to UTC. Undefined until loaded / if unavailable.
   const [partnerTimezone, setPartnerTimezone] = useState<string>();
@@ -474,8 +504,11 @@ export default function OrganizationsPage() {
       // anyway, so skip the request outright.
       if (isArchiveLifecycleOrg(selectedOrg)) {
         siteCrud.clear();
+        setSummary(null);
+        setSummaryFailed(false);
         return;
       }
+      void loadSummary(selectedOrg.id);
       // Skip the fetch if org creation already fetched sites for this org
       // synchronously — avoids a redundant concurrent GET per create.
       if (skipSiteFetchForOrgId.current === selectedOrg.id) {
@@ -485,8 +518,10 @@ export default function OrganizationsPage() {
       siteCrud.refresh();
     } else {
       siteCrud.clear();
+      setSummary(null);
+      setSummaryFailed(false);
     }
-  }, [selectedOrg, siteCrud.refresh, siteCrud.clear]);
+  }, [selectedOrg, siteCrud.refresh, siteCrud.clear, loadSummary]);
 
   // Org handlers
   const handleAdd = () => {
@@ -966,10 +1001,13 @@ export default function OrganizationsPage() {
         </div>
       )}
 
-      {/* Split view: org list (left) + detail panel (right) */}
-      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+      {/* Split view: org list (left) + detail panel (right). The list is the
+          navigator: it keeps its own scroll box and stays put while the
+          panel scrolls, and the panel is only as tall as its content rather
+          than stretched to the list's height with nothing in it. */}
+      <div className="grid gap-6 lg:grid-cols-[minmax(320px,26%)_1fr] lg:items-start">
         {/* Left panel - Organization list */}
-        <div className="rounded-lg border bg-card shadow-xs">
+        <div className="rounded-lg border bg-card shadow-xs lg:sticky lg:top-6">
           <div className="border-b px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {t('organizationsPage.list.title')}
@@ -1376,8 +1414,82 @@ export default function OrganizationsPage() {
                   </div>
                 </div>
 
-                {/* Sites section */}
-                <div className="p-6">
+                {/* Facts strip: the customer at a glance, in the record
+                    overview's own words. Tiles come and go with the payload;
+                    a failed read says so in one line with a retry, and an
+                    empty payload renders nothing rather than zeros. */}
+                {summaryFailed ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-6 py-3 text-sm text-muted-foreground">
+                    <span>{t('organizations:orgRecord.overview.noSummary')}</span>
+                    <button
+                      type="button"
+                      data-testid="org-facts-retry"
+                      onClick={() => void loadSummary(selectedOrg.id)}
+                      className="font-medium text-primary hover:underline"
+                    >
+                      {t('organizationsPage.actions.tryAgain')}
+                    </button>
+                  </div>
+                ) : (
+                  summary && (
+                    <dl
+                      data-testid="org-facts"
+                      className="flex flex-wrap gap-x-8 gap-y-3 border-b px-6 py-4"
+                    >
+                      {summary.devices && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.devices')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.devices.total)}</dd>
+                          <dd className="text-xs text-muted-foreground tabular-nums">
+                            {t('organizations:orgRecord.overview.tiles.devicesSub', {
+                              online: formatNumber(summary.devices.online),
+                              total: formatNumber(summary.devices.total),
+                            })}
+                          </dd>
+                        </div>
+                      )}
+                      {summary.alerts && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.alerts')}</dt>
+                          <dd className={`mt-0.5 text-sm font-semibold tabular-nums ${summary.alerts.critical > 0 ? 'text-destructive' : ''}`}>
+                            {formatNumber(summary.alerts.open)}
+                          </dd>
+                          <dd className="text-xs text-muted-foreground tabular-nums">
+                            {t('organizations:orgRecord.overview.tiles.alertsSub', {
+                              critical: formatNumber(summary.alerts.critical),
+                              high: formatNumber(summary.alerts.high),
+                            })}
+                          </dd>
+                        </div>
+                      )}
+                      {summary.contracts && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.contracts')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.contracts.active)}</dd>
+                          <dd className="text-xs text-muted-foreground">
+                            {summary.contracts.nextRenewalAt
+                              ? t('organizations:orgRecord.overview.tiles.contractsSub', { date: formatDate(summary.contracts.nextRenewalAt) })
+                              : t('organizations:orgRecord.overview.tiles.contractsNoRenewal')}
+                          </dd>
+                        </div>
+                      )}
+                      <div className="min-w-32">
+                        <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.sites')}</dt>
+                        <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.sites.count)}</dd>
+                        {summary.lastActivityAt && (
+                          <dd className="text-xs text-muted-foreground">
+                            {t('organizations:orgRecord.overview.lastActivity', { date: formatDate(summary.lastActivityAt) })}
+                          </dd>
+                        )}
+                      </div>
+                    </dl>
+                  )
+                )}
+
+                {/* Sites section — flat inside the panel (the panel is the
+                    card); count and search appear only once the list is long
+                    enough to need them. */}
+                <div className="px-6 py-5">
                   {siteCrud.sitesLoading ? (
                     <div className="flex items-center justify-center py-8">
                       <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -1385,6 +1497,7 @@ export default function OrganizationsPage() {
                     </div>
                   ) : (
                     <SiteList
+                      variant="section"
                       sites={siteCrud.sites}
                       onAddSite={siteCrud.openAdd}
                       onEdit={siteCrud.openEdit}
