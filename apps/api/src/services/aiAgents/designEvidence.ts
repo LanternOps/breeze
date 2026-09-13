@@ -375,11 +375,18 @@ export function assembleDesignEvidence(raw: RawDesignEvidence, opts: { limitByte
  * the model can influence.
  */
 export function designBaselineNumbers(e: DesignEvidence): FleetDesignBaselineNumbers {
-  const alertsPer100EndpointsPerMonth = e.counts.endpoints > 0
+  // A loader that failed lands in `unavailable` and its section carries the
+  // neutral shape (zeros) so the bundle stays serializable — those zeros are
+  // NOT measurements. The persisted baseline reports them as null ("not
+  // measured"), never as a reassuring 0.
+  const countsMeasured = !e.unavailable.includes('counts');
+  const precursorsMeasured = !e.unavailable.includes('precursors');
+  const alertsPer100EndpointsPerMonth = countsMeasured && e.counts.endpoints > 0
     ? Math.round((e.counts.alerts90d / 3) / e.counts.endpoints * 100)
     : null;
-  const ticketsPerMonth = Math.round(e.counts.tickets90d / 3);
+  const ticketsPerMonth = countsMeasured ? Math.round(e.counts.tickets90d / 3) : null;
   const precursorValue = (condition: FleetDesignPrecursorCondition): number | null => {
+    if (!precursorsMeasured) return null;
     switch (condition) {
       case 'disk_used_over_threshold': return e.precursors.diskOver;
       case 'reboot_pending_over_threshold': return e.precursors.rebootPendingOver;

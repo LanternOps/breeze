@@ -232,7 +232,9 @@ describe('POST /ai/fleet-design/runs', () => {
     const res = await postRuns(app, { orgId: ORG_ID });
 
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ skipped: 'mode_off' });
+    // `success: false` is what runAction's failure detector reads (apiError.ts)
+    // — a declined admission must never toast as a queued run.
+    await expect(res.json()).resolves.toEqual({ success: false, skipped: 'mode_off' });
     expect(writeRouteAuditMock.mock.calls[0]![1]).toMatchObject({ result: 'failure' });
   });
 });

@@ -402,6 +402,16 @@ describe('buildReportPdf: ai_fleet_design', () => {
     expect(text).toContain('What was found');
   });
 
+  it('names the evidence sections that were not measured so a zero is never read as a measurement', () => {
+    const summary: FleetDesignReportSummary = {
+      fleetDesign: { outcome: outcomeFixture, orgName: 'Acme', unavailable: ['counts', 'precursors'] },
+    };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    expect(pdfCommandText(doc)).toContain('Not measured: counts, precursors');
+    const clean = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary: { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } } });
+    expect(pdfCommandText(clean)).not.toContain('Not measured');
+  });
+
   it('renders every section title and key section content', () => {
     const summary: FleetDesignReportSummary = { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } };
     const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });

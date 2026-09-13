@@ -140,7 +140,12 @@ fleetDesignRoutes.post(
       result: result.created ? 'success' : 'failure',
     });
 
-    if (!result.created) return c.json({ skipped: result.skipped }, 200);
+    // A declined admission is not an error — the caller asked for a design and
+    // the admission rules said not now (mode off, cap reached, budget). It is
+    // also not a success: `success: false` is exactly the HTTP-200 failure
+    // shape the web's runAction detector reads (apps/web/src/lib/apiError.ts),
+    // so a "Run now" button can never toast "queued" for a run that never was.
+    if (!result.created) return c.json({ success: false, skipped: result.skipped }, 200);
     return c.json({ runId: result.run.id }, 202);
   },
 );

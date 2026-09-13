@@ -238,6 +238,7 @@ export async function persistFleetDesignReport(
         agentName: flattenLine(agent.name),
         evidenceTruncated: evidence.truncated,
         devicesNotAssessed: evidence.devicesNotAssessed,
+        unavailable: [...evidence.unavailable],
       },
     };
 

@@ -1147,6 +1147,17 @@ function designCtx(overrides: Partial<AgentRunPromptContext> = {}): AgentRunProm
 }
 
 describe('buildFleetDesignTaskPrompt (Fleet Designer W01)', () => {
+  it('renders counts and precursors as "not measured" — never as zeros — when their loaders were unavailable', () => {
+    const out = buildFleetDesignTaskPrompt(designCtx({
+      design: { trigger: 'manual', occurrenceKey: null, evidence: designEvidence({ unavailable: ['counts', 'precursors'] }) },
+    }));
+    expect(out).not.toMatch(/alerts \(90d\): 0/);
+    expect(out).not.toMatch(/backups missed: 0/);
+    expect(out).toMatch(/## Counts\nnot measured/);
+    expect(out).toMatch(/## Precursors[^\n]*\nnot measured/);
+    expect(out).toContain('Not measured: counts, precursors');
+  });
+
   it('states a manual trigger by default', () => {
     const text = buildFleetDesignTaskPrompt(designCtx());
     expect(text).toContain('Trigger: manual fleet design');

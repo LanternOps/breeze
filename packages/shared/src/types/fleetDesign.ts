@@ -132,6 +132,8 @@ export interface FleetDesignReportSummary {
     agentName?: string;
     evidenceTruncated?: boolean;
     devicesNotAssessed?: number;
+    /** Evidence sections whose loader failed — their numbers were never measured (never invented zeros). */
+    unavailable?: string[];
   };
 }
 

@@ -62,4 +62,14 @@ describe('assembleDesignEvidence', () => {
     const e = assembleDesignEvidence(raw({ unavailable: ['software'] }));
     expect(e.unavailable).toEqual(['software']);
   });
+  it('baseline numbers are null, not zero, when the counts or precursors loader was unavailable', () => {
+    const e = assembleDesignEvidence(raw({ unavailable: ['counts', 'precursors'] }));
+    const n = designBaselineNumbers(e);
+    expect(n.alertsPer100EndpointsPerMonth).toBeNull();
+    expect(n.ticketsPerMonth).toBeNull();
+    expect(n.precursors.every((p) => p.deviceCount === null)).toBe(true);
+    const onlyCounts = designBaselineNumbers(assembleDesignEvidence(raw({ unavailable: ['counts'], precursors: { ...raw().precursors, diskOver: 2 } })));
+    expect(onlyCounts.ticketsPerMonth).toBeNull();
+    expect(onlyCounts.precursors.find((p) => p.condition === 'disk_used_over_threshold')?.deviceCount).toBe(2);
+  });
 });

@@ -1367,6 +1367,19 @@ function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: Buil
 
   let y = drawTitleBlock(doc, 'Fleet Design', orgName, metaParts.join('   ·   '), PAGE.bandH + 8);
 
+  // Provenance line: a section whose loader failed was never measured, so a
+  // reader must not take a 0 in the baseline as a finding.
+  const unavailable = Array.isArray(fd.unavailable)
+    ? fd.unavailable.map((s) => fdText(s, NARRATIVE_NAME_MAX_CHARS)).filter(Boolean)
+    : [];
+  if (unavailable.length) {
+    set.text(doc, C.faint);
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.text(`Not measured: ${unavailable.join(', ')}`, PAGE.mx, y);
+    y += NARRATIVE_LINE_H + 2;
+  }
+
   // Closed, exhaustive iteration over FLEET_DESIGN_SECTION_KEYS (never a
   // stored key order) is what makes an unknown/renamed key structurally
   // unrenderable. `sections` itself is only present when `outcome` is —

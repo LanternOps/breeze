@@ -398,6 +398,7 @@ describe('persistFleetDesignReport', () => {
       agentName: 'Fleet Designer',
       evidenceTruncated: false,
       devicesNotAssessed: 0,
+      unavailable: [],
     });
     expect(typeof fleetDesign.generatedAt).toBe('string');
   });

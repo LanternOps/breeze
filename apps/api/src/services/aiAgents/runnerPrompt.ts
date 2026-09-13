@@ -1236,19 +1236,30 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
     lines.push('');
   }
 
+  // A section whose loader failed is in `unavailable`; its zeros are filler,
+  // not measurements — say "not measured" instead of showing the model a
+  // reassuring 0 it would build a design on.
   lines.push('## Counts');
-  lines.push(`alerts (90d): ${e.counts.alerts90d}`);
-  lines.push(`tickets (90d): ${e.counts.tickets90d}`);
-  lines.push(`endpoints: ${e.counts.endpoints}`);
+  if (e.unavailable.includes('counts')) {
+    lines.push('not measured');
+  } else {
+    lines.push(`alerts (90d): ${e.counts.alerts90d}`);
+    lines.push(`tickets (90d): ${e.counts.tickets90d}`);
+    lines.push(`endpoints: ${e.counts.endpoints}`);
+  }
   lines.push('');
 
   lines.push('## Precursors (server-computed thresholds)');
-  lines.push(`disk over ${e.thresholds.diskUsedPercent}%: ${e.precursors.diskOver} device(s)`);
-  lines.push(`reboot pending: ${e.precursors.rebootPending} device(s), ${e.precursors.rebootPendingOver} over ${e.thresholds.rebootPendingDays} day(s)`);
-  lines.push(`patch age over ${e.thresholds.patchAgeDays} day(s): ${e.precursors.patchAgeOver} device(s)`);
-  lines.push(`certificates expiring within ${e.thresholds.certificateDays} day(s): ${designCell(e.precursors.certificateExpiring)}`);
-  lines.push(`backups missed: ${e.precursors.backupMissed} device(s)`);
-  lines.push(`service restarts over ${e.thresholds.serviceRestartsPer30d}/30d: ${e.precursors.serviceRestartsOver} device(s)`);
+  if (e.unavailable.includes('precursors')) {
+    lines.push('not measured');
+  } else {
+    lines.push(`disk over ${e.thresholds.diskUsedPercent}%: ${e.precursors.diskOver} device(s)`);
+    lines.push(`reboot pending: ${e.precursors.rebootPending} device(s), ${e.precursors.rebootPendingOver} over ${e.thresholds.rebootPendingDays} day(s)`);
+    lines.push(`patch age over ${e.thresholds.patchAgeDays} day(s): ${e.precursors.patchAgeOver} device(s)`);
+    lines.push(`certificates expiring within ${e.thresholds.certificateDays} day(s): ${designCell(e.precursors.certificateExpiring)}`);
+    lines.push(`backups missed: ${e.precursors.backupMissed} device(s)`);
+    lines.push(`service restarts over ${e.thresholds.serviceRestartsPer30d}/30d: ${e.precursors.serviceRestartsOver} device(s)`);
+  }
   lines.push('');
 
   if (e.unavailable.length) lines.push(`Not measured: ${e.unavailable.join(', ')}`);
