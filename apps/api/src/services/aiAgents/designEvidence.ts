@@ -52,8 +52,9 @@
  * thing keeping one tenant's design evidence out of another tenant's rows.
  * Every statement pins the org on its PRIMARY table AND on every
  * tenant-bearing table it joins; a table with no `org_id` of its own
- * (`patches`, `script_tags` joined only through `script_to_tags`) is reached
- * exclusively through an org-pinned join partner.
+ * with no tenant column of its own (`patches`) is reached exclusively through
+ * an org-pinned join partner; `script_tags` does carry the org/partner axis
+ * and is predicated on it directly in `loadAutomation`.
  *
  * Partner-wide config rows (`configuration_policies`, `alert_templates`,
  * `scripts`, `script_tags`) admit `org_id IS NULL AND partner_id =

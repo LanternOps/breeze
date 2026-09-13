@@ -1799,6 +1799,18 @@ aiAgentsRoutes.post(
       });
     };
 
+    // Fleet Designer (W01): this route is the DEVICE lane. A designer run is
+    // device-less and belongs on POST /ai/fleet-design/runs; admitted here it
+    // would carry a deviceId and — because this call omits `profile`, which
+    // defaults to 'full' — would run without the design profile's read-only
+    // tool floor and zero action budget. Admission refuses the pairing too
+    // (ownership_mismatch); this is the honest 400 that says why, and it is
+    // checked before the run is attempted so nothing is queued.
+    if (agent.kind === 'designer') {
+      auditTrigger('failure', { deviceId, reason: 'kind_not_device_triggerable' });
+      return c.json({ error: 'kind_not_device_triggerable' }, 400);
+    }
+
     // The loaded row is an authorization/visibility handle and supplies the
     // requested kind. Admission deliberately re-resolves the effective agent,
     // which may be an org override or partner baseline different from this row.

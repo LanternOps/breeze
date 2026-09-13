@@ -873,6 +873,21 @@ export async function createAndEnqueueAgentRun(
   const resolved = await resolveEffectiveAgentSystem(orgId, kind);
   if (!resolved) return skip('no_effective_agent');
   snapshot = resolved;
+
+  // 2a. Fleet Designer (W01) — the kind/profile pairing, BOTH directions, and
+  //     deliberately before every volume gate below so no cooldown or rate
+  //     skip can mask a mismatch. Rule 8a states the forward half (a design
+  //     run must be a device-less designer). This is the half that carries the
+  //     safety: `profile` defaults to 'full' when a caller omits it
+  //     (`input.profile ?? 'full'` above), and the generic manual-trigger
+  //     route POST /ai/agents/:id/runs omits it — so without this check a
+  //     designer agent admitted through that route would run on the FULL
+  //     profile, where `isDesignProfile` is false and none of the read-only
+  //     machinery applies: no `designLimits` (maxActionsPerRun 0), no
+  //     `designToolAllowlist` floor (the agent's own toolAllowlist is used
+  //     instead), no read-only tool denial. A designer runs on the design
+  //     profile or it does not run.
+  if (kind === 'designer' && (input.profile ?? 'full') !== 'design') return skip('ownership_mismatch');
   const effective = resolved.effective;
   if (!effective.enabled) return skip('agent_disabled');
   if (effective.mode === 'off') return skip('mode_off');

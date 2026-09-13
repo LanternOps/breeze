@@ -2325,6 +2325,20 @@ describe('createAndEnqueueAgentRun design-profile admission (Fleet Designer W01)
     expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
   });
 
+  it('ownership_mismatch when a designer agent is admitted on any profile but design', async () => {
+    // The converse of the rule above, and the one that matters for safety: the
+    // generic manual-trigger route omits `profile`, which defaults to 'full',
+    // so without this direction a designer agent would run with its own
+    // toolAllowlist and ordinary action limits — no read-only floor at all.
+    for (const profile of ['full', 'verdict', 'sweep', 'narrative', 'triage'] as const) {
+      seedDesignAdmissionReads();
+      const result = await createAndEnqueueAgentRun(
+        designInput({ dedupeKey: `design:d11:${profile}`, profile, deviceId: DEVICE_ID }),
+      );
+      expect(result, profile).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
   it('ownership_mismatch when a design run carries a deviceId', async () => {
     seedDesignAdmissionReads();
     const result = await createAndEnqueueAgentRun(

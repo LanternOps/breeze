@@ -505,6 +505,22 @@ beforeEach(() => {
 });
 
 describe('POST /ai-agents/:id/runs', () => {
+  it('refuses a designer agent outright — it has no device-bound lane (Fleet Designer W01)', async () => {
+    getAgentMock.mockResolvedValue({ ...agent(), kind: 'designer', name: 'Fleet Designer' });
+
+    const res = await trigger(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'kind_not_device_triggerable' });
+    // Never admitted: a designer admitted here would default to the FULL
+    // profile, where none of the read-only design machinery applies.
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'failure', action: 'ai_agent.run.manual_trigger' }),
+    );
+  });
+
   it('queues a manual run and audits the accountable human actor', async () => {
     const res = await trigger(buildApp());
 
