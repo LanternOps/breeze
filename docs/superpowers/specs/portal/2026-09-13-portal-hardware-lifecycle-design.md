@@ -222,10 +222,12 @@ ALTER TABLE portal_branding
   ADD COLUMN IF NOT EXISTS enable_lifecycle boolean NOT NULL DEFAULT false;
 ```
 
-Named to sort after `2026-10-16-170800-fleet-design-apply.sql`, the newest
-migration committed to this worktree's `apps/api/migrations/` as of this
-revision (open PRs already claim `2026-10-16-180000` through `180200` (#5701 and #5710), so the slot must sort after them; re-check `gh pr list --json files` for `2026-10-16-18` before the W01 commit and bump if another PR has landed a later one. Re-verify
-against `origin/main` before pushing, per CLAUDE.md's pre-push naming guard.
+Named to sort after every migration already claimed by open PRs: #5701 and
+#5710 carry `2026-10-16-180000` through `180200`, so `180300` is the next
+free same-day slot under `localeCompare`. Before the W01 commit, re-check
+`gh pr list --json files` for any newer `2026-10-16-18xxxx` file and bump if
+one has appeared; re-verify against `origin/main` before pushing, per
+CLAUDE.md's pre-push naming guard.
 
 **Export-policy classification.** `enable_lifecycle` is a new column on
 `portal_branding`, which is already in `CORE_ORG_CASCADE_DELETE_ORDER` (it has
