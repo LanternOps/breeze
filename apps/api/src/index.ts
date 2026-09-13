@@ -146,6 +146,7 @@ import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
+import { fleetDesignRoutes } from './routes/fleetDesign';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
@@ -993,6 +994,10 @@ api.route('/ai/provider', aiProviderRoutes);
 // '/schedules' as an agent id (#4189).
 api.route('/ai/agents/schedules', aiAgentSchedulesRoutes);
 api.route('/ai/agents', aiAgentsRoutes);
+// Fleet Designer (W01, #5651) — trigger/list/detail for `designer`-kind runs.
+// Distinct path prefix from '/ai/agents', so registration order relative to
+// it doesn't matter the way '/ai/agents/schedules' does.
+api.route('/ai/fleet-design', fleetDesignRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);

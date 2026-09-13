@@ -351,7 +351,8 @@ export const fleetDesignArtifactProjection = {
  * route (Task 12) and the W03 Fleet Design page. `orgCondition` is a plain
  * predicate builder (e.g. `(orgId) => eq(orgId, auth.orgId)`) rather than a
  * full `AuthContext`, so this module stays independent of the auth-context
- * shape callers build it from.
+ * shape callers build it from. `undefined` means "no org filter" — the
+ * system-scope contract of `AuthContext.orgCondition`; `and()` drops it.
  *
  * Returns `null` when the run does not exist, does not belong to a Fleet
  * Design definition, or fails the caller's org condition — the caller cannot
@@ -360,7 +361,7 @@ export const fleetDesignArtifactProjection = {
  */
 export async function loadFleetDesignReport(
   reportRunId: string,
-  orgCondition: (orgId: AnyPgColumn) => SQL<unknown>,
+  orgCondition: (orgId: AnyPgColumn) => SQL<unknown> | undefined,
 ): Promise<{
   reportRunId: string; reportId: string; orgId: string; summary: FleetDesignReportSummary; generatedAt: string | null;
 } | null> {

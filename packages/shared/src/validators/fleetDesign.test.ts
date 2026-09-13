@@ -3,6 +3,7 @@ import {
   fleetDesignSubmissionSchema,
   fleetDesignOutcomeFromSubmission,
   renderFleetDesignMarkdown,
+  triggerFleetDesignRunSchema,
   type FleetDesignOutcomeRefs,
 } from './fleetDesign';
 import { FLEET_DESIGN_SECTION_KEYS, FLEET_DESIGN_CONFIDENCE_THRESHOLD, type FleetDesignSubmission } from '../types/fleetDesign';
@@ -87,6 +88,16 @@ describe('fleetDesignSubmissionSchema', () => {
     const s = validSubmission();
     s.functions.push({ functionKey: 'print_server', deviceIds: [D1], confidence: 0.8, evidence: ['spooler'] });
     expect(fleetDesignSubmissionSchema.safeParse(s).success).toBe(false);
+  });
+});
+
+describe('triggerFleetDesignRunSchema', () => {
+  it('accepts orgId alone and orgId+siteId, rejects unknown keys and non-uuids', () => {
+    expect(triggerFleetDesignRunSchema.safeParse({ orgId: D1 }).success).toBe(true);
+    expect(triggerFleetDesignRunSchema.safeParse({ orgId: D1, siteId: D2 }).success).toBe(true);
+    expect(triggerFleetDesignRunSchema.safeParse({ orgId: D1, deviceId: D2 }).success).toBe(false);
+    expect(triggerFleetDesignRunSchema.safeParse({ orgId: 'not-a-uuid' }).success).toBe(false);
+    expect(triggerFleetDesignRunSchema.safeParse({}).success).toBe(false);
   });
 });
 

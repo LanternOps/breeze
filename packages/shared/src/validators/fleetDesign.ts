@@ -16,6 +16,21 @@ const textList = (max = 50) => z.array(fleetDesignText()).max(max);
 const uuid = z.string().uuid();
 const functionKey = z.string().max(48).refine((k) => parseFunctionKey(k) !== null, { message: 'unknown function key' });
 
+/**
+ * Fleet Designer (W01), Task 12 — `POST /ai/fleet-design/runs`'s body. `.strict()`
+ * so an unrecognized key (e.g. a caller sending `deviceId`, which this
+ * device-less profile never takes) 400s instead of being silently ignored.
+ * `siteId` is optional: a Fleet Design usually targets a whole organization;
+ * when present, the route verifies it belongs to `orgId` before trusting it
+ * into `triggerRef.siteId` (which `runLoop.ts` reads).
+ */
+export const triggerFleetDesignRunSchema = z.object({
+  orgId: uuid,
+  siteId: uuid.optional(),
+}).strict();
+
+export type TriggerFleetDesignRunInput = z.infer<typeof triggerFleetDesignRunSchema>;
+
 const functionEntry = z.object({
   functionKey,
   label: fleetDesignText(80).optional(),
