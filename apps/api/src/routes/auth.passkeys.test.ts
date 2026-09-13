@@ -285,6 +285,10 @@ vi.mock('../services/ipAllowlist', () => ({
 // rename PATCH route) still take priority by pushing onto the queue first.
 const DEFAULT_EPOCH_ROW = [{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }];
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [], policyId: null })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const dbMock: any = {
     select: vi.fn(() => dbState.makeSelectChain(dbState.selectQueue.shift() ?? [])),

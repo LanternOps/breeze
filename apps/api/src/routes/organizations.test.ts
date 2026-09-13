@@ -9,6 +9,10 @@ import { orgRoutes } from './orgs';
 
 vi.mock('../services', () => ({}));
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [], policyId: null })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const db: Record<string, unknown> = {
     select: vi.fn(() => ({
