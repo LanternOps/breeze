@@ -182,6 +182,12 @@ export default function ScriptAuthoringPage() {
   const [reauthCode, setReauthCode] = useState('');
   const [reauthTier, setReauthTier] = useState<ReauthTier | null>(null);
   const [resolvingReauth, setResolvingReauth] = useState(false);
+  // Resetting an open lane is its own step-up: it can happen while the lane is
+  // already enabled, so it cannot borrow the enable-path's code box (#5683).
+  // Its own code lives here so a half-typed enable code can never be minted
+  // against the reset, or the other way round.
+  const [resetStepUpOpen, setResetStepUpOpen] = useState(false);
+  const [resetCode, setResetCode] = useState('');
 
   const [partnerPolicy, setPartnerPolicy] = useState<ScriptPolicyDto | null>(null);
   const [partnerCanManage, setPartnerCanManage] = useState(false);
@@ -259,14 +265,14 @@ export default function ScriptAuthoringPage() {
     }
   }, [orgPolicy, ensureReauthTier]);
 
-  const mintLaneGrant = useCallback(async (resource: Record<string, unknown>): Promise<string> => {
+  const mintLaneGrant = useCallback(async (resource: Record<string, unknown>, code: string): Promise<string> => {
     const tier = await ensureReauthTier();
     if (!tier || tier === 'password') {
       throw new StepUpMintError('unavailable', t('scriptAuthoringPage.stepUp.body'));
     }
-    const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code: reauthCode };
+    const reauth: StepUpReauth = tier === 'passkey' ? { method: 'passkey' } : { method: 'totp', code };
     return mintStepUpGrant({ operation: 'ai_script_lane_grant', resource, reauth });
-  }, [ensureReauthTier, reauthCode, t]);
+  }, [ensureReauthTier, t]);
 
   const handleOrgSave = useCallback(async () => {
     if (!orgDraft || !orgId) return;
@@ -278,7 +284,7 @@ export default function ScriptAuthoringPage() {
       let stepUpGrant: string | undefined;
       if (isEnabling) {
         try {
-          stepUpGrant = await mintLaneGrant({ orgId, unattendedEnabled: true });
+          stepUpGrant = await mintLaneGrant({ orgId, unattendedEnabled: true }, reauthCode);
         } catch (err) {
           setError(err instanceof Error ? err.message : t('scriptAuthoringPage.saveFailed'));
           return;
@@ -314,7 +320,7 @@ export default function ScriptAuthoringPage() {
     } finally {
       setOrgSaving(false);
     }
-  }, [orgDraft, orgId, orgPolicy, mintLaneGrant, load, t]);
+  }, [orgDraft, orgId, orgPolicy, mintLaneGrant, reauthCode, load, t]);
 
   const handlePartnerSave = useCallback(async () => {
     if (!partnerDraft) return;
@@ -352,12 +358,22 @@ export default function ScriptAuthoringPage() {
 
   const handleReset = useCallback(async () => {
     if (!orgId) return;
-    setResetting(true);
     setError(null);
+    // A TOTP approver has to type a code first: minting straight away sends an
+    // empty one and the step-up route 400s `Invalid code` (#5683). The first
+    // click resolves the factor and reveals the box; the second one mints.
+    // A passkey approver needs no typed input — the browser ceremony is the
+    // proof — so that tier goes straight through.
+    const tier = await ensureReauthTier();
+    if (tier === 'totp' && resetCode.length === 0) {
+      setResetStepUpOpen(true);
+      return;
+    }
+    setResetting(true);
     try {
       let stepUpGrant: string;
       try {
-        stepUpGrant = await mintLaneGrant({ orgId, unattendedEnabled: true, reset: true });
+        stepUpGrant = await mintLaneGrant({ orgId, unattendedEnabled: true, reset: true }, resetCode);
       } catch (err) {
         setError(err instanceof Error ? err.message : t('scriptAuthoringPage.lane.resetFailed'));
         return;
@@ -368,6 +384,8 @@ export default function ScriptAuthoringPage() {
         successMessage: t('scriptAuthoringPage.lane.resetSuccess'),
       });
       setLaneState(result.laneState);
+      setResetCode('');
+      setResetStepUpOpen(false);
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;
       if (!(err instanceof ActionError)) showToast({ message: t('scriptAuthoringPage.lane.resetFailed'), type: 'error' });
@@ -375,7 +393,7 @@ export default function ScriptAuthoringPage() {
     } finally {
       setResetting(false);
     }
-  }, [orgId, mintLaneGrant, t]);
+  }, [orgId, mintLaneGrant, ensureReauthTier, resetCode, t]);
 
   if (loading) {
     return (
@@ -410,6 +428,18 @@ export default function ScriptAuthoringPage() {
               <p className="text-sm text-muted-foreground">
                 {t('scriptAuthoringPage.lane.openBody', { reason: laneState.openedReason ?? '' })}
               </p>
+              {resetStepUpOpen && reauthTier && reauthTier !== 'password' && (
+                <div className="space-y-2 rounded-md border bg-background p-3" data-testid="script-lane-reset-stepup">
+                  <p className="text-sm font-medium">{t('scriptAuthoringPage.stepUp.title')}</p>
+                  <p className="text-xs text-muted-foreground">{t('scriptAuthoringPage.lane.resetStepUpBody')}</p>
+                  <StepUpPrompt
+                    tier={reauthTier}
+                    reauthValue={resetCode}
+                    onChange={setResetCode}
+                    disabled={resetting}
+                  />
+                </div>
+              )}
               <button
                 type="button"
                 data-testid="script-lane-reset"

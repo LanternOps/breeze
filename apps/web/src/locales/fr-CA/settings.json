@@ -5382,6 +5382,7 @@
       "openTitle": "La voie non supervisée est en pause",
       "openBody": "{{reason}} Les exécutions non supervisées sont refusées tant qu'un approbateur n'a pas réinitialisé la voie. Les approbations continuent de fonctionner normalement.",
       "reset": "Réinitialiser la voie",
+      "resetStepUpBody": "La réinitialisation du couloir sans surveillance exige une nouvelle vérification de sécurité.",
       "resetSuccess": "La voie non supervisée fonctionne de nouveau.",
       "resetFailed": "Impossible de réinitialiser la voie."
     },

@@ -5382,6 +5382,7 @@
       "openTitle": "Gözetimsiz kanal duraklatıldı",
       "openBody": "{{reason}} Bir onaylayıcı kanalı sıfırlayana kadar gözetimsiz çalıştırmalar reddedilir. Onaylar normal şekilde çalışmaya devam eder.",
       "reset": "Kanalı sıfırla",
+      "resetStepUpBody": "Gözetimsiz şeridi sıfırlamak için yeni bir güvenlik doğrulaması gerekir.",
       "resetSuccess": "Gözetimsiz kanal yeniden çalışıyor.",
       "resetFailed": "Kanal sıfırlanamadı."
     },
