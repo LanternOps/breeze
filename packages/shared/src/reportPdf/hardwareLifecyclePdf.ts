@@ -82,8 +82,8 @@ const COLUMNS: Col[] = [
   { key: 'ageYears', label: 'Age', w: 13, halign: 'right' },
   { key: 'purchaseDate', label: 'Purchased', w: 21, halign: 'left' },
   { key: 'warrantyEndDate', label: 'Warranty', w: 29, halign: 'left' },
-  { key: 'replaceBy', label: 'Status', w: 46, halign: 'left' },
-  { key: 'runway', label: 'Service life used', w: 54, halign: 'left' },
+  { key: 'replaceBy', label: 'Status', w: 34, halign: 'left' },
+  { key: 'runway', label: 'Service life used', w: 66, halign: 'left' },
 ];
 const DEVICE_COL = COLUMNS.findIndex((c) => c.key === 'device');
 const OS_COL = COLUMNS.findIndex((c) => c.key === 'os');
@@ -294,22 +294,11 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
   }
 
   if (data.column.index === STATUS_COL) {
-    // One cell says it once: the status word in its colour, then the date
-    // it turns on, muted. "Replace now · was due Mar 2023".
-    const word = REPLACEMENT_LABELS[row.replacement] ?? '';
-    const when = row.replaceBy
-      ? (row.replaceBy <= today ? `was due ${monthYear(row.replaceBy)}` : quarterLabel(row.replaceBy))
-      : null;
+    // Just the word; the service-life column carries the timing.
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(BODY_FONT);
     ink(doc, colors[row.replacement]);
-    doc.text(word, x, midY + 1);
-    if (when) {
-      const ww = doc.getTextWidth(word);
-      doc.setFont('helvetica', 'normal');
-      ink(doc, C.muted);
-      doc.text(`  ·  ${when}`, x + ww, midY + 1);
-    }
+    doc.text(REPLACEMENT_LABELS[row.replacement] ?? '', x, midY + 1);
     return;
   }
 

@@ -68,8 +68,9 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Due soon');
     expect(text).toContain('Purchase date unknown');
     expect(text).toContain('Q4 2026');
-    // One status cell: the word, then the date it turns on.
-    expect(text).toContain('was due Apr 2023');
+    // Status is the word alone; timing lives in the service-life column.
+    expect(text).not.toContain('was due');
+    expect(text).toContain('past due');
     expect(text).toContain('Apr 2019');
     expect(text).toContain('Oct 2021 *');
     expect(text).toContain("* Purchase date taken from the manufacturer's ship record.");
