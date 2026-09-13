@@ -218,7 +218,7 @@ function buildSubmission(opts: {
 }): FleetDesignSubmission {
   return {
     found: { summary: ['3 devices act as a file server'], findings: [] },
-    functions: [{ functionKey: opts.functionKey, deviceIds: [...opts.deviceIds], confidence: 0.9, evidence: ['SMB shares active'] }],
+    functions: [{ functionKey: opts.functionKey as FleetDesignSubmission['functions'][number]['functionKey'], deviceIds: [...opts.deviceIds], confidence: 0.9, evidence: ['SMB shares active'] }],
     monitoring: [{
       functionKey: opts.functionKey,
       watches: [{ watchType: 'service', name: 'LanmanServer', alertOnStop: true, autoRestart: true, rationale: 'Core file-sharing service' }],
@@ -301,7 +301,7 @@ async function seedReportRun(orgId: string, outcome: FleetDesignOutcome): Promis
       schemaVersion: outcome.schemaVersion,
       outcome,
       generatedAt: outcome.generatedAt,
-      runId: null,
+      runId: undefined,
       evidenceTruncated: false,
     },
   };
