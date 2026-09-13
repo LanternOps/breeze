@@ -10,11 +10,13 @@ const {
   createConfigPolicyMock,
   parentPolicyEnablesHpCmslCollectionMock,
   mfaState,
+  authState,
   permState,
 } = vi.hoisted(() => ({
   createConfigPolicyMock: vi.fn(),
   parentPolicyEnablesHpCmslCollectionMock: vi.fn(),
   mfaState: { satisfied: true },
+  authState: { override: null as any },
   permState: { permissions: { permissions: [{ resource: '*', action: '*' }] } as any },
 }));
 
@@ -57,7 +59,7 @@ const EXECUTE = { permissions: [{ resource: 'devices', action: 'execute' }] } as
 function buildApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
-    c.set('auth', {
+    c.set('auth', authState.override ?? {
       scope: 'organization',
       orgId: ORG_ID,
       partnerId: null,
@@ -86,6 +88,7 @@ describe('POST / — hpCmsl create-with-parent gate (#5511 W02 D4)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mfaState.satisfied = true;
+    authState.override = null;
     permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
     createConfigPolicyMock.mockResolvedValue({ id: POLICY_ID, name: 'Child', orgId: ORG_ID, parentPolicyId: PARENT_ID });
     parentPolicyEnablesHpCmslCollectionMock.mockResolvedValue(false);
@@ -132,6 +135,27 @@ describe('POST / — hpCmsl create-with-parent gate (#5511 W02 D4)', () => {
 
     expect(res.status).toBe(201);
     expect(createConfigPolicyMock).toHaveBeenCalled();
+  });
+
+  it('gates a PARTNER-WIDE child of a collecting parent too (gate runs before the ownership branch)', async () => {
+    permState.permissions = WRITE_ONLY;
+    authState.override = {
+      scope: 'partner',
+      orgId: null,
+      partnerId: 'partner-1',
+      user: { id: 'user-1' },
+      token: { scope: 'partner', mfa: true },
+      accessibleOrgIds: [ORG_ID],
+      canAccessOrg: () => true,
+      orgCondition: () => undefined,
+    };
+    parentPolicyEnablesHpCmslCollectionMock.mockResolvedValue(true);
+
+    const res = await createChild({ name: 'Child', ownerScope: 'partner', parentPolicyId: PARENT_ID });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'HP_CMSL_EXECUTE_REQUIRED' });
+    expect(createConfigPolicyMock).not.toHaveBeenCalled();
   });
 
   it('does not consult the parent at all for a root policy', async () => {

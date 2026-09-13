@@ -105,6 +105,17 @@ describe('resolveWarrantyInlineSettingsForWrite', () => {
     expect(out.hpCmsl).toEqual({ enabled: false });
   });
 
+  it('REPLACES, never merges: a payload that omits hpCmsl drops a consented block (contract D5)', () => {
+    // Warranty updates are whole-blob replace. A caller that sends only
+    // thresholds therefore revokes collection — deliberately the fail-safe
+    // direction, and the reason WarrantyTab always sends hpCmsl explicitly.
+    // Pinned so a future "helpful" merge cannot silently change it.
+    const stored = { warnDays: 90, hpCmsl: { enabled: true, consent: CURRENT_CONSENT } };
+    const out = resolveWarrantyInlineSettingsForWrite({ warnDays: 45 }, stored, ACTOR) as any;
+    expect(out).toEqual({ warnDays: 45 });
+    expect(out.hpCmsl).toBeUndefined();
+  });
+
   it('leaves undefined/null settings alone (a featurePolicyId-only update)', () => {
     expect(resolveWarrantyInlineSettingsForWrite(undefined, null, ACTOR)).toBeUndefined();
     expect(resolveWarrantyInlineSettingsForWrite(null, null, ACTOR)).toBeNull();
