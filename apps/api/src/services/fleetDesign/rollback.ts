@@ -140,7 +140,17 @@ async function rollbackPolicy(ctx: RollbackCtx, row: FleetDesignLedgerRow): Prom
   if (!policy) throw new RollbackRefused('policy_missing');
   if (policy.status === 'archived') throw new RollbackRefused('modified_since_apply');
 
-  const current = snapshotLinks(await listFeatureLinks(policyId));
+  // Both sides through canonical(): `snapshotLinks` only sorts keys WITHIN
+  // `monitoring` / `alertRule`, not the outer `{monitoring, alertRule}`
+  // object — and a jsonb round trip does not preserve JS insertion order, so
+  // `expected` (read back from `created_refs`) can carry its two top-level
+  // keys in a different order than a freshly computed `current` even when
+  // every value is byte-identical. Comparing the RAW `current` against
+  // `canonical(expected)` made every legitimate rollback fail closed as
+  // "modified_since_apply" (caught by fleetDesignApply.integration.test.ts
+  // case 6 against real Postgres — a mocked-db unit test can't reproduce a
+  // jsonb round trip).
+  const current = canonical(snapshotLinks(await listFeatureLinks(policyId)));
   const expected = row.createdRefs?.linksSnapshot;
   if (!expected || JSON.stringify(current) !== JSON.stringify(canonical(expected))) throw new RollbackRefused('modified_since_apply');
 
