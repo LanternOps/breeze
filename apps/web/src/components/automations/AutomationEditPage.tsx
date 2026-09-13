@@ -376,7 +376,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         throw new Error(extractApiError(data, t('automationEditPage.errors.save')));
       }
 
-      void navigateTo('/automations');
+      void navigateTo('/jobs');
     } catch (err) {
       setError(err instanceof Error ? err.message : t('automationEditPage.errors.generic'));
     } finally {
@@ -385,7 +385,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   };
 
   const handleCancel = () => {
-    void navigateTo('/automations');
+    void navigateTo('/jobs');
   };
 
   if (loading) {
@@ -417,12 +417,12 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   return (
     <div className="space-y-6">
       <Breadcrumbs items={[
-        { label: t('automationEditPage.breadcrumb.automations'), href: '/automations' },
+        { label: t('automationEditPage.breadcrumb.automations'), href: '/jobs' },
         { label: isNew ? t('automationEditPage.breadcrumb.new') : (defaultValues?.name || t('automationEditPage.breadcrumb.edit')) }
       ]} />
       <div className="flex items-center gap-4">
         <a
-          href="/automations"
+          href="/jobs"
           className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted"
         >
           <ArrowLeft className="h-5 w-5" />

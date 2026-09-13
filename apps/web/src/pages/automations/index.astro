@@ -1,8 +1,3 @@
 ---
-import DashboardLayout from '../../layouts/DashboardLayout.astro';
-import AutomationsPage from '../../components/automations/AutomationsPage';
+return Astro.redirect('/jobs', 301);
 ---
-
-<DashboardLayout titleKey="titles.automations">
-  <AutomationsPage client:load />
-</DashboardLayout>

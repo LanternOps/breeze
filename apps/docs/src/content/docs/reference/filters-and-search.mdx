@@ -194,6 +194,25 @@ curl "https://breeze.yourdomain.com/api/v1/search?q=workstation&limit=20" \
   The total result limit (controlled by the `limit` query parameter, default 20, max 50) is distributed across categories. Each category receives roughly `limit / 4` results, capped at **8 per category** regardless of how high `limit` is set, ensuring a balanced mix when the query matches broadly.
 </Aside>
 
+### Command Palette and Keyboard Shortcuts
+
+In the web app the same search backs the command palette. Open it with **Cmd+K** (macOS) or **Ctrl+K**, or press **/** on any page that does not claim that key for its own filter bar. Before you type, the palette lists your **recent devices** (the last five device pages you opened), **recently visited** pages, and quick actions — so `Cmd+K`, `Enter` returns you to the last device you were working on. As you type, matching recents appear instantly while the server search runs.
+
+Recent devices also appear in the sidebar under **Devices & Assets**; the chevron beside the row hides or shows them, and the choice is remembered. Recents are stored per user in the browser, never on the server.
+
+Single-key shortcuts work anywhere except inside a text field:
+
+| Keys | Action |
+|---|---|
+| `g` then `h` / `o` / `d` / `a` / `i` / `r` / `s` / `p` / `v` | Go to Dashboard / Organizations / Devices & Assets / Alerts / Incidents / Remote Access / Scripts / Patches / Vulnerabilities |
+| `/` | Open search |
+| `[` | Cycle the sidebar between open, auto-hide and icons |
+| `?` | Show the keyboard shortcuts card |
+| `Cmd+Shift+H` / `Ctrl+Shift+H` | Open the help panel |
+| `Esc` | Close a dialog or menu |
+
+The Devices list keeps its own `/` (focus the filter bar) and `?` (filter syntax help); the shortcuts card is still reachable there from the palette's **Keyboard shortcuts** quick action.
+
 ### Advanced Filtering
 
 For advanced device filtering beyond simple substring search, use the Saved Filters system described above. Saved filters support structured conditions with typed operators, nested logic, and field-specific matching across hardware specs, metrics, software inventory, network details, and more.

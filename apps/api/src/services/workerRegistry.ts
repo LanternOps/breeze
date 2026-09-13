@@ -1040,6 +1040,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'stripeSessionRevocationSweep',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/stripeSessionRevocationSweep');
+      return { init: m.initializeStripeSessionRevocationSweep, shutdown: m.shutdownStripeSessionRevocationSweep };
+    },
+  },
+  {
     name: 'ticketAttachmentReaper',
     placement: 'global',
     load: async () => {
