@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-13
 **Status:** Design — direction and first-cut scope approved by Todd in session; Codex xhigh quorum applied (section 13); ready for plans
-**Issues addressed:** replaces the split-view Organizations page refined in #5708; feature issue registered via `register_feature` (see section 11)
+**Issues addressed:** feature #5721 (waves W01 #5722, W02 #5723, W03 #5724); replaces the split-view Organizations page refined in #5708
 **Branch:** `spec/organizations-account-board` (docs); implementation waves branch from the feature issue
 **Mock:** [`assets/2026-09-13-organizations-account-board-mock.html`](assets/2026-09-13-organizations-account-board-mock.html) — static, example figures, table above 900px and cards below. The mock shows the W03 end state; W02 ships without the Integrations column.
 
