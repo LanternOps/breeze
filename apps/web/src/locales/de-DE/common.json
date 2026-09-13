@@ -2480,5 +2480,10 @@
     "approximateUnavailableStale": "≈ Summe nicht verfügbar — {{target}}-Wechselkurs für {{codes}} ist zu alt",
     "approximateUnavailableMixed": "≈ Summe nicht verfügbar — {{codes}} konnte nicht in {{target}} umgerechnet werden",
     "approximateUnavailableCodesOverflow": "{{codes}} und {{more}} weitere"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Ihre Rolle wird künftig eine Zwei-Faktor-Authentifizierung erfordern. Richten Sie sie bis {{date}} ein.",
+    "cta": "2FA einrichten",
+    "dismiss": "Erinnerung an die Zwei-Faktor-Authentifizierung schließen"
   }
 }

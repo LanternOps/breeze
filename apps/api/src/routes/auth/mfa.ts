@@ -181,6 +181,13 @@ mfaRoutes.get('/mfa/enrollment-options', authMiddleware, async (c) => {
   return c.json({
     allowedMethods: policy.allowedMethods,
     phoneConfigured: user.phoneVerified === true && Boolean(user.phoneNumber),
+    // #5306 — forced-enrollment discovery now also answers "how long have I
+    // got". `mfaGraceEndsAt` is non-null exactly while this user's enrolment
+    // grace window is open, and it is what the dashboard banner nudges from.
+    // `mfaEnrollmentRequired` is the live verdict for an unenrolled user, so a
+    // client can tell "must enrol now" from "must enrol by <date>".
+    mfaEnrollmentRequired: policy.required,
+    mfaGraceEndsAt: policy.pendingEnrollment?.deadline ?? null,
   });
 });
 

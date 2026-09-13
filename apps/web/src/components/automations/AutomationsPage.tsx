@@ -76,6 +76,11 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
     // never render.
     managedByAgentId:
       item.managedByAgentId === null ? null : asString(item.managedByAgentId),
+    // Compiled-from-monitor automations (#5287) carry this so the fetch layer
+    // can filter them out below — a monitor-managed row is an implementation
+    // detail of its monitor, not a Job the operator manages here.
+    managedByMonitorId:
+      item.managedByMonitorId === null ? null : asString(item.managedByMonitorId),
     description: asString(item.description),
     triggerType,
     triggerConfig: {
@@ -223,7 +228,15 @@ export default function AutomationsPage() {
       }
       const data = await response.json();
       const rows = data.data ?? data.automations ?? [];
-      setAutomations(Array.isArray(rows) ? rows.map((row: unknown) => toListAutomation(row, t)) : []);
+      // Monitor-managed automations (#5287) are compiled artifacts of their
+      // monitor, not Jobs an operator manages here — hide them from the list.
+      // (Non-monitor-managed automations still show, including agent-managed
+      // ones, which render read-only inline instead of being hidden — #3824.)
+      setAutomations(
+        Array.isArray(rows)
+          ? rows.map((row: unknown) => toListAutomation(row, t)).filter((automation) => !automation.managedByMonitorId)
+          : []
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : t('automationsPage.errors.generic'));
     } finally {

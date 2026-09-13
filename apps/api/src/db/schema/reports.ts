@@ -96,7 +96,7 @@ export const reports = pgTable('reports', {
   ).on(table.orgId, table.type)
     .where(sql`${table.portalSelfService} = true`),
   // Fleet Designer W01 (#5651): one Fleet Design definition per org. See
-  // migrations/2026-10-16-160600-ai-agents-fleet-designer.sql.
+  // migrations/2026-10-16-170500-ai-agents-fleet-designer.sql.
   aiFleetDesignOrgUniq: uniqueIndex('reports_ai_fleet_design_org_uniq')
     .on(table.orgId)
     .where(sql`${table.type} = 'ai_fleet_design'`),

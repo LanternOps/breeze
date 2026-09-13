@@ -47,6 +47,7 @@ import {
 } from '../services/aiAgents/managedAutomation';
 import { UUID_REGEX } from '../utils/uuid';
 import { projectAutomationRunsToSites, scanProjectedAutomationRuns } from '../services/automationReadProjection';
+import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
 export const automationRoutes = new Hono();
 export const automationWebhookRoutes = new Hono();
@@ -1270,6 +1271,13 @@ async function handleUpdateAutomation(c: Context) {
     return c.json({ error: 'Automation not found' }, 404);
   }
 
+  // #5289 — a row compiled from a monitor definition must be edited only by
+  // the compiler; a side edit here would silently drift from the definition
+  // until the next compile pass overwrote it.
+  if (automation.managedByMonitorId) {
+    return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
+  }
+
   // Even a plain enabled toggle goes through the agent so there is one switch
   // for both the agent policy and its system-managed trigger wiring.
   if (isManagedAutomation(automation)) {
@@ -1451,6 +1459,14 @@ automationRoutes.delete(
       return c.json({ error: 'Automation not found' }, 404);
     }
 
+    // #5289 — see the guard in handleUpdateAutomation. Unlike the agent-managed
+    // case below, there is no soft-disable escape hatch for a monitor-managed
+    // row: it is removed by disabling/removing its monitor, which the
+    // compiler then reconciles.
+    if (automation.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
+    }
+
     // Deletion is the ONE managed-row operation a user may reach, and only
     // once the owning agent is soft-disabled. disableAgent flips this row to
     // enabled:false but leaves managed_by_agent_id set, and a disabled agent
@@ -1516,6 +1532,11 @@ async function triggerAutomationRun(
   const automation = await getAutomationWithOrgCheck(automationId, auth);
   if (!automation) {
     return c.json({ error: 'Automation not found' }, 404);
+  }
+
+  // #5289 — see the guard in handleUpdateAutomation.
+  if (automation.managedByMonitorId) {
+    return managedByMonitorResponse(c, 'automations', automation.managedByMonitorId);
   }
 
   // A managed trigger is alert.triggered, so a manual run has no event to bind

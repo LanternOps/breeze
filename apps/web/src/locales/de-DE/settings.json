@@ -5403,6 +5403,7 @@
       "openTitle": "Die unbeaufsichtigte Ausführung ist pausiert",
       "openBody": "{{reason}} Unbeaufsichtigte Ausführungen werden verweigert, bis ein Genehmiger die Ausführung zurücksetzt. Genehmigungen funktionieren weiterhin normal.",
       "reset": "Ausführung zurücksetzen",
+      "resetStepUpBody": "Das Zurücksetzen der unbeaufsichtigten Spur erfordert eine erneute Sicherheitsprüfung.",
       "resetSuccess": "Die unbeaufsichtigte Ausführung läuft wieder.",
       "resetFailed": "Die Ausführung konnte nicht zurückgesetzt werden."
     },

@@ -5403,6 +5403,7 @@
       "openTitle": "O modo sem supervisão está pausado",
       "openBody": "{{reason}} As execuções sem supervisão são recusadas até que um aprovador redefina o modo. As aprovações continuam funcionando normalmente.",
       "reset": "Redefinir o modo",
+      "resetStepUpBody": "Redefinir a faixa não assistida exige uma nova verificação de segurança.",
       "resetSuccess": "O modo sem supervisão está funcionando novamente.",
       "resetFailed": "Não foi possível redefinir o modo."
     },

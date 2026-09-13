@@ -5403,6 +5403,7 @@
       "openTitle": "La modalità non presidiata è in pausa",
       "openBody": "{{reason}} Le esecuzioni non presidiate vengono rifiutate finché un approvatore non ripristina la modalità. Le approvazioni continuano a funzionare normalmente.",
       "reset": "Ripristina la modalità",
+      "resetStepUpBody": "Il ripristino della corsia non presidiata richiede un nuovo controllo di sicurezza.",
       "resetSuccess": "La modalità non presidiata è di nuovo attiva.",
       "resetFailed": "Impossibile ripristinare la modalità."
     },

@@ -5403,6 +5403,7 @@
       "openTitle": "Unattended lane is paused",
       "openBody": "{{reason}} Unattended runs are refused until an approver resets the lane. Approvals still work normally.",
       "reset": "Reset the lane",
+      "resetStepUpBody": "Resetting the unattended lane needs a fresh security check.",
       "resetSuccess": "The unattended lane is running again.",
       "resetFailed": "The lane could not be reset."
     },

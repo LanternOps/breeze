@@ -5403,6 +5403,7 @@
       "openTitle": "La ejecución sin supervisión está en pausa",
       "openBody": "{{reason}} Las ejecuciones sin supervisión se rechazan hasta que un aprobador restablezca la vía. Las aprobaciones siguen funcionando con normalidad.",
       "reset": "Restablecer la vía",
+      "resetStepUpBody": "Restablecer el carril desatendido requiere una nueva verificación de seguridad.",
       "resetSuccess": "La ejecución sin supervisión vuelve a funcionar.",
       "resetFailed": "No se pudo restablecer la vía."
     },

@@ -29,6 +29,9 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+  // See featureLinks.siteScope.test.ts for why this export is required now
+  // that the route imports services/monitors/monitorService.
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
 }));
 
 vi.mock('../../middleware/auth', () => ({

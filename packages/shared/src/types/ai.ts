@@ -120,7 +120,11 @@ export type AiContentBlock =
 // ============================================
 
 export type AiPageContext =
-  | { type: 'device'; id: string; hostname: string; os?: string; status?: string; ip?: string }
+  // `orgId` is the org the device belongs to, supplied so the web client can
+  // tell that an open chat session belongs to a different tenant than the page
+  // it is now sitting on (#5684). It is a client-side hint only: the API never
+  // authorizes on it — the session org is derived from the device row (#5593).
+  | { type: 'device'; id: string; hostname: string; orgId?: string; os?: string; status?: string; ip?: string }
   | { type: 'alert'; id: string; title: string; severity?: string; deviceHostname?: string }
   | { type: 'dashboard'; orgName?: string; deviceCount?: number; alertCount?: number }
   | { type: 'custom'; label: string; data: Record<string, unknown> };

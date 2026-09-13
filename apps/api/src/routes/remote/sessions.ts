@@ -59,6 +59,12 @@ import {
 import { trustDenyBody } from '../../services/partnerTrust';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { remoteSessionStaleCondition } from '../../services/remoteSessionStaleness';
+import {
+  buildStopDesktopCommand,
+  terminalIntentSet,
+  terminalSessionReturning,
+  toTerminalSessionRow,
+} from '../../services/remoteDesktopTerminalIntent';
 
 export const sessionRoutes = new Hono();
 
@@ -182,15 +188,11 @@ sessionRoutes.delete(
     // One UPDATE both rechecks and claims the exact stale rows. Splitting this
     // into SELECT ids + UPDATE ids lets a session become fresh/active or be
     // replaced after validation but before teardown.
-    const result = await db
+    const result = (await db
       .update(remoteSessions)
-      .set({ status: 'disconnected', endedAt: new Date() })
+      .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
       .where(and(...conditions))
-      .returning({
-        id: remoteSessions.id,
-        type: remoteSessions.type,
-        deviceId: remoteSessions.deviceId,
-      });
+      .returning(terminalSessionReturning())).map(toTerminalSessionRow);
 
     // Revoke viewer tokens AND signal each agent to stop the peer-to-peer
     // WebRTC stream / terminal PTY. Marking the row + revoking the token alone
@@ -292,7 +294,7 @@ sessionRoutes.post(
     try {
       const staleUpdate = db
         .update(remoteSessions)
-        .set({ status: 'disconnected', endedAt: new Date() })
+        .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
         .where(
           and(
             eq(remoteSessions.deviceId, data.deviceId),
@@ -300,19 +302,11 @@ sessionRoutes.post(
             inArray(remoteSessions.status, ['pending', 'connecting', 'active'])
           )
         ) as unknown as Promise<unknown> & {
-          returning?: (fields: {
-            id: typeof remoteSessions.id;
-            type: typeof remoteSessions.type;
-            deviceId: typeof remoteSessions.deviceId;
-          }) => Promise<Array<{ id: string; type: string; deviceId: string }>>;
+          returning?: (fields: ReturnType<typeof terminalSessionReturning>) => Promise<Array<Parameters<typeof toTerminalSessionRow>[0]>>;
         };
 
       if (typeof staleUpdate.returning === 'function') {
-        const revoked = await staleUpdate.returning({
-          id: remoteSessions.id,
-          type: remoteSessions.type,
-          deviceId: remoteSessions.deviceId,
-        });
+        const revoked = (await staleUpdate.returning(terminalSessionReturning())).map(toTerminalSessionRow);
         // Revoke viewer tokens AND push the agent stop so a stale row for a
         // still-live desktop/terminal doesn't leave the stream running.
         await teardownDisconnectedSessions(revoked);
@@ -320,7 +314,12 @@ sessionRoutes.post(
         await staleUpdate;
       }
     } catch (err) {
+      // The UPDATE may already have committed when this fires (a row-shape
+      // error in the post-UPDATE mapping, for instance), which would leave
+      // rows terminal with no viewer revocation and no stop — so it is
+      // escalated, not just logged.
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
 
     // Create session
@@ -1274,15 +1273,20 @@ sessionRoutes.post(
     // resetting endedAt/durationSeconds. Guard on the live states so the
     // already-terminal case loses the write and is reported, not silently
     // clobbered.
+    //
+    // Through the terminal-intent contract (SEC-038 W03): the same guarded
+    // UPDATE also bumps the generation every start bumps, records it as the
+    // terminal one, and moves the phase to 'pending' until the agent's stop
+    // result lands. The live-status guard is the contract's own.
     const [updated] = await db
       .update(remoteSessions)
-      .set({
+      .set(terminalIntentSet({
         status: 'disconnected',
         endedAt,
         durationSeconds,
         bytesTransferred: body.bytesTransferred !== undefined ? BigInt(body.bytesTransferred) : session.bytesTransferred,
         recordingUrl: recordingUrl ?? session.recordingUrl
-      })
+      }, 'pending'))
       .where(and(
         eq(remoteSessions.id, sessionId),
         inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
@@ -1342,16 +1346,18 @@ sessionRoutes.post(
     // already terminal and the viewer token already revoked, so delivery is
     // best-effort by design; the trade is that the outcome cannot be reported
     // synchronously in the response, only logged and captured.
+    // The contract always writes the terminal generation with the terminal
+    // status; a null here would mean the UPDATE above bypassed it.
+    const terminalGeneration = toTerminalSessionRow(updated).terminalGeneration;
     if (session.type === 'desktop' && device.agentId) {
       // `dispatchCommandToAgent` RESOLVES with a status — it does not throw on
       // a failed delivery (see DispatchOutcome in services/agentCommandRelay).
       // A bare catch would therefore have been silent for every real
       // non-delivery, so branch on the status explicitly.
-      void dispatchCommandToAgent(device.agentId, {
-        id: `desk-stop-${sessionId}`,
-        type: 'stop_desktop',
-        payload: { sessionId },
-      }).then((outcome) => {
+      void dispatchCommandToAgent(
+        device.agentId,
+        buildStopDesktopCommand(sessionId, terminalGeneration),
+      ).then((outcome) => {
         if (outcome.status === 'sent') return;
         const detail = outcome.status === 'infrastructure_error' ? ` (${outcome.message})` : '';
         console.warn(
@@ -1398,12 +1404,18 @@ sessionRoutes.post(
       throw viewerRevocationError;
     }
 
+    // Still 200, not 202: callers that treat 200 as "ended" keep working. The
+    // phase is additive — 'pending' until the agent acknowledges the stop,
+    // 'confirmed' after — and the generation is a decimal string, never a
+    // JSON number (SEC-038 W03).
     return c.json({
       id: updated.id,
       status: updated.status,
       endedAt: updated.endedAt,
       durationSeconds: updated.durationSeconds,
-      bytesTransferred: updated.bytesTransferred ? Number(updated.bytesTransferred) : null
+      bytesTransferred: updated.bytesTransferred ? Number(updated.bytesTransferred) : null,
+      terminationPhase: updated.terminationPhase,
+      terminalGeneration: formatDesktopGeneration(terminalGeneration),
     });
   }
 );

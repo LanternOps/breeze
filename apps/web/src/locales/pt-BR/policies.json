@@ -835,6 +835,17 @@
         "openAlertsFeature": "Abrir Alertas",
         "legacyAlertRulesMovedToAlerts": "{{count}} regra(s) de alerta legada(s) salvas nesta aba foram movidas para o recurso Alertas desta política. O monitoramento não as armazena mais."
       },
+      "monitorsTab": {
+        "attachMonitor": "Anexar um monitor",
+        "loadingMonitors": "Carregando monitores…",
+        "noMoreMonitorsToAttach": "Não há mais monitores disponíveis para anexar",
+        "selectAMonitorToAttach": "Selecione um monitor para anexar…",
+        "noMonitorsAttached": "Ainda não há monitores anexados a esta política.",
+        "inherited": "Herdado",
+        "overrideValue": "Valor de substituição",
+        "overridesLabel": "Substituições:",
+        "failedToLoadMonitors": "Falha ao carregar os monitores"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Capturar solicitações de elevação do UAC do Windows",
         "theAgentObservesUACConsentPromptsAnd": "O agente observa as solicitações de consentimento do UAC e as registra como solicitações de elevação para análise no PAM. A captura fica desativada por padrão — ative-a aqui para incluir o escopo de um dispositivo no PAM.",

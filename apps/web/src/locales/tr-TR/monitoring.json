@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Bir monitör tarafından yönetiliyor",
+    "description": "Bu kayıt bir monitörden oluşturulur ve doğrudan düzenlenemez. Bunun yerine monitörden yönetin.",
+    "open": "Monitörü aç",
+    "badge": "Monitör tarafından yönetiliyor",
+    "badgeHint": "Bir monitör tarafından yönetiliyor — bunun yerine monitörden düzenleyin.",
+    "monitorLabel": "Monitör"
+  }
+}

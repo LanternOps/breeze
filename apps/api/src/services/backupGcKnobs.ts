@@ -61,6 +61,31 @@ export function resolveBackupRestorePinLingerMs(): number {
 }
 
 /**
+ * D18 W02 (#5451): how old an orphan manifest-bearing prefix (no
+ * backup_snapshots row, no retirement row) must be before GC treats it as
+ * abandoned rather than an in-flight/not-yet-adopted upload. Default matches
+ * the agent's 7-day journalMaxAge + 48h resume headroom (9 days) — same
+ * physical constant as backupRetention.ts's
+ * BACKUP_GC_AGENT_JOURNAL_MAX_AGE_MS, duplicated here because this module is
+ * imported BY backupRetention.ts (not the reverse), so it can't be shared by
+ * import; keep both literals in sync if the agent's journalMaxAge ever
+ * changes. The floor mirrors the manifest-less-prefix floor for the same
+ * reason: an override at or below journalMaxAge could reclaim a prefix the
+ * agent might still legitimately resume into.
+ */
+const BACKUP_ORPHAN_MANIFEST_AGENT_JOURNAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT =
+  BACKUP_ORPHAN_MANIFEST_AGENT_JOURNAL_MAX_AGE_MS + 48 * 60 * 60 * 1000; // 9 days
+const BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_PRODUCTION_FLOOR = BACKUP_ORPHAN_MANIFEST_AGENT_JOURNAL_MAX_AGE_MS + 1;
+export function resolveBackupOrphanManifestMaxAgeMs(): number {
+  return resolveMsKnob(
+    'BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS',
+    BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT,
+    BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_PRODUCTION_FLOOR,
+  );
+}
+
+/**
  * Grace window added on top of publish_lease_expires_at before retention
  * treats a base pin as released (spec §3.1: "the margin is what turns the
  * pre-PUT check into a fence — the server keeps the pin for lease + margin,

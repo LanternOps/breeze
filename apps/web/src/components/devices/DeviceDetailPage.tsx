@@ -275,6 +275,9 @@ export default function DeviceDetailPage({ deviceId }: DeviceDetailPageProps) {
         type: "device",
         id: device.id,
         hostname: device.hostname,
+        // Lets the AI store notice that an open chat belongs to another tenant
+        // and start a session anchored to THIS device's org instead (#5684).
+        orgId: device.orgId || undefined,
         os: device.os,
         status: device.status,
         ip: undefined,

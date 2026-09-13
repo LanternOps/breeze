@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Géré par un moniteur",
+    "description": "Cet enregistrement est généré à partir d’un moniteur et ne peut pas être modifié directement. Gérez-le plutôt depuis le moniteur.",
+    "open": "Ouvrir le moniteur",
+    "badge": "Géré par un moniteur",
+    "badgeHint": "Géré par un moniteur — modifiez-le plutôt depuis le moniteur.",
+    "monitorLabel": "Moniteur"
+  }
+}

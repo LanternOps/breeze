@@ -62,6 +62,12 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  // #5289 — the compiler's only write to monitor_definitions stamps the
+  // compiled_* ids and hash back onto a definition its CALLER already loaded
+  // and authorised. Every caller-facing write path (create/update/delete) runs
+  // the gate in services/monitors/monitorService.ts before compiling, and the
+  // compiler never takes an owner axis from a request.
+  'services/monitors/monitorCompiler.ts': 'stamps compiled_* provenance on a definition the caller already gated via monitorService',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
   // hash, MFA secret, passkeys, phone, email verification, last-login), never

@@ -66,5 +66,19 @@
     "heading": "Relatório agendado",
     "body": "Seu relatório agendado {{reportName}} está em anexo.",
     "button": "Ver relatório"
+  },
+  "mfaEnrollmentNotice": {
+    "subject": "Ação necessária: configure a autenticação de dois fatores até {{deadline}}",
+    "preheader": "Sua função exige autenticação de dois fatores. Cadastre-se até {{deadline}}.",
+    "heading": "Autenticação de dois fatores obrigatória",
+    "body": "Olá {{name}}, sua função exige autenticação de dois fatores (2FA) na sua conta Breeze. Cadastre-se até {{deadline}} — após essa data você precisará se cadastrar antes de continuar usando o Breeze.",
+    "button": "Configurar autenticação de dois fatores"
+  },
+  "mfaEnrollmentReminder": {
+    "subject": "Faltam 3 dias para configurar a autenticação de dois fatores",
+    "preheader": "Sua janela de cadastro de autenticação de dois fatores se encerra em {{deadline}}.",
+    "heading": "O prazo para cadastro está terminando",
+    "body": "Olá {{name}}, sua função exige autenticação de dois fatores (2FA) na sua conta Breeze, e sua janela de cadastro se encerra em {{deadline}}. Cadastre-se agora — após essa data você precisará se cadastrar antes de continuar usando o Breeze.",
+    "button": "Configurar autenticação de dois fatores"
   }
 }

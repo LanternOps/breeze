@@ -19,6 +19,7 @@ import {
   configPolicyBackupSettings,
   configPolicyOnedriveSettings,
   configPolicyOnedriveLibraries,
+  configPolicyMonitors,
   devices,
   deviceGroups,
   organizations,
@@ -52,6 +53,7 @@ import {
   deviceLifecycleInlineSettingsSchema,
   eventLogInlineSettingsSchema,
   monitoringInlineSettingsSchema,
+  monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
 } from '@breeze/shared/validators';
@@ -708,6 +710,8 @@ async function decomposeInlineSettings(
             autoResolveConditions: item.autoResolveConditions ?? null,
             titleTemplate: item.titleTemplate ?? '{{ruleName}} triggered on {{deviceName}}',
             messageTemplate: item.messageTemplate ?? '{{ruleName}} condition met',
+            escalationPolicyId: item.escalationPolicyId ?? null,
+            notificationChannelIds: item.notificationChannelIds ?? null,
             sortOrder: item.sortOrder ?? idx,
           }))
         );
@@ -1044,6 +1048,22 @@ async function decomposeInlineSettings(
       break;
     }
 
+    case 'monitors': {
+      const parsed = monitorsInlineSettingsSchema.parse(s);
+      if (parsed.items.length > 0) {
+        await tx.insert(configPolicyMonitors).values(
+          parsed.items.map((item, idx) => ({
+            featureLinkId: linkId,
+            monitorId: item.monitorId,
+            enabled: item.enabled,
+            overrides: item.overrides ?? null,
+            sortOrder: item.sortOrder ?? idx,
+          }))
+        );
+      }
+      break;
+    }
+
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -1090,6 +1110,9 @@ function assertDecomposableInlineSettings(featureType: ConfigFeatureType, settin
       break;
     case 'onedrive_helper':
       onedriveHelperInlineSettingsSchema.parse(settings);
+      break;
+    case 'monitors':
+      monitorsInlineSettingsSchema.parse(settings);
       break;
     default:
       break;
@@ -1153,6 +1176,9 @@ async function deleteNormalizedRows(
       await tx.delete(configPolicyOnedriveSettings).where(eq(configPolicyOnedriveSettings.featureLinkId, linkId));
       break;
     }
+    case 'monitors':
+      await tx.delete(configPolicyMonitors).where(eq(configPolicyMonitors.featureLinkId, linkId));
+      break;
     case 'warranty':
     case 'helper':
     case 'pam':
@@ -1192,6 +1218,8 @@ async function assembleInlineSettings(
           autoResolveConditions: r.autoResolveConditions,
           titleTemplate: r.titleTemplate,
           messageTemplate: r.messageTemplate,
+          escalationPolicyId: r.escalationPolicyId,
+          notificationChannelIds: r.notificationChannelIds,
           sortOrder: r.sortOrder,
         })),
       };
@@ -1395,6 +1423,23 @@ async function assembleInlineSettings(
         notifyOnSessionEnd: row.notifyOnSessionEnd,
         showActiveIndicator: row.showActiveIndicator,
         technicianIdentityLevel: row.technicianIdentityLevel,
+      };
+    }
+
+    case 'monitors': {
+      const rows = await db
+        .select()
+        .from(configPolicyMonitors)
+        .where(eq(configPolicyMonitors.featureLinkId, linkId))
+        .orderBy(asc(configPolicyMonitors.sortOrder));
+      if (rows.length === 0) return null;
+      return {
+        items: rows.map((r) => ({
+          monitorId: r.monitorId,
+          enabled: r.enabled,
+          overrides: r.overrides,
+          sortOrder: r.sortOrder,
+        })),
       };
     }
 
@@ -2643,7 +2688,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'event_log' ||
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
-    featureType === 'device_lifecycle'
+    featureType === 'device_lifecycle' ||
+    featureType === 'monitors'
   ) {
     // These have no policy table — they require inlineSettings.
     //

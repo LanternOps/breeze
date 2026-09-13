@@ -509,6 +509,91 @@ describe('manage_automations managed-row protection', () => {
   });
 });
 
+// #5289 — a row compiled from a monitor definition (managed_by_monitor_id
+// set) must refuse enable/disable/run the same way an agent-managed row does.
+// create/update/delete are unreachable here (early-returned above), so only
+// enable/disable/run are covered.
+describe('manage_automations managed-by-monitor guard (#5289)', () => {
+  const toolMap = new Map<string, AiTool>();
+  registerFleetTools(toolMap);
+  const tool = toolMap.get('manage_automations')!;
+  const auth = {
+    user: { id: 'u1', email: 'test@test.com', name: 'Test' },
+    orgId: 'org-1',
+    partnerId: null,
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    canAccessOrg: (id: string) => id === 'org-1',
+    orgCondition: () => undefined,
+  } as any;
+  const monitorManaged = {
+    id: 'automation-1',
+    name: 'Compiled automation',
+    orgId: 'org-1',
+    partnerId: null,
+    trigger: { type: 'event', eventType: 'alert.triggered' },
+    conditions: null,
+    managedByAgentId: null,
+    managedByMonitorId: 'monitor-1',
+  };
+  const defaultSelectImplementation = vi.mocked(db.select).getMockImplementation();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([monitorManaged]),
+        }),
+      }),
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.mocked(db.select).mockReset();
+    vi.mocked(db.select).mockImplementation(defaultSelectImplementation!);
+  });
+
+  it('refuses to disable a monitor-managed automation', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'disable',
+      automationId: monitorManaged.id,
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'automation_managed_by_monitor',
+      monitorId: 'monitor-1',
+    });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('refuses to enable a monitor-managed automation', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'enable',
+      automationId: monitorManaged.id,
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'automation_managed_by_monitor',
+      monitorId: 'monitor-1',
+    });
+    expect(vi.mocked(db.update)).not.toHaveBeenCalled();
+  });
+
+  it('refuses to run a monitor-managed automation', async () => {
+    const result = JSON.parse(await tool.handler({
+      action: 'run',
+      automationId: monitorManaged.id,
+    }, auth));
+
+    expect(result).toEqual({
+      error: 'automation_managed_by_monitor',
+      monitorId: 'monitor-1',
+    });
+    expect(vi.mocked(db.insert)).not.toHaveBeenCalled();
+  });
+});
+
 describe('manage_maintenance_windows handler', () => {
   const toolMap = new Map<string, AiTool>();
   registerFleetTools(toolMap);

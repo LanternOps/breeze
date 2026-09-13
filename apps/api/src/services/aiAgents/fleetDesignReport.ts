@@ -17,7 +17,7 @@
  *     `POST /ai/fleet-design/runs` starts a manual, schedule-less run — so
  *     the definition is upserted against the PARTIAL unique index
  *     `reports_ai_fleet_design_org_uniq` (`org_id`) `WHERE type =
- *     'ai_fleet_design'` (migration `2026-10-16-160600-ai-agents-fleet-designer.sql`)
+ *     'ai_fleet_design'` (migration `2026-10-16-170500-ai-agents-fleet-designer.sql`)
  *     instead. A later run — manual or scheduled — reuses the SAME
  *     definition row and simply replaces its artifact, exactly like a human
  *     re-running any other one-time report.

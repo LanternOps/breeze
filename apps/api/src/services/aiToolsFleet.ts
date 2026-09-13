@@ -107,6 +107,7 @@ import {
   isManagedAutomation,
   managedAutomationOwnerIsLive,
 } from './aiAgents/managedAutomation';
+import { MANAGED_BY_MONITOR_ERROR } from './monitors/managedRowGuard';
 import type {
   FleetFindingKind,
   FleetFindingSeverity,
@@ -1695,6 +1696,8 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           orgId: automations.orgId,
           partnerId: automations.partnerId,
           conditions: automations.conditions,
+          // #5289 — lets the caller render a compiled automation read-only.
+          managedByMonitorId: automations.managedByMonitorId,
         }).from(automations)
           .where(conditions.length > 0 ? and(...conditions) : undefined);
 
@@ -1875,6 +1878,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (isManagedAutomation(existing)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: existing.managedByAgentId });
         }
+        // #5289 — a row compiled from a monitor definition must be edited
+        // only by the compiler; a side edit here would silently drift from
+        // the definition until the next compile pass overwrote it.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({ error: MANAGED_BY_MONITOR_ERROR.automations, monitorId: existing.managedByMonitorId });
+        }
 
         // Toggling a partner-wide automation mutates behavior across every
         // org under the partner (#2133) — requires the partner-wide capability.
@@ -1903,6 +1912,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!auto) return JSON.stringify({ error: 'Automation not found or access denied' });
         if (isManagedAutomation(auto)) {
           return JSON.stringify({ error: MANAGED_AUTOMATION_ERROR_CODE, agentId: auto.managedByAgentId });
+        }
+        // #5289 — see the guard in the enable/disable branch above.
+        if (auto.managedByMonitorId) {
+          return JSON.stringify({ error: MANAGED_BY_MONITOR_ERROR.automations, monitorId: auto.managedByMonitorId });
         }
 
         // Running a partner-wide automation fans actions out across every org
