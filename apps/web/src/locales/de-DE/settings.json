@@ -4505,8 +4505,8 @@
       "openRecord": "Datensatz öffnen",
       "openSettings": "Einstellungen",
       "openSettingsFor": "Einstellungen für {{name}}",
-      "archiveOrganizationFor": "{{name}} archivieren",
-      "openRecordFor": "Datensatz für {{name}} öffnen"
+      "openRecordFor": "Datensatz für {{name}} öffnen",
+      "more": "Weitere Aktionen"
     },
     "errors": {
       "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",

@@ -4558,8 +4558,8 @@
       "openRecord": "Kaydı aç",
       "openSettings": "Ayarlar",
       "openSettingsFor": "{{name}} ayarları",
-      "archiveOrganizationFor": "{{name}} kuruluşunu arşivle",
-      "openRecordFor": "{{name}} kaydını aç"
+      "openRecordFor": "{{name}} kaydını aç",
+      "more": "Diğer işlemler"
     },
     "errors": {
       "fetchOrganizations": "Kuruluşlar getirilemedi",

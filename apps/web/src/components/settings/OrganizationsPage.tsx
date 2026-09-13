@@ -19,6 +19,8 @@ import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import { Dialog } from '../shared/Dialog';
+import { ActionMenu } from '../shared/ActionMenu';
+import { Building2, ChevronRight, GripVertical, Settings } from 'lucide-react';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 
@@ -919,14 +921,14 @@ export default function OrganizationsPage() {
             type="button"
             data-testid="bulk-org-import-toggle"
             onClick={() => setShowBulkImport((v) => !v)}
-            className="inline-flex h-10 items-center justify-center rounded-md border bg-background px-4 text-sm font-medium transition hover:bg-muted"
+            className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
           >
             {t('bulkOrgImport.title')}
           </button>
           <button
             type="button"
             onClick={handleAdd}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             {t('organizationsPage.actions.addOrganization')}
           </button>
@@ -1028,14 +1030,7 @@ export default function OrganizationsPage() {
                         onKeyDown={e => handleReorderKeyDown(e, org)}
                         className="mt-0.5 shrink-0 cursor-grab rounded p-0.5 text-muted-foreground/40 transition group-hover:text-muted-foreground group-focus-within:text-muted-foreground active:cursor-grabbing"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <circle cx="9" cy="6" r="1" />
-                          <circle cx="9" cy="12" r="1" />
-                          <circle cx="9" cy="18" r="1" />
-                          <circle cx="15" cy="6" r="1" />
-                          <circle cx="15" cy="12" r="1" />
-                          <circle cx="15" cy="18" r="1" />
-                        </svg>
+                        <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
                     )}
                     <button
@@ -1078,48 +1073,26 @@ export default function OrganizationsPage() {
                       </span>
                     </button>
 
-                    {/* Row actions: revealed on hover AND on keyboard focus
-                        within the row, so they are never focusable-but-
-                        invisible. */}
-                    <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                      <button
-                        type="button"
-                        aria-label={t('organizationsPage.actions.openSettingsFor', { name: org.name })}
-                        title={t('organizationsPage.actions.openSettings')}
-                        tabIndex={rowTabIndex}
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleEdit(org);
-                        }}
-                        className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                          <path d="m15 5 4 4" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`org-archive-open-row-${org.id}`}
-                        aria-label={t('organizationsPage.actions.archiveOrganizationFor', { name: org.name })}
-                        title={t('organizationsPage.actions.archiveOrganization')}
-                        tabIndex={rowTabIndex}
-                        onClick={e => {
-                          e.stopPropagation();
-                          handleArchive(org);
-                        }}
-                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <rect x="2" y="4" width="20" height="5" rx="1" />
-                          <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
-                          <path d="M10 13h4" />
-                        </svg>
-                      </button>
-                    </div>
-
-                    {/* Row-end chevron — the row's persistent route to the
-                        record page now that the name selects the row. */}
+                    {/* Row actions mirror the detail header's two routes —
+                        Settings and Open record — and nothing else; the rare
+                        lifecycle actions live in the header's More menu.
+                        Settings is revealed on hover AND on keyboard focus
+                        within the row, so it is never focusable-but-invisible;
+                        the record link stays visible so the destination is
+                        discoverable without hovering. */}
+                    <button
+                      type="button"
+                      aria-label={t('organizationsPage.actions.openSettingsFor', { name: org.name })}
+                      title={t('organizationsPage.actions.openSettings')}
+                      tabIndex={rowTabIndex}
+                      onClick={e => {
+                        e.stopPropagation();
+                        handleEdit(org);
+                      }}
+                      className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
+                    >
+                      <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
                     <a
                       href={`/organizations/${org.id}`}
                       data-testid={`org-open-record-${org.id}`}
@@ -1129,9 +1102,7 @@ export default function OrganizationsPage() {
                       onClick={e => e.stopPropagation()}
                       className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="m9 18 6-6-6-6" />
-                      </svg>
+                      <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </a>
                   </li>
                   );
@@ -1267,7 +1238,7 @@ export default function OrganizationsPage() {
                         data-testid="org-restore"
                         onClick={() => void handleRestore(selectedOrg)}
                         disabled={restoringOrgId === selectedOrg.id}
-                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {restoringOrgId === selectedOrg.id
                           ? t('organizationsPage.restore.restoring')
@@ -1302,40 +1273,52 @@ export default function OrganizationsPage() {
                         )}
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    {/* One primary, one secondary, one overflow. Archive and
+                        merge are quarterly actions; as permanent red-outline
+                        buttons they outweighed Settings and taught the eye to
+                        skip the header. Merge (irreversible) keeps the
+                        destructive tone inside the menu; archive is reversible
+                        and reads as an ordinary item. */}
+                    <div className="flex shrink-0 items-center gap-2">
                       <button
                         type="button"
                         data-testid="org-open-record"
                         onClick={() => void navigateTo(`/organizations/${selectedOrg.id}`)}
-                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                       >
                         {t('organizationsPage.actions.openRecord')}
                       </button>
                       <button
                         type="button"
                         onClick={() => handleEdit(selectedOrg)}
-                        className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
                       >
+                        <Settings className="h-3.5 w-3.5" aria-hidden="true" />
                         {t('organizationsPage.actions.openSettings')}
                       </button>
-                      <button
-                        type="button"
-                        data-testid="org-archive-open"
-                        onClick={() => handleArchive(selectedOrg)}
-                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        {t('organizationsPage.actions.archiveOrganization')}
-                      </button>
-                      {canMergeOrgs && (
-                        <button
-                          type="button"
-                          data-testid="org-merge-open"
-                          onClick={() => handleMerge(selectedOrg)}
-                          className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                        >
-                          {t('organizationsPage.merge.openButton')}
-                        </button>
-                      )}
+                      <ActionMenu
+                        label={t('organizationsPage.actions.more')}
+                        testId="org-more-actions"
+                        items={[
+                          {
+                            id: 'archive',
+                            label: t('organizationsPage.actions.archiveOrganization'),
+                            onSelect: () => handleArchive(selectedOrg),
+                            testId: 'org-archive-open',
+                          },
+                          ...(canMergeOrgs
+                            ? [
+                                {
+                                  id: 'merge',
+                                  label: t('organizationsPage.merge.openButton'),
+                                  onSelect: () => handleMerge(selectedOrg),
+                                  tone: 'destructive' as const,
+                                  testId: 'org-merge-open',
+                                },
+                              ]
+                            : []),
+                        ]}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1363,15 +1346,7 @@ export default function OrganizationsPage() {
             /* Empty state */
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <div className="rounded-full bg-muted/50 p-4">
-                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/60">
-                  <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
-                  <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
-                  <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
-                  <path d="M10 6h4" />
-                  <path d="M10 10h4" />
-                  <path d="M10 14h4" />
-                  <path d="M10 18h4" />
-                </svg>
+                <Building2 className="h-8 w-8 text-muted-foreground/60" strokeWidth={1.5} aria-hidden="true" />
               </div>
               <h3 className="mt-4 text-sm font-medium">{t('organizationsPage.emptySelection.title')}</h3>
               <p className="mt-1 text-sm text-muted-foreground">

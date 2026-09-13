@@ -151,7 +151,6 @@ describe('OrganizationsPage — keyboard operability', () => {
     await flush();
 
     expect(screen.getByRole('button', { name: 'Settings for Alpha Ltd' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Archive Alpha Ltd' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open record for Alpha Ltd' })).toHaveAttribute(
       'href',
       `/organizations/${ALPHA.id}`,

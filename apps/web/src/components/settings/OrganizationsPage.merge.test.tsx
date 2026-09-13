@@ -98,6 +98,11 @@ async function selectLoser() {
   await flush();
 }
 
+/** Merge lives in the detail header's More menu; open it so its items render. */
+function openMoreMenu() {
+  fireEvent.click(screen.getByTestId('org-more-actions'));
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   fetchMock.mockReset();
@@ -123,6 +128,8 @@ describe('OrganizationsPage — merge launcher partner gating', () => {
     await selectLoser();
 
     expect(screen.getByRole('heading', { level: 2, name: 'Acme Legacy' })).toBeInTheDocument();
+    openMoreMenu();
+    expect(screen.getByTestId('org-archive-open')).toBeInTheDocument();
     expect(screen.queryByTestId('org-merge-open')).not.toBeInTheDocument();
   });
 
@@ -133,6 +140,7 @@ describe('OrganizationsPage — merge launcher partner gating', () => {
     await flush();
 
     await selectLoser();
+    openMoreMenu();
 
     expect(screen.getByTestId('org-merge-open')).toBeInTheDocument();
   });
@@ -145,6 +153,7 @@ describe('OrganizationsPage — merge completion stays on the summary until the 
     await flush();
 
     await selectLoser();
+    openMoreMenu();
     fireEvent.click(screen.getByTestId('org-merge-open'));
 
     fireEvent.change(screen.getByTestId('org-merge-survivor-select'), { target: { value: SURVIVOR.id } });

@@ -519,7 +519,8 @@ describe('OrganizationsPage — org mid-archive-drain (#4166)', () => {
     expect(screen.queryByTestId('org-archived-row')).not.toBeInTheDocument();
     const panel = screen.getByTestId('org-detail-panel');
     expect(within(panel).queryByTestId('org-restore')).not.toBeInTheDocument();
-    expect(within(panel).getByTestId('org-archive-open')).toBeInTheDocument();
+    // Back on the mutable pane: the More menu (archive/merge) is offered again.
+    expect(within(panel).getByTestId('org-more-actions')).toBeInTheDocument();
   });
 });
 
@@ -539,7 +540,9 @@ describe('OrganizationsPage — archived org detail pane is read-only', () => {
     expect(within(panel).getByTestId('org-archived-detail-badge')).toBeInTheDocument();
     expect(within(panel).getByTestId('org-archived-detail-purge')).toBeInTheDocument();
 
-    // No edit/merge/archive affordances — only the Restore button.
+    // No edit/merge/archive affordances (not even the More menu that would
+    // hold them) — only the Restore button.
+    expect(within(panel).queryByTestId('org-more-actions')).not.toBeInTheDocument();
     expect(within(panel).queryByTestId('org-archive-open')).not.toBeInTheDocument();
     expect(within(panel).queryByTestId('org-merge-open')).not.toBeInTheDocument();
     expect(within(panel).getAllByRole('button')).toHaveLength(1);
@@ -574,7 +577,7 @@ describe('OrganizationsPage — restore', () => {
     // The detail pane switched out of read-only for the now-restored org.
     const panel = screen.getByTestId('org-detail-panel');
     expect(within(panel).queryByTestId('org-restore')).not.toBeInTheDocument();
-    expect(within(panel).getByTestId('org-archive-open')).toBeInTheDocument();
+    expect(within(panel).getByTestId('org-more-actions')).toBeInTheDocument();
 
     expect(showToastMock).toHaveBeenCalledWith(
       expect.objectContaining({

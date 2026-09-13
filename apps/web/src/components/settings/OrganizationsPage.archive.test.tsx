@@ -100,26 +100,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('OrganizationsPage — archive entry points open the real ArchiveOrgModal', () => {
-  it('opens it from the list-row hover icon, without first selecting the org', async () => {
+/** Archive is a quarterly action: it lives in the detail header's More menu
+ *  (never a permanent red button, never a per-row icon), so every entry point
+ *  goes through selecting the org and opening that menu. */
+async function openArchiveFromMenu(org: typeof ORG_A) {
+  await selectOrg(org);
+  fireEvent.click(screen.getByTestId('org-more-actions'));
+  fireEvent.click(screen.getByTestId('org-archive-open'));
+  await flush();
+}
+
+describe('OrganizationsPage — archive entry point opens the real ArchiveOrgModal', () => {
+  it('list rows carry no archive control; the header More menu is the entry point', async () => {
     mockApi();
     render(<OrganizationsPage />);
     await flush();
 
-    fireEvent.click(screen.getByTestId(`org-archive-open-row-${ORG_A.id}`));
-    await flush();
+    expect(screen.queryByTestId(`org-archive-open-row-${ORG_A.id}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-archive-open')).not.toBeInTheDocument();
 
-    expect(screen.getByTestId('org-archive-modal')).toBeInTheDocument();
-  });
-
-  it('opens it from the detail header button once an org is selected', async () => {
-    mockApi();
-    render(<OrganizationsPage />);
-    await flush();
-
-    await selectOrg(ORG_A);
-    fireEvent.click(screen.getByTestId('org-archive-open'));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     expect(screen.getByTestId('org-archive-modal')).toBeInTheDocument();
   });
@@ -131,8 +131,7 @@ describe('OrganizationsPage — archive completion', () => {
     render(<OrganizationsPage />);
     await flush();
 
-    fireEvent.click(screen.getByTestId(`org-archive-open-row-${ORG_A.id}`));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     fireEvent.click(screen.getByTestId('org-archive-submit'));
     await flush(); // archive POST (202)
@@ -156,14 +155,12 @@ describe('OrganizationsPage — archive completion', () => {
     expect(screen.getByText('No organization selected')).toBeInTheDocument();
   });
 
-  it('drops the org from the list when archived via the detail header button too', async () => {
+  it('drops the org from the list when the archive lands as `archived` (no drain) too', async () => {
     mockApi(() => ({ status: 'archived', purgeAt: null }));
     render(<OrganizationsPage />);
     await flush();
 
-    await selectOrg(ORG_A);
-    fireEvent.click(screen.getByTestId('org-archive-open'));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     fireEvent.click(screen.getByTestId('org-archive-submit'));
     await flush();

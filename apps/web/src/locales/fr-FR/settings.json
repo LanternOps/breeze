@@ -4505,8 +4505,8 @@
       "openRecord": "Ouvrir la fiche",
       "openSettings": "Paramètres",
       "openSettingsFor": "Paramètres de {{name}}",
-      "archiveOrganizationFor": "Archiver {{name}}",
-      "openRecordFor": "Ouvrir la fiche de {{name}}"
+      "openRecordFor": "Ouvrir la fiche de {{name}}",
+      "more": "Autres actions"
     },
     "errors": {
       "fetchOrganizations": "Impossible de récupérer des organisations",

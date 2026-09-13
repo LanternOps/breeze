@@ -4553,8 +4553,8 @@
       "openRecord": "Apri scheda",
       "openSettings": "Impostazioni",
       "openSettingsFor": "Impostazioni di {{name}}",
-      "archiveOrganizationFor": "Archivia {{name}}",
-      "openRecordFor": "Apri la scheda di {{name}}"
+      "openRecordFor": "Apri la scheda di {{name}}",
+      "more": "Altre azioni"
     },
     "errors": {
       "fetchOrganizations": "Impossibile recuperare le organizzazioni",

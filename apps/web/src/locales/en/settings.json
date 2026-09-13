@@ -4558,8 +4558,8 @@
       "openRecord": "Open record",
       "openSettings": "Settings",
       "openSettingsFor": "Settings for {{name}}",
-      "archiveOrganizationFor": "Archive {{name}}",
-      "openRecordFor": "Open record for {{name}}"
+      "openRecordFor": "Open record for {{name}}",
+      "more": "More actions"
     },
     "errors": {
       "fetchOrganizations": "Failed to fetch organizations",

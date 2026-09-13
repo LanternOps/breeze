@@ -4558,8 +4558,8 @@
       "openRecord": "Abrir registro",
       "openSettings": "Configurações",
       "openSettingsFor": "Configurações de {{name}}",
-      "archiveOrganizationFor": "Arquivar {{name}}",
-      "openRecordFor": "Abrir o registro de {{name}}"
+      "openRecordFor": "Abrir o registro de {{name}}",
+      "more": "Mais ações"
     },
     "errors": {
       "fetchOrganizations": "Falha ao buscar organizações",
