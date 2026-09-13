@@ -962,25 +962,26 @@ export default function OrganizationsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
+      {/* Page header. Actions drop under the title on narrow screens instead
+          of squeezing it into a two-line wrap beside two-line buttons. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('organizationsPage.title')}</h1>
           <p className="text-muted-foreground">{t('organizationsPage.description')}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             data-testid="bulk-org-import-toggle"
             onClick={() => setShowBulkImport((v) => !v)}
-            className="inline-flex h-9 items-center justify-center rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
+            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
           >
             {t('bulkOrgImport.title')}
           </button>
           <button
             type="button"
             onClick={handleAdd}
-            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             {t('organizationsPage.actions.addOrganization')}
           </button>
@@ -1005,7 +1006,11 @@ export default function OrganizationsPage() {
           navigator: it keeps its own scroll box and stays put while the
           panel scrolls, and the panel is only as tall as its content rather
           than stretched to the list's height with nothing in it. */}
-      <div className="grid gap-6 lg:grid-cols-[minmax(320px,26%)_1fr] lg:items-start">
+      {/* `minmax(0, 1fr)` on purpose: a bare `1fr` (and the implicit single
+          column below `lg`) has an `auto` minimum, so any non-wrapping content
+          — a row of action buttons — widened the track past the viewport and
+          the whole page scrolled sideways on a phone. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(320px,26%)_minmax(0,1fr)] lg:items-start">
         {/* Left panel - Organization list */}
         <div className="rounded-lg border bg-card shadow-xs lg:sticky lg:top-6">
           <div className="border-b px-4 py-3">
@@ -1115,7 +1120,7 @@ export default function OrganizationsPage() {
                             need attention (trial/suspended/churned/etc). */}
                         {org.status !== 'active' && (
                           <span
-                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
+                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-medium leading-none ${statusColors[org.status]}`}
                           >
                             {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
                           </span>
@@ -1126,7 +1131,7 @@ export default function OrganizationsPage() {
                         {workspaceOrgId === org.id && (
                           <span
                             data-testid="org-workspace-marker"
-                            className="inline-flex items-center rounded-full border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary"
+                            className="inline-flex items-center rounded-full border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-xs font-medium leading-none text-primary"
                           >
                             {t('organizationsPage.list.workspaceMarker')}
                           </span>
@@ -1249,7 +1254,7 @@ export default function OrganizationsPage() {
                             <span className="mt-1 flex items-center gap-2">
                               <span
                                 data-testid="org-archived-badge"
-                                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
+                                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-medium leading-none ${archiveBadge(org).color}`}
                               >
                                 {archiveBadge(org).label}
                               </span>
@@ -1283,10 +1288,10 @@ export default function OrganizationsPage() {
                * this row has to be reachable at all. */
               <>
                 <div className="border-b px-6 py-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                         <span
                           data-testid="org-archived-detail-badge"
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${archiveBadge(selectedOrg).color}`}
@@ -1323,7 +1328,7 @@ export default function OrganizationsPage() {
               <>
                 {/* Org header */}
                 <div className="border-b px-6 py-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <h2 className="truncate text-lg font-semibold">{selectedOrg.name}</h2>
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
@@ -1370,7 +1375,7 @@ export default function OrganizationsPage() {
                         skip the header. Merge (irreversible) keeps the
                         destructive tone inside the menu; archive is reversible
                         and reads as an ordinary item. */}
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
                       <button
                         type="button"
                         data-testid="org-open-record"
@@ -1476,12 +1481,13 @@ export default function OrganizationsPage() {
                       <div className="min-w-32">
                         <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.sites')}</dt>
                         <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.sites.count)}</dd>
-                        {summary.lastActivityAt && (
-                          <dd className="text-xs text-muted-foreground">
-                            {t('organizations:orgRecord.overview.lastActivity', { date: formatDate(summary.lastActivityAt) })}
-                          </dd>
-                        )}
                       </div>
+                      {summary.lastActivityAt && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.lastActivity')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatDate(summary.lastActivityAt)}</dd>
+                        </div>
+                      )}
                     </dl>
                   )
                 )}

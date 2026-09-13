@@ -115,7 +115,7 @@ describe('OrganizationsPage — the detail panel says something about the custom
     expect(within(facts).getByText('Active contracts')).toBeInTheDocument();
     expect(within(facts).getByText(/^Next renewal /)).toBeInTheDocument();
     expect(within(facts).getByText('Sites')).toBeInTheDocument();
-    expect(within(facts).getByText(/^Last activity /)).toBeInTheDocument();
+    expect(within(facts).getByText('Last activity')).toBeInTheDocument();
 
     // The summary was requested for the selected org, pinned to it.
     expect(fetchMock).toHaveBeenCalledWith(
@@ -134,7 +134,7 @@ describe('OrganizationsPage — the detail panel says something about the custom
     expect(within(facts).getByText('Devices')).toBeInTheDocument();
     expect(within(facts).queryByText('Open alerts')).not.toBeInTheDocument();
     expect(within(facts).queryByText('Active contracts')).not.toBeInTheDocument();
-    expect(within(facts).queryByText(/^Last activity /)).not.toBeInTheDocument();
+    expect(within(facts).queryByText('Last activity')).not.toBeInTheDocument();
   });
 
   it('says so when the summary cannot be loaded, and Try again refetches it', async () => {
