@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import SiteList, { SITE_SEARCH_THRESHOLD, type Site } from './SiteList';
@@ -31,5 +31,16 @@ describe('SiteList', () => {
 
     expect(screen.getByText(`${many.length} of ${many.length} sites`)).toBeInTheDocument();
     expect(screen.getByRole('searchbox', { name: 'Search sites' })).toBeInTheDocument();
+  });
+
+  it('a search typed above the threshold cannot keep filtering once the box is hidden below it', () => {
+    const { rerender } = render(<SiteList sites={many} variant="section" />);
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search sites' }), { target: { value: 'Site 6' } });
+    expect(screen.getAllByRole('row')).toHaveLength(2); // header + one match
+
+    // The match is deleted: five sites remain, the search box unmounts.
+    rerender(<SiteList sites={many.slice(0, SITE_SEARCH_THRESHOLD - 1)} variant="section" />);
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('row')).toHaveLength(SITE_SEARCH_THRESHOLD); // header + five sites
   });
 });

@@ -137,6 +137,34 @@ describe('OrganizationsPage — the detail panel says something about the custom
     expect(within(facts).queryByText('Last activity')).not.toBeInTheDocument();
   });
 
+  it('never shows one org’s counts under another org’s name while the new summary is loading', async () => {
+    const BETA = { ...ALPHA, id: 'bbbbbbbb-2222-4222-8222-222222222222', name: 'Beta Ltd', deviceCount: 1 };
+    let holdBeta = true;
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/orgs/organizations?') && !init?.method) return jsonResponse({ data: [ALPHA, BETA] });
+      if (url === '/orgs/partners/me') return jsonResponse({ settings: {} });
+      if (url.startsWith('/orgs/sites?organizationId=')) return jsonResponse({ data: [] });
+      if (url === `/orgs/organizations/${ALPHA.id}/summary`) return jsonResponse(FULL_SUMMARY);
+      if (url === `/orgs/organizations/${BETA.id}/summary`) {
+        if (holdBeta) return new Promise<Response>(() => {});
+        return jsonResponse({ orgId: BETA.id, devices: { total: 1, online: 1, offline: 0 }, sites: { count: 1 } });
+      }
+      return jsonResponse({ data: [] });
+    });
+    render(<OrganizationsPage />);
+    await flush();
+    await selectAlpha();
+    expect(within(screen.getByTestId('org-facts')).getByText('12 of 15 online')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`org-row-${BETA.id}`));
+    await flush();
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Beta Ltd' })).toBeInTheDocument();
+    expect(screen.queryByText('12 of 15 online')).not.toBeInTheDocument();
+    holdBeta = false;
+  });
+
   it('says so when the summary cannot be loaded, and Try again refetches it', async () => {
     mockApi({ summary: { error: 'boom' }, summaryStatus: 500 });
     render(<OrganizationsPage />);

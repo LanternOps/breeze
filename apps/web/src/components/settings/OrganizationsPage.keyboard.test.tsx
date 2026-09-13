@@ -153,6 +153,33 @@ describe('OrganizationsPage — keyboard operability', () => {
     expect(screen.getByTestId('org-reorder-announcement')).toHaveTextContent('Alpha Ltd moved to position 2 of 2');
   });
 
+  it('a held arrow key keeps walking the row: the handle stays mounted and focused while the PATCH is in flight', async () => {
+    mockApi();
+    render(<OrganizationsPage />);
+    await flush();
+
+    const handle = screen.getByRole('button', { name: 'Reorder Alpha Ltd' });
+    handle.focus();
+    fireEvent.keyDown(handle, { key: 'ArrowDown' });
+    // Synchronously after the first move, before the PATCH settles: the same
+    // handle is still in the document and still focused.
+    expect(screen.getByRole('button', { name: 'Reorder Alpha Ltd' })).toBe(handle);
+    expect(document.activeElement).toBe(handle);
+    await flush();
+
+    fireEvent.keyDown(handle, { key: 'ArrowUp' });
+    await flush();
+
+    const patches = fetchMock.mock.calls.filter(
+      ([url, init]) => String(url) === '/orgs/organizations/order' && init?.method === 'PATCH',
+    );
+    expect(patches.map(([, init]) => JSON.parse(String(init!.body)).orderedIds)).toEqual([
+      [BETA.id, ALPHA.id],
+      [ALPHA.id, BETA.id],
+    ]);
+    expect(document.activeElement).toBe(handle);
+  });
+
   it('row actions carry accessible names that include the organization', async () => {
     mockApi();
     render(<OrganizationsPage />);

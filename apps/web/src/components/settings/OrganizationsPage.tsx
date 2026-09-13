@@ -251,8 +251,11 @@ export default function OrganizationsPage() {
   // only fleet fact this page had; a manager could not read health from it
   // and a tech could not triage from it. Sections the caller cannot read are
   // absent from the payload, so the strip hides a tile rather than showing a
-  // false zero. Latest-wins guarded: arrowing through rows fires overlapping
-  // reads, and a slow one must not repaint a stale customer's counts.
+  // false zero. Latest-wins guarded: clicking quickly through rows fires
+  // overlapping reads, and a slow one must not repaint a stale customer's
+  // counts. The strip is also cleared the moment the selection changes (see
+  // the selectedOrg effect) so the previous customer's numbers never sit
+  // under the new customer's name while its read is in flight.
   const [summary, setSummary] = useState<OrgSummary | null>(null);
   const [summaryFailed, setSummaryFailed] = useState(false);
   const summaryLatest = useLatest<OrgSummary | null>();
@@ -565,6 +568,10 @@ export default function OrganizationsPage() {
         setSummaryFailed(false);
         return;
       }
+      // Clear first: the previous org's counts must not render under this
+      // org's name while its own read is in flight (review of #5708).
+      setSummary(null);
+      setSummaryFailed(false);
       void loadSummary(selectedOrg.id);
       // Skip the fetch if org creation already fetched sites for this org
       // synchronously — avoids a redundant concurrent GET per create.
@@ -877,13 +884,16 @@ export default function OrganizationsPage() {
 
   /**
    * Keyboard reorder: the same splice-and-persist as `handleOrgDrop`, one
-   * step at a time. Only offered when dragging is (the handle is not
-   * rendered while a search filter is active or a reorder is in flight), so
-   * the two paths can never disagree about whether a move is allowed. The
-   * moved row keeps focus across the re-render because React keys the rows
-   * by id, so a held arrow key walks the org through the list.
+   * step at a time. The handle is rendered whenever manual order is active
+   * (no search, no status filter, manual sort) and stays MOUNTED while a
+   * reorder PATCH is in flight — unmounting it would drop focus to <body>
+   * after a single move. Moves are ignored, not hidden, until the previous
+   * one settles; because React keys the rows by id the focused handle
+   * survives the re-render, so a held arrow key walks the org through the
+   * list.
    */
   const moveOrganization = (org: Organization, delta: -1 | 1) => {
+    if (reorderPending) return;
     const sourceIndex = organizations.findIndex(o => o.id === org.id);
     if (sourceIndex === -1) return;
     const targetIndex = sourceIndex + delta;
@@ -1163,7 +1173,13 @@ export default function OrganizationsPage() {
             ) : (
               <ul className="divide-y" aria-label={t('organizationsPage.list.title')}>
                 {filteredOrgs.map((org, index) => {
-                  const dragEnabled = manualOrderActive && !reorderPending;
+                  // Two gates on purpose: the handle is SHOWN whenever manual
+                  // order applies, and DRAGGING is enabled only while no
+                  // reorder is in flight. Tying the handle's presence to the
+                  // in-flight flag unmounted the focused handle on every
+                  // keyboard move (review of #5708).
+                  const showReorderHandle = manualOrderActive;
+                  const dragEnabled = showReorderHandle && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
                   const isSelected = selectedOrg?.id === org.id;
@@ -1189,7 +1205,7 @@ export default function OrganizationsPage() {
                         : 'border-l-2 border-l-transparent'
                     } ${isDragging ? 'opacity-50' : ''} ${isDropTarget ? 'border-t-2 border-t-primary' : ''}`}
                   >
-                    {dragEnabled && (
+                    {showReorderHandle && (
                       /* Always visible (dimmed) so manual ordering is
                          discoverable; a real button so it takes focus and
                          moves the row with the arrow keys. */
@@ -1198,6 +1214,7 @@ export default function OrganizationsPage() {
                         data-testid="org-drag-handle"
                         aria-label={t('organizationsPage.list.reorderHandle', { name: org.name })}
                         aria-describedby={REORDER_HINT_ID}
+                        aria-busy={reorderPending || undefined}
                         title={t('organizationsPage.list.dragToReorder')}
                         tabIndex={rowTabIndex}
                         onClick={e => e.stopPropagation()}

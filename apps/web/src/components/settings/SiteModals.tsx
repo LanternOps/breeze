@@ -131,7 +131,7 @@ export default function SiteModals({
       {mode === 'delete' && selectedSite && (
         <ConfirmDialog
           open
-          onClose={onClose}
+          onClose={submitting ? noop : onClose}
           onConfirm={() => void onConfirmDelete()}
           title={t('organizationsPage.deleteSite.title')}
           message={

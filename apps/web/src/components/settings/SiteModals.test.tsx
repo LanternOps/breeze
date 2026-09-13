@@ -77,6 +77,13 @@ describe('SiteModals — dialog semantics', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('delete dialog ignores Escape while the delete is in flight', () => {
+    const { onClose } = renderModals('delete', { selectedSite: { ...SITE, deviceCount: 0 }, submitting: true });
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Delete Site' }), { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it('add renders a dialog labelled by its visible heading', () => {
     renderModals('add', { selectedSite: null });
 

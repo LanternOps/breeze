@@ -12,7 +12,7 @@ import type { Organization } from './organizationTypes';
 // drizzle-orm, so this is the same manual-sync obligation the `Organization`
 // status unions in orgStore.ts/organizationTypes.ts
 // already carry. Typing this array as `Organization['status'][]` also makes a
-// status missing from OrganizationList's union a compile error, not just a
+// status missing from organizationTypes' union a compile error, not just a
 // runtime gap — `tsc --noEmit` catches that half of the contract.
 const ALL_ORG_STATUSES: Organization['status'][] = [
   'active',

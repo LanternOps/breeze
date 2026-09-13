@@ -51,6 +51,22 @@ describe('ActionMenu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
+  it('hands focus back to the trigger BEFORE the handler runs, so a dialog it opens can restore to it', () => {
+    let activeWhenSelected: Element | null = null;
+    render(
+      <ActionMenu
+        label="More actions"
+        items={[{ id: 'a', label: 'Archive', onSelect: () => { activeWhenSelected = document.activeElement; } }]}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'More actions' });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+
+    expect(activeWhenSelected).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('arrow keys cycle the items; Escape closes and returns focus to the trigger', () => {
     renderMenu();
     const trigger = screen.getByRole('button', { name: 'More actions' });

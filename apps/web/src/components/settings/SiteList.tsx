@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -51,6 +51,13 @@ export default function SiteList({ sites, onAddSite, onEdit, onDelete, onSiteCli
   const isSection = variant === 'section';
   const showListChrome = !isSection || sites.length >= SITE_SEARCH_THRESHOLD;
   const Heading = isSection ? 'h3' : 'h2';
+
+  // When the list shrinks below the threshold the search box unmounts; a
+  // query typed before that must not keep filtering a list the operator can
+  // no longer see a filter for (five real sites behind "No sites").
+  useEffect(() => {
+    if (!showListChrome) setQuery('');
+  }, [showListChrome]);
 
   // Row pieces shared by the desktop table and the mobile cards.
   const renderSiteName = (site: Site) =>

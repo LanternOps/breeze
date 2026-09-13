@@ -93,6 +93,12 @@ export function ActionMenu({ label, items, testId, triggerClassName }: ActionMen
               tabIndex={-1}
               data-testid={item.testId}
               onClick={() => {
+                // Focus the trigger BEFORE the item unmounts and before the
+                // handler runs: a dialog opened by `onSelect` captures
+                // `document.activeElement` on mount as its restore target,
+                // and without this it captured <body> (the menuitem was
+                // already gone in the same commit).
+                triggerRef.current?.focus();
                 setOpen(false);
                 item.onSelect();
               }}
