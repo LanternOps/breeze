@@ -49,10 +49,19 @@ export async function afterDomainPersisted(
     }
   }
 
-  await runOutsideDbContext(() => withSystemDbAccessContext(
-    () => upsertPostureRollup(ctx.orgId, ctx.tenantId, utcDate(ctx.now)),
-    'm365SyncPostureRollup',
-  ));
+  try {
+    await runOutsideDbContext(() => withSystemDbAccessContext(
+      () => upsertPostureRollup(ctx.orgId, ctx.tenantId, utcDate(ctx.now)),
+      'm365SyncPostureRollup',
+    ));
+  } catch (rollupError) {
+    // Both failed: surface both, or the link failure (often the more
+    // actionable one) would vanish behind the rollup's.
+    if (linkError !== null) {
+      throw new AggregateError([linkError, rollupError], 'link reconciliation and posture rollup both failed');
+    }
+    throw rollupError;
+  }
 
   if (linkError !== null) throw linkError;
 }

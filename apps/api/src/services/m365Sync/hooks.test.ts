@@ -87,6 +87,14 @@ describe('afterDomainPersisted (spec §5.6, §5.9)', () => {
     expect(mocks.ambiguous).not.toHaveBeenCalled();
   });
 
+  it('surfaces BOTH errors when the link pass and the rollup both fail', async () => {
+    mocks.links.mockRejectedValueOnce(new Error('links boom'));
+    mocks.rollup.mockRejectedValueOnce(new Error('rollup boom'));
+    const error = await afterDomainPersisted(hookCtx({ domain: 'intune_devices' })).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors.map((e: Error) => e.message)).toEqual(['links boom', 'rollup boom']);
+  });
+
   it('a link failure does not stop the rollup, and the failure still surfaces', async () => {
     mocks.links.mockRejectedValueOnce(new Error('links boom'));
     await expect(afterDomainPersisted(hookCtx({ domain: 'intune_devices' }))).rejects.toThrow('links boom');

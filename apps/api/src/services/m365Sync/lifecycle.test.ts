@@ -12,6 +12,8 @@ const { mocks } = vi.hoisted(() => ({
     deleteThrows: false,
     systemContext: vi.fn(),
     outside: vi.fn(),
+    outsideDepth: 0,
+    claimedOutsideContext: [] as boolean[],
     claim: vi.fn(async () => undefined),
     flag: vi.fn(() => true),
   },
@@ -41,7 +43,11 @@ vi.mock('../../db', () => ({
     }),
   },
   withSystemDbAccessContext: async (fn: () => Promise<unknown>) => { mocks.systemContext(); return fn(); },
-  runOutsideDbContext: (fn: () => unknown) => { mocks.outside(); return fn(); },
+  runOutsideDbContext: (fn: () => unknown) => {
+    mocks.outside();
+    mocks.outsideDepth += 1;
+    try { return fn(); } finally { mocks.outsideDepth -= 1; }
+  },
 }));
 vi.mock('../../config/env', () => ({ isM365TenantSyncEnabled: mocks.flag }));
 vi.mock('./claim', () => ({ claimAndEnqueue: mocks.claim }));
@@ -64,7 +70,22 @@ beforeEach(() => {
   mocks.rearmed = [{ domain: 'users' }, { domain: 'ca_policies' }];
   mocks.insertThrows = false; mocks.deleteThrows = false;
   mocks.flag.mockReturnValue(true);
-  mocks.claim.mockResolvedValue(undefined);
+  mocks.outsideDepth = 0;
+  mocks.claimedOutsideContext = [];
+  mocks.claim.mockImplementation(async () => { mocks.claimedOutsideContext.push(mocks.outsideDepth > 0); });
+});
+
+describe('every claim escapes the ambient DB context first', () => {
+  // Nested in a request transaction, the claim's generation bump would not
+  // commit before the job is in Redis, and the worker would fence itself.
+  it.each([
+    ['onConnectionConsented', () => onConnectionConsented({ id: CONNECTION, orgId: ORG, tenantId: TENANT, status: 'active' })],
+    ['onConnectionUpgraded', () => onConnectionUpgraded({ id: CONNECTION, orgId: ORG })],
+    ['requestOnDemandSync', () => requestOnDemandSync({ orgId: ORG, connectionId: CONNECTION })],
+  ] as const)('%s', async (_name, call) => {
+    await call();
+    expect(mocks.claimedOutsideContext).toEqual([true]);
+  });
 });
 
 describe('onConnectionConsented (spec §5.8)', () => {

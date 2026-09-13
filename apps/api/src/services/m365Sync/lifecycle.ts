@@ -70,7 +70,7 @@ export async function onConnectionConsented(conn: {
         },
       });
     }, 'm365SyncConsentSeed'));
-    await claimAndEnqueue(conn.orgId, [...M365_SYNC_DOMAINS], 1);
+    await runOutsideDbContext(() => claimAndEnqueue(conn.orgId, [...M365_SYNC_DOMAINS], 1));
   } catch (err) {
     console.error(
       `[m365Sync/lifecycle] Seeding failed for org=${conn.orgId} connection=${conn.id}; `
@@ -131,7 +131,7 @@ export async function onConnectionUpgraded(conn: { id: string; orgId: string }):
       ))
       .returning({ domain: m365SyncState.domain }), 'm365SyncUpgradeReseed'));
     const domains = rearmed.map((row) => row.domain as M365SyncDomain);
-    if (domains.length > 0) await claimAndEnqueue(conn.orgId, domains, 1);
+    if (domains.length > 0) await runOutsideDbContext(() => claimAndEnqueue(conn.orgId, domains, 1));
   } catch (err) {
     console.error(
       `[m365Sync/lifecycle] Upgrade re-seed failed for org=${conn.orgId} connection=${conn.id}:`,
@@ -145,8 +145,15 @@ export async function onConnectionUpgraded(conn: { id: string; orgId: string }):
  * `claimAndEnqueue` makes them due and claims them in one place, so nothing
  * here duplicates the claim protocol. MFA, the connection check and the rate
  * limit live in the route. Propagates a failure so the route can report it.
+ *
+ * `runOutsideDbContext` is load-bearing: the route runs inside the request's
+ * org-scoped transaction, and `claimAndEnqueue`'s own system context would
+ * otherwise NEST into it — the generation bump would not commit until the
+ * request ends, while the job is already in Redis, so a fast worker's Phase A
+ * would read the old generation and fence itself. Escaping first makes the
+ * claim commit before the enqueue, as claim.ts documents.
  */
 export async function requestOnDemandSync(input: { orgId: string; connectionId: string }): Promise<void> {
   if (!isM365TenantSyncEnabled()) return;
-  await claimAndEnqueue(input.orgId, [...ON_DEMAND_SYNC_DOMAINS], 1);
+  await runOutsideDbContext(() => claimAndEnqueue(input.orgId, [...ON_DEMAND_SYNC_DOMAINS], 1));
 }
