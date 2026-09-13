@@ -1187,6 +1187,14 @@
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays"
+      },
+      "rationale": {
+        "label": "Rationale",
+        "edit": "Edit rationale",
+        "placeholder": "Why this item exists…",
+        "save": "Save",
+        "cancel": "Cancel",
+        "none": "No rationale recorded."
       }
     }
   },

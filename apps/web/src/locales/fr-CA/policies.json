@@ -1187,6 +1187,14 @@
         "enabled": "activé",
         "warnDays": "AvertissementsJours",
         "criticalDays": "Critical Days"
+      },
+      "rationale": {
+        "label": "Justification",
+        "edit": "Modifier la justification",
+        "placeholder": "Pourquoi cet élément existe…",
+        "save": "Enregistrer",
+        "cancel": "Annuler",
+        "none": "Aucune justification enregistrée."
       }
     }
   },

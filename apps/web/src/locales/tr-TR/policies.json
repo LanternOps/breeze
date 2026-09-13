@@ -1187,6 +1187,14 @@
         "enabled": "etkin",
         "warnDays": "warnDays",
         "criticalDays": "kritikDayler"
+      },
+      "rationale": {
+        "label": "Gerekçe",
+        "edit": "Gerekçeyi düzenle",
+        "placeholder": "Bu öğe neden var…",
+        "save": "Kaydet",
+        "cancel": "İptal",
+        "none": "Kayıtlı gerekçe yok."
       }
     }
   },

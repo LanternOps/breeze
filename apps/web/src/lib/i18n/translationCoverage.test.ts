@@ -76,6 +76,8 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     'devices.json': 175,
     'discovery.json': 17,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 23,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
@@ -193,6 +195,8 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     'devices.json': 126,
     'discovery.json': 17,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 31,
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
@@ -311,6 +315,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 38,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
@@ -441,6 +447,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 40,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
@@ -584,6 +592,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 43,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name" (list/legacy column + field label), "Monitor" (policy-tab
@@ -681,6 +691,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 81,
     // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
@@ -761,6 +773,8 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 22,
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.

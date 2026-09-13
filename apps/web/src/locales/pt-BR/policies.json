@@ -1187,6 +1187,14 @@
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays"
+      },
+      "rationale": {
+        "label": "Justificativa",
+        "edit": "Editar justificativa",
+        "placeholder": "Por que este item existe…",
+        "save": "Salvar",
+        "cancel": "Cancelar",
+        "none": "Nenhuma justificativa registrada."
       }
     }
   },

@@ -1,0 +1,93 @@
+{
+  "page": {
+    "title": "Filo Tasarımı",
+    "description": "Bu kuruluşun filosu için yapay zekâ tarafından hazırlanan bir tasarım: her cihazın ne işe yaradığı, nelerin izleneceği ve nelerin değiştiği.",
+    "orgLabel": "Kuruluş",
+    "selectOrgPlaceholder": "Kullanılabilir kuruluş yok",
+    "siteLabel": "Saha (isteğe bağlı)",
+    "allSites": "Tüm sahalar",
+    "startButton": "Filo Tasarımı Başlat",
+    "startError": "Filo Tasarımı çalıştırması başlatılamadı.",
+    "startSuccess": "Filo Tasarımı çalıştırması başlatıldı.",
+    "empty": "Bu kuruluş için henüz Filo Tasarımı yok.",
+    "loadError": "Filo Tasarımları yüklenemedi.",
+    "detailLoadError": "Bu Filo Tasarımı yüklenemedi.",
+    "loadingDesign": "Tasarım yükleniyor…",
+    "downloadPdf": "PDF İndir",
+    "downloadFailed": "PDF indirilemedi.",
+    "reviewApply": "İncele ve Uygula",
+    "listColumns": {
+      "generated": "Oluşturulma",
+      "functions": "İşlevler",
+      "watches": "İzlemeler",
+      "rules": "Kurallar",
+      "applied": "Uygulandı"
+    },
+    "startSkipped": {
+      "modeOff": "Tasarımcı ajan bu kuruluş için kapalı.",
+      "killSwitchOff": "Yapay zekâ ajanları şu anda platform genelinde kapalı.",
+      "agentDisabled": "Tasarımcı ajan bu kuruluş için devre dışı.",
+      "noEffectiveAgent": "Bu kuruluş için yapılandırılmış bir tasarımcı ajan yok.",
+      "orgBudgetExceeded": "Bu kuruluşun yapay zekâ bütçesi bu dönem için tükendi.",
+      "agentDailyBudgetExceeded": "Tasarımcı ajanın günlük bütçesi tükendi.",
+      "maxConcurrentDesignRuns": "Bu kuruluş için zaten bir Filo Tasarımı çalıştırması sürüyor.",
+      "designRate": "Bu kuruluş şu an için Filo Tasarımı çalıştırma sınırına ulaştı.",
+      "duplicate": "Eşdeğer bir Filo Tasarımı çalıştırması zaten istenmişti.",
+      "generic": "Çalıştırma başlatılmadı ({{reason}})."
+    }
+  },
+  "sections": {
+    "found": "Neler bulundu",
+    "functions": "Her cihaz ne işe yarıyor",
+    "monitoring": "Neler izlenmeli, ve neden",
+    "retired": "Neler devralınmıyor",
+    "automation": "Otomasyon",
+    "legacy": "Eski betik envanteri",
+    "baseline": "Referans değerler ve öncüller",
+    "unsure": "Tasarımcının emin olmadığı noktalar"
+  },
+  "items": {
+    "none": "Burada hiçbir şey yok.",
+    "applied": "Uygulandı",
+    "findingCount": "{{title}} — {{count}} cihaz",
+    "functionMeta": "{{count}} cihaz · %{{pct}} güven",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "drawer": {
+    "title": "Filo Tasarımını Uygula",
+    "loadingPreview": "Bunun ne yapacağı kontrol ediliyor…",
+    "nothingSelected": "Uygulamak için en az bir öğe seçin.",
+    "creates": "Oluşturur",
+    "watchAndRuleCount": "{{watches}} izleme, {{rules}} kural",
+    "retires": "Kaldırır",
+    "displaces": "Yerini alır",
+    "displacesCount": "{{count}} cihaz",
+    "acceptDisplacement": "Yer değişimini kabul et",
+    "roleCorrections": "Rol düzeltmeleri",
+    "billingWarning": "Rol değişiklikleri faturalandırmayı etkileyebilir.",
+    "alreadyApplied": "Zaten uygulandı",
+    "blockers": "Engeller",
+    "cancel": "İptal",
+    "confirm": "Onayla",
+    "applyingCloseBlocked": "Uygulanıyor — lütfen bitmesini bekleyin.",
+    "rollingBackCloseBlocked": "Geri alınıyor — lütfen bitmesini bekleyin."
+  },
+  "result": {
+    "applied": "{{count}} öğe uygulandı.",
+    "skipped": "Zaten uygulanmış {{count}} öğe atlandı.",
+    "partial": "Kısmen uygulandı — {{step}}. adımda başarısız oldu: {{reason}}",
+    "rollback": "Uygulananları geri al",
+    "rollbackDone": "{{count}} öğe geri alındı.",
+    "rollbackRefused": "Bazı öğeler geri alınamadı:",
+    "close": "Kapat"
+  },
+  "errors": {
+    "genericPreview": "Bu Filo Tasarımının önizlemesi başarısız oldu.",
+    "genericApply": "Bu Filo Tasarımı uygulanamadı.",
+    "genericRollback": "Bu Filo Tasarımı geri alınamadı.",
+    "blocked": "Bu tasarım henüz uygulanamaz — engelleri giderip tekrar deneyin.",
+    "site_restricted": "Sahayla sınırlı hesaplar bir Filo Tasarımını uygulayamaz veya geri alamaz.",
+    "no_designer_agent": "Bu kuruluş için yapılandırılmış bir tasarımcı ajan yok.",
+    "not_found": "Bu Filo Tasarımı bulunamadı."
+  }
+}

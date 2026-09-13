@@ -1187,6 +1187,14 @@
         "enabled": "aktiviert",
         "warnDays": "warnDays",
         "criticalDays": "kritischeTage"
+      },
+      "rationale": {
+        "label": "Begründung",
+        "edit": "Begründung bearbeiten",
+        "placeholder": "Warum dieses Element existiert …",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "none": "Keine Begründung hinterlegt."
       }
     }
   },

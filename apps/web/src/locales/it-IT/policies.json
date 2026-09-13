@@ -1187,6 +1187,14 @@
         "enabled": "enabled",
         "warnDays": "warnDays",
         "criticalDays": "criticalDays"
+      },
+      "rationale": {
+        "label": "Motivazione",
+        "edit": "Modifica motivazione",
+        "placeholder": "Perché esiste questo elemento…",
+        "save": "Salva",
+        "cancel": "Annulla",
+        "none": "Nessuna motivazione registrata."
       }
     }
   },

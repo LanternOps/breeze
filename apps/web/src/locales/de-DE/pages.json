@@ -160,7 +160,8 @@
     "ticketsNew": "Ticket erstellen",
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
-    "workspace": "KI-Assistent"
+    "workspace": "KI-Assistent",
+    "aiAgentsFleetDesign": "Flottendesign"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
