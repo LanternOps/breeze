@@ -23,6 +23,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'lastSeenIp', 'enrollmentIp', 'enrollmentIpClass', 'enrollmentIpAsn',
   'enrollmentIpClassifiedAt',
   'hostname', 'displayName', 'osType', 'deviceRole', 'deviceRoleSource',
+  'deviceFunction', 'deviceFunctionSource',
   'isVirtual', 'virtualizationPlatform', 'osVersion', 'osBuild', 'architecture',
   'agentVersion', 'helperLifecycleMode', 'status', 'isEphemeral',
   'maintenanceStartedAt', 'maintenanceUntil', 'maintenanceReason', 'maintenanceStartedBy',
