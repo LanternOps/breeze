@@ -1186,7 +1186,13 @@
         "generateACriticalAlertWhenWarrantyExpires": "Generate a critical alert when warranty expires within this many days.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Collect HP warranty from the device",
+        "hpCmslConsentExplainer": "HP warranty data is read on the device using HP's Client Management Script Library. Ticking this box accepts HP's licence on this customer's behalf, and HP may collect technical information from the device, including its IP address. Left unticked, HP devices keep whatever warranty status they already have.",
+        "hpCmslNoAcceptanceRecordedYet": "No acceptance recorded yet. Saving with this box ticked records your user and the server time.",
+        "hpCmslAcceptedByOn": "Accepted by {{user}} on {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP has changed its licence terms since this acceptance. Save again to re-accept.",
+        "hpCmslInheritanceReplacesTheWholeLink": "This policy replaces the inherited warranty settings as a whole, with no field-by-field merge. Saving it with device collection switched off stops HP warranty collection on every device this policy reaches."
       }
     }
   },
