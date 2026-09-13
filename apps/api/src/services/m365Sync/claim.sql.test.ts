@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { buildReconcileEligibleSql } from './claim';
+import { buildClaimDueDomainsSql, buildReconcileEligibleSql } from './claim';
 
 /**
  * COMPILED-SQL assertions in their own file. The sibling claim.test.ts mocks the
@@ -63,5 +63,79 @@ describe('reconcile eligibility (compiled SQL)', () => {
     const { params } = dialect.sqlToQuery(buildReconcileEligibleSql(NOW));
     expect(params).toContain(6 * 3600);   // users, intune_devices
     expect(params).toContain(24 * 3600);  // ca_policies, skus
+  });
+});
+
+describe('claimDueDomains (compiled SQL) — spec §5.2 step 3', () => {
+  const dialect = new PgDialect();
+  const NOW = new Date('2026-09-08T12:00:00.000Z');
+  const compile = (over = {}) => dialect.sqlToQuery(buildClaimDueDomainsSql({ limit: 200, now: NOW, ...over }));
+
+  it('locks ONLY the state row and skips rows another ticker already holds', () => {
+    const { sql } = compile();
+    // `OF s` matters: locking m365_connections too would serialise every domain
+    // of one org behind its connection row for the whole tick.
+    expect(sql).toContain('for update of s skip locked');
+    expect(sql.toLowerCase()).not.toContain('for update of s, c');
+  });
+
+  it('joins the connection on BOTH id and org_id, so a claim can never cross a tenant', () => {
+    const { sql } = compile();
+    expect(sql).toContain('c."id" = s."connection_id"');
+    expect(sql).toContain('c."org_id" = s."org_id"');
+  });
+
+  it('selects only due, unleased rows on an executable connection', () => {
+    const { sql, params } = compile();
+    expect(sql).toContain('s."next_sync_at" is not null');
+    expect(sql).toContain('s."next_sync_at" <=');
+    expect(sql).toContain('s."lease_until" is null or s."lease_until" <');
+    expect(params).toContain('active');
+    expect(params).toContain('degraded');
+  });
+
+  it('orders by next_sync_at and honours the batch limit', () => {
+    const { sql, params } = compile({ limit: 25 });
+    expect(sql).toContain('order by s."next_sync_at" asc');
+    expect(params).toContain(25);
+  });
+
+  it('takes a 20-minute lease and INCREMENTS the generation', () => {
+    const { sql } = compile();
+    expect(sql).toContain(`interval '20 minutes'`);
+    expect(sql).toContain('"run_generation" = t."run_generation" + 1');
+  });
+
+  it('does NOT touch next_sync_at — cadence advances only on completion (spec §5.2)', () => {
+    const { sql } = compile();
+    const update = sql.slice(sql.toLowerCase().indexOf('update "m365_sync_state"'));
+    expect(update).not.toContain('"next_sync_at" =');
+  });
+
+  it('keys the UPDATE on the unique (org_id, domain), not on an unstated surrogate id', () => {
+    const { sql } = compile();
+    expect(sql).toContain('t."org_id" = due."org_id"');
+    expect(sql).toContain('t."domain" = due."domain"');
+  });
+
+  it('returns everything the job payload needs, including the NEW generation', () => {
+    const { sql } = compile();
+    for (const fragment of [
+      't."org_id"', 't."domain"', 't."run_generation"',
+      'due."connection_id"', 'due."tenant_id"', 'due."consent_generation"',
+    ]) expect(sql).toContain(fragment);
+  });
+
+  it('narrows to one org and an explicit domain list when asked (the priority-1 lane)', () => {
+    const { sql, params } = compile({ orgId: 'org-1', domains: ['users', 'skus'] });
+    expect(sql).toContain('s."org_id" =');
+    expect(params).toContain('org-1');
+    expect(params).toContain('users');
+    expect(params).toContain('skus');
+  });
+
+  it('binds every timestamp as an ISO string, never a Date', () => {
+    const { params } = compile();
+    expect(params.some((p) => p instanceof Date)).toBe(false);
   });
 });
