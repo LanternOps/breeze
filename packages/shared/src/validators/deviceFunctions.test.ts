@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEVICE_FUNCTION_KEYS, isDeviceFunctionKey, parseFunctionKey } from './deviceFunctions';
+import { DEVICE_FUNCTION_KEYS, isDeviceFunctionKey, parseFunctionKey, setDeviceFunctionSchema } from './deviceFunctions';
 
 describe('device function SSOT', () => {
   it('lists the v1 functions with unknown last', () => {
@@ -15,5 +15,24 @@ describe('device function SSOT', () => {
     expect(parseFunctionKey('custom:P')).toBeNull();
     expect(parseFunctionKey('custom:has space')).toBeNull();
     expect(parseFunctionKey('nonsense')).toBeNull();
+  });
+});
+
+describe('setDeviceFunctionSchema', () => {
+  it('accepts a known key, a custom key with a label, and null (clear)', () => {
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'file_server' }).success).toBe(true);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'custom:pos', label: 'POS terminal' }).success).toBe(true);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: null }).success).toBe(true);
+  });
+  it('rejects an unknown key, a custom key without a label, and unknown fields', () => {
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'nonsense' }).success).toBe(false);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'custom:pos' }).success).toBe(false);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'custom:pos', label: '   ' }).success).toBe(false);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'file_server', extra: 1 }).success).toBe(false);
+    expect(setDeviceFunctionSchema.safeParse({ functionKey: 'file_server', label: 'x'.repeat(81) }).success).toBe(false);
+  });
+  it('trims the label', () => {
+    const parsed = setDeviceFunctionSchema.parse({ functionKey: 'custom:pos', label: '  POS  ' });
+    expect(parsed.label).toBe('POS');
   });
 });

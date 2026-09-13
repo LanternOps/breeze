@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Device FUNCTION — what a device is for — a second axis beside the coarse,
  * billable `device_role` (validators/deviceRoles.ts). The Fleet Designer
@@ -34,3 +36,31 @@ export function parseFunctionKey(
   const m = CUSTOM_SLUG.exec(key);
   return m ? { kind: 'custom', slug: m[1]! } : null;
 }
+
+export const DEVICE_FUNCTION_KEY_MAX_CHARS = 48;
+export const DEVICE_FUNCTION_LABEL_MAX_CHARS = 80;
+
+/**
+ * Body of `PUT /devices/:id/function` (Fleet Designer W02). `functionKey: null`
+ * clears the device's function (supersedes whatever is active, manual or ai).
+ * A non-null key must be a known key or `custom:<slug>`; a custom key must
+ * carry a label because there is nothing else to display for it.
+ */
+export const setDeviceFunctionSchema = z
+  .object({
+    functionKey: z.string().max(DEVICE_FUNCTION_KEY_MAX_CHARS).nullable(),
+    label: z.string().trim().min(1).max(DEVICE_FUNCTION_LABEL_MAX_CHARS).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.functionKey === null) return;
+    const parsed = parseFunctionKey(value.functionKey);
+    if (!parsed) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['functionKey'], message: 'Unknown device function key' });
+      return;
+    }
+    if (parsed.kind === 'custom' && !value.label) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['label'], message: 'A custom function key needs a label' });
+    }
+  });
+export type SetDeviceFunctionInput = z.infer<typeof setDeviceFunctionSchema>;
