@@ -97,7 +97,9 @@ export async function upsertPostureRollup(orgId: string, tenantId: string, date:
   const computedAt = new Date();
   const payload = {
     tenantId,
-    ...counters,
+    // Built per column above: integers for the integer columns, strings for
+    // the two numeric(8,2) ones — a mixed record TS cannot correlate itself.
+    ...(counters as Partial<Pick<typeof m365PostureRollups.$inferInsert, RollupColumn>>),
     domainsFresh: domainsFresh as Record<string, { asOf: string; complete: boolean }>,
     computedAt,
   };
