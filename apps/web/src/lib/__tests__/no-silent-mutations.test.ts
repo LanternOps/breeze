@@ -90,6 +90,8 @@ const TARGET_GLOBS = [
   // drawer needs its own entry or its mutations are invisible to it.
   'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
+  // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
+  'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
   'src/components/dnsSecurity/AddDnsIntegrationModal.tsx',
@@ -610,8 +612,9 @@ describe('no silent mutations in targeted set', () => {
     // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
     // lib/api/scriptProposals.ts (request-changes + promote), so the count is
     // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
-    // count is now 127.
-    expect(absoluteFiles.length).toBe(127);
+    // count is now 127. Fleet Designer W02 (#5652) adds
+    // devices/DeviceFunctionField.tsx, so the count is now 128.
+    expect(absoluteFiles.length).toBe(128);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

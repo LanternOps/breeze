@@ -73,7 +73,8 @@ const namespaceDuplicateBaselines = {
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
     // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
     'deliverables.json': 2,
-    'devices.json': 174,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
+    'devices.json': 175,
     'discovery.json': 17,
     'integrations.json': 23,
     // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).
@@ -186,7 +187,8 @@ const namespaceDuplicateBaselines = {
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
     'deliverables.json': 1,
-    'devices.json': 125,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
+    'devices.json': 126,
     'discovery.json': 17,
     'integrations.json': 31,
     // +1: monitoring.json managed.monitorLabel — "Monitor" is the identical loanword in this locale (matches the established common.json monitor terminology).

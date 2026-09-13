@@ -100,6 +100,15 @@ describe('FilterChipBar', () => {
     }
   });
 
+  it('catalog exposes deviceFunction as a core enum over the shared SSOT keys (Fleet Designer W02)', () => {
+    const field = V2_FILTER_FIELDS.find(f => f.key === 'deviceFunction');
+    expect(field).toBeDefined();
+    expect(field!.category).toBe('core');
+    expect(field!.type).toBe('enum');
+    expect(field!.enumValues).toContain('file_server');
+    expect(field!.enumValues?.[field!.enumValues.length - 1]).toBe('unknown');
+  });
+
   // ---- Spec 4.1 — Org picker renders names ----
   it('org picker renders names not UUIDs', () => {
     const orgs = [

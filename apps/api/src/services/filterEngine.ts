@@ -15,6 +15,7 @@ import type {
   FilterPreviewResult,
   FilterPreviewDevice
 } from '@breeze/shared/types/filters';
+import { DEVICE_FUNCTION_KEYS } from '@breeze/shared/validators';
 export type {
   FilterOperator,
   FilterFieldCategory,
@@ -78,6 +79,11 @@ export const FILTER_FIELDS: FilterFieldDefinition[] = [
   { key: 'tags', label: 'Tags', category: 'core', type: 'array', operators: OPERATORS_BY_TYPE.array },
   { key: 'deviceRole', label: 'Device Role', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum,
     enumValues: ['workstation', 'server', 'printer', 'router', 'switch', 'firewall', 'access_point', 'phone', 'iot', 'camera', 'nas', 'unknown'] },
+  // Fleet Designer W02 (#5652): the ACTIVE device function projection. Known
+  // keys come from the shared SSOT; a custom:<slug> key is matchable through
+  // equals/in with the value typed by hand.
+  { key: 'deviceFunction', label: 'Device Function', category: 'core', type: 'enum', operators: OPERATORS_BY_TYPE.enum,
+    enumValues: [...DEVICE_FUNCTION_KEYS] },
   { key: 'lastUser', label: 'Last User', category: 'core', type: 'string', operators: OPERATORS_BY_TYPE.string },
   { key: 'isHeadless', label: 'Headless', category: 'core', type: 'boolean', operators: OPERATORS_BY_TYPE.boolean },
   { key: 'uptimeSeconds', label: 'Uptime (seconds)', category: 'core', type: 'number', operators: OPERATORS_BY_TYPE.number },
