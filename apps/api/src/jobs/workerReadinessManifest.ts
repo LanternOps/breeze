@@ -179,6 +179,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('orgMerge'),
   consumers('pamActuationWorker'),
   consumers('ticketAttachmentReaper'),
+  consumers('aiArtifactSweeper'),
   consumers('ticketOutboxPublisher'),
   consumers('metricAnomalyIncidentPublisher'),
   consumers('aiUnattendedExposureRetention'),

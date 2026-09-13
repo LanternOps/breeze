@@ -171,6 +171,9 @@ export const JOB_SCHEDULES = {
   // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
   'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
+  // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
+  // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
+  'ai-artifact-expiry-sweeper': '2 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

@@ -123,6 +123,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'aiArtifactSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiArtifactSweeper');
+      return { init: m.initializeAiArtifactSweeper, shutdown: m.shutdownAiArtifactSweeper };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {
