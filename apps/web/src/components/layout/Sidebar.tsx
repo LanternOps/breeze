@@ -460,6 +460,7 @@ const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
   '/monitoring/delivery': '/monitoring',
+  '/monitoring/monitors': '/monitoring',
   '/monitoring/network': '/monitoring',
   '/monitoring/rules': '/monitoring',
 };

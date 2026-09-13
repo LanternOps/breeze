@@ -363,7 +363,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         const data = await response.json().catch(() => ({}));
         throw new Error(extractApiError(data, t('monitoring:editor.errors.delete')));
       }
-      void navigateTo('/monitoring');
+      void navigateTo('/monitoring/monitors');
     } catch (err) {
       setError(err instanceof Error ? err.message : t('monitoring:editor.errors.delete'));
     } finally {
@@ -442,13 +442,13 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       <div className="space-y-6" data-testid="monitor-editor">
         <Breadcrumbs
           items={[
-            { label: t('monitoring:editor.breadcrumb.monitors'), href: '/monitoring' },
+            { label: t('monitoring:editor.breadcrumb.monitors'), href: '/monitoring/monitors' },
             { label: isNew ? t('monitoring:editor.breadcrumb.new') : watch('name') || t('monitoring:editor.titleEdit') },
           ]}
         />
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <a href="/monitoring" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
+            <a href="/monitoring/monitors" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
               <ArrowLeft className="h-5 w-5" />
             </a>
             <h1 className="text-xl font-semibold tracking-tight">

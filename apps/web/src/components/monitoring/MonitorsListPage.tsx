@@ -136,7 +136,7 @@ export default function MonitorsListPage() {
 
   return (
     <div className="space-y-6" data-testid="monitors-list-page">
-      <MonitoringTabStrip currentPath="/monitoring" />
+      <MonitoringTabStrip currentPath="/monitoring/monitors" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('monitoring:list.title')}</h1>

@@ -75,6 +75,7 @@
     "logs": "Journaux",
     "monitoring": "Surveillance",
     "monitoringNetwork": "Supervision – Réseau",
+    "monitoringMonitors": "Supervision – Moniteurs",
     "monitoringDelivery": "Supervision – Diffusion",
     "monitoringMonitorDetail": "Supervision – Moniteur",
     "monitoringRules": "Supervision – Règles héritées",

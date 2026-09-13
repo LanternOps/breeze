@@ -55,7 +55,7 @@ export default function MonitoringPage() {
 
   return (
     <div className="space-y-6">
-      <MonitoringTabStrip currentPath="/monitoring/network" />
+      <MonitoringTabStrip currentPath="/monitoring" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('longTail.monitoring.MonitoringPage.title')}</h1>

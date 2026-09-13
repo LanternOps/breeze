@@ -6,8 +6,8 @@ import MonitoringTabStrip from './MonitoringTabStrip';
 describe('MonitoringTabStrip (#5288, #5289)', () => {
   it('renders all four tabs with the right hrefs', () => {
     render(<MonitoringTabStrip currentPath="/monitoring/delivery" />);
-    expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute('href', '/monitoring');
-    expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute('href', '/monitoring/network');
+    expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute('href', '/monitoring');
+    expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute('href', '/monitoring/monitors');
     expect(screen.getByRole('link', { name: 'Delivery' })).toHaveAttribute('href', '/monitoring/delivery');
     expect(screen.getByRole('link', { name: 'Legacy rules' })).toHaveAttribute('href', '/monitoring/rules');
   });
@@ -19,13 +19,14 @@ describe('MonitoringTabStrip (#5288, #5289)', () => {
     expect(screen.getByRole('link', { name: 'Network' })).not.toHaveAttribute('aria-current');
   });
 
-  it('marks Monitors active for the hub root and for a monitor editor path', () => {
+  it('marks Monitors active for the monitors list and for a monitor editor path', () => {
     render(<MonitoringTabStrip currentPath="/monitoring/monitors/abc" />);
     expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Network' })).not.toHaveAttribute('aria-current');
   });
 
-  it('marks Network active for the network page', () => {
-    render(<MonitoringTabStrip currentPath="/monitoring/network" />);
+  it('marks Network active for the hub root (network monitoring is the default tab)', () => {
+    render(<MonitoringTabStrip currentPath="/monitoring" />);
     expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute('aria-current', 'page');
   });
 

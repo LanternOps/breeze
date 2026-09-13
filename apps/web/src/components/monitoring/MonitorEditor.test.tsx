@@ -349,7 +349,7 @@ describe('MonitorEditor (#5289)', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'DELETE' })),
     );
-    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring'));
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring/monitors'));
   });
 
   it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {

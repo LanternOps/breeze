@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
+// Network monitoring is the hub's default tab (owner decision 2026-09-13);
+// monitor definitions live under /monitoring/monitors.
 const TABS = [
-  { href: '/monitoring', labelKey: 'monitors' },
-  { href: '/monitoring/network', labelKey: 'network' },
+  { href: '/monitoring', labelKey: 'network' },
+  { href: '/monitoring/monitors', labelKey: 'monitors' },
   { href: '/monitoring/delivery', labelKey: 'delivery' },
   { href: '/monitoring/rules', labelKey: 'legacyRules' },
 ] as const;

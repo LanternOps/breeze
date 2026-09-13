@@ -75,6 +75,7 @@
     "logs": "Logs",
     "monitoring": "Monitoring",
     "monitoringNetwork": "Monitoring – Network",
+    "monitoringMonitors": "Monitoring – Monitors",
     "monitoringDelivery": "Monitoring – Delivery",
     "monitoringMonitorDetail": "Monitoring – Monitor",
     "monitoringRules": "Monitoring – Legacy rules",
