@@ -11,6 +11,8 @@ import { devices, alerts } from '../db/schema';
 import { eq, and, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
+import type { CaptureScope } from './artifacts/toolResultCapture';
+import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
 import {
   extensionContributionRegistry,
   type ExtensionContributionRegistry,
@@ -134,6 +136,16 @@ export interface AiTool {
    * NOT covered by this and must still narrow results themselves.
    */
   deviceArgs?: readonly string[];
+  /**
+   * Opt this tool OUT of large-result artifact capture (execution-plane spec
+   * §5.2). Default false: an oversized result is persisted and replaced with
+   * `{ artifact, compacted }`. Set it only for a tool whose value IS its
+   * structure — the workspace tools (W03) and `export_dataset` (W04), which
+   * already return a handle and would otherwise be captured recursively.
+   * A tool that returns bulk DATA must never set this: that is the case the
+   * capture exists for.
+   */
+  captureExempt?: boolean;
 }
 
 // ============================================
@@ -494,6 +506,22 @@ export type ExecuteToolOptions = {
    * every other caller omits it and the handler sees `undefined`.
    */
   context?: ToolExecutionContext;
+  /**
+   * Where an oversized result should be attributed if it has to be captured
+   * (execution-plane spec §5.2). Supplied by the CHAT path only, from its
+   * active session: `auth.orgId` is null for a partner-scope login, and a chat
+   * call has no run to anchor to. The AGENT RUN path supplies nothing — its
+   * auth context is built from the run row and already carries both the org and
+   * the run id (services/aiAgents/agentAuthContext.ts).
+   *
+   * OPTIONAL AND ABSENT BY DEFAULT: a caller that omits it gets today's
+   * behaviour with no branch taken. It rides here rather than on
+   * `ToolExecutionContext` (documented as deliberately narrow, verified-release
+   * material) or on `AuthContext` (a caller identity read by every tenancy
+   * gate) — this bag is what toolExecutionContext.ts's own argument points at
+   * for unrelated per-invocation inputs.
+   */
+  capture?: CaptureScope;
 };
 
 export async function executeTool(
@@ -556,6 +584,30 @@ export async function executeTool(
   // typed without a third one, since a handler written `(input, auth, ...rest)`
   // or reading `arguments` would otherwise capture pre-verified release
   // material the host never intended to hand out.
-  if (coreTool) return coreTool.handler(effectiveInput, auth, opts?.context);
-  return (tool as RegistryAiTool).handler(effectiveInput, auth);
+  const rawResult = coreTool
+    ? await coreTool.handler(effectiveInput, auth, opts?.context)
+    : await (tool as RegistryAiTool).handler(effectiveInput, auth);
+
+  // Large-result capture (execution-plane spec §5.2). HERE, after the handler
+  // and BEFORE any compaction — the callers all compact immediately after this
+  // await, and by then the oversized bytes are gone. Deliberately NOT applied
+  // to the tool-error envelopes returned above: they are short by construction
+  // and an artifact of an error string is nonsense.
+  //
+  // A captureExempt tool and an unattributable call take the SAME null-context
+  // path, so there is exactly one passthrough branch. `captureLargeToolResult`
+  // returns the raw string unchanged for a null context, below the threshold,
+  // and with the workspace flag off, and turns a STORE failure into a typed
+  // tool error (§9) rather than the raw result inline. This catch is only for
+  // the genuinely unexpected: capture is an enhancement, never a reason a tool
+  // call fails.
+  const captureCtx = (tool as { captureExempt?: boolean }).captureExempt
+    ? null
+    : captureContextFrom(auth, opts, toolName);
+  try {
+    return await captureLargeToolResult(rawResult, captureCtx);
+  } catch (err) {
+    console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err);
+    return rawResult;
+  }
 }
