@@ -4462,26 +4462,6 @@
       "slug": "Généré à partir du nom. Unique dans votre compte; utilisé par l'API et les intégrations."
     }
   },
-  "organizationList": {
-    "title": "Organisations",
-    "count": "{{filtered}} de {{total}} organisations",
-    "searchPlaceholder": "Rechercher des organisations",
-    "allStatuses": "Tous les statuts",
-    "status": {
-      "active": "Active",
-      "trial": "Procès",
-      "suspended": "Suspendu",
-      "churned": "Tourné",
-      "offboarding": "Départ en cours",
-      "merging": "Fusion en cours",
-      "archived": "Archivé",
-      "purging": "Purge en cours"
-    },
-    "columns": {
-      "devices": "Appareils"
-    },
-    "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
-  },
   "bulkOrgImport": {
     "title": "Import en masse",
     "description": "Importez des organisations et des sites depuis un CSV exporté de votre ancien RMM.",
@@ -4545,7 +4525,7 @@
   },
   "organizationsPage": {
     "loading": "Chargement des organisations...",
-    "title": "Organisations & Sites",
+    "title": "Organisations",
     "description": "Gérer les organisations et leurs sites.",
     "actions": {
       "addOrganization": "Ajouter l’organisation",
@@ -4582,13 +4562,23 @@
     "list": {
       "title": "Organisations",
       "empty": "Aucune organisation trouvée.",
-      "noMatches": "Aucune organisation ne correspond à votre recherche.",
+      "noMatches": "Aucune organisation ne correspond à votre recherche ou à votre filtre.",
       "dragToReorder": "De la traînée à la réorganisation",
       "searchLabel": "Rechercher des organisations",
       "reorderHandle": "Réorganiser {{name}}",
       "reorderHint": "Utilisez les flèches vers le haut et vers le bas pour déplacer cette organisation.",
       "movedAnnouncement": "{{name}} déplacée à la position {{position}} de {{total}}",
-      "workspaceMarker": "Espace de travail"
+      "workspaceMarker": "Espace de travail",
+      "sort": {
+        "label": "Trier",
+        "manual": "Ordre manuel",
+        "name": "De A à Z",
+        "devices": "Le plus d'appareils"
+      },
+      "filter": {
+        "label": "Filtrer par statut",
+        "all": "Toutes"
+      }
     },
     "sites": {
       "loading": "Chargement des sites..."

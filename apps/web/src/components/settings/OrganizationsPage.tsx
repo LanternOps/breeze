@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useHashState } from '@/lib/useHashState';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import OrganizationForm from './OrganizationForm';
 import SiteList from './SiteList';
 import SiteModals from './SiteModals';
@@ -24,7 +24,7 @@ import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { makeOrgFetch, useLatest, type OrgSummary } from '../organizations/record/orgRecordFetch';
 import { formatDate } from '@/lib/dateTimeFormat';
 import { formatNumber } from '@/lib/i18n/format';
-import { Building2, ChevronRight, GripVertical, Settings } from 'lucide-react';
+import { Building2, ChevronDown, ChevronRight, GripVertical, Settings } from 'lucide-react';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 
@@ -33,6 +33,26 @@ type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
 const REORDER_HINT_ID = 'org-list-reorder-hint';
 const ADD_ORG_TITLE_ID = 'org-add-dialog-title';
 const noop = () => {};
+
+/** localStorage key for the list's sort choice: a per-browser convenience,
+ *  never authoritative state. Exported for the test. */
+export const ORG_LIST_SORT_STORAGE_KEY = 'breeze.orgList.sort';
+type SortMode = 'manual' | 'name' | 'devices';
+const SORT_MODES: SortMode[] = ['manual', 'name', 'devices'];
+
+function readStoredSortMode(): SortMode {
+  try {
+    const stored = window.localStorage.getItem(ORG_LIST_SORT_STORAGE_KEY);
+    return stored === 'name' || stored === 'devices' ? stored : 'manual';
+  } catch {
+    return 'manual';
+  }
+}
+
+/** Chip order for the status filter: lifecycle order, `active` excluded —
+ *  it is the steady state the other chips are the exceptions to, the same
+ *  rule that keeps the active rows free of a status pill. */
+const FILTERABLE_STATUSES: Organization['status'][] = ['trial', 'suspended', 'churned', 'offboarding', 'merging'];
 
 type OrganizationFormValues = {
   name: string;
@@ -150,6 +170,19 @@ export default function OrganizationsPage() {
   const [initialOrgId] = useHashState<string | null>(null, (h) => h || undefined);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // List controls for a long list (the stated persona has 60+ customers):
+  // a status filter that only offers the statuses actually present, and a
+  // sort that defaults to the partner's own manual (drag) order.
+  const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
+  const [statusFilter, setStatusFilter] = useState<'all' | Organization['status']>('all');
+  const changeSortMode = (mode: SortMode) => {
+    setSortMode(mode);
+    try {
+      window.localStorage.setItem(ORG_LIST_SORT_STORAGE_KEY, mode);
+    } catch {
+      /* per-browser nicety only; nothing depends on it persisting */
+    }
+  };
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
   /**
@@ -247,11 +280,35 @@ export default function OrganizationsPage() {
   // redundant duplicate GET it would otherwise fire (#1978 follow-up).
   const skipSiteFetchForOrgId = useRef<string | null>(null);
 
+  const presentStatuses = useMemo(
+    () => FILTERABLE_STATUSES.filter((status) => organizations.some((org) => org.status === status)),
+    [organizations],
+  );
+
+  // A filter whose status just left the list (its last org was archived or
+  // merged away) would leave an empty list behind a chip that no longer
+  // exists; fall back to the full list instead.
+  useEffect(() => {
+    if (statusFilter !== 'all' && !presentStatuses.includes(statusFilter)) setStatusFilter('all');
+  }, [presentStatuses, statusFilter]);
+
   const filteredOrgs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return organizations;
-    return organizations.filter(org => org.name.toLowerCase().includes(q));
-  }, [organizations, searchQuery]);
+    let rows = organizations;
+    if (q) rows = rows.filter(org => org.name.toLowerCase().includes(q));
+    if (statusFilter !== 'all') rows = rows.filter(org => org.status === statusFilter);
+    if (sortMode === 'name') {
+      rows = [...rows].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortMode === 'devices') {
+      rows = [...rows].sort((a, b) => (b.deviceCount ?? 0) - (a.deviceCount ?? 0) || a.name.localeCompare(b.name));
+    }
+    return rows;
+  }, [organizations, searchQuery, statusFilter, sortMode]);
+
+  /** Manual (drag / arrow-key) ordering only means something against the
+   *  full, server-ordered list: a search, a filter or another sort hides
+   *  rows, so a move's neighbours would not be its real neighbours. */
+  const manualOrderActive = sortMode === 'manual' && statusFilter === 'all' && searchQuery.trim().length === 0;
 
   /**
    * Client-side re-filter of whatever archived rows are already loaded, using
@@ -934,16 +991,11 @@ export default function OrganizationsPage() {
 
   // Site handlers — moved to `useSiteCrud` (#5075 W02); `siteCrud` above.
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('organizationsPage.loading')}</p>
-        </div>
-      </div>
-    );
-  }
+  // The first load keeps the page frame (header, actions, empty panel) and
+  // shows a skeleton list where the rows will land, instead of replacing the
+  // whole page with a spinner. Later non-silent refreshes (after a create or
+  // import) already have rows to show and never flash the skeleton.
+  const initialLoading = loading && organizations.length === 0;
 
   if (error && organizations.length === 0) {
     return (
@@ -1025,6 +1077,54 @@ export default function OrganizationsPage() {
               onChange={e => setSearchQuery(e.target.value)}
               className="mt-2 h-8 w-full rounded-md border bg-background px-2.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
+            {/* Status chips only for statuses present (exception-only, like
+                the row pills); the sort select sits at the end of the row.
+                Both hide manual reordering while they narrow or reorder the
+                list. */}
+            <div className="mt-2 flex items-start gap-2">
+              {presentStatuses.length > 0 && (
+                <div
+                  role="group"
+                  aria-label={t('organizationsPage.list.filter.label')}
+                  className="flex min-w-0 flex-1 flex-wrap gap-1"
+                >
+                  {(['all', ...presentStatuses] as const).map((status) => {
+                    const pressed = statusFilter === status;
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        aria-pressed={pressed}
+                        onClick={() => setStatusFilter(status)}
+                        className={`inline-flex h-8 items-center rounded-full border px-2.5 text-xs font-medium transition ${
+                          pressed
+                            ? 'border-foreground bg-foreground text-background'
+                            : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                        }`}
+                      >
+                        {status === 'all'
+                          ? t('organizationsPage.list.filter.all')
+                          : t(/* i18n-dynamic */ statusLabelKeys[status])}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <select
+                aria-label={t('organizationsPage.list.sort.label')}
+                value={sortMode}
+                onChange={(e) => changeSortMode(e.target.value as SortMode)}
+                // `py-0` overrides the forms plugin's vertical padding, which
+                // otherwise pushes a 28px select's text out of its own box.
+                className="ml-auto h-8 shrink-0 rounded-md border bg-background py-0 pl-2 pr-7 text-xs leading-none focus:outline-hidden focus:ring-2 focus:ring-ring"
+              >
+                {SORT_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {t(/* i18n-dynamic */ `organizationsPage.list.sort.${mode}`)}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <p id={REORDER_HINT_ID} className="sr-only">
@@ -1039,8 +1139,22 @@ export default function OrganizationsPage() {
             {reorderAnnouncement}
           </div>
 
-          <div className="max-h-[calc(100vh-320px)] overflow-y-auto">
-            {filteredOrgs.length === 0 ? (
+          {/* One scroll region for the active list AND the Archived section:
+              the Archived bar sits sticky at the bottom of the box and its
+              rows flow on underneath, so there is never a second, stacked
+              scroller pushing off the bottom of a 1080p screen. */}
+          <div data-testid="org-list-scroll" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+            {initialLoading ? (
+              <div data-testid="org-list-skeleton" aria-busy="true" className="divide-y">
+                <p className="sr-only">{t('organizationsPage.loading')}</p>
+                {Array.from({ length: 6 }, (_, i) => (
+                  <div key={i} className="px-3 py-3" aria-hidden="true">
+                    <div className="skeleton h-3.5 w-2/3" />
+                    <div className="skeleton mt-2 h-3 w-1/3" />
+                  </div>
+                ))}
+              </div>
+            ) : filteredOrgs.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                 {organizations.length === 0
                   ? t('organizationsPage.list.empty')
@@ -1049,7 +1163,7 @@ export default function OrganizationsPage() {
             ) : (
               <ul className="divide-y" aria-label={t('organizationsPage.list.title')}>
                 {filteredOrgs.map((org, index) => {
-                  const dragEnabled = searchQuery.trim().length === 0 && !reorderPending;
+                  const dragEnabled = manualOrderActive && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
                   const isSelected = selectedOrg?.id === org.id;
@@ -1069,7 +1183,7 @@ export default function OrganizationsPage() {
                     onDragLeave={dragEnabled ? handleOrgDragLeave : undefined}
                     onDrop={dragEnabled ? (e) => handleOrgDrop(e, org) : undefined}
                     onDragEnd={dragEnabled ? handleOrgDragEnd : undefined}
-                    className={`group relative flex cursor-pointer items-start gap-1.5 px-3 py-3 transition hover:bg-muted/50 ${
+                    className={`group relative flex cursor-pointer items-start gap-1.5 px-3 py-3 transition [contain-intrinsic-size:auto_60px] [content-visibility:auto] hover:bg-muted/50 ${
                       isSelected
                         ? 'bg-muted/60 border-l-2 border-l-primary'
                         : 'border-l-2 border-l-transparent'
@@ -1180,30 +1294,28 @@ export default function OrganizationsPage() {
                 })}
               </ul>
             )}
-          </div>
 
-          {/* Archived organizations — collapsed by default, fetched only on expand */}
-          <div className="border-t">
-            <button
-              type="button"
-              data-testid="org-archived-toggle"
-              onClick={handleToggleArchived}
-              aria-expanded={archivedExpanded}
-              className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
-            >
-              <span>{t('organizationsPage.archived.sectionTitle')}</span>
-              <svg
-                xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                className={`transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
-                aria-hidden="true"
+            {/* Archived organizations — collapsed by default, fetched only on
+                expand. The bar is sticky at the bottom of the shared scroll
+                box; expanded rows continue below it in the same box. */}
+            <div className="sticky bottom-0 z-10 border-t bg-card">
+              <button
+                type="button"
+                data-testid="org-archived-toggle"
+                onClick={handleToggleArchived}
+                aria-expanded={archivedExpanded}
+                className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
               >
-                <path d="m6 9 6 6 6-6" />
-              </svg>
-            </button>
+                <span>{t('organizationsPage.archived.sectionTitle')}</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
 
             {archivedExpanded && (
-              <div data-testid="org-archived-section" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+              <div data-testid="org-archived-section" className="border-t">
                 {archivedLoading ? (
                   <div className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {t('organizationsPage.archived.loading')}

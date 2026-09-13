@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction, handleActionError } from '@/lib/runAction';
 import { Dialog } from '../shared/Dialog';

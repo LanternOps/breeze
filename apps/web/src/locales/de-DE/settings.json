@@ -4414,26 +4414,6 @@
       "slug": "Wird aus dem Namen erzeugt. Innerhalb Ihres Kontos eindeutig; von der API und Integrationen verwendet."
     }
   },
-  "organizationList": {
-    "title": "Organisationen",
-    "count": "{{filtered}} von {{total}} Organisationen",
-    "searchPlaceholder": "Organisationen suchen",
-    "allStatuses": "Alle Status",
-    "status": {
-      "active": "Aktiv",
-      "trial": "Prozess",
-      "suspended": "Suspendiert",
-      "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft",
-      "merging": "Zusammenführung läuft",
-      "archived": "Archiviert",
-      "purging": "Löschung läuft"
-    },
-    "columns": {
-      "devices": "Geräte"
-    },
-    "empty": "Keine Organisationen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen."
-  },
   "bulkOrgImport": {
     "title": "Massenimport",
     "description": "Organisationen und Standorte aus einer CSV-Datei Ihres bisherigen RMM importieren.",
@@ -4497,7 +4477,7 @@
   },
   "organizationsPage": {
     "loading": "Organisationen werden geladen...",
-    "title": "Organisationen und Standorte",
+    "title": "Organisationen",
     "description": "Verwalten Sie Organisationen und ihre Standorte.",
     "actions": {
       "addOrganization": "Organisation hinzufügen",
@@ -4534,13 +4514,23 @@
     "list": {
       "title": "Organisationen",
       "empty": "Keine Organisationen gefunden.",
-      "noMatches": "Keine Organisationen entsprechen Ihrer Suche.",
+      "noMatches": "Keine Organisationen entsprechen Ihrer Suche oder Ihrem Filter.",
       "dragToReorder": "Zum Neuanordnen ziehen",
       "searchLabel": "Organisationen durchsuchen",
       "reorderHandle": "{{name}} neu anordnen",
       "reorderHint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
       "movedAnnouncement": "{{name}} wurde an Position {{position}} von {{total}} verschoben",
-      "workspaceMarker": "Arbeitsbereich"
+      "workspaceMarker": "Arbeitsbereich",
+      "sort": {
+        "label": "Sortieren",
+        "manual": "Manuelle Reihenfolge",
+        "name": "A bis Z",
+        "devices": "Meiste Geräte"
+      },
+      "filter": {
+        "label": "Nach Status filtern",
+        "all": "Alle"
+      }
     },
     "sites": {
       "loading": "Seiten werden geladen..."

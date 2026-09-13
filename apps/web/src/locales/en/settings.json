@@ -4467,26 +4467,6 @@
       "slug": "Generated from the name. Unique within your account; used by the API and integrations."
     }
   },
-  "organizationList": {
-    "title": "Organizations",
-    "count": "{{filtered}} of {{total}} organizations",
-    "searchPlaceholder": "Search organizations",
-    "allStatuses": "All statuses",
-    "status": {
-      "active": "Active",
-      "trial": "Trial",
-      "suspended": "Suspended",
-      "churned": "Churned",
-      "offboarding": "Offboarding",
-      "merging": "Merging…",
-      "archived": "Archived",
-      "purging": "Purging"
-    },
-    "columns": {
-      "devices": "Devices"
-    },
-    "empty": "No organizations found. Try adjusting your search or filters."
-  },
   "bulkOrgImport": {
     "title": "Bulk import",
     "description": "Import organizations and sites from a CSV exported from your previous RMM.",
@@ -4550,7 +4530,7 @@
   },
   "organizationsPage": {
     "loading": "Loading organizations...",
-    "title": "Organizations & Sites",
+    "title": "Organizations",
     "description": "Manage organizations and their sites.",
     "actions": {
       "addOrganization": "Add organization",
@@ -4587,13 +4567,23 @@
     "list": {
       "title": "Organizations",
       "empty": "No organizations found.",
-      "noMatches": "No organizations match your search.",
+      "noMatches": "No organizations match your search or filter.",
       "dragToReorder": "Drag to reorder",
       "searchLabel": "Search organizations",
       "reorderHandle": "Reorder {{name}}",
       "reorderHint": "Use the up and down arrow keys to move this organization.",
       "movedAnnouncement": "{{name}} moved to position {{position}} of {{total}}",
-      "workspaceMarker": "Workspace"
+      "workspaceMarker": "Workspace",
+      "sort": {
+        "label": "Sort",
+        "manual": "Manual order",
+        "name": "A to Z",
+        "devices": "Most devices"
+      },
+      "filter": {
+        "label": "Filter by status",
+        "all": "All"
+      }
     },
     "sites": {
       "loading": "Loading sites..."

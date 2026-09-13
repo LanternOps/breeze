@@ -4414,26 +4414,6 @@
       "slug": "Se genera a partir del nombre. Es único en tu cuenta y lo usan la API y las integraciones."
     }
   },
-  "organizationList": {
-    "title": "Organizaciones",
-    "count": "{{filtered}} de organizaciones {{total}}",
-    "searchPlaceholder": "Buscar organizaciones",
-    "allStatuses": "Todos los estados",
-    "status": {
-      "active": "Activo",
-      "trial": "Prueba",
-      "suspended": "Suspendido",
-      "churned": "Dado de baja",
-      "offboarding": "En proceso de baja",
-      "merging": "En proceso de fusión",
-      "archived": "Archivado",
-      "purging": "En proceso de purgado"
-    },
-    "columns": {
-      "devices": "Dispositivos"
-    },
-    "empty": "No se encontraron organizaciones. Intente ajustar su búsqueda o filtros."
-  },
   "bulkOrgImport": {
     "title": "Importación masiva",
     "description": "Importa organizaciones y sitios desde un CSV exportado de tu RMM anterior.",
@@ -4497,7 +4477,7 @@
   },
   "organizationsPage": {
     "loading": "Cargando organizaciones...",
-    "title": "Organizaciones y sitios",
+    "title": "Organizaciones",
     "description": "Gestionar organizaciones y sus sitios.",
     "actions": {
       "addOrganization": "Agregar organización",
@@ -4534,13 +4514,23 @@
     "list": {
       "title": "Organizaciones",
       "empty": "No se encontraron organizaciones.",
-      "noMatches": "Ninguna organización coincide con su búsqueda.",
+      "noMatches": "Ninguna organización coincide con tu búsqueda o filtro.",
       "dragToReorder": "Arrastre para reordenar",
       "searchLabel": "Buscar organizaciones",
       "reorderHandle": "Reordenar {{name}}",
       "reorderHint": "Usa las flechas arriba y abajo para mover esta organización.",
       "movedAnnouncement": "{{name}} se movió a la posición {{position}} de {{total}}",
-      "workspaceMarker": "Espacio de trabajo"
+      "workspaceMarker": "Espacio de trabajo",
+      "sort": {
+        "label": "Ordenar",
+        "manual": "Orden manual",
+        "name": "De la A a la Z",
+        "devices": "Más dispositivos"
+      },
+      "filter": {
+        "label": "Filtrar por estado",
+        "all": "Todas"
+      }
     },
     "sites": {
       "loading": "Cargando sitios..."

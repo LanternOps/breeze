@@ -4467,26 +4467,6 @@
       "slug": "Gerado a partir do nome. Único na sua conta; usado pela API e pelas integrações."
     }
   },
-  "organizationList": {
-    "title": "Organizações",
-    "count": "{{filtered}} de organizações {{total}}",
-    "searchPlaceholder": "Pesquisar organizações",
-    "allStatuses": "Todos os status",
-    "status": {
-      "active": "Ativo",
-      "trial": "Avaliação",
-      "suspended": "Suspenso",
-      "churned": "Cancelado",
-      "offboarding": "Em desligamento",
-      "merging": "Em fusão",
-      "archived": "Arquivado",
-      "purging": "Em exclusão"
-    },
-    "columns": {
-      "devices": "Dispositivos"
-    },
-    "empty": "Nenhuma organização encontrada. Tente ajustar sua pesquisa ou filtros."
-  },
   "bulkOrgImport": {
     "title": "Importação em massa",
     "description": "Importe organizações e locais a partir de um CSV exportado do seu RMM anterior.",
@@ -4550,7 +4530,7 @@
   },
   "organizationsPage": {
     "loading": "Carregando organizações...",
-    "title": "Organizações e sites",
+    "title": "Organizações",
     "description": "Gerencie organizações e seus sites.",
     "actions": {
       "addOrganization": "Adicionar organização",
@@ -4587,13 +4567,23 @@
     "list": {
       "title": "Organizações",
       "empty": "Nenhuma organização encontrada.",
-      "noMatches": "Nenhuma organização corresponde à sua pesquisa.",
+      "noMatches": "Nenhuma organização corresponde à sua busca ou filtro.",
       "dragToReorder": "Arraste para reordenar",
       "searchLabel": "Buscar organizações",
       "reorderHandle": "Reordenar {{name}}",
       "reorderHint": "Use as setas para cima e para baixo para mover esta organização.",
       "movedAnnouncement": "{{name}} movida para a posição {{position}} de {{total}}",
-      "workspaceMarker": "Espaço de trabalho"
+      "workspaceMarker": "Espaço de trabalho",
+      "sort": {
+        "label": "Ordenar",
+        "manual": "Ordem manual",
+        "name": "De A a Z",
+        "devices": "Mais dispositivos"
+      },
+      "filter": {
+        "label": "Filtrar por status",
+        "all": "Todas"
+      }
     },
     "sites": {
       "loading": "Carregando sites..."

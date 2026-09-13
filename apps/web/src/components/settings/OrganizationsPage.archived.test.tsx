@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrganizationsPage from './OrganizationsPage';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import { ORGANIZATIONS_PAGE_SIZE } from '../../lib/fetchAllOrganizations';
