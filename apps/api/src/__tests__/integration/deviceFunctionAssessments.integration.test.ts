@@ -106,7 +106,7 @@ function insertRaw(v: RawInsert, ctx: DbAccessContext = SYSTEM_CTX): Promise<unk
     VALUES (
       ${v.deviceId}::uuid, ${v.orgId}::uuid, ${v.functionKey ?? 'file_server'},
       ${v.source ?? 'ai'}, ${v.confidence ?? (v.source === 'manual' ? null : 0.8)},
-      ${active}, ${active ? null : new Date()}
+      ${active}, ${active ? sql`NULL` : sql`now()`}
     )`));
 }
 

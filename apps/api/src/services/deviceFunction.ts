@@ -276,22 +276,40 @@ export async function applyDesignFunctions(
           result.skippedForeign += 1;
           continue;
         }
-        const outcome = await upsertDeviceFunction({
-          deviceId,
-          orgId: input.orgId,
-          functionKey: fn.functionKey,
-          label: fn.label ?? null,
-          source: 'ai',
-          confidence: fn.confidence,
-          evidence: fn.evidence,
-          runId: input.runId,
-          reportRunId: input.reportRunId,
-          userId: input.userId,
-        }, tx);
+        let outcome: UpsertDeviceFunctionResult;
+        try {
+          outcome = await upsertDeviceFunction(fnInput(fn, deviceId), tx);
+        } catch (err) {
+          // The membership read above and the per-device lock are separate
+          // statements: a device deleted or moved out of the org in between
+          // surfaces here as device_not_found. Count it like any other foreign
+          // id rather than aborting the whole step — the contract is "never
+          // throw for a device that is not (or no longer) ours".
+          if (err instanceof DeviceFunctionError && err.code === 'device_not_found') {
+            result.skippedForeign += 1;
+            continue;
+          }
+          throw err;
+        }
         if (outcome.outcome === 'written') result.written += 1;
         else result.keptManual += 1;
       }
     }
     return result;
   });
+
+  function fnInput(fn: ApplyDesignFunctionsInput['functions'][number], deviceId: string): UpsertDeviceFunctionInput {
+    return {
+      deviceId,
+      orgId: input.orgId,
+      functionKey: fn.functionKey,
+      label: fn.label ?? null,
+      source: 'ai',
+      confidence: fn.confidence,
+      evidence: fn.evidence,
+      runId: input.runId,
+      reportRunId: input.reportRunId,
+      userId: input.userId,
+    };
+  }
 }

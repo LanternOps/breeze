@@ -75,7 +75,11 @@ functionRoutes.put(
         outcome = written.outcome;
       }
     } catch (err) {
-      if (err instanceof DeviceFunctionError) return c.json({ error: err.code }, 400);
+      if (err instanceof DeviceFunctionError) {
+        // The access check above and the service's FOR UPDATE lock are separate
+        // statements; a device deleted or moved in between is a 404, not a 400.
+        return c.json({ error: err.code }, err.code === 'device_not_found' ? 404 : 400);
+      }
       throw err;
     }
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import type { DeviceFunctionDto } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, ActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import {
   CUSTOM_FUNCTION_PREFIX,
   CUSTOM_FUNCTION_SLUG_PATTERN,
@@ -84,8 +85,14 @@ export default function DeviceFunctionField({ deviceId, functionKey, functionSou
       onChanged({ functionKey: dto.functionKey, source: dto.source, label: dto.label ?? null });
       setEditing(false);
     } catch (err) {
-      // A non-401 ActionError was already toasted by runAction.
+      // 401: the auth redirect is the feedback. Any other ActionError was
+      // already toasted by runAction; anything else (a throw from the parent's
+      // onChanged, say) must not vanish silently.
       if (err instanceof ActionError && err.status === 401) return;
+      if (!(err instanceof ActionError)) {
+        console.error('Failed to apply device function change:', err);
+        showToast({ type: 'error', message: t('deviceInfoTab.functionSaveFailed') });
+      }
     } finally {
       setSaving(false);
     }
@@ -115,11 +122,13 @@ export default function DeviceFunctionField({ deviceId, functionKey, functionSou
     try {
       const res = await fetchWithAuth(`/devices/${deviceId}/function`);
       if (!res.ok) {
+        console.error(`Failed to load device function detail (HTTP ${res.status})`);
         setDetailError(t('deviceInfoTab.functionEvidenceUnavailable'));
         return;
       }
       setDetail((await res.json()) as DeviceFunctionDto);
-    } catch {
+    } catch (err) {
+      console.error('Failed to load device function detail:', err);
       setDetailError(t('deviceInfoTab.functionEvidenceUnavailable'));
     }
   };

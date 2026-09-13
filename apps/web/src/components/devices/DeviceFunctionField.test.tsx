@@ -60,6 +60,47 @@ describe('DeviceFunctionField', () => {
     expect(screen.getByText('82% confidence')).toBeInTheDocument();
   });
 
+  it('shows the unavailable message (and logs) when the detail GET fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async () => jsonResponse({ error: 'boom' }, false, 500));
+
+    render(<DeviceFunctionField deviceId={deviceId} functionKey="file_server" functionSource="ai" onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByText('Why the designer thinks so'));
+    await screen.findByText('Could not load the assessment details.');
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('disables Save for an invalid custom slug or a missing label', () => {
+    render(<DeviceFunctionField deviceId={deviceId} functionKey={null} functionSource={null} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByTitle('Change function'));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '__custom__' } });
+    const save = screen.getByTitle('Save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText('custom key (a-z, 0-9, -)'), { target: { value: 'pos' } });
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByPlaceholderText('Label'), { target: { value: 'POS' } });
+    expect(save.disabled).toBe(false);
+    fireEvent.change(screen.getByPlaceholderText('custom key (a-z, 0-9, -)'), { target: { value: 'has space' } });
+    expect(save.disabled).toBe(true);
+  });
+
+  it('toasts and logs when the parent onChanged throws after a successful save', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fetchWithAuthMock.mockImplementation(async (_input, init) =>
+      init?.method === 'PUT'
+        ? jsonResponse({ ...aiDto, functionKey: 'kiosk', source: 'manual', confidence: null, evidence: [] })
+        : jsonResponse({}, false, 404),
+    );
+    render(<DeviceFunctionField deviceId={deviceId} functionKey={null} functionSource={null} onChanged={() => { throw new Error('parent blew up'); }} />);
+    fireEvent.click(screen.getByTitle('Change function'));
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'kiosk' } });
+    fireEvent.click(screen.getByTitle('Save'));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Failed to save device function' })));
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it('renders "Not assessed" with no badge when there is no function', () => {
     render(<DeviceFunctionField deviceId={deviceId} functionKey={null} functionSource={null} onChanged={vi.fn()} />);
     expect(screen.getByText('Not assessed')).toBeInTheDocument();

@@ -153,11 +153,16 @@ describe('PUT /devices/:id/function', () => {
     expect(upsertDeviceFunction).toHaveBeenCalledWith(expect.objectContaining({ functionKey: 'custom:pos', label: 'POS' }));
   });
 
-  it('maps a DeviceFunctionError to 400 with its code and does not audit', async () => {
-    vi.mocked(upsertDeviceFunction).mockRejectedValue(new DeviceFunctionError('device_not_found'));
-    const res = await makeApp().request(jsonReq(`/devices/${DEVICE_ID}/function`, 'PUT', { functionKey: 'file_server' }));
-    expect(res.status).toBe(400);
+  it('maps a DeviceFunctionError to 400 (404 for device_not_found) with its code and does not audit', async () => {
+    vi.mocked(upsertDeviceFunction).mockRejectedValueOnce(new DeviceFunctionError('device_not_found'));
+    let res = await makeApp().request(jsonReq(`/devices/${DEVICE_ID}/function`, 'PUT', { functionKey: 'file_server' }));
+    expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'device_not_found' });
+
+    vi.mocked(upsertDeviceFunction).mockRejectedValueOnce(new DeviceFunctionError('label_required'));
+    res = await makeApp().request(jsonReq(`/devices/${DEVICE_ID}/function`, 'PUT', { functionKey: 'file_server' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'label_required' });
     expect(writeRouteAudit).not.toHaveBeenCalled();
   });
 

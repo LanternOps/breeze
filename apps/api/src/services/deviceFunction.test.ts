@@ -298,6 +298,23 @@ describe('applyDesignFunctions', () => {
     });
   });
 
+  it('counts a device that vanished between the membership read and its lock as skippedForeign', async () => {
+    // Membership says both are ours; DEVICE's FOR UPDATE read then finds no row
+    // (deleted / moved concurrently) → counted, not thrown; OTHER_DEVICE still written.
+    const calls = seed([
+      [{ id: DEVICE }, { id: OTHER_DEVICE }],
+      [],                                       // DEVICE: lock finds nothing
+      [{ id: OTHER_DEVICE, orgId: ORG }], [],   // OTHER_DEVICE: written
+    ]);
+    const result = await applyDesignFunctions({
+      orgId: ORG, reportRunId: REPORT_RUN, runId: RUN, userId: USER,
+      functions: [{ functionKey: 'file_server', deviceIds: [DEVICE, OTHER_DEVICE], confidence: 0.9, evidence: [] }],
+    });
+    expect(result).toEqual({ written: 1, keptManual: 0, skippedForeign: 1 });
+    expect(calls.inserts).toHaveLength(1);
+    expect(calls.inserts[0]!.values).toMatchObject({ deviceId: OTHER_DEVICE });
+  });
+
   it('rejects an invalid function key up front', async () => {
     seed([[{ id: DEVICE }]]);
     await expect(
