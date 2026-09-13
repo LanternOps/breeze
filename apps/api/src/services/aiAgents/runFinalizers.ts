@@ -27,6 +27,7 @@ import { isDesignProfile } from './designProfile';
 import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
 import { computeDrift } from '../fleetDesign/drift';
 import { fileFleetDesignDocument } from '../fleetDesign/documents';
+import { captureException } from '../sentry';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistSweepFindings } from './sweepFindings';
@@ -372,7 +373,15 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
           timezone,
         }));
       } catch (error) {
+        // Best effort, but never invisible: a systemic storage or deliverable
+        // fault would otherwise stop every scheduled design filing itself with
+        // no signal at all (the run still completes, so there is no error code
+        // to carry it). Same treatment `designEvidence.ts` gives a loader that
+        // fails without failing the run.
         console.error('[aiAgentRunLoop] failed to file the fleet design document', { runId: ctx.run.id, reportRunId, error });
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          service: 'aiAgents', operation: 'fileFleetDesignDocument', runId: ctx.run.id, reportRunId, orgId: ctx.run.orgId,
+        });
       }
     }
     return null;

@@ -84,16 +84,59 @@ describe('fileFleetDesignDocument', () => {
   });
 
   it('is idempotent per report run: a second call returns the existing document and uploads nothing', async () => {
-    selectQueue.push([{ id: 'doc-existing' }]);
+    selectQueue.push([{ id: 'doc-existing' }]); // already filed
+    selectQueue.push([]); // no deliverable
     const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
     expect(uploadDocumentMock).not.toHaveBeenCalled();
     expect(result).toEqual({ documentId: 'doc-existing', alreadyFiled: true, evidence: null });
+  });
+
+  it('re-attempts the evidence link when the document exists but was never linked (a failure between the two writes)', async () => {
+    selectQueue.push([{ id: 'doc-existing' }]); // already filed
+    selectQueue.push([{ id: DELIVERABLE, autoEvidenceReportId: REPORT, name: 'Quarterly configuration audit' }]);
+    selectQueue.push([{ id: OCCURRENCE }]); // open occurrence
+    selectQueue.push([]); // no evidence row yet
+    const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
+    expect(uploadDocumentMock).not.toHaveBeenCalled();
+    expect(addEvidenceMock).toHaveBeenCalledWith(ORG, OCCURRENCE, { kind: 'document', documentId: 'doc-existing' }, actor);
+    expect(result).toEqual({ documentId: 'doc-existing', alreadyFiled: true, evidence: { deliverableId: DELIVERABLE, occurrenceId: OCCURRENCE } });
+  });
+
+  it('never attaches a twin when the document is already evidence on that occurrence', async () => {
+    selectQueue.push([{ id: 'doc-existing' }]);
+    selectQueue.push([{ id: DELIVERABLE, autoEvidenceReportId: REPORT, name: 'Quarterly configuration audit' }]);
+    selectQueue.push([{ id: OCCURRENCE }]);
+    selectQueue.push([{ id: 'evidence-1' }]); // already linked
+    const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
+    expect(addEvidenceMock).not.toHaveBeenCalled();
+    expect(result.evidence).toEqual({ deliverableId: DELIVERABLE, occurrenceId: OCCURRENCE });
+  });
+
+  it('skips the deliverable linkage entirely when the caller lacks contracts:write', async () => {
+    selectQueue.push([]); // not filed yet
+    const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor, linkDeliverableEvidence: false });
+    expect(uploadDocumentMock).toHaveBeenCalledTimes(1);
+    expect(addEvidenceMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ documentId: 'doc-1', alreadyFiled: false, evidence: null });
+  });
+
+  it('prefers the explicitly linked deliverable over a name-matched one that sorts first', async () => {
+    selectQueue.push([]); // not filed yet
+    selectQueue.push([
+      { id: 'deliverable-name-match', autoEvidenceReportId: null, name: 'Annual configuration audit' },
+      { id: DELIVERABLE, autoEvidenceReportId: REPORT, name: 'Quarterly review' },
+    ]);
+    selectQueue.push([{ id: OCCURRENCE }]);
+    selectQueue.push([]); // no evidence row yet
+    const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
+    expect(result.evidence).toEqual({ deliverableId: DELIVERABLE, occurrenceId: OCCURRENCE });
   });
 
   it('attaches the document as evidence on the open occurrence of a linked deliverable', async () => {
     selectQueue.push([]); // no existing document
     selectQueue.push([{ id: DELIVERABLE, autoEvidenceReportId: REPORT, name: 'Quarterly configuration audit' }]);
     selectQueue.push([{ id: OCCURRENCE }]); // open occurrence
+    selectQueue.push([]); // no evidence row yet
     const result = await fileFleetDesignDocument({ orgId: ORG, reportRunId: RUN, actor });
     expect(addEvidenceMock).toHaveBeenCalledWith(ORG, OCCURRENCE, { kind: 'document', documentId: 'doc-1' }, actor);
     expect(result.evidence).toEqual({ deliverableId: DELIVERABLE, occurrenceId: OCCURRENCE });

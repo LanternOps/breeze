@@ -812,6 +812,66 @@ describe('finalizeFleetDesign (finish-time persistence)', () => {
       .toEqual({ reportId: REPORT_ID, reportRunId: REPORT_RUN_ID });
   });
 
+  it('passes the SERVER-COMPUTED drift to persistFleetDesignReport when the org has an applied design (W05)', async () => {
+    // The approved design + live state the evidence loader would have found.
+    // Only the WIRING is under test here — `computeDrift` itself is not
+    // mocked, so a swapped argument order or a dropped `drift` field fails.
+    const approvedDesign = {
+      reportRunId: 'prior-run',
+      appliedAt: '2026-09-01T10:00:00.000Z',
+      functions: [{
+        functionKey: 'file_server', label: 'File servers', groupId: 'g1', policyId: 'p1',
+        deviceIds: [D1],
+        watches: [{ watchType: 'service', name: 'Spooler', enabled: true }],
+        rules: [],
+      }],
+      retired: [],
+    };
+    const driftLive = {
+      policies: [{
+        id: 'p1', name: 'Fleet Design — File servers', status: 'active', ownerScope: 'organization' as const,
+        createdAt: '2026-09-01T09:00:00.000Z',
+        watches: [{ watchType: 'service', name: 'Spooler', enabled: false }],
+        rules: [],
+      }],
+      assignments: [{ policyId: 'p1', level: 'device_group', targetId: 'g1', priority: 50, roleFilter: null }],
+      groupMembers: { g1: [D1] },
+    };
+    const evidenceWithDrift = assembleDesignEvidence(designRaw({ approvedDesign, driftLive } as never));
+    loadDesignEvidence.mockImplementation(async () => evidenceWithDrift);
+
+    seedRows();
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+      assistantText: 'Design complete.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(persistFleetDesignReport).toHaveBeenCalledTimes(1);
+    const { drift } = persistFleetDesignReport.mock.calls[0]![0] as { drift: { approvedReportRunId: string; changed: unknown[]; missing: unknown[]; extra: unknown[] } | null };
+    expect(drift).not.toBeNull();
+    expect(drift!.approvedReportRunId).toBe('prior-run');
+    expect(drift!.changed).toEqual([
+      { functionKey: 'file_server', kind: 'watch', name: 'Spooler', field: 'enabled', approved: 'true', live: 'false' },
+    ]);
+    expect(drift!.missing).toEqual([]);
+    expect(drift!.extra).toEqual([]);
+  });
+
+  it('passes drift = null when the org has no applied design', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+      assistantText: 'Design complete.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    const { drift } = persistFleetDesignReport.mock.calls[0]![0] as { drift: unknown };
+    expect(drift).toBeNull();
+  });
+
   it('reports design_missing when the run reached a normal finish with no submission', async () => {
     seedRows();
     scriptQuery({ assistantText: 'I could not design anything useful.' });

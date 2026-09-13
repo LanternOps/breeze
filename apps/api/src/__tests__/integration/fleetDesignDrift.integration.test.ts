@@ -285,6 +285,25 @@ async function disableWatchByHand(policyId: string, watchName: string): Promise<
   `));
 }
 
+/** Inserts a watch or rule row directly onto the policy's own feature link,
+ *  mimicking a technician adding one by hand after the design was applied. */
+async function addItemByHand(policyId: string, kind: 'watch' | 'rule', name: string): Promise<void> {
+  await withSystemDbAccessContext(() => (kind === 'watch'
+    ? db.execute(sql`
+        INSERT INTO config_policy_monitoring_watches (settings_id, watch_type, name, enabled)
+        SELECT ms.id, 'service', ${name}, true
+        FROM config_policy_monitoring_settings ms
+        JOIN config_policy_feature_links fl ON fl.id = ms.feature_link_id
+        WHERE fl.config_policy_id = ${policyId}::uuid AND fl.feature_type = 'monitoring'
+      `)
+    : db.execute(sql`
+        INSERT INTO config_policy_alert_rules (feature_link_id, name, severity, conditions, cooldown_minutes)
+        SELECT fl.id, ${name}, 'low', '[]'::jsonb, 5
+        FROM config_policy_feature_links fl
+        WHERE fl.config_policy_id = ${policyId}::uuid AND fl.feature_type = 'alert_rule'
+      `)));
+}
+
 async function countFleetDesignLedger(orgId: string): Promise<number> {
   return (await getTestDb().select({ id: fleetDesignAppliedItems.id }).from(fleetDesignAppliedItems).where(eq(fleetDesignAppliedItems.orgId, orgId))).length;
 }
@@ -357,6 +376,59 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
     expect(driftAfterRemoval.changed).toEqual([
       { functionKey: 'file_server', kind: 'watch', name: 'Spooler', field: 'enabled', approved: 'true', live: 'false' },
     ]);
+  });
+
+  runDb('2b. a watch and a rule added by hand to the design\'s own policy surface as extra through the real JOINs', async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildDriftOutcome(f.deviceIds));
+    const applied = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, driftApproval()));
+    expect(applied.partial).toBeNull();
+
+    const ledger = await readLedger(runId);
+    const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
+
+    await addItemByHand(policyId, 'watch', 'HandAddedWatch');
+    await addItemByHand(policyId, 'rule', 'Hand-added rule');
+
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.envA.orgId, {}));
+    const drift = computeDrift(evidence.approvedDesign!, evidence.driftLive!);
+
+    // Both arrive through loadDriftLiveState's own watch/rule JOINs — the
+    // part of the loader the fixture-driven unit tests cannot exercise.
+    expect(drift.extra.map((e) => `${e.kind}:${e.name}`).sort()).toEqual(['rule:Hand-added rule', 'watch:HandAddedWatch']);
+    // Both devices are still in the function group, so the count is real.
+    expect(drift.extra.every((e) => e.deviceCount === 2)).toBe(true);
+    expect(drift.missing).toEqual([]);
+    expect(drift.changed).toEqual([]);
+  });
+
+  runDb("2c. a design-owned policy promoted to partner-wide is still found — its items are not reported missing", async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildDriftOutcome(f.deviceIds));
+    const applied = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, driftApproval()));
+    expect(applied.partial).toBeNull();
+
+    const approved = await withSystemDbAccessContext(() => loadApprovedDesign(f.envA.orgId));
+    const policyId = approved!.functions[0]!.policyId!;
+
+    // A technician promotes the design's policy to partner-wide: org_id NULL,
+    // partner_id set (the org-XOR-partner CHECK). The pinned-id branch of
+    // loadDriftLiveState exists exactly for this.
+    // The ownership guard (`breeze_config_policy_parent_guard`) only admits
+    // this in system context — the same context a real promotion runs in.
+    await withSystemDbAccessContext(() => db.execute(sql`
+      UPDATE configuration_policies SET org_id = NULL, partner_id = ${f.envA.partnerId}::uuid WHERE id = ${policyId}::uuid
+    `));
+
+    const live = await withSystemDbAccessContext(() => loadDriftLiveState(f.envA.orgId, approved!));
+    expect(live.policies.some((p) => p.id === policyId && p.ownerScope === 'partner')).toBe(true);
+
+    const drift = computeDrift(approved!, live);
+    // The watches and rules still exist on the (now partner-wide) policy, so
+    // nothing is "missing"; and a partner-wide policy is never "extra".
+    expect(drift.missing).toEqual([]);
+    expect(drift.extra).toEqual([]);
+    expect(drift.changed).toEqual([]);
   });
 
   runDb('3. a rolled-back design is not the approved design', async () => {
@@ -540,9 +612,19 @@ describe('Fleet Design → org documents hand-off against live Postgres (W05, #5
     const second = await withSystemDbAccessContext(() => fileFleetDesignDocument({
       orgId, reportRunId: runId, actor: { userId: null, partnerId: f.envA.partnerId, accessibleOrgIds: null },
     }));
-    expect(second).toEqual({ documentId: first.documentId, alreadyFiled: true, evidence: null });
+    // No twin document, and no twin evidence row: the re-file re-checks the
+    // linkage (so a failure between the two writes is recoverable) but the
+    // document is already evidence on that occurrence, so nothing is added.
+    expect(second).toEqual({
+      documentId: first.documentId,
+      alreadyFiled: true,
+      evidence: { deliverableId: deliverable!.id, occurrenceId: occurrence!.id },
+    });
     const docs = await getTestDb().select({ id: orgDocuments.id }).from(orgDocuments).where(eq(orgDocuments.orgId, orgId));
     expect(docs).toHaveLength(1);
+    const evidenceAfter = await getTestDb().select({ id: serviceDeliverableEvidence.id }).from(serviceDeliverableEvidence)
+      .where(eq(serviceDeliverableEvidence.occurrenceId, occurrence!.id));
+    expect(evidenceAfter).toHaveLength(1);
   });
 
   runDb("refuses another org's report run (404) and files nothing", async () => {
