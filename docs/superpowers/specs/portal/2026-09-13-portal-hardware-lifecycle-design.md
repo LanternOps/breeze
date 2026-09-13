@@ -215,7 +215,7 @@ some MSPs are already relying on `enableReports` alone gating it.
 **Schema.** `portal_branding.enable_lifecycle boolean NOT NULL DEFAULT false`,
 same fail-closed shape as the seven existing visibility columns. New
 idempotent migration
-`apps/api/migrations/2026-10-16-170900-portal-lifecycle-flag.sql`:
+`apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql`:
 
 ```sql
 ALTER TABLE portal_branding
@@ -224,10 +224,7 @@ ALTER TABLE portal_branding
 
 Named to sort after `2026-10-16-170800-fleet-design-apply.sql`, the newest
 migration committed to this worktree's `apps/api/migrations/` as of this
-revision (`ls apps/api/migrations | sort | tail -1`); `170900` is the next
-free time slot on that same date, so `localeCompare` orders it last without
-touching the `-a-`/`-b-` same-day infix (no dependency on another same-day
-migration) and without landing inside the closed `2026-08-06` block. Re-verify
+revision (open PRs already claim `2026-10-16-180000` through `180200` (#5701 and #5710), so the slot must sort after them; re-check `gh pr list --json files` for `2026-10-16-18` before the W01 commit and bump if another PR has landed a later one. Re-verify
 against `origin/main` before pushing, per CLAUDE.md's pre-push naming guard.
 
 **Export-policy classification.** `enable_lifecycle` is a new column on
@@ -582,7 +579,7 @@ list endpoint would duplicate `listPortalRuns` filtered to one type.
 Three waves, each independently shippable once #5701 is on `main`.
 
 - **W01, flag, API, and data path.**
-  - Migration `apps/api/migrations/2026-10-16-170900-portal-lifecycle-flag.sql`
+  - Migration `apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql`
     (§4).
   - Flag wiring (§4, the `enableDocuments`-pattern sweep): `db/schema/portal.ts`
     (`enableLifecycle` column); `services/portal/portalFlags.ts`
