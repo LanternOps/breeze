@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { M365ReadAction, ReadActionFailureCode } from '@breeze/shared/m365';
+import type { M365ReadAction, ReadActionFailureCode, ReadActionResult } from '@breeze/shared/m365';
 import {
   isM365SyncActionId,
   type M365SyncActionResult,
@@ -312,12 +312,16 @@ export async function callGraphReadExecutor(
     return { ok: true, kind: 'sync', result, executorMs };
   }
 
-  if (executorResult.kind === 'collection') {
-    record?.(request, { ...auditBase, outcome: 'ok', itemCount: executorResult.items.length, truncated: executorResult.truncated });
-    return { ok: true, kind: 'collection', items: executorResult.items, truncated: executorResult.truncated };
+  // Sync branch above always returns, so the remaining outcome is one of the
+  // two non-sync executor success shapes (the `success: false` member was
+  // already excluded by the `!executorResult.success` check above).
+  const readResult = executorResult as Extract<ReadActionResult, { success: true }>;
+  if (readResult.kind === 'collection') {
+    record?.(request, { ...auditBase, outcome: 'ok', itemCount: readResult.items.length, truncated: readResult.truncated });
+    return { ok: true, kind: 'collection', items: readResult.items, truncated: readResult.truncated };
   }
   record?.(request, { ...auditBase, outcome: 'ok', itemCount: 1, truncated: false });
-  return { ok: true, kind: 'resource', resource: executorResult.resource };
+  return { ok: true, kind: 'resource', resource: readResult.resource };
 }
 
 /**

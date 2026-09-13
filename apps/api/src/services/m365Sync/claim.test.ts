@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { claimAndEnqueue, claimDueDomains, syncJobId } from './claim';
+import type { M365SyncJobData } from './types';
 
 describe('syncJobId', () => {
   const D = { orgId: '11111111-1111-4111-8111-111111111111', domain: 'users' as const, generation: 7 };
@@ -27,7 +28,7 @@ describe('syncJobId', () => {
 
 const { dbMocks, queueMocks } = vi.hoisted(() => ({
   dbMocks: { execute: vi.fn(), systemDepth: 0 },
-  queueMocks: { enqueue: vi.fn(async () => 'job-1') },
+  queueMocks: { enqueue: vi.fn(async (_data: M365SyncJobData) => 'job-1') },
 }));
 
 vi.mock('../../db', () => ({

@@ -117,9 +117,11 @@ export async function persistCaPolicies(
   };
   for (const item of items) {
     switch ((item.state ?? '').trim()) {
-      case 'enabled': counts.ca_policies_enabled += 1; break;
-      case 'enabledForReportingButNotEnforced': counts.ca_policies_report_only += 1; break;
-      case 'disabled': counts.ca_policies_disabled += 1; break;
+      case 'enabled': counts.ca_policies_enabled = (counts.ca_policies_enabled ?? 0) + 1; break;
+      case 'enabledForReportingButNotEnforced':
+        counts.ca_policies_report_only = (counts.ca_policies_report_only ?? 0) + 1;
+        break;
+      case 'disabled': counts.ca_policies_disabled = (counts.ca_policies_disabled ?? 0) + 1; break;
       default: break;   // an unrecognised state lands in NO bucket, never guessed into one
     }
   }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { M365SyncJobData } from './types';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
@@ -11,7 +12,8 @@ const { mocks } = vi.hoisted(() => ({
       intervalSeconds: st.intervalSeconds,
       nextSyncAt: new Date(sig.now.getTime() + st.intervalSeconds * 1000),
     })),
-    claim: vi.fn(async () => []), enqueue: vi.fn(async () => 'job-1'),
+    claim: vi.fn(async (): Promise<M365SyncJobData[]> => []),
+    enqueue: vi.fn(async (_data: M365SyncJobData) => 'job-1'),
     executorDepth: -1, depth: 0,
   },
 }));

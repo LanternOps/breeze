@@ -153,7 +153,10 @@ export async function persistIntuneDevices(
     devices_in_grace: 0,
     devices_unknown: 0,
   };
-  for (const item of items) counts[complianceBucket(item.complianceState)] += 1;
+  for (const item of items) {
+    const bucket = complianceBucket(item.complianceState);
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
+  }
 
   return { inserted: plan.inserted, updated: plan.updated, unchanged: plan.unchanged, stale, complete, counts };
 }

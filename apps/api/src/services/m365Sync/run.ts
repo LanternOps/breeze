@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
+import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS, type M365SyncDomain } from '@breeze/shared/m365';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
 import {
@@ -35,6 +36,20 @@ const DOMAIN_ENTITY_TABLE = {
   ca_policies: m365CaPolicies,
   skus: m365LicenseSkus,
 } as const satisfies Partial<Record<M365SyncDomain, unknown>>;
+
+/**
+ * The columns `loadSyncRunContext` reads off of whichever domain entity table
+ * applies — every `DOMAIN_ENTITY_TABLE` member has this shape, but they are
+ * otherwise structurally distinct `pgTable`s, so a single lookup expression
+ * spanning all four needs one common, honestly-typed view rather than
+ * `as { col: never }` casts that TS2352 rejects (never widens back to itself).
+ */
+type EntityTableLike = {
+  graphId: PgColumn;
+  coreHash: PgColumn;
+  isStale: PgColumn;
+  orgId: PgColumn;
+};
 
 export type FenceReason =
   | 'state_missing' | 'generation_mismatch' | 'connection_not_executable'
@@ -144,11 +159,12 @@ export async function loadSyncRunContext(
     const table = DOMAIN_ENTITY_TABLE[data.domain as keyof typeof DOMAIN_ENTITY_TABLE];
     const existing = new Map<string, { coreHash: string; isStale: boolean }>();
     if (table) {
+      const entityTable = table as unknown as EntityTableLike;
       const entityRows = await db.select({
-        graphId: (table as { graphId: never }).graphId,
-        coreHash: (table as { coreHash: never }).coreHash,
-        isStale: (table as { isStale: never }).isStale,
-      }).from(table as never).where(eq((table as { orgId: never }).orgId, data.orgId as never));
+        graphId: entityTable.graphId,
+        coreHash: entityTable.coreHash,
+        isStale: entityTable.isStale,
+      }).from(table as unknown as PgTable).where(eq(entityTable.orgId, data.orgId));
       for (const entity of entityRows as Array<{ graphId: string; coreHash: string | null; isStale: boolean }>) {
         existing.set(entity.graphId, { coreHash: entity.coreHash ?? '', isStale: Boolean(entity.isStale) });
       }

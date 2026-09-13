@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { M365SyncJobData } from '../services/m365Sync/types';
 
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     counts: vi.fn(), add: vi.fn(async () => ({ id: 'j' })), getRepeatables: vi.fn(async () => [] as unknown[]),
     removeRepeatable: vi.fn(async () => undefined),
-    reconcile: vi.fn(async () => 0), claim: vi.fn(async () => []), countDue: vi.fn(async () => 0),
-    enqueue: vi.fn(async () => 'job-1'), run: vi.fn(async () => 'success'),
+    reconcile: vi.fn(async () => 0),
+    claim: vi.fn(async (): Promise<M365SyncJobData[]> => []),
+    countDue: vi.fn(async () => 0),
+    enqueue: vi.fn(async (_data: M365SyncJobData) => 'job-1'), run: vi.fn(async () => 'success'),
     metricDepth: vi.fn(), metricUtil: vi.fn(), metricSkipped: vi.fn(), metricBacklog: vi.fn(),
     order: [] as string[],
   },
