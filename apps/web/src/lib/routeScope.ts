@@ -102,6 +102,13 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // P2-6 (#4193): fleet value accounting — honours the org switcher (single
   // org) and aggregates across accessible orgs in All-organizations view.
   { pattern: /^\/ai-agents\/impact$/, kind: 'org-or-all' },
+  // Fleet Designer W03 (#5653): a Fleet Design belongs to exactly one org —
+  // there is no fleet-wide aggregation of "what to watch on this device".
+  // The page carries its own org picker (independent of the global switcher,
+  // since starting a design run always needs one concrete orgId even in
+  // All-organizations view) — org-required is the closest existing kind to
+  // "meaningless without one org", same posture as discovery/monitoring.
+  { pattern: /^\/ai-agents\/fleet-design$/, kind: 'org-required' },
   // Operator task detail (#5205 W07): a task belongs to one org, resolved by
   // the API from the task id, so the page works under any org context.
   { pattern: /^\/operator\/tasks\/[^/]+$/, kind: 'org-or-all' },

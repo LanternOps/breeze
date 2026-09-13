@@ -160,7 +160,8 @@
     "ticketsNew": "Bilet Oluştur",
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
-    "workspace": "Yapay Zeka Asistanı"
+    "workspace": "Yapay Zeka Asistanı",
+    "aiAgentsFleetDesign": "Filo Tasarımı"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

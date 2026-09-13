@@ -300,7 +300,7 @@ describe('discovered_assets classifier precedence (#3187)', () => {
            set device_role = (select asset_type from discovered_assets where id = ${assetId}),
                device_role_source = 'discovery'
          where id = ${deviceId}
-           and device_role_source is distinct from 'manual'
+           and coalesce(device_role_source, 'auto') not in ('manual', 'ai')
            and exists (
              select 1 from discovered_assets
               where id = ${assetId}
@@ -351,6 +351,12 @@ describe('discovered_assets classifier precedence (#3187)', () => {
     const pinnedDevice = await makeDevice({ deviceRole: 'server', deviceRoleSource: 'manual' });
     await propagate(okAsset.id, pinnedDevice.id);
     expect(await roleOf(pinnedDevice.id)).toBe('server');
+
+    // 2b. A role a technician approved from a Fleet Design ('ai', W03 #5653)
+    //     is never overwritten by a discovery guess either.
+    const aiDevice = await makeDevice({ deviceRole: 'server', deviceRoleSource: 'ai' });
+    await propagate(okAsset.id, aiDevice.id);
+    expect(await roleOf(aiDevice.id)).toBe('server');
 
     // 3. A manually-typed ASSET does not push its type onto the device either.
     const manualAsset = await seedAsset(org.id, site.id, {

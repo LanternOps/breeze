@@ -767,6 +767,7 @@ async function decomposeInlineSettings(
             escalationPolicyId: item.escalationPolicyId ?? null,
             notificationChannelIds: item.notificationChannelIds ?? null,
             sortOrder: item.sortOrder ?? idx,
+            rationale: item.rationale ?? null,
           }))
         );
       }
@@ -926,6 +927,7 @@ async function decomposeInlineSettings(
             maxRestartAttempts: w.maxRestartAttempts,
             restartCooldownSeconds: w.restartCooldownSeconds,
             sortOrder: idx,
+            rationale: w.rationale ?? null,
           }))
         );
       }
@@ -1275,6 +1277,7 @@ async function assembleInlineSettings(
           escalationPolicyId: r.escalationPolicyId,
           notificationChannelIds: r.notificationChannelIds,
           sortOrder: r.sortOrder,
+          rationale: r.rationale,
         })),
       };
     }
@@ -1442,6 +1445,7 @@ async function assembleInlineSettings(
           autoRestart: w.autoRestart,
           maxRestartAttempts: w.maxRestartAttempts,
           restartCooldownSeconds: w.restartCooldownSeconds,
+          rationale: w.rationale,
         })),
       };
     }

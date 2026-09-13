@@ -1193,6 +1193,15 @@
         "hpCmslAcceptedByOn": "Akzeptiert von {{user}} am {{date}}",
         "hpCmslTermsChangedSaveAgain": "HP hat seine Lizenzbedingungen seit dieser Zustimmung geändert. Speichern Sie erneut, um erneut zuzustimmen.",
         "hpCmslInheritanceReplacesTheWholeLink": "Diese Richtlinie ersetzt die geerbten Garantieeinstellungen vollständig, ohne feldweise Zusammenführung. Wird sie mit deaktivierter Erfassung gespeichert, endet die HP-Garantieerfassung auf jedem Gerät, das diese Richtlinie erreicht."
+      },
+      "rationale": {
+        "label": "Begründung",
+        "edit": "Begründung bearbeiten",
+        "placeholder": "Warum dieses Element existiert …",
+        "save": "Speichern",
+        "cancel": "Abbrechen",
+        "none": "Keine Begründung hinterlegt."
+
       }
     }
   },

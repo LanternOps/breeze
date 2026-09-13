@@ -1193,6 +1193,15 @@
         "hpCmslAcceptedByOn": "Accepté par {{user}} le {{date}}",
         "hpCmslTermsChangedSaveAgain": "HP a modifié ses conditions de licence depuis cette acceptation. Enregistrez de nouveau pour accepter à nouveau.",
         "hpCmslInheritanceReplacesTheWholeLink": "Cette stratégie remplace entièrement les paramètres de garantie hérités, sans fusion champ par champ. L'enregistrer avec la collecte sur l'appareil désactivée arrête la collecte de garantie HP sur tous les appareils qu'elle atteint."
+      },
+      "rationale": {
+        "label": "Justification",
+        "edit": "Modifier la justification",
+        "placeholder": "Pourquoi cet élément existe…",
+        "save": "Enregistrer",
+        "cancel": "Annuler",
+        "none": "Aucune justification enregistrée."
+
       }
     }
   },

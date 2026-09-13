@@ -16,6 +16,7 @@ export * from './devices';
 export * from './deviceExternalLinks';
 export * from './deviceCustomFieldValues';
 export * from './deviceFunctionAssessments';
+export * from './fleetDesignAppliedItems';
 export * from './scripts';
 export * from './scriptProposals';
 export * from './alerts';

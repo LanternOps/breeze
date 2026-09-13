@@ -1125,7 +1125,10 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
                 })
                 .where(and(
                   eq(devices.id, match.deviceId),
-                  sql`${devices.deviceRoleSource} is distinct from 'manual'`,
+                  // Neither a technician's ('manual') nor a Fleet Design
+                  // correction the technician approved ('ai', W03 #5653) is
+                  // overwritten by a discovery guess.
+                  sql`coalesce(${devices.deviceRoleSource}, 'auto') not in ('manual', 'ai')`,
                   sql`exists (select 1 from ${discoveredAssets} where ${discoveredAssets.id} = ${upsertedAssetId} and ${discoveredAssets.typeSource} <> 'manual' and ${discoveredAssets.assetType} <> 'unknown')`,
                 ));
             }

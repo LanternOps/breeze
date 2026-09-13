@@ -978,3 +978,80 @@ describe('AlertRuleTab — featurePolicyId payload (#5080)', () => {
     expect(payload.featurePolicyId).toBeNull();
   });
 });
+
+// Fleet Designer W03 (#5653): a Fleet Design writes `rationale` on each alert
+// rule it creates. The tab must display it read-only, offer an edit
+// affordance, and round-trip an edited value through the save payload.
+describe('AlertRuleTab rationale (#5653)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    saveMock.mockResolvedValue({
+      id: 'link-1',
+      featureType: 'alert_rule',
+      featurePolicyId: null,
+      inlineSettings: {},
+    });
+  });
+
+  function renderWithRationale() {
+    return render(
+      <AlertRuleTab
+        policyId="policy-1"
+        existingLink={{
+          id: 'link-1',
+          featureType: 'alert_rule',
+          featurePolicyId: null,
+          inlineSettings: {
+            items: [
+              {
+                name: 'Sustained CPU',
+                severity: 'high',
+                conditions: [{ type: 'metric', metric: 'cpu', operator: 'gt', value: 90 }],
+                cooldownMinutes: 15,
+                autoResolve: false,
+                rationale: 'CPU pressure precedes an outage on this device function.',
+              },
+            ],
+          },
+        }}
+        linkedPolicyId={null}
+        onLinkChanged={vi.fn()}
+      />,
+    );
+  }
+
+  it('displays the rationale read-only when the rule is expanded', () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('Sustained CPU'));
+
+    expect(screen.getByTestId('alert-rule-rationale-0').textContent).toContain(
+      'CPU pressure precedes an outage on this device function.',
+    );
+  });
+
+  it('says so when a rule carries no rationale', () => {
+    render(
+      <AlertRuleTab policyId="policy-1" existingLink={undefined} linkedPolicyId={null} onLinkChanged={vi.fn()} />,
+    );
+    addFirstRule();
+
+    expect(screen.getByTestId('alert-rule-rationale-0').textContent).toContain('No rationale recorded.');
+  });
+
+  it('edits the rationale and carries it through the save payload', async () => {
+    renderWithRationale();
+    fireEvent.click(screen.getByText('Sustained CPU'));
+
+    fireEvent.click(screen.getByTestId('alert-rule-rationale-0-edit'));
+    fireEvent.change(screen.getByTestId('alert-rule-rationale-0-textarea'), {
+      target: { value: 'Updated by the technician.' },
+    });
+    fireEvent.click(screen.getByTestId('alert-rule-rationale-0-save'));
+
+    expect(screen.getByTestId('alert-rule-rationale-0').textContent).toContain('Updated by the technician.');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(saveMock).toHaveBeenCalled());
+    expect(lastSavedItems()[0]!.rationale).toBe('Updated by the technician.');
+  });
+});

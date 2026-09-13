@@ -37,12 +37,17 @@ import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
-import { triggerFleetDesignRunSchema, type FleetDesignReportSummary } from '@breeze/shared';
+import { fleetDesignApprovalSchema, triggerFleetDesignRunSchema, type FleetDesignReportSummary } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { reportRuns, reports, sites } from '../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
+import { applyFleetDesign } from '../services/fleetDesign/apply';
+import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
+import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
+import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
@@ -63,6 +68,30 @@ function uuidParam(c: Context, name: string): string | null {
 const scopes = requireScope('organization', 'partner', 'system');
 const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action);
 const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
+// Apply writes configuration policies and device groups — both gated on
+// devices:write everywhere else (routes/configurationPolicies/crud.ts,
+// routes/groups.ts). Scripts (W04) will add scripts:write.
+const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+
+/**
+ * Apply and rollback touch every device a function names, so they need an
+ * org-unrestricted site authority: a site-restricted caller
+ * (`permissions.allowedSiteIds` set) is refused before any service call —
+ * the same read the groups route makes at routes/groups.ts:447.
+ */
+function siteRestricted(c: Context): boolean {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  return Array.isArray(perms?.allowedSiteIds);
+}
+
+function mapApplyError(c: Context, err: unknown) {
+  if (err instanceof FleetDesignApplyError) {
+    if (err.code === 'not_found' || err.code === 'no_outcome') return c.json({ error: 'not_found' }, 404);
+    if (err.code === 'blocked') return c.json({ error: 'blocked', ...(err.payload ?? {}) }, 409);
+  }
+  if (err instanceof PartnerWideWriteDeniedError) return c.json({ error: err.message }, 403);
+  throw err;
+}
 
 /**
  * Counts sections out of a stored `FleetDesignReportSummary` for the list/
@@ -210,4 +239,98 @@ fleetDesignRoutes.get('/:reportRunId', scopes, requireAiRead, async (c) => {
     markdown: row.summary?.fleetDesign?.outcome?.markdown ?? '',
     downloadPath: `/api/reports/runs/${row.reportRunId}/download`,
   });
+});
+
+// ---------------------------------------------------------------------------
+// W03: apply preview, apply, rollback, ledger
+// ---------------------------------------------------------------------------
+
+fleetDesignRoutes.post(
+  '/:reportRunId/apply/preview',
+  scopes,
+  requireDevicesWrite,
+  requireMfa(),
+  zValidator('json', fleetDesignApprovalSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const reportRunId = uuidParam(c, 'reportRunId');
+    if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+    if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
+    try {
+      const preview = await previewFleetDesignApply(auth, reportRunId, c.req.valid('json'));
+      return c.json(preview);
+    } catch (err) {
+      return mapApplyError(c, err);
+    }
+  },
+);
+
+fleetDesignRoutes.post(
+  '/:reportRunId/apply',
+  scopes,
+  requireDevicesWrite,
+  requireMfa(),
+  zValidator('json', fleetDesignApprovalSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const reportRunId = uuidParam(c, 'reportRunId');
+    if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+    if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
+    const approval = c.req.valid('json');
+    try {
+      const result = await applyFleetDesign(auth, reportRunId, approval, c);
+      writeRouteAudit(c, {
+        orgId: auth.orgId ?? null,
+        action: 'fleet_design.apply',
+        resourceType: 'report_run',
+        resourceId: reportRunId,
+        details: { reportRunId, applied: result.applied.length, skipped: result.skipped.length, partial: result.partial },
+        result: result.partial ? 'failure' : 'success',
+      });
+      return c.json(result);
+    } catch (err) {
+      if (err instanceof FleetDesignApplyError && err.code === 'blocked') {
+        writeRouteAudit(c, {
+          orgId: auth.orgId ?? null,
+          action: 'fleet_design.apply',
+          resourceType: 'report_run',
+          resourceId: reportRunId,
+          details: { reportRunId, applied: 0, blocked: true },
+          result: 'failure',
+        });
+      }
+      return mapApplyError(c, err);
+    }
+  },
+);
+
+fleetDesignRoutes.post('/:reportRunId/rollback', scopes, requireDevicesWrite, requireMfa(), async (c) => {
+  const auth = c.get('auth');
+  const reportRunId = uuidParam(c, 'reportRunId');
+  if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+  if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
+  try {
+    const result = await rollbackFleetDesign(auth, reportRunId, c);
+    writeRouteAudit(c, {
+      orgId: auth.orgId ?? null,
+      action: 'fleet_design.rollback',
+      resourceType: 'report_run',
+      resourceId: reportRunId,
+      details: { reportRunId, rolledBack: result.rolledBack.length, refused: result.refused.length },
+      result: result.refused.length === 0 ? 'success' : 'failure',
+    });
+    return c.json(result);
+  } catch (err) {
+    return mapApplyError(c, err);
+  }
+});
+
+fleetDesignRoutes.get('/:reportRunId/applied', scopes, requireAiRead, async (c) => {
+  const auth = c.get('auth');
+  const reportRunId = uuidParam(c, 'reportRunId');
+  if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+  const row = await loadFleetDesignReport(reportRunId, (col) => auth.orgCondition(col));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  const rows = await loadLedger(reportRunId, row.orgId);
+  return c.json({ items: rows.map(toLedgerItem) });
 });

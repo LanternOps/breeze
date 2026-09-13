@@ -160,7 +160,8 @@
     "ticketsNew": "Crea ticket",
     "timesheet": "Foglio ore",
     "vulnerabilities": "Vulnerabilità",
-    "workspace": "Assistente IA"
+    "workspace": "Assistente IA",
+    "aiAgentsFleetDesign": "Progettazione flotta"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",

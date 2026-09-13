@@ -672,6 +672,11 @@ const REPOINT_TABLES: readonly string[] = [
   // row re-stamps the assessment; the merge repoint is then an idempotent
   // no-op on the same value.
   "device_function_assessments",
+  // fleet_design_applied_items (Fleet Designer W03, #5653): plain repoint —
+  // UNIQUE (report_run_id, item_ref) cannot collide across orgs because
+  // report_run_id is unique; created_refs/before_image hold ids of rows that
+  // are themselves repointed (groups, policies, assessments, devices).
+  "fleet_design_applied_items",
   "device_filesystem_cleanup_runs",
   "device_filesystem_scan_state",
   "device_filesystem_snapshots",

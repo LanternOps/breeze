@@ -1,0 +1,93 @@
+{
+  "page": {
+    "title": "Progettazione flotta",
+    "description": "Una progettazione redatta dall'IA per la flotta di questa organizzazione: a cosa serve ogni dispositivo, cosa monitorare e cosa è cambiato.",
+    "orgLabel": "Organizzazione",
+    "selectOrgPlaceholder": "Nessuna organizzazione disponibile",
+    "siteLabel": "Sede (facoltativo)",
+    "allSites": "Tutte le sedi",
+    "startButton": "Avvia una progettazione flotta",
+    "startError": "Impossibile avviare l'esecuzione della progettazione flotta.",
+    "startSuccess": "Esecuzione della progettazione flotta avviata.",
+    "empty": "Nessuna progettazione flotta ancora per questa organizzazione.",
+    "loadError": "Impossibile caricare le progettazioni flotta.",
+    "detailLoadError": "Impossibile caricare questa progettazione flotta.",
+    "loadingDesign": "Caricamento progettazione…",
+    "downloadPdf": "Scarica PDF",
+    "downloadFailed": "Impossibile scaricare il PDF.",
+    "reviewApply": "Rivedi e applica",
+    "listColumns": {
+      "generated": "Generato",
+      "functions": "Funzioni",
+      "watches": "Monitoraggi",
+      "rules": "Regole",
+      "applied": "Applicato"
+    },
+    "startSkipped": {
+      "modeOff": "L'agente progettista è disattivato per questa organizzazione.",
+      "killSwitchOff": "Gli agenti IA sono al momento disattivati per l'intera piattaforma.",
+      "agentDisabled": "L'agente progettista è disabilitato per questa organizzazione.",
+      "noEffectiveAgent": "Nessun agente progettista è configurato per questa organizzazione.",
+      "orgBudgetExceeded": "Il budget IA di questa organizzazione è esaurito per questo periodo.",
+      "agentDailyBudgetExceeded": "Il budget giornaliero dell'agente progettista è esaurito.",
+      "maxConcurrentDesignRuns": "Un'esecuzione della progettazione flotta è già in corso per questa organizzazione.",
+      "designRate": "Questa organizzazione ha raggiunto il limite di esecuzioni di progettazione flotta per ora.",
+      "duplicate": "Un'esecuzione equivalente della progettazione flotta era già stata richiesta.",
+      "generic": "L'esecuzione non è stata avviata ({{reason}})."
+    }
+  },
+  "sections": {
+    "found": "Cosa è stato trovato",
+    "functions": "A cosa serve ogni dispositivo",
+    "monitoring": "Cosa monitorare, e perché",
+    "retired": "Cosa non viene mantenuto",
+    "automation": "Automazione",
+    "legacy": "Inventario script legacy",
+    "baseline": "Baseline e precursori",
+    "unsure": "Su cosa il progettista non è sicuro"
+  },
+  "items": {
+    "none": "Niente qui.",
+    "applied": "Applicato",
+    "findingCount": "{{title}} — {{count}} dispositivi",
+    "functionMeta": "{{count}} dispositivi · {{pct}}% di confidenza",
+    "roleCorrectionLabel": "{{from}} → {{to}}"
+  },
+  "drawer": {
+    "title": "Applica progettazione flotta",
+    "loadingPreview": "Verifica di cosa comporterà…",
+    "nothingSelected": "Seleziona almeno un elemento da applicare.",
+    "creates": "Crea",
+    "watchAndRuleCount": "{{watches}} monitoraggi, {{rules}} regole",
+    "retires": "Ritira",
+    "displaces": "Sostituisce",
+    "displacesCount": "{{count}} dispositivi",
+    "acceptDisplacement": "Accetta sostituzione",
+    "roleCorrections": "Correzioni di ruolo",
+    "billingWarning": "Le modifiche di ruolo possono incidere sulla fatturazione.",
+    "alreadyApplied": "Già applicato",
+    "blockers": "Blocchi",
+    "cancel": "Annulla",
+    "confirm": "Conferma",
+    "applyingCloseBlocked": "Applicazione in corso — attendere il termine dell'operazione.",
+    "rollingBackCloseBlocked": "Ripristino in corso — attendere il termine dell'operazione."
+  },
+  "result": {
+    "applied": "{{count}} elemento/i applicato/i.",
+    "skipped": "{{count}} elemento/i già applicato/i ignorato/i.",
+    "partial": "Applicato parzialmente — errore al passaggio {{step}}: {{reason}}",
+    "rollback": "Ripristina quanto applicato",
+    "rollbackDone": "{{count}} elemento/i ripristinato/i.",
+    "rollbackRefused": "Alcuni elementi non è stato possibile ripristinarli:",
+    "close": "Chiudi"
+  },
+  "errors": {
+    "genericPreview": "Anteprima di questa progettazione flotta non riuscita.",
+    "genericApply": "Impossibile applicare questa progettazione flotta.",
+    "genericRollback": "Impossibile ripristinare questa progettazione flotta.",
+    "blocked": "Questa progettazione non può ancora essere applicata — risolvi i blocchi e riprova.",
+    "site_restricted": "Gli account limitati a una sede non possono applicare né ripristinare una progettazione flotta.",
+    "no_designer_agent": "Nessun agente progettista è configurato per questa organizzazione.",
+    "not_found": "Questa progettazione flotta non è stata trovata."
+  }
+}
