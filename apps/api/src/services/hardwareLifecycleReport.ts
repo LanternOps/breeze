@@ -39,6 +39,7 @@ import {
   ageYears,
   buildHardwareLifecycleRecommendations,
   classifyOsSupport,
+  cleanUserName,
   classifyReplacement,
   countByOsSupport,
   countByReplacement,
@@ -65,6 +66,7 @@ type Subject = {
   kind: 'device' | 'manual_asset';
   name: string;
   hostname: string | null;
+  user: string | null;
   site: string | null;
   manufacturer: string | null;
   model: string | null;
@@ -95,6 +97,7 @@ function toDeviceRow(s: Subject, today: string, replaceAgeYears: number): Hardwa
     kind: s.kind,
     name: s.name,
     hostname: s.hostname,
+    user: s.user,
     site: s.site,
     manufacturer: s.manufacturer,
     model: s.model,
@@ -161,6 +164,7 @@ export async function generateHardwareLifecycleReport(
       id: devices.id,
       hostname: devices.hostname,
       displayName: devices.displayName,
+      lastUser: devices.lastUser,
       osType: devices.osType,
       osVersion: devices.osVersion,
       deviceRole: devices.deviceRole,
@@ -184,6 +188,7 @@ export async function generateHardwareLifecycleReport(
     kind: 'device' as const,
     name: d.displayName?.trim() || d.hostname,
     hostname: d.hostname,
+    user: cleanUserName(d.lastUser),
     site: d.siteName ?? null,
     manufacturer: d.manufacturer ?? null,
     model: d.model ?? null,
@@ -228,6 +233,7 @@ export async function generateHardwareLifecycleReport(
         kind: 'manual_asset',
         name: a.name,
         hostname: null,
+        user: null,
         site: a.siteName ?? null,
         manufacturer: a.manufacturer ?? null,
         model: a.model ?? null,

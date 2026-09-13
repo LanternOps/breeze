@@ -29,6 +29,9 @@ export type HardwareLifecycleDeviceRow = {
   /** What the customer calls it: display name, else hostname, else asset name. */
   name: string;
   hostname?: string | null;
+  /** Last signed-in person, cleaned of domain noise; null for servers,
+   *  manual assets and service accounts. The customer-facing identity. */
+  user?: string | null;
   site?: string | null;
   manufacturer?: string | null;
   model?: string | null;

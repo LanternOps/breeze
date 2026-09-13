@@ -1803,6 +1803,19 @@ function renderGenericReport(doc: jsPDF, rows: Record<string, unknown>[], opts: 
 export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
   const doc = new jsPDF({ orientation: 'landscape' });
   const records = rows as Record<string, unknown>[];
+  // Document metadata: the title a reader sees in their viewer tab and the
+  // language a screen reader announces. Cheap, and the only structure jsPDF
+  // can give an assistive reader.
+  const orgName = (opts.summary as { org?: { name?: string } } | undefined)?.org?.name?.trim();
+  if (typeof doc.setProperties === 'function') {
+    doc.setProperties({
+      title: orgName ? `${reportTypeLabel(opts.reportType)} — ${orgName}` : `${reportTypeLabel(opts.reportType)} report`,
+      subject: `${reportTypeLabel(opts.reportType)} report prepared ${opts.generatedAt}`,
+      author: opts.branding?.name?.trim() || 'Breeze',
+      creator: 'Breeze RMM',
+    });
+  }
+  if (typeof doc.setLanguage === 'function') doc.setLanguage('en-US');
 
   // SAFE guard is intentionally asymmetric: a summary carrying an exec shape
   // ('devices' key) must not enter the posture cover, but we don't require any

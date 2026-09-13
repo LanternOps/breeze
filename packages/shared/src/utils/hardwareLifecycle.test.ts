@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   addYears,
   buildAtAGlanceProse,
+  cleanUserName,
+  rowLabel,
+  rowMention,
+  shortHostname,
   buildHardwareLifecycleRecommendations,
   classifyOsSupport,
   classifyReplacement,
@@ -175,7 +179,7 @@ describe('buildAtAGlanceProse', () => {
       row({ name: 's', replaceBy: '2028-01-01', replacement: 'supported' }),
       row({ name: 'u' }),
     ];
-    expect(buildAtAGlanceProse(rows, 2)).toBe('4 of your 8 computers are past due for replacement. 2 more computers come due within the year. 1 computer is missing purchase records, which we are confirming. We also manage 2 other devices (network and print hardware), listed at the end.');
+    expect(buildAtAGlanceProse(rows, 2)).toBe('4 of your 8 computers are past due for replacement. 2 more computers come due within the year. The other 1 is within its expected service life. 1 computer is missing purchase records, which we are confirming. We also manage 2 other devices (network and print hardware), listed at the end.');
   });
 });
 
@@ -214,6 +218,9 @@ describe('buildHardwareLifecycleRecommendations', () => {
 
   it('says so when nothing needs attention', () => {
     expect(buildHardwareLifecycleRecommendations([row({ name: 'x', replaceBy: '2029-01-01', replacement: 'supported' })], TODAY)).toEqual([
+      'Nothing needs your attention right now. The first computer to come due is x, around Q1 2029; we will flag it in the report before then.',
+    ]);
+    expect(buildHardwareLifecycleRecommendations([], TODAY)).toEqual([
       'Nothing needs your attention right now; we will flag the first computer to come due in a future report.',
     ]);
   });
@@ -222,6 +229,68 @@ describe('buildHardwareLifecycleRecommendations', () => {
     const rows = Array.from({ length: 8 }, (_, i) => row({ name: `pc${i}`, replaceBy: '2024-01-01', replacement: 'replace' }));
     expect(buildHardwareLifecycleRecommendations(rows, TODAY)[0]).toBe(
       'Plan replacements for the 8 computers marked Replace now this quarter.',
+    );
+  });
+});
+
+describe('customer-facing identity', () => {
+  it('cleanUserName strips domain prefixes and suffixes and drops service accounts', () => {
+    expect(cleanUserName('CORP\\priya.n')).toBe('priya.n');
+    expect(cleanUserName('priya@corp.local')).toBe('priya');
+    expect(cleanUserName('AzureAD\\Priya Natarajan')).toBe('Priya Natarajan');
+    expect(cleanUserName('  ')).toBeNull();
+    expect(cleanUserName(null)).toBeNull();
+    expect(cleanUserName('SYSTEM')).toBeNull();
+    expect(cleanUserName('NT AUTHORITY\\SYSTEM')).toBeNull();
+    expect(cleanUserName('root')).toBeNull();
+  });
+
+  it('shortHostname drops the domain suffix but keeps a plain name', () => {
+    expect(shortHostname('branch-lt-12.corp.local')).toBe('branch-lt-12');
+    expect(shortHostname('MacBook-Air.local')).toBe('MacBook-Air');
+    expect(shortHostname('SAM4')).toBe('SAM4');
+    expect(shortHostname('Reception PC (no agent)')).toBe('Reception PC (no agent)');
+  });
+
+  it('rowLabel leads with the person and model when a user is known', () => {
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', model: 'Latitude 7410' }))).toBe('priya.n — Latitude 7410');
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n' }))).toBe('priya.n');
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local' }))).toBe('branch-lt-12');
+    expect(rowLabel(row({ name: 'Front desk', hostname: 'fd-01.corp.local' }))).toBe('Front desk');
+  });
+
+  it('rowMention reads as a person would say it in a sentence', () => {
+    expect(rowMention(row({ name: 'x.corp.local', user: 'Priya', model: 'ThinkPad T14' }))).toBe("Priya's ThinkPad T14");
+    expect(rowMention(row({ name: 'x.corp.local', user: 'James', model: null }))).toBe("James's computer");
+    expect(rowMention(row({ name: 'srv-files-02.corp.local' }))).toBe('srv-files-02');
+  });
+
+  it('recommendations name people, chunk at four, and lead with the oldest', () => {
+    const rows = [
+      row({ name: 'a.corp.local', user: 'Priya', model: 'T14', replaceBy: '2023-04-01', replacement: 'replace', ageYears: 7.1 }),
+      row({ name: 'b.corp.local', replaceBy: '2025-01-01', replacement: 'replace', ageYears: 5.4 }),
+      row({ name: 'c.corp.local', replaceBy: '2025-07-01', replacement: 'replace', ageYears: 4.9 }),
+      row({ name: 'd.corp.local', replaceBy: '2025-07-01', replacement: 'replace', ageYears: 4.9 }),
+      row({ name: 'e.corp.local', replaceBy: '2025-08-01', replacement: 'replace', ageYears: 4.8 }),
+    ];
+    expect(buildHardwareLifecycleRecommendations(rows, TODAY)[0]).toBe(
+      "Plan replacements for the 5 computers marked Replace now this quarter, starting with Priya's T14 (7 years old).",
+    );
+    expect(buildHardwareLifecycleRecommendations(rows.slice(0, 2), TODAY)[0]).toBe(
+      "Plan replacements for Priya's T14 and b this quarter, starting with Priya's T14 (7 years old).",
+    );
+  });
+
+  it('at-a-glance frames the ask with what is fine and what is oldest', () => {
+    const rows = [
+      row({ name: 'a', replaceBy: '2021-04-01', replacement: 'replace', ageYears: 9.3, osSupport: 'ended' }),
+      row({ name: 'b', replaceBy: '2025-01-01', replacement: 'replace', ageYears: 5.4 }),
+      row({ name: 'c', replaceBy: '2026-12-01', replacement: 'due_soon', ageYears: 3.8 }),
+      row({ name: 'd', replaceBy: '2029-01-01', replacement: 'supported', ageYears: 1 }),
+      row({ name: 'e' }),
+    ];
+    expect(buildAtAGlanceProse(rows, 0)).toBe(
+      '2 of your 5 computers are past due for replacement; the oldest is 9 years old and 1 no longer receives security updates. 1 more computer comes due within the year. The other 1 is within its expected service life. 1 computer is missing purchase records, which we are confirming.',
     );
   });
 });

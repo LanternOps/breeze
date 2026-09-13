@@ -36,7 +36,7 @@ const summary: HardwareLifecycleSummary = {
   computers: { total: 3, byReplacement: { replace: 1, due_soon: 1, unknown: 1 }, byOsSupport: { supported: 1, ending: 1, ended: 1 } },
   otherEquipmentCount: 2,
   rows: [
-    row({ name: 'SAM4', manufacturer: 'Dell Inc.', model: 'OptiPlex 3050', serialNumber: '255P3W2', os: 'Windows 10 Pro', osSupport: 'ended', purchaseDate: '2019-04-01', purchaseDateSource: 'manual', warrantyEndDate: '2022-04-01', ageYears: 7.1, replaceBy: '2023-04-01', replacement: 'replace', lifeUsed: 1 }),
+    row({ name: 'SAM4', user: 'CORP\\sam.lee', manufacturer: 'Dell Inc.', model: 'OptiPlex 3050', serialNumber: '255P3W2', os: 'Windows 10 Pro', osSupport: 'ended', purchaseDate: '2019-04-01', purchaseDateSource: 'manual', warrantyEndDate: '2022-04-01', ageYears: 7.1, replaceBy: '2023-04-01', replacement: 'replace', lifeUsed: 1 }),
     row({ name: 'LAW-SRV', manufacturer: 'Dell Inc.', model: 'PowerEdge T340', os: 'Windows Server 2019', osSupport: 'ending', purchaseDate: '2021-10-01', purchaseDateSource: 'vendor', warrantyEndDate: '2026-11-30', ageYears: 4.7, replaceBy: '2026-11-30', replacement: 'due_soon', warrantyExtended: true, lifeUsed: 0.9 }),
     row({ name: 'MacBook-Air.local', manufacturer: 'Apple Inc.', os: 'macOS 26.3.1' }),
   ],
@@ -56,23 +56,37 @@ describe('hardware lifecycle PDF', () => {
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
     expect(text).toContain('Liggett & Goodman P.C.');
-    expect(text).toContain('1 of your 3 computers is past due for replacement.');
+    expect(text).toContain('1 of your 3 computers is past due for replacement; the oldest is 7 years old and 1 no longer receives security updates.');
     expect(text).toContain('1 more computer comes due within the year.');
-    expect(text).toContain('1 computer is missing purchase records');
+    expect(text).toContain('missing purchase records');
     expect(text).toContain('We also manage');
     // jsPDF escapes parentheses inside text operators.
-    expect(text).toContain('Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(SAM4\\).');
+    expect(text).toContain("Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(sam.lee's OptiPlex 3050\\).");
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
     expect(text).toContain('Unknown age');
     expect(text).toContain('Q4 2026');
-    expect(text).toContain('Overdue');
+    // Overdue rows show the date they came due; "Replace now" already says overdue.
+    expect(text).toContain('Apr 2023');
     expect(text).toContain('Apr 2019');
-    expect(text).toContain('Oct 2021*');
+    expect(text).toContain('Oct 2021 *');
+    expect(text).toContain("* Purchase date taken from the manufacturer's ship record.");
+    // Identity leads with the person; the hostname rides underneath.
+    expect(text).toContain('sam.lee — OptiPlex 3050');
+    expect(text).toContain('SAM4');
+    expect(text).toContain('MacBook-Air');
+    // OS risk is a word, not only a colour; editions are stripped for the reader.
+    expect(text).toContain('No security updates');
+    expect(text).toContain('Support ending');
+    expect(text).toContain('Windows 10');
+    expect(text).not.toContain('Windows 10 Pro');
+    expect(text).toContain('No purchase date');
+    expect(text).toContain('past due');
+    expect(text).toContain('We plan to replace a computer 4 years after purchase');
     expect(text).toContain('Ricoh IM C6010 and SonicWALL TZ300');
     expect(text).toContain('What we recommend');
     expect(text).toContain('budget to replace it when coverage ends');
-    expect(text).toContain('Prepared by OliveTech from live device records');
+    expect(text).toContain('Figures come from live device records');
     expect(text).toContain('HARDWARE LIFECYCLE');
   });
 
@@ -89,6 +103,9 @@ describe('hardware lifecycle PDF', () => {
     expect(doc.getNumberOfPages()).toBeGreaterThan(1);
     const text = pdfText(doc);
     expect(text.match(/HARDWARE LIFECYCLE/g)?.length).toBe(doc.getNumberOfPages());
+    // Every continuation page restates the plan heading and the legend.
+    expect(text.match(/Device replacement plan \\\(continued\\\)/g)?.length).toBe(doc.getNumberOfPages() - 1);
+    expect(text.match(/60 Replace now/g)?.length).toBe(doc.getNumberOfPages());
   });
 
   it('falls back to the generic table when the snapshot has no rows array', () => {

@@ -236,6 +236,55 @@ export function displayOs(osType: string | null | undefined, osVersion: string |
   return value;
 }
 
+
+// ---------------------------------------------------------------------------
+// Customer-facing identity. The reader is an office manager, not a
+// technician: "Priya's ThinkPad" beats "branch-lt-12.corp.local".
+
+const SERVICE_ACCOUNTS = new Set(['system', 'root', 'administrator', 'admin', 'localsystem', 'defaultaccount', 'guest', 'wdagutilityaccount', '_mbsetupuser', 'local service', 'network service']);
+
+/** Strip "DOMAIN\\", "@domain" and known service accounts from a last-user value. */
+export function cleanUserName(raw: string | null | undefined): string | null {
+  let v = (raw ?? '').trim();
+  if (!v) return null;
+  const slash = v.lastIndexOf('\\');
+  if (slash >= 0) v = v.slice(slash + 1);
+  v = v.replace(/@.*$/, '').trim();
+  if (!v || SERVICE_ACCOUNTS.has(v.toLowerCase())) return null;
+  return v;
+}
+
+/** "branch-lt-12.corp.local" → "branch-lt-12"; leaves non-hostnames alone. */
+export function shortHostname(value: string | null | undefined): string {
+  const v = (value ?? '').trim();
+  if (!v || /\s/.test(v)) return v;
+  const dot = v.indexOf('.');
+  return dot > 0 ? v.slice(0, dot) : v;
+}
+
+type Identity = Pick<HardwareLifecycleDeviceRow, 'name' | 'hostname' | 'user' | 'model'>;
+
+/** Table identity: "Priya — Latitude 7410", else the short device name. */
+export function rowLabel(row: Identity): string {
+  const user = cleanUserName(row.user);
+  if (user) return row.model ? `${user} — ${row.model}` : user;
+  return shortHostname(row.name);
+}
+
+/** Sentence identity: "Priya's Latitude 7410", else the short device name. */
+export function rowMention(row: Identity): string {
+  const user = cleanUserName(row.user);
+  if (user) return `${user}'s ${row.model ?? 'computer'}`;
+  return shortHostname(row.name);
+}
+
+/** Hostname shown under the label when it adds information. */
+export function rowSecondary(row: Identity): string | null {
+  const host = shortHostname(row.hostname);
+  if (!host) return null;
+  return host === rowLabel(row) ? null : host;
+}
+
 // ---------------------------------------------------------------------------
 // Presentation helpers (shared by PDF + web so both read identically)
 
@@ -295,7 +344,7 @@ export function countByOsSupport(rows: HardwareLifecycleDeviceRow[]): Record<Exc
 }
 
 function namesWithOsStatus(rows: HardwareLifecycleDeviceRow[], status: OsSupportStatus, limit = 3): string[] {
-  const names = rows.filter((r) => r.osSupport === status).map((r) => r.name);
+  const names = rows.filter((r) => r.osSupport === status).map(rowMention);
   return names.length > limit ? [...names.slice(0, limit), `${names.length - limit} more`] : names;
 }
 
@@ -308,7 +357,16 @@ export function buildAtAGlanceProse(rows: HardwareLifecycleDeviceRow[], otherCou
   if (n === 0) {
     sentences.push('We are not yet managing any computers for you.');
   } else if (c.replace > 0) {
-    sentences.push(`${c.replace} of your ${n} computer${n === 1 ? '' : 's'} ${c.replace === 1 ? 'is' : 'are'} past due for replacement.`);
+    // Lead with the ask, then frame it: how old, how exposed, and what is fine.
+    const replace = rows.filter((r) => r.replacement === 'replace');
+    const oldest = Math.max(...replace.map((r) => r.ageYears ?? 0));
+    const ended = replace.filter((r) => r.osSupport === 'ended').length;
+    const frame: string[] = [];
+    if (oldest >= 1) frame.push(`the oldest is ${Math.round(oldest)} years old`);
+    if (ended > 0) frame.push(`${ended} no longer receive${ended === 1 ? 's' : ''} security updates`);
+    sentences.push(
+      `${c.replace} of your ${n} computer${n === 1 ? '' : 's'} ${c.replace === 1 ? 'is' : 'are'} past due for replacement${frame.length ? `; ${frame.join(' and ')}` : ''}.`,
+    );
   } else if (known === 0) {
     // Nothing is dated: say so instead of asserting health we cannot prove.
     sentences.push(`We are still confirming purchase records for ${n === 1 ? 'your computer' : `all ${n} of your computers`}, so no replacement dates are available yet.`);
@@ -319,6 +377,9 @@ export function buildAtAGlanceProse(rows: HardwareLifecycleDeviceRow[], otherCou
   }
   if (c.due_soon > 0) {
     sentences.push(`${c.due_soon} more computer${c.due_soon === 1 ? ' comes' : 's come'} due within the year.`);
+  }
+  if (c.replace > 0 && c.supported > 0) {
+    sentences.push(`The other ${c.supported} ${c.supported === 1 ? 'is' : 'are'} within ${c.supported === 1 ? 'its' : 'their'} expected service life.`);
   }
   if (c.unknown > 0 && known > 0) {
     sentences.push(`${c.unknown} computer${c.unknown === 1 ? ' is' : 's are'} missing purchase records, which we are confirming.`);
@@ -355,17 +416,17 @@ export function buildHardwareLifecycleRecommendations(
 
   if (replace.length > 0) {
     const oldest = replace[0]!;
-    const listed = replace.length <= 6
-      ? humanJoin(replace.map((r) => r.name))
+    const listed = replace.length <= 4
+      ? humanJoin(replace.map(rowMention))
       : `the ${replace.length} computers marked Replace now`;
     const ageNote = oldest.ageYears
-      ? `, starting with ${oldest.name} (${Math.round(oldest.ageYears)} years old)`
+      ? `, starting with ${rowMention(oldest)} (${Math.round(oldest.ageYears)} years old)`
       : '';
     lines.push(`Plan replacements for ${listed} this quarter${ageNote}.`);
   }
 
   if (osEnded.length > 0) {
-    const names = humanJoin(osEnded.slice(0, 4).map((r) => r.name));
+    const names = humanJoin(osEnded.slice(0, 4).map(rowMention));
     const verb = osEnded.length === 1 ? 'no longer receives' : 'no longer receive';
     const which = osEnded.length === 1 ? 'this one' : 'these';
     lines.push(`${names} ${verb} security updates on the current operating system; prioritize ${which} when scheduling.`);
@@ -373,9 +434,9 @@ export function buildHardwareLifecycleRecommendations(
 
   for (const r of due.slice(0, 3)) {
     if (r.warrantyExtended && r.warrantyEndDate) {
-      lines.push(`${r.name} is covered by warranty until ${monthYearLong(r.warrantyEndDate)}; budget to replace it when coverage ends.`);
+      lines.push(`${rowMention(r)} is covered by warranty until ${monthYearLong(r.warrantyEndDate)}; budget to replace it when coverage ends.`);
     } else {
-      lines.push(`Budget for ${r.name} around ${replaceByLabel(r.replaceBy, today)}; no action needed yet.`);
+      lines.push(`Budget for ${rowMention(r)} around ${replaceByLabel(r.replaceBy, today)}; no action needed yet.`);
     }
   }
 
@@ -385,7 +446,12 @@ export function buildHardwareLifecycleRecommendations(
   }
 
   if (lines.length === 0) {
-    lines.push('Nothing needs your attention right now; we will flag the first computer to come due in a future report.');
+    const next = sorted.find((r) => r.replacement === 'supported' && r.replaceBy);
+    lines.push(
+      next
+        ? `Nothing needs your attention right now. The first computer to come due is ${rowMention(next)}, around ${quarterLabel(next.replaceBy!)}; we will flag it in the report before then.`
+        : 'Nothing needs your attention right now; we will flag the first computer to come due in a future report.',
+    );
   }
   return lines;
 }
