@@ -492,6 +492,11 @@ describe('audit log routes', () => {
         expect.objectContaining({ action: 'agent.source.ip.changed', count: 1 })
       );
       expect(body.recentEvents[0].action).toBe('agent.source.ip.changed');
+      // The action is a security event, but it must not inflate the
+      // login/permission counters, which are computed independently.
+      expect(body.loginAttempts).toBe(0);
+      expect(body.failedLogins).toBe(0);
+      expect(body.permissionChanges).toBe(0);
     });
   });
 });
