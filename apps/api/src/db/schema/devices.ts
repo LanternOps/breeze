@@ -62,6 +62,12 @@ export const devices = pgTable('devices', {
   osType: osTypeEnum('os_type').notNull(),
   deviceRole: varchar('device_role', { length: 30 }).notNull().default('unknown'),
   deviceRoleSource: varchar('device_role_source', { length: 20 }).notNull().default('auto'),
+  // Fleet Designer W02 (#5652) — projection of the ACTIVE
+  // device_function_assessments row ("what is this device for"), written ONLY
+  // by services/deviceFunction.ts in the same transaction as the assessment.
+  // Both NULL, or both set, pinned by devices_device_function_source_chk.
+  deviceFunction: text('device_function'),
+  deviceFunctionSource: text('device_function_source').$type<'ai' | 'manual'>(),
   // Orthogonal virtualization attribute (issue #1387): is this box running on a
   // hypervisor, and which one. Set by the agent from SMBIOS hardware identity
   // strings. Distinct from device_role — a virtual workstation is still a

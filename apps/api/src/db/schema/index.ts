@@ -15,6 +15,7 @@ export * from './authenticatorPolicies';
 export * from './devices';
 export * from './deviceExternalLinks';
 export * from './deviceCustomFieldValues';
+export * from './deviceFunctionAssessments';
 export * from './scripts';
 export * from './scriptProposals';
 export * from './alerts';
