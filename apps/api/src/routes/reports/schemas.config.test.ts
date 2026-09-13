@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   createReportSchema,
+  hardwareLifecycleConfigFields,
+  hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
   updateReportSchema,
@@ -90,6 +92,21 @@ describe('report config schema', () => {
     expect(Object.keys(securityCompliancePostureConfigFields).sort()).toEqual(
       Object.keys(securityCompliancePostureConfigSchema.shape).sort(),
     );
+  });
+
+  it('keeps the hardware lifecycle persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(hardwareLifecycleConfigFields).sort()).toEqual(
+      Object.keys(hardwareLifecycleConfigSchema.shape).sort(),
+    );
+  });
+
+  it('preserves hardware lifecycle replaceAgeYears on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Lifecycle', type: 'hardware_lifecycle',
+      config: { replaceAgeYears: 5, includeOtherEquipment: false },
+    });
+    expect(parsed.config.replaceAgeYears).toBe(5);
+    expect(parsed.config.includeOtherEquipment).toBe(false);
   });
 
   it('preserves posture backupRequired on create and update', () => {

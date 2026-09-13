@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // persisted status / is_subscription flag without a live DB (#1320).
 const insertMock = vi.fn();
 const selectMock = vi.fn();
+const updateMock = vi.fn();
 
 vi.mock('../db', () => ({
   db: {
     insert: (...args: unknown[]) => insertMock(...args),
     select: (...args: unknown[]) => selectMock(...args),
+    update: (...args: unknown[]) => updateMock(...args),
   },
 }));
 
@@ -25,6 +27,11 @@ vi.mock('../db/schema', () => ({
     orgId: 'devices.orgId',
     isEphemeral: 'devices.isEphemeral',
     isVirtual: 'devices.isVirtual',
+    purchaseDateSource: 'devices.purchaseDateSource',
+  },
+  manualAssets: {
+    id: 'manualAssets.id',
+    purchaseDateSource: 'manualAssets.purchaseDateSource',
   },
 }));
 
@@ -39,7 +46,7 @@ vi.mock('./warrantyAlertEvaluator', () => ({
   evaluateWarrantyAlerts: (...args: unknown[]) => evaluateWarrantyAlertsMock(...args),
 }));
 
-import { syncWarrantyForDevice, upsertAgentWarranty } from './warrantySync';
+import { syncWarrantyForDevice, syncWarrantyForSubject, upsertAgentWarranty } from './warrantySync';
 
 const DEVICE_ID = '44444444-4444-4444-4444-444444444444';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -50,6 +57,14 @@ function captureUpsert() {
   const values = vi.fn().mockReturnValue({ onConflictDoUpdate });
   insertMock.mockReturnValue({ values });
   return { values, onConflictDoUpdate };
+}
+
+/** Capture db.update(table).set(...).where(...). */
+function captureUpdate() {
+  const where = vi.fn().mockResolvedValue(undefined);
+  const set = vi.fn().mockReturnValue({ where });
+  updateMock.mockReturnValue({ set });
+  return { set, where };
 }
 
 function inDays(days: number): string {
@@ -193,5 +208,53 @@ describe('syncWarrantyForDevice — virtual machine exclusion (#3201)', () => {
     queueReads(PHYSICAL_HARDWARE, [{ orgId: ORG_ID, isEphemeral: true, isVirtual: false }]);
     await syncWarrantyForDevice(DEVICE_ID, { force: true });
     expect(providerMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('writes a vendor-sourced purchase date on the device when the lookup reports a ship date', async () => {
+    captureUpsert();
+    const { set } = captureUpdate();
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
+        found: true, entitlements: [], warrantyStartDate: '2024-01-10', warrantyEndDate: inDays(400), shipDate: '2024-01-05',
+      }]])),
+    });
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: { kind: 'device', deviceId: DEVICE_ID } });
+
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ purchaseDate: '2024-01-05', purchaseDateSource: 'vendor' }));
+  });
+
+  it('does not touch the purchase date when the vendor reports none', async () => {
+    captureUpsert();
+    captureUpdate();
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
+        found: true, entitlements: [], warrantyStartDate: '2024-01-10', warrantyEndDate: inDays(400),
+      }]])),
+    });
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Dell', serialNumber: 'SN1', subject: { kind: 'device', deviceId: DEVICE_ID } });
+
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it('targets the manual asset row for a manual-asset subject', async () => {
+    captureUpsert();
+    const { set } = captureUpdate();
+    providerMock.mockReturnValue({
+      lookup: vi.fn().mockResolvedValue(new Map([['SN2', {
+        found: true, entitlements: [], warrantyStartDate: null, warrantyEndDate: inDays(100), shipDate: '2023-06-01',
+      }]])),
+    });
+
+    await syncWarrantyForSubject({ orgId: ORG_ID, manufacturer: 'Lenovo', serialNumber: 'SN2', subject: { kind: 'manualAsset', manualAssetId: 'ma-1' } });
+
+    expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'manualAssets.id' }));
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ purchaseDate: '2023-06-01', purchaseDateSource: 'vendor' }));
   });
 });

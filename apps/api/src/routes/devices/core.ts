@@ -1718,6 +1718,11 @@ coreRoutes.patch(
       updates.deviceRole = data.deviceRole;
       updates.deviceRoleSource = 'manual';
     }
+    if (data.purchaseDate !== undefined) {
+      // Both NULL or both set — devices_purchase_date_source_chk.
+      updates.purchaseDate = data.purchaseDate;
+      updates.purchaseDateSource = data.purchaseDate === null ? null : 'manual';
+    }
     // NOTE: no `updates.customFields` branch. Custom-field values were written
     // to `device_custom_field_values` above; the merge-with-existing semantics
     // this used to implement are now the upsert's, keyed on
