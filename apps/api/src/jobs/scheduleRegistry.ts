@@ -148,7 +148,7 @@ export const JOB_SCHEDULES = {
   // 90 days, both via partial indexes so the sweep never rescans pruned
   // history. Hour 19 was free in the daily tier; :03 keeps it in the
   // daily = 3 (mod 5) lane.
-  'm365-sync-retention': '3 19 * * *',
+  'm365-sync-retention': '8 19 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
