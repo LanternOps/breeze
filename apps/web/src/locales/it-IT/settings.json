@@ -4457,6 +4457,9 @@
       "suspended": "Sospesa",
       "churned": "Persa",
       "offboarding": "In dismissione"
+    },
+    "help": {
+      "slug": "Generato dal nome. Univoco nel tuo account; usato dall'API e dalle integrazioni."
     }
   },
   "organizationList": {
@@ -4578,21 +4581,21 @@
     "deviceCount": "{{count}} dispositivi",
     "list": {
       "title": "Organizzazioni",
-      "searchPlaceholder": "Cerca...",
       "empty": "Nessuna organizzazione trovata.",
       "noMatches": "Nessuna organizzazione corrisponde alla ricerca.",
       "dragToReorder": "Trascina per riordinare",
       "searchLabel": "Cerca organizzazioni",
       "reorderHandle": "Riordina {{name}}",
       "reorderHint": "Usa le frecce su e giù per spostare questa organizzazione.",
-      "movedAnnouncement": "{{name}} spostata alla posizione {{position}} di {{total}}"
+      "movedAnnouncement": "{{name}} spostata alla posizione {{position}} di {{total}}",
+      "workspaceMarker": "Spazio di lavoro"
     },
     "sites": {
       "loading": "Caricamento siti..."
     },
     "emptySelection": {
       "title": "Nessuna organizzazione selezionata",
-      "description": "Seleziona un'organizzazione dall'elenco per visualizzarne i siti."
+      "description": "Seleziona un'organizzazione per vederne stato, siti e azioni."
     },
     "add": {
       "title": "Aggiungi organizzazione",
@@ -4613,8 +4616,9 @@
     },
     "deleteSite": {
       "title": "Elimina sito",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
+      "message": "Eliminare {{name}}? Il sito verrà rimosso definitivamente e l'operazione non può essere annullata.",
+      "blockedMessage_one": "{{name}} ha ancora {{count}} dispositivo. Spostalo in un altro sito prima di eliminare questo.",
+      "blockedMessage_other": "{{name}} ha ancora {{count}} dispositivi. Spostali in un altro sito prima di eliminare questo."
     },
     "merge": {
       "openButton": "Unisci a un'altra organizzazione",
@@ -4715,6 +4719,9 @@
         "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
         "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
       }
+    },
+    "scope": {
+      "hint": "Il tuo spazio di lavoro è impostato su {{orgName}}. Le azioni di questa pagina si applicano all'organizzazione selezionata qui."
     }
   },
   "siteDetailPage": {

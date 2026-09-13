@@ -150,6 +150,7 @@ export default function OrganizationForm({
           <input
             id="organization-slug"
             placeholder={t('organizationForm.placeholders.slug')}
+            aria-describedby="organization-slug-help"
             className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             {...slugField}
             onChange={event => {
@@ -158,6 +159,9 @@ export default function OrganizationForm({
               slugField.onChange(event);
             }}
           />
+          <p id="organization-slug-help" className="text-xs text-muted-foreground">
+            {t('organizationForm.help.slug')}
+          </p>
           {errors.slug && <p className="text-sm text-destructive">{errors.slug.message}</p>}
         </div>
 

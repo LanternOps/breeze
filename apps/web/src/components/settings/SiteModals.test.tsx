@@ -38,15 +38,36 @@ function renderModals(mode: 'add' | 'edit' | 'delete', overrides?: Partial<Param
 }
 
 describe('SiteModals — dialog semantics', () => {
-  it('delete renders a destructive confirm dialog whose Delete button fires onConfirmDelete', () => {
-    const { onConfirmDelete } = renderModals('delete');
+  it('delete on an empty site names the site and the consequence, and Delete fires onConfirmDelete', () => {
+    const { onConfirmDelete } = renderModals('delete', { selectedSite: { ...SITE, deviceCount: 0 } });
 
     const dialog = screen.getByRole('dialog', { name: 'Delete Site' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(dialog).toHaveTextContent(SITE.name);
+    expect(dialog).toHaveTextContent('Delete Headquarters? This removes the site permanently and cannot be undone.');
 
-    fireEvent.click(screen.getByTestId('site-delete-confirm'));
+    const confirm = screen.getByTestId('site-delete-confirm');
+    expect(confirm).toHaveAttribute('aria-disabled', 'false');
+    fireEvent.click(confirm);
     expect(onConfirmDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('delete on a site that still has devices explains the block and disables Delete', () => {
+    const { onConfirmDelete } = renderModals('delete');
+
+    expect(screen.getByRole('dialog', { name: 'Delete Site' })).toHaveTextContent(
+      'Headquarters still has 7 devices. Move them to another site before deleting this one.',
+    );
+    const confirm = screen.getByTestId('site-delete-confirm');
+    expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(confirm);
+    expect(onConfirmDelete).not.toHaveBeenCalled();
+  });
+
+  it('singular device copy', () => {
+    renderModals('delete', { selectedSite: { ...SITE, deviceCount: 1 } });
+    expect(screen.getByRole('dialog', { name: 'Delete Site' })).toHaveTextContent(
+      'Headquarters still has 1 device. Move it to another site before deleting this one.',
+    );
   });
 
   it('delete dialog closes on Escape', () => {

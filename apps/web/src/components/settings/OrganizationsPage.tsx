@@ -20,6 +20,7 @@ import { navigateTo } from '@/lib/navigation';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
 import { Dialog } from '../shared/Dialog';
 import { ActionMenu } from '../shared/ActionMenu';
+import { applyOrgSwitch } from '@/lib/orgSwitch';
 import { Building2, ChevronRight, GripVertical, Settings } from 'lucide-react';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
@@ -126,6 +127,16 @@ export default function OrganizationsPage() {
   // answer for the life of the mount (#4013's lesson, TicketingSettingsTabs).
   const jwt = useJwtClaims();
   const canMergeOrgs = jwt.status === 'resolved' && jwt.claims.scope === 'partner';
+  // The workspace org (the OrgSwitcher's selection) is a separate axis from
+  // the org selected on this page, and the two disagree constantly on a
+  // two-monitor desk: a tech acts on OliveTech here while the switcher says
+  // Liggett. The page never used to read it at all. Both are read through
+  // store selectors so the chip re-renders when the org list lands after
+  // mount (the name lives in the store's list, not on the token).
+  const workspaceOrgId = useOrgStore((s) => s.currentOrgId);
+  const workspaceOrgName = useOrgStore((s) =>
+    s.currentOrgId ? (s.organizations.find((o) => o.id === s.currentOrgId)?.name ?? null) : null,
+  );
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -555,6 +566,12 @@ export default function OrganizationsPage() {
     window.location.hash = org.id;
   };
 
+  /** Same ritual as the record page's "Work in this org": the switch
+   *  re-navigates this page under the new scope, so no local state to keep. */
+  const handleWorkHere = (org: Organization) => {
+    void applyOrgSwitch(org.id, t('organizations:orgRecord.actions.workHereToast', { orgName: org.name }));
+  };
+
   /** Arrow/Home/End on a row's select button: move focus and the roving tab
    *  stop, never the selection (see `activeRowId`). */
   const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -959,7 +976,7 @@ export default function OrganizationsPage() {
             </h2>
             <input
               type="search"
-              placeholder={t('organizationsPage.list.searchPlaceholder')}
+              placeholder={t('organizationsPage.list.searchLabel')}
               aria-label={t('organizationsPage.list.searchLabel')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
@@ -1063,6 +1080,17 @@ export default function OrganizationsPage() {
                             className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
                           >
                             {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
+                          </span>
+                        )}
+                        {/* The one row that IS the current workspace — the
+                            same exception-only rule: at most one row ever
+                            carries it, so it reads as a landmark, not noise. */}
+                        {workspaceOrgId === org.id && (
+                          <span
+                            data-testid="org-workspace-marker"
+                            className="inline-flex items-center rounded-full border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-[10px] font-medium leading-none text-primary"
+                          >
+                            {t('organizationsPage.list.workspaceMarker')}
                           </span>
                         )}
                         {shouldShowDeviceCount(org.deviceCount) && (
@@ -1258,9 +1286,9 @@ export default function OrganizationsPage() {
                 {/* Org header */}
                 <div className="border-b px-6 py-4">
                   <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                         <span
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
                         >
@@ -1269,6 +1297,31 @@ export default function OrganizationsPage() {
                         {shouldShowDeviceCount(selectedOrg.deviceCount) && (
                           <span>
                             {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
+                          </span>
+                        )}
+                        {/* Stated, never implied: when the workspace is a
+                            different org, say which — the same chip and
+                            wording as the record page — and offer the switch
+                            right here. Nothing renders in the fleet view or
+                            when the two agree. */}
+                        {workspaceOrgId && workspaceOrgId !== selectedOrg.id && workspaceOrgName && (
+                          <span className="inline-flex items-center gap-2">
+                            <span
+                              data-testid="org-scope-chip"
+                              title={t('organizationsPage.scope.hint', { orgName: workspaceOrgName })}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-xs text-muted-foreground"
+                            >
+                              <Building2 className="h-3 w-3" aria-hidden="true" />
+                              {t('organizations:orgRecord.header.scopeChip', { orgName: workspaceOrgName })}
+                            </span>
+                            <button
+                              type="button"
+                              data-testid="org-work-here"
+                              onClick={() => handleWorkHere(selectedOrg)}
+                              className="text-xs font-medium text-primary hover:underline"
+                            >
+                              {t('organizations:orgRecord.actions.workHere')}
+                            </button>
                           </span>
                         )}
                       </div>

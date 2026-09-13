@@ -15,8 +15,16 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 const storeFetchOrganizations = vi.fn().mockResolvedValue(undefined);
+// Workspace scope the page reads through the store selector; the scope tests
+// set these, everything else leaves the workspace unset (fleet view).
+const mockStoreCurrentOrgId: string | null = null;
+const mockStoreOrganizations: Array<{ id: string; name: string }> = [];
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  useOrgStore: Object.assign(
+    (selector?: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown) =>
+      selector ? selector({ currentOrgId: mockStoreCurrentOrgId, organizations: mockStoreOrganizations }) : undefined,
+    { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  ),
 }));
 
 vi.mock('../../lib/authScope', () => ({
@@ -165,6 +173,10 @@ describe('OrganizationsPage — keyboard operability', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add organization' }));
     const dialog = screen.getByRole('dialog', { name: 'Add Organization' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
+    // "Slug" is developer vocabulary; the field explains itself.
+    expect(screen.getByLabelText('Slug')).toHaveAccessibleDescription(
+      'Generated from the name. Unique within your account; used by the API and integrations.',
+    );
 
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();

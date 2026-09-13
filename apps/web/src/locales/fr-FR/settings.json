@@ -4409,6 +4409,9 @@
       "suspended": "Suspendu",
       "churned": "Tourné",
       "offboarding": "Départ en cours"
+    },
+    "help": {
+      "slug": "Généré à partir du nom. Unique dans votre compte ; utilisé par l'API et les intégrations."
     }
   },
   "organizationList": {
@@ -4530,21 +4533,21 @@
     "deviceCount": "{{count}} dispositifs",
     "list": {
       "title": "Organisations",
-      "searchPlaceholder": "Rechercher...",
       "empty": "Aucune organisation trouvée.",
       "noMatches": "Aucune organisation ne correspond à votre recherche.",
       "dragToReorder": "De la traînée à la réorganisation",
       "searchLabel": "Rechercher des organisations",
       "reorderHandle": "Réorganiser {{name}}",
       "reorderHint": "Utilisez les flèches haut et bas pour déplacer cette organisation.",
-      "movedAnnouncement": "{{name}} déplacée en position {{position}} sur {{total}}"
+      "movedAnnouncement": "{{name}} déplacée en position {{position}} sur {{total}}",
+      "workspaceMarker": "Espace de travail"
     },
     "sites": {
       "loading": "Sites de chargement..."
     },
     "emptySelection": {
       "title": "Aucune organisation sélectionnée",
-      "description": "Sélectionnez une organisation parmi la liste pour consulter ses sites."
+      "description": "Sélectionnez une organisation pour voir son statut, ses sites et ses actions."
     },
     "add": {
       "title": "Ajouter l’organisation",
@@ -4565,8 +4568,9 @@
     },
     "deleteSite": {
       "title": "Supprimer le site",
-      "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
-      "messageSuffix": " Cette action ne peut être annulée."
+      "message": "Supprimer {{name}} ? Le site sera définitivement supprimé, sans possibilité d'annulation.",
+      "blockedMessage_one": "{{name}} contient encore {{count}} appareil. Déplacez-le vers un autre site avant de supprimer celui-ci.",
+      "blockedMessage_other": "{{name}} contient encore {{count}} appareils. Déplacez-les vers un autre site avant de supprimer celui-ci."
     },
     "merge": {
       "openButton": "Fusionner avec une autre organisation",
@@ -4667,6 +4671,9 @@
         "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
         "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
       }
+    },
+    "scope": {
+      "hint": "Votre espace de travail est défini sur {{orgName}}. Les actions de cette page s'appliquent à l'organisation sélectionnée ici."
     }
   },
   "siteDetailPage": {

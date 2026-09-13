@@ -121,17 +121,28 @@ export default function SiteModals({
 
       {/* Site Delete confirmation — the shared destructive ConfirmDialog, so it
           carries the same shape-coded icon, single-fire latch and dialog
-          semantics as every other delete in the app. */}
+          semantics as every other delete in the app.
+
+          `devices.site_id` is NOT NULL with a plain FK to `sites` (no ON
+          DELETE), so the API's DELETE cannot succeed while devices are still
+          on the site — it aborts on the FK. Say so before the click and
+          disable Confirm, instead of letting the operator learn it from a
+          failed request. */}
       {mode === 'delete' && selectedSite && (
         <ConfirmDialog
           open
           onClose={onClose}
           onConfirm={() => void onConfirmDelete()}
           title={t('organizationsPage.deleteSite.title')}
-          message={`${t('organizationsPage.deleteSite.messagePrefix')} ${selectedSite.name}?${t('organizationsPage.deleteSite.messageSuffix')}`}
+          message={
+            selectedSite.deviceCount > 0
+              ? t('organizationsPage.deleteSite.blockedMessage', { name: selectedSite.name, count: selectedSite.deviceCount })
+              : t('organizationsPage.deleteSite.message', { name: selectedSite.name })
+          }
           confirmLabel={t('common:actions.delete')}
           variant="destructive"
           isLoading={submitting}
+          confirmDisabled={selectedSite.deviceCount > 0}
           confirmTestId="site-delete-confirm"
         />
       )}

@@ -18,8 +18,16 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 const storeFetchOrganizations = vi.fn().mockResolvedValue(undefined);
+// Workspace scope the page reads through the store selector; the scope tests
+// set these, everything else leaves the workspace unset (fleet view).
+const mockStoreCurrentOrgId: string | null = null;
+const mockStoreOrganizations: Array<{ id: string; name: string }> = [];
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  useOrgStore: Object.assign(
+    (selector?: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown) =>
+      selector ? selector({ currentOrgId: mockStoreCurrentOrgId, organizations: mockStoreOrganizations }) : undefined,
+    { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  ),
 }));
 
 // OrganizationsPage reads useJwtClaims() unconditionally (for the merge
@@ -278,7 +286,7 @@ describe('OrganizationsPage — Archived section search reachability', () => {
 
     expect(screen.getAllByTestId('org-archived-row')).toHaveLength(2);
 
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Gamma' } });
     await flush();
 
     // Forwarded as the API's own `search` query param (routes/orgs.ts /
@@ -300,7 +308,7 @@ describe('OrganizationsPage — Archived section search reachability', () => {
     await flush();
     await expandArchivedSection();
 
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Nonexistent Org' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Nonexistent Org' } });
     await flush();
 
     expect(screen.getByText('No archived organizations match your search.')).toBeInTheDocument();
@@ -312,7 +320,7 @@ describe('OrganizationsPage — Archived section search reachability', () => {
     render(<OrganizationsPage />);
     await flush();
 
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Gamma' } });
     await flush();
 
     expect(archivedFetchWasIssued()).toBe(false);
@@ -325,7 +333,7 @@ describe('OrganizationsPage — Archived section search reachability', () => {
     await expandArchivedSection();
     fetchMock.mockClear();
 
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Gamma' } });
     // Well under the 300ms debounce — nothing should have gone out yet.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
@@ -372,7 +380,7 @@ describe('OrganizationsPage — Archived section search race safety', () => {
 
     // Type "Gamma" — the OLDER request. Advance past the debounce so its
     // fetch actually fires and hangs open (held, not yet resolved).
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Gamma' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Gamma' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(320);
     });
@@ -380,7 +388,7 @@ describe('OrganizationsPage — Archived section search race safety', () => {
 
     // Before it resolves, change the search again — the NEWER request. Its
     // own debounced fetch fires and is ALSO held open.
-    fireEvent.change(screen.getByPlaceholderText('Search...'), { target: { value: 'Delta' } });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search organizations' }), { target: { value: 'Delta' } });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(320);
     });
