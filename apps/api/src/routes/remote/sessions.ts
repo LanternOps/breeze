@@ -314,7 +314,12 @@ sessionRoutes.post(
         await staleUpdate;
       }
     } catch (err) {
+      // The UPDATE may already have committed when this fires (a row-shape
+      // error in the post-UPDATE mapping, for instance), which would leave
+      // rows terminal with no viewer revocation and no stop — so it is
+      // escalated, not just logged.
       console.error('[remote] Failed to terminate stale sessions for device', data.deviceId, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
 
     // Create session

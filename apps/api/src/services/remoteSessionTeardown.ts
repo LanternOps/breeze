@@ -177,7 +177,11 @@ export async function teardownDisconnectedSessions(
         // to this exact decision. A row with no generation cannot be stopped
         // through the contract, so it is a loud error, not a bare stop.
         if (row.terminalGeneration == null) {
-          throw new Error(`session ${row.id} was marked terminal without a terminal generation`);
+          // Not a delivery failure: a contract violation in the mechanism
+          // that guarantees the stop, so it is escalated, not just logged.
+          const invariant = new Error(`session ${row.id} was marked terminal without a terminal generation`);
+          captureException(invariant);
+          throw invariant;
         }
         await dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, row.terminalGeneration));
       } catch (err) {

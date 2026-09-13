@@ -19,7 +19,7 @@
  *     agent's stop result lands, and ONLY for the exact terminal generation;
  *   - REST End keeps returning 200 with a `terminationPhase` field.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { eq } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
@@ -40,6 +40,26 @@ vi.mock('../../services/agentCommandRelay', async (importOriginal) => {
 vi.mock('../../routes/agentWs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../routes/agentWs')>();
   return { ...actual, sendCommandToAgent: sendCommandToAgentMock };
+});
+// Terminal (PTY) WS plumbing for the two terminalWs writers: the one-time
+// ticket is stubbed (minting one is not under test) and the local-install
+// step gets a throw seam so the onOpen setup-failure branch is reachable.
+const { consumeWsTicketMock, installLocalRemoteConnectionMock } = vi.hoisted(() => ({
+  consumeWsTicketMock: vi.fn(),
+  installLocalRemoteConnectionMock: vi.fn(),
+}));
+vi.mock('../../services/remoteSessionAuth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/remoteSessionAuth')>();
+  return { ...actual, consumeWsTicket: consumeWsTicketMock };
+});
+vi.mock('../../services/remoteWsOwnership', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/remoteWsOwnership')>();
+  installLocalRemoteConnectionMock.mockImplementation(actual.installLocalRemoteConnection);
+  return { ...actual, installLocalRemoteConnection: installLocalRemoteConnectionMock };
+});
+vi.mock('../../config/partnerTrustMode', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/partnerTrustMode')>();
+  return { ...actual, partnerTrustMode: vi.fn(() => 'off') };
 });
 vi.mock('../../services/remoteAccessPolicy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/remoteAccessPolicy')>();
@@ -95,7 +115,14 @@ vi.mock('../../services/desktopSessionStop', () => ({
   })),
 }));
 
-import { createAgentWsHandlers } from '../../routes/agentWs';
+import { __installAgentSocketForTest, createAgentWsHandlers } from '../../routes/agentWs';
+import {
+  __createTerminalSharedLeasesForTest,
+  __resetTerminalWsForTest,
+  closeTerminalSession,
+  createTerminalWsRoutes,
+  getActiveTerminalSession,
+} from '../../routes/terminalWs';
 import { remoteRoutes } from '../../routes/remote';
 import { vncViewerRoutes } from '../../routes/tunnels';
 import { devices, remoteSessions, tunnelSessions, users } from '../../db/schema';
@@ -273,6 +300,46 @@ async function agentResult(fx: Fixture, message: Record<string, unknown>): Promi
   await handlers.onOpen({}, fakeWs);
   await handlers.onMessage({ data: JSON.stringify({ type: 'command_result', ...message }) } as MessageEvent, fakeWs);
   await handlers.onClose({}, fakeWs);
+}
+
+type TerminalWsHandlers = {
+  onOpen: (event: unknown, ws: unknown) => Promise<void>;
+  onClose: (event: unknown, ws: unknown) => Promise<void> | void;
+};
+
+/**
+ * Drive the real terminal WS `onOpen` for a PTY-type session so it lands in
+ * the live in-memory map (validation, lease claim and the `active` write all
+ * run for real against the row; only the ticket and agent socket are stubbed).
+ */
+async function openTerminalWs(fx: Fixture): Promise<{ handlers: TerminalWsHandlers; ws: { send: () => void; close: () => void } }> {
+  // terminalWs sits in an import cycle with agentWs, so its `isAgentConnected`
+  // binding is the real one: register a real (fake-transport) agent socket
+  // rather than trying to mock the function.
+  __installAgentSocketForTest(fx.agentId, { send: () => {} });
+  consumeWsTicketMock.mockResolvedValue({
+    ok: true,
+    sessionId: fx.sessionId,
+    sessionType: 'terminal',
+    userId: fx.env.user.id,
+    expiresAt: Date.now() + 60_000,
+  });
+  let factory: ((c: unknown) => TerminalWsHandlers) | undefined;
+  createTerminalWsRoutes(
+    ((f: (c: unknown) => TerminalWsHandlers) => { factory = f; return (_c: unknown, _n: unknown) => {}; }) as never,
+    { sharedLeases: __createTerminalSharedLeasesForTest() },
+  );
+  if (!factory) throw new Error('terminal ws factory was not captured');
+  const handlers = factory({
+    req: {
+      param: (key: string) => (key === 'id' ? fx.sessionId : undefined),
+      query: (key: string) => (key === 'ticket' ? 'ticket-tint' : undefined),
+      header: () => undefined,
+    },
+  });
+  const ws = { send: () => {}, close: () => {} };
+  await handlers.onOpen({}, ws);
+  return { handlers, ws };
 }
 
 function stopCommandsFor(sessionId: string): Array<{ id: string; payload: Record<string, unknown> }> {
@@ -518,12 +585,47 @@ const WRITERS: WriterCase[] = [
     expectPhase: 'confirmed',
     sendsStop: false,
   },
+  {
+    writer: 'routes/terminalWs.ts:closeExactTerminalConnection (via closeTerminalSession)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      await openTerminalWs(fx);
+      expect(getActiveTerminalSession(fx.sessionId)).toBeDefined();
+      expect((await readFence(fx.sessionId)).status).toBe('active');
+      expect(await closeTerminalSession(fx.sessionId)).toBe(true);
+    },
+    expectStatus: 'disconnected',
+    // A PTY row has no endpoint acknowledgement flow: confirmed on commit.
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
+  {
+    writer: 'routes/terminalWs.ts:onOpen setup-failure (validated, not yet stored)',
+    seedStatus: 'pending',
+    seed: { type: 'terminal' },
+    run: async (fx) => {
+      // Throw between validation and the local install: that is the only
+      // window the else-branch at the end of onOpen covers.
+      installLocalRemoteConnectionMock.mockImplementationOnce(() => {
+        throw new Error('injected: local install exploded');
+      });
+      await openTerminalWs(fx);
+      expect(getActiveTerminalSession(fx.sessionId)).toBeUndefined();
+    },
+    expectStatus: 'failed',
+    expectPhase: 'confirmed',
+    sendsStop: false,
+  },
 ];
 
 describe('SEC-038 W03 — one terminal-intent contract for every terminal writer', () => {
   beforeEach(() => {
     dispatchCommandToAgentMock.mockClear();
     sendCommandToAgentMock.mockClear();
+  });
+  afterEach(() => {
+    __resetTerminalWsForTest();
   });
 
   describe.each(WRITERS)('$writer', (writerCase) => {
