@@ -42,6 +42,9 @@ export type AlertRuleOverrides = {
   targetIds?: string[];
   templateOwned?: boolean;
   updatedAt?: string;
+  // #5289 — set by ruleConversionService when this rule is converted to a
+  // monitor (the rule itself stays, deactivated, as a historical record).
+  convertedToMonitorId?: string;
 };
 
 export { getPagination } from '../../utils/pagination';
@@ -533,6 +536,9 @@ export function formatAlertRuleResponse(rule: AlertRuleRow, template?: AlertTemp
     templateName: template?.name,
     // #5289 — lets the web render a compiled rule read-only.
     managedByMonitorId: rule.managedByMonitorId ?? null,
+    // #5289 — lets the Legacy rules list show a "Converted" badge instead of
+    // the Convert action for a rule that already went through conversion.
+    convertedToMonitorId: overrides.convertedToMonitorId ?? null,
     createdAt: rule.createdAt,
     updatedAt: overrides.updatedAt ?? rule.createdAt
   };
