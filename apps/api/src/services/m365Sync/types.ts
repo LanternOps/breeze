@@ -97,18 +97,14 @@ export const M365_SYNC_LEASE_MINUTES = 20;
 export const M365_SYNC_PERSIST_CHUNK_SIZE = 1000;
 
 /**
- * Domains this wave can actually persist. `reconcileEligibleConnections` seeds
- * ONLY these: seeding `signin_activity`/`secure_score` before W05 lands their
- * persisters would make them claimable with nothing to run, so they would be
- * re-claimed every tick forever and burn ticker slots.
- *
- * W05 SETS THIS TO `M365_SYNC_DOMAINS` and, in the same PR, inverts the two
- * `expect(params).not.toContain(...)` assertions in `claim.sql.test.ts` that
- * are marked "W05 inverts this".
+ * Domains the worker can actually persist; `reconcileEligibleConnections`
+ * seeds exactly these. W04 shipped four because `signin_activity` and
+ * `secure_score` had no persister and would have been re-claimed every tick
+ * with nothing to run. W05 landed both (see DOMAIN_PERSISTERS in run.ts), so
+ * this is the whole contracted list — assigned from the shared constant rather
+ * than retyped, so a seventh domain cannot be silently left unseeded.
  */
-export const M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[] = [
-  'users', 'intune_devices', 'ca_policies', 'skus',
-] as const;
+export const M365_SYNC_IMPLEMENTED_DOMAINS: readonly M365SyncDomain[] = M365_SYNC_DOMAINS;
 
 /**
  * The `sources` key that decides a domain's outcome (spec §6). A

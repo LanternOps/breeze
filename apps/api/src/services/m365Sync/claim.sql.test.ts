@@ -46,23 +46,22 @@ describe('reconcile eligibility (compiled SQL)', () => {
     expect(sql).toContain('3600');
   });
 
-  it('seeds ONLY the domains this wave can persist', () => {
+  it('seeds every contracted domain', () => {
     const { params } = dialect.sqlToQuery(buildReconcileEligibleSql(NOW));
     expect(params).toContain('users');
     expect(params).toContain('intune_devices');
     expect(params).toContain('ca_policies');
     expect(params).toContain('skus');
-    // W05 inverts this: when M365_SYNC_IMPLEMENTED_DOMAINS becomes
-    // M365_SYNC_DOMAINS these two flip to `toContain`. They are the only two
-    // assertions in the wave that W05 must edit rather than extend.
-    expect(params).not.toContain('signin_activity');   // W05 inverts this
-    expect(params).not.toContain('secure_score');      // W05 inverts this
+    // W05 inverted these two: both domains now have persisters, so seeding them
+    // gives the ticker work to do rather than a row it can only re-claim.
+    expect(params).toContain('signin_activity');
+    expect(params).toContain('secure_score');
   });
 
   it('seeds each domain with its own default interval', () => {
     const { params } = dialect.sqlToQuery(buildReconcileEligibleSql(NOW));
     expect(params).toContain(6 * 3600);   // users, intune_devices
-    expect(params).toContain(24 * 3600);  // ca_policies, skus
+    expect(params).toContain(24 * 3600);  // ca_policies, skus, secure_score, signin_activity
   });
 });
 

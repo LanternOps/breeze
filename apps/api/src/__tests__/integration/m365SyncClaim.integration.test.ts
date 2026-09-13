@@ -176,15 +176,17 @@ describe('m365 sync claim protocol (real Postgres, spec §5.2)', () => {
     expect(claimed[0]).toMatchObject({ orgId: a.orgId, domain: 'skus', priority: 1 });
   });
 
-  runDb('reconcile seeds the four implemented domains once and is idempotent', async () => {
+  runDb('reconcile seeds all six domains once and is idempotent', async () => {
     const t = await seedConnection();
 
-    expect(await reconcileEligibleConnections()).toBe(4);
+    expect(await reconcileEligibleConnections()).toBe(6);
     expect(await reconcileEligibleConnections()).toBe(0);
 
     const rows = await withSystemDbAccessContext(() =>
       db.select().from(m365SyncState).where(eq(m365SyncState.orgId, t.orgId)));
-    expect(rows.map((r) => r.domain).sort()).toEqual(['ca_policies', 'intune_devices', 'skus', 'users']);
+    expect(rows.map((r) => r.domain).sort()).toEqual([
+      'ca_policies', 'intune_devices', 'secure_score', 'signin_activity', 'skus', 'users',
+    ]);
     for (const row of rows) {
       const ahead = row.nextSyncAt!.getTime() - Date.now();
       expect(ahead).toBeGreaterThanOrEqual(-5_000);
@@ -192,6 +194,7 @@ describe('m365 sync claim protocol (real Postgres, spec §5.2)', () => {
     }
     expect(rows.find((r) => r.domain === 'users')!.intervalSeconds).toBe(21600);
     expect(rows.find((r) => r.domain === 'skus')!.intervalSeconds).toBe(86400);
+    expect(rows.find((r) => r.domain === 'signin_activity')!.intervalSeconds).toBe(86400);
   });
 
   runDb('reconcile ignores a revoked connection', async () => {
