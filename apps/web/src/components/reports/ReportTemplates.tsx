@@ -206,7 +206,11 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
   const name = item.name ?? fallback?.name;
   if (!name) return null;
 
-  const id = item.id ?? fallback?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  // A saved report that matches a curated template (by id or name) folds into
+  // that curated card. `/reports/templates` returns every saved report, and
+  // "Use template" saves one under the curated name, so keying the row by its
+  // own UUID would render a second card with the same name after every use.
+  const id = fallback?.id ?? item.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const previewImage = item.previewImage ?? item.previewUrl ?? fallback?.previewImage;
   const fallbackType = fallback?.defaults.type ?? 'executive_summary';
   const rawType = item.defaults?.type ?? item.type ?? item.reportType ?? fallback?.defaults.type;
