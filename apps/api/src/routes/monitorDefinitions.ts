@@ -136,8 +136,17 @@ monitorDefinitionRoutes.post(
   zValidator('json', createMonitorDefinitionSchema),
   async (c) => {
     const auth = c.get('auth');
+    // The web client carries the selected org as an ambient `?orgId=` query,
+    // not in the body. Partner tokens have auth.orgId === null, so without
+    // this fallback every "This organization only" create 403s (cf. #808).
+    const body = c.req.valid('json');
+    const queryOrgId = z.string().uuid().safeParse(c.req.query('orgId'));
+    const input =
+      body.orgId || !queryOrgId.success || body.ownerScope === 'partner'
+        ? body
+        : { ...body, orgId: queryOrgId.data };
     try {
-      const created = await createMonitorDefinition(c.req.valid('json'), auth);
+      const created = await createMonitorDefinition(input, auth);
       writeRouteAudit(c, {
         orgId: created.orgId ?? undefined,
         action: 'monitor.create',
