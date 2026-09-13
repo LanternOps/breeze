@@ -597,6 +597,47 @@ describe('importBundle', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Fleet Designer W04 (#5654): an internal caller (apply step 4) states the
+  // version provenance instead of the importer's default 'imported'.
+  // -------------------------------------------------------------------------
+  describe('provenance override', () => {
+    it('stamps the caller-supplied provenance on the created row and its v1 version', async () => {
+      const approvedAt = new Date('2026-09-13T00:00:00.000Z');
+      h.state.selectQueue.push([], []);
+      const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+        mode: 'rename', availability: 'org',
+        provenanceFor: (_entry, index) => ({ origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt, changelog: `Fleet Design item ${index}` }),
+      });
+      expect('error' in result).toBe(false);
+      const values = h.state.inserts.find((i) => i.table === scripts)!.values as Record<string, unknown>;
+      expect(values.origin).toBe('ai_proposal');
+      expect(values.originProposalId).toBeNull();
+      expect(h.state.cuts).toHaveLength(1);
+      expect(h.state.cuts[0]!.provenance).toMatchObject({
+        origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt, changelog: 'Fleet Design item 0', createdBy: 'user-123',
+      });
+      expect(h.state.cuts[0]!.provenance).not.toHaveProperty('proposalId');
+    });
+
+    it('never lets the override acknowledge a STRICT pattern — the created script still fails closed', async () => {
+      h.state.selectQueue.push([], []);
+      await importBundle(makeAuth(), validBundle([{ ...baseEntry, content: "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\X' -Name A -Value 1" }]), {
+        mode: 'rename', availability: 'org',
+        provenanceFor: () => ({ origin: 'ai_proposal', approvedBy: 'approver-1', approvedAt: new Date(), changelog: 'x' }),
+      });
+      const values = h.state.inserts.find((i) => i.table === scripts)!.values as Record<string, unknown>;
+      expect(values.acknowledgedSecurityPatterns).toEqual([]);
+      expect(values.securityAcknowledgedBy).toBeNull();
+    });
+
+    it('without the override, a bundle import stays origin imported', async () => {
+      h.state.selectQueue.push([], []);
+      await importBundle(makeAuth(), validBundle([baseEntry]), { mode: 'rename', availability: 'org' });
+      expect(h.state.cuts[0]!.provenance).toMatchObject({ origin: 'imported' });
+    });
+  });
+
   it('rejects a system-scope import with no orgId instead of creating tenantless orphan rows', async () => {
     const auth = makeAuth({ scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null });
     const result = await importBundle(auth, validBundle([baseEntry]), {

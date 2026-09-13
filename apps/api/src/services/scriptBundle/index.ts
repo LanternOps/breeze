@@ -35,7 +35,7 @@ import {
   type ScriptWriteAuth
 } from '../scriptWrite';
 import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAcknowledgement';
-import { cutScriptVersion } from '../scriptVersions';
+import { cutScriptVersion, type ScriptVersionProvenance } from '../scriptVersions';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
   MAX_BUNDLE_TAGS_PER_SCRIPT,
@@ -716,6 +716,15 @@ export async function importBundle(
     mode: BundleImportMode;
     /** Tags linked on every imported / renamed / versioned entry (skipped entries are untouched). */
     tags?: readonly string[];
+    /**
+     * Version provenance for each written entry, for INTERNAL callers that
+     * know where the content came from (Fleet Design apply, W04 #5654: AI-
+     * authored, human-approved). Never reachable from the bundle route — a
+     * file cannot assert its own provenance. Default `{ origin: 'imported' }`.
+     * `createdBy` is always the caller; nothing here can acknowledge a STRICT
+     * pattern (insertScriptRow clamps that from content, fail closed).
+     */
+    provenanceFor?: (entry: ScriptBundleEntry, index: number) => Omit<ScriptVersionProvenance, 'createdBy'>;
   }
 ): Promise<BundleImportResult | ScriptScopeError> {
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
@@ -835,11 +844,13 @@ export async function importBundle(
 
           await cutScriptVersion(tx, {
             scriptId: existing.id,
-            provenance: {
-              origin: 'imported',
-              changelog: `Imported from bundle "${entry.name}"`,
-              createdBy: auth.user.id
-            }
+            provenance: options.provenanceFor
+              ? { ...options.provenanceFor(entry, index), createdBy: auth.user.id }
+              : {
+                  origin: 'imported',
+                  changelog: `Imported from bundle "${entry.name}"`,
+                  createdBy: auth.user.id
+                }
           });
         });
 
@@ -881,7 +892,9 @@ export async function importBundle(
         timeoutSeconds: entry.timeoutSeconds,
         runAs: entry.runAs,
         exitCodeSeverityMapping: entry.exitCodeSeverityMapping ?? null
-      }, { origin: 'imported' });
+      }, options.provenanceFor
+        ? { provenance: { ...options.provenanceFor(entry, index), createdBy: auth.user.id } }
+        : { origin: 'imported' });
       if (!created) {
         result.errors.push({ index, name: entry.name, error: 'Insert returned no row' });
         continue;
