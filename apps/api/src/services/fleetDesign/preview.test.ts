@@ -18,6 +18,12 @@ vi.mock('../configurationPolicy', () => configPolicyMock);
 const partnerWideMock = vi.hoisted(() => ({ canManagePartnerWidePolicies: vi.fn(() => false) }));
 vi.mock('../partnerWideAccess', () => partnerWideMock);
 
+const bundleMock = vi.hoisted(() => ({
+  previewBundle: vi.fn(),
+  findSecretVariableReferences: vi.fn(async () => [] as string[]),
+}));
+vi.mock('../scriptBundle', () => bundleMock);
+
 // --- Table-routed fake db (FIFO queue per table) ---------------------------
 type Row = Record<string, unknown>;
 const dbHolder = vi.hoisted(() => ({
@@ -302,5 +308,70 @@ describe('previewFleetDesignApplyWithContext — role corrections', () => {
 
     expect(preview.roleCorrections).toEqual([{ deviceId: 'd1', hostname: 'H1', from: 'workstation', to: 'server', billingRelevant: true }]);
     expect(preview.blockers).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W04 (#5654): step 4 — approved automation scripts
+// ---------------------------------------------------------------------------
+describe('previewFleetDesignApply — automation scripts (W04)', () => {
+  const spooler = { name: 'Restart print spooler', purpose: 'Restart spooler when stuck', osTypes: ['windows' as const], language: 'powershell' as const, content: 'Restart-Service Spooler' };
+  const cleanup = { name: 'Clean temp', purpose: 'Free disk', osTypes: ['windows' as const], language: 'powershell' as const, content: 'Remove-Item $env:TEMP\\* -Recurse' };
+  const outcome = makeOutcome({ automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler, cleanup] }] });
+  const target = { orgId: ORG, partnerId: null, availability: 'org' as const };
+
+  it('lists each approved script with its name, language, OS and whether a same-named script already exists', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcome));
+    bundleMock.previewBundle.mockResolvedValue({ target, entries: [{ index: 0, name: spooler.name, status: 'name-conflict' }, { index: 1, name: cleanup.name, status: 'new' }] });
+
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({ automation: ['automation:file_server:script:0', 'automation:file_server:script:1'] }));
+
+    expect(preview.scripts).toEqual([
+      { itemRef: 'automation:file_server:script:0', functionKey: 'file_server', name: spooler.name, language: 'powershell', osTypes: ['windows'], alreadyExists: true },
+      { itemRef: 'automation:file_server:script:1', functionKey: 'file_server', name: cleanup.name, language: 'powershell', osTypes: ['windows'], alreadyExists: false },
+    ]);
+    expect(preview.blockers).toEqual([]);
+    // Checked against the same importer the apply will call, org-owned.
+    expect(bundleMock.previewBundle).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ bundleVersion: 1, scripts: [expect.objectContaining({ name: spooler.name, tags: ['fleet-design'] }), expect.objectContaining({ name: cleanup.name })] }),
+      { availability: 'org', orgId: ORG },
+    );
+  });
+
+  it('blocks a ref that is not in the design or is malformed', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcome));
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({ automation: ['automation:file_server:script:7', 'automation:print_server:script:0'] }));
+    expect(preview.blockers).toEqual([
+      { itemRef: 'automation:file_server:script:7', reason: 'not_in_design' },
+      { itemRef: 'automation:print_server:script:0', reason: 'not_in_design' },
+    ]);
+    expect(preview.scripts).toEqual([]);
+    expect(bundleMock.previewBundle).not.toHaveBeenCalled();
+  });
+
+  it('blocks a script the importer would reject (invalid entry, secret variable reference, scope denied)', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcome));
+    bundleMock.previewBundle.mockResolvedValueOnce({ target, entries: [{ index: 0, name: spooler.name, status: 'invalid', error: 'too long' }, { index: 1, name: cleanup.name, status: 'new' }] });
+    bundleMock.findSecretVariableReferences.mockResolvedValueOnce(['api_key']);
+    const approval = makeApproval({ automation: ['automation:file_server:script:0', 'automation:file_server:script:1'] });
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, approval);
+    expect(preview.blockers).toEqual([
+      { itemRef: 'automation:file_server:script:0', reason: 'script_invalid' },
+      { itemRef: 'automation:file_server:script:1', reason: 'script_secret_reference' },
+    ]);
+
+    bundleMock.previewBundle.mockResolvedValueOnce({ error: 'denied', status: 403 });
+    const denied = await previewFleetDesignApply(makeAuth(), RUN, approval);
+    expect(denied.blockers.map((b) => b.reason)).toEqual(['script_scope_denied', 'script_scope_denied']);
+  });
+
+  it('an already-applied script is reported in alreadyApplied, not re-created and not checked again', async () => {
+    ledgerMock.lockReportRun.mockResolvedValue(lockedOk(outcome));
+    ledgerMock.loadLedger.mockResolvedValue([{ id: 'l1', itemRef: 'automation:file_server:script:0', itemKind: 'script', status: 'applied', step: 4, createdRefs: { scriptId: 's1' }, beforeImage: null, appliedAt: new Date() }]);
+    const preview = await previewFleetDesignApply(makeAuth(), RUN, makeApproval({ automation: ['automation:file_server:script:0'] }));
+    expect(preview.alreadyApplied).toEqual(['automation:file_server:script:0']);
+    expect(preview.scripts).toEqual([]);
+    expect(bundleMock.previewBundle).not.toHaveBeenCalled();
   });
 });

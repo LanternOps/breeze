@@ -4458,27 +4458,10 @@
       "suspended": "Sospesa",
       "churned": "Persa",
       "offboarding": "In dismissione"
+    },
+    "help": {
+      "slug": "Generato dal nome. Univoco nel tuo account; usato dall'API e dalle integrazioni."
     }
-  },
-  "organizationList": {
-    "title": "Organizzazioni",
-    "count": "{{filtered}} di {{total}} organizzazioni",
-    "searchPlaceholder": "Cerca organizzazioni",
-    "allStatuses": "Tutti gli stati",
-    "status": {
-      "active": "Attiva",
-      "trial": "Prova",
-      "suspended": "Sospesa",
-      "churned": "Persa",
-      "offboarding": "In dismissione",
-      "merging": "Fusione in corso",
-      "archived": "Archiviata",
-      "purging": "Eliminazione in corso"
-    },
-    "columns": {
-      "devices": "Dispositivi"
-    },
-    "empty": "Nessuna organizzazione trovata. Prova a modificare ricerca o filtri."
   },
   "bulkOrgImport": {
     "title": "Importazione in blocco",
@@ -4543,7 +4526,7 @@
   },
   "organizationsPage": {
     "loading": "Caricamento organizzazioni...",
-    "title": "Organizzazioni e siti",
+    "title": "Organizzazioni",
     "description": "Gestisci le organizzazioni e i relativi siti.",
     "actions": {
       "addOrganization": "Aggiungi organizzazione",
@@ -4552,7 +4535,10 @@
       "archiveOrganization": "Archivia organizzazione",
       "deleting": "Eliminazione...",
       "openRecord": "Apri scheda",
-      "openSettings": "Impostazioni"
+      "openSettings": "Impostazioni",
+      "openSettingsFor": "Impostazioni di {{name}}",
+      "openRecordFor": "Apri la scheda di {{name}}",
+      "more": "Altre azioni"
     },
     "errors": {
       "fetchOrganizations": "Impossibile recuperare le organizzazioni",
@@ -4576,17 +4562,31 @@
     "deviceCount": "{{count}} dispositivi",
     "list": {
       "title": "Organizzazioni",
-      "searchPlaceholder": "Cerca...",
       "empty": "Nessuna organizzazione trovata.",
-      "noMatches": "Nessuna organizzazione corrisponde alla ricerca.",
-      "dragToReorder": "Trascina per riordinare"
+      "noMatches": "Nessuna organizzazione corrisponde alla ricerca o al filtro.",
+      "dragToReorder": "Trascina per riordinare",
+      "searchLabel": "Cerca organizzazioni",
+      "reorderHandle": "Riordina {{name}}",
+      "reorderHint": "Usa le frecce su e giù per spostare questa organizzazione.",
+      "movedAnnouncement": "{{name}} spostata alla posizione {{position}} di {{total}}",
+      "workspaceMarker": "Spazio di lavoro",
+      "sort": {
+        "label": "Ordina",
+        "manual": "Ordine manuale",
+        "name": "Dalla A alla Z",
+        "devices": "Più dispositivi"
+      },
+      "filter": {
+        "label": "Filtra per stato",
+        "all": "Tutte"
+      }
     },
     "sites": {
       "loading": "Caricamento siti..."
     },
     "emptySelection": {
       "title": "Nessuna organizzazione selezionata",
-      "description": "Seleziona un'organizzazione dall'elenco per visualizzarne i siti."
+      "description": "Seleziona un'organizzazione per vederne stato, siti e azioni."
     },
     "add": {
       "title": "Aggiungi organizzazione",
@@ -4607,8 +4607,9 @@
     },
     "deleteSite": {
       "title": "Elimina sito",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
+      "message": "Eliminare {{name}}? Il sito verrà rimosso definitivamente e l'operazione non può essere annullata.",
+      "blockedMessage_one": "{{name}} ha ancora {{count}} dispositivo. Spostalo in un altro sito prima di eliminare questo.",
+      "blockedMessage_other": "{{name}} ha ancora {{count}} dispositivi. Spostali in un altro sito prima di eliminare questo."
     },
     "merge": {
       "openButton": "Unisci a un'altra organizzazione",
@@ -4709,6 +4710,9 @@
         "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
         "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
       }
+    },
+    "scope": {
+      "hint": "Il tuo spazio di lavoro è impostato su {{orgName}}. Le azioni di questa pagina si applicano all'organizzazione selezionata qui."
     }
   },
   "siteDetailPage": {
@@ -4806,7 +4810,9 @@
     "count": "{{filtered}} di {{total}} siti",
     "searchPlaceholder": "Cerca siti",
     "actions": {
-      "add": "Aggiungi sito"
+      "add": "Aggiungi sito",
+      "editSite": "Modifica {{name}}",
+      "deleteSite": "Elimina {{name}}"
     },
     "columns": {
       "timezone": "Fuso orario",

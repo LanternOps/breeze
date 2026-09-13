@@ -72,7 +72,8 @@
         "invoicesNothingDue": "Nulla in scadenza",
         "contacts": "Contatti",
         "portalUsers": "Utenti del portale",
-        "sites": "Siti"
+        "sites": "Siti",
+        "lastActivity": "Ultima attività"
       },
       "activity": {
         "title": "Attività recente",

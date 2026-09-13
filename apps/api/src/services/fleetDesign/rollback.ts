@@ -1,7 +1,7 @@
 /**
  * Fleet Design rollback (Fleet Designer W03, #5653; spec §4.8).
  *
- * Reverses the ledger in reverse step order (5 → 3 → 2 → 1) and refuses any
+ * Reverses the ledger in reverse step order (5 → 4 → 3 → 2 → 1) and refuses any
  * item whose objects changed since the apply — a STATE comparison against
  * the ledger's `created_refs` / `before_image`, never `updated_at`. Each
  * ledger row runs in its own savepoint so a refusal or a thrown guard
@@ -19,6 +19,8 @@ import {
   deviceGroupMemberships,
   deviceGroups,
   devices,
+  scriptTags,
+  scriptToTags,
 } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { schedulePeripheralPolicyDevice } from '../../jobs/peripheralJobs';
@@ -31,6 +33,7 @@ import { canManagePartnerWidePolicies } from '../partnerWideAccess';
 import { canonical, retireRewrite, snapshotLinks } from './apply';
 import { loadLedger, lockReportRun, markRolledBack, type FleetDesignLedgerRow } from './ledger';
 import { FleetDesignApplyError } from './preview';
+import { FLEET_DESIGN_SCRIPT_TAG } from './scripts';
 
 type Refusal = { itemRef: string; reason: FleetDesignRollbackRefusal };
 
@@ -51,19 +54,30 @@ interface RollbackCtx {
   groupsStillTargeted: Set<string>;
   /** Devices whose pre-apply function could not be restored (the prior assessment is gone). */
   functionsNotRestored: string[];
+  /** Untagging a created script is a script write (W04); the route resolves scripts:write. */
+  canWriteScripts: boolean;
+}
+
+export interface FleetDesignRollbackOptions {
+  /** Caller holds scripts:write. Default false — a script row is refused, never silently untagged. */
+  canWriteScripts?: boolean;
 }
 
 export async function rollbackFleetDesign(
   auth: AuthContext,
   reportRunId: string,
   audit: RequestLike = requestLikeFromSnapshot({}),
+  options: FleetDesignRollbackOptions = {},
 ): Promise<FleetDesignRollbackResult> {
   const locked = await lockReportRun(reportRunId, (col) => auth.orgCondition(col));
   if (!locked) throw new FleetDesignApplyError('not_found');
   const orgId = locked.orgId;
   const ledger = (await loadLedger(reportRunId, orgId)).filter((r) => r.status === 'applied');
 
-  const ctx: RollbackCtx = { auth, orgId, reportRunId, userId: auth.user.id, audit, groupsStillTargeted: new Set(), functionsNotRestored: [] };
+  const ctx: RollbackCtx = {
+    auth, orgId, reportRunId, userId: auth.user.id, audit, groupsStillTargeted: new Set(), functionsNotRestored: [],
+    canWriteScripts: options.canWriteScripts === true,
+  };
   const rolledBack: string[] = [];
   const refused: Refusal[] = [];
 
@@ -88,8 +102,9 @@ export async function rollbackFleetDesign(
           case 'role_correction': await rollbackRoleCorrection(ctx, row); break;
           case 'policy': await rollbackPolicy(ctx, row); break;
           case 'retired': await rollbackRetired(ctx, row); break;
+          case 'script': await rollbackScript(ctx, row); break;
           case 'function': await rollbackFunction(ctx, row); break;
-          default: throw new RollbackRefused('modified_since_apply'); // 'script' is W04
+          default: throw new RollbackRefused('modified_since_apply');
         }
         await markRolledBack([row.id, ...group.map((g) => g.id)], orgId, ctx.userId);
       });
@@ -131,6 +146,29 @@ async function rollbackRoleCorrection(ctx: RollbackCtx, row: FleetDesignLedgerRo
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, ctx.orgId), eq(devices.deviceRoleSource, 'ai')))
     .returning({ id: devices.id });
   if (!updated) throw new RollbackRefused('modified_since_apply');
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 ← script (W04): spec §4.8 — "scripts are left in place but
+// untagged". Only the `fleet-design` tag link goes; the script row, its
+// versions and any other tag a technician added stay. No unmodified-since-
+// apply check: removing our own tag is safe whatever happened to the script
+// since, and a deleted script simply has nothing left to untag.
+// ---------------------------------------------------------------------------
+async function rollbackScript(ctx: RollbackCtx, row: FleetDesignLedgerRow): Promise<void> {
+  if (!ctx.canWriteScripts) throw new RollbackRefused('scripts_write_required');
+  const scriptId = row.createdRefs?.scriptId;
+  if (!scriptId) throw new RollbackRefused('modified_since_apply');
+  // Step 4 imports org-owned, so ensureTagIds created (or reused) the tag in
+  // the org's own tag scope.
+  const tags = await db
+    .select({ id: scriptTags.id })
+    .from(scriptTags)
+    .where(and(eq(scriptTags.orgId, ctx.orgId), eq(scriptTags.name, FLEET_DESIGN_SCRIPT_TAG)));
+  if (tags.length === 0) return;
+  await db
+    .delete(scriptToTags)
+    .where(and(eq(scriptToTags.scriptId, scriptId), inArray(scriptToTags.tagId, tags.map((t) => t.id))));
 }
 
 // ---------------------------------------------------------------------------

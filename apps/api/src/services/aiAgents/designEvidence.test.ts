@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FLEET_DESIGN_PRECURSOR_THRESHOLDS } from '@breeze/shared';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // db + leaf-service mocks for the `loadDesignEvidence` suite at the bottom of
@@ -125,6 +126,25 @@ describe('assembleDesignEvidence', () => {
     expect(Buffer.byteLength(JSON.stringify(e), 'utf8')).toBeLessThanOrEqual(32 * 1024);
     expect(e.truncated).toBe(true);
     expect(e.devices).toHaveLength(1);
+  });
+  it('keeps legacy-import scripts ahead of the rest so neither the count cap nor the byte trim drops them first (W04)', () => {
+    const script = (i: number, legacyImport: boolean) => ({
+      id: uuid(i), name: `S${i}`, language: 'powershell', osTypes: ['windows'], tags: legacyImport ? ['legacy-import'] : [],
+      legacyImport, description: 'd'.repeat(150),
+    });
+    // 1,000 ordinary scripts, then 5 legacy ones at the END of the loader order.
+    const scripts = [...Array.from({ length: 1000 }, (_, i) => script(i + 1, false)), ...Array.from({ length: 5 }, (_, i) => script(2001 + i, true))];
+    const capped = assembleDesignEvidence(raw({ automation: { playbooks: [], scripts } }));
+    expect(capped.automation.scripts.filter((s) => s.legacyImport)).toHaveLength(5);
+    const trimmed = assembleDesignEvidence(raw({ automation: { playbooks: [], scripts } }), { limitBytes: 32 * 1024 });
+    expect(trimmed.truncated).toBe(true);
+    expect(trimmed.automation.scripts.filter((s) => s.legacyImport)).toHaveLength(5);
+  });
+  it('the automation loader orders legacy-import scripts first and matches the tag case-insensitively (W04)', () => {
+    const src = readFileSync(new URL('./designEvidence.ts', import.meta.url), 'utf8');
+    const loader = src.slice(src.indexOf('async function loadAutomation'), src.indexOf('type LogRow'));
+    expect(loader).toMatch(/ORDER BY[\s\S]*lower\(t\d?\.name\) = 'legacy-import'[\s\S]*DESC/);
+    expect(loader).toContain("toLowerCase() === 'legacy-import'");
   });
   it('computes baseline numbers with the frozen thresholds', () => {
     const e = assembleDesignEvidence(raw({ counts: { alerts90d: 126, tickets90d: 21, endpoints: 100 }, precursors: { ...raw().precursors, diskOver: 4, certificateExpiring: null } }));

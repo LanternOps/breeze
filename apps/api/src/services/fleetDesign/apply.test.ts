@@ -37,6 +37,9 @@ vi.mock('../groupMembership', () => groupMembershipMock);
 const peripheralJobsMock = vi.hoisted(() => ({ schedulePeripheralPolicyDevice: vi.fn(async () => undefined) }));
 vi.mock('../../jobs/peripheralJobs', () => peripheralJobsMock);
 
+const bundleMock = vi.hoisted(() => ({ importBundle: vi.fn() }));
+vi.mock('../scriptBundle', () => bundleMock);
+
 const auditMock = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
   requestLikeFromSnapshot: vi.fn(() => ({ fake: true })),
@@ -144,7 +147,7 @@ function makeApproval(overrides: Partial<FleetDesignApproval> = {}): FleetDesign
 }
 
 function makePreview(overrides: Partial<FleetDesignApplyPreview> = {}): FleetDesignApplyPreview {
-  return { functions: [], policies: [], retired: [], roleCorrections: [], alreadyApplied: [], blockers: [], ...overrides };
+  return { functions: [], policies: [], retired: [], scripts: [], roleCorrections: [], alreadyApplied: [], blockers: [], ...overrides };
 }
 
 function makeOutcome(overrides: Partial<FleetDesignOutcome['sections']> = {}): FleetDesignOutcome {
@@ -180,6 +183,7 @@ function makeCtx(overrides: Partial<FleetDesignPreviewContext> = {}): FleetDesig
     monitoringByFunction: new Map(),
     retiredResolved: new Map(),
     policyRowByFunction: new Map(),
+    scriptsToCreate: [],
     ...overrides,
   } as FleetDesignPreviewContext;
 }
@@ -446,6 +450,201 @@ describe('applyFleetDesign — step 5 (role corrections)', () => {
     }));
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.role.ai_correction' }));
     expect(result.applied).toContain('roleCorrections:d1');
+  });
+});
+
+describe('applyFleetDesign — step 4 (scripts, W04)', () => {
+  const spooler = { name: 'Restart print spooler', purpose: 'Restart spooler when stuck', osTypes: ['windows' as const], language: 'powershell' as const, content: 'Restart-Service Spooler' };
+  const cleanup = { name: 'Clean temp', purpose: 'Free disk', osTypes: ['windows' as const], language: 'powershell' as const, content: 'Remove-Item temp' };
+  const toCreate = [
+    { itemRef: 'automation:file_server:script:0', functionKey: 'file_server', script: spooler },
+    { itemRef: 'automation:file_server:script:1', functionKey: 'file_server', script: cleanup },
+  ];
+  const importOk = {
+    target: { orgId: ORG, partnerId: null, availability: 'org' },
+    imported: 1, renamed: 1, skipped: 0, versioned: 0, errors: [] as Array<{ index: number; name: string; error: string }>,
+    scripts: [
+      { index: 0, name: spooler.name, action: 'renamed', finalName: `${spooler.name} (2)`, scriptId: 'script-a' },
+      { index: 1, name: cleanup.name, action: 'imported', scriptId: 'script-b' },
+    ],
+  };
+  const approval = () => makeApproval({ automation: toCreate.map((t) => t.itemRef) });
+
+  it('creates every approved script in ONE importer call — org-owned, rename on collision, tagged fleet-design — and records one ledger row each', async () => {
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({ scriptsToCreate: toCreate }));
+    bundleMock.importBundle.mockResolvedValue(importOk);
+
+    const result = await applyFleetDesign(makeAuth(), RUN, approval());
+
+    expect(bundleMock.importBundle).toHaveBeenCalledTimes(1);
+    const [auth, envelope, options] = bundleMock.importBundle.mock.calls[0]!;
+    expect(auth.user.id).toBe(USER);
+    expect(envelope).toEqual({
+      bundleVersion: 1,
+      scripts: [
+        { name: spooler.name, description: spooler.purpose, category: 'Fleet Design', tags: ['fleet-design'], osTypes: ['windows'], language: 'powershell', content: spooler.content, timeoutSeconds: 300, runAs: 'system' },
+        { name: cleanup.name, description: cleanup.purpose, category: 'Fleet Design', tags: ['fleet-design'], osTypes: ['windows'], language: 'powershell', content: cleanup.content, timeoutSeconds: 300, runAs: 'system' },
+      ],
+    });
+    expect(options).toMatchObject({ availability: 'org', orgId: ORG, mode: 'rename', tags: ['fleet-design'] });
+
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith({
+      orgId: ORG, reportRunId: RUN, itemRef: 'automation:file_server:script:0', itemKind: 'script', step: 4,
+      createdRefs: { scriptId: 'script-a', scriptName: `${spooler.name} (2)` }, userId: USER,
+    });
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
+      itemRef: 'automation:file_server:script:1', step: 4, createdRefs: { scriptId: 'script-b', scriptName: cleanup.name },
+    }));
+    expect(result.applied).toEqual(['automation:file_server:script:0', 'automation:file_server:script:1']);
+    expect(result.partial).toBeNull();
+    expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: 'fleet_design.apply.script', resourceType: 'script', resourceId: 'script-a',
+    }));
+  });
+
+  it('stamps honest provenance: AI-authored (ai_proposal), approved by the applying user, no proposal or review id', async () => {
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({ scriptsToCreate: toCreate }));
+    bundleMock.importBundle.mockResolvedValue(importOk);
+    await applyFleetDesign(makeAuth(), RUN, approval());
+    const options = bundleMock.importBundle.mock.calls[0]![2] as { provenanceFor: (e: unknown, i: number) => Record<string, unknown> };
+    const p = options.provenanceFor({}, 1);
+    expect(p).toMatchObject({ origin: 'ai_proposal', approvedBy: USER });
+    expect(p.approvedAt).toBeInstanceOf(Date);
+    expect(p.changelog).toContain(RUN);
+    expect(p.changelog).toContain('automation:file_server:script:1');
+    expect(p).not.toHaveProperty('proposalId');
+    expect(p).not.toHaveProperty('reviewId');
+    // Creation is not run authorisation: no approvalMethod is claimed.
+    expect(p).not.toHaveProperty('approvalMethod');
+  });
+
+  it('a per-entry importer error fails step 4 as a whole (savepoint) — no script ledger rows, partial failedStep 4, step 5 not run', async () => {
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      scriptsToCreate: toCreate,
+      preview: makePreview({ roleCorrections: [{ deviceId: 'd1', hostname: 'h', from: 'workstation', to: 'server', billingRelevant: true }] }),
+    }));
+    bundleMock.importBundle.mockResolvedValue({ ...importOk, imported: 1, renamed: 0, errors: [{ index: 0, name: spooler.name, error: 'references secret variable' }], scripts: [importOk.scripts[1]] });
+
+    const result = await applyFleetDesign(makeAuth(), RUN, approval());
+
+    expect(result.partial).toEqual({ failedStep: 4, reason: expect.stringContaining('references secret variable') });
+    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemKind: 'script' }));
+    expect(ledgerMock.recordFailed).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'step:4', itemKind: 'script', step: 4 }));
+    expect(dbHolder.updates.find((u) => u.table === devices)).toBeUndefined();
+  });
+
+  it('a scope error from the importer fails step 4', async () => {
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({ scriptsToCreate: toCreate }));
+    bundleMock.importBundle.mockResolvedValue({ error: 'Partner-wide write denied', status: 403 });
+    const result = await applyFleetDesign(makeAuth(), RUN, approval());
+    expect(result.partial).toEqual({ failedStep: 4, reason: expect.stringContaining('script_scope_denied') });
+  });
+
+  it('does not call the importer when every approved script was created by an earlier apply', async () => {
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({ scriptsToCreate: [] }));
+    await applyFleetDesign(makeAuth(), RUN, approval());
+    expect(bundleMock.importBundle).not.toHaveBeenCalled();
+  });
+
+  it('appends the created id to the rationale of an applied rule that names the proposal, and refreshes the policy snapshot', async () => {
+    const rule: FleetDesignRule = {
+      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      action: { kind: 'script', ref: spooler.name }, paging: 'business_hours',
+    };
+    const other: FleetDesignRule = { ...rule, name: 'Unrelated', action: 'none' };
+    const outcome = makeOutcome({
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule, other] }],
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler, cleanup] }],
+    });
+    const policyRow = { id: 'ledger-policy', createdRefs: { policyId: 'p1', groupId: 'g1', alertRuleLinkId: 'link-r' } } as unknown as FleetDesignLedgerRow;
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      outcome,
+      scriptsToCreate: toCreate,
+      policyRowByFunction: new Map([['file_server', policyRow]]),
+    }));
+    bundleMock.importBundle.mockResolvedValue(importOk);
+    const before = { items: [toRuleItem(rule), toRuleItem(other)] };
+    const patchedItems = [{ ...toRuleItem(rule), rationale: `${toRuleItem(rule).rationale} [script created: script-a]` }, toRuleItem(other)];
+    configPolicyMock.listFeatureLinks
+      .mockResolvedValueOnce([{ id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: before }])
+      .mockResolvedValueOnce([{ id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]);
+    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-r' });
+
+    await applyFleetDesign(makeAuth(), RUN, approval());
+
+    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-r', { inlineSettings: { items: patchedItems } }, 'p1');
+    expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith('ledger-policy', ORG, expect.objectContaining({
+      policyId: 'p1',
+      linksSnapshot: snapshotLinks([{ featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]),
+    }));
+  });
+
+  it('a second apply that adds a rule (reused policy) AND its script keeps the refs step 3 just wrote when step 4 refreshes the snapshot', async () => {
+    const rule: FleetDesignRule = {
+      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      action: { kind: 'script', ref: spooler.name }, paging: 'none',
+    };
+    const outcome = makeOutcome({
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule] }],
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler] }],
+    });
+    // First apply created the policy with watches only — no alert_rule link yet.
+    const existingRow = { id: 'ledger-policy', createdRefs: { policyId: 'p1', groupId: 'g1', monitoringLinkId: 'link-m' } } as unknown as FleetDesignLedgerRow;
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      outcome,
+      scriptsToCreate: [toCreate[0]!],
+      preview: makePreview({
+        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 0, ruleCount: 1, displaces: [] }],
+      }),
+      monitoringByFunction: new Map([['file_server', { watches: [], rules: [0] }]]),
+      policyRowByFunction: new Map([['file_server', existingRow]]),
+    }));
+    bundleMock.importBundle.mockResolvedValue({ ...importOk, imported: 1, renamed: 0, scripts: [{ index: 0, name: spooler.name, action: 'imported', scriptId: 'script-a' }] });
+    const ruleItem = toRuleItem(rule);
+    const monitoringLink = { id: 'link-m', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { watches: [] } };
+    configPolicyMock.listFeatureLinks
+      .mockResolvedValueOnce([monitoringLink]) // step 3 reads the policy's links before adding the rule link
+      .mockResolvedValue([monitoringLink, { id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [ruleItem] } }]);
+    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-r' });
+    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-r' });
+
+    await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:rule:0'], automation: ['automation:file_server:script:0'] }));
+
+    const calls = ledgerMock.updateCreatedRefs.mock.calls.filter((c) => c[0] === 'ledger-policy');
+    expect(calls.length).toBe(2); // step 3 union, then step 4 snapshot refresh
+    expect(calls[1]![2]).toMatchObject({ policyId: 'p1', monitoringLinkId: 'link-m', alertRuleLinkId: 'link-r' });
+  });
+
+  it('step 3 of a LATER apply writes the id of a script an earlier apply created into the rule rationale', async () => {
+    const rule: FleetDesignRule = {
+      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      action: { kind: 'script', ref: 'automation:file_server:script:0' }, paging: 'none',
+    };
+    const outcome = makeOutcome({
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule] }],
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler] }],
+    });
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      outcome,
+      ledger: [{ id: 'l-s', itemRef: 'automation:file_server:script:0', itemKind: 'script', status: 'applied', step: 4, createdRefs: { scriptId: 'script-old' } } as unknown as FleetDesignLedgerRow],
+      preview: makePreview({
+        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 0, ruleCount: 1, displaces: [] }],
+      }),
+      monitoringByFunction: new Map([['file_server', { watches: [], rules: [0] }]]),
+    }));
+    configPolicyMock.createConfigPolicy.mockResolvedValue({ id: 'p-new' });
+    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-r' });
+    configPolicyMock.assignPolicy.mockResolvedValue({ id: 'a1' });
+    configPolicyMock.updateConfigPolicy.mockResolvedValue({ id: 'p-new' });
+    configPolicyMock.listFeatureLinks.mockResolvedValue([]);
+
+    await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:rule:0'] }));
+
+    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-new', 'alert_rule', null, {
+      items: [expect.objectContaining({ rationale: 'jobs pile up [Action: script automation:file_server:script:0; Paging: none] [script created: script-old]' })],
+    });
   });
 });
 

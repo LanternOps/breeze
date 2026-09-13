@@ -101,6 +101,29 @@ describe('ScriptProvenancePanel', () => {
     expect(await screen.findByTestId('script-provenance-empty')).toBeInTheDocument();
   });
 
+  it('explains a never-reviewed AI proposal (Fleet Design apply, #5654) instead of implying an edit', async () => {
+    fetchWithAuthMock.mockResolvedValue(
+      makeJsonResponse({
+        versions: [
+          {
+            ...headVersion,
+            reviewId: null,
+            reviewedAt: null,
+            reviewSummary: null,
+            reviewRiskTier: null,
+            reviewModel: null,
+            proposalId: null
+          }
+        ]
+      })
+    );
+    render(<ScriptProvenancePanel scriptId="s1" />);
+    expect(await screen.findByTestId('script-provenance-not-reviewed')).toBeInTheDocument();
+    expect(screen.getByTestId('script-provenance-approver')).toHaveTextContent('Jane Doe');
+    expect(screen.queryByTestId('script-provenance-edited-since-review')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('script-provenance-badge-reviewed')).not.toBeInTheDocument();
+  });
+
   it('redirects to login on a 401', async () => {
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({}, false, 401));
     render(<ScriptProvenancePanel scriptId="s1" />);

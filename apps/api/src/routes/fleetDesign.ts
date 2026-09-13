@@ -42,7 +42,7 @@ import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { reportRuns, reports, sites } from '../db/schema';
 import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
-import { PERMISSIONS, type UserPermissions } from '../services/permissions';
+import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { applyFleetDesign } from '../services/fleetDesign/apply';
 import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
@@ -71,11 +71,22 @@ const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PER
 const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);
 // Apply writes configuration policies and device groups — both gated on
 // devices:write everywhere else (routes/configurationPolicies/crud.ts,
-// routes/groups.ts). Scripts (W04) will add scripts:write.
+// routes/groups.ts). Step 4 (W04) also creates scripts, so an approval that
+// carries automation refs additionally needs scripts:write — the permission
+// POST /scripts and the bundle importer require (see canWriteScripts).
 const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
 // Filing the design in the org's document library writes an org_documents
 // row — the same gate `routes/orgDocuments.ts` puts on an upload.
 const requireDocumentsWrite = requirePermission(PERMISSIONS.DOCUMENTS_WRITE.resource, PERMISSIONS.DOCUMENTS_WRITE.action);
+
+/**
+ * scripts:write, read from the permissions `requireDevicesWrite` just resolved
+ * for this org/partner. Absent permissions read as "no" (fail closed).
+ */
+function canWriteScripts(c: Context): boolean {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  return !!perms && hasPermission(perms, PERMISSIONS.SCRIPTS_WRITE.resource, PERMISSIONS.SCRIPTS_WRITE.action);
+}
 
 /**
  * Apply and rollback touch every device a function names, so they need an
@@ -260,8 +271,10 @@ fleetDesignRoutes.post(
     const reportRunId = uuidParam(c, 'reportRunId');
     if (!reportRunId) return c.json({ error: 'not_found' }, 404);
     if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
+    const approval = c.req.valid('json');
+    if (approval.automation.length > 0 && !canWriteScripts(c)) return c.json({ error: 'scripts_write_required' }, 403);
     try {
-      const preview = await previewFleetDesignApply(auth, reportRunId, c.req.valid('json'));
+      const preview = await previewFleetDesignApply(auth, reportRunId, approval);
       return c.json(preview);
     } catch (err) {
       return mapApplyError(c, err);
@@ -281,6 +294,7 @@ fleetDesignRoutes.post(
     if (!reportRunId) return c.json({ error: 'not_found' }, 404);
     if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
     const approval = c.req.valid('json');
+    if (approval.automation.length > 0 && !canWriteScripts(c)) return c.json({ error: 'scripts_write_required' }, 403);
     try {
       const result = await applyFleetDesign(auth, reportRunId, approval, c);
       writeRouteAudit(c, {
@@ -314,7 +328,9 @@ fleetDesignRoutes.post('/:reportRunId/rollback', scopes, requireDevicesWrite, re
   if (!reportRunId) return c.json({ error: 'not_found' }, 404);
   if (siteRestricted(c)) return c.json({ error: 'site_restricted' }, 403);
   try {
-    const result = await rollbackFleetDesign(auth, reportRunId, c);
+    // A caller without scripts:write still rolls back everything else; the
+    // service refuses only the script rows (scripts_write_required).
+    const result = await rollbackFleetDesign(auth, reportRunId, c, { canWriteScripts: canWriteScripts(c) });
     writeRouteAudit(c, {
       orgId: auth.orgId ?? null,
       action: 'fleet_design.rollback',

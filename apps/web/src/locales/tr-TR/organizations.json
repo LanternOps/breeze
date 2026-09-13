@@ -72,7 +72,8 @@
         "invoicesNothingDue": "Vadesi gelen yok",
         "contacts": "Kişiler",
         "portalUsers": "Portal kullanıcıları",
-        "sites": "Siteler"
+        "sites": "Siteler",
+        "lastActivity": "Son etkinlik"
       },
       "activity": {
         "title": "Son etkinlik",

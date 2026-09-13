@@ -1,16 +1,19 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import type { FleetDesignOutcome } from "@breeze/shared";
+import type { FleetDesignAutomationEntry, FleetDesignLegacyItem, FleetDesignOutcome } from "@breeze/shared";
 import { getDeviceFunctionLabel } from "@/lib/deviceFunctions";
 import type { UseDesignSelectionResult } from "./useDesignSelection";
 
 /**
- * Fleet Designer W03 (#5653) — renders the eight `FLEET_DESIGN_SECTION_KEYS`
- * sections of a stored `FleetDesignOutcome` in order. Selectable items
- * (functions, monitoring watches/rules, retired items, role corrections) get
- * a checkbox wired through `selection`; `found`/`automation`/`legacy`/
- * `baseline` and the non-role-correction parts of `unsure` are read-only —
- * automation and legacy carry no apply path yet (W04).
+ * Fleet Designer W03/W04 (#5653/#5654) — renders the eight
+ * `FLEET_DESIGN_SECTION_KEYS` sections of a stored `FleetDesignOutcome` in
+ * order. Selectable items (functions, monitoring watches/rules, retired
+ * items, automation scripts, role corrections) get a checkbox wired through
+ * `selection`. `found`/`baseline` and the non-role-correction parts of
+ * `unsure` are read-only. Within automation, playbooks stay read-only (no
+ * apply path — only scripts do); legacy is read-only by design — it is an
+ * informational inventory, never an apply target (`approval.legacy` is
+ * always `[]`, see `useDesignSelection`'s docstring).
  */
 export interface FleetDesignViewerProps {
   outcome: FleetDesignOutcome;
@@ -73,6 +76,18 @@ function SelectableRow({
     </label>
   );
 }
+
+/** Read-only playbook label: built-in name, or "custom name — description". */
+function playbookLabel(playbook: FleetDesignAutomationEntry["playbooks"][number]): string {
+  if ("builtInName" in playbook) return playbook.builtInName;
+  return `${playbook.custom.name} — ${playbook.custom.description}`;
+}
+
+const LEGACY_BUCKET_CLASS: Record<FleetDesignLegacyItem["bucket"], string> = {
+  obsolete: "bg-muted text-muted-foreground",
+  covered: "bg-success/15 text-success",
+  needed: "bg-warning/15 text-warning",
+};
 
 export default function FleetDesignViewer({ outcome, selection }: FleetDesignViewerProps) {
   const { t } = useTranslation("fleetDesign");
@@ -149,25 +164,76 @@ export default function FleetDesignViewer({ outcome, selection }: FleetDesignVie
       <Section title={t("sections.automation")} testId="fleet-design-section-automation">
         {sections.automation.length === 0 && <p className="text-sm text-muted-foreground">{t("items.none")}</p>}
         {sections.automation.map((a) => (
-          <div key={a.functionKey} className="space-y-1 text-sm">
-            <p className="font-medium">{getDeviceFunctionLabel(a.functionKey)}</p>
-            {a.scripts.map((s, i) => (
-              <p key={i} className="text-xs text-muted-foreground">
-                {s.name} — {s.purpose}
+          <div key={a.functionKey} className="space-y-1.5">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {getDeviceFunctionLabel(a.functionKey)}
+            </h3>
+            {a.playbooks.map((p, i) => (
+              <p key={i} className="text-sm text-muted-foreground">
+                {playbookLabel(p)}
               </p>
             ))}
+            {a.scripts.map((s, i) =>
+              s.itemRef ? (
+                <div key={s.itemRef} className="space-y-1">
+                  <SelectableRow
+                    itemRef={s.itemRef}
+                    label={s.name}
+                    meta={`${s.language} · ${s.osTypes.join("/")} — ${s.purpose}`}
+                    selection={selection}
+                  />
+                  <details data-testid={`fleet-design-script-content-${s.itemRef}`} className="rounded-md border px-3 py-1.5">
+                    <summary className="cursor-pointer text-xs text-muted-foreground">{t("automation.showContent")}</summary>
+                    <div className="mt-2 overflow-x-auto">
+                      <pre className="text-xs">{s.content}</pre>
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <p key={i} className="text-xs text-muted-foreground">
+                  {s.name} — {s.purpose}
+                </p>
+              ),
+            )}
           </div>
         ))}
       </Section>
 
       <Section title={t("sections.legacy")} testId="fleet-design-section-legacy">
-        {sections.legacy.length === 0 && <p className="text-sm text-muted-foreground">{t("items.none")}</p>}
-        {sections.legacy.map((l) => (
-          <p key={l.scriptId} className="text-sm">
-            <span className="font-medium">{l.scriptName}</span>{" "}
-            <span className="text-xs text-muted-foreground">— {l.bucket}: {l.notes}</span>
-          </p>
-        ))}
+        {sections.legacy.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{t("items.none")}</p>
+        ) : (
+          <div className="overflow-x-auto" data-testid="fleet-design-legacy-table">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs font-medium text-muted-foreground">
+                  <th className="px-2 py-1">{t("legacy.columns.script")}</th>
+                  <th className="px-2 py-1">{t("legacy.columns.bucket")}</th>
+                  <th className="px-2 py-1">{t("legacy.columns.coveredBy")}</th>
+                  <th className="px-2 py-1">{t("legacy.columns.intent")}</th>
+                  <th className="px-2 py-1">{t("legacy.columns.notes")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sections.legacy.map((l) => (
+                  <tr key={l.scriptId} data-testid={`fleet-design-legacy-row-${l.scriptId}`} className="border-b last:border-0">
+                    <td className="px-2 py-1.5 font-medium">{l.scriptName}</td>
+                    <td className="px-2 py-1.5">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${LEGACY_BUCKET_CLASS[l.bucket]}`}
+                      >
+                        {t(/* i18n-dynamic */ `legacy.bucket.${l.bucket}`)}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-muted-foreground">{l.coveredBy || "—"}</td>
+                    <td className="px-2 py-1.5 text-muted-foreground">{l.intent}</td>
+                    <td className="px-2 py-1.5 text-muted-foreground">{l.notes}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Section>
 
       <Section title={t("sections.baseline")} testId="fleet-design-section-baseline">

@@ -56,11 +56,31 @@
     "functionMeta": "{{count}} Geräte · {{pct}}% Konfidenz",
     "roleCorrectionLabel": "{{from}} → {{to}}"
   },
+  "automation": {
+    "showContent": "Skriptinhalt anzeigen"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Skript",
+      "bucket": "Kategorie",
+      "coveredBy": "Abgedeckt durch",
+      "intent": "Zweck",
+      "notes": "Notizen"
+    },
+    "bucket": {
+      "obsolete": "Veraltet",
+      "covered": "Abgedeckt",
+      "needed": "Benötigt"
+    }
+  },
   "drawer": {
     "title": "Flottendesign anwenden",
     "loadingPreview": "Es wird geprüft, was dies bewirkt …",
     "nothingSelected": "Wählen Sie mindestens ein Element zum Anwenden aus.",
     "creates": "Erstellt",
+    "createsScripts": "Erstellt Skripte",
+    "scriptRenamed": "ein Skript mit diesem Namen existiert bereits — das neue erhält eine nummerierte Erweiterung",
+    "scriptsNote": "Wird in der Skriptbibliothek dieser Organisation erstellt und mit „fleet-design\" markiert. Nichts wird ausgeführt, bis es jemand startet; ein Rollback entfernt die Markierung und behält das Skript.",
     "watchAndRuleCount": "{{watches}} Überwachungen, {{rules}} Regeln",
     "retires": "Entfernt",
     "displaces": "Verdrängt",
@@ -91,7 +111,8 @@
     "blocked": "Dieses Design kann noch nicht angewendet werden — beheben Sie die blockierenden Punkte und versuchen Sie es erneut.",
     "site_restricted": "Standortbeschränkte Konten können ein Flottendesign weder anwenden noch zurücksetzen.",
     "no_designer_agent": "Für diese Organisation ist kein Design-Agent konfiguriert.",
-    "not_found": "Dieses Flottendesign wurde nicht gefunden."
+    "not_found": "Dieses Flottendesign wurde nicht gefunden.",
+    "scripts_write_required": "Zum Erstellen von Skripten wird die Schreibberechtigung für Skripte benötigt. Heben Sie die Auswahl der vorgeschlagenen Skripte auf oder wenden Sie sich an einen Administrator."
   },
   "drift": {
     "banner": "Abweichung seit dem am {{date}} angewendeten Design: {{missing}} fehlend, {{extra}} zusätzlich, {{changed}} geändert.",

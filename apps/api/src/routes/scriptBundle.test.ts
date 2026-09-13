@@ -225,6 +225,44 @@ describe('script bundle routes', () => {
     expect(h.state.inserts).toHaveLength(0);
   });
 
+  describe('POST /scripts/bundle/import — import-wide tags (Fleet Designer W04 #5654)', () => {
+    it('links the import-wide tag on every imported entry', async () => {
+      h.state.selectQueue.push([], [], []); // no org conflict, no partner-wide conflict, no existing tag
+      const res = await importRequest(app, {
+        bundle: { bundleVersion: 1, scripts: [baseEntry] },
+        mode: 'skip',
+        tags: ['legacy-import']
+      });
+      expect(res.status).toBe(200);
+      const { scriptTags, scriptToTags } = await import('../db/schema');
+      const tagInsert = h.state.inserts.find((i) => i.table === scriptTags);
+      expect((tagInsert!.values as Array<Record<string, unknown>>).map((t) => t.name)).toEqual(['legacy-import']);
+      expect(h.state.inserts.find((i) => i.table === scriptToTags)).toBeDefined();
+    });
+
+    it('rejects more than 10 import-wide tags with 400 and writes nothing', async () => {
+      const res = await importRequest(app, {
+        bundle: { bundleVersion: 1, scripts: [baseEntry] },
+        mode: 'skip',
+        tags: Array.from({ length: 11 }, (_, i) => `tag-${i}`)
+      });
+      expect(res.status).toBe(400);
+      expect(h.state.inserts).toHaveLength(0);
+    });
+
+    it('rejects an empty or over-long tag name with 400', async () => {
+      for (const bad of ['', 'x'.repeat(51)]) {
+        const res = await importRequest(app, {
+          bundle: { bundleVersion: 1, scripts: [baseEntry] },
+          mode: 'skip',
+          tags: [bad]
+        });
+        expect(res.status).toBe(400);
+      }
+      expect(h.state.inserts).toHaveLength(0);
+    });
+  });
+
   it('audits every imported script with the bundle identity', async () => {
     h.state.selectQueue.push([], []);
     const res = await importRequest(app, {

@@ -94,7 +94,7 @@ import { rollbackFleetDesign } from './rollback';
 import { snapshotLinks } from './apply';
 import { FleetDesignApplyError } from './preview';
 import { DeviceGroupDeleteError } from '../deviceGroupDelete';
-import { configPolicyAssignments, configurationPolicies, deviceFunctionAssessments, deviceGroupMemberships, deviceGroups, devices } from '../../db/schema';
+import { configPolicyAssignments, configurationPolicies, deviceFunctionAssessments, deviceGroupMemberships, deviceGroups, devices, scripts, scriptTags, scriptToTags } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import type { FleetDesignLedgerRow } from './ledger';
 
@@ -472,6 +472,50 @@ describe('rollbackFleetDesign — cross-item dependency', () => {
     ]));
     expect(deviceGroupDeleteMock.deleteDeviceGroup).not.toHaveBeenCalled();
     expect(deviceFunctionMock.restoreDeviceFunction).not.toHaveBeenCalled();
+  });
+});
+
+describe('rollbackFleetDesign — script row (W04)', () => {
+  const scriptRow = () => row({ id: 'script-row', itemRef: 'automation:file_server:script:0', itemKind: 'script', step: 4, createdRefs: { scriptId: 'script-a', scriptName: 'Restart print spooler' } });
+
+  it('removes only the fleet-design tag link and leaves the script in place', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([scriptRow()]);
+    selectSeed(scriptTags, [{ id: 'tag-fd' }]);
+
+    const result = await rollbackFleetDesign(makeAuth(), RUN, undefined, { canWriteScripts: true });
+
+    expect(result).toEqual({ rolledBack: ['automation:file_server:script:0'], refused: [] });
+    expect(dbHolder.deletes.map((d) => d.table)).toEqual([scriptToTags]);
+    expect(dbHolder.deletes.find((d) => d.table === scripts)).toBeUndefined();
+    expect(dbHolder.updates.find((u) => u.table === scripts)).toBeUndefined();
+    expect(ledgerMock.markRolledBack).toHaveBeenCalledWith(['script-row'], ORG, USER);
+  });
+
+  it('with no fleet-design tag left in the org there is nothing to untag, and the row still rolls back', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([scriptRow()]);
+    selectSeed(scriptTags, []);
+    const result = await rollbackFleetDesign(makeAuth(), RUN, undefined, { canWriteScripts: true });
+    expect(result.rolledBack).toEqual(['automation:file_server:script:0']);
+    expect(dbHolder.deletes).toEqual([]);
+  });
+
+  it('refuses the script row (scripts_write_required) for a caller without scripts:write — and by default', async () => {
+    ledgerMock.loadLedger.mockResolvedValue([scriptRow()]);
+    const result = await rollbackFleetDesign(makeAuth(), RUN);
+    expect(result).toEqual({ rolledBack: [], refused: [{ itemRef: 'automation:file_server:script:0', reason: 'scripts_write_required' }] });
+    expect(dbHolder.deletes).toEqual([]);
+    expect(ledgerMock.markRolledBack).not.toHaveBeenCalled();
+  });
+
+  it('rolls the script row back after step 5 and before step 1', async () => {
+    const roleRow = row({ id: 'role-1', itemRef: 'roleCorrections:d9', itemKind: 'role_correction', step: 5, beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'auto' } });
+    const functionRow = row({ id: 'function-1', itemRef: 'functions:x', itemKind: 'function', step: 1, createdRefs: { groupId: 'g-missing' }, beforeImage: { memberships: [], priorAssessmentIdByDevice: {} } });
+    ledgerMock.loadLedger.mockResolvedValue([functionRow, scriptRow(), roleRow]);
+    updateSeed(devices, [{ id: 'd9' }]);
+    selectSeed(scriptTags, [{ id: 'tag-fd' }]);
+    await rollbackFleetDesign(makeAuth(), RUN, undefined, { canWriteScripts: true });
+    const order = auditMock.writeAuditEvent.mock.calls.map((c) => (c[1] as { details: { itemRef: string } }).details.itemRef);
+    expect(order).toEqual(['roleCorrections:d9', 'automation:file_server:script:0', 'functions:x']);
   });
 });
 

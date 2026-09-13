@@ -77,6 +77,12 @@ export default function ScriptProvenancePanel({ scriptId }: ScriptProvenancePane
   const headIsReviewed = !!head.reviewId && !head.reviewEvidenceErased;
   const editedSinceReview = !headIsReviewed && head.origin === 'human' && earlierVersionWasReviewed;
   const hasReviewCitation = !!head.reviewId;
+  // Fleet Design apply creates ai_proposal-origin scripts with no proposal and
+  // no review — AI-authored, human-approved at apply, never model-reviewed
+  // (#5654). Say so plainly instead of falling through to "edited since
+  // review" (which this panel's editedSinceReview never fires for anyway,
+  // since it's gated on origin === 'human') or showing nothing at all.
+  const neverReviewed = head.origin === 'ai_proposal' && !head.reviewId;
 
   return (
     <div className="rounded-lg border bg-card p-6 shadow-xs">
@@ -136,6 +142,21 @@ export default function ScriptProvenancePanel({ scriptId }: ScriptProvenancePane
             )}
           </div>
         )
+      )}
+
+      {neverReviewed && (
+        <div className="mt-4 space-y-2 text-sm">
+          <p data-testid="script-provenance-not-reviewed" className="text-muted-foreground">
+            {t('provenance.notReviewedDetail')}
+          </p>
+          {head.approvedBy && (
+            <p data-testid="script-provenance-approver" className="text-muted-foreground">
+              <span className="font-medium">{t('provenance.approvedBy')}: </span>
+              {head.approverName ?? head.approvedBy}
+              {head.approvalMethod ? ` (${head.approvalMethod})` : ''}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

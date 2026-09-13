@@ -4463,27 +4463,10 @@
       "suspended": "Suspenso",
       "churned": "Cancelado",
       "offboarding": "Em desligamento"
+    },
+    "help": {
+      "slug": "Gerado a partir do nome. Único na sua conta; usado pela API e pelas integrações."
     }
-  },
-  "organizationList": {
-    "title": "Organizações",
-    "count": "{{filtered}} de organizações {{total}}",
-    "searchPlaceholder": "Pesquisar organizações",
-    "allStatuses": "Todos os status",
-    "status": {
-      "active": "Ativo",
-      "trial": "Avaliação",
-      "suspended": "Suspenso",
-      "churned": "Cancelado",
-      "offboarding": "Em desligamento",
-      "merging": "Em fusão",
-      "archived": "Arquivado",
-      "purging": "Em exclusão"
-    },
-    "columns": {
-      "devices": "Dispositivos"
-    },
-    "empty": "Nenhuma organização encontrada. Tente ajustar sua pesquisa ou filtros."
   },
   "bulkOrgImport": {
     "title": "Importação em massa",
@@ -4548,7 +4531,7 @@
   },
   "organizationsPage": {
     "loading": "Carregando organizações...",
-    "title": "Organizações e sites",
+    "title": "Organizações",
     "description": "Gerencie organizações e seus sites.",
     "actions": {
       "addOrganization": "Adicionar organização",
@@ -4557,7 +4540,10 @@
       "archiveOrganization": "Arquivar organização",
       "deleting": "Excluindo...",
       "openRecord": "Abrir registro",
-      "openSettings": "Configurações"
+      "openSettings": "Configurações",
+      "openSettingsFor": "Configurações de {{name}}",
+      "openRecordFor": "Abrir o registro de {{name}}",
+      "more": "Mais ações"
     },
     "errors": {
       "fetchOrganizations": "Falha ao buscar organizações",
@@ -4581,17 +4567,31 @@
     "deviceCount": "Dispositivos {{count}}",
     "list": {
       "title": "Organizações",
-      "searchPlaceholder": "Procurar...",
       "empty": "Nenhuma organização encontrada.",
-      "noMatches": "Nenhuma organização corresponde à sua pesquisa.",
-      "dragToReorder": "Arraste para reordenar"
+      "noMatches": "Nenhuma organização corresponde à sua busca ou filtro.",
+      "dragToReorder": "Arraste para reordenar",
+      "searchLabel": "Buscar organizações",
+      "reorderHandle": "Reordenar {{name}}",
+      "reorderHint": "Use as setas para cima e para baixo para mover esta organização.",
+      "movedAnnouncement": "{{name}} movida para a posição {{position}} de {{total}}",
+      "workspaceMarker": "Espaço de trabalho",
+      "sort": {
+        "label": "Ordenar",
+        "manual": "Ordem manual",
+        "name": "De A a Z",
+        "devices": "Mais dispositivos"
+      },
+      "filter": {
+        "label": "Filtrar por status",
+        "all": "Todas"
+      }
     },
     "sites": {
       "loading": "Carregando sites..."
     },
     "emptySelection": {
       "title": "Nenhuma organização selecionada",
-      "description": "Selecione uma organização na lista para visualizar seus sites."
+      "description": "Selecione uma organização para ver seu status, sites e ações."
     },
     "add": {
       "title": "Adicionar organização",
@@ -4612,8 +4612,9 @@
     },
     "deleteSite": {
       "title": "Excluir site",
-      "messagePrefix": "Tem certeza de que deseja excluir",
-      "messageSuffix": "Esta ação não pode ser desfeita."
+      "message": "Excluir {{name}}? O site será removido permanentemente e isso não pode ser desfeito.",
+      "blockedMessage_one": "{{name}} ainda tem {{count}} dispositivo. Mova-o para outro site antes de excluir este.",
+      "blockedMessage_other": "{{name}} ainda tem {{count}} dispositivos. Mova-os para outro site antes de excluir este."
     },
     "merge": {
       "openButton": "Mesclar com outra organização",
@@ -4714,6 +4715,9 @@
         "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
         "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
       }
+    },
+    "scope": {
+      "hint": "Seu espaço de trabalho está definido como {{orgName}}. As ações desta página se aplicam à organização selecionada aqui."
     }
   },
   "siteDetailPage": {
@@ -4811,7 +4815,9 @@
     "count": "{{filtered}} de sites {{total}}",
     "searchPlaceholder": "Pesquisar sites",
     "actions": {
-      "add": "Adicionar site"
+      "add": "Adicionar site",
+      "editSite": "Editar {{name}}",
+      "deleteSite": "Excluir {{name}}"
     },
     "columns": {
       "timezone": "Fuso horário",

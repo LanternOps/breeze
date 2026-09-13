@@ -4410,27 +4410,10 @@
       "suspended": "Suspendiert",
       "churned": "Aufgewühlt",
       "offboarding": "Abmeldung läuft"
+    },
+    "help": {
+      "slug": "Wird aus dem Namen erzeugt. Innerhalb Ihres Kontos eindeutig; von der API und Integrationen verwendet."
     }
-  },
-  "organizationList": {
-    "title": "Organisationen",
-    "count": "{{filtered}} von {{total}} Organisationen",
-    "searchPlaceholder": "Organisationen suchen",
-    "allStatuses": "Alle Status",
-    "status": {
-      "active": "Aktiv",
-      "trial": "Prozess",
-      "suspended": "Suspendiert",
-      "churned": "Aufgewühlt",
-      "offboarding": "Abmeldung läuft",
-      "merging": "Zusammenführung läuft",
-      "archived": "Archiviert",
-      "purging": "Löschung läuft"
-    },
-    "columns": {
-      "devices": "Geräte"
-    },
-    "empty": "Keine Organisationen gefunden. Versuchen Sie, Ihre Suche oder Filter anzupassen."
   },
   "bulkOrgImport": {
     "title": "Massenimport",
@@ -4495,7 +4478,7 @@
   },
   "organizationsPage": {
     "loading": "Organisationen werden geladen...",
-    "title": "Organisationen und Standorte",
+    "title": "Organisationen",
     "description": "Verwalten Sie Organisationen und ihre Standorte.",
     "actions": {
       "addOrganization": "Organisation hinzufügen",
@@ -4504,7 +4487,10 @@
       "archiveOrganization": "Organisation archivieren",
       "deleting": "Löschen...",
       "openRecord": "Datensatz öffnen",
-      "openSettings": "Einstellungen"
+      "openSettings": "Einstellungen",
+      "openSettingsFor": "Einstellungen für {{name}}",
+      "openRecordFor": "Datensatz für {{name}} öffnen",
+      "more": "Weitere Aktionen"
     },
     "errors": {
       "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
@@ -4528,17 +4514,31 @@
     "deviceCount": "{{count}} Geräte",
     "list": {
       "title": "Organisationen",
-      "searchPlaceholder": "Suchen...",
       "empty": "Keine Organisationen gefunden.",
-      "noMatches": "Keine Organisationen entsprechen Ihrer Suche.",
-      "dragToReorder": "Zum Neuanordnen ziehen"
+      "noMatches": "Keine Organisationen entsprechen Ihrer Suche oder Ihrem Filter.",
+      "dragToReorder": "Zum Neuanordnen ziehen",
+      "searchLabel": "Organisationen durchsuchen",
+      "reorderHandle": "{{name}} neu anordnen",
+      "reorderHint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
+      "movedAnnouncement": "{{name}} wurde an Position {{position}} von {{total}} verschoben",
+      "workspaceMarker": "Arbeitsbereich",
+      "sort": {
+        "label": "Sortieren",
+        "manual": "Manuelle Reihenfolge",
+        "name": "A bis Z",
+        "devices": "Meiste Geräte"
+      },
+      "filter": {
+        "label": "Nach Status filtern",
+        "all": "Alle"
+      }
     },
     "sites": {
       "loading": "Seiten werden geladen..."
     },
     "emptySelection": {
       "title": "Keine Organisation ausgewählt",
-      "description": "Wählen Sie eine Organisation aus der Liste aus, um deren Standorte anzuzeigen."
+      "description": "Wählen Sie eine Organisation aus, um Status, Standorte und Aktionen zu sehen."
     },
     "add": {
       "title": "Organisation hinzufügen",
@@ -4559,8 +4559,9 @@
     },
     "deleteSite": {
       "title": "Standort löschen",
-      "messagePrefix": "Sind Sie sicher, dass Sie löschen möchten?",
-      "messageSuffix": "Diese Aktion kann nicht rückgängig gemacht werden."
+      "message": "{{name}} löschen? Der Standort wird dauerhaft entfernt; dies kann nicht rückgängig gemacht werden.",
+      "blockedMessage_one": "{{name}} hat noch {{count}} Gerät. Verschieben Sie es an einen anderen Standort, bevor Sie diesen löschen.",
+      "blockedMessage_other": "{{name}} hat noch {{count}} Geräte. Verschieben Sie sie an einen anderen Standort, bevor Sie diesen löschen."
     },
     "merge": {
       "openButton": "In eine andere Organisation zusammenführen",
@@ -4661,6 +4662,9 @@
         "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
         "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
       }
+    },
+    "scope": {
+      "hint": "Ihr Arbeitsbereich ist auf {{orgName}} eingestellt. Aktionen auf dieser Seite gelten für die hier ausgewählte Organisation."
     }
   },
   "siteDetailPage": {
@@ -4758,7 +4762,9 @@
     "count": "{{filtered}} von {{total}} Standorte",
     "searchPlaceholder": "Standorte suchen",
     "actions": {
-      "add": "Standort hinzufügen"
+      "add": "Standort hinzufügen",
+      "editSite": "{{name}} bearbeiten",
+      "deleteSite": "{{name}} löschen"
     },
     "columns": {
       "timezone": "Zeitzone",

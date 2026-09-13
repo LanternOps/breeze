@@ -15,8 +15,16 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 const storeFetchOrganizations = vi.fn().mockResolvedValue(undefined);
+// Workspace scope the page reads through the store selector; the scope tests
+// set these, everything else leaves the workspace unset (fleet view).
+const mockStoreCurrentOrgId: string | null = null;
+const mockStoreOrganizations: Array<{ id: string; name: string }> = [];
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  useOrgStore: Object.assign(
+    (selector?: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown) =>
+      selector ? selector({ currentOrgId: mockStoreCurrentOrgId, organizations: mockStoreOrganizations }) : undefined,
+    { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  ),
 }));
 
 // Archive doesn't gate on scope the way merge does, but OrganizationsPage
@@ -100,26 +108,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('OrganizationsPage — archive entry points open the real ArchiveOrgModal', () => {
-  it('opens it from the list-row hover icon, without first selecting the org', async () => {
+/** Archive is a quarterly action: it lives in the detail header's More menu
+ *  (never a permanent red button, never a per-row icon), so every entry point
+ *  goes through selecting the org and opening that menu. */
+async function openArchiveFromMenu(org: typeof ORG_A) {
+  await selectOrg(org);
+  fireEvent.click(screen.getByTestId('org-more-actions'));
+  fireEvent.click(screen.getByTestId('org-archive-open'));
+  await flush();
+}
+
+describe('OrganizationsPage — archive entry point opens the real ArchiveOrgModal', () => {
+  it('list rows carry no archive control; the header More menu is the entry point', async () => {
     mockApi();
     render(<OrganizationsPage />);
     await flush();
 
-    fireEvent.click(screen.getByTestId(`org-archive-open-row-${ORG_A.id}`));
-    await flush();
+    expect(screen.queryByTestId(`org-archive-open-row-${ORG_A.id}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('org-archive-open')).not.toBeInTheDocument();
 
-    expect(screen.getByTestId('org-archive-modal')).toBeInTheDocument();
-  });
-
-  it('opens it from the detail header button once an org is selected', async () => {
-    mockApi();
-    render(<OrganizationsPage />);
-    await flush();
-
-    await selectOrg(ORG_A);
-    fireEvent.click(screen.getByTestId('org-archive-open'));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     expect(screen.getByTestId('org-archive-modal')).toBeInTheDocument();
   });
@@ -131,8 +139,7 @@ describe('OrganizationsPage — archive completion', () => {
     render(<OrganizationsPage />);
     await flush();
 
-    fireEvent.click(screen.getByTestId(`org-archive-open-row-${ORG_A.id}`));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     fireEvent.click(screen.getByTestId('org-archive-submit'));
     await flush(); // archive POST (202)
@@ -156,14 +163,12 @@ describe('OrganizationsPage — archive completion', () => {
     expect(screen.getByText('No organization selected')).toBeInTheDocument();
   });
 
-  it('drops the org from the list when archived via the detail header button too', async () => {
+  it('drops the org from the list when the archive lands as `archived` (no drain) too', async () => {
     mockApi(() => ({ status: 'archived', purgeAt: null }));
     render(<OrganizationsPage />);
     await flush();
 
-    await selectOrg(ORG_A);
-    fireEvent.click(screen.getByTestId('org-archive-open'));
-    await flush();
+    await openArchiveFromMenu(ORG_A);
 
     fireEvent.click(screen.getByTestId('org-archive-submit'));
     await flush();

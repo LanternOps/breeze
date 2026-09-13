@@ -607,6 +607,44 @@ describe('Fleet Design apply/rollback routes (W03, #5653)', () => {
     });
   });
 
+  describe('scripts:write gate (W04, #5654)', () => {
+    const SCRIPT_APPROVAL = { ...EMPTY_APPROVAL, automation: ['automation:file_server:script:0'] };
+    const withScriptsWrite = { permissions: [{ resource: 'devices', action: 'write' }, { resource: 'scripts', action: 'write' }] };
+    const devicesOnly = { permissions: [{ resource: 'devices', action: 'write' }] };
+
+    it.each(['apply/preview', 'apply'])('%s: 403 scripts_write_required when automation refs are approved and the caller lacks scripts:write', async (path) => {
+      const app = buildW03App({}, devicesOnly);
+      const res = await postJson(app, `/${REPORT_RUN_ID}/${path}`, SCRIPT_APPROVAL);
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: 'scripts_write_required' });
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('apply proceeds with scripts:write', async () => {
+      applyFleetDesignMock.mockResolvedValue({ applied: ['automation:file_server:script:0'], skipped: [], partial: null, rollbackAvailable: true });
+      const app = buildW03App({}, withScriptsWrite);
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`, SCRIPT_APPROVAL);
+      expect(res.status).toBe(200);
+      expect(applyFleetDesignMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('an approval without automation refs needs no scripts:write', async () => {
+      previewFleetDesignApplyMock.mockResolvedValue({ functions: [], policies: [], retired: [], scripts: [], roleCorrections: [], alreadyApplied: [], blockers: [] });
+      const app = buildW03App({}, devicesOnly);
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`, EMPTY_APPROVAL);
+      expect(res.status).toBe(200);
+    });
+
+    it('rollback tells the service whether the caller may untag scripts', async () => {
+      rollbackFleetDesignMock.mockResolvedValue({ rolledBack: [], refused: [] });
+      await buildW03App({}, devicesOnly).request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      await buildW03App({}, withScriptsWrite).request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(rollbackFleetDesignMock.mock.calls[0]![3]).toEqual({ canWriteScripts: false });
+      expect(rollbackFleetDesignMock.mock.calls[1]![3]).toEqual({ canWriteScripts: true });
+    });
+  });
+
   describe('GET /:reportRunId/applied', () => {
     it('returns { items } via toLedgerItem for an accessible report run', async () => {
       loadFleetDesignReportMock.mockResolvedValue({

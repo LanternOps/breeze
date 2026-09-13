@@ -65,7 +65,7 @@ import { createOrganization, createPartner, createSite, createUser } from './db-
 import {
   db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext,
 } from '../../db';
-import { aiAgentRuns, aiAgents, aiAgentSchedules, devices, reportRuns, reports } from '../../db/schema';
+import { aiAgentRuns, aiAgents, aiAgentSchedules, devices, reportRuns, reports, scripts, scriptTags, scriptToTags } from '../../db/schema';
 import { persistedSystemSiteScopeValues, systemReportAuthority } from '../../services/siteScope';
 import {
   FleetDesignPersistConflictError,
@@ -305,6 +305,29 @@ describe('persistFleetDesignReport / loadDesignEvidence against live Postgres (F
       SELECT count(*)::int FROM ai_agent_runs
        WHERE id = ${f.runId}::uuid AND report_run_id = ${result.reportRunId}::uuid
     `)).toBe(1);
+  });
+
+  runDb('W04: the automation loader lists legacy-import scripts first and matches the tag case-insensitively', async () => {
+    const f = await seed();
+    const db0 = getTestDb();
+    const [plain] = await db0.insert(scripts).values({
+      orgId: f.orgId, partnerId: f.partnerId, name: 'Aaa ordinary script', osTypes: ['windows'], language: 'powershell', content: 'Write-Output 1', createdBy: f.userId,
+    }).returning({ id: scripts.id });
+    const [legacy] = await db0.insert(scripts).values({
+      orgId: f.orgId, partnerId: f.partnerId, name: 'Zzz imported script', osTypes: ['windows'], language: 'powershell', content: 'Write-Output 2', createdBy: f.userId,
+    }).returning({ id: scripts.id });
+    const [tag] = await db0.insert(scriptTags).values({ orgId: f.orgId, partnerId: f.partnerId, name: 'Legacy-Import' }).returning({ id: scriptTags.id });
+    await db0.insert(scriptToTags).values({ scriptId: legacy!.id, tagId: tag!.id });
+
+    const evidence = await withSystemDbAccessContext(() => loadDesignEvidence(f.orgId, {}));
+
+    // A loader that throws only costs its own section — prove this one ran.
+    expect(evidence.unavailable).not.toContain('automation');
+    const ids = evidence.automation.scripts.map((s) => s.id);
+    expect(ids.indexOf(legacy!.id)).toBe(0);
+    expect(ids).toContain(plain!.id);
+    expect(evidence.automation.scripts[0]).toMatchObject({ legacyImport: true, tags: ['Legacy-Import'] });
+    expect(evidence.automation.scripts.find((s) => s.id === plain!.id)!.legacyImport).toBe(false);
   });
 
   runDb('a second persist for the same org reuses the definition (one reports row, two report_runs)', async () => {

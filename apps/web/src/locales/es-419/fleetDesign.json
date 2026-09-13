@@ -56,11 +56,31 @@
     "functionMeta": "{{count}} dispositivos · {{pct}}% de confianza",
     "roleCorrectionLabel": "{{from}} → {{to}}"
   },
+  "automation": {
+    "showContent": "Mostrar contenido del script"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Categoría",
+      "coveredBy": "Cubierto por",
+      "intent": "Intención",
+      "notes": "Notas"
+    },
+    "bucket": {
+      "obsolete": "Obsoleto",
+      "covered": "Cubierto",
+      "needed": "Necesario"
+    }
+  },
   "drawer": {
     "title": "Aplicar diseño de flota",
     "loadingPreview": "Comprobando qué hará esto…",
     "nothingSelected": "Seleccione al menos un elemento para aplicar.",
     "creates": "Crea",
+    "createsScripts": "Crea scripts",
+    "scriptRenamed": "ya existe un script con este nombre — el nuevo obtendrá un sufijo numerado",
+    "scriptsNote": "Se crea en la biblioteca de scripts de esta organización, etiquetado como fleet-design. Nada se ejecuta hasta que alguien lo ejecute; revertir quita la etiqueta y conserva el script.",
     "watchAndRuleCount": "{{watches}} vigilancias, {{rules}} reglas",
     "retires": "Retira",
     "displaces": "Desplaza",
@@ -91,7 +111,8 @@
     "blocked": "Este diseño aún no se puede aplicar — resuelva los bloqueos e intente de nuevo.",
     "site_restricted": "Las cuentas restringidas a un sitio no pueden aplicar ni revertir un diseño de flota.",
     "no_designer_agent": "No hay ningún agente diseñador configurado para esta organización.",
-    "not_found": "No se encontró este diseño de flota."
+    "not_found": "No se encontró este diseño de flota.",
+    "scripts_write_required": "Crear scripts requiere el permiso de escritura de Scripts. Deseleccione los scripts propuestos o solicite ayuda a un administrador."
   },
   "drift": {
     "banner": "Desviación desde el diseño aplicado el {{date}}: {{missing}} faltantes, {{extra}} adicionales, {{changed}} modificados.",

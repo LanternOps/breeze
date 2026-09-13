@@ -77,7 +77,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 175,
     'discovery.json': 17,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
-    'fleetDesign.json': 1,
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
+    'fleetDesign.json': 2,
     'integrations.json': 23,
     // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
     // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
@@ -196,7 +197,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 126,
     'discovery.json': 17,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
-    'fleetDesign.json': 1,
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
+    'fleetDesign.json': 2,
     'integrations.json': 31,
     // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
     // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
@@ -316,7 +318,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 152,
     'discovery.json': 15,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
-    'fleetDesign.json': 1,
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-FR.
+    'fleetDesign.json': 3,
     'integrations.json': 38,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
@@ -448,7 +452,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 152,
     'discovery.json': 15,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
-    'fleetDesign.json': 1,
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-CA.
+    'fleetDesign.json': 3,
     'integrations.json': 40,
     // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
     // (event-log count field), "Direction" (bandwidth/disk-I/O field),
@@ -692,7 +698,8 @@ const namespaceDuplicateBaselines = {
     'devices.json': 144,
     'discovery.json': 22,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
-    'fleetDesign.json': 1,
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
+    'fleetDesign.json': 2,
     'integrations.json': 81,
     // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
     // "Monitor" (policy-tab column), "Info" (severity), "Hardware"

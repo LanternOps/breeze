@@ -4463,27 +4463,10 @@
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
       "offboarding": "Ayrılma"
+    },
+    "help": {
+      "slug": "Addan üretilir. Hesabınızda benzersizdir; API ve entegrasyonlar tarafından kullanılır."
     }
-  },
-  "organizationList": {
-    "title": "Kuruluşlar",
-    "count": "{{filtered}} / {{total}} kuruluş",
-    "searchPlaceholder": "Arama kuruluşları",
-    "allStatuses": "Tüm durumlar",
-    "status": {
-      "active": "Aktif",
-      "trial": "Deneme",
-      "suspended": "Askıya alındı",
-      "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma",
-      "merging": "Birleştirme",
-      "archived": "Arşivlendi",
-      "purging": "Temizleme"
-    },
-    "columns": {
-      "devices": "Cihazlar"
-    },
-    "empty": "Hiçbir kuruluş bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin."
   },
   "bulkOrgImport": {
     "title": "Toplu içe aktarma",
@@ -4548,7 +4531,7 @@
   },
   "organizationsPage": {
     "loading": "Organizasyonlar yükleniyor...",
-    "title": "Kuruluşlar ve Siteler",
+    "title": "Kuruluşlar",
     "description": "Kuruluşları ve sitelerini yönetin.",
     "actions": {
       "addOrganization": "Organizasyon ekle",
@@ -4557,7 +4540,10 @@
       "archiveOrganization": "Kuruluşu arşivle",
       "deleting": "Siliniyor...",
       "openRecord": "Kaydı aç",
-      "openSettings": "Ayarlar"
+      "openSettings": "Ayarlar",
+      "openSettingsFor": "{{name}} ayarları",
+      "openRecordFor": "{{name}} kaydını aç",
+      "more": "Diğer işlemler"
     },
     "errors": {
       "fetchOrganizations": "Kuruluşlar getirilemedi",
@@ -4581,17 +4567,31 @@
     "deviceCount": "{{count}} cihazlar",
     "list": {
       "title": "Kuruluşlar",
-      "searchPlaceholder": "Ara...",
       "empty": "Hiçbir kuruluş bulunamadı.",
-      "noMatches": "Aramanızla eşleşen kuruluş yok.",
-      "dragToReorder": "Yeniden sıralamak için sürükleyin"
+      "noMatches": "Aramanızla veya filtrenizle eşleşen kuruluş yok.",
+      "dragToReorder": "Yeniden sıralamak için sürükleyin",
+      "searchLabel": "Kuruluşlarda ara",
+      "reorderHandle": "{{name}} sırasını değiştir",
+      "reorderHint": "Bu kuruluşu taşımak için yukarı ve aşağı ok tuşlarını kullanın.",
+      "movedAnnouncement": "{{name}}, {{total}} kuruluş içinde {{position}}. sıraya taşındı",
+      "workspaceMarker": "Çalışma alanı",
+      "sort": {
+        "label": "Sırala",
+        "manual": "Elle sıralama",
+        "name": "A'dan Z'ye",
+        "devices": "En çok cihaz"
+      },
+      "filter": {
+        "label": "Duruma göre filtrele",
+        "all": "Tümü"
+      }
     },
     "sites": {
       "loading": "Siteler yükleniyor..."
     },
     "emptySelection": {
       "title": "Hiçbir kuruluş seçilmedi",
-      "description": "Sitelerini görüntülemek için listeden bir kuruluş seçin."
+      "description": "Durumunu, sitelerini ve işlemlerini görmek için bir kuruluş seçin."
     },
     "add": {
       "title": "Organizasyon Ekle",
@@ -4612,8 +4612,9 @@
     },
     "deleteSite": {
       "title": "Siteyi Sil",
-      "messagePrefix": "Silmek istediğinizden emin misiniz?",
-      "messageSuffix": "Bu işlem geri alınamaz."
+      "message": "{{name}} silinsin mi? Site kalıcı olarak kaldırılır ve bu işlem geri alınamaz.",
+      "blockedMessage_one": "{{name}} sitesinde hâlâ {{count}} cihaz var. Bu siteyi silmeden önce cihazı başka bir siteye taşıyın.",
+      "blockedMessage_other": "{{name}} sitesinde hâlâ {{count}} cihaz var. Bu siteyi silmeden önce cihazları başka bir siteye taşıyın."
     },
     "merge": {
       "openButton": "Başka bir kuruluşla birleştir",
@@ -4714,6 +4715,9 @@
         "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
         "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
       }
+    },
+    "scope": {
+      "hint": "Çalışma alanınız {{orgName}} olarak ayarlı. Bu sayfadaki işlemler burada seçilen kuruluşa uygulanır."
     }
   },
   "siteDetailPage": {
@@ -4811,7 +4815,9 @@
     "count": "{{filtered}} / {{total}} site",
     "searchPlaceholder": "Sitelerde ara",
     "actions": {
-      "add": "Site ekle"
+      "add": "Site ekle",
+      "editSite": "{{name}} düzenle",
+      "deleteSite": "{{name}} sil"
     },
     "columns": {
       "timezone": "Saat Dilimi",

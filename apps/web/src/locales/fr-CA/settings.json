@@ -4458,27 +4458,10 @@
       "suspended": "Suspendu",
       "churned": "Tourné",
       "offboarding": "Départ en cours"
+    },
+    "help": {
+      "slug": "Généré à partir du nom. Unique dans votre compte; utilisé par l'API et les intégrations."
     }
-  },
-  "organizationList": {
-    "title": "Organisations",
-    "count": "{{filtered}} de {{total}} organisations",
-    "searchPlaceholder": "Rechercher des organisations",
-    "allStatuses": "Tous les statuts",
-    "status": {
-      "active": "Active",
-      "trial": "Procès",
-      "suspended": "Suspendu",
-      "churned": "Tourné",
-      "offboarding": "Départ en cours",
-      "merging": "Fusion en cours",
-      "archived": "Archivé",
-      "purging": "Purge en cours"
-    },
-    "columns": {
-      "devices": "Appareils"
-    },
-    "empty": "Aucune organisation trouvée. Essayez d’ajuster votre recherche ou vos filtres."
   },
   "bulkOrgImport": {
     "title": "Import en masse",
@@ -4543,7 +4526,7 @@
   },
   "organizationsPage": {
     "loading": "Chargement des organisations...",
-    "title": "Organisations & Sites",
+    "title": "Organisations",
     "description": "Gérer les organisations et leurs sites.",
     "actions": {
       "addOrganization": "Ajouter l’organisation",
@@ -4552,7 +4535,10 @@
       "archiveOrganization": "Archiver l'organisation",
       "deleting": "Suppression…",
       "openRecord": "Ouvrir la fiche",
-      "openSettings": "Paramètres"
+      "openSettings": "Paramètres",
+      "openSettingsFor": "Paramètres de {{name}}",
+      "openRecordFor": "Ouvrir la fiche de {{name}}",
+      "more": "Autres actions"
     },
     "errors": {
       "fetchOrganizations": "Impossible de récupérer des organisations",
@@ -4576,17 +4562,31 @@
     "deviceCount": "{{count}} appareils",
     "list": {
       "title": "Organisations",
-      "searchPlaceholder": "Rechercher...",
       "empty": "Aucune organisation trouvée.",
-      "noMatches": "Aucune organisation ne correspond à votre recherche.",
-      "dragToReorder": "De la traînée à la réorganisation"
+      "noMatches": "Aucune organisation ne correspond à votre recherche ou à votre filtre.",
+      "dragToReorder": "De la traînée à la réorganisation",
+      "searchLabel": "Rechercher des organisations",
+      "reorderHandle": "Réorganiser {{name}}",
+      "reorderHint": "Utilisez les flèches vers le haut et vers le bas pour déplacer cette organisation.",
+      "movedAnnouncement": "{{name}} déplacée à la position {{position}} de {{total}}",
+      "workspaceMarker": "Espace de travail",
+      "sort": {
+        "label": "Trier",
+        "manual": "Ordre manuel",
+        "name": "De A à Z",
+        "devices": "Le plus d'appareils"
+      },
+      "filter": {
+        "label": "Filtrer par statut",
+        "all": "Toutes"
+      }
     },
     "sites": {
       "loading": "Chargement des sites..."
     },
     "emptySelection": {
       "title": "Aucune organisation sélectionnée",
-      "description": "Sélectionnez une organisation parmi la liste pour consulter ses sites."
+      "description": "Sélectionnez une organisation pour consulter son statut, ses sites et ses actions."
     },
     "add": {
       "title": "Ajouter l’organisation",
@@ -4607,8 +4607,9 @@
     },
     "deleteSite": {
       "title": "Supprimer le site",
-      "messagePrefix": "Êtes-vous sûr de vouloir supprimer ?",
-      "messageSuffix": " Cette action ne peut être annulée."
+      "message": "Supprimer {{name}}? Le site sera supprimé de façon permanente et ne pourra pas être récupéré.",
+      "blockedMessage_one": "{{name}} compte encore {{count}} appareil. Déplacez-le vers un autre site avant de supprimer celui-ci.",
+      "blockedMessage_other": "{{name}} compte encore {{count}} appareils. Déplacez-les vers un autre site avant de supprimer celui-ci."
     },
     "merge": {
       "openButton": "Fusionner avec une autre organisation",
@@ -4709,6 +4710,9 @@
         "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
         "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
       }
+    },
+    "scope": {
+      "hint": "Votre espace de travail est réglé sur {{orgName}}. Les actions de cette page s'appliquent à l'organisation sélectionnée ici."
     }
   },
   "siteDetailPage": {
@@ -4806,7 +4810,9 @@
     "count": "{{filtered}} de {{total}} sites",
     "searchPlaceholder": "Rechercher des sites",
     "actions": {
-      "add": "Ajouter le site"
+      "add": "Ajouter le site",
+      "editSite": "Modifier {{name}}",
+      "deleteSite": "Supprimer {{name}}"
     },
     "columns": {
       "timezone": "Fuse horaire",
