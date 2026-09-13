@@ -12,6 +12,7 @@ import {
   type M365ConnectionExecutionSnapshot, type M365SyncCallFailureCode, type M365SyncCallResult,
 } from '../m365ControlPlane/readActionService';
 import { redactLogMessage } from '../logRedaction';
+import { captureException } from '../sentry';
 import { recordM365SyncRunEvent } from './audit';
 import { applyCadence } from './cadence';
 import { claimDueDomains } from './claim';
@@ -319,8 +320,11 @@ const NO_PERSIST: DomainPersistResult = {
  * event, one log line" true by construction.
  *
  * Guarded on run_generation as a SECOND fence beyond the Phase C FOR UPDATE
- * re-read: between that read and this write the transaction is open, so this is
- * belt-and-braces, and it costs one predicate.
+ * re-read: `assertStillFenced` and `writeCompletion` are separate
+ * `withSystemDbAccessContext` calls, so the Phase C lock is already released by
+ * the time this runs — the predicate is doing real work, not merely belt and
+ * braces, and it is what catches a disconnect/rebind/re-claim that lands in
+ * that window. It costs one predicate.
  *
  * `mode: 'continuation'` exists for the 'partial-continue' restart. It stores
  * the cursor and releases the lease and NOTHING else: touching next_sync_at,
@@ -465,6 +469,16 @@ export async function runSyncDomain(
         itemCount: 0, truncated: false, sources: null, continuation: null,
         lastError: sanitizedError('domain_not_implemented', `no persister for ${data.domain}`),
       });
+      // This is a real terminal write (mode: 'complete'), so it owes the same
+      // exactly-one audit event and run metric every OTHER completion branch
+      // writes (spec §7) — otherwise a domain with no persister yet is
+      // invisible to both the audit trail and the per-domain dashboards.
+      recordM365SyncRun(data.domain, 'error');
+      recordM365SyncRunEvent({
+        orgId: data.orgId, connectionId: data.connectionId, domain: data.domain,
+        generation: data.generation, outcome: 'error', correlationId, truncated: false,
+        inserted: 0, updated: 0, stale: 0, unchanged: 0,
+      });
       return 'noop';
     }
 
@@ -514,7 +528,22 @@ export async function runSyncDomain(
     });
 
     if (!call.ok) {
-      const { outcome, unschedule, restartWalk } = outcomeForFailure(call.code);
+      const { outcome, unschedule, sentryWorthy, restartWalk } = outcomeForFailure(call.code);
+
+      // sentryWorthy means this is a genuinely unexpected Graph failure, not a
+      // dead credential, a throttle, or a missing consent — those are already
+      // recorded on the row and reporting them per scheduled run is exactly
+      // what flooded the Sentry quota for Huntress (BREEZE-1). Tagged with the
+      // domain/org/code, never the raw executor message: `scrubEvent` redacts
+      // the exception value on the way out regardless, but the message here is
+      // deliberately code-only so nothing tenant-specific is ever assembled.
+      if (sentryWorthy) {
+        captureException(new Error(`m365 sync failure: ${call.code}`), undefined, {
+          org_id: data.orgId,
+          m365_sync_domain: data.domain,
+          m365_sync_failure_code: call.code,
+        });
+      }
 
       // The continuation seal expired or died with an executor restart. Clear
       // the cursor, leave every completion field alone (the walk did NOT

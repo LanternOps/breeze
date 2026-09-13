@@ -7,7 +7,7 @@ const { mocks } = vi.hoisted(() => ({
     persistUsers: vi.fn(), callExecutor: vi.fn(),
     completion: [] as Record<string, unknown>[],
     audit: vi.fn(), metricRun: vi.fn(), metricFenced: vi.fn(), metricItems: vi.fn(),
-    hook: vi.fn(),
+    hook: vi.fn(), captureException: vi.fn(),
     cadence: vi.fn((_d: string, st: { intervalSeconds: number }, _o: string, sig: { now: Date }) => ({
       intervalSeconds: st.intervalSeconds,
       nextSyncAt: new Date(sig.now.getTime() + st.intervalSeconds * 1000),
@@ -44,6 +44,7 @@ vi.mock('./hooks', () => ({ afterDomainPersisted: mocks.hook }));
 vi.mock('./cadence', () => ({ applyCadence: mocks.cadence }));
 vi.mock('./claim', () => ({ claimDueDomains: mocks.claim }));
 vi.mock('../../jobs/m365SyncQueue', () => ({ enqueueSyncDomain: mocks.enqueue }));
+vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 
 import { outcomeForFailure, runSyncDomain } from './run';   // nextSyncAt lives in cadence.ts (Task 12) and is covered by cadence.test.ts
 
@@ -169,6 +170,27 @@ describe('runSyncDomain', () => {
     mocks.callExecutor.mockResolvedValue({ ok: false, code: 'application_token_invalid', message: 'm', executorMs: 5 });
     await expect(run()).resolves.toBe('error');
     expect(mocks.completion.at(-1)).toMatchObject({ lastStatus: 'error', nextSyncAt: null });
+  });
+
+  it('a BENIGN failure code (sentryWorthy: false) is never reported to Sentry', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'application_token_invalid', message: 'm', executorMs: 5 });
+    await run();
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a genuinely unexpected Graph failure (sentryWorthy: true) IS reported to Sentry exactly once', async () => {
+    mocks.callExecutor.mockResolvedValue({ ok: false, code: 'graph_response_invalid', message: 'm', executorMs: 5 });
+    await run();
+    expect(mocks.captureException).toHaveBeenCalledTimes(1);
+    expect(mocks.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      undefined,
+      expect.objectContaining({
+        org_id: 'org-1',
+        m365_sync_domain: 'users',
+        m365_sync_failure_code: 'graph_response_invalid',
+      }),
+    );
   });
 
   it('records exactly ONE m365.sync.run audit event per run, with counts and no row content', async () => {
@@ -308,6 +330,15 @@ describe('runSyncDomain', () => {
       .resolves.toBe('noop');
     expect(mocks.callExecutor).not.toHaveBeenCalled();
     expect(mocks.completion.at(-1)).toMatchObject({ nextSyncAt: null, leaseUntil: null });
+  });
+
+  it('a domain with no persister still writes the ONE audit event and run metric (spec §7)', async () => {
+    await runSyncDomain({ ...JOB, domain: 'secure_score' }, { callExecutor: mocks.callExecutor });
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(mocks.audit.mock.calls[0]![0]).toMatchObject({
+      orgId: 'org-1', connectionId: 'conn-1', domain: 'secure_score', generation: 5, outcome: 'error',
+    });
+    expect(mocks.metricRun).toHaveBeenCalledWith('secure_score', 'error');
   });
 
   it('publishes run and item metrics by domain', async () => {

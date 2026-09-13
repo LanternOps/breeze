@@ -111,16 +111,17 @@ describe('runM365SyncTick (spec §5.2)', () => {
     expect(mocks.metricBacklog).toHaveBeenCalledWith(37);
   });
 
-  it('never enqueues a job id containing a colon', async () => {
+  it('the claimed-row fields fed into syncJobId contain no colon', async () => {
+    // NOTE (deviation from plan text, and from this test's former name "never
+    // enqueues a job id containing a colon"): `enqueueSyncDomain` is mocked at
+    // this layer, so no job id is ever actually built or inspected here —
+    // renamed to describe what this actually asserts. The real job-id
+    // assertions live in claim.test.ts, claim.sql.test.ts, m365SyncQueue.test.ts
+    // and the integration test. `JSON.stringify` of any non-empty object always
+    // contains `:` (JSON key/value syntax) too, which is why this checks the
+    // claimed-row field VALUES that feed `syncJobId`, not a JSON.stringify blob.
     mocks.claim.mockResolvedValue([CLAIMED]);
     await runM365SyncTick();
-    // NOTE (deviation from plan text): `JSON.stringify` of any non-empty
-    // object always contains `:` (JSON key/value syntax), so that assertion
-    // can never pass regardless of implementation — every other "no colon in
-    // job id" test in this repo (e.g. intentOutboxPublisher.test.ts,
-    // m365SyncQueue.test.ts) checks the actual jobId/field values, not a
-    // JSON.stringify blob. This checks the claimed-row field values that feed
-    // `syncJobId` instead.
     expect(Object.values(mocks.enqueue.mock.calls[0]![0]).map(String).join('|')).not.toContain(':');
   });
 

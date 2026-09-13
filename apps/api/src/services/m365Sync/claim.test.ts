@@ -107,4 +107,27 @@ describe('claimAndEnqueue', () => {
     await claimAndEnqueue('org-1', ['users'], 1);
     expect(queueMocks.enqueue).toHaveBeenCalled();
   });
+
+  it('a failing enqueue does NOT abandon the rest of an already-claimed batch, but rejects with the FIRST error', async () => {
+    let call = 0;
+    dbMocks.execute.mockImplementation(async () => {
+      call += 1;
+      if (call === 1) return { rows: [] };   // the "make due" update
+      return { rows: [
+        { org_id: 'org-1', domain: 'users', run_generation: 1, connection_id: 'c', tenant_id: 't', consent_generation: 0 },
+        { org_id: 'org-1', domain: 'skus', run_generation: 1, connection_id: 'c', tenant_id: 't', consent_generation: 0 },
+        { org_id: 'org-1', domain: 'ca_policies', run_generation: 1, connection_id: 'c', tenant_id: 't', consent_generation: 0 },
+      ] };
+    });
+    const boom = new Error('redis blip');
+    queueMocks.enqueue
+      .mockResolvedValueOnce('job-1')
+      .mockRejectedValueOnce(boom)
+      .mockResolvedValueOnce('job-3');
+
+    await expect(claimAndEnqueue('org-1', ['users', 'skus', 'ca_policies'], 1)).rejects.toBe(boom);
+    // Every claimed row was already leased — abandoning the ones after the
+    // failure would strand them until the 20-minute lease expires.
+    expect(queueMocks.enqueue).toHaveBeenCalledTimes(3);
+  });
 });

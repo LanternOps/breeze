@@ -200,5 +200,25 @@ export async function claimAndEnqueue(
   }, 'm365SyncMakeDue');
 
   const claimed = await claimDueDomains({ limit: domains.length, now, orgId, domains, priority });
-  for (const job of claimed) await enqueueSyncDomain(job);
+
+  // Every row in `claimed` already holds a lease from the claim above, so one
+  // failing enqueue must not abandon the rest of the batch (they would
+  // otherwise sit unscheduled until the 20-minute lease expires). Unlike the
+  // ticker's equivalent loop (jobs/m365SyncWorker.ts runM365SyncTick, which
+  // only logs and lets the next tick reclaim), this is an ON-DEMAND caller —
+  // it needs to see that something failed, so the FIRST error is re-thrown
+  // after every job has been attempted.
+  let firstError: unknown;
+  for (const job of claimed) {
+    try {
+      await enqueueSyncDomain(job);
+    } catch (error) {
+      firstError ??= error;
+      console.log('[M365Sync] enqueue-failed', JSON.stringify({
+        orgId: job.orgId, domain: job.domain, generation: job.generation,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+  if (firstError !== undefined) throw firstError;
 }

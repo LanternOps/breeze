@@ -102,7 +102,8 @@ export async function runM365SyncTick(now: Date = new Date()): Promise<M365SyncT
   return { claimed: claimed.length, depth, seeded, due };
 }
 
-async function processSyncDomain(job: Job<M365SyncQueueJobData>): Promise<string> {
+/** Exported for m365SyncWorker.processSyncDomain.test.ts — the BullMQ processor never calls this directly with a hand-built job. */
+export async function processSyncDomain(job: Job<M365SyncQueueJobData>): Promise<string> {
   if (!isM365TenantSyncEnabled()) return 'noop';
 
   const parsed = m365SyncJobDataSchema.safeParse(job.data);
