@@ -444,10 +444,14 @@ export default function ScriptAuthoringPage() {
                 type="button"
                 data-testid="script-lane-reset"
                 onClick={() => void handleReset()}
-                disabled={resetting || !orgId}
+                // `resolvingReauth` counts as busy: the first click awaits the
+                // factor-discovery round trip BEFORE `resetting` is set, so
+                // without it the button sits unchanged and re-clickable for two
+                // requests and a double-click fires concurrent resets (#5683).
+                disabled={resetting || resolvingReauth || !orgId}
                 className="inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-50"
               >
-                {resetting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {resetting || resolvingReauth ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {t('scriptAuthoringPage.lane.reset')}
               </button>
             </div>

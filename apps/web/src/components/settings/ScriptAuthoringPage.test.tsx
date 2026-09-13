@@ -287,6 +287,32 @@ describe('ScriptAuthoringPage', () => {
     });
   });
 
+  it('disables the reset button while it resolves the reauth factor', async () => {
+    let releaseUsersMe: (() => void) | null = null;
+    const usersMeGate = new Promise<void>((resolve) => { releaseUsersMe = resolve; });
+    mockRoutes({
+      org: orgGetBody({ laneState: LANE_OPEN }),
+      usersMe: { mfaMethod: 'totp' },
+      passkeys: { passkeys: [] },
+    });
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/users/me') { await usersMeGate; }
+      return base(url, init);
+    });
+
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-lane-banner')).toBeInTheDocument());
+
+    fireEvent.click(getByTestId('script-lane-reset'));
+    // The factor round trip happens BEFORE the mint, so the button must read as
+    // busy for it — otherwise a double-click fires concurrent resets (#5683).
+    await waitFor(() => expect((getByTestId('script-lane-reset') as HTMLButtonElement).disabled).toBe(true));
+    releaseUsersMe!();
+    await waitFor(() => expect((getByTestId('script-lane-reset') as HTMLButtonElement).disabled).toBe(false));
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
   it('surfaces a save failure instead of failing silently', async () => {
     mockRoutes({});
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
