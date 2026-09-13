@@ -475,6 +475,79 @@ describe('deliverRunFinishedNotifications — narrative (P2-3)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Fleet Designer W01 (#5651), Task 9 — the design-run notification. Same
+// "the whole payload is a pointer at a stored document" posture as the
+// narrative digest above, but links to the Fleet Design page (keyed by the
+// linked report_runs id), not `/reports`, and carries no headline.
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — fleet design (W01)', () => {
+  const REPORT_ID = '00000000-0000-4000-8000-0000000000f5';
+  const REPORT_RUN_ID = '00000000-0000-4000-8000-0000000000f6';
+
+  function designRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'design',
+      summary: 'Fleet design complete.',
+      outcome: {
+        toolExecutionCount: 0,
+        fleetDesign: { schemaVersion: 1 },
+        fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+      },
+      ...overrides,
+    };
+  }
+
+  it('titles with the org name, links to the fleet design page, and carries no priority', async () => {
+    queueRows('ai_agent_runs', [designRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({
+      userId: USER_A,
+      orgId: ORG_ID,
+      type: 'ai',
+      title: 'Fleet Design ready — Acme Dental',
+      link: `/ai-agents/fleet-design#${REPORT_RUN_ID}`,
+      dedupeKey: `agent-run:${RUN_ID}`,
+    });
+    expect((input as { priority?: string }).priority).toBeUndefined();
+    expect((input as { metadata: Record<string, unknown> }).metadata.fleetDesign)
+      .toEqual({ reportRunId: REPORT_RUN_ID, reportId: REPORT_ID });
+  });
+
+  it('falls back to the unconditional run link when persistence produced no artifact', async () => {
+    queueRows('ai_agent_runs', [designRun({
+      outcome: { toolExecutionCount: 0, fleetDesign: { schemaVersion: 1 } },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
+    expect((input as { metadata: Record<string, unknown> }).metadata.fleetDesign).toBeUndefined();
+  });
+
+  it('never applies the fleet design copy to another profile, even with a fleetDesignReport on the outcome', async () => {
+    queueRows('ai_agent_runs', [designRun({ profile: 'full' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]!;
+    expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase 2 wave P2-4 (ticket triage), Task 9 (#4191) — the triage
 // notification branch: suppress-if-nothing-minted, ticket-NUMBER-only
 // titling, /tickets/<id> linking, and the "executed automatically" autonomy

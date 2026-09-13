@@ -81,6 +81,7 @@ import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
+import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
@@ -1250,6 +1251,10 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // the only representation that goes back to null when the artifact is
       // deleted.
       reportRunId: aiAgentRuns.reportRunId,
+      // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
+      // read below; `undefined`/absent for a row read back through an older
+      // mock/fixture simply never matches `'design'`.
+      profile: aiAgentRuns.profile,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -1379,6 +1384,40 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     }
     : null;
 
+  // Fleet Designer W01 (#5651), Task 9 — the linked fleet design artifact's
+  // provenance scalars, projected out of `report_runs.result` BY POSTGRES
+  // for the same reason the narrative read above is: that jsonb carries the
+  // full rendered markdown and every legacy-script/automation section,
+  // which the run-detail DTO deliberately does not ship. Gated on
+  // `run.profile === 'design'` (unlike the narrative read above, which fires
+  // on `reportRunId` alone) because a design run's linked artifact carries
+  // `summary.fleetDesign`, not `summary.narrative` — querying the wrong
+  // projection would just read back nulls, so the profile gate is what
+  // keeps this from being a wasted round trip on every other profile.
+  //
+  // Same tenancy shape as the narrative read: the join to `reports` carries
+  // the org pin (`report_runs` has no `org_id` of its own), and
+  // `auth.orgCondition` stays as defence-in-depth beside RLS.
+  const [fleetDesignArtifactRow] = run.profile === 'design' && run.reportRunId
+    ? await db
+      .select(fleetDesignArtifactProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(and(
+        eq(reportRuns.id, run.reportRunId),
+        eq(reports.orgId, run.orgId),
+        auth.orgCondition(reports.orgId),
+      ))
+      .limit(1)
+    : [];
+  const fleetDesignArtifact = fleetDesignArtifactRow
+    ? {
+      reportId: fleetDesignArtifactRow.reportId ?? null,
+      generatedAt: fleetDesignArtifactRow.generatedAt ?? null,
+      evidenceTruncated: fleetDesignArtifactRow.evidenceTruncated === true,
+    }
+    : null;
+
   // Phase 2 wave P2-4 (#4191), Task A10 — the ticket_drafts rows THIS RUN
   // produced, for ticketProposal.draftsWritten. A LIVE query, not something
   // read off the persisted outcome jsonb: a draft intent left
@@ -1441,6 +1480,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     deviceHostnames,
     narrativeArtifact,
     draftRows,
+    fleetDesignArtifact,
   );
   return c.json({ data: detail });
 });

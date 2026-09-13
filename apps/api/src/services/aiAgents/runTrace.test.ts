@@ -929,4 +929,72 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.reportRunId).toBeNull();
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Fleet Designer W01 (#5651), Task 9 — the design run projection.
+  // ---------------------------------------------------------------------
+  describe('design run projection (W01)', () => {
+    const SCHEDULE_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const REPORT_RUN_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    function fleetDesignOutcome(overrides: Record<string, unknown> = {}) {
+      return {
+        schemaVersion: 1,
+        generatedAt: '2026-09-12T07:00:00.000Z',
+        markdown: '# Fleet Design',
+        thresholds: { confidence: 0.6, precursors: {} },
+        sections: {
+          found: { summary: [], findings: [] },
+          functions: [
+            { functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] },
+            { functionKey: 'domain_controller', deviceIds: ['dev-2'], confidence: 0.8, evidence: [] },
+          ],
+          monitoring: [],
+          retired: [],
+          automation: [],
+          legacy: [],
+          baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+          unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+        },
+        ...overrides,
+      };
+    }
+
+    it('projects functionCount and reportRunId for a design run', () => {
+      const detail = buildRunTrace(
+        baseRun({
+          deviceId: null,
+          triggerKind: 'schedule',
+          scheduleId: SCHEDULE_ID,
+          reportRunId: REPORT_RUN_ID,
+          outcome: {
+            fleetDesign: fleetDesignOutcome(),
+            fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          } as never,
+        }),
+        AGENT,
+        null,
+        [],
+        [],
+        new Map(),
+        null,
+        [],
+        { reportId: REPORT_ID, generatedAt: '2026-09-12T07:00:00.000Z', evidenceTruncated: false },
+      );
+
+      expect(detail.reportRunId).toBe(REPORT_RUN_ID);
+      expect(detail.fleetDesign).toMatchObject({
+        reportRunId: REPORT_RUN_ID,
+        reportId: REPORT_ID,
+        functionCount: 2,
+      });
+    });
+
+    it('projects null fleetDesign for every non-design run', () => {
+      const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+
+      expect(detail.fleetDesign).toBeNull();
+    });
+  });
 });

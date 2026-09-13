@@ -179,6 +179,34 @@ function readNarrativeDigest(outcome: Record<string, unknown>): NarrativeDigest 
 }
 
 /**
+ * Fleet Designer W01 (#5651), Task 9 — the design digest. Direct sibling of
+ * `readNarrativeDigest` above: `null` unless the run BOTH produced a design
+ * AND had it persisted as a report artifact (`finalizeFleetDesign` writes
+ * `outcome.fleetDesignReport` only after `persistFleetDesignReport`'s
+ * transaction committed). Same "the payload is a pointer at a stored
+ * document, not the document itself" posture — a design run whose
+ * persistence lost the CAS or failed falls back to the generic run-finished
+ * copy, which links to the RUN and its `design_persist_*` error code.
+ *
+ * Unlike narrative, there is no model-authored headline to carry: the
+ * design outcome has no equivalent free-text summary field, so the
+ * notification's message falls back to the generic
+ * `${agent.name}: ${firstLine || run.status}` shape.
+ */
+interface FleetDesignDigest {
+  reportId: string;
+  reportRunId: string;
+}
+
+function readFleetDesignDigest(outcome: Record<string, unknown>): FleetDesignDigest | null {
+  const link = outcome.fleetDesignReport;
+  if (!link || typeof link !== 'object') return null;
+  const { reportId, reportRunId } = link as Record<string, unknown>;
+  if (typeof reportId !== 'string' || typeof reportRunId !== 'string') return null;
+  return { reportId, reportRunId };
+}
+
+/**
  * Phase 2 wave P2-4 (ticket triage), Task 9 (#4191) — counts how many
  * `ticket_drafts` rows this run has minted so far (any state — a draft the
  * run produced and a human already consumed/discarded still counts as
@@ -465,7 +493,10 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   // gets its own copy; everything else (including a narrative run whose
   // persistence failed) keeps the branch above.
   const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
-  const orgName = narrative ? await loadOrgName(run.orgId) : '';
+  // Fleet Designer W01 (#5651), Task 9 — same shape, a design run that
+  // actually produced an artifact gets its own copy.
+  const design = run.profile === 'design' ? readFleetDesignDigest(run.outcome ?? {}) : null;
+  const orgName = (design || narrative) ? await loadOrgName(run.orgId) : '';
   // Task 9 (P2-4 ticket triage, #4191). `ticketLabel` is the ticket NUMBER,
   // never the subject — see `loadTicketLabel`'s docstring for the
   // short-id-fallback case. `triageAutonomous` is ground truth, not an
@@ -477,38 +508,45 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   const triage = run.profile === 'triage';
   const ticketLabel = triage ? await loadTicketLabel(run.ticketId ?? null, run.orgId) : null;
   const triageAutonomous = triage && run.status === 'completed' && run.intentIds.length > 0;
-  const title = narrative
-    ? `Weekly narrative ready${orgName ? ` — ${orgName}` : ''}`
-    : sweep
-      ? `Sweep finished: ${sweep.findings} finding(s)`
-        + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
-      : (triage && ticketLabel)
-        ? `Ticket #${ticketLabel} triaged — ${agent.name}`
-        : verdictAwareTitle(agent.name, verdict);
-  const baseMessage = narrative
-    ? narrative.headline || `${agent.name}: ${firstLine || run.status}`
-    : sweep
-      ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
-      : `${agent.name}: ${firstLine || run.status}`;
+  const title = design
+    ? `Fleet Design ready${orgName ? ` — ${orgName}` : ''}`
+    : narrative
+      ? `Weekly narrative ready${orgName ? ` — ${orgName}` : ''}`
+      : sweep
+        ? `Sweep finished: ${sweep.findings} finding(s)`
+          + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
+        : (triage && ticketLabel)
+          ? `Ticket #${ticketLabel} triaged — ${agent.name}`
+          : verdictAwareTitle(agent.name, verdict);
+  const baseMessage = design
+    ? `${agent.name}: ${firstLine || run.status}`
+    : narrative
+      ? narrative.headline || `${agent.name}: ${firstLine || run.status}`
+      : sweep
+        ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
+        : `${agent.name}: ${firstLine || run.status}`;
   // Autonomy note appended, never substituted — the recipient still gets
   // what the run actually did, plus the fact that it happened unattended.
   const message = triageAutonomous ? `${baseMessage} Executed automatically.` : baseMessage;
   // Anything critical escalates, exactly as `needs_attention` does for a
   // full-profile run — the two are mutually exclusive here (a sweep run never
   // produces a run verdict of its own).
-  // A narrative is a scheduled deliverable, never an escalation — it stays at
-  // the default priority whatever the week contained. A triage run's own
-  // `computeRunVerdict` (runLoop.ts) can only ever land `no_action` (it mints
-  // no `executedActions` of its own), so the fallthrough below already keeps
-  // it at the default 'normal' priority without a dedicated branch.
-  const priority = narrative
+  // A narrative — and, same reasoning, a Fleet Design — is a scheduled
+  // deliverable, never an escalation — it stays at the default priority
+  // whatever it contained. A triage run's own `computeRunVerdict`
+  // (runLoop.ts) can only ever land `no_action` (it mints no
+  // `executedActions` of its own), so the fallthrough below already keeps it
+  // at the default 'normal' priority without a dedicated branch.
+  const priority = (design || narrative)
     ? null
     : sweep ? (sweep.critical > 0 ? 'high' : null) : (verdict === 'needs_attention' ? 'high' : null);
-  const link = narrative
-    ? '/reports'
-    : (triage && run.ticketId)
-      ? `/tickets/${run.ticketId}`
-      : `/ai-agents/runs/${run.id}`;
+  const link = design
+    ? `/ai-agents/fleet-design#${design.reportRunId}`
+    : narrative
+      ? '/reports'
+      : (triage && run.ticketId)
+        ? `/tickets/${run.ticketId}`
+        : `/ai-agents/runs/${run.id}`;
 
   // AFTER the status commit and outside any held transaction (#1105).
   await inSystemDbContext(async () => {
@@ -572,6 +610,12 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
           // access controls.
           ...(narrative
             ? { narrative: { reportRunId: narrative.reportRunId, reportId: narrative.reportId } }
+            : {}),
+          // Fleet Designer W01 (#5651), Task 9 — same "two ids and nothing
+          // else" posture: the design itself lives on the report artifact,
+          // never duplicated onto the notification row.
+          ...(design
+            ? { fleetDesign: { reportRunId: design.reportRunId, reportId: design.reportId } }
             : {}),
         },
         dedupeKey: `agent-run:${run.id}`,

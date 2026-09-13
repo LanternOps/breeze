@@ -1101,10 +1101,18 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
-    // Fleet Designer (W01): always `null` for now — Task 9 is what actually
-    // projects a design-profile run's outcome into this field and gives it
-    // a real shape here.
-    fleetDesign: z.unknown().nullable(),
+    // Fleet Designer W01 (#5651), Task 9: `null` for every non-design run
+    // and for a design run that produced nothing.
+    fleetDesign: z.object({
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      generatedAt: z.string().nullable(),
+      functionCount: z.number(),
+      watchCount: z.number(),
+      ruleCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1510,6 +1518,108 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrative).toBeNull();
     expect(parsed.data.reportRunId).toBeNull();
+  });
+
+  /**
+   * Fleet Designer W01 (#5651), Task 9 — the design artifact read. Direct
+   * sibling of the narrative artifact test above: same org-pinned join
+   * shape, different projection (`fleetDesignArtifactProjection`), and
+   * gated on `run.profile === 'design'` rather than firing for every run
+   * that merely links a `report_runs` row (a design run's linked artifact
+   * carries `summary.fleetDesign`, not `summary.narrative`).
+   */
+  it('reads the linked fleet design artifact through an org-pinned join and projects downloadPath', async () => {
+    const DESIGN_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'design',
+        scheduleId: DESIGN_SCHEDULE_ID,
+        triggerRef: { scheduleId: DESIGN_SCHEDULE_ID, occurrenceKey: '2026-09-12T07:00:00Z', kind: 'design' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          fleetDesign: {
+            schemaVersion: 1,
+            generatedAt: '2026-09-12T07:00:00.000Z',
+            markdown: '# Fleet Design',
+            thresholds: { confidence: 0.6, precursors: {} },
+            sections: {
+              found: { summary: [], findings: [] },
+              functions: [{ functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] }],
+              monitoring: [],
+              retired: [],
+              automation: [],
+              legacy: [],
+              baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+              unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+            },
+          },
+          fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      // The existing (narrative) artifact query still fires unconditionally
+      // on `reportRunId` alone (see the sibling "skips" test below) — it
+      // finds nothing for a design run's projection.
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          generatedAt: '2026-09-12T07:00:00.000Z',
+          evidenceTruncated: false,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Three selects: the run row, the (empty) narrative-projection query and
+    // the fleet design artifact. No session, no intent ids and no sweep
+    // findings, so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.fleetDesign).toMatchObject({
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      functionCount: 1,
+      evidenceTruncated: false,
+    });
+  });
+
+  it('skips the fleet design artifact read for a non-design run, even with a reportRunId set', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+        },
+      })]))
+      // The existing (narrative) artifact query still fires — reportRunId
+      // alone gates it — but it finds nothing for this row's projection.
+      .mockReturnValueOnce(selectChain([]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.fleetDesign).toBeNull();
   });
 
   it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
