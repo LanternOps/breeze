@@ -11,7 +11,7 @@ import {
   deviceGroupMemberships,
   configPolicyMonitors,
 } from '../db/schema';
-import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
 import { evaluateConditions } from '../services/alertConditions';
@@ -59,6 +59,10 @@ import {
  * ownership-compatibility trigger and the feature-link lifecycle in one place.
  */
 export const monitorDefinitionRoutes = new Hono();
+
+// Every route needs an auth context: requireScope/requirePermission read
+// c.get('auth') and 401 without it. Guarded by monitorDefinitions.authGate.test.ts.
+monitorDefinitionRoutes.use('*', authMiddleware);
 
 const requireAlertRead = requirePermission(PERMISSIONS.ALERTS_READ.resource, PERMISSIONS.ALERTS_READ.action);
 const requireAlertWrite = requirePermission(PERMISSIONS.ALERTS_WRITE.resource, PERMISSIONS.ALERTS_WRITE.action);

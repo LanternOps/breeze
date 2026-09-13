@@ -42,6 +42,7 @@ const {
 }));
 
 vi.mock('../middleware/auth', () => ({
+  authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
   requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
     mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
