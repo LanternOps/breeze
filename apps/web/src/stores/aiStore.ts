@@ -28,6 +28,12 @@ interface M365Connection {
 interface AiState {
   isOpen: boolean;
   sessionId: string | null;
+  /**
+   * Org the current session is anchored to, as reported by the API (#5684).
+   * Null when unknown — a session restored from localStorage only carries its
+   * id until `loadSession` resolves the rest.
+   */
+  sessionOrgId: string | null;
   messages: AiMessage[];
   isStreaming: boolean;
   isLoading: boolean;
@@ -83,11 +89,45 @@ interface AiState {
   setSelectedM365Connection: (connectionId: string | null) => void;
 }
 
+/**
+ * True when an open session belongs to a different org than the device page the
+ * chat is now sitting on (#5684).
+ *
+ * Both sides must be known: a device page context with no `orgId` (an older
+ * caller) and a session with no recorded org both mean "cannot tell", and the
+ * session is left alone rather than dropped on a guess.
+ */
+function pageContextOrgMismatch(
+  ctx: AiPageContext | null,
+  sessionOrgId: string | null,
+): boolean {
+  return (
+    !!ctx && ctx.type === 'device' && !!ctx.orgId && !!sessionOrgId && ctx.orgId !== sessionOrgId
+  );
+}
+
+/**
+ * Session-scoped state to wipe when the chat rebinds to another tenant — the
+ * next message then creates a session anchored to the device's org (#5593).
+ */
+const CLEARED_SESSION = {
+  sessionId: null,
+  sessionOrgId: null,
+  messages: [] as AiMessage[],
+  isFlagged: false,
+  flagReason: null,
+  boundM365ConnectionId: null,
+  pendingApproval: null,
+  pendingPlan: null,
+  activePlan: null,
+} as const;
+
 export const useAiStore = create<AiState>()(
   persist(
     (set, get) => ({
   isOpen: false,
   sessionId: null,
+  sessionOrgId: null,
   messages: [],
   isStreaming: false,
   isLoading: false,
@@ -123,7 +163,12 @@ export const useAiStore = create<AiState>()(
   close: () => set({ isOpen: false }),
   clearError: () => set({ error: null }),
 
-  setPageContext: (ctx) => set({ pageContext: ctx }),
+  setPageContext: (ctx) =>
+    set((s) =>
+      pageContextOrgMismatch(ctx, s.sessionOrgId)
+        ? { pageContext: ctx, ...CLEARED_SESSION }
+        : { pageContext: ctx },
+    ),
 
   createSession: async (opts) => {
     set({ isLoading: true, error: null });
@@ -145,6 +190,7 @@ export const useAiStore = create<AiState>()(
       const data = await res.json();
       set({
         sessionId: data.id,
+        sessionOrgId: data.orgId ?? null,
         messages: [],
         isLoading: false,
         isFlagged: false,
@@ -164,7 +210,7 @@ export const useAiStore = create<AiState>()(
   // device-scoped session, and — when an initial message is supplied — auto-sends it
   // so the tech gets an answer without retyping the context.
   startDeviceTask: async (deviceId, ctx, initialMessage) => {
-    set({ pageContext: ctx, sessionId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
+    set({ pageContext: ctx, sessionId: null, sessionOrgId: null, messages: [], isFlagged: false, flagReason: null, isOpen: true });
     await get().createSession({ deviceId });
     // Only send if the session was actually created — createSession leaves
     // sessionId null and sets `error` on failure; sending then would be session-less.
@@ -179,7 +225,7 @@ export const useAiStore = create<AiState>()(
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) {
         if (res.status === 404) {
-          set({ sessionId: null, messages: [], isLoading: false });
+          set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
         } else {
           set({ error: 'Failed to load session', isLoading: false });
         }
@@ -187,7 +233,16 @@ export const useAiStore = create<AiState>()(
       }
       const data = await res.json();
       if (data.session?.status !== 'active') {
-        set({ sessionId: null, messages: [], isLoading: false });
+        set({ sessionId: null, sessionOrgId: null, messages: [], isLoading: false });
+        return;
+      }
+
+      // Only the session id survives a reload, so the org arrives here — this is
+      // where a persisted Org A session opened on an Org B device page is
+      // caught and dropped (#5684).
+      const restoredOrgId: string | null = data.session.orgId ?? null;
+      if (pageContextOrgMismatch(get().pageContext, restoredOrgId)) {
+        set({ ...CLEARED_SESSION, isLoading: false });
         return;
       }
 
@@ -195,6 +250,7 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        sessionOrgId: restoredOrgId,
         messages,
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
@@ -204,6 +260,7 @@ export const useAiStore = create<AiState>()(
     } catch (err) {
       set({
         sessionId: null,
+        sessionOrgId: null,
         messages: [],
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
@@ -428,7 +485,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, messages: [], boundM365ConnectionId: null });
+      set({ sessionId: null, sessionOrgId: null, messages: [], boundM365ConnectionId: null });
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });
@@ -488,6 +545,10 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        // An explicit pick from the history panel is authoritative — it is not
+        // dropped on an org mismatch, but the org is recorded so a later page
+        // navigation can rebind (#5684).
+        sessionOrgId: data.session?.orgId ?? null,
         messages,
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,
@@ -560,6 +621,7 @@ export const useAiStore = create<AiState>()(
       name: 'breeze-ai-chat',
       partialize: (state) => ({
         sessionId: state.sessionId,
+        sessionOrgId: state.sessionOrgId,
       }),
     }
   )
