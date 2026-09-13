@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SortableTh } from './SortableTh';
+import { i18n } from '@/lib/i18n';
 
 function renderTh(props: Partial<Parameters<typeof SortableTh>[0]> = {}) {
   const onSort = vi.fn();
@@ -57,5 +58,18 @@ describe('SortableTh', () => {
     renderTh();
     expect(screen.getByRole('columnheader').className).not.toContain('text-right');
     expect(screen.getByTestId('sort-total').className).not.toContain('flex-row-reverse');
+  });
+
+  it('reads its labels from the catalog named by `namespace`', () => {
+    i18n.addResourceBundle('en', 'probe', {
+      shared: { sortableTh: { sortBy: 'PROBE {{label}}', sortByWithDirection: 'PROBE {{label}} {{direction}}', ascending: 'up', descending: 'down' } },
+    }, true, true);
+    renderTh({ namespace: 'probe', activeSort: 'total', direction: 'asc' });
+    expect(screen.getByTestId('sort-total')).toHaveAttribute('aria-label', 'PROBE Total up');
+  });
+
+  it('defaults to the billing catalog so existing callers are unchanged', () => {
+    renderTh({ activeSort: 'total', direction: 'desc' });
+    expect(screen.getByTestId('sort-total')).toHaveAttribute('aria-label', 'Sort by Total, Descending');
   });
 });

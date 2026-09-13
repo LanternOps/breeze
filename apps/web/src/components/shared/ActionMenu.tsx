@@ -1,14 +1,23 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { useMenuKeyboard } from '../billing/shared/menuKeyboard';
 
 export interface ActionMenuItem {
   id: string;
   label: string;
-  onSelect: () => void;
+  /** Second, muted line under the label (e.g. a contact's email and phone). */
+  description?: string;
+  /** Renders the item as a real link (`<a role="menuitem">`) so `mailto:`/`tel:`
+   *  and record links stay middle-clickable. `onSelect` is optional then. */
+  href?: string;
+  /** Required unless `href` is set; still called (after focus returns to the
+   *  trigger) when both are present. */
+  onSelect?: () => void;
   /** `destructive` renders the item in the destructive colour: reserve it for
    *  actions that cannot be undone (merge), not for reversible ones (archive). */
   tone?: 'default' | 'destructive';
+  /** Draws a divider above this item — grouping without a separate item type. */
+  separatorBefore?: boolean;
   testId?: string;
 }
 
@@ -19,18 +28,20 @@ export interface ActionMenuProps {
   testId?: string;
   /** Classes on the trigger button. Defaults to the secondary-button look. */
   triggerClassName?: string;
+  /** Tab index of the trigger; a roving-tabindex row passes -1 for every row but the active one. */
+  triggerTabIndex?: number;
 }
 
 /**
- * Overflow menu for a header's rare actions, per the WAI-ARIA menu-button
- * pattern: trigger carries `aria-haspopup="menu"` + `aria-expanded`, the popup
- * is `role="menu"` of `role="menuitem"`s, the first item takes focus on open,
- * Arrow/Home/End move between items, Tab and an outside click close, and
- * Escape closes and returns focus to the trigger. Renders nothing when there
+ * Overflow menu for a header's or a row's rare actions, per the WAI-ARIA
+ * menu-button pattern: trigger carries `aria-haspopup="menu"` + `aria-expanded`,
+ * the popup is `role="menu"` of `role="menuitem"`s, the first item takes focus
+ * on open, Arrow/Home/End move between items, Tab and an outside click close,
+ * and Escape closes and returns focus to the trigger. Renders nothing when there
  * are no items, so callers can pass a permission-filtered list without
  * guarding the trigger themselves.
  */
-export function ActionMenu({ label, items, testId, triggerClassName }: ActionMenuProps) {
+export function ActionMenu({ label, items, testId, triggerClassName, triggerTabIndex }: ActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -59,6 +70,21 @@ export function ActionMenu({ label, items, testId, triggerClassName }: ActionMen
 
   if (items.length === 0) return null;
 
+  const itemClass = (item: ActionMenuItem) =>
+    `block w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent ${
+      item.tone === 'destructive' ? 'text-destructive' : ''
+    }`;
+
+  const activate = (item: ActionMenuItem) => {
+    // Focus the trigger BEFORE the item unmounts and before the handler runs:
+    // a dialog opened by `onSelect` captures `document.activeElement` on mount
+    // as its restore target, and without this it captured <body> (the
+    // menuitem was already gone in the same commit).
+    triggerRef.current?.focus();
+    setOpen(false);
+    item.onSelect?.();
+  };
+
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -69,6 +95,7 @@ export function ActionMenu({ label, items, testId, triggerClassName }: ActionMen
         aria-expanded={open}
         aria-label={label}
         title={label}
+        tabIndex={triggerTabIndex}
         onClick={() => setOpen((value) => !value)}
         className={
           triggerClassName ??
@@ -85,30 +112,28 @@ export function ActionMenu({ label, items, testId, triggerClassName }: ActionMen
           onKeyDown={handleKeyDown}
           className="absolute right-0 z-20 mt-1 min-w-44 overflow-hidden rounded-md border bg-popover py-1 shadow-md"
         >
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              data-testid={item.testId}
-              onClick={() => {
-                // Focus the trigger BEFORE the item unmounts and before the
-                // handler runs: a dialog opened by `onSelect` captures
-                // `document.activeElement` on mount as its restore target,
-                // and without this it captured <body> (the menuitem was
-                // already gone in the same commit).
-                triggerRef.current?.focus();
-                setOpen(false);
-                item.onSelect();
-              }}
-              className={`block w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-accent focus-visible:bg-accent ${
-                item.tone === 'destructive' ? 'text-destructive' : ''
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
+          {items.map((item) => {
+            const body = (
+              <>
+                {item.label}
+                {item.description && <span className="block text-xs text-muted-foreground">{item.description}</span>}
+              </>
+            );
+            return (
+              <Fragment key={item.id}>
+                {item.separatorBefore && <div role="separator" className="my-1 border-t" />}
+                {item.href ? (
+                  <a role="menuitem" tabIndex={-1} href={item.href} data-testid={item.testId} onClick={() => activate(item)} className={itemClass(item)}>
+                    {body}
+                  </a>
+                ) : (
+                  <button type="button" role="menuitem" tabIndex={-1} data-testid={item.testId} onClick={() => activate(item)} className={itemClass(item)}>
+                    {body}
+                  </button>
+                )}
+              </Fragment>
+            );
+          })}
         </div>
       )}
     </div>
