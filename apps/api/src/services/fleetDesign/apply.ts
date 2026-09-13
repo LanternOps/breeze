@@ -41,13 +41,14 @@ import { applyDesignFunctions } from '../deviceFunction';
 import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
 import { findReusableGroup, recordApplied, recordFailed, updateCreatedRefs } from './ledger';
 import {
+  FLEET_DESIGN_ASSIGNMENT_PRIORITY,
   FleetDesignApplyError,
   fleetDesignGroupName,
   previewFleetDesignApplyWithContext,
   type FleetDesignPreviewContext,
 } from './preview';
 
-export const FLEET_DESIGN_ASSIGNMENT_PRIORITY = 100;
+export { FLEET_DESIGN_ASSIGNMENT_PRIORITY };
 export const FLEET_DESIGN_CHECK_INTERVAL_SECONDS = 60;
 
 interface ApplyCtx extends FleetDesignPreviewContext {

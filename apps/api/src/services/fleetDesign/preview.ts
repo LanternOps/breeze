@@ -205,6 +205,7 @@ export async function previewFleetDesignApplyWithContext(
         const winner = eff.features[featureType];
         if (!winner || winner.sourceLevel === 'default') continue;
         if (reusedPolicyId && winner.sourcePolicyId === reusedPolicyId) continue;
+        if (!wouldBeDisplaced(winner.sourceLevel, winner.sourcePriority)) continue;
         const k = `${winner.sourcePolicyId}:${featureType}`;
         const row = displaced.get(k) ?? { policyId: winner.sourcePolicyId, policyName: winner.sourcePolicyName, featureType, deviceCount: 0 };
         row.deviceCount += 1;
@@ -312,6 +313,24 @@ async function resolveRetiredItem(
     ? (settings.watches ?? []).some((w) => w.name === item.itemName && w.enabled !== false)
     : (settings.items ?? []).some((r) => r.name === item.itemName);
   return { found, editable, policyName: policy.name, linkId: link.id, inlineSettings: link.inlineSettings, policyOrgId: policy.orgId };
+}
+
+/**
+ * Mirrors `resolveEffectiveConfig`'s winner order (level rank DESC, priority
+ * ASC, created_at ASC): a Fleet Design assignment (device_group, priority
+ * FLEET_DESIGN_ASSIGNMENT_PRIORITY = 100) out-ranks every site / org /
+ * partner assignment, loses to a device-level one, and among device_group
+ * assignments only beats a HIGHER priority number (ties go to the older
+ * row, i.e. the existing one). Anything the new assignment cannot beat is
+ * not displaced and must not be reported as such.
+ */
+const LEVEL_RANK: Record<string, number> = { device: 5, device_group: 4, site: 3, organization: 2, partner: 1 };
+export const FLEET_DESIGN_ASSIGNMENT_PRIORITY = 100;
+export function wouldBeDisplaced(sourceLevel: string, sourcePriority: number): boolean {
+  const rank = LEVEL_RANK[sourceLevel] ?? 0;
+  if (rank < LEVEL_RANK.device_group!) return true;
+  if (rank > LEVEL_RANK.device_group!) return false;
+  return sourcePriority > FLEET_DESIGN_ASSIGNMENT_PRIORITY;
 }
 
 function dedupe<T>(values: readonly T[]): T[] {
