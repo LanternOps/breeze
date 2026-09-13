@@ -874,3 +874,9 @@ export * from './stripeAccount';
 // ============================================
 
 export * from './tickets';
+
+// ============================================
+// AI run artifacts (execution plane, spec 2026-09-13)
+// ============================================
+
+export * from './aiArtifacts';

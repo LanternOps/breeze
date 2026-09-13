@@ -629,6 +629,21 @@ const envObjectSchema = z
     // in env.ts. Validated here for boolean format only.
     BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
 
+    // Execution plane W01 (spec 2026-09-13 §8). Validated for SHAPE here so a
+    // typo boot-refuses instead of silently reading as off / 'us'.
+    BREEZE_REGION: z.string().optional(),
+    BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
+    ARTIFACT_BLOB_BACKEND: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_EU: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_US: z.string().optional(),
+    ARTIFACT_S3_BUCKET_EU: z.string().optional(),
+    ARTIFACT_S3_BUCKET_US: z.string().optional(),
+    ARTIFACT_S3_REGION_EU: z.string().optional(),
+    ARTIFACT_S3_REGION_US: z.string().optional(),
+    ARTIFACT_S3_ACCESS_KEY: z.string().optional(),
+    ARTIFACT_S3_SECRET_KEY: z.string().optional(),
+    ARTIFACT_S3_SSE: z.string().optional(),
+
     // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
     // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
     // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
@@ -1835,6 +1850,52 @@ const envSchema = envObjectSchema
         message:
           'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
       });
+    }
+
+    // Execution plane W01 (spec §8). Same class as the two flags above.
+    const regionRaw = (data.BREEZE_REGION ?? '').trim().toLowerCase();
+    if (regionRaw && regionRaw !== 'eu' && regionRaw !== 'us') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_REGION'],
+        message: 'BREEZE_REGION must be "eu" or "us" when set (hosted regions are single-region deployments). Defaults to "us".',
+      });
+    }
+    const workspaceRaw = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+    if (workspaceRaw && !boolValues.has(workspaceRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_WORKSPACE_ENABLED'],
+        message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
+      });
+    }
+    const blobBackendRaw = (data.ARTIFACT_BLOB_BACKEND ?? '').trim().toLowerCase();
+    if (blobBackendRaw && blobBackendRaw !== 's3') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARTIFACT_BLOB_BACKEND'],
+        message: blobBackendRaw === 'db'
+          ? 'ARTIFACT_BLOB_BACKEND=db is not available in v1 — there is no generic blob table. Use "s3" (MinIO works locally through S3_ENDPOINT).'
+          : 'ARTIFACT_BLOB_BACKEND must be "s3" when set.',
+      });
+    }
+    // With the lane switched on for a hosted region, the blob store for THAT
+    // region must be reachable, or the first oversized tool result becomes an
+    // `artifact_store_unavailable` error for every technician (spec §9).
+    const workspaceOn = boolValues.has(workspaceRaw) && ['true', '1', 'yes', 'on'].includes(workspaceRaw);
+    const hostedOn = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (workspaceOn && hostedOn) {
+      const region = regionRaw === 'eu' ? 'EU' : 'US';
+      const bucket = (data[`ARTIFACT_S3_BUCKET_${region}` as 'ARTIFACT_S3_BUCKET_EU' | 'ARTIFACT_S3_BUCKET_US'] ?? '').trim() || (data.S3_BUCKET ?? '').trim();
+      const accessKey = (data.ARTIFACT_S3_ACCESS_KEY ?? '').trim() || (data.S3_ACCESS_KEY ?? '').trim();
+      const secretKey = (data.ARTIFACT_S3_SECRET_KEY ?? '').trim() || (data.S3_SECRET_KEY ?? '').trim();
+      if (!bucket || !accessKey || !secretKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [`ARTIFACT_S3_BUCKET_${region}`],
+          message: `BREEZE_AI_WORKSPACE_ENABLED=true on a hosted deployment requires an artifact blob store for region ${region.toLowerCase()}: set ARTIFACT_S3_BUCKET_${region} (or S3_BUCKET) plus ARTIFACT_S3_ACCESS_KEY/ARTIFACT_S3_SECRET_KEY (or S3_ACCESS_KEY/S3_SECRET_KEY).`,
+        });
+      }
     }
 
     // BREEZE_AI_SCRIPT_AUTHORING_ENABLED (AI script authoring W01b). Same

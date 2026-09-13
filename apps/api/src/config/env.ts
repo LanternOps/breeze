@@ -113,6 +113,31 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// Execution plane (spec docs/superpowers/specs/ai-mcp/2026-09-13-ai-agent-execution-plane-design.md §8).
+// Sub-flag of BREEZE_AI_AGENTS_ENABLED AND hosted-only (D-I): the sandbox lane
+// is the paid channel, and the artifact blob store it needs is S3-compatible
+// object storage a self-hoster is not required to run. Read at CALL time so a
+// test can flip it per case without vi.resetModules(). With this false, every
+// AI tool result is byte-identical to today — the capture hook in
+// services/aiTools.ts returns the raw string untouched.
+export function aiWorkspaceEnabled(): boolean {
+  return isHosted() && AI_AGENTS_ENABLED && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false);
+}
+
+export type BreezeRegion = 'eu' | 'us';
+
+// Deployment region. Hosted regions are single-region deployments (one API +
+// worker per region), so the process knows its own region from env and every
+// org it serves lives in it. Used to pick the artifact blob bucket and, later,
+// the sandbox region (spec §8 "Residency"). Previously read inline by
+// routes/mcpServer.ts for partner-trust bootstrap; that reader now calls this.
+// Unrecognised values resolve to 'us' here; config/validate.ts refuses them at
+// boot so a typo cannot reach production.
+export function breezeRegion(): BreezeRegion {
+  const raw = (process.env.BREEZE_REGION ?? '').trim().toLowerCase();
+  return raw === 'eu' ? 'eu' : 'us';
+}
+
 /**
  * AI script authoring, review, and reviewer-gated execution (spec
  * 2026-09-11-ai-script-authoring-and-review-design.md §8).
