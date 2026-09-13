@@ -30,6 +30,8 @@ import {
   ensureBuiltInMonitorsForPartner,
 } from '../../services/monitors/builtInMonitors';
 import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
+import { createPartner as createPartnerViaService } from '../../services/partnerCreate';
+import { roles } from '../../db/schema';
 import { createOrganization, createPartner, createSite } from './db-utils';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -199,6 +201,39 @@ describe('ensureBuiltInMonitorsForPartner', () => {
         }),
       ),
     ).rejects.toMatchObject({ cause: { constraint_name: 'monitor_definitions_builtin_partner_chk' } });
+  });
+});
+
+describe('createPartner() hook', () => {
+  it('provisions the built-ins inside the signup transaction with the admin user as creator', async () => {
+    // createPartner copies permissions from the system "Partner Admin" role.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      const [existing] = await db
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(eq(roles.name, 'Partner Admin'), eq(roles.isSystem, true), sql`${roles.partnerId} IS NULL`));
+      if (!existing) {
+        await db.insert(roles).values({ partnerId: null, scope: 'partner', name: 'Partner Admin', description: 'System partner admin', isSystem: true });
+      }
+    });
+    const suffix = randomUUID().slice(0, 8);
+    const created = await withDbAccessContext(SYSTEM_CTX, () =>
+      createPartnerViaService({
+        orgName: `BuiltIn Co ${suffix}`,
+        adminEmail: `builtin-${suffix}@example.test`,
+        adminName: 'Built In',
+        passwordHash: 'x',
+        origin: { mcp: false },
+        status: 'active',
+      }),
+    );
+    createdPartnerIds.push(created.partnerId);
+    createdOrgIds.push(created.orgId);
+
+    const rows = await builtInsFor(created.partnerId);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.createdBy === created.adminUserId)).toBe(true);
+    expect(await marker(created.partnerId)).toMatchObject({ version: 1 });
   });
 });
 
