@@ -228,13 +228,13 @@ describe('MFA enrolment grace window (#5306)', () => {
 
     const columns = await readGraceColumns(user.id);
     expect(columns.deadline!.toISOString()).toBe(granted.pendingEnrollment!.deadline);
-    const [{ count }] = (await getTestDb().execute<{ count: number }>(sql`
+    const columnRows = (await getTestDb().execute<{ count: number }>(sql`
       SELECT count(*)::int AS count
         FROM information_schema.columns
        WHERE table_name = 'users'
          AND column_name IN ('mfa_enrollment_deadline', 'mfa_enrollment_grace_granted_at',
                              'mfa_enrollment_notice_sent_at', 'mfa_enrollment_reminded_at')
     `)) as { count: number }[];
-    expect(count).toBe(4);
+    expect(columnRows[0]?.count).toBe(4);
   });
 });
