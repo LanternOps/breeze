@@ -59,19 +59,30 @@ export function buildScriptEnvelope(scripts: FleetDesignProposedScript[]): Scrip
 
 /**
  * The automation proposal a rule's `action: { kind: 'script', ref }` names.
- * The model may cite a proposal by its item ref or by its name; the first
- * match in section order wins. Null when the rule names no proposed script
- * (`none`, a playbook, or an existing library script id).
+ * The model may cite a proposal by its item ref (exact) or by its name. Two
+ * functions can propose the same name, so a name resolves within the rule's
+ * own function first, then the first match in section order. Null when the
+ * rule names no proposed script (`none`, a playbook, or an existing library
+ * script id).
  */
-export function proposalRefForRule(outcome: FleetDesignOutcome, action: FleetDesignRule['action']): string | null {
+export function proposalRefForRule(
+  outcome: FleetDesignOutcome,
+  action: FleetDesignRule['action'],
+  ruleFunctionKey: string,
+): string | null {
   if (action === 'none' || action.kind !== 'script') return null;
+  let ownFunction: string | null = null;
+  let anyFunction: string | null = null;
   for (const entry of outcome.sections.automation) {
     for (const [index, script] of entry.scripts.entries()) {
       const itemRef = automationScriptRef(entry.functionKey, index);
-      if (action.ref === itemRef || action.ref === script.name) return itemRef;
+      if (action.ref === itemRef) return itemRef;
+      if (action.ref !== script.name) continue;
+      if (entry.functionKey === ruleFunctionKey) ownFunction ??= itemRef;
+      anyFunction ??= itemRef;
     }
   }
-  return null;
+  return ownFunction ?? anyFunction;
 }
 
 const CREATED_MARKER = '[script created:';

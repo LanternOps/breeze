@@ -326,8 +326,8 @@ export function toRuleItem(r: FleetDesignRule, createdScriptId?: string) {
 }
 
 /** The id of a script this run already created for the proposal a rule names, if any. */
-function createdScriptIdFor(ctx: ApplyCtx, r: FleetDesignRule): string | undefined {
-  const ref = proposalRefForRule(ctx.outcome, r.action);
+function createdScriptIdFor(ctx: ApplyCtx, r: FleetDesignRule, functionKey: string): string | undefined {
+  const ref = proposalRefForRule(ctx.outcome, r.action, functionKey);
   return ref ? ctx.createdScriptIds.get(ref) : undefined;
 }
 
@@ -343,7 +343,7 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
     const newRuleRefs = items.rules.map((n) => `monitoring:${functionKey}:rule:${n}`).filter((r) => !ctx.appliedRefs.has(r));
     if (newWatchRefs.length === 0 && newRuleRefs.length === 0) continue;
     const newWatches = items.watches.filter((n) => newWatchRefs.includes(`monitoring:${functionKey}:watch:${n}`)).map((n) => toWatchItem(section.watches[n]!));
-    const newRules = items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => toRuleItem(section.alertRules[n]!, createdScriptIdFor(ctx, section.alertRules[n]!)));
+    const newRules = items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => toRuleItem(section.alertRules[n]!, createdScriptIdFor(ctx, section.alertRules[n]!, functionKey)));
 
     const policyRef = `policy:${functionKey}`;
     const existingRow = ctx.policyRowByFunction.get(functionKey);
@@ -385,6 +385,10 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
         linksSnapshot: snapshotLinks(after),
       };
       await updateCreatedRefs(existingRow.id, ctx.orgId, createdRefs);
+      // Keep the in-memory row current: step 4 (linkRulesToCreatedScripts)
+      // rebuilds created_refs from it, and a stale copy would write back the
+      // link ids this step just added.
+      existingRow.createdRefs = createdRefs;
     } else {
       const policy = await createConfigPolicy(
         { orgId: ctx.orgId },
@@ -527,7 +531,9 @@ async function stepScripts(ctx: ApplyCtx): Promise<void> {
  * names a script created in THIS step gets `[script created: <id>]` appended
  * to its stored rationale (text only — alert rules have no action binding).
  * The policy ledger row's `linksSnapshot` is refreshed so rollback's
- * unmodified-since-apply comparison stays exact.
+ * unmodified-since-apply comparison stays exact. A rule is matched by the
+ * name + rationale step 3 wrote, so one a technician has since edited is
+ * deliberately left alone (it is theirs now).
  */
 async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>): Promise<void> {
   for (const [functionKey, policyRow] of ctx.policyRowByFunction) {
@@ -537,7 +543,7 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
     // Stored rationale (as step 3 wrote it) → the rationale it should now carry.
     const rewrites = new Map<string, { name: string; rationale: string }>();
     for (const rule of section.alertRules) {
-      const ref = proposalRefForRule(ctx.outcome, rule.action);
+      const ref = proposalRefForRule(ctx.outcome, rule.action, functionKey);
       const scriptId = ref && createdRefs.has(ref) ? ctx.createdScriptIds.get(ref) : undefined;
       if (!scriptId) continue;
       const stored = toRuleItem(rule);

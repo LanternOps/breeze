@@ -579,6 +579,43 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
     }));
   });
 
+  it('a second apply that adds a rule (reused policy) AND its script keeps the refs step 3 just wrote when step 4 refreshes the snapshot', async () => {
+    const rule: FleetDesignRule = {
+      name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
+      action: { kind: 'script', ref: spooler.name }, paging: 'none',
+    };
+    const outcome = makeOutcome({
+      monitoring: [{ functionKey: 'file_server', watches: [], alertRules: [rule] }],
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [spooler] }],
+    });
+    // First apply created the policy with watches only — no alert_rule link yet.
+    const existingRow = { id: 'ledger-policy', createdRefs: { policyId: 'p1', groupId: 'g1', monitoringLinkId: 'link-m' } } as unknown as FleetDesignLedgerRow;
+    previewMock.previewFleetDesignApplyWithContext.mockResolvedValue(makeCtx({
+      outcome,
+      scriptsToCreate: [toCreate[0]!],
+      preview: makePreview({
+        functions: [{ functionKey: 'file_server', label: 'File Server', groupId: 'g1', groupName: 'Fleet Design: File Server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+        policies: [{ functionKey: 'file_server', policyName: 'Fleet Design: File Server', watchCount: 0, ruleCount: 1, displaces: [] }],
+      }),
+      monitoringByFunction: new Map([['file_server', { watches: [], rules: [0] }]]),
+      policyRowByFunction: new Map([['file_server', existingRow]]),
+    }));
+    bundleMock.importBundle.mockResolvedValue({ ...importOk, imported: 1, renamed: 0, scripts: [{ index: 0, name: spooler.name, action: 'imported', scriptId: 'script-a' }] });
+    const ruleItem = toRuleItem(rule);
+    const monitoringLink = { id: 'link-m', featureType: 'monitoring', featurePolicyId: null, inlineSettings: { watches: [] } };
+    configPolicyMock.listFeatureLinks
+      .mockResolvedValueOnce([monitoringLink]) // step 3 reads the policy's links before adding the rule link
+      .mockResolvedValue([monitoringLink, { id: 'link-r', featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: [ruleItem] } }]);
+    configPolicyMock.addFeatureLink.mockResolvedValue({ id: 'link-r' });
+    configPolicyMock.updateFeatureLink.mockResolvedValue({ id: 'link-r' });
+
+    await applyFleetDesign(makeAuth(), RUN, makeApproval({ monitoring: ['monitoring:file_server:rule:0'], automation: ['automation:file_server:script:0'] }));
+
+    const calls = ledgerMock.updateCreatedRefs.mock.calls.filter((c) => c[0] === 'ledger-policy');
+    expect(calls.length).toBe(2); // step 3 union, then step 4 snapshot refresh
+    expect(calls[1]![2]).toMatchObject({ policyId: 'p1', monitoringLinkId: 'link-m', alertRuleLinkId: 'link-r' });
+  });
+
   it('step 3 of a LATER apply writes the id of a script an earlier apply created into the rule rationale', async () => {
     const rule: FleetDesignRule = {
       name: 'Spooler stuck', severity: 'medium', conditions: [], cooldownMinutes: 30, rationale: 'jobs pile up',
