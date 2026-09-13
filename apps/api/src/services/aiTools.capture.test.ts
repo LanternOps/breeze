@@ -135,6 +135,16 @@ describe('executeTool capture hook', () => {
     expect(mocks.capture).not.toHaveBeenCalled();
   });
 
+  it('tolerates an auth context with no principal — capture must never be what throws', async () => {
+    // Regression: `AuthContext.principal` is typed non-optional but is absent on
+    // plenty of hand-built contexts. Reading it unguarded turned every such tool
+    // call into a TypeError from inside the capture hook.
+    cleanup.push(register('cap_no_principal', BIG));
+    const noPrincipal = { ...(auth as Record<string, unknown>), principal: undefined } as never;
+    expect(await executeTool('cap_no_principal', {}, noPrincipal)).toBe(BIG);
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
+  });
+
   it('never lets a capture fault fail the tool call — the raw result still returns', async () => {
     cleanup.push(register('cap_boom', BIG));
     mocks.capture.mockRejectedValueOnce(new Error('unexpected'));

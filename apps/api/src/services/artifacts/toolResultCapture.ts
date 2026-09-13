@@ -89,7 +89,12 @@ export function captureContextFrom(
   toolName: string,
 ): CaptureContext | null {
   const orgId = opts?.capture?.orgId ?? auth.orgId ?? null;
-  const runId = auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
+  // `principal` is typed non-optional but is absent on hand-built contexts (test
+  // doubles, and any caller that predates the field). Capture runs on EVERY tool
+  // call, so it must never be the thing that throws — `middleware/auth.ts` reads
+  // it the same defensive way (isAiAgentPrincipal, dbAccessContextFromAuth).
+  const principal = auth.principal as AuthContext['principal'] | undefined;
+  const runId = principal?.kind === 'ai_agent' ? principal.runId : null;
   const sessionId = runId ? null : (opts?.capture?.sessionId ?? null);
   if (!orgId) return null;
   if (!runId && !sessionId) return null;
