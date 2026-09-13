@@ -543,15 +543,10 @@ export default function OrganizationsBoardPage() {
       if (archived.error) {
         return <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{archived.error}</div>;
       }
-      if (filteredRows.length === 0) {
-        // Keyed on whether a search is active: once a term is present the loaded
-        // rows ARE the server-filtered result, so empty means "no match".
-        return (
-          <div data-testid="org-board-archived-empty" className="rounded-lg border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
-            {searchQuery.trim() ? t('orgBoard.archived.noMatches') : t('orgBoard.archived.empty')}
-          </div>
-        );
-      }
+      // The table wrapper (and its `responsive-table-desktop` testid) always renders,
+      // even with zero rows: the archived view can go from non-empty to empty in
+      // place (the last archived org gets restored) without the row query surface
+      // disappearing out from under a caller that just watched a row leave it.
       return (
         <>
           {archived.truncated && (
@@ -575,6 +570,13 @@ export default function OrganizationsBoardPage() {
             archivedView
             now={new Date()}
           />
+          {filteredRows.length === 0 && (
+            // Keyed on whether a search is active: once a term is present the loaded
+            // rows ARE the server-filtered result, so empty means "no match".
+            <div data-testid="org-board-archived-empty" className="rounded-lg border bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+              {searchQuery.trim() ? t('orgBoard.archived.noMatches') : t('orgBoard.archived.empty')}
+            </div>
+          )}
         </>
       );
     }
