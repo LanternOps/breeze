@@ -887,6 +887,7 @@ export const alertRuleItemSchema = z.object({
   // back to org defaults while the standalone alert-rule path honoured both.
   escalationPolicyId: z.string().uuid().nullable().optional(),
   notificationChannelIds: z.array(z.string().uuid()).max(20).optional(),
+  rationale: z.string().trim().max(2000).nullable().optional(),
 });
 
 export const alertRuleInlineSettingsSchema = z.object({
@@ -937,6 +938,7 @@ export const monitoringInlineSettingsSchema = z.object({
     autoRestart: z.boolean().default(false),
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
     restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
+    rationale: z.string().trim().max(2000).nullable().optional(),
   })).max(200).default([]),
   // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
   // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
