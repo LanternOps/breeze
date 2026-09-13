@@ -39,7 +39,9 @@
       "delete": "Impossibile eliminare il monitor",
       "toggle": "Impossibile aggiornare il monitor"
     },
-    "deleteConfirm": "Eliminare il monitor {{name}}? Verranno rimosse anche la relativa regola di avviso e l'automazione di risposta."
+    "deleteConfirm": "Eliminare il monitor {{name}}? Verranno rimosse anche la relativa regola di avviso e l'automazione di risposta.",
+    "builtIn": "Integrato",
+    "builtInHint": "Fornito da Breeze. Modifica le soglie, disattivalo o eliminalo: non tornerà."
   },
   "editor": {
     "titleNew": "Nuovo monitor",

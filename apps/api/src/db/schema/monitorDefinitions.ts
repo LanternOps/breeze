@@ -81,6 +81,10 @@ export const monitorDefinitions = pgTable(
     compiledHash: text('compiled_hash'),
     compiledAt: timestamp('compiled_at', { withTimezone: true }),
     createdBy: uuid('created_by').references(() => users.id),
+    // Set on the partner-wide rows provisioned by services/monitors/
+    // builtInMonitors.ts ('cpu_high' | 'memory_high' | 'disk_full'). NULL for
+    // every user-authored monitor. CHECK: builtin_key IS NULL OR partner_id IS NOT NULL.
+    builtinKey: varchar('builtin_key', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   },

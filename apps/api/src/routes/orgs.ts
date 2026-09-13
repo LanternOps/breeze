@@ -61,6 +61,7 @@ import { getEnrollmentDefaultsForOrg } from '../services/enrollmentDefaults';
 import { isValidIpOrCidr } from '../services/ipMatch';
 import { applyNewPartnerDefaultSettings } from '../services/partnerDefaultSettings';
 import { seedSystemTicketStatuses } from '../services/ticketConfigService';
+import { ensureBuiltInMonitorsForPartner } from '../services/monitors/builtInMonitors';
 import { getTrustedClientIpOrUndefined } from '../services/clientIp';
 import {
   canManagePartnerWidePolicies,
@@ -533,6 +534,7 @@ orgRoutes.post('/partners', requireScope('system'), requireOrgWrite, requireMfa(
       .returning(partnerPublicColumns());
     if (newPartner) {
       await seedSystemTicketStatuses(tx, newPartner.id);
+      await ensureBuiltInMonitorsForPartner(newPartner.id, { createdBy: auth.user?.id ?? null, exec: tx });
     }
     return [newPartner];
   });

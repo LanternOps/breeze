@@ -39,7 +39,9 @@
       "delete": "Impossible de supprimer le moniteur",
       "toggle": "Impossible de mettre à jour le moniteur"
     },
-    "deleteConfirm": "Supprimer le moniteur {{name}}? Sa règle d’alerte et son automatisation de réponse seront également supprimées."
+    "deleteConfirm": "Supprimer le moniteur {{name}}? Sa règle d’alerte et son automatisation de réponse seront également supprimées.",
+    "builtIn": "Intégré",
+    "builtInHint": "Fourni par Breeze. Modifiez les seuils, désactivez-le ou supprimez-le – il ne reviendra pas."
   },
   "editor": {
     "titleNew": "Nouveau moniteur",

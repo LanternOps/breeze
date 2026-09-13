@@ -158,6 +158,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
+import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -1667,6 +1668,22 @@ async function bootstrap(): Promise<void> {
     });
   } catch (err) {
     console.error('[startup] Failed to ensure system script library:', err);
+  }
+
+  // Built-in CPU / memory / disk monitors for partners created before the
+  // feature shipped. One-time per partner (partners.settings marker); opt out
+  // with BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
+  try {
+    await runWithSystemDbAccess(async () => {
+      const result = await ensureBuiltInMonitorsForAllPartners();
+      if (result.provisioned > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[startup] Failed to provision built-in monitors:', err);
   }
 
   try {

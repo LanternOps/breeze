@@ -6,6 +6,7 @@ import { navigateTo } from '@/lib/navigation';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
 import { ScopeBadge } from '../shared/ScopeBadge';
+import { BuiltInBadge } from './BuiltInBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import MonitoringTabStrip from './MonitoringTabStrip';
 import type { MonitorKind } from '@breeze/shared';
@@ -24,6 +25,7 @@ type MonitorRow = {
   enabled: boolean;
   orgId: string | null;
   partnerId: string | null;
+  builtinKey?: string | null;
   attachmentCount?: number;
 };
 
@@ -186,7 +188,10 @@ export default function MonitorsListPage() {
                     <td className="px-4 py-3">{t(/* i18n-dynamic */ `monitoring:severities.${row.severity}`)}</td>
                     <td className="px-4 py-3">{deployedToLabel(row)}</td>
                     <td className="px-4 py-3">
-                      <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                      <span className="inline-flex items-center gap-1.5">
+                        <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                        {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
+                      </span>
                     </td>
                     <td className="px-4 py-3">{renderEnabledToggle(row)}</td>
                     <td className="px-4 py-3 text-right">{renderActions(row)}</td>
@@ -202,7 +207,10 @@ export default function MonitorsListPage() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       {renderName(row)}
-                      <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                      <span className="inline-flex items-center gap-1.5">
+                        <ScopeBadge orgId={row.orgId} partnerId={row.partnerId} isSystem={false} />
+                        {row.builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
+                      </span>
                     </div>
                     <CardField label={t('monitoring:list.columns.kind')}>
                       {t(/* i18n-dynamic */ `monitoring:kinds.${row.kind}`)}

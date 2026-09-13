@@ -17,6 +17,7 @@ import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { BuiltInBadge } from './BuiltInBadge';
 import ActionsEditor, {
   type Script,
   type NotificationChannel,
@@ -156,6 +157,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [aiAgents, setAiAgents] = useState<AiAgent[]>([]);
   const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [builtinKey, setBuiltinKey] = useState<string | null>(null);
 
   const methods = useForm<MonitorFormValues>({
     resolver: zodResolver(monitorFormSchema),
@@ -258,6 +260,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       const data = await response.json();
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
+      setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -451,6 +454,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
             <h1 className="text-xl font-semibold tracking-tight">
               {isNew ? t('monitoring:editor.titleNew') : t('monitoring:editor.titleEdit')}
             </h1>
+            {builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
           </div>
           {!isNew && (
             <button
