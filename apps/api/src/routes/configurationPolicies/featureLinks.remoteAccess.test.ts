@@ -215,7 +215,10 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
         POLICY_ID,
         'remote_access',
         undefined,
-        capabilitySettings
+        capabilitySettings,
+        // #5511 W02: the route hands every feature-link write its consent actor
+        // out of band; the service only reads it for warranty.
+        { userId: 'user-1' }
       );
     });
 
@@ -313,7 +316,8 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
             sessionPromptMode: 'consent',
           },
         }),
-        POLICY_ID
+        POLICY_ID,
+        { userId: 'user-1' }
       );
     });
 

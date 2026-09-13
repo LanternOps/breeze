@@ -1172,4 +1172,112 @@ describe('featureLinks routes', () => {
     });
 
   });
+
+  // ============================================================
+  // #5511 W02 — warranty hpCmsl block, server-stamped consent (D3)
+  // ============================================================
+
+  describe('warranty inlineSettings validation and consent', () => {
+    const CONSENT = {
+      acceptedByUserId: 'attacker',
+      acceptedAt: '2020-01-01T00:00:00.000Z',
+      eulaId: 'hp-cmsl-eula-2026-04-01',
+    };
+
+    beforeEach(() => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'warranty', inlineSettings: {} }],
+      });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+    });
+
+    it('POST refuses a client-supplied consent with a coded 400 and never calls the service', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'warranty',
+          inlineSettings: { hpCmsl: { enabled: true, consent: CONSENT } },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('PATCH refuses a client-supplied consent with the same coded 400', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: true, consent: CONSENT } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE' });
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST rejects an unknown warranty key instead of persisting it', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCsml: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST passes the authenticated user to the service as the consent actor', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'warranty',
+          inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30, hpCmsl: { enabled: true } },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'warranty',
+        undefined,
+        { enabled: true, warnDays: 90, criticalDays: 30, hpCmsl: { enabled: true } },
+        { userId: 'user-1' },
+      );
+    });
+
+    it('PATCH passes the authenticated user to the service as the consent actor', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+        LINK_ID,
+        expect.objectContaining({ inlineSettings: { hpCmsl: { enabled: false } } }),
+        POLICY_ID,
+        { userId: 'user-1' },
+      );
+    });
+
+    it('maps a WarrantyConsentError from the service to a 400, not a 500', async () => {
+      const { WarrantyConsentError } = await import('../../services/configurationPolicy');
+      addFeatureLinkMock.mockRejectedValueOnce(new WarrantyConsentError('nope'));
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
 });

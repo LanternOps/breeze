@@ -7,10 +7,12 @@ import {
   alertRuleInlineSettingsSchema,
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
+  clientSuppliedWarrantyHpCmslConsent,
   monitoringInlineSettingsSchema,
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
+  warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
@@ -31,6 +33,7 @@ import {
   PARTNER_WIDE_WRITE_DENIED_MESSAGE,
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
+  WarrantyConsentError,
 } from '../../services/configurationPolicy';
 import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
 import { getMonitorDefinition } from '../../services/monitors/monitorService';
@@ -96,6 +99,15 @@ featureLinkRoutes.get(
 );
 
 // POST /:id/features — add a feature link
+// #5511 W02 (contract D3): HP CMSL consent is stamped by the server from the
+// authenticated session, never accepted from a client. One literal, shared by
+// the POST/PATCH pre-checks and the service-error mapping, so the code a UI
+// branches on cannot drift between them.
+const WARRANTY_CONSENT_REFUSAL = {
+  error: 'HP CMSL consent is recorded by the server from your authenticated session. Remove hpCmsl.consent from the request and send it again.',
+  code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE',
+} as const;
+
 featureLinkRoutes.post(
   '/:id/features',
   requireScope('organization', 'partner', 'system'),
@@ -198,6 +210,25 @@ featureLinkRoutes.post(
       data.inlineSettings = parsed.data;
     }
 
+    // #5511 W02 (contract D3): the consent refusal runs FIRST and on its own so
+    // a client that supplied one gets a coded, actionable 400. Letting the
+    // strict schema report it would produce a bare "Unrecognized key" with no
+    // `code`, and silently stripping it would let a UI believe an acceptance
+    // had been recorded when none was.
+    if (data.featureType === 'warranty' && data.inlineSettings) {
+      if (clientSuppliedWarrantyHpCmslConsent(data.inlineSettings)) {
+        return c.json(WARRANTY_CONSENT_REFUSAL, 400);
+      }
+      const parsed = warrantyInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid warranty settings', parsed.error),
+          400
+        );
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     if (data.featureType === 'remote_access' && data.inlineSettings) {
       const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
       if (!parsed.success) {
@@ -294,11 +325,15 @@ featureLinkRoutes.post(
         id,
         data.featureType,
         data.featurePolicyId,
-        data.inlineSettings
+        data.inlineSettings,
+        { userId: auth.user.id }
       );
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (error instanceof WarrantyConsentError) {
+        return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
@@ -419,6 +454,20 @@ featureLinkRoutes.patch(
         }
         data.inlineSettings = parsed.data;
       }
+      if (existingLink.featureType === 'warranty') {
+        // Same ordering and reasoning as the POST route above (#5511 W02, D3).
+        if (clientSuppliedWarrantyHpCmslConsent(data.inlineSettings)) {
+          return c.json(WARRANTY_CONSENT_REFUSAL, 400);
+        }
+        const parsed = warrantyInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid warranty settings', parsed.error),
+            400
+          );
+        }
+        data.inlineSettings = parsed.data;
+      }
       if (existingLink.featureType === 'remote_access') {
         const parsed = remoteAccessInlineSettingsSchema.safeParse(data.inlineSettings);
         if (!parsed.success) {
@@ -492,10 +541,13 @@ featureLinkRoutes.patch(
 
     let updated;
     try {
-      updated = await updateFeatureLink(linkId, data, id);
+      updated = await updateFeatureLink(linkId, data, id, { userId: auth.user.id });
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (error instanceof WarrantyConsentError) {
+        return c.json({ error: error.message, code: WARRANTY_CONSENT_REFUSAL.code }, 400);
       }
       if (isMonitorNotAttachableDbError(error)) {
         return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
