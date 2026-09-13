@@ -428,6 +428,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_filesystem_cleanup_runs',
   'device_filesystem_scan_state',
   'device_filesystem_snapshots',
+  // Leaf table (Fleet Designer W02, #5652): composite FK to devices ON DELETE
+  // CASCADE, run FK ON DELETE SET NULL (run_id); no children of its own.
+  'device_function_assessments',
   'device_group_memberships',
   'device_groups',
   'device_hardware',

@@ -273,6 +273,7 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'device_external_links',
   'device_filesystem_cleanup_runs', 'device_filesystem_scan_state',
   'device_filesystem_snapshots',
+  'device_function_assessments',
   'device_group_memberships', 'device_hardware', 'device_ip_history',
   'device_metrics', 'device_mtls_certificates', 'device_network', 'device_patches',
   'device_process_samples', 'device_recovery_keys', 'device_registry_state',
@@ -505,6 +506,10 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // custom-field values (#3257 W05) — FK (device_id, org_id) ->
   // devices(id, org_id) ON DELETE CASCADE; leaf table, no children.
   'device_custom_field_values',
+  // device function assessments (Fleet Designer W02, #5652) — FK
+  // (device_id, org_id) -> devices(id, org_id) ON DELETE CASCADE; leaf table,
+  // no children.
+  'device_function_assessments',
   // Patches
   'device_patches', 'patch_job_results', 'patch_rollbacks',
   // Deployments & software

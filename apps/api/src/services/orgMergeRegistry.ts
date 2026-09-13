@@ -658,6 +658,14 @@ const REPOINT_TABLES: readonly string[] = [
   "device_custom_field_values",
   "device_disks",
   "device_event_logs",
+  // device_function_assessments (Fleet Designer W02, #5652): plain repoint —
+  // device state follows the device; its only unique index is (device_id)
+  // WHERE active, which cannot collide across orgs because a device belongs to
+  // one org. The devices FK is ON UPDATE CASCADE, so re-stamping the device
+  // row re-stamps the assessment; the merge repoint is then an idempotent
+  // no-op on the same value. (Sorted here by localeCompare, after
+  // device_event_logs and before device_external_links.)
+  "device_function_assessments",
   // device_external_links: plain repoint, and the unique key was checked first.
   // device_external_links_uniq is (partner_id, system, COALESCE(source_instance,
   // ''), external_id) — PARTNER-scoped, with no org_id in it. An org merge keeps
