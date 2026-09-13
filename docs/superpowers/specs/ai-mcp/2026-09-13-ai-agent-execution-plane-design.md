@@ -1,10 +1,10 @@
 ---
 title: AI Agent Execution Plane — sandboxed workspaces, artifacts, and compute metering
-status: draft — awaiting Todd's review
+status: approved by Todd 2026-09-13 — feature #5711, waves #5712–#5716
 date: 2026-09-13
 supersedes_in_part: 2026-08-22-ai-agents-program-and-wave1-design.md §2 (see §2 below)
 spike: ../../spikes/2026-09-13-ai-agent-execution-plane-backend.md
-tracking_issue: (assigned by register_feature after writing-plans)
+tracking_issue: LanternOps/breeze#5711
 ---
 
 # AI Agent Execution Plane — design
