@@ -85,11 +85,6 @@
     "sectionServiceDesk": "Service desk",
     "serviceManagement": "Gestione servizi"
   },
-  "monitoringTabs": {
-    "ariaLabel": "Sezioni di monitoraggio",
-    "network": "Rete",
-    "delivery": "Consegna"
-  },
   "documentTitles": {
     "dashboard": "Dashboard",
     "profileSettings": "Impostazioni del profilo"

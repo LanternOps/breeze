@@ -100,6 +100,7 @@
       "generic": "Something went wrong"
     },
     "loading": "Loading monitor…",
+    "noAttachments": "Not deployed to any policy yet.",
     "testResult": {
       "triggered": "Condition met on {{device}}",
       "notTriggered": "Condition not met on {{device}}"

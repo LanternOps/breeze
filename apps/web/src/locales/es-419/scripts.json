@@ -106,7 +106,8 @@
       "sendNotification": "Enviar notificación",
       "createAlert": "Crear alerta",
       "executeCommand": "Ejecutar comando",
-      "deploySoftware": "Implementar software"
+      "deploySoftware": "Implementar software",
+      "aiTriage": "Triaje con IA"
     },
     "severity": {
       "critical": "Crítico",
@@ -133,7 +134,8 @@
       "saveAutomation": "Guardar automatización",
       "copyUrl": "Copiar URL",
       "addCondition": "Agregar condición",
-      "addAction": "Agregar acción"
+      "addAction": "Agregar acción",
+      "removeAction": "Quitar acción"
     },
     "scope": {
       "title": "Alcance",

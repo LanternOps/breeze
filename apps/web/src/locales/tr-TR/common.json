@@ -85,11 +85,6 @@
     "sectionServiceDesk": "Servis masası",
     "serviceManagement": "Servis yönetimi"
   },
-  "monitoringTabs": {
-    "ariaLabel": "İzleme bölümleri",
-    "network": "Ağ",
-    "delivery": "Teslimat"
-  },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
     "profileSettings": "Profil Ayarları"

@@ -106,7 +106,8 @@
       "sendNotification": "Invia notifica",
       "createAlert": "Crea avviso",
       "executeCommand": "Esegui comando",
-      "deploySoftware": "Distribuisci software"
+      "deploySoftware": "Distribuisci software",
+      "aiTriage": "Triage IA"
     },
     "severity": {
       "critical": "Critica",
@@ -133,7 +134,8 @@
       "saveAutomation": "Salva automazione",
       "copyUrl": "Copia URL",
       "addCondition": "Aggiungi condizione",
-      "addAction": "Aggiungi azione"
+      "addAction": "Aggiungi azione",
+      "removeAction": "Rimuovi azione"
     },
     "scope": {
       "title": "Ambito",

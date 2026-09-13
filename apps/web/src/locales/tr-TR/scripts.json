@@ -106,7 +106,8 @@
       "sendNotification": "Bildirim Gönder",
       "createAlert": "Uyarı Oluştur",
       "executeCommand": "Komutu Yürüt",
-      "deploySoftware": "Yazılımı Dağıtın"
+      "deploySoftware": "Yazılımı Dağıtın",
+      "aiTriage": "Yapay Zeka Triyajı"
     },
     "severity": {
       "critical": "Kritik",
@@ -133,7 +134,8 @@
       "saveAutomation": "Otomasyonu kaydet",
       "copyUrl": "URL'yi kopyala",
       "addCondition": "Koşul Ekle",
-      "addAction": "Eylem Ekle"
+      "addAction": "Eylem Ekle",
+      "removeAction": "Eylemi Kaldır"
     },
     "scope": {
       "title": "Kapsam",

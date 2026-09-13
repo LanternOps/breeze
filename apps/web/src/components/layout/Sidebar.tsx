@@ -456,6 +456,8 @@ const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
   '/monitoring/delivery': '/monitoring',
+  '/monitoring/network': '/monitoring',
+  '/monitoring/rules': '/monitoring',
 };
 
 // Determine which section a given href belongs to (for auto-expand)

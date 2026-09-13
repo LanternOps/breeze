@@ -6,5 +6,252 @@
     "badge": "Gestito da monitor",
     "badgeHint": "Gestito da un monitor: modificalo invece dal monitor.",
     "monitorLabel": "Monitor"
+  },
+  "hub": {
+    "title": "Monitoraggio e automazione",
+    "tabs": {
+      "monitors": "Monitor",
+      "network": "Rete",
+      "delivery": "Consegna",
+      "legacyRules": "Regole legacy"
+    },
+    "ariaLabel": "Sezioni di monitoraggio"
+  },
+  "list": {
+    "title": "Monitor",
+    "description": "Osserva una condizione, rispondi sul dispositivo, notifica ed esegui l'escalation quando continua a verificarsi.",
+    "new": "Nuovo monitor",
+    "empty": "Ancora nessun monitor.",
+    "columns": {
+      "name": "Nome",
+      "kind": "Tipo",
+      "severity": "Gravità",
+      "deployedTo": "Distribuito su",
+      "enabled": "Abilitato",
+      "owner": "Responsabile"
+    },
+    "allOrgs": "Tutte le org",
+    "policiesCount_one": "{{count}} criterio",
+    "policiesCount_other": "{{count}} criteri",
+    "notDeployed": "Non distribuito",
+    "errors": {
+      "fetch": "Impossibile caricare i monitor",
+      "delete": "Impossibile eliminare il monitor",
+      "toggle": "Impossibile aggiornare il monitor"
+    },
+    "deleteConfirm": "Eliminare il monitor {{name}}? Verranno rimosse anche la relativa regola di avviso e l'automazione di risposta."
+  },
+  "editor": {
+    "titleNew": "Nuovo monitor",
+    "titleEdit": "Modifica monitor",
+    "breadcrumb": {
+      "monitors": "Monitor",
+      "new": "Nuovo monitor"
+    },
+    "sections": {
+      "watch": "Cosa monitorare",
+      "noise": "Gravità e rumore",
+      "respond": "Rispondi",
+      "notify": "Notifica",
+      "escalate": "Escalation verso una persona",
+      "deployed": "Distribuito su"
+    },
+    "fields": {
+      "name": "Nome",
+      "description": "Descrizione",
+      "kind": "Tipo",
+      "severity": "Gravità",
+      "cooldownMinutes": "Cooldown (minuti)",
+      "autoResolve": "Risolvi automaticamente quando la condizione si normalizza",
+      "deliveryMode": "Consegna",
+      "channels": "Canali",
+      "escalationPolicy": "Criterio di escalation",
+      "recurrenceThreshold": "Esegui l'escalation dopo",
+      "recurrenceWindowDays": "episodi entro (giorni)",
+      "pauseResponses": "Sospendi le risposte automatiche finché una persona non le reimposta",
+      "aiAgent": "Agente IA (abilita le risposte di triage con IA)"
+    },
+    "deliveryModes": {
+      "inherit": "Usa le regole di instradamento",
+      "channels": "Regole di instradamento più questi canali",
+      "none": "Non notificare"
+    },
+    "agentDeliveredHint": "Questa osservazione viene eseguita sul dispositivo e deve esistere anche nella scheda Monitoraggio di servizi e processi del criterio, finché ciò non viene unificato.",
+    "responsesHint": "Le risposte vengono eseguite in ordine sul dispositivo che ha violato la condizione.",
+    "recurrenceHint": "Conteggiato in episodi di violazione: un nuovo episodio inizia solo dopo che la condizione si è ripristinata.",
+    "ownerScope": {
+      "legend": "Proprietario",
+      "partner": "Tutte le organizzazioni (partner-wide)",
+      "organization": "Solo questa organizzazione"
+    },
+    "actions": {
+      "save": "Salva monitor",
+      "saving": "Salvataggio…",
+      "create": "Crea monitor",
+      "test": "Prova su un dispositivo",
+      "deploy": "Distribuisci a…",
+      "delete": "Elimina"
+    },
+    "errors": {
+      "load": "Impossibile caricare il monitor",
+      "save": "Impossibile salvare il monitor",
+      "delete": "Impossibile eliminare il monitor",
+      "test": "Prova fallita",
+      "generic": "Qualcosa è andato storto"
+    },
+    "loading": "Caricamento monitor…",
+    "noAttachments": "Non ancora distribuito in nessun criterio.",
+    "testResult": {
+      "triggered": "Condizione soddisfatta su {{device}}",
+      "notTriggered": "Condizione non soddisfatta su {{device}}"
+    },
+    "testDialog": {
+      "title": "Prova su un dispositivo",
+      "selectDevice": "Dispositivo",
+      "run": "Esegui prova"
+    }
+  },
+  "kinds": {
+    "cpu": "Utilizzo CPU",
+    "memory": "Utilizzo memoria",
+    "disk": "Utilizzo disco",
+    "offline": "Dispositivo offline",
+    "event_log": "Log eventi",
+    "patch_compliance": "Conformità patch",
+    "service": "Servizio arrestato",
+    "process": "Processo arrestato",
+    "process_resource": "Risorsa del processo",
+    "cert_expiry": "Scadenza certificato",
+    "bandwidth": "Larghezza di banda",
+    "disk_io": "I/O disco",
+    "network_errors": "Errori di rete"
+  },
+  "fields": {
+    "operator": "Confronto",
+    "value": "Valore",
+    "durationMinutes": "Per almeno (minuti)",
+    "category": "Categoria",
+    "level": "Livello",
+    "sourcePattern": "L'origine corrisponde a",
+    "messagePattern": "Il messaggio corrisponde a",
+    "countThreshold": "Occorrenze",
+    "windowMinutes": "Entro (minuti)",
+    "serviceName": "Nome del servizio",
+    "processName": "Nome del processo",
+    "consecutiveFailures": "Errori consecutivi",
+    "resource": "Risorsa",
+    "withinDays": "Scade entro (giorni)",
+    "direction": "Direzione",
+    "errorType": "Direzione dell'errore",
+    "interfaceName": "Interfaccia (opzionale)"
+  },
+  "operators": {
+    "gt": "maggiore di",
+    "gte": "almeno",
+    "lt": "minore di",
+    "lte": "al massimo",
+    "eq": "uguale a",
+    "neq": "diverso da"
+  },
+  "severities": {
+    "critical": "Critica",
+    "high": "Alta",
+    "medium": "Media",
+    "low": "Bassa",
+    "info": "Info"
+  },
+  "eventCategories": {
+    "security": "Sicurezza",
+    "hardware": "Hardware",
+    "application": "Applicazione",
+    "system": "Sistema"
+  },
+  "eventLevels": {
+    "warning": "Avviso",
+    "error": "Errore",
+    "critical": "Critica"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Memoria"
+  },
+  "directions": {
+    "in": "In entrata",
+    "out": "In uscita",
+    "read": "Lettura",
+    "write": "Scrittura",
+    "total": "Totale"
+  },
+  "deploy": {
+    "title": "Distribuisci monitor",
+    "existingPolicy": "Collega a un criterio di configurazione esistente",
+    "newPolicy": "Crea un criterio per",
+    "levels": {
+      "organization": "questa organizzazione",
+      "site": "un sito",
+      "device_group": "un gruppo di dispositivi"
+    },
+    "selectPolicy": "Criterio di configurazione",
+    "selectTarget": "Destinazione",
+    "policyName": "Nome del criterio",
+    "attach": "Collega",
+    "cancel": "Annulla",
+    "detachConfirm": "Scollegare da {{policy}}?",
+    "errors": {
+      "attach": "Impossibile collegare il monitor",
+      "detach": "Impossibile scollegare il monitor"
+    }
+  },
+  "policyTab": {
+    "title": "Monitor",
+    "description": "Monitor collegati a questo criterio. Le righe disabilitate disattivano un monitor per l'ambito di questo criterio; le sovrascritture ne modificano le soglie.",
+    "attachExisting": "Collega esistente",
+    "createNew": "Crea monitor",
+    "empty": "Nessun monitor collegato.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Tipo",
+      "enabled": "Abilitato",
+      "overrides": "Sovrascritture",
+      "source": "Origine"
+    },
+    "inherited": "Ereditato dal livello superiore",
+    "overrideEditor": {
+      "title": "Sovrascrittura per questo criterio",
+      "clear": "Rimuovi sovrascritture"
+    },
+    "save": "Salva",
+    "errors": {
+      "save": "Impossibile salvare i monitor"
+    }
+  },
+  "legacy": {
+    "title": "Regole di avviso legacy",
+    "description": "Regole di avviso autonome non gestite da un monitor. Convertile per ottenere risposte, consegna ed escalation in un unico posto.",
+    "empty": "Nessuna regola legacy.",
+    "columns": {
+      "name": "Nome",
+      "template": "Modello",
+      "target": "Destinazione",
+      "owner": "Responsabile",
+      "active": "Attivo"
+    },
+    "convert": "Converti in monitor",
+    "converted": "Convertita",
+    "notConvertible": "Le condizioni di questa regola non possono essere espresse come un singolo monitor.",
+    "errors": {
+      "fetch": "Impossibile caricare le regole di avviso",
+      "convert": "Impossibile convertire la regola"
+    }
+  },
+  "devices": {
+    "title": "Dispositivi",
+    "columns": {
+      "device": "Dispositivo",
+      "enabled": "Abilitato",
+      "overrides": "Sovrascritture",
+      "source": "Criterio di origine"
+    },
+    "empty": "Nessun dispositivo è ancora coperto da questo monitor."
   }
 }

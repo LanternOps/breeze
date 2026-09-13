@@ -106,7 +106,8 @@
       "sendNotification": "Benachrichtigung senden",
       "createAlert": "Benachrichtigung erstellen",
       "executeCommand": "Befehl ausführen",
-      "deploySoftware": "Software bereitstellen"
+      "deploySoftware": "Software bereitstellen",
+      "aiTriage": "KI-Triage"
     },
     "severity": {
       "critical": "Kritisch",
@@ -133,7 +134,8 @@
       "saveAutomation": "Automatisierung speichern",
       "copyUrl": "URL kopieren",
       "addCondition": "Bedingung hinzufügen",
-      "addAction": "Aktion hinzufügen"
+      "addAction": "Aktion hinzufügen",
+      "removeAction": "Aktion entfernen"
     },
     "scope": {
       "title": "Umfang",

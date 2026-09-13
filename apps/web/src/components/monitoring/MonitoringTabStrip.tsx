@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
 
 const TABS = [
-  { href: '/monitoring', labelKey: 'network' },
+  { href: '/monitoring', labelKey: 'monitors' },
+  { href: '/monitoring/network', labelKey: 'network' },
   { href: '/monitoring/delivery', labelKey: 'delivery' },
+  { href: '/monitoring/rules', labelKey: 'legacyRules' },
 ] as const;
 
 interface MonitoringTabStripProps {
@@ -27,14 +29,25 @@ function useCurrentPath(initialPath: string): string {
 }
 
 export default function MonitoringTabStrip({ currentPath = '/monitoring' }: MonitoringTabStripProps) {
-  const { t } = useTranslation('common');
+  const { t } = useTranslation('monitoring');
   const path = useCurrentPath(currentPath);
-  const activeHref = useMemo(
-    () => (path.startsWith('/monitoring/delivery') ? '/monitoring/delivery' : '/monitoring'),
-    [path],
-  );
+  // Longest matching prefix, so `/monitoring/monitors/:id` (the editor) and
+  // the hub root both resolve to the Monitors tab without a dedicated case,
+  // and `/monitoring/network` doesn't get swallowed by the `/monitoring`
+  // entry ahead of it in the array.
+  const activeHref = useMemo(() => {
+    let best: (typeof TABS)[number]['href'] | null = null;
+    for (const tab of TABS) {
+      const matches = path === tab.href || path.startsWith(`${tab.href}/`);
+      if (matches && (!best || tab.href.length > best.length)) {
+        best = tab.href;
+      }
+    }
+    return best ?? '/monitoring';
+  }, [path]);
+
   return (
-    <nav className="flex gap-1 border-b" aria-label={t('monitoringTabs.ariaLabel')}>
+    <nav className="flex gap-1 border-b" aria-label={t('hub.ariaLabel')}>
       {TABS.map((tab) => (
         <a
           key={tab.href}
@@ -42,7 +55,7 @@ export default function MonitoringTabStrip({ currentPath = '/monitoring' }: Moni
           aria-current={activeHref === tab.href ? 'page' : undefined}
           className={`-mb-px border-b-2 px-3 py-2 text-sm ${activeHref === tab.href ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
         >
-          {t(/* i18n-dynamic */ `monitoringTabs.${tab.labelKey}`)}
+          {t(/* i18n-dynamic */ `hub.tabs.${tab.labelKey}`)}
         </a>
       ))}
     </nav>
