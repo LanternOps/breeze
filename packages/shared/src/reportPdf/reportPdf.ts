@@ -2,6 +2,8 @@ import { jsPDF } from 'jspdf';
 import autoTable, { type CellHookData } from 'jspdf-autotable';
 import type { PostureControls, PostureProduct, PostureSummary } from '../types/postureReport';
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
+import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
+import { renderHardwareLifecycleReport } from './hardwareLifecyclePdf';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -65,7 +67,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -92,6 +94,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ai_org_narrative: 'Weekly AI Operations Narrative',
   ai_agent_impact: 'AI Agent Impact',
   ai_fleet_design: 'Fleet Design',
+  hardware_lifecycle: 'Hardware Lifecycle',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -1850,6 +1853,28 @@ export function buildReportPdf(rows: unknown[], opts: BuildOpts): jsPDF {
     // section/table volume is unbounded up to the schema caps and may
     // paginate on its own.
     renderFleetDesignReport(doc, (opts.summary as FleetDesignReportSummary).fleetDesign!, opts);
+  } else if (
+    opts.reportType === 'hardware_lifecycle'
+    && opts.summary
+    && Array.isArray((opts.summary as HardwareLifecycleSummary).rows)
+  ) {
+    // Self-contained chrome: the plan table paginates on its own (didDrawPage)
+    // and the sections after it add pages as needed.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderHardwareLifecycleReport(
+      doc,
+      opts.summary as HardwareLifecycleSummary,
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
   } else {
     renderGenericReport(doc, records, opts);
   }
