@@ -13,12 +13,47 @@
 import { proposeScriptInputSchema } from '@breeze/shared';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import type { AiTool } from './aiTools';
+import { verifyDeviceAccess } from './aiTools';
+import type { AuthContext } from '../middleware/auth';
 import {
   createScriptProposal, enqueueScriptReview, getScriptProposalForPrincipal, waitForReviewCompletion,
 } from './scriptProposals';
 
 /** Spec §4.2: the inline wait before propose_script returns `pending`. */
 const INLINE_REVIEW_WAIT_MS = 45_000;
+
+/**
+ * The proposal's org comes from the TARGET DEVICE, never from `auth.orgId`
+ * (#5682): a partner-scope token carries `orgId: null`, which inserted NULL
+ * into `script_proposals.org_id` and killed AI script authoring for every MSP
+ * tech. `verifyDeviceAccess` is the same org+site-gated resolution the
+ * declarative `deviceArgs` gate already ran, so this re-resolve cannot widen
+ * reach — it only reads back the org the caller was allowed to see.
+ *
+ * A proposal is a single row with a single `org_id`, so a set of devices
+ * spanning two orgs has no honest answer: refuse rather than silently pinning
+ * the batch to the first device's org.
+ */
+async function resolveProposalOrgId(
+  deviceIds: string[],
+  auth: AuthContext,
+): Promise<{ orgId: string } | { error: string }> {
+  const orgIds = new Set<string>();
+  for (const deviceId of deviceIds) {
+    const access = await verifyDeviceAccess(deviceId, auth);
+    if ('error' in access) return { error: access.error };
+    orgIds.add(access.device.orgId);
+  }
+  if (orgIds.size > 1) {
+    return { error: 'invalid_input: all target devices must belong to one organization' };
+  }
+  // Fall back to the caller's own org only if a device somehow resolved
+  // without one — the page-context org, exactly as routes/ai.ts resolves it.
+  const [orgId] = [...orgIds];
+  const resolved = orgId ?? auth.orgId;
+  if (!resolved) return { error: 'invalid_input: could not resolve the organization for these devices' };
+  return { orgId: resolved };
+}
 
 function disabled(): string {
   return JSON.stringify({ error: 'feature_disabled: AI script authoring is not enabled on this deployment' });
@@ -70,7 +105,11 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         ? { kind: 'agent_run' as const, agentRunId: auth.principal.runId }
         : { kind: 'chat_session' as const, sessionId: null };
 
-      const { proposal, scan } = await createScriptProposal(auth, parsed.data, author);
+      const resolvedOrg = await resolveProposalOrgId(parsed.data.deviceIds, auth);
+      if ('error' in resolvedOrg) return JSON.stringify({ error: resolvedOrg.error });
+
+      const { proposal, scan } = await createScriptProposal(
+        auth, parsed.data, author, resolvedOrg.orgId);
       const staticScan = {
         basicHits: scan.basicHits, strictHits: scan.strictHits, touchClasses: scan.touchClasses,
       };
@@ -84,7 +123,7 @@ export function registerScriptProposalTools(aiTools: Map<string, AiTool>): void 
         });
       }
 
-      await enqueueScriptReview({ proposalId: proposal.id, orgId: auth.orgId!, attempt: 1 });
+      await enqueueScriptReview({ proposalId: proposal.id, orgId: proposal.orgId, attempt: 1 });
       const review = await waitForReviewCompletion(proposal.id, INLINE_REVIEW_WAIT_MS);
 
       return JSON.stringify({

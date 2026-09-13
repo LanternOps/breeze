@@ -36,6 +36,7 @@ async function seedReviewedProposal(orgId: string, deviceId: string) {
         deviceIds: [deviceId], runAs: 'system', timeoutSeconds: 60,
       },
       { kind: 'chat_session', sessionId: null },
+      orgId,
     ),
   );
   await withSystemDbAccessContext(() =>

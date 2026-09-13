@@ -45,7 +45,10 @@ export async function assertProposalRunnable(
     .select().from(scriptProposals).where(eq(scriptProposals.id, input.proposalId)).limit(1);
 
   if (!proposal) return { ok: false, reason: 'not_found' };
-  if (proposal.orgId !== auth.orgId) return { ok: false, reason: 'wrong_org' };
+  // Org ACCESS, not token equality (#5682): a partner-scope actor's `orgId` is
+  // null, so `!==` refused every approved proposal they had just approved.
+  // `canAccessOrg` is the app-layer mirror of `breeze_has_org_access`.
+  if (!auth.canAccessOrg(proposal.orgId)) return { ok: false, reason: 'wrong_org' };
   if (proposal.status === 'superseded') return { ok: false, reason: 'superseded' };
   if (proposal.status !== 'reviewed') return { ok: false, reason: 'not_reviewed' };
   if (proposal.intentId !== null && proposal.intentId !== input.releasingIntentId) {
