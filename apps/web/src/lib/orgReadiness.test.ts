@@ -10,6 +10,20 @@ import {
   type ReadinessCapabilities,
   type ReadinessOrg,
 } from './orgReadiness';
+import {
+  BOARD_COLUMNS,
+  BOARD_FILTERS,
+  compareRows,
+  lensForFilter,
+  matchesFilter,
+  parseBoardHash,
+  searchMatches,
+  serializeBoardHash,
+  sortRows,
+  visibleColumns,
+  visibleFilters,
+  type BoardRow,
+} from './orgReadiness';
 
 const NOW = new Date('2026-09-13T12:00:00.000Z');
 const ORG_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
@@ -227,5 +241,173 @@ describe('helpers', () => {
     expect(purgeCountdownDays(null, NOW)).toBeNull();
     expect(purgeCountdownDays(undefined, NOW)).toBeNull();
     expect(purgeCountdownDays('garbage', NOW)).toBeNull();
+  });
+});
+
+function row(overrides: {
+  name?: string;
+  status?: BoardRow['org']['status'];
+  archived?: true;
+  setup?: number;
+  account?: number;
+  open?: number;
+  primary?: { name: string | null; email: string | null } | null;
+}): BoardRow {
+  const setupChips = Array.from({ length: overrides.setup ?? 0 }, () => ({
+    key: 'noSite' as const, tone: 'warning' as const, target: 'sites' as const, href: '#',
+  }));
+  const accountChips = Array.from({ length: overrides.account ?? 0 }, () => ({
+    key: 'primaryContact' as const, tone: 'warning' as const, target: 'contacts' as const, href: '#',
+  }));
+  const org = {
+    id: 'aaaaaaaa-1111-4111-8111-111111111111',
+    name: overrides.name ?? 'Alpha Ltd',
+    status: overrides.status ?? ('active' as const),
+    createdAt: '2026-01-01T00:00:00Z',
+    ...(overrides.archived ? { archived: true as const } : {}),
+  };
+  const readiness: BoardRow['readiness'] = {
+    orgId: org.id,
+    type: 'customer',
+    status: org.status,
+    setup: { policyAssigned: true },
+    account: {
+      primaryContact: overrides.primary === undefined
+        ? { name: 'Jane Doe', email: 'jane@alpha.test', phone: null, mobile: null }
+        : overrides.primary && { ...overrides.primary, phone: null, mobile: null },
+      billingRoleContact: true,
+      billingAddress: true,
+    },
+    tickets: { open: overrides.open ?? 0, awaitingCustomer: 0, slaBreached: 0 },
+  };
+  return { org, readiness, state: 'ready', chips: { setup: setupChips, account: accountChips, accountApplicable: true } };
+}
+
+describe('filters', () => {
+  it('has the spec order and leaves W03 room', () => {
+    expect([...BOARD_FILTERS]).toEqual(['all', 'setupIncomplete', 'accountMissing', 'openTickets', 'trial', 'archived']);
+    expect([...BOARD_COLUMNS]).toEqual(['setup', 'account', 'integrations', 'tickets']);
+  });
+
+  it('matchesFilter implements every predicate', () => {
+    expect(matchesFilter('all', row({}))).toBe(true);
+    expect(matchesFilter('setupIncomplete', row({ setup: 1 }))).toBe(true);
+    expect(matchesFilter('setupIncomplete', row({}))).toBe(false);
+    expect(matchesFilter('accountMissing', row({ account: 2 }))).toBe(true);
+    expect(matchesFilter('accountMissing', row({}))).toBe(false);
+    expect(matchesFilter('openTickets', row({ open: 3 }))).toBe(true);
+    expect(matchesFilter('openTickets', row({ open: 0 }))).toBe(false);
+    expect(matchesFilter('trial', row({ status: 'trial' }))).toBe(true);
+    expect(matchesFilter('trial', row({}))).toBe(false);
+    expect(matchesFilter('archived', row({ archived: true }))).toBe(true);
+    expect(matchesFilter('archived', row({}))).toBe(false);
+  });
+
+  it('a row whose readiness has not landed matches no readiness filter', () => {
+    const pending: BoardRow = { ...row({}), readiness: undefined, state: 'pending', chips: null };
+    expect(matchesFilter('setupIncomplete', pending)).toBe(false);
+    expect(matchesFilter('accountMissing', pending)).toBe(false);
+    expect(matchesFilter('openTickets', pending)).toBe(false);
+    expect(matchesFilter('all', pending)).toBe(true);
+  });
+
+  it('visibleFilters drops Open tickets without the tickets capability and always keeps Archived', () => {
+    const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: false, integrations: false };
+    expect(visibleFilters(caps)).toEqual(['all', 'setupIncomplete', 'accountMissing', 'trial', 'archived']);
+    expect(visibleFilters({ ...caps, tickets: true })).toEqual([...BOARD_FILTERS]);
+    expect(visibleFilters(null)).toEqual(['all', 'setupIncomplete', 'accountMissing', 'trial', 'archived']);
+  });
+
+  it('lensForFilter forces Both only when the filter’s evidence is hidden', () => {
+    expect(lensForFilter('setupIncomplete', 'account')).toBe('both');
+    expect(lensForFilter('setupIncomplete', 'setup')).toBe('setup');
+    expect(lensForFilter('accountMissing', 'setup')).toBe('both');
+    expect(lensForFilter('accountMissing', 'account')).toBe('account');
+    expect(lensForFilter('openTickets', 'setup')).toBe('setup');
+    expect(lensForFilter('trial', 'account')).toBe('account');
+    expect(lensForFilter('all', 'setup')).toBe('setup');
+  });
+});
+
+describe('columns', () => {
+  const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: true };
+
+  it('follows the lens and the tickets capability; Integrations stays off until W03', () => {
+    expect(visibleColumns('both', caps)).toEqual(['setup', 'account', 'tickets']);
+    expect(visibleColumns('setup', caps)).toEqual(['setup', 'tickets']);
+    expect(visibleColumns('account', caps)).toEqual(['account', 'tickets']);
+    expect(visibleColumns('both', { ...caps, tickets: false })).toEqual(['setup', 'account']);
+  });
+
+  it('renders Setup and Account (always-true capabilities) before the first batch lands, never Tickets', () => {
+    expect(visibleColumns('both', null)).toEqual(['setup', 'account']);
+  });
+});
+
+describe('sort', () => {
+  const a = row({ name: 'Alpha', open: 1 });
+  const b = row({ name: 'Beta', open: 5 });
+  const c = row({ name: 'Gamma', open: 5 });
+
+  it('manual keeps the given order (same array reference)', () => {
+    const rows = [c, a, b];
+    expect(compareRows('manual')).toBeNull();
+    expect(sortRows(rows, 'manual')).toBe(rows);
+  });
+
+  it('name sorts A to Z', () => {
+    expect(sortRows([c, a, b], 'name').map((r) => r.org.name)).toEqual(['Alpha', 'Beta', 'Gamma']);
+  });
+
+  it('tickets sorts by open count descending, then name', () => {
+    expect(sortRows([c, a, b], 'tickets').map((r) => r.org.name)).toEqual(['Beta', 'Gamma', 'Alpha']);
+  });
+
+  it('tickets treats an unknown count as zero', () => {
+    const unknown: BoardRow = { ...row({ name: 'Zed' }), readiness: undefined, state: 'pending', chips: null };
+    expect(sortRows([unknown, a], 'tickets').map((r) => r.org.name)).toEqual(['Alpha', 'Zed']);
+  });
+});
+
+describe('search', () => {
+  const r = row({ name: 'Alpha Ltd', primary: { name: 'Jane Doe', email: 'jane@alpha.test' } });
+
+  it('matches org name, contact name and contact email, case-insensitively', () => {
+    expect(searchMatches('alpha', r.org, r.readiness)).toBe(true);
+    expect(searchMatches('JANE', r.org, r.readiness)).toBe(true);
+    expect(searchMatches('@alpha.test', r.org, r.readiness)).toBe(true);
+    expect(searchMatches('nothing', r.org, r.readiness)).toBe(false);
+  });
+
+  it('an empty query matches everything and a missing contact matches only the name', () => {
+    expect(searchMatches('   ', r.org, r.readiness)).toBe(true);
+    const noContact = row({ name: 'Alpha Ltd', primary: null });
+    expect(searchMatches('jane', noContact.org, noContact.readiness)).toBe(false);
+    expect(searchMatches('jane', r.org, undefined)).toBe(false);
+  });
+});
+
+describe('hash', () => {
+  it('serialises lens and filter explicitly so a localStorage default can never override a chosen value', () => {
+    expect(serializeBoardHash({ lens: 'both', filter: 'all' })).toBe('lens=both&filter=all');
+    expect(serializeBoardHash({ lens: 'setup', filter: 'trial' })).toBe('lens=setup&filter=trial');
+  });
+
+  it('parses its own output, with or without the leading #', () => {
+    expect(parseBoardHash('#lens=setup&filter=archived')).toEqual({ lens: 'setup', filter: 'archived' });
+    expect(parseBoardHash('lens=account')).toEqual({ lens: 'account' });
+    expect(parseBoardHash('filter=openTickets')).toEqual({ filter: 'openTickets' });
+  });
+
+  it('ignores unknown values and falls back to undefined for an empty or foreign hash', () => {
+    expect(parseBoardHash('')).toBeUndefined();
+    expect(parseBoardHash('#')).toBeUndefined();
+    expect(parseBoardHash('lens=nope&filter=unlinked')).toBeUndefined();
+    expect(parseBoardHash('lens=setup&filter=unlinked')).toEqual({ lens: 'setup' });
+    expect(parseBoardHash('tickets')).toBeUndefined();
+  });
+
+  it('treats a bare uuid as a row highlight (the incumbent’s selected-org deep link)', () => {
+    expect(parseBoardHash('#AAAAAAAA-1111-4111-8111-111111111111')).toEqual({ highlightOrgId: 'aaaaaaaa-1111-4111-8111-111111111111' });
   });
 });

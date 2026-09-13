@@ -243,3 +243,132 @@ export function purgeCountdownDays(purgeAt: string | null | undefined, now: Date
   if (Number.isNaN(target.getTime())) return null;
   return Math.ceil((target.getTime() - now.getTime()) / DAY_MS);
 }
+
+/* ---------------------- Lens, filters, sort, columns ---------------------- */
+
+export const BOARD_LENSES = ['setup', 'account', 'both'] as const;
+export type BoardLens = (typeof BOARD_LENSES)[number];
+export const DEFAULT_LENS: BoardLens = 'both';
+
+/** Chip order = band order. W03 inserts 'unlinked' between accountMissing and openTickets. */
+export const BOARD_FILTERS = ['all', 'setupIncomplete', 'accountMissing', 'openTickets', 'trial', 'archived'] as const;
+export type BoardFilter = (typeof BOARD_FILTERS)[number];
+export const DEFAULT_FILTER: BoardFilter = 'all';
+
+export const BOARD_SORTS = ['manual', 'name', 'tickets'] as const;
+export type BoardSort = (typeof BOARD_SORTS)[number];
+
+/** Readiness columns in render order. 'integrations' is the W03 slot. */
+export const BOARD_COLUMNS = ['setup', 'account', 'integrations', 'tickets'] as const;
+export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+/** W03 replaces this constant with `capabilities.integrations`; until the column has a renderer it stays off. */
+const INTEGRATIONS_COLUMN_ENABLED = false;
+
+export interface BoardRow {
+  org: Organization;
+  readiness: ReadinessOrg | undefined;
+  state: ReadinessRowState;
+  chips: DerivedChips | null;
+}
+
+export const isBoardLens = (value: string): value is BoardLens => (BOARD_LENSES as readonly string[]).includes(value);
+export const isBoardFilter = (value: string): value is BoardFilter => (BOARD_FILTERS as readonly string[]).includes(value);
+export const isBoardSort = (value: string): value is BoardSort => (BOARD_SORTS as readonly string[]).includes(value);
+
+const LENS_HIDES: Record<BoardLens, BoardColumn | null> = { setup: 'account', account: 'setup', both: null };
+/** Which column carries a filter's evidence; applying it under a lens that hides that column forces Both. */
+const FILTER_EVIDENCE: Partial<Record<BoardFilter, BoardColumn>> = {
+  setupIncomplete: 'setup',
+  accountMissing: 'account',
+  openTickets: 'tickets',
+};
+
+export function visibleColumns(lens: BoardLens, capabilities: ReadinessCapabilities | null): BoardColumn[] {
+  return BOARD_COLUMNS.filter((column) => {
+    if (LENS_HIDES[lens] === column) return false;
+    if (column === 'integrations') return INTEGRATIONS_COLUMN_ENABLED && capabilities?.integrations === true;
+    if (column === 'tickets') return capabilities?.tickets === true;
+    return true; // setup / account: policies + contacts are always-true capabilities
+  });
+}
+
+/** A capability-trimmed section takes its filter with it; Archived is always discoverable. */
+export function visibleFilters(capabilities: ReadinessCapabilities | null): BoardFilter[] {
+  return BOARD_FILTERS.filter((filter) => (filter === 'openTickets' ? capabilities?.tickets === true : true));
+}
+
+export function lensForFilter(filter: BoardFilter, lens: BoardLens): BoardLens {
+  const evidence = FILTER_EVIDENCE[filter];
+  return evidence !== undefined && LENS_HIDES[lens] === evidence ? 'both' : lens;
+}
+
+export function matchesFilter(filter: BoardFilter, row: BoardRow): boolean {
+  switch (filter) {
+    case 'all':
+      return true;
+    case 'setupIncomplete':
+      return (row.chips?.setup.length ?? 0) > 0;
+    case 'accountMissing':
+      return (row.chips?.account.length ?? 0) > 0;
+    case 'openTickets':
+      return (row.readiness?.tickets?.open ?? 0) > 0;
+    case 'trial':
+      return row.org.status === 'trial';
+    case 'archived':
+      return row.org.archived === true;
+  }
+}
+
+export function compareRows(sort: BoardSort): ((a: BoardRow, b: BoardRow) => number) | null {
+  if (sort === 'name') return (a, b) => a.org.name.localeCompare(b.org.name);
+  if (sort === 'tickets') {
+    return (a, b) =>
+      (b.readiness?.tickets?.open ?? 0) - (a.readiness?.tickets?.open ?? 0) || a.org.name.localeCompare(b.org.name);
+  }
+  return null; // manual: the server's stored partner order, untouched
+}
+
+export function sortRows(rows: BoardRow[], sort: BoardSort): BoardRow[] {
+  const compare = compareRows(sort);
+  return compare ? [...rows].sort(compare) : rows;
+}
+
+/** Search over org name, primary contact name and email — client-side over the loaded list plus the readiness payload. */
+export function searchMatches(query: string, org: Pick<Organization, 'name'>, readiness: ReadinessOrg | undefined): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  if (org.name.toLowerCase().includes(q)) return true;
+  const primary = readiness?.account.primaryContact;
+  if (!primary) return false;
+  return (primary.name?.toLowerCase().includes(q) ?? false) || (primary.email?.toLowerCase().includes(q) ?? false);
+}
+
+/* ---------------------------------- Hash ---------------------------------- */
+
+export interface BoardHashState {
+  lens?: BoardLens;
+  filter?: BoardFilter;
+  /** A bare `#<uuid>`: scroll to and briefly highlight that row. */
+  highlightOrgId?: string;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** `lens=setup&filter=all` → state; a bare uuid → row highlight; anything else → undefined (useHashState's default). */
+export function parseBoardHash(hash: string): BoardHashState | undefined {
+  const raw = hash.replace(/^#/, '');
+  if (!raw) return undefined;
+  if (UUID_RE.test(raw)) return { highlightOrgId: raw.toLowerCase() };
+  const params = new URLSearchParams(raw);
+  const lens = params.get('lens');
+  const filter = params.get('filter');
+  const state: BoardHashState = {};
+  if (lens && isBoardLens(lens)) state.lens = lens;
+  if (filter && isBoardFilter(filter)) state.filter = filter;
+  return Object.keys(state).length > 0 ? state : undefined;
+}
+
+/** Always both keys: the hash must win over the localStorage default for BOTH values once the user has chosen. */
+export function serializeBoardHash(state: { lens: BoardLens; filter: BoardFilter }): string {
+  return `lens=${state.lens}&filter=${state.filter}`;
+}
