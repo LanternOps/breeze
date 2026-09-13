@@ -16,7 +16,7 @@ const AI_KEYS = [
 ];
 const SCRIPT_KEYS = [
   'origin','originHuman','originAiProposal','originImported','originSystem','reviewed','editedSinceReview',
-  'provenanceTitle','reviewSummary','approvedBy','evidenceErased','allOrigins',
+  'provenanceTitle','reviewSummary','approvedBy','evidenceErased','allOrigins','notReviewed','notReviewedDetail',
 ];
 
 describe('script proposal i18n', () => {

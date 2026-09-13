@@ -81,6 +81,39 @@ describe('useDesignSelection', () => {
     expect(approval.legacy).toEqual([]);
   });
 
+  it('selects an automation script ref like any other selectable item', () => {
+    const { result } = renderHook(() => useDesignSelection(new Set()));
+
+    act(() => result.current.toggle('automation:workstation:script:0'));
+    expect(result.current.isSelected('automation:workstation:script:0')).toBe(true);
+
+    act(() => result.current.toggle('automation:workstation:script:0'));
+    expect(result.current.isSelected('automation:workstation:script:0')).toBe(false);
+  });
+
+  it('does not auto-select the owning function when an automation script is selected', () => {
+    const { result } = renderHook(() => useDesignSelection(new Set()));
+
+    act(() => result.current.toggle('automation:workstation:script:0'));
+
+    expect(result.current.isSelected('automation:workstation:script:0')).toBe(true);
+    expect(result.current.isSelected('functions:workstation')).toBe(false);
+  });
+
+  it('carries selected automation refs (full ref strings) into the approval body', () => {
+    const { result } = renderHook(() => useDesignSelection(new Set()));
+
+    act(() => {
+      result.current.toggle('automation:workstation:script:0');
+      result.current.toggle('automation:workstation:script:1');
+    });
+
+    const approval = result.current.toApproval();
+    expect(approval.automation).toEqual(['automation:workstation:script:0', 'automation:workstation:script:1']);
+    expect(approval.functions).toEqual([]);
+    expect(approval.legacy).toEqual([]);
+  });
+
   it('clear empties the selection', () => {
     const { result } = renderHook(() => useDesignSelection(new Set()));
 

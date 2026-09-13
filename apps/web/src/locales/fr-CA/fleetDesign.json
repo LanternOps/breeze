@@ -53,11 +53,31 @@
     "functionMeta": "{{count}} appareils · {{pct}}% de confiance",
     "roleCorrectionLabel": "{{from}} → {{to}}"
   },
+  "automation": {
+    "showContent": "Afficher le contenu du script"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Catégorie",
+      "coveredBy": "Couvert par",
+      "intent": "Intention",
+      "notes": "Notes"
+    },
+    "bucket": {
+      "obsolete": "Obsolète",
+      "covered": "Couvert",
+      "needed": "Nécessaire"
+    }
+  },
   "drawer": {
     "title": "Appliquer la conception de flotte",
     "loadingPreview": "Vérification de ce que cela va faire…",
     "nothingSelected": "Sélectionnez au moins un élément à appliquer.",
     "creates": "Crée",
+    "createsScripts": "Crée des scripts",
+    "scriptRenamed": "un script portant ce nom existe déjà — le nouveau recevra un suffixe numéroté",
+    "scriptsNote": "Créé dans la bibliothèque de scripts de cette organisation, étiqueté fleet-design. Rien ne s'exécute avant que quelqu'un le lance; l'annulation retire l'étiquette et conserve le script.",
     "watchAndRuleCount": "{{watches}} surveillances, {{rules}} règles",
     "retires": "Retire",
     "displaces": "Déplace",
@@ -88,6 +108,7 @@
     "blocked": "Cette conception ne peut pas encore être appliquée — résolvez les blocages et réessayez.",
     "site_restricted": "Les comptes restreints à un site ne peuvent ni appliquer ni annuler une conception de flotte.",
     "no_designer_agent": "Aucun agent concepteur n'est configuré pour cette organisation.",
-    "not_found": "Cette conception de flotte est introuvable."
+    "not_found": "Cette conception de flotte est introuvable.",
+    "scripts_write_required": "La création de scripts nécessite la permission d'écriture Scripts. Désélectionnez les scripts proposés ou demandez à un administrateur."
   }
 }

@@ -24,6 +24,7 @@ const EMPTY_PREVIEW: FleetDesignApplyPreview = {
   functions: [],
   policies: [],
   retired: [],
+  scripts: [],
   roleCorrections: [],
   alreadyApplied: [],
   blockers: [],
@@ -151,5 +152,54 @@ describe('ApplyDrawer', () => {
 
     await waitFor(() => expect(screen.getByTestId('fleet-design-apply-drawer-blockers')).toBeTruthy());
     expect((screen.getByTestId('fleet-design-apply-drawer-confirm') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('renders a "creates scripts" block listing preview.scripts, with a renamed note when a script already exists', async () => {
+    const preview: FleetDesignApplyPreview = {
+      ...EMPTY_PREVIEW,
+      scripts: [
+        { itemRef: 'automation:workstation:script:0', functionKey: 'workstation', name: 'Clear temp', language: 'powershell', osTypes: ['windows'], alreadyExists: false },
+        { itemRef: 'automation:workstation:script:1', functionKey: 'workstation', name: 'Backup', language: 'bash', osTypes: ['linux', 'macos'], alreadyExists: true },
+      ],
+    };
+    previewApplyMock.mockResolvedValue(jsonResponse(preview));
+    const base = { ...EMPTY_BASE, automation: ['automation:workstation:script:0', 'automation:workstation:script:1'] };
+    render(<ApplyDrawer open reportRunId="run-1" approvalBase={base} onClose={vi.fn()} onApplied={vi.fn()} />);
+
+    const block = await screen.findByTestId('fleet-design-apply-drawer-scripts');
+    expect(block.textContent).toContain('Clear temp');
+    expect(block.textContent).toContain('Backup');
+    // Only the already-existing script gets the renamed note.
+    const renamedCount = (block.textContent?.match(/numbered suffix/g) ?? []).length;
+    expect(renamedCount).toBe(1);
+  });
+
+  it('renders nothing for the scripts block when preview.scripts is empty', async () => {
+    previewApplyMock.mockResolvedValue(jsonResponse(EMPTY_PREVIEW));
+    const base = { ...EMPTY_BASE, functions: ['workstation'] };
+    render(<ApplyDrawer open reportRunId="run-1" approvalBase={base} onClose={vi.fn()} onApplied={vi.fn()} />);
+
+    await waitFor(() => expect(previewApplyMock).toHaveBeenCalled());
+    expect(screen.queryByTestId('fleet-design-apply-drawer-scripts')).toBeNull();
+  });
+
+  it('shows the scripts_write_required message when the preview request is refused with 403', async () => {
+    previewApplyMock.mockResolvedValue(jsonResponse({ error: 'scripts_write_required' }, false, 403));
+    const base = { ...EMPTY_BASE, automation: ['automation:workstation:script:0'] };
+    render(<ApplyDrawer open reportRunId="run-1" approvalBase={base} onClose={vi.fn()} onApplied={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('fleet-design-apply-drawer-scripts-write-required')).toBeTruthy());
+  });
+
+  it('shows the scripts_write_required message when apply is refused with 403', async () => {
+    previewApplyMock.mockResolvedValue(jsonResponse(EMPTY_PREVIEW));
+    applyMock.mockResolvedValue(jsonResponse({ error: 'scripts_write_required' }, false, 403));
+    const base = { ...EMPTY_BASE, functions: ['workstation'] };
+    render(<ApplyDrawer open reportRunId="run-1" approvalBase={base} onClose={vi.fn()} onApplied={vi.fn()} />);
+
+    await waitFor(() => expect(previewApplyMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('fleet-design-apply-drawer-confirm'));
+
+    await waitFor(() => expect(screen.getByTestId('fleet-design-apply-drawer-scripts-write-required')).toBeTruthy());
   });
 });

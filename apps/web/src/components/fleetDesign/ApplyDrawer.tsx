@@ -31,7 +31,9 @@ export interface ApplyDrawerProps {
 }
 
 function selectionCount(base: Omit<FleetDesignApproval, "displacementsAccepted">): number {
-  return base.functions.length + base.monitoring.length + base.retired.length + base.roleCorrections.length;
+  return (
+    base.functions.length + base.monitoring.length + base.retired.length + base.automation.length + base.roleCorrections.length
+  );
 }
 
 export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, onApplied }: ApplyDrawerProps) {
@@ -44,6 +46,13 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
   const [result, setResult] = useState<FleetDesignApplyResult | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
   const [rollbackResult, setRollbackResult] = useState<FleetDesignRollbackResult | null>(null);
+  // Set when either the preview or the apply request comes back 403
+  // `{ error: 'scripts_write_required' }` (W04 #5654) — the caller's
+  // approval contains automation refs but they lack Scripts write. Shown as
+  // a persistent message in the drawer body in addition to the toast
+  // `friendly()` already produces, since a toast alone can disappear before
+  // the technician reads it.
+  const [scriptsWriteRequired, setScriptsWriteRequired] = useState(false);
 
   // Latest-ref: the effect below fires only on the open/reportRunId edge, but
   // must still read the CURRENT selection at that moment, not a stale one
@@ -56,8 +65,20 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
     if (code === "site_restricted") return t("errors.site_restricted");
     if (code === "no_designer_agent") return t("errors.no_designer_agent");
     if (code === "not_found") return t("errors.not_found");
+    if (code === "scripts_write_required") return t("errors.scripts_write_required");
     return undefined;
   };
+
+  /** Preview and apply both answer 403 `{ error: 'scripts_write_required' }`
+   *  (W04 #5654) when the approval carries automation refs but the caller
+   *  lacks Scripts write. `runAction` already toasts the friendly() text
+   *  above; this just flags the persistent, dedicated message below. */
+  const isScriptsWriteRequired = (err: unknown): boolean =>
+    err instanceof ActionError &&
+    err.status === 403 &&
+    !!err.body &&
+    typeof err.body === "object" &&
+    (err.body as Record<string, unknown>).error === "scripts_write_required";
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +86,7 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
     setRollbackResult(null);
     setPreview(null);
     setPreviewFailed(false);
+    setScriptsWriteRequired(false);
     setAccepted(new Set());
     setPreviewLoading(true);
     void (async () => {
@@ -77,8 +99,9 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
           parseSuccess: (d) => d as FleetDesignApplyPreview,
         });
         setPreview(data);
-      } catch {
+      } catch (err) {
         setPreviewFailed(true);
+        if (isScriptsWriteRequired(err)) setScriptsWriteRequired(true);
       } finally {
         setPreviewLoading(false);
       }
@@ -102,6 +125,7 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
   const handleConfirm = async () => {
     if (!preview) return;
     setApplying(true);
+    setScriptsWriteRequired(false);
     try {
       const body: FleetDesignApproval = { ...approvalBaseRef.current, displacementsAccepted: [...accepted] };
       const data = await runAction<FleetDesignApplyResult>({
@@ -119,6 +143,7 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
         // apply itself just discovered rather than a stale confirm state.
         setPreview((prev) => (prev ? { ...prev, blockers: body.blockers ?? prev.blockers } : prev));
       }
+      if (isScriptsWriteRequired(err)) setScriptsWriteRequired(true);
       // 401: the auth redirect is the feedback. Every other ActionError was
       // already toasted by runAction via the friendly/fallback message.
     } finally {
@@ -154,9 +179,15 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
       closeDisabledReason={applying ? t("drawer.applyingCloseBlocked") : rollingBack ? t("drawer.rollingBackCloseBlocked") : undefined}
     >
       <div className="flex-1 overflow-y-auto px-5 py-4">
+        {scriptsWriteRequired && (
+          <p className="mb-3 text-sm text-destructive" data-testid="fleet-design-apply-drawer-scripts-write-required">
+            {t("errors.scripts_write_required")}
+          </p>
+        )}
+
         {previewLoading && <p className="text-sm text-muted-foreground">{t("drawer.loadingPreview")}</p>}
 
-        {!previewLoading && previewFailed && !preview && (
+        {!previewLoading && previewFailed && !preview && !scriptsWriteRequired && (
           <p className="text-sm text-destructive" data-testid="fleet-design-apply-drawer-preview-error">
             {t("errors.genericPreview")}
           </p>
@@ -236,6 +267,21 @@ export default function ApplyDrawer({ open, onClose, reportRunId, approvalBase, 
                     <li key={r.itemRef}>{r.itemName}</li>
                   ))}
                 </ul>
+              </section>
+            )}
+
+            {preview.scripts.length > 0 && (
+              <section data-testid="fleet-design-apply-drawer-scripts">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("drawer.createsScripts")}</h3>
+                <ul className="mt-1 space-y-1 text-sm">
+                  {preview.scripts.map((s) => (
+                    <li key={s.itemRef}>
+                      {s.name} — {s.language} · {s.osTypes.join("/")}
+                      {s.alreadyExists && <span className="text-xs text-muted-foreground"> ({t("drawer.scriptRenamed")})</span>}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-xs text-muted-foreground">{t("drawer.scriptsNote")}</p>
               </section>
             )}
 

@@ -53,11 +53,31 @@
     "functionMeta": "{{count}} devices · {{pct}}% confidence",
     "roleCorrectionLabel": "{{from}} → {{to}}"
   },
+  "automation": {
+    "showContent": "Show script content"
+  },
+  "legacy": {
+    "columns": {
+      "script": "Script",
+      "bucket": "Bucket",
+      "coveredBy": "Covered by",
+      "intent": "Intent",
+      "notes": "Notes"
+    },
+    "bucket": {
+      "obsolete": "Obsolete",
+      "covered": "Covered",
+      "needed": "Needed"
+    }
+  },
   "drawer": {
     "title": "Apply Fleet Design",
     "loadingPreview": "Checking what this will do…",
     "nothingSelected": "Select at least one item to apply.",
     "creates": "Creates",
+    "createsScripts": "Creates scripts",
+    "scriptRenamed": "a script with this name exists — the new one gets a numbered suffix",
+    "scriptsNote": "Created in this organization's script library, tagged fleet-design. Nothing runs until someone runs it; rollback removes the tag and keeps the script.",
     "watchAndRuleCount": "{{watches}} watches, {{rules}} rules",
     "retires": "Retires",
     "displaces": "Displaces",
@@ -88,6 +108,7 @@
     "blocked": "This design cannot be applied yet — resolve the blockers and try again.",
     "site_restricted": "Site-restricted accounts cannot apply or roll back a Fleet Design.",
     "no_designer_agent": "No designer agent is configured for this organization.",
-    "not_found": "This Fleet Design could not be found."
+    "not_found": "This Fleet Design could not be found.",
+    "scripts_write_required": "Creating scripts needs the Scripts write permission. Deselect the proposed scripts, or ask an administrator."
   }
 }
