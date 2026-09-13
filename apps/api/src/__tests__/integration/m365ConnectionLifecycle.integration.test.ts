@@ -475,7 +475,7 @@ describe('customer Graph-read upgrade consent (manifest v2 → v3)', () => {
 
   beforeAll(async () => {
     upgradeExecutor = await createFakeSyncExecutor();
-    syncExecutorConfig.signingPrivateJwk = upgradeExecutor.signingPrivateJwk;
+    syncExecutorConfig.signingPrivateJwk = upgradeExecutor.signingPrivateJwk as Record<string, unknown>;
     syncExecutorConfig.signingKid = upgradeExecutor.signingKid;
   });
   afterAll(async () => { await upgradeExecutor.close(); });

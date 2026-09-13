@@ -334,7 +334,7 @@ describe('m365 tenant sync — first run across all six domains', () => {
     const [ada] = await rows<{ last_successful_sign_in_at: Date | null }>(sql`
       SELECT last_successful_sign_in_at FROM m365_users
       WHERE org_id = ${fixture.orgId}::uuid AND graph_id = 'aaaaaaaa-0000-4000-8000-000000000001'`);
-    expect(ada!.last_successful_sign_in_at && new Date(ada.last_successful_sign_in_at).toISOString())
+    expect(ada!.last_successful_sign_in_at && new Date(ada!.last_successful_sign_in_at!).toISOString())
       .toBe('2026-09-07T12:00:00.000Z');
 
     // Secure score: 90 rows keyed by Graph's own date, not the fetch day.
