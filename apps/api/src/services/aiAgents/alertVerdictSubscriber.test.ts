@@ -56,7 +56,12 @@ vi.mock('./skipVisibility', () => ({ recordAgentRunSkip }));
 
 import { db } from '../../db';
 import type { BreezeEvent } from '../eventBus';
-import { handleAlertVerdictEvent, AUTO_RESOLVE_VERDICT_WINDOW_MINUTES } from './alertVerdictSubscriber';
+import {
+  handleAlertVerdictEvent,
+  enqueueVerdictRunForAlert,
+  enqueueVerdictRunForGroup,
+  AUTO_RESOLVE_VERDICT_WINDOW_MINUTES,
+} from './alertVerdictSubscriber';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000e1';
 const DEVICE_ID = '00000000-0000-4000-8000-0000000000e2';
@@ -468,6 +473,40 @@ describe('ai-agent-alert-verdict subscriber', () => {
       expect(recordAgentRunSkip).toHaveBeenCalledWith(
         expect.objectContaining({ orgId: ORG_ID, reason: 'kill_switch_off', triggerKind: 'alert' }),
       );
+    });
+
+    // Review finding (#5681): `enqueueVerdictRunForAlert` is exported
+    // precisely SO the ungrouped-alert delay job (`alertVerdictScheduler.ts`)
+    // can call it directly, bypassing `handleAlertVerdictEvent`'s own gate.
+    // Every test above goes through the event entry point, whose gate returns
+    // first — so this function's own kill-switch branch, and the scheduled
+    // path that is the whole point of it being exported, were unexercised.
+    it('records a skip when called DIRECTLY by the ungrouped-alert job, not via the event', async () => {
+      shared.aiAgentsEnabled = false;
+      recordAgentRunSkip.mockClear();
+
+      await enqueueVerdictRunForAlert(ORG_ID, ALERT_ID, 'ungrouped');
+
+      expect(recordAgentRunSkip).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: ORG_ID, reason: 'kill_switch_off', alertId: ALERT_ID }),
+      );
+      // Still short-circuits ahead of the two DB reads — visibility, not cost.
+      expect(db.select).not.toHaveBeenCalled();
+      expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    });
+
+    it('records a skip when enqueueVerdictRunForGroup is called directly', async () => {
+      shared.aiAgentsEnabled = false;
+      recordAgentRunSkip.mockClear();
+
+      await enqueueVerdictRunForGroup(ORG_ID, {
+        groupId: GROUP_ID, rootAlertId: ALERT_ID, deviceId: DEVICE_ID,
+      });
+
+      expect(recordAgentRunSkip).toHaveBeenCalledWith(
+        expect.objectContaining({ orgId: ORG_ID, reason: 'kill_switch_off', deviceId: DEVICE_ID }),
+      );
+      expect(db.select).not.toHaveBeenCalled();
     });
 
     it('records the skip exactly once per event, never once per nested helper', async () => {

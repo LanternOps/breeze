@@ -4072,6 +4072,17 @@ describe('GET /ai-agents — system block (#5380)', () => {
     expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([ORG_ID, OTHER_ORG_ID]);
   });
 
+  // Review finding (#5681): the route documents that a system-scoped caller
+  // (accessibleOrgIds === null) must NOT fan the summary out across every
+  // tenant on the platform. That contract had no test.
+  it('never fans the skip summary out for a system-scoped caller', async () => {
+    await buildApp(false, {
+      scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null,
+    }).request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([]);
+  });
+
   it('reports skips as null (unknown) rather than zero when the counter store is unreachable', async () => {
     readAgentRunSkipSummaryMock.mockResolvedValue(null);
 

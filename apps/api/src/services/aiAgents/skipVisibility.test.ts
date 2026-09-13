@@ -46,14 +46,19 @@ function fakeRedis() {
         expires.push(key);
         return chain;
       },
-      exec: async () => [],
+      // ioredis resolves a pipeline with one [error, result] tuple per
+      // command; a command-level failure (OOM, WRONGTYPE, an ACL denial) does
+      // NOT reject. `execResult` lets a test model exactly that.
+      exec: async () => state.execResult ?? [],
     };
     return chain;
   };
+  const state: { execResult: [Error | null, unknown][] | null } = { execResult: null };
   return {
     hashes,
     expires,
     multi,
+    state,
     hgetall: async (key: string) => Object.fromEntries(hashes.get(key) ?? new Map()),
   };
 }
@@ -131,6 +136,58 @@ describe('skipVisibility', () => {
       redisState.redis = null;
       expect(() => recordAgentRunSkip({ orgId: 'org-1', reason: 'cooldown' })).not.toThrow();
     });
+
+    // Review finding (#5681): ioredis RESOLVES a pipeline with one
+    // [error, result] tuple per command — only a connection-level failure
+    // rejects. A Redis under memory pressure (`OOM command not allowed`) is
+    // exactly the incident this counter exists to make visible, and a bare
+    // `.catch()` would never see it: the counter would silently stop moving
+    // while the banner kept reporting a summary that looked complete.
+    it('logs a command-level pipeline error that ioredis reports WITHOUT rejecting', async () => {
+      const redis = fakeRedis();
+      redis.state.execResult = [
+        [new Error("OOM command not allowed when used memory > 'maxmemory'"), null],
+        [null, 1],
+        [null, 'OK'],
+        [null, 1],
+      ];
+      redisState.redis = redis;
+      const error = vi.mocked(console.error);
+
+      recordAgentRunSkip({ orgId: 'org-1', reason: 'kill_switch_off' });
+
+      await vi.waitFor(() => expect(error).toHaveBeenCalled());
+      const [message, context] = error.mock.calls[0] as [string, Record<string, unknown>];
+      expect(message).toContain('run-skip counter');
+      expect(context).toMatchObject({ orgId: 'org-1', reason: 'kill_switch_off' });
+    });
+
+    it('stays quiet when every pipeline command succeeded', async () => {
+      const redis = fakeRedis();
+      redis.state.execResult = [[null, 1], [null, 1], [null, 'OK'], [null, 1]];
+      redisState.redis = redis;
+
+      recordAgentRunSkip({ orgId: 'org-1', reason: 'kill_switch_off' });
+
+      await vi.waitFor(() => {
+        expect(redis.hashes.get('breeze:ai-agents:skips:org-1')?.get('count:kill_switch_off')).toBe('1');
+      });
+      expect(vi.mocked(console.error)).not.toHaveBeenCalled();
+    });
+
+    it('never throws when the pipeline itself rejects (connection down)', async () => {
+      redisState.redis = {
+        multi: () => ({
+          hincrby() { return this; }, hsetnx() { return this; },
+          hset() { return this; }, expire() { return this; },
+          exec: async () => { throw new Error('connection is closed'); },
+        }),
+      };
+      const error = vi.mocked(console.error);
+
+      expect(() => recordAgentRunSkip({ orgId: 'org-1', reason: 'cooldown' })).not.toThrow();
+      await vi.waitFor(() => expect(error).toHaveBeenCalled());
+    });
   });
 
   describe('readAgentRunSkipSummary', () => {
@@ -174,6 +231,19 @@ describe('skipVisibility', () => {
         firstAt: new Date(now - 8_000).toISOString(),
       });
       expect(second).toMatchObject({ reason: 'cooldown', count: 1 });
+    });
+
+    it('caps the fan-out at the documented org limit rather than reading thousands of keys', async () => {
+      const redis = fakeRedis();
+      redisState.redis = redis;
+      const reads: string[] = [];
+      redis.hgetall = async (key: string) => { reads.push(key); return {}; };
+
+      await readAgentRunSkipSummary(Array.from({ length: 60 }, (_, i) => `org-${i}`));
+
+      // A partner-scoped caller can reach thousands of orgs; the summary is a
+      // banner line, not an analytics surface.
+      expect(reads).toHaveLength(25);
     });
 
     it('returns null when the Redis read fails — never a misleading zero', async () => {

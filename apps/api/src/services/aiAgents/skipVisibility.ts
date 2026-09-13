@@ -100,13 +100,25 @@ async function countSkip(orgId: string, reason: string, now: number): Promise<vo
   const redis = getRedis();
   if (!redis) return;
   const key = `${REDIS_KEY_PREFIX}${orgId}`;
-  await redis
+  const results = await redis
     .multi()
     .hincrby(key, `count:${reason}`, 1)
     .hsetnx(key, `first:${reason}`, String(now))
     .hset(key, `last:${reason}`, String(now))
     .expire(key, RETENTION_SECONDS)
     .exec();
+
+  // ioredis RESOLVES a pipeline with one [error, result] tuple per command;
+  // only a connection-level failure rejects. So `OOM command not allowed when
+  // used memory > 'maxmemory'`, a WRONGTYPE on the key, or an ACL denial
+  // arrives HERE, not in the caller's `.catch` — and a Redis under memory
+  // pressure is exactly the incident this counter exists to make visible.
+  // Left unchecked, the counter would silently stop moving while
+  // `readAgentRunSkipSummary` kept returning a summary that looked complete.
+  const failure = results?.find(([error]) => error != null)?.[0];
+  if (failure) {
+    console.error('[aiAgents] run-skip counter write failed', { orgId, reason, error: failure });
+  }
 }
 
 /**

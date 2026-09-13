@@ -1686,6 +1686,18 @@ describe('AiAgentsPage — subsystem disabled (#5380)', () => {
     expect(screen.queryByTestId('ai-agents-skip-trace')).toBeNull();
   });
 
+  it('ignores a malformed system block rather than mis-rendering one', async () => {
+    // `enabled` is the field every branch reads. A block that does not answer
+    // it is "not reported" — guessing from a partial shape would be its own
+    // false alarm.
+    mockEndpoints([PARTNER_AGENT], { envFlagEnabled: false, envFlagName: 'X', skips: null });
+    render(<AiAgentsPage />);
+
+    await screen.findByTestId('ai-agents-list');
+    expect(screen.queryByTestId('ai-agents-subsystem-disabled')).toBeNull();
+    expect(screen.getByTestId(`ai-agent-running-badge-${PARTNER_AGENT.id}`).textContent).toBe('Running');
+  });
+
   it('survives an older API that does not return the system block at all', async () => {
     mockEndpoints([PARTNER_AGENT], undefined);
     render(<AiAgentsPage />);
