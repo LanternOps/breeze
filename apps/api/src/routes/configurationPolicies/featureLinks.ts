@@ -12,12 +12,13 @@ import {
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
+  warrantyHpCmslRequested,
   warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { ORG_SCOPED_ONLY_FEATURE_TYPES } from '@breeze/shared/constants';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../../services/siteCeilingAccess';
-import { PERMISSIONS } from '../../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { findOfflineDurationViolation } from '../../services/alertConditions/offlineDuration';
 import {
   getConfigPolicy,
@@ -49,6 +50,7 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+import { checkHpCmslWriteAllowed, warrantyLinkEnablesCollection } from './hpCmslGate';
 
 // The `config_policy_monitors_compat` deferred constraint trigger
 // (2026-10-16-160300-monitor-definitions.sql) is the owner-compatibility
@@ -140,6 +142,17 @@ featureLinkRoutes.post(
         { error: `The "${data.featureType}" feature is not supported on partner-wide policies; it must be configured on an organization-scoped policy.` },
         400
       );
+    }
+
+    // #5511 W02 (contract D4): enabling device-side HP warranty collection
+    // installs HP software on every HP endpoint this policy reaches, so it
+    // carries the deployment gate — devices.execute (and MFA, already enforced
+    // route-level) — rather than the plain devices.write every other
+    // feature-link write needs. Keyed on the RESULT of the write, not the
+    // feature type: an alert-threshold edit installs nothing and stays ungated.
+    if (data.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
     }
 
     // Validate the referenced feature policy exists (only when a policy ID is provided)
@@ -388,6 +401,14 @@ featureLinkRoutes.patch(
       return c.json({ error: 'Feature link not found' }, 404);
     }
 
+    // Same gate as the POST route (#5511 W02, D4). `data.inlineSettings` is the
+    // whole replacement blob (warranty updates are replace, not merge — D5), so
+    // the request predicate reads the post-write state directly.
+    if (existingLink.featureType === 'warranty' && warrantyHpCmslRequested(data.inlineSettings)) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
+
     if (data.featurePolicyId !== undefined && data.featurePolicyId !== null) {
       // Same partner-linkable exception as the POST route above.
       if (policy.orgId === null && !PARTNER_LINKABLE_FEATURE_TYPES.has(existingLink.featureType as any)) {
@@ -593,6 +614,19 @@ featureLinkRoutes.delete(
 
     const existingLink = policy.featureLinks.find((l: any) => l.id === linkId);
     if (!existingLink) return c.json({ error: 'Feature link not found' }, 404);
+
+    // #5511 W02 (contract D4/D5): deleting a warranty link is normally a pure
+    // revocation and stays ungated — but with a parent that COLLECTS, this
+    // delete does not end collection, it reverts to the parent's link and
+    // starts it. Fails CLOSED when the parent is set but could not be resolved
+    // (`parentPolicy` null): "can't tell" must not read as "no parent".
+    const parentUnresolved = !!policy.parentPolicyId && !policy.parentPolicy;
+    const revertStartsHpCmslCollection = existingLink.featureType === 'warranty'
+      && (parentUnresolved || warrantyLinkEnablesCollection(policy.parentPolicy?.featureLinks));
+    if (revertStartsHpCmslCollection) {
+      const gate = checkHpCmslWriteAllowed(auth, c.get('permissions') as UserPermissions | undefined);
+      if (!gate.allowed) return c.json(gate.body, 403);
+    }
 
     const deleted = await removeFeatureLink(linkId, id);
     if (!deleted) return c.json({ error: 'Feature link not found' }, 404);

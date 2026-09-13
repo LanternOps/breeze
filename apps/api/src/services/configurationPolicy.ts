@@ -451,6 +451,32 @@ export async function getConfigPolicy(id: string, auth: AuthContext) {
  * baseline must not silently strip config from every child), so hiding archived
  * rows here would misrepresent what is selectable.
  */
+/**
+ * True when the named parent policy carries a warranty link that actually
+ * delivers HP CMSL collection (#5511 W02, contract D4) — the input to the
+ * create-with-parent gate in routes/configurationPolicies/crud.ts.
+ *
+ * Keyed on a value inside the link's JSONB, not on the presence of a link.
+ * One level is all that is needed: a parent must itself be a root policy
+ * (`parent_policy_id IS NULL`, see listEligibleParentPolicies), so there is no
+ * grandparent to walk. A parent this context cannot see resolves to `false`
+ * here, but createConfigPolicy then refuses the create outright
+ * (InvalidParentPolicyError), so that is never a way around the gate.
+ */
+export async function parentPolicyEnablesHpCmslCollection(parentId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ inlineSettings: configPolicyFeatureLinks.inlineSettings })
+    .from(configPolicyFeatureLinks)
+    .where(
+      and(
+        eq(configPolicyFeatureLinks.configPolicyId, parentId),
+        eq(configPolicyFeatureLinks.featureType, 'warranty')
+      )
+    )
+    .limit(1);
+  return warrantyHpCmslCollectionEffective(row?.inlineSettings);
+}
+
 export async function listEligibleParentPolicies(
   auth: AuthContext,
   sel: { ownerScope: 'organization'; orgId: string } | { ownerScope: 'partner' },
