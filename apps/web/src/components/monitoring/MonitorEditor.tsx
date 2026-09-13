@@ -15,6 +15,7 @@ import {
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
+import { asList } from '@/lib/asList';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import ActionsEditor, {
   type Script,
@@ -140,6 +141,13 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [error, setError] = useState<string>();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
+  const [testDevices, setTestDevices] = useState<{ id: string; name: string }[]>([]);
+  const [testDeviceId, setTestDeviceId] = useState('');
+  const [testSubmitting, setTestSubmitting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    { status: 'result'; triggered: boolean; deviceName: string } | { status: 'error'; message: string } | null
+  >(null);
 
   const [kindsMeta, setKindsMeta] = useState<KindMeta[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -375,6 +383,46 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     }
   };
 
+  const handleOpenTest = () => {
+    setTestOpen(true);
+    setTestResult(null);
+    if (testDevices.length > 0) return;
+    void fetchWithAuth('/devices')
+      .then((res) => (res.ok ? res.json() : { devices: [] }))
+      .then((data) =>
+        setTestDevices(
+          asList(data, 'devices').map((d: { id: string; hostname?: string; displayName?: string }) => ({
+            id: d.id,
+            name: d.displayName || d.hostname || d.id,
+          })),
+        ),
+      )
+      .catch(() => setTestDevices([]));
+  };
+
+  const handleRunTest = async () => {
+    if (!monitorId || !testDeviceId) return;
+    setTestSubmitting(true);
+    setTestResult(null);
+    try {
+      const response = await fetchWithAuth(`/monitor-definitions/${monitorId}/test`, {
+        method: 'POST',
+        body: JSON.stringify({ deviceId: testDeviceId }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(extractApiError(data, t('monitoring:editor.errors.test')));
+      }
+      const data = await response.json();
+      const deviceName = testDevices.find((d) => d.id === testDeviceId)?.name ?? testDeviceId;
+      setTestResult({ status: 'result', triggered: !!data?.data?.triggered, deviceName });
+    } catch (err) {
+      setTestResult({ status: 'error', message: err instanceof Error ? err.message : t('monitoring:editor.errors.test') });
+    } finally {
+      setTestSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -392,14 +440,86 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
             { label: isNew ? t('monitoring:editor.breadcrumb.new') : watch('name') || t('monitoring:editor.titleEdit') },
           ]}
         />
-        <div className="flex items-center gap-4">
-          <a href="/monitoring" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
-            <ArrowLeft className="h-5 w-5" />
-          </a>
-          <h1 className="text-xl font-semibold tracking-tight">
-            {isNew ? t('monitoring:editor.titleNew') : t('monitoring:editor.titleEdit')}
-          </h1>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <a href="/monitoring" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
+              <ArrowLeft className="h-5 w-5" />
+            </a>
+            <h1 className="text-xl font-semibold tracking-tight">
+              {isNew ? t('monitoring:editor.titleNew') : t('monitoring:editor.titleEdit')}
+            </h1>
+          </div>
+          {!isNew && (
+            <button
+              type="button"
+              data-testid="monitor-editor-test-open"
+              onClick={handleOpenTest}
+              className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t('monitoring:editor.actions.test')}
+            </button>
+          )}
         </div>
+
+        {!isNew && testOpen && (
+          <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="monitor-editor-test-panel">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex-1 space-y-1">
+                <label className="text-xs font-medium text-muted-foreground" htmlFor="monitor-editor-test-device">
+                  {t('monitoring:editor.testDialog.selectDevice')}
+                </label>
+                <select
+                  id="monitor-editor-test-device"
+                  data-testid="monitor-editor-test-device"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                  value={testDeviceId}
+                  onChange={(e) => {
+                    setTestResult(null);
+                    setTestDeviceId(e.target.value);
+                  }}
+                >
+                  <option value="">—</option>
+                  {testDevices.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                data-testid="monitor-editor-test-run"
+                disabled={!testDeviceId || testSubmitting}
+                onClick={() => void handleRunTest()}
+                className="h-9 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('monitoring:editor.testDialog.run')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTestOpen(false)}
+                className="h-9 rounded-md border px-4 text-sm font-medium hover:bg-muted"
+              >
+                {t('common:actions.close')}
+              </button>
+            </div>
+            {testResult && (
+              <p
+                data-testid="monitor-editor-test-result"
+                className={`mt-3 text-sm ${testResult.status === 'error' ? 'text-destructive' : testResult.triggered ? 'text-emerald-700' : 'text-muted-foreground'}`}
+              >
+                {testResult.status === 'error'
+                  ? testResult.message
+                  : t(
+                      testResult.triggered
+                        ? 'monitoring:editor.testResult.triggered'
+                        : 'monitoring:editor.testResult.notTriggered',
+                      { device: testResult.deviceName },
+                    )}
+              </p>
+            )}
+          </div>
+        )}
 
         {error && (
           <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

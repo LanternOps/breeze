@@ -131,6 +131,10 @@ describe('MonitorEditor (#5289)', () => {
       }
       if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
       if (init?.method === 'DELETE' && input === '/monitor-definitions/m1/attachments/a1') return json({}, true, 204);
+      if (input === '/devices') return json({ devices: [{ id: 'dev-1', hostname: 'HOST-1' }] });
+      if (input === '/monitor-definitions/m1/test' && init?.method === 'POST') {
+        return json({ data: { triggered: true, conditionsMet: [], conditionsNotMet: [], context: { deviceId: 'dev-1' } } });
+      }
       return defaultFetchImpl(input);
     });
     render(<MonitorEditor monitorId="m1" />);
@@ -147,5 +151,48 @@ describe('MonitorEditor (#5289)', () => {
         expect.objectContaining({ method: 'DELETE' }),
       ),
     );
+  });
+
+  it('edit mode: tests the monitor against a picked device', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) {
+        return json({
+          data: {
+            id: 'm1',
+            name: 'Disk full',
+            kind: 'disk',
+            enabled: true,
+            condition: { operator: 'gt', value: 90, durationMinutes: 5 },
+            severity: 'high',
+            cooldownMinutes: 5,
+            autoResolve: false,
+            responses: [],
+            deliveryMode: 'inherit',
+            deliveryChannelIds: [],
+            recurrenceActions: [],
+            pauseResponsesOnEscalation: true,
+            orgId: 'org-1',
+            partnerId: null,
+            attachments: [],
+          },
+        });
+      }
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (input === '/devices') return json({ devices: [{ id: 'dev-1', hostname: 'HOST-1' }] });
+      if (input === '/monitor-definitions/m1/test' && init?.method === 'POST') {
+        expect(JSON.parse(init.body as string)).toEqual({ deviceId: 'dev-1' });
+        return json({ data: { triggered: true, conditionsMet: [], conditionsNotMet: [], context: { deviceId: 'dev-1' } } });
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.click(screen.getByTestId('monitor-editor-test-open'));
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-device')).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('monitor-editor-test-device'), { target: { value: 'dev-1' } });
+    fireEvent.click(screen.getByTestId('monitor-editor-test-run'));
+
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-test-result')).toHaveTextContent('HOST-1'));
   });
 });

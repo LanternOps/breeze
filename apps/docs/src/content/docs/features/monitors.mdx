@@ -1,196 +1,145 @@
 ---
 title: Monitors
-description: Author one object that carries a condition, severity, delivery, and responses, then deploy it fleet-wide through Configuration Policies.
+description: Author one object that carries a condition, severity, delivery, and device-side responses, then deploy it fleet-wide through Configuration Policies.
 ---
 
 import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-<Aside type="note">
-  This wave ships the **API** for monitors. There is no Monitors page in the web UI yet — creating, editing, and deploying a monitor today means calling `/monitor-definitions` directly or through the AI assistant. The web surface arrives in a later release; this page documents the object and the API you'll use until then.
-</Aside>
+A **monitor** is a single object that carries everything a technician used to have to wire up across three separate places: a **condition** to watch for, a **severity**, **responses** (scripts or other actions to run automatically on the device that breached), **delivery** (which notification channels and escalation policy to use), and an optional **recurrence counter** that escalates to a human when the same problem keeps coming back. You author one monitor instead of a standalone [alert rule](/features/alerts/#creating-alert-rules) plus a separately-wired [automation](/features/automations/).
 
-A **monitor** is a single object that carries everything a technician used to have to wire up across three separate places: a **condition** to watch for, a **severity**, **delivery** (which notification channels and escalation policy to use), and **responses** (scripts or other actions to run automatically when it fires). You author one monitor instead of an alert rule plus a matching automation.
-
-Under the hood, Breeze compiles a monitor definition into the alert template, alert rule, and automation rows the existing alert sweep, notification dispatcher, and automation worker already execute — nothing downstream had to change to support monitors. See [How compilation works](#how-compilation-works) below for why those compiled rows are read-only.
+Under the hood, Breeze compiles a monitor into the alert template, alert rule, and automation rows the existing alert sweep, notification dispatcher, and automation worker already execute -- nothing downstream had to change to support monitors. See [How compilation works](#how-compilation-works) below for why those compiled rows show up read-only elsewhere in the product.
 
 ## Monitor kinds
 
-Every monitor has one `kind`, which determines the shape of its `condition`. Thirteen kinds are available:
+Every monitor has one **kind**, which determines the shape of its condition. Thirteen kinds are available:
 
 | Kind | Watches for | Default severity | Evaluated by |
 |---|---|---|---|
-| `cpu` | CPU usage above/below a percentage threshold, over a sliding window | High | Server |
-| `memory` | RAM usage above/below a percentage threshold, over a sliding window | High | Server |
-| `disk` | Disk usage above/below a percentage threshold, over a sliding window | High | Server |
-| `offline` | Device unreachable for a continuous duration | High | Server |
-| `event_log` | Windows Event Log / macOS unified log / Linux journal entries matching a category, level, and optional source/message pattern | Medium | Server |
-| `patch_compliance` | Patch compliance percentage above/below a threshold | Medium | Server |
-| `service` | A named Windows service stops running | High | Agent |
-| `process` | A named process stops running | High | Agent |
-| `process_resource` | A named process's CPU or memory usage above/below a threshold | Medium | Agent |
-| `cert_expiry` | A certificate expiring within N days | Medium | Server |
-| `bandwidth` | Network bandwidth (in/out/total) above/below a threshold | Medium | Server |
-| `disk_io` | Disk read/write/total I/O above/below a threshold | Medium | Server |
-| `network_errors` | Network interface errors (in/out/total) above/below a threshold | Medium | Server |
+| CPU usage | CPU usage above/below a percentage threshold, over a sliding window | High | Server |
+| Memory usage | RAM usage above/below a percentage threshold, over a sliding window | High | Server |
+| Disk usage | Disk usage above/below a percentage threshold, over a sliding window | High | Server |
+| Device offline | Device unreachable for a continuous duration | High | Server |
+| Event log | Windows Event Log / macOS unified log / Linux journal entries matching a category, level, and optional source/message pattern | Medium | Server |
+| Patch compliance | Patch compliance percentage above/below a threshold | Medium | Server |
+| Service stopped | A named Windows service stops running | High | Agent |
+| Process stopped | A named process stops running | High | Agent |
+| Process resource | A named process's CPU or memory usage above/below a threshold | Medium | Agent |
+| Certificate expiry | A certificate expiring within N days | Medium | Server |
+| Bandwidth | Network bandwidth (in/out/total) above/below a threshold | Medium | Server |
+| Disk I/O | Disk read/write/total I/O above/below a threshold | Medium | Server |
+| Network errors | Network interface errors (in/out/total) above/below a threshold | Medium | Server |
 
-"Evaluated by **Agent**" means the condition is checked on the endpoint itself (service and process watches), the same way [Service & Process Monitoring](/features/service-monitoring/) works today. Every other kind is evaluated by the server-side alert sweep against collected device metrics.
+"Evaluated by **Agent**" means the condition is checked on the endpoint itself, the same way it's checked today for a service or process watch. Every other kind is evaluated by the server-side alert sweep against collected device metrics.
 
-Call `GET /monitor-definitions/kinds` to get the full list along with each kind's default severity, title/message templates, and which condition fields a policy attachment is allowed to override (`overridableKeys` — see [Deploying through Configuration Policies](#deploying-through-configuration-policies) below).
+<Aside type="note">
+  **Service stopped**, **Process stopped**, and **Process resource** monitors still read their watch list from the same place [Service & Process Monitoring](/features/service-monitoring/) does -- the policy's **Monitoring** tab. Creating one of these monitor kinds doesn't add a new watch by itself; the service or process name also has to exist as a watch on that tab until a future wave unifies the two. See that page's [Overview](/features/service-monitoring/#overview) for how watches are defined today.
+</Aside>
 
 ## Ownership: organization vs. partner-wide
 
-A monitor is owned by exactly one organization, or by your partner account across every organization you manage — never both. Set `ownerScope: "organization"` (the default) or `ownerScope: "partner"` on create; a partner-wide monitor requires partner-wide management access. Ownership cannot change after creation — there's no "convert to partner-wide" call, so plan the scope up front.
+A monitor is owned by exactly one organization, or by your partner account across every organization you manage -- never both. You choose this when creating the monitor, and it can't change afterward -- there's no "convert to partner-wide" option, so plan the scope up front.
 
-A configuration policy can only attach a monitor it's compatible with: an org-owned monitor can only attach to a policy owned by that same org (or a partner-wide monitor owned by that org's partner); a partner-wide monitor can only attach to a partner-wide policy owned by the same partner. Attaching across that boundary is rejected.
+A configuration policy can only attach a monitor it's compatible with: an org-owned monitor can only attach to a policy owned by that same org (or a partner-wide policy owned by that org's partner); a partner-wide monitor can only attach to a partner-wide policy owned by the same partner. Attaching across that boundary is refused.
 
-## Anatomy of a monitor
-
-```json
-{
-  "ownerScope": "organization",
-  "name": "High disk on servers",
-  "kind": "disk",
-  "condition": { "operator": "gte", "value": 90, "durationMinutes": 10 },
-  "severity": "high",
-  "cooldownMinutes": 15,
-  "autoResolve": true,
-  "responses": [
-    { "type": "run_script", "scriptId": "uuid" }
-  ],
-  "deliveryMode": "channels",
-  "deliveryChannelIds": ["uuid"],
-  "escalationPolicyId": "uuid",
-  "recurrenceThreshold": 3,
-  "recurrenceWindowHours": 24,
-  "recurrenceActions": [
-    { "type": "create_alert", "alertSeverity": "critical", "alertTitle": "Recurring disk pressure", "alertMessage": "Fired 3+ times in 24h" }
-  ],
-  "pauseResponsesOnEscalation": true
-}
-```
-
-| Field | Description |
-|---|---|
-| `name` | 1–200 characters |
-| `description` | Optional, up to 2000 characters |
-| `kind` | One of the 13 kinds above |
-| `condition` | Shape depends on `kind` — see [Monitor kinds](#monitor-kinds) |
-| `enabled` | Whether the monitor is active. Defaults to `true` |
-| `severity` | `critical`, `high`, `medium`, `low`, or `info` |
-| `cooldownMinutes` | Minimum time between repeated firings for the same device (0–1440). Defaults to 5 |
-| `autoResolve` | Automatically resolve the alert once the condition clears |
-| `autoResolveConditions` | Optional custom clear condition, same shape as an alert template's |
-| `responses` | Up to 10 actions to run when the monitor fires, using the same action vocabulary as [Automations](/features/automations/#action-configuration) (`run_script`, `send_notification`, `create_alert`, `execute_command`, `deploy_software`, `ai_triage`) |
-| `deliveryMode` | `none`, `inherit`, or `channels` — see [Delivery and escalation](#delivery-and-escalation) |
-| `deliveryChannelIds` | Notification channel UUIDs, required (and only used) when `deliveryMode` is `channels` |
-| `escalationPolicyId` | Optional escalation policy to attach |
-| `recurrenceThreshold` / `recurrenceWindowHours` | Optional — fire `recurrenceActions` when the monitor recurs this many times within this many hours. Must be set together |
-| `recurrenceActions` | Extra actions to run only once the recurrence threshold is hit (e.g. escalate to a human after three noisy firings) |
-| `pauseResponsesOnEscalation` | Whether normal `responses` should pause once an escalation has fired. Defaults to `true` |
-| `aiAgentId` | Required if any `responses` or `recurrenceActions` entry is `ai_triage` |
-
-A monitor with an `ai_triage` response wakes an AI triage agent when it fires, the same way an automation with that action does — see [AI Agents](/features/ai-agents/).
-
-## Delivery and escalation
-
-`deliveryMode` controls where notifications for this monitor's alerts go:
-
-- **`none`** — suppress the normal notification fallback entirely. Use this when a monitor's only real "delivery" is its `responses` (e.g. auto-run a script) and you don't want a channel notification too.
-- **`inherit`** (default) — fall back to notification routing rules, then the organization's default channels, exactly like a standalone alert rule with no channels configured.
-- **`channels`** — send to the specific `deliveryChannelIds` you list.
-
-`escalationPolicyId` attaches an [escalation policy](/features/alerts/#escalation-policies) so an unacknowledged alert from this monitor notifies progressively broader audiences over time.
-
-## Recurrence
-
-`recurrenceThreshold` and `recurrenceWindowHours` (set together, or not at all) let a monitor escalate its own response after it keeps firing. If a monitor fires `recurrenceThreshold` or more times within `recurrenceWindowHours`, its `recurrenceActions` run in addition to (or, if `pauseResponsesOnEscalation` is true, instead of) the normal `responses` — for example, quietly retry a fix a couple of times, then create a critical alert and page someone once it's clear the automatic fix isn't sticking.
-
-## Deploying through Configuration Policies
-
-A monitor only takes effect once it's attached to a [Configuration Policy](/features/configuration-policies/) that's assigned somewhere in your fleet — creating a monitor by itself doesn't put it on any device.
+## Creating a monitor
 
 <Steps>
 
-1. Attach the monitor to a policy:
+1. Go to **Fleet Management → Monitoring**, then open the **Monitors** tab. Click **New monitor**.
 
-   ```
-   POST /monitor-definitions/:id/attachments
-   { "configPolicyId": "uuid", "enabled": true, "overrides": null }
-   ```
+2. **What to watch.** Pick the monitor's **kind** from the thirteen listed above, then fill in its condition -- a metric operator and threshold for a usage kind, category/level/pattern for an event log, a service or process name for the agent-evaluated kinds, and so on. The fields shown depend on the kind you picked.
 
-   Or, to deploy straight to a target without an existing policy in hand, let the call create one for you:
+3. **Severity & noise.** Choose a **severity** (`critical`, `high`, `medium`, `low`, or `info`), a **cooldown** (minimum minutes between repeated firings for the same device), and whether to **auto-resolve** the alert once the condition clears.
 
-   ```
-   POST /monitor-definitions/:id/attachments
-   { "createPolicyFor": { "level": "organization", "targetId": "uuid" } }
-   ```
+4. **Respond.** Add up to ten device-side actions to run automatically when the monitor fires, in order: **run a script**, **send a notification**, **create an alert**, **execute a command**, or **deploy software** -- the same action vocabulary as an [automation](/features/automations/#action-configuration). Responses run on the device that breached, not the monitor's whole fleet.
 
-2. Make sure that policy is assigned to the organization, site, device group, or device you want the monitor to reach (see [Assigning a policy](/features/configuration-policies/#assigning-a-policy)).
+5. **Notify.** Choose a **delivery mode**:
+   - **Use routing rules** -- fall back to [notification routing rules](/features/alerts/#notification-routing-rules), then the organization's default channels, exactly like a standalone alert rule with no channels configured.
+   - **Routing rules plus these channels** -- also send to specific channels you pick, in addition to whatever routing rules match.
+   - **Do not notify** -- suppress the normal notification fallback entirely. Use this when a monitor's only real "delivery" is its responses (e.g. auto-run a script) and a channel notification would just be noise.
+
+6. **Escalate to a human.** Optionally attach an [escalation policy](/features/alerts/#escalation-policies) so an unacknowledged alert notifies progressively broader audiences over time. Optionally also set **Escalate after** *N* breach episodes **within** a window -- see [Recurrence: escalating to a human](#recurrence-escalating-to-a-human) below for what an "episode" means and what fires when the threshold is hit.
+
+7. **Deployed to** (shown once the monitor has been saved -- not on first creation). Lists every configuration policy this monitor is attached to, and lets you see which devices it currently reaches. See [Deploying through Configuration Policies](#deploying-through-configuration-policies) below.
+
+8. Click **Save monitor**. Before deploying to production, use **Test on a device** to pick one device and confirm whether the monitor's condition, as you have it saved, would currently trigger there.
 
 </Steps>
 
-A monitor can be attached to more than one policy at once, and a policy can carry more than one monitor — each attachment is its own row, with its own `enabled` flag and `overrides`.
+<Aside>
+  A monitor with an action of type `ai_triage` wakes an AI triage agent when it fires, the same way an automation with that action does -- see [AI Agents](/features/ai-agents/). This requires choosing an AI agent on the monitor.
+</Aside>
+
+## Recurrence: escalating to a human
+
+A **breach episode** starts the first time a monitor's condition trips on a device and ends when the condition recovers (or the alert auto-resolves). Flapping -- a condition that trips and clears repeatedly in quick succession -- still only counts as one long episode as long as it never fully recovers in between, so a noisy-but-continuous problem doesn't inflate the count the way counting every individual breach would.
+
+If a monitor accumulates **Escalate after** *N* or more episodes **within** the configured window, its recurrence actions run in addition to (or, if **Pause automatic responses until a person resets** is on, *instead of*) its normal responses. This is meant for "stop auto-restarting this, a human needs to look at it" situations -- for example, quietly restart a stopped service a couple of times, then once it's clear the automatic fix isn't sticking, stop retrying, raise a critical alert, and page someone. Pausing stays in effect until a person clears it; it won't silently resume responding on its own the next time the condition recovers.
+
+## Deploying through Configuration Policies
+
+A monitor only takes effect once it's attached to a [Configuration Policy](/features/configuration-policies/) that's assigned somewhere in your fleet -- creating a monitor by itself doesn't put it on any device.
+
+<Steps>
+
+1. From the monitor's **Deployed to** section, attach it to an existing policy, or create a policy for an organization, site, or device group in one step. You can also go the other way: open a policy's **Monitors** tab and click **Attach existing** to pick a monitor, or **Create monitor** to author a new one for that policy directly.
+
+2. Make sure that policy is assigned to the organization, site, device group, or device you want the monitor to reach -- see [Assigning a policy](/features/configuration-policies/#assigning-a-policy).
+
+</Steps>
+
+A monitor can be attached to more than one policy at once, and a policy can carry more than one monitor -- each attachment has its own enabled state and its own overrides.
 
 ### Cumulative deployment, closest-attachment-wins per monitor
 
-Monitor deployment is deliberately **cumulative**, unlike every other configuration-policy feature (which resolves "closest policy wins" for the whole feature). If you attach three monitors at the organization level and a fourth at a site, a device at that site runs all four — attaching a monitor at the site never silently drops the org's monitors.
+Monitor deployment is deliberately **cumulative**, unlike every other configuration-policy feature (which resolves "closest policy wins" for the whole feature). If you attach three monitors at the organization level and a fourth at a site, a device at that site runs all four -- attaching a monitor at the site never silently drops the org's monitors.
 
-What *is* closest-wins is the **per-monitor** attachment: if the same monitor is attached at both the organization and one of its sites, the site's attachment (its `enabled` flag and `overrides`) wins for devices at that site, while devices in other sites of the same org still get the organization's attachment. This is what makes it possible to turn a monitor off, or tighten its threshold, for one part of the fleet without touching the monitor definition itself or its attachment everywhere else.
+What *is* closest-wins is the **per-monitor** attachment: if the same monitor is attached at both the organization and one of its sites, the site's attachment wins for devices at that site, while devices in other sites of the same org still get the organization's attachment. This is what makes it possible to turn a monitor off, or tighten its threshold, for one part of the fleet without touching the monitor definition itself or its attachment everywhere else.
 
-Call `GET /monitor-definitions/:id/devices` to see exactly which devices a monitor currently resolves to, and what `enabled`/`overrides` each one is getting and from which policy.
+On the policy's **Monitors** tab, each attached monitor shows as a card with its name, kind, and severity. A monitor whose attachment came from a [baseline policy](/features/configuration-policies/#baseline-policies-inheritance) shows an **Inherited** badge. Toggle a card's enabled switch to turn that monitor off for this policy's scope, or set an **Override value** to adjust the condition's threshold for this policy's scope only -- without editing the monitor definition or affecting any other policy it's attached to.
 
-### Per-attachment overrides
-
-An attachment's `overrides` field can override specific condition fields without touching the monitor definition — for example, attaching a `disk` monitor at the org level with an 90% threshold, then overriding `value` to 95 on one noisy site's attachment. Only the fields a kind marks as `overridableKeys` (from `GET /monitor-definitions/kinds`) can be overridden this way; the merged condition is re-validated against the kind's schema, so an out-of-range override is rejected rather than silently stored.
-
-## How compilation works
-
-Every write to a monitor definition (create, update) re-compiles it into three rows:
-
-- an **alert template** (`[monitor] <name>`, category `monitor`)
-- an **alert rule** targeting `type: "monitor"` with the monitor's id, so the sweep resolves which devices it applies to the same way it resolves the deployment above
-- an **automation** triggered by `alert.triggered` filtered to that alert rule, carrying the monitor's `responses` as its actions
-
-These three rows are what the alert sweep, notification dispatcher, and automation worker already execute — a monitor never invents a new evaluation or execution path. Re-compiling is idempotent: editing a monitor updates the same three rows in place, so alert history and automation run history stay attached to the same ids across every edit.
-
-<Aside type="caution">
-  **`responses` run against every device in the monitor's own organization (or, for a partner-wide monitor, every device across every organization the partner manages) — not only the device whose alert triggered them.** The compiled automation is filtered so it only fires from *this monitor's* alerts (never from unrelated alerts elsewhere in the tenant), but once it fires it targets its whole owning org like any other event-triggered automation with no device targeting configured. The one exception is an `ai_triage` response, which always binds to the specific device that alerted. If a response only makes sense on the device that breached — restarting a service on that one machine rather than every machine — verify the blast radius before relying on it, and prefer `ai_triage` or a narrowly-scoped script/command where that matters.
-</Aside>
-
-### Why the compiled rows are read-only
-
-You cannot edit the compiled alert template, alert rule, or automation directly — through the UI, the API, or the AI assistant. Attempting to (`PUT`/`PATCH`/`DELETE` on `/alerts/rules/:id`, `/automations/:id`, or its template) is refused with `409` and the id of the owning monitor:
-
-```json
-{ "error": "alert_rule_managed_by_monitor", "monitorId": "uuid" }
-```
-
-This is deliberate, not a bug: a side edit to one of the compiled rows would look like it worked, and then **silently vanish the next time the monitor recompiles** — the technician's change would disappear without any error, because the compiler treats the monitor definition as the single source of truth and overwrites whatever is in the compiled rows to match it. Refusing the edit up front, at the moment it's made, is far less confusing than letting it drift for however long until the next recompile discards it. If you need different behavior, edit the monitor itself — every field that ends up in the compiled rows (condition, severity, delivery, responses, and so on) is editable there.
-
-Deleting a monitor deletes its compiled template, rule, and automation along with it, and detaches it from every policy. Alerts it already raised keep their history — they simply lose the link back to the (now deleted) monitor.
+Open the monitor's **Deployed to** section and its **Devices** list to see exactly which devices it currently resolves to, and what enabled state and overrides each one is getting and from which policy.
 
 ## Converting a legacy alert rule
 
-If you have an existing standalone [alert rule](/features/alerts/#creating-alert-rules) that only measures one thing an automation would otherwise need to be wired to by hand, you can convert it into a monitor in one step:
+If you have an existing standalone [alert rule](/features/alerts/#creating-alert-rules) that only measures one thing an automation would otherwise need to be wired to by hand, you can convert it into a monitor from the **Legacy rules** tab of the Monitoring hub.
 
-```
-POST /monitor-definitions/convert-from-rule/:ruleId
-```
+Find the rule in the **Legacy alert rules** list -- standalone rules not already managed by a monitor -- and click **Convert to monitor**. Breeze creates a new monitor with the same condition, severity, cooldown, and delivery settings as the rule, plus a configuration policy assigned exactly where the rule targeted (so the monitor reaches the same devices), and deactivates the original rule. The rule isn't deleted, so its alert history stays intact -- it just stops firing on its own once the monitor takes over, since a rule and its replacement monitor can never both be active for the same devices without double-alerting.
 
-This creates a new monitor with the same condition, severity, cooldown, and delivery settings as the rule, plus a configuration policy assigned exactly where the rule targeted (so the monitor reaches the same devices), and deactivates the original rule — it isn't deleted, so its alert history stays intact, and its `convertedToMonitorId` field points at the monitor that replaced it.
+Not every rule can convert. Conversion is refused, with an explanation, when:
 
-Conversion is all-or-nothing: a rule and its new monitor can never both be active for the same devices, since that would double-alert.
-
-Conversion only works for rules with a **single, directly-mappable condition** — one of the threshold metrics (CPU/RAM/disk), offline detection, event log, patch compliance, service/process stopped, certificate expiry, bandwidth, disk I/O, or network errors. It's rejected with `409 RULE_NOT_CONVERTIBLE` when:
-
-- the rule's condition is a **group** (multiple conditions joined by AND/OR) — a monitor carries exactly one condition, so there's no faithful single-monitor equivalent
+- the rule's condition is a **group** (multiple conditions joined by AND/OR) -- a monitor carries exactly one condition, so there's no faithful single-monitor equivalent
 - the rule measures **process count**, which has no monitor kind of its own
-- the rule is already converted (managed by another monitor) — `409 RULE_ALREADY_MANAGED`
+- the rule is already converted (managed by another monitor)
 - the rule's target scope doesn't map onto a policy assignment level
 
-A rule that isn't convertible keeps running as a standalone alert rule; nothing about it changes.
+A rule that isn't convertible keeps running as a standalone alert rule -- nothing about it changes, and you can keep it exactly as it was or restructure it by hand into a monitor-friendly shape.
+
+## How compilation works
+
+Every save to a monitor re-compiles it into three rows:
+
+- an **alert template**, in the same library shown on the [Alert Templates](/features/alert-templates/) screen
+- an **alert rule** targeting this monitor, so the sweep resolves which devices it applies to the same way it resolves the deployment above
+- an **automation**, shown on the **Jobs** page, triggered by this alert rule and carrying the monitor's responses as its actions
+
+These three rows are what the alert sweep, notification dispatcher, and automation worker already execute -- a monitor never invents a new evaluation or execution path. Editing a monitor updates the same three rows in place, so alert history and automation run history stay attached to the same records across every edit.
+
+<Aside type="caution">
+  **Responses run against every device in the monitor's own organization (or, for a partner-wide monitor, every device across every organization the partner manages) -- not only the device whose alert triggered them.** The compiled automation only fires from *this monitor's* alerts, but once it fires it targets its whole owning org like any other event-triggered automation with no device targeting configured. The one exception is an AI triage response, which always binds to the specific device that alerted. If a response only makes sense on the device that breached -- restarting a service on that one machine rather than every machine -- prefer AI triage or a narrowly-scoped script/command where that matters.
+</Aside>
+
+### What's read-only, and why
+
+Once a monitor exists, its compiled alert template and rule show up **read-only** on the **Alert Templates** screen, and its compiled automation shows up **read-only** on the **Jobs** page -- both carry a **Monitor-managed** badge with an **Open monitor** link back to the monitor that owns them. You can't edit any of the three directly, in the UI or the API.
+
+This is deliberate, not a bug: a side edit to one of the compiled rows would look like it worked, and then silently vanish the next time the monitor recompiles -- the compiler treats the monitor definition as the single source of truth and overwrites whatever is in the compiled rows to match it every time it saves. Refusing the edit up front is far less confusing than letting it drift until the next save discards it without warning. If you need different behavior, edit the monitor itself -- every field that ends up in the compiled rows (condition, severity, delivery, responses, escalation) is editable there.
+
+Deleting a monitor deletes its compiled template, rule, and automation along with it, and detaches it from every policy. Alerts it already raised keep their history -- they simply lose the link back to the now-deleted monitor.
 
 ## API reference
+
+All paths are relative to `/api/v1`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -202,8 +151,22 @@ A rule that isn't convertible keeps running as a standalone alert rule; nothing 
 | DELETE | `/monitor-definitions/:id` | Delete a monitor, its compiled rows, and its attachments (requires MFA) |
 | POST | `/monitor-definitions/:id/attachments` | Attach to a configuration policy, optionally creating one (requires MFA) |
 | DELETE | `/monitor-definitions/:id/attachments/:attachmentId` | Detach from a policy (requires MFA) |
-| GET | `/monitor-definitions/:id/devices` | List devices this monitor currently resolves to, with each device's effective `enabled`/`overrides` |
-| POST | `/monitor-definitions/:id/test` | Evaluate the monitor's compiled condition against one device without waiting for the sweep |
+| GET | `/monitor-definitions/:id/devices` | List devices this monitor currently resolves to, with each device's effective enabled state and overrides |
+| POST | `/monitor-definitions/:id/test` | Evaluate the monitor's condition against one device without waiting for the sweep |
 | POST | `/monitor-definitions/convert-from-rule/:ruleId` | Convert a legacy standalone alert rule into a monitor (requires MFA) |
 
-Creating, updating, deleting, attaching, and detaching all require a session with satisfied multi-factor authentication, the same MFA gate as Patch Management and Maintenance Windows policies.
+Creating, updating, deleting, attaching, and detaching all require a session with satisfied multi-factor authentication -- the same MFA gate as Patch Management and Maintenance Windows policies.
+
+## Troubleshooting
+
+**A response didn't run on the device I expected.**
+Responses target every device in the monitor's own organization (or, for a partner-wide monitor, the whole partner), not just the device that breached -- see the caution above. If you need device-scoped behavior, use an AI triage response or a script/command that checks the target before acting.
+
+**I can't edit an alert rule or automation I know is related to a monitor.**
+That's expected -- it's the compiled rule or automation, and it's read-only. Look for the **Monitor-managed** badge and click **Open monitor** to edit the underlying monitor instead; your change will re-compile into the rule or automation automatically.
+
+**A legacy rule won't convert.**
+Check the refusal reason shown on the **Legacy rules** tab. Rules with grouped (AND/OR) conditions, rules measuring process count, and rules whose target scope doesn't map onto a policy assignment level can't become a single monitor -- leave them as standalone rules.
+
+**A service/process monitor never fires even though the watch looks right.**
+Confirm the same service or process name also exists as a watch on the policy's **Monitoring** tab -- see [Service & Process Monitoring](/features/service-monitoring/). The monitor and the watch have to agree until a future release unifies them into one place.
