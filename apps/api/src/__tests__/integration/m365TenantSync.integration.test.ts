@@ -12,13 +12,13 @@
  */
 import './setup';
 import { createHash, randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SignJWT, importJWK } from 'jose';
 import { eq, sql } from 'drizzle-orm';
 import { Registry } from 'prom-client';
 import { db, withSystemDbAccessContext } from '../../db';
 import { m365Connections } from '../../db/schema';
-import { runSyncDomain, DOMAIN_PERSISTERS } from '../../services/m365Sync/run';
+import { runSyncDomain, DOMAIN_PERSISTERS, assertStillFenced } from '../../services/m365Sync/run';
 import { claimDueDomains } from '../../services/m365Sync/claim';
 import { registerM365SyncMetrics } from '../../services/m365Sync/metrics';
 import { disconnectCustomerGraphReadConnection } from '../../services/m365ControlPlane/connectionService';
@@ -141,12 +141,13 @@ async function rows<T = Record<string, unknown>>(query: ReturnType<typeof sql>):
   return result as unknown as T[];
 }
 
-// `getTestDb().execute(sql\`...\`)` runs a raw statement through postgres.js
-// directly, bypassing Drizzle's column-type-aware result mapping — unlike the
-// query builder (`db.select()...`), a raw `.execute()` timestamptz column
-// comes back as the driver's row value, which this test-stack's postgres.js
-// client returns as a string rather than a parsed Date. Compare instants via
-// this helper instead of relying on `.getTime()` existing on the field.
+// `getTestDb().execute(sql\`...\`)` bypasses Drizzle's column-type-aware
+// result mapping (unlike the query builder, e.g. `db.select()...`) — and
+// empirically, on this code path a timestamptz column comes back as a plain
+// string rather than a parsed Date (confirmed by a `.getTime is not a
+// function` failure before this helper existed). Compare instants via this
+// helper instead of relying on `.getTime()`/`.toISOString()` existing on
+// the field.
 function toMs(value: Date | string | null | undefined): number | null {
   if (value == null) return null;
   return value instanceof Date ? value.getTime() : new Date(value).getTime();
@@ -167,6 +168,17 @@ beforeAll(async () => {
   syncExecutorConfig.signingPrivateJwk = executor.signingPrivateJwk as Record<string, unknown>;
   syncExecutorConfig.signingKid = executor.signingKid;
 });
+
+// `executor` is created once for the whole file and its per-actionType
+// fixture queues are never drained by `close()`. A test whose flow fences
+// (or otherwise short-circuits) BEFORE the executor call it enqueued for —
+// the Phase A/Phase C fencing tests below are exactly this shape — leaves
+// that fixture sitting in the queue, where a LATER test using the same
+// domain would silently dequeue someone else's stale fixture instead of its
+// own. Reset before each test so every test's queue starts empty; this
+// mirrors what a fresh executor per test would give without paying for a
+// real key-pair generation + HTTP listener per test.
+beforeEach(() => { executor.reset(); });
 
 afterAll(async () => {
   await executor.close();
@@ -561,7 +573,11 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
     expect(stale[0]!.stale_since).not.toBeNull();
   });
 
-  runDb('a run whose generation was superseded discards its result and counts a fence', async () => {
+  runDb('a claim already superseded before the run starts is fenced at Phase A', async () => {
+    // The generation bump lands BEFORE runSyncDomain is even called, so this
+    // proves Phase A's own re-read (loadSyncRunContext) catches a stale
+    // claim — not the independent Phase C check the run makes after the
+    // executor call returns (that is the next test below).
     process.env.M365_TENANT_SYNC_ENABLED = 'true';
     const registry = new Registry();
     registerM365SyncMetrics(registry);
@@ -572,7 +588,8 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
       { skuId: '11111111-0000-4000-8000-00000000000a', skuPartNumber: 'SPB', consumedUnits: 3, enabled: 10 },
     ]));
     const [job] = await claimFor(fixture);
-    // The ticker reclaimed the row while this job was in flight.
+    // The ticker reclaimed the row before this job was ever handed to
+    // runSyncDomain.
     await getTestDb().execute(sql`
       UPDATE m365_sync_state SET run_generation = run_generation + 1
       WHERE org_id = ${fixture.orgId}::uuid AND domain = 'skus'`);
@@ -580,6 +597,9 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
     const fencedBefore = await counterValue(registry, 'm365_sync_fenced_total');
     await expect(runSyncDomain(job!)).resolves.toBe('fenced');
     expect(await counterValue(registry, 'm365_sync_fenced_total')).toBe(fencedBefore + 1);
+    // The fixture was never consumed — Phase A fenced before Phase B's
+    // executor call ever ran.
+    expect(executor.calls.some((call) => call.actionType === 'm365.sync.skus')).toBe(false);
 
     expect(await rows(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
     const [state] = await rows<{ last_status: string | null; last_run_at: Date | null }>(sql`
@@ -587,6 +607,87 @@ describe('m365 tenant sync — incomplete and fenced runs', () => {
       WHERE org_id = ${fixture.orgId}::uuid AND domain = 'skus'`);
     expect(state!.last_status).toBeNull();
     expect(state!.last_run_at).toBeNull();
+  });
+
+  runDb('a generation superseded WHILE the executor call is in flight is fenced at Phase C', async () => {
+    // Phase A's own re-read passes here (the generation is still current when
+    // runSyncDomain starts) — the bump is injected into the Phase C hook
+    // itself, landing after Phase B's executor call has already returned and
+    // exactly where the real race this fence exists for occurs: a reclaim
+    // that happens between the outbound Graph call and the completion write.
+    process.env.M365_TENANT_SYNC_ENABLED = 'true';
+    const registry = new Registry();
+    registerM365SyncMetrics(registry);
+    const fixture = await seedConnectedOrg();
+    await seedDueStateRows(fixture, ['skus']);
+
+    executor.enqueue('m365.sync.skus', syncSkusResult([
+      { skuId: '11111111-0000-4000-8000-00000000000a', skuPartNumber: 'SPB', consumedUnits: 3, enabled: 10 },
+    ]));
+    const [job] = await claimFor(fixture);
+
+    const fencedBefore = await counterValue(registry, 'm365_sync_fenced_total');
+    await expect(runSyncDomain(job!, {
+      deps: {
+        assertStillFenced: async (data) => {
+          await getTestDb().execute(sql`
+            UPDATE m365_sync_state SET run_generation = run_generation + 1
+            WHERE org_id = ${data.orgId}::uuid AND domain = ${data.domain}::m365_sync_domain`);
+          return assertStillFenced(data);
+        },
+      },
+    })).resolves.toBe('fenced');
+    expect(await counterValue(registry, 'm365_sync_fenced_total')).toBe(fencedBefore + 1);
+    // Unlike the Phase A case, the executor WAS called — Phase C's job is to
+    // discard a result that already arrived, not to prevent the call.
+    expect(executor.calls.some((call) => call.actionType === 'm365.sync.skus')).toBe(true);
+
+    expect(await rows(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
+    const [state] = await rows<{ last_status: string | null; last_run_at: Date | null }>(sql`
+      SELECT last_status, last_run_at FROM m365_sync_state
+      WHERE org_id = ${fixture.orgId}::uuid AND domain = 'skus'`);
+    expect(state!.last_status).toBeNull();
+    expect(state!.last_run_at).toBeNull();
+  });
+});
+
+describe('m365 tenant sync — executor failure path', () => {
+  // Every other case in this suite enqueues a success (M365SyncActionResult)
+  // response. `runSyncDomain`'s !call.ok branch (outcomeForFailure et al.) —
+  // roughly a third of the function, covering the credential-dead
+  // unschedule, the Sentry-quota-safe error path, and throttle handling — was
+  // otherwise never exercised end to end. `credential_unavailable` covers the
+  // unschedule + non-Sentry-worthy arm (run.ts's outcomeForFailure).
+  runDb('a dead credential is recorded, unscheduled, and never thrown as an exception', async () => {
+    process.env.M365_TENANT_SYNC_ENABLED = 'true';
+    const fixture = await seedConnectedOrg();
+    await seedDueStateRows(fixture, ['skus']);
+
+    // Wire shape per packages/shared/src/m365/readActions.ts's
+    // m365SyncActionFailureSchema (.strict(): success/code/retryAfterSeconds
+    // only). The executor returns this with HTTP 200 — graphReadExecutorClient
+    // .syncAction only special-cases 503 (sync_capacity); every other failure
+    // code rides a 200 body with `success: false`.
+    executor.enqueue('m365.sync.skus', { status: 200, body: { success: false, code: 'credential_unavailable' } });
+
+    const [job] = await claimFor(fixture);
+    // outcomeForFailure's sentryWorthy=false for this code is exactly the
+    // BREEZE-1 fix: a config problem already recorded on the row must not
+    // also throw and burn a Sentry event on every scheduled run.
+    await expect(runSyncDomain(job!)).resolves.toBe('error');
+
+    const [state] = await rows<{
+      last_status: string | null; next_sync_at: Date | null; last_error: string | null; lease_until: Date | null;
+    }>(sql`
+      SELECT last_status, next_sync_at, last_error, lease_until FROM m365_sync_state
+      WHERE org_id = ${fixture.orgId}::uuid AND domain = 'skus'`);
+    expect(state!.last_status).toBe('error');
+    // unschedule: true — the domain waits for re-consent/retest, not the ticker.
+    expect(state!.next_sync_at).toBeNull();
+    expect(state!.last_error).toContain('credential_unavailable');
+    expect(state!.lease_until).toBeNull();
+    // No rows written on a failed pull.
+    expect(await rows(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${fixture.orgId}::uuid`)).toEqual([]);
   });
 });
 
