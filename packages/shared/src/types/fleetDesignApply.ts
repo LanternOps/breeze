@@ -5,7 +5,7 @@
  *   functions:<functionKey>
  *   monitoring:<functionKey>:watch:<n> | monitoring:<functionKey>:rule:<n>
  *   retired:<n>
- *   automation:<functionKey>:script:<n>   (W04)
+ *   automation:<functionKey>:script:<n>   (W04: creates a script in step 4)
  *   legacy:<scriptId>                     (W04, informational)
  *   roleCorrections:<deviceId>
  *   policy:<functionKey>                  (ledger-only: the policy a function's monitoring lives in)
@@ -74,10 +74,23 @@ export interface FleetDesignApplyPreviewRoleCorrection {
   billingRelevant: true;
 }
 
+/** Step 4 (W04 #5654): an approved script the apply will create, org-owned,
+ *  tagged `fleet-design`. `alreadyExists` = a script of that name is already
+ *  in the library, so the created one gets a ` (2)` style suffix. */
+export interface FleetDesignApplyPreviewScript {
+  itemRef: string;
+  functionKey: string;
+  name: string;
+  language: 'powershell' | 'bash' | 'python' | 'cmd';
+  osTypes: string[];
+  alreadyExists: boolean;
+}
+
 export interface FleetDesignApplyPreview {
   functions: FleetDesignApplyPreviewFunction[];
   policies: FleetDesignApplyPreviewPolicy[];
   retired: FleetDesignApplyPreviewRetired[];
+  scripts: FleetDesignApplyPreviewScript[];
   roleCorrections: FleetDesignApplyPreviewRoleCorrection[];
   /** Item refs with an `applied` ledger row (skipped on apply). */
   alreadyApplied: string[];
@@ -106,7 +119,13 @@ export interface FleetDesignLedgerItem {
   rolledBackAt: string | null;
 }
 
-export type FleetDesignRollbackRefusal = 'modified_since_apply' | 'group_has_other_members' | 'policy_missing' | 'partner_wide_write_denied';
+export type FleetDesignRollbackRefusal =
+  | 'modified_since_apply'
+  | 'group_has_other_members'
+  | 'policy_missing'
+  | 'partner_wide_write_denied'
+  /** W04: untagging a created script is a script write; the caller lacks scripts:write. */
+  | 'scripts_write_required';
 
 export interface FleetDesignRollbackResult {
   rolledBack: string[];
@@ -126,6 +145,8 @@ export type FleetDesignCreatedRefs = {
   linksSnapshot?: { monitoring: unknown; alertRule: unknown };
   membershipSnapshot?: string[];
   scriptId?: string;
+  /** W04: the name the script was created under (may carry a rename suffix). */
+  scriptName?: string;
 };
 
 /** `fleet_design_applied_items.before_image` — state before the apply, for rollback. */

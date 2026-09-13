@@ -1,6 +1,6 @@
 /**
- * Fleet Design apply (Fleet Designer W03, #5653; spec §4.8 steps 1, 2, 3, 5 —
- * step 4, scripts, is W04).
+ * Fleet Design apply (Fleet Designer W03, #5653; spec §4.8 steps 1, 2, 3, 5;
+ * step 4, scripts, W04 #5654 — see ./scripts.ts).
  *
  * Runs under the request's ambient `withDbAccessContext` transaction. Each
  * numbered step runs in its own `db.transaction`, which nests as a SAVEPOINT
@@ -39,6 +39,7 @@ import {
 } from '../configurationPolicy';
 import { applyDesignFunctions } from '../deviceFunction';
 import { addManualGroupMemberships, validateManualMembershipDevices } from '../groupMembership';
+import { importBundle } from '../scriptBundle';
 import { findReusableGroup, recordApplied, recordFailed, updateCreatedRefs } from './ledger';
 import {
   FLEET_DESIGN_ASSIGNMENT_PRIORITY,
@@ -47,6 +48,12 @@ import {
   previewFleetDesignApplyWithContext,
   type FleetDesignPreviewContext,
 } from './preview';
+import {
+  FLEET_DESIGN_SCRIPT_TAG,
+  buildScriptEnvelope,
+  proposalRefForRule,
+  withScriptCreated,
+} from './scripts';
 
 export { FLEET_DESIGN_ASSIGNMENT_PRIORITY };
 export const FLEET_DESIGN_CHECK_INTERVAL_SECONDS = 60;
@@ -58,6 +65,8 @@ interface ApplyCtx extends FleetDesignPreviewContext {
   userId: string;
   applied: string[];
   audit: RequestLike;
+  /** Proposal item ref → script id, for every script created by this run (any apply). */
+  createdScriptIds: Map<string, string>;
 }
 
 /**
@@ -103,6 +112,11 @@ export async function applyFleetDesign(
     userId: auth.user.id,
     applied: [],
     audit,
+    createdScriptIds: new Map(
+      previewCtx.ledger
+        .filter((r) => r.status === 'applied' && r.itemKind === 'script' && typeof r.createdRefs?.scriptId === 'string')
+        .map((r) => [r.itemRef, r.createdRefs!.scriptId!]),
+    ),
   };
   const skipped = [...preview.alreadyApplied];
 
@@ -110,6 +124,7 @@ export async function applyFleetDesign(
     [1, () => stepFunctions(ctx)],
     [2, () => stepRetire(ctx)],
     [3, () => stepMonitoring(ctx)],
+    [4, () => stepScripts(ctx)],
     [5, () => stepRoleCorrections(ctx)],
   ];
   for (const [n, run] of steps) {
@@ -299,14 +314,21 @@ export function toWatchItem(w: FleetDesignWatch) {
   return { watchType: w.watchType, name: w.name, enabled: true, alertOnStop: w.alertOnStop, autoRestart: w.autoRestart, rationale: w.rationale };
 }
 
-export function toRuleItem(r: FleetDesignRule) {
+export function toRuleItem(r: FleetDesignRule, createdScriptId?: string) {
+  const rationale = `${r.rationale} [Action: ${describeAction(r.action)}; Paging: ${r.paging}]`;
   return {
     name: r.name,
     severity: r.severity,
     conditions: r.conditions,
     cooldownMinutes: r.cooldownMinutes,
-    rationale: `${r.rationale} [Action: ${describeAction(r.action)}; Paging: ${r.paging}]`,
+    rationale: createdScriptId ? withScriptCreated(rationale, createdScriptId) : rationale,
   };
+}
+
+/** The id of a script this run already created for the proposal a rule names, if any. */
+function createdScriptIdFor(ctx: ApplyCtx, r: FleetDesignRule): string | undefined {
+  const ref = proposalRefForRule(ctx.outcome, r.action);
+  return ref ? ctx.createdScriptIds.get(ref) : undefined;
 }
 
 async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
@@ -321,7 +343,7 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
     const newRuleRefs = items.rules.map((n) => `monitoring:${functionKey}:rule:${n}`).filter((r) => !ctx.appliedRefs.has(r));
     if (newWatchRefs.length === 0 && newRuleRefs.length === 0) continue;
     const newWatches = items.watches.filter((n) => newWatchRefs.includes(`monitoring:${functionKey}:watch:${n}`)).map((n) => toWatchItem(section.watches[n]!));
-    const newRules = items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => toRuleItem(section.alertRules[n]!));
+    const newRules = items.rules.filter((n) => newRuleRefs.includes(`monitoring:${functionKey}:rule:${n}`)).map((n) => toRuleItem(section.alertRules[n]!, createdScriptIdFor(ctx, section.alertRules[n]!)));
 
     const policyRef = `policy:${functionKey}`;
     const existingRow = ctx.policyRowByFunction.get(functionKey);
@@ -431,6 +453,116 @@ export function canonical(value: unknown): unknown {
     }
     return v;
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 (W04 #5654): approved scripts → the bundle importer, org-owned
+// ---------------------------------------------------------------------------
+/**
+ * One importer call for every pending script, so the tenancy chokepoint,
+ * secret-variable rejection, tag linking and v1 version cut are the
+ * importer's — never re-implemented here. Rename on a name collision (never
+ * version or skip someone else's script). ANY per-entry failure fails the
+ * whole step: the importer records per-entry errors rather than throwing, so
+ * this rethrows, and the step's savepoint rolls back the scripts that did
+ * land — a step is all-or-nothing, like every other step.
+ *
+ * Provenance (see ./scripts.ts): `ai_proposal`, approved by the applying
+ * user, no proposal/review id, no approvalMethod — creating a script is not
+ * authorising a run of it.
+ */
+async function stepScripts(ctx: ApplyCtx): Promise<void> {
+  const pending = ctx.scriptsToCreate.filter((s) => !ctx.appliedRefs.has(s.itemRef));
+  if (pending.length === 0) return;
+  const approvedAt = new Date();
+  const result = await importBundle(ctx.auth, buildScriptEnvelope(pending.map((p) => p.script)), {
+    availability: 'org',
+    orgId: ctx.orgId,
+    mode: 'rename',
+    tags: [FLEET_DESIGN_SCRIPT_TAG],
+    provenanceFor: (_entry, index) => ({
+      origin: 'ai_proposal',
+      approvedBy: ctx.userId,
+      approvedAt,
+      changelog: `Created by Fleet Design from report run ${ctx.reportRunId} (${pending[index]?.itemRef ?? `entry ${index}`})`,
+    }),
+  });
+  if ('error' in result) throw new Error(`script_scope_denied: ${result.error}`);
+  if (result.errors.length > 0) {
+    const detail = result.errors.map((e) => `${pending[e.index]?.itemRef ?? `entry ${e.index}`}: ${e.error}`).join('; ');
+    throw new Error(`script_import_failed: ${detail}`);
+  }
+
+  const byIndex = new Map(result.scripts.map((r) => [r.index, r]));
+  const createdNow: Array<{ itemRef: string; scriptId: string }> = [];
+  for (const [index, item] of pending.entries()) {
+    const entry = byIndex.get(index);
+    if (!entry?.scriptId || (entry.action !== 'imported' && entry.action !== 'renamed')) {
+      throw new Error(`script_import_failed: ${item.itemRef}: ${entry?.action ?? 'no result'}`);
+    }
+    const scriptName = entry.finalName ?? entry.name;
+    const row = await recordApplied({
+      orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: item.itemRef, itemKind: 'script', step: 4,
+      createdRefs: { scriptId: entry.scriptId, scriptName }, userId: ctx.userId,
+    });
+    if (row) {
+      ctx.applied.push(item.itemRef);
+      ctx.appliedRefs.add(item.itemRef);
+      ctx.createdScriptIds.set(item.itemRef, entry.scriptId);
+      createdNow.push({ itemRef: item.itemRef, scriptId: entry.scriptId });
+      writeAuditEvent(ctx.audit, {
+        orgId: ctx.orgId, action: 'fleet_design.apply.script', resourceType: 'script', resourceId: entry.scriptId, resourceName: scriptName,
+        actorType: 'user', actorId: ctx.userId, actorEmail: ctx.auth.user.email,
+        details: { reportRunId: ctx.reportRunId, itemRef: item.itemRef, functionKey: item.functionKey, renamed: entry.action === 'renamed' },
+      });
+    } else warnUnrecordedApply(ctx.reportRunId, item.itemRef);
+  }
+  if (createdNow.length > 0) await linkRulesToCreatedScripts(ctx, new Set(createdNow.map((c) => c.itemRef)));
+}
+
+/**
+ * Spec §4.8 step 4: "the alert rules that reference them are updated with the
+ * created ids". Rules were written by step 3 (this or an earlier apply) into
+ * the function policy's inline alert_rule link; each one whose design rule
+ * names a script created in THIS step gets `[script created: <id>]` appended
+ * to its stored rationale (text only — alert rules have no action binding).
+ * The policy ledger row's `linksSnapshot` is refreshed so rollback's
+ * unmodified-since-apply comparison stays exact.
+ */
+async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>): Promise<void> {
+  for (const [functionKey, policyRow] of ctx.policyRowByFunction) {
+    const policyId = policyRow.createdRefs?.policyId;
+    const section = ctx.outcome.sections.monitoring.find((m) => m.functionKey === functionKey);
+    if (!policyId || !section) continue;
+    // Stored rationale (as step 3 wrote it) → the rationale it should now carry.
+    const rewrites = new Map<string, { name: string; rationale: string }>();
+    for (const rule of section.alertRules) {
+      const ref = proposalRefForRule(ctx.outcome, rule.action);
+      const scriptId = ref && createdRefs.has(ref) ? ctx.createdScriptIds.get(ref) : undefined;
+      if (!scriptId) continue;
+      const stored = toRuleItem(rule);
+      rewrites.set(JSON.stringify([stored.name, stored.rationale]), { name: stored.name, rationale: withScriptCreated(stored.rationale, scriptId) });
+    }
+    if (rewrites.size === 0) continue;
+
+    const links = await listFeatureLinks(policyId);
+    const ruleLink = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId);
+    if (!ruleLink) continue; // no rule of this function was approved
+    const cur = (ruleLink.inlineSettings ?? {}) as RuleSettings;
+    let changed = false;
+    const items = (cur.items ?? []).map((item) => {
+      const next = rewrites.get(JSON.stringify([item.name, String(item.rationale ?? '')]));
+      if (!next) return item;
+      changed = true;
+      return { ...item, rationale: next.rationale };
+    });
+    if (!changed) continue;
+    const updated = await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items } }, policyId);
+    if (!updated) throw new Error(`rule_link_missing: ${policyId}`);
+    const createdRefsNext: FleetDesignCreatedRefs = { ...policyRow.createdRefs, linksSnapshot: snapshotLinks(await listFeatureLinks(policyId)) };
+    await updateCreatedRefs(policyRow.id, ctx.orgId, createdRefsNext);
+    policyRow.createdRefs = createdRefsNext;
+  }
 }
 
 // ---------------------------------------------------------------------------

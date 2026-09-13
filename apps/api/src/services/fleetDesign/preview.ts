@@ -1,5 +1,6 @@
 /**
- * Fleet Design apply preview (Fleet Designer W03, #5653; spec §4.8).
+ * Fleet Design apply preview (Fleet Designer W03, #5653; W04 #5654 adds the
+ * step 4 scripts; spec §4.8).
  *
  * Resolves an approval against the CURRENT state of the org — which devices
  * still exist, which group a function already has, which policy each device's
@@ -22,6 +23,7 @@ import {
   type FleetDesignApplyPreviewPolicy,
   type FleetDesignApplyPreviewRetired,
   type FleetDesignApplyPreviewRoleCorrection,
+  type FleetDesignApplyPreviewScript,
   type FleetDesignApproval,
   type FleetDesignOutcome,
   type FleetDesignRetiredItem,
@@ -31,7 +33,9 @@ import { configurationPolicies, deviceGroupMemberships, devices } from '../../db
 import type { AuthContext } from '../../middleware/auth';
 import { listFeatureLinks, policyAccessCondition, resolveEffectiveConfig } from '../configurationPolicy';
 import { canManagePartnerWidePolicies } from '../partnerWideAccess';
+import { findSecretVariableReferences, previewBundle } from '../scriptBundle';
 import { findReusableGroup, loadLedger, lockReportRun, type FleetDesignLedgerRow, type LockedReportRun } from './ledger';
+import { buildScriptEnvelope, parseAutomationRef, type FleetDesignScriptToCreate } from './scripts';
 
 export type FleetDesignApplyErrorCode = 'not_found' | 'blocked' | 'no_outcome';
 
@@ -111,6 +115,8 @@ export interface FleetDesignPreviewContext {
   retiredResolved: Map<string, { item: FleetDesignRetiredItem; linkId: string; inlineSettings: unknown; policyOrgId: string | null }>;
   /** `policy:<key>` ledger rows from THIS run (reuse target for a second apply). */
   policyRowByFunction: Map<string, FleetDesignLedgerRow>;
+  /** Step 4 (W04): approved scripts not yet applied, in approval order. */
+  scriptsToCreate: FleetDesignScriptToCreate[];
 }
 
 export async function previewFleetDesignApplyWithContext(
@@ -248,6 +254,37 @@ export async function previewFleetDesignApplyWithContext(
     retiredResolved.set(ref, { item, linkId: resolved.linkId, inlineSettings: resolved.inlineSettings, policyOrgId: resolved.policyOrgId });
   }
 
+  // --- Section 5: automation scripts (W04) ---------------------------------
+  // Checked against the SAME importer step 4 will call, with the same target,
+  // so anything it would reject per entry (scope, an invalid entry, a secret
+  // variable reference) blocks here instead of failing the step half-way.
+  const scriptsToCreate: FleetDesignScriptToCreate[] = [];
+  for (const ref of dedupe(approval.automation)) {
+    const parsed = parseAutomationRef(ref);
+    if (!parsed) { blockers.push({ itemRef: ref, reason: 'malformed_ref' }); continue; }
+    const script = outcome.sections.automation.find((a) => a.functionKey === parsed.functionKey)?.scripts[parsed.index];
+    if (!script) { blockers.push({ itemRef: ref, reason: 'not_in_design' }); continue; }
+    if (appliedRefs.has(ref)) continue; // created by an earlier apply — skipped, never re-created
+    scriptsToCreate.push({ itemRef: ref, functionKey: parsed.functionKey, script });
+  }
+  const scripts: FleetDesignApplyPreviewScript[] = [];
+  if (scriptsToCreate.length > 0) {
+    const check = await previewBundle(auth, buildScriptEnvelope(scriptsToCreate.map((s) => s.script)), { availability: 'org', orgId });
+    for (const [index, item] of scriptsToCreate.entries()) {
+      const { itemRef, functionKey, script } = item;
+      let alreadyExists = false;
+      if ('error' in check) {
+        blockers.push({ itemRef, reason: 'script_scope_denied' });
+      } else {
+        const entry = check.entries.find((e) => e.index === index);
+        if (!entry || entry.status === 'invalid') blockers.push({ itemRef, reason: 'script_invalid' });
+        else if ((await findSecretVariableReferences(check.target, script.content)).length > 0) blockers.push({ itemRef, reason: 'script_secret_reference' });
+        alreadyExists = entry?.status === 'name-conflict';
+      }
+      scripts.push({ itemRef, functionKey, name: script.name, language: script.language, osTypes: script.osTypes, alreadyExists });
+    }
+  }
+
   // --- Section 8: role corrections -----------------------------------------
   const roleCorrections: FleetDesignApplyPreviewRoleCorrection[] = [];
   for (const deviceId of dedupe(approval.roleCorrections)) {
@@ -265,14 +302,15 @@ export async function previewFleetDesignApplyWithContext(
     ...dedupe(approval.functions).map((k) => `functions:${k}`),
     ...dedupe(approval.monitoring),
     ...dedupe(approval.retired),
+    ...dedupe(approval.automation),
     ...dedupe(approval.roleCorrections).map((d) => `roleCorrections:${d}`),
   ];
   const alreadyApplied = approvalRefs.filter((r) => appliedRefs.has(r));
   // A ref that is already applied is skipped by apply, so it cannot block it.
   const liveBlockers = blockers.filter((b) => !appliedRefs.has(b.itemRef));
 
-  const preview: FleetDesignApplyPreview = { functions, policies, retired, roleCorrections, alreadyApplied, blockers: liveBlockers };
-  return { locked, outcome, ledger, appliedRefs, orgDevices, preview, wantedByFunction, monitoringByFunction, retiredResolved, policyRowByFunction };
+  const preview: FleetDesignApplyPreview = { functions, policies, retired, scripts, roleCorrections, alreadyApplied, blockers: liveBlockers };
+  return { locked, outcome, ledger, appliedRefs, orgDevices, preview, wantedByFunction, monitoringByFunction, retiredResolved, policyRowByFunction, scriptsToCreate };
 }
 
 export async function previewFleetDesignApply(
