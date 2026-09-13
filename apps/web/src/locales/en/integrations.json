@@ -58,7 +58,30 @@
       "disconnectFailed": "The connection could not be disconnected.",
       "disconnectSucceeded": "Breeze connection disconnected.",
       "approveNewPermissions": "Approve new permissions",
-      "upgradeFailed": "Approval for the new permissions could not be started."
+      "upgradeFailed": "Approval for the new permissions could not be started.",
+      "syncNow": "Sync now",
+      "syncFailed": "Tenant sync could not be requested.",
+      "syncSucceeded": "Tenant sync requested."
+    },
+    "sync": {
+      "lastSynced": "Last synced {{relative}}",
+      "counts": "{{users}} users · {{devices}} devices",
+      "never": "Not synced yet",
+      "chips": {
+        "partial": "{{domain}}: partial",
+        "needsConsent": "{{domain}}: needs consent",
+        "throttled": "{{domain}}: throttled",
+        "error": "{{domain}}: error",
+        "unlicensed": "Sign-in activity needs Entra ID P1"
+      },
+      "domains": {
+        "users": "Users",
+        "signin_activity": "Sign-in activity",
+        "intune_devices": "Intune devices",
+        "ca_policies": "Conditional Access",
+        "skus": "Licenses",
+        "secure_score": "Secure Score"
+      }
     },
     "errors": {
       "consent_expired": "The consent session expired. Start consent again.",

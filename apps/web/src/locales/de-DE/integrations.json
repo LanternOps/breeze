@@ -58,7 +58,30 @@
       "disconnectFailed": "Die Verbindung konnte nicht getrennt werden.",
       "disconnectSucceeded": "Die Breeze-Verbindung wurde getrennt.",
       "approveNewPermissions": "Neue Berechtigungen genehmigen",
-      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden."
+      "upgradeFailed": "Die Genehmigung der neuen Berechtigungen konnte nicht gestartet werden.",
+      "syncNow": "Jetzt synchronisieren",
+      "syncFailed": "Die Mandantensynchronisierung konnte nicht angefordert werden.",
+      "syncSucceeded": "Mandantensynchronisierung angefordert."
+    },
+    "sync": {
+      "lastSynced": "Zuletzt synchronisiert {{relative}}",
+      "counts": "{{users}} Benutzer · {{devices}} Geräte",
+      "never": "Noch nicht synchronisiert",
+      "chips": {
+        "partial": "{{domain}}: unvollständig",
+        "needsConsent": "{{domain}}: Zustimmung erforderlich",
+        "throttled": "{{domain}}: gedrosselt",
+        "error": "{{domain}}: Fehler",
+        "unlicensed": "Anmeldeaktivität erfordert Entra ID P1"
+      },
+      "domains": {
+        "users": "Benutzer",
+        "signin_activity": "Anmeldeaktivität",
+        "intune_devices": "Intune-Geräte",
+        "ca_policies": "Bedingter Zugriff",
+        "skus": "Lizenzen",
+        "secure_score": "Sicherheitsbewertung"
+      }
     },
     "errors": {
       "consent_expired": "Die Zustimmungssitzung ist abgelaufen. Starten Sie die Zustimmung erneut.",
