@@ -218,26 +218,10 @@ describe('rollbackFleetDesign — policy row', () => {
     expect(ledgerMock.markRolledBack).not.toHaveBeenCalled();
   });
 
-  // FIXED (Fleet Designer W03 integration pass, fleetDesignApply.integration.test.ts
-  // case 6/7): rollback.ts's rollbackPolicy compared `JSON.stringify(current)`
-  // — the RAW `snapshotLinks()` output, whose two top-level keys keep JS
-  // insertion order `{ monitoring, alertRule }` — against
-  // `JSON.stringify(canonical(expected))`. In THIS mocked suite `expected`
-  // (`createdRefs.linksSnapshot`) is the same in-memory object `snapshotLinks`
-  // just produced, so the two happened to already agree in key order and this
-  // test passed even with the bug in place — a mocked ledger row never goes
-  // through a real jsonb round trip. Against live Postgres, jsonb does NOT
-  // preserve insertion order: a freshly-read `createdRefs.linksSnapshot` came
-  // back with its two top-level keys reordered (alphabetically), so `current`
-  // and `canonical(expected)` differed in key order on every call regardless
-  // of content — a Fleet Design policy rollback always refused with
-  // `modified_since_apply`, even immediately after a clean apply with zero
-  // changes. `it.fails` had locked this in as a known-failing case here so it
-  // would start FAILING this suite (forcing a promotion back to `it`) the
-  // moment rollback.ts was fixed — which is what promotes it below.
-  // Fix: wrap `current` in `canonical()` too (rollback.ts's `rollbackPolicy`),
-  // so both sides are recursively key-sorted regardless of how the ledger's
-  // jsonb column happens to order them.
+  // Both sides of the linksSnapshot comparison go through canonical(): a
+  // mocked ledger row never crosses a jsonb round trip, so this suite cannot
+  // see the key-order difference the integration suite (case 6) proved on
+  // real Postgres. The assertion here is the sequence, not the comparison.
   it('archives the policy, deletes the assignment, and marks the ledger row rolled back when links still match', async () => {
     const policyRow = row({ id: 'policy-1', itemRef: 'policy:file_server', itemKind: 'policy', step: 3, createdRefs: { policyId: 'p1', groupId: 'g1', assignmentId: 'assign-1', linksSnapshot: snapshotLinks(links) } });
     ledgerMock.loadLedger.mockResolvedValue([policyRow]);

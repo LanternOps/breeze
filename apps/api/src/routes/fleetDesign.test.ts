@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { PERMISSIONS } from '../services/permissions';
+// Resolves through the vi.mock('../services/fleetDesign/preview', ...) factory
+// below, which spreads `...actual` — so this is the REAL class, same identity
+// the route module's own `err instanceof FleetDesignApplyError` checks against.
+import { FleetDesignApplyError } from '../services/fleetDesign/preview';
 
 const {
   selectMock,
@@ -66,6 +71,44 @@ vi.mock('../services/auditEvents', () => ({
 vi.mock('../db', () => ({
   db: { select: selectMock },
 }));
+
+// W03 (#5653): apply preview, apply, rollback, ledger. A second vi.hoisted
+// block (rather than folding into the one above) so this section can be
+// read and lifted independently of the W01 runs/list/detail mocks.
+const {
+  previewFleetDesignApplyMock,
+  applyFleetDesignMock,
+  rollbackFleetDesignMock,
+  loadLedgerMock,
+} = vi.hoisted(() => ({
+  previewFleetDesignApplyMock: vi.fn(),
+  applyFleetDesignMock: vi.fn(),
+  rollbackFleetDesignMock: vi.fn(),
+  loadLedgerMock: vi.fn(),
+}));
+
+// Keep the real FleetDesignApplyError class (and every other export) so the
+// route's `err instanceof FleetDesignApplyError` check — and this file's own
+// `instanceof` assertions — see the same identity the real module would.
+vi.mock('../services/fleetDesign/preview', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/fleetDesign/preview')>();
+  return { ...actual, previewFleetDesignApply: previewFleetDesignApplyMock };
+});
+
+vi.mock('../services/fleetDesign/apply', () => ({
+  applyFleetDesign: applyFleetDesignMock,
+}));
+
+vi.mock('../services/fleetDesign/rollback', () => ({
+  rollbackFleetDesign: rollbackFleetDesignMock,
+}));
+
+// toLedgerItem stays real — it's a pure projection, exercised by the
+// GET /:id/applied test below.
+vi.mock('../services/fleetDesign/ledger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/fleetDesign/ledger')>();
+  return { ...actual, loadLedger: loadLedgerMock };
+});
 
 // Imported AFTER the mocks above so the route module picks up the mocked
 // dependencies (vi.mock calls are hoisted, but the import must still come
@@ -299,5 +342,326 @@ describe('GET /ai/fleet-design/:reportRunId', () => {
     expect(body.reportRunId).toBe(REPORT_RUN_ID);
     expect(body.markdown).toBe('## What was found\n');
     expect(body.downloadPath).toBe(`/api/reports/runs/${REPORT_RUN_ID}/download`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W03 (#5653): apply preview, apply, rollback, ledger
+// ---------------------------------------------------------------------------
+describe('Fleet Design apply/rollback routes (W03, #5653)', () => {
+  const JSON_HEADERS = { 'content-type': 'application/json' };
+  const EMPTY_APPROVAL = {
+    functions: [], monitoring: [], retired: [], automation: [], legacy: [], roleCorrections: [], displacementsAccepted: [],
+  };
+
+  /**
+   * Same shape as `buildApp` above, plus an optional `permissions` context
+   * var — `routes/fleetDesign.ts`'s `siteRestricted(c)` reads
+   * `c.get('permissions')`, which the W01 `buildApp` never sets (no route it
+   * covers reads it).
+   */
+  function buildW03App(authOverrides: Record<string, unknown> = {}, permissions?: Record<string, unknown>) {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+        principal: { kind: 'user', id: USER_ID },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        ...authOverrides,
+      } as never);
+      if (permissions !== undefined) c.set('permissions', permissions as never);
+      await next();
+    });
+    app.route('/ai/fleet-design', fleetDesignRoutes);
+    return app;
+  }
+
+  function postJson(app: Hono, path: string, body: unknown = EMPTY_APPROVAL) {
+    return app.request(`/ai/fleet-design${path}`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    previewFleetDesignApplyMock.mockReset();
+    applyFleetDesignMock.mockReset();
+    rollbackFleetDesignMock.mockReset();
+    loadLedgerMock.mockReset();
+  });
+
+  describe('POST /:reportRunId/apply/preview', () => {
+    it('forwards the validated body to previewFleetDesignApply(auth, reportRunId, body) and returns 200 with its result', async () => {
+      const previewResult = {
+        functions: [{ functionKey: 'file_server', label: 'File server', groupId: null, groupName: 'Fleet Design: File server', deviceCount: 1, devicesAdded: [], devicesRemoved: [], keptManual: 0, missingDevices: [] }],
+        policies: [], retired: [], roleCorrections: [], alreadyApplied: [], blockers: [],
+      };
+      previewFleetDesignApplyMock.mockResolvedValue(previewResult);
+      const approval = { ...EMPTY_APPROVAL, functions: ['file_server'] };
+      const app = buildW03App();
+
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`, approval);
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual(previewResult);
+      expect(previewFleetDesignApplyMock).toHaveBeenCalledTimes(1);
+      const [authArg, reportRunIdArg, approvalArg] = previewFleetDesignApplyMock.mock.calls[0]!;
+      expect(authArg).toMatchObject({ orgId: ORG_ID });
+      expect(reportRunIdArg).toBe(REPORT_RUN_ID);
+      expect(approvalArg).toEqual(approval);
+    });
+
+    it('404s for a malformed reportRunId without calling the service', async () => {
+      const app = buildW03App();
+      const res = await postJson(app, '/not-a-uuid/apply/preview');
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+    });
+
+    it('400s on an unrecognized approval key (.strict()) without calling the service', async () => {
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`, { ...EMPTY_APPROVAL, bogus: true });
+      expect(res.status).toBe(400);
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+    });
+
+    it('403s with site_restricted before calling the service when the caller carries allowedSiteIds', async () => {
+      const app = buildW03App({}, { allowedSiteIds: [SITE_ID] });
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`);
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: 'site_restricted' });
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+    });
+
+    it('maps FleetDesignApplyError("not_found") to 404', async () => {
+      previewFleetDesignApplyMock.mockRejectedValue(new FleetDesignApplyError('not_found'));
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+    });
+
+    it('requires devices:write', async () => {
+      hasPermMock.mockReturnValue(false);
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`);
+      expect(res.status).toBe(403);
+      expect(hasPermMock).toHaveBeenCalledWith(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+    });
+
+    it('requires MFA', async () => {
+      mfaOkMock.mockReturnValue(false);
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply/preview`);
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(previewFleetDesignApplyMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /:reportRunId/apply', () => {
+    it('requires devices:write and MFA the same way preview does', async () => {
+      hasPermMock.mockReturnValue(false);
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res.status).toBe(403);
+      expect(hasPermMock).toHaveBeenCalledWith(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+
+      hasPermMock.mockReturnValue(true);
+      mfaOkMock.mockReturnValue(false);
+      const res2 = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res2.status).toBe(403);
+      await expect(res2.json()).resolves.toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('403s with site_restricted before calling the service', async () => {
+      const app = buildW03App({}, { allowedSiteIds: [SITE_ID] });
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: 'site_restricted' });
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('404s for a malformed reportRunId without calling the service', async () => {
+      const app = buildW03App();
+      const res = await postJson(app, '/not-a-uuid/apply');
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('400s on an unrecognized approval key without calling the service', async () => {
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`, { ...EMPTY_APPROVAL, extra: 1 });
+      expect(res.status).toBe(400);
+      expect(applyFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('maps FleetDesignApplyError("blocked") to 409 with the blockers/unaccepted payload', async () => {
+      const payload = {
+        blockers: [{ itemRef: 'functions:file_server', reason: 'not_in_design' }],
+        unaccepted: [{ policyId: '99999999-9999-4999-8999-999999999999', policyName: 'Existing Monitoring', featureType: 'monitoring', deviceCount: 3 }],
+      };
+      applyFleetDesignMock.mockRejectedValue(new FleetDesignApplyError('blocked', payload));
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toEqual({ error: 'blocked', ...payload });
+    });
+
+    it('audits fleet_design.apply with the outcome on success', async () => {
+      const result = { applied: ['functions:file_server'], skipped: [], partial: null, rollbackAvailable: true };
+      applyFleetDesignMock.mockResolvedValue(result);
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual(result);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'fleet_design.apply', resourceType: 'report_run', resourceId: REPORT_RUN_ID, result: 'success' }),
+      );
+    });
+
+    it('audits fleet_design.apply as a failure and re-throws mapped 409 when blocked', async () => {
+      applyFleetDesignMock.mockRejectedValue(new FleetDesignApplyError('blocked', { blockers: [], unaccepted: [] }));
+      const app = buildW03App();
+      const res = await postJson(app, `/${REPORT_RUN_ID}/apply`);
+      expect(res.status).toBe(409);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'fleet_design.apply', result: 'failure', details: expect.objectContaining({ blocked: true }) }),
+      );
+    });
+  });
+
+  describe('POST /:reportRunId/rollback', () => {
+    it('returns the service result', async () => {
+      const rollbackResult = { rolledBack: ['functions:file_server'], refused: [] };
+      rollbackFleetDesignMock.mockResolvedValue(rollbackResult);
+      const app = buildW03App();
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual(rollbackResult);
+      expect(rollbackFleetDesignMock).toHaveBeenCalledTimes(1);
+      expect(rollbackFleetDesignMock.mock.calls[0]![1]).toBe(REPORT_RUN_ID);
+    });
+
+    it('requires devices:write and MFA', async () => {
+      hasPermMock.mockReturnValue(false);
+      const app = buildW03App();
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      expect(hasPermMock).toHaveBeenCalledWith(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+      expect(rollbackFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('403s with site_restricted before calling the service', async () => {
+      const app = buildW03App({}, { allowedSiteIds: [SITE_ID] });
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(res.status).toBe(403);
+      await expect(res.json()).resolves.toEqual({ error: 'site_restricted' });
+      expect(rollbackFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('404s for a malformed reportRunId without calling the service', async () => {
+      const app = buildW03App();
+      const res = await app.request('/ai/fleet-design/not-a-uuid/rollback', { method: 'POST' });
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+      expect(rollbackFleetDesignMock).not.toHaveBeenCalled();
+    });
+
+    it('maps FleetDesignApplyError("not_found") to 404', async () => {
+      rollbackFleetDesignMock.mockRejectedValue(new FleetDesignApplyError('not_found'));
+      const app = buildW03App();
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+    });
+
+    it('audits fleet_design.rollback', async () => {
+      const rollbackResult = { rolledBack: ['functions:file_server'], refused: [] };
+      rollbackFleetDesignMock.mockResolvedValue(rollbackResult);
+      const app = buildW03App();
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/rollback`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(writeRouteAuditMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: 'fleet_design.rollback', resourceType: 'report_run', resourceId: REPORT_RUN_ID, result: 'success' }),
+      );
+    });
+  });
+
+  describe('GET /:reportRunId/applied', () => {
+    it('returns { items } via toLedgerItem for an accessible report run', async () => {
+      loadFleetDesignReportMock.mockResolvedValue({
+        reportRunId: REPORT_RUN_ID,
+        reportId: REPORT_ID,
+        orgId: ORG_ID,
+        summary: fleetDesignSummary(),
+        generatedAt: '2026-09-12T00:00:00.000Z',
+      });
+      const ledgerRow = {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        orgId: ORG_ID,
+        reportRunId: REPORT_RUN_ID,
+        itemRef: 'functions:file_server',
+        itemKind: 'function',
+        status: 'applied',
+        step: 1,
+        createdRefs: { groupId: 'gggggggg-gggg-4ggg-8ggg-gggggggggggg' },
+        beforeImage: null,
+        error: null,
+        appliedByUserId: USER_ID,
+        appliedAt: new Date('2026-09-12T00:00:00.000Z'),
+        rolledBackByUserId: null,
+        rolledBackAt: null,
+      };
+      loadLedgerMock.mockResolvedValue([ledgerRow]);
+      const app = buildW03App();
+
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/applied`);
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        items: [{
+          id: ledgerRow.id,
+          itemRef: 'functions:file_server',
+          itemKind: 'function',
+          status: 'applied',
+          step: 1,
+          createdRefs: ledgerRow.createdRefs,
+          error: null,
+          appliedAt: '2026-09-12T00:00:00.000Z',
+          rolledBackAt: null,
+        }],
+      });
+      expect(loadLedgerMock).toHaveBeenCalledWith(REPORT_RUN_ID, ORG_ID);
+    });
+
+    it("404s for another org's report run", async () => {
+      loadFleetDesignReportMock.mockResolvedValue(null);
+      const app = buildW03App();
+      const res = await app.request(`/ai/fleet-design/${REPORT_RUN_ID}/applied`);
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+      expect(loadLedgerMock).not.toHaveBeenCalled();
+    });
+
+    it('404s for a malformed reportRunId', async () => {
+      const app = buildW03App();
+      const res = await app.request('/ai/fleet-design/not-a-uuid/applied');
+      expect(res.status).toBe(404);
+      await expect(res.json()).resolves.toEqual({ error: 'not_found' });
+    });
   });
 });
