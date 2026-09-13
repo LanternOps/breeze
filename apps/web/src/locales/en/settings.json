@@ -2152,6 +2152,7 @@
           "fixWatchesHeld": "Fix watches held",
           "fixWatchesRecurred": "Fix watches recurred",
           "narrativesDelivered": "Weekly reports delivered",
+          "fleetDesignsDelivered": "Fleet Designs delivered",
           "estTimeSaved": "Estimated time saved",
           "llmSpend": "LLM spend",
           "window": "Reporting window (days)",

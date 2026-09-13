@@ -33,6 +33,8 @@ export const aiAgentImpactDaily = pgTable('ai_agent_impact_daily', {
   fixWatchesHeld: integer('fix_watches_held').notNull().default(0),
   fixWatchesRecurred: integer('fix_watches_recurred').notNull().default(0),
   narrativesDelivered: integer('narratives_delivered').notNull().default(0),
+  /** W05 (#5655): completed `design` runs that produced a report. */
+  fleetDesignsDelivered: integer('fleet_designs_delivered').notNull().default(0),
   llmCents: integer('llm_cents').notNull().default(0),
   rebuiltAt: timestamp('rebuilt_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -53,6 +55,7 @@ export const aiAgentImpactDaily = pgTable('ai_agent_impact_daily', {
   check('ai_agent_impact_daily_watches_held_chk', sql`${t.fixWatchesHeld} >= 0`),
   check('ai_agent_impact_daily_watches_recurred_chk', sql`${t.fixWatchesRecurred} >= 0`),
   check('ai_agent_impact_daily_narratives_chk', sql`${t.narrativesDelivered} >= 0`),
+  check('ai_agent_impact_daily_fleet_designs_chk', sql`${t.fleetDesignsDelivered} >= 0`),
   check('ai_agent_impact_daily_llm_cents_chk', sql`${t.llmCents} >= 0`),
 ]);
 
