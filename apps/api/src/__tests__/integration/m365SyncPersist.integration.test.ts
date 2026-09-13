@@ -17,6 +17,7 @@ import {
   m365Connections, m365IntuneDevices, m365PostureRollups, m365SecureScoreSnapshots,
   m365SyncState, m365Users,
 } from '../../db/schema';
+import { M365SyncRunFencedError } from '../../services/m365Sync/domains/persist';
 import { persistSecureScore } from '../../services/m365Sync/domains/secureScore';
 import { persistSigninActivity } from '../../services/m365Sync/domains/signinActivity';
 import { persistUsers, usersPrimaryProjection } from '../../services/m365Sync/domains/users';
@@ -212,6 +213,33 @@ describe('posture rollup (real Postgres, spec §5.9)', () => {
       users: { asOf: '2026-09-08T06:00:00.000Z', complete: true },
       secure_score: { asOf: null, complete: false },
     });
+  });
+});
+
+describe('run ownership guard (real Postgres, spec §5.3/§5.8)', () => {
+  async function seedState(generation: number) {
+    await withSystemDbAccessContext(() => db.insert(m365SyncState).values({
+      orgId: t.orgId, connectionId: t.connectionId, domain: 'users', intervalSeconds: 21600, runGeneration: generation,
+    }));
+  }
+
+  runDb('a run that owns its state row persists', async () => {
+    await seedState(4);
+    await persistUsers({ ...ctx(), generation: 4, domain: 'users' }, result([user()], ALL_OK));
+    expect(await userRow()).toBeDefined();
+  });
+
+  runDb('a run whose state row was deleted (disconnect) fences and writes NOTHING', async () => {
+    await expect(persistUsers({ ...ctx(), generation: 4, domain: 'users' }, result([user()], ALL_OK)))
+      .rejects.toBeInstanceOf(M365SyncRunFencedError);
+    expect(await userRow()).toBeUndefined();
+  });
+
+  runDb('a run whose row was re-claimed (newer generation) fences too', async () => {
+    await seedState(5);
+    await expect(persistSigninActivity({ ...ctx(), generation: 4, domain: 'users' },
+      result([{ id: 'u1', lastSuccessfulSignInAt: null }], { signInActivity: 'ok' })))
+      .rejects.toBeInstanceOf(M365SyncRunFencedError);
   });
 });
 

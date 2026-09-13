@@ -51,6 +51,7 @@ vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 import { M365_SYNC_DOMAINS } from '@breeze/shared/m365';
 import { DOMAIN_PERSISTERS, outcomeForFailure, runSyncDomain } from './run';   // nextSyncAt lives in cadence.ts (Task 12) and is covered by cadence.test.ts
 import { M365_SYNC_IMPLEMENTED_DOMAINS } from './types';
+import { M365SyncRunFencedError } from './domains/persist';
 
 const JOB = { orgId: 'org-1', domain: 'users' as const, generation: 5, connectionId: 'conn-1',
   tenantId: 'tenant-1', consentGeneration: 2, priority: 10 as const };
@@ -149,6 +150,28 @@ describe('runSyncDomain', () => {
     expect(mocks.persistUsers).not.toHaveBeenCalled();
     expect(mocks.completion).toEqual([]);
     expect(mocks.metricFenced).toHaveBeenCalledTimes(1);
+  });
+
+  it('a persister that loses ownership mid-persist is FENCED: no completion, no audit, fenced metric', async () => {
+    mocks.persistUsers.mockRejectedValue(new M365SyncRunFencedError('gone'));
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(run()).resolves.toBe('fenced');
+    } finally { spy.mockRestore(); }
+    expect(mocks.completion).toEqual([]);
+    expect(mocks.audit).not.toHaveBeenCalled();
+    expect(mocks.hook).not.toHaveBeenCalled();
+    expect(mocks.metricFenced).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the owned domain into the persist context so every chunk re-proves ownership', async () => {
+    await run();
+    expect(mocks.persistUsers.mock.calls[0]![0]).toMatchObject({ domain: 'users', generation: 5, orgId: 'org-1' });
+  });
+
+  it('a non-fence persist error still propagates', async () => {
+    mocks.persistUsers.mockRejectedValue(new Error('chunk exploded'));
+    await expect(run()).rejects.toThrow('chunk exploded');
   });
 
   it('fences BEFORE the fetch too, without spending a Graph call', async () => {

@@ -51,6 +51,14 @@ export interface PersistContext {
   tenantId: string;
   connectionId: string;
   generation: number;
+  /**
+   * The domain this run owns. When set (run.ts always sets it), every persist
+   * transaction first takes FOR SHARE on its own (org, domain, generation)
+   * state row and fences if the row is gone or re-claimed — see
+   * `inOwnedRunTransaction` in domains/persist.ts. Optional only so unit tests
+   * can build a context without it.
+   */
+  domain?: M365SyncDomain;
   /** graph_id -> existing (core_hash, is_stale), read once in Phase A. */
   existing: Map<string, { coreHash: string; isStale: boolean }>;
   now: Date;

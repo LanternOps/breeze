@@ -96,11 +96,16 @@ export async function onConnectionConsented(conn: {
  * a privacy defect; a failed disconnect the operator retries is not.
  */
 export async function onConnectionDisconnected(conn: { id: string; orgId: string }): Promise<void> {
+  // State FIRST, and the order is load-bearing: every sync persist transaction
+  // holds FOR SHARE on its state row (domains/persist.ts
+  // inOwnedRunTransaction). Deleting the state rows waits for any in-flight
+  // chunk to commit and fences every later chunk, so the entity deletes below
+  // (each a fresh READ COMMITTED snapshot) also catch rows a racing run wrote.
+  await db.delete(m365SyncState).where(eq(m365SyncState.orgId, conn.orgId));
   await db.delete(m365Users).where(eq(m365Users.orgId, conn.orgId));
   await db.delete(m365IntuneDevices).where(eq(m365IntuneDevices.orgId, conn.orgId));
   await db.delete(m365CaPolicies).where(eq(m365CaPolicies.orgId, conn.orgId));
   await db.delete(m365LicenseSkus).where(eq(m365LicenseSkus.orgId, conn.orgId));
-  await db.delete(m365SyncState).where(eq(m365SyncState.orgId, conn.orgId));
 }
 
 /**

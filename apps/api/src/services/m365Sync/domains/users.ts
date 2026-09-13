@@ -180,7 +180,7 @@ async function writeEnrichmentPass(
         and u.graph_id = p.graph_id
         and (${sql.join(differs, sql` or `)})
     `);
-  });
+  }, ctx);
 }
 
 /**
@@ -282,7 +282,7 @@ export async function persistUsers(
         ...usersEnrichmentUpdateSet(result.sources),
       },
     });
-  });
+  }, ctx);
 
   // Rows the upsert just wrote already carry their enrichment; every other
   // fetched user gets the field-wise pass.
@@ -296,7 +296,7 @@ export async function persistUsers(
   );
 
   const stale = plan.staleIds.length
-    ? await markEntitiesStale(m365Users as never, ctx.orgId, plan.staleIds, ctx.now)
+    ? await markEntitiesStale(m365Users as never, ctx.orgId, plan.staleIds, ctx.now, ctx)
     : 0;
 
   return {

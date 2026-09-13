@@ -138,6 +138,11 @@ describe('onConnectionDisconnected (spec §5.8)', () => {
     expect(mocks.claim).not.toHaveBeenCalled();
   });
 
+  it('deletes the state rows FIRST, so in-flight persist chunks are waited on and later ones fence', async () => {
+    await onConnectionDisconnected({ id: CONNECTION, orgId: ORG });
+    expect(mocks.deletedTables[0]).toBe('m365_sync_state');
+  });
+
   it('runs on the AMBIENT context — it never opens its own', async () => {
     await onConnectionDisconnected({ id: CONNECTION, orgId: ORG });
     expect(mocks.systemContext).not.toHaveBeenCalled();

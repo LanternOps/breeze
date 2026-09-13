@@ -18,6 +18,7 @@ import { applyCadence } from './cadence';
 import { claimDueDomains } from './claim';
 import { persistCaPolicies } from './domains/caPolicies';
 import { persistIntuneDevices } from './domains/intuneDevices';
+import { M365SyncRunFencedError } from './domains/persist';
 import { persistSecureScore } from './domains/secureScore';
 import { persistSigninActivity } from './domains/signinActivity';
 import { persistSkus } from './domains/skus';
@@ -526,6 +527,9 @@ export async function runSyncDomain(
     const persistCtx: PersistContext = {
       orgId: data.orgId, tenantId: data.tenantId, connectionId: data.connectionId,
       generation: data.generation, existing: loaded.existing, now,
+      // Every persist transaction re-proves ownership of this (org, domain,
+      // generation) state row under FOR SHARE (domains/persist.ts).
+      domain: data.domain,
     };
 
     // ---- Phase B: NO DB context held --------------------------------------
@@ -646,7 +650,24 @@ export async function runSyncDomain(
       return 'needs_consent';
     }
 
-    const persisted: DomainPersistResult = await persister(persistCtx, result);
+    let persisted: DomainPersistResult;
+    try {
+      persisted = await persister(persistCtx, result);
+    } catch (error) {
+      // Lost ownership mid-persist (a disconnect, rebind or re-claim committed
+      // between the Phase C check and a chunk). Same meaning as a Phase C
+      // fence: discard, write no completion, let the owner of the row decide.
+      // Chunks already committed are either erased by the disconnect (it waits
+      // on our FOR SHARE) or re-written by the newer generation.
+      if (error instanceof M365SyncRunFencedError) {
+        recordM365SyncFenced();
+        logSync('fenced-mid-persist', {
+          orgId: data.orgId, domain: data.domain, generation: data.generation, correlationId,
+        });
+        return 'fenced';
+      }
+      throw error;
+    }
 
     // Sign-in continuation loop (spec §5.7, §6 "unchanged until exhausted").
     // A page that still has more behind it stores ONLY the cursor (and clears

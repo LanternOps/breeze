@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { db } from '../../../db';
+import { inOwnedRunTransaction } from './persist';
 import {
   M365_SYNC_PERSIST_CHUNK_SIZE,
   type DomainPersistResult, type M365SyncActionResult, type PersistContext,
@@ -84,7 +85,7 @@ export async function persistSigninActivity(
       chunk.map((item) => sql`(${item.id}::text, ${item.lastSuccessfulSignInAt}::timestamptz)`),
       sql`, `,
     );
-    const rows = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
+    const rows = await inOwnedRunTransaction(ctx, 'm365SyncSigninPersist', () => db.execute(sql`
       with page (graph_id, signed_in_at) as (values ${values}),
       updated as (
         update m365_users u
@@ -96,7 +97,7 @@ export async function persistSigninActivity(
         returning 1
       )
       select (select count(*) from updated)::int as updated
-    `), 'm365SyncSigninPersist'));
+    `));
     updated += updatedCount(rows);
   }
 

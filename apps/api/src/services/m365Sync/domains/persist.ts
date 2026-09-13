@@ -58,22 +58,71 @@ export function planEntityWrites<TItem, TRow>(
   return { rows, inserted, updated, unchanged, staleIds };
 }
 
+/** The run no longer owns its state row: disconnected, rebound or re-claimed mid-persist. */
+export class M365SyncRunFencedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'M365SyncRunFencedError';
+  }
+}
+
+/**
+ * One short system transaction that first proves this run still owns its
+ * `(org_id, domain, run_generation)` state row, holding FOR SHARE on it until
+ * the transaction commits.
+ *
+ * Why (spec §5.3 + §5.8): Phase C's fence check and the chunked persist are
+ * separate transactions. Without this, a disconnect that commits in between
+ * erases the tenant snapshot and the still-running persist then re-inserts
+ * rows for a revoked connection — a customer directory outliving the consent
+ * that authorised it. With it, the lock order is total: a disconnect deletes
+ * the state row FIRST (lifecycle.onConnectionDisconnected), so it waits for
+ * any in-flight chunk to commit and then deletes that chunk's rows too, and
+ * every later chunk finds no row and throws M365SyncRunFencedError. A re-claim
+ * bumps run_generation, which fences the old run the same way.
+ *
+ * Without `ctx.domain` (unit tests) the guard is skipped.
+ */
+export async function inOwnedRunTransaction<T>(
+  ctx: PersistContext | undefined,
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    if (ctx?.domain) {
+      const result = await db.execute(sql`
+        select 1 as owned from m365_sync_state
+        where org_id = ${ctx.orgId}::uuid
+          and domain = ${ctx.domain}::m365_sync_domain
+          and run_generation = ${ctx.generation}
+        for share
+      `);
+      const rows = (result as { rows?: unknown[] }).rows ?? result;
+      if (!Array.isArray(rows) || rows.length === 0) {
+        throw new M365SyncRunFencedError(
+          `m365 sync run no longer owns org=${ctx.orgId} domain=${ctx.domain} generation=${ctx.generation}`,
+        );
+      }
+    }
+    return fn();
+  }, label));
+}
+
 /**
  * One SHORT transaction per 1 000-row chunk (spec §5.3). The upserts are
  * idempotent, so a failure part-way leaves a consistent partial state that the
  * next run finishes — the alternative, one transaction over 25 000 rows, would
  * hold a pooled connection for the whole write on a 1-vCPU managed database.
+ * Each chunk is an owned-run transaction when `ctx` is given.
  */
 export async function writeEntityChunks<TRow>(
   rows: TRow[],
   write: (chunk: TRow[]) => Promise<void>,
+  ctx?: PersistContext,
 ): Promise<void> {
   for (let i = 0; i < rows.length; i += M365_SYNC_PERSIST_CHUNK_SIZE) {
     const chunk = rows.slice(i, i + M365_SYNC_PERSIST_CHUNK_SIZE);
-    await runOutsideDbContext(() => withSystemDbAccessContext(
-      () => write(chunk),
-      'm365SyncPersistChunk',
-    ));
+    await inOwnedRunTransaction(ctx, 'm365SyncPersistChunk', () => write(chunk));
   }
 }
 
@@ -83,11 +132,12 @@ export async function markEntitiesStale(
   orgId: string,
   graphIds: string[],
   now: Date,
+  ctx?: PersistContext,
 ): Promise<number> {
   let marked = 0;
   for (let i = 0; i < graphIds.length; i += M365_SYNC_PERSIST_CHUNK_SIZE) {
     const chunk = graphIds.slice(i, i + M365_SYNC_PERSIST_CHUNK_SIZE);
-    await runOutsideDbContext(() => withSystemDbAccessContext(async () => {
+    await inOwnedRunTransaction(ctx, 'm365SyncMarkStale', async () => {
       await db.update(table)
         .set({ isStale: true, staleSince: now } as never)
         .where(and(
@@ -95,7 +145,7 @@ export async function markEntitiesStale(
           inArray((table as never as { graphId: never }).graphId, chunk as never),
           eq((table as never as { isStale: never }).isStale, false as never),
         ));
-    }, 'm365SyncMarkStale'));
+    });
     marked += chunk.length;
   }
   return marked;

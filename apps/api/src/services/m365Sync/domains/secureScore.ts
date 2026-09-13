@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { db } from '../../../db';
+import { inOwnedRunTransaction } from './persist';
 import type { DomainPersistResult, M365SyncActionResult, PersistContext } from '../types';
 
 interface ParsedScore {
@@ -92,7 +93,7 @@ export async function persistSecureScore(
     sql`, `,
   );
 
-  const written = await runOutsideDbContext(() => withSystemDbAccessContext(() => db.execute(sql`
+  const written = await inOwnedRunTransaction(ctx, 'm365SyncSecureScorePersist', () => db.execute(sql`
     with written as (
       insert into m365_secure_score_snapshots (
         org_id, tenant_id, score_date, current_score, max_score,
@@ -111,7 +112,7 @@ export async function persistSecureScore(
     select
       (select count(*) from written where inserted)::int     as inserted,
       (select count(*) from written where not inserted)::int as updated
-  `), 'm365SyncSecureScorePersist'));
+  `));
 
   const row = rowsOf(written)[0] ?? {};
   const newest = scores[0]!;
