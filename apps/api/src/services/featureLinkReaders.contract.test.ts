@@ -31,6 +31,14 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // #5289 — attachment CRUD and the "which policies attach this monitor" view:
   // the policy's own links, never an inherited projection of them.
   'routes/monitorDefinitions.ts',
+  // #5289 — AI-tool mirror of routes/monitorDefinitions.ts above: every read
+  // here is either reporting a monitor's own (authored) policy attachments
+  // (get_monitor) or the attach/detach read-modify-write path over the same
+  // authored rows (currentAttachmentItems, mirroring that file's currentItems).
+  // None of these resolve a policy's EFFECTIVE monitor set — that's
+  // services/monitors/monitorResolver.ts's job — so there is no call site here
+  // that should switch to the view.
+  'services/aiToolsMonitors.ts',
 
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.
