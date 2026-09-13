@@ -2,7 +2,7 @@
  * AI execution-plane workspaces (spec §6.2) — one row per sandbox instance.
  *
  * Shape 1 (direct NOT NULL `org_id`). Created by
- * migrations/2026-10-16-171500-ai-run-workspaces-compute.sql, which also
+ * migrations/2026-10-16-180300-ai-run-workspaces-compute.sql, which also
  * carries the RLS enable/force/policies, the composite deferrable FK to
  * `ai_agent_runs(id, org_id)`, and the compute columns added to
  * `ai_agent_runs`, `ai_cost_usage`, `ai_sessions` and `ai_budgets`.

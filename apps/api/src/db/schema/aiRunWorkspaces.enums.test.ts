@@ -10,7 +10,7 @@ import {
 
 const MIGRATION = path.join(
   __dirname,
-  '../../../migrations/2026-10-16-171500-ai-run-workspaces-compute.sql',
+  '../../../migrations/2026-10-16-180300-ai-run-workspaces-compute.sql',
 );
 
 /**
