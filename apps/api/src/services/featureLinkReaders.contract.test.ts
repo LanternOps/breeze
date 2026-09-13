@@ -225,7 +225,9 @@ describe('feature-link readers contract', () => {
       'routes/remote/helpers.ts',
       'services/deviceLifecyclePolicy.ts',
       'services/helperPermissions.ts',
-      'services/warrantyAlertEvaluator.ts',
+      // #5511 W02: the warranty hierarchy read moved out of warrantyAlertEvaluator.ts
+      // into this shared module (alerting + HP CMSL heartbeat delivery).
+      'services/warrantyPolicyResolution.ts',
       'services/configPolicyPatching.ts',
       'jobs/automationWorker.ts',
       'jobs/backupWorker.ts',
