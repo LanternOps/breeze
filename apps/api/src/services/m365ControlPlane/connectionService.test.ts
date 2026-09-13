@@ -162,6 +162,16 @@ vi.mock('./consentSessionService', () => ({
   insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,
 }));
 
+const { lifecycleMocks } = vi.hoisted(() => ({
+  lifecycleMocks: {
+    disconnected: vi.fn(async (_conn: { id: string; orgId: string }) => {}),
+    depthAtHook: -1,
+  },
+}));
+vi.mock('../m365Sync/lifecycle', () => ({
+  onConnectionDisconnected: lifecycleMocks.disconnected,
+}));
+
 vi.mock('./runtimeConfig', () => ({
   loadM365CustomerGraphReadRuntimeConfig: vi.fn(() => ({
     clientId: '55555555-5555-4555-8555-555555555555',
@@ -675,6 +685,44 @@ describe('customer Graph-read connection lifecycle', () => {
     expect(disconnected.status).toBe('revoked');
     expect(disconnected.consentAttemptId).not.toBe(ATTEMPT_ID);
   });
+
+  describe('disconnect erases the synced tenant snapshot (spec §5.8)', () => {
+    it('calls the sync disconnect hook AFTER the status flip, inside the same single system context', async () => {
+      dbMocks.selectResults.push([row()]);
+      dbMocks.updateResults.push((set) => [row({ ...set })]);
+      let systemDepth = 0;
+      contextMocks.withSystem.mockImplementationOnce(async (fn) => {
+        systemDepth += 1;
+        try { return await fn(); } finally { systemDepth -= 1; }
+      });
+      lifecycleMocks.disconnected.mockImplementationOnce(async () => {
+        lifecycleMocks.depthAtHook = systemDepth;
+        dbMocks.order.push('erase');
+      });
+
+      await disconnectCustomerGraphReadConnection({ id: CONNECTION_ID, orgId: ORG_ID, actorId: ACTOR_ID });
+
+      expect(lifecycleMocks.disconnected).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID });
+      expect(dbMocks.order).toEqual(['delete-session', 'update', 'erase']);
+      expect(lifecycleMocks.depthAtHook).toBe(1);
+      expect(contextMocks.withSystem).toHaveBeenCalledOnce();
+    });
+
+    it('propagates a hook failure so the whole disconnect rolls back', async () => {
+      dbMocks.selectResults.push([row()]);
+      dbMocks.updateResults.push((set) => [row({ ...set })]);
+      lifecycleMocks.disconnected.mockRejectedValueOnce(new Error('erase failed'));
+      await expect(disconnectCustomerGraphReadConnection({ id: CONNECTION_ID, orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toThrow('erase failed');
+    });
+
+    it('does not erase when the connection was not found', async () => {
+      dbMocks.selectResults.push([]);
+      await expect(disconnectCustomerGraphReadConnection({ id: CONNECTION_ID, orgId: ORG_ID, actorId: ACTOR_ID }))
+        .rejects.toMatchObject({ code: 'connection_not_found' });
+      expect(lifecycleMocks.disconnected).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('createConnectionService factory (non-read profile)', () => {
@@ -756,6 +804,17 @@ describe('createConnectionService factory (non-read profile)', () => {
     });
     expect(result.profile).toBe('customer-graph-actions');
     expect(result.status).toBe('active');
+  });
+
+  it('disconnecting the ACTIONS profile never erases the tenant snapshot the READ profile synced', async () => {
+    // The sync reads exclusively through the customer-graph-read connection;
+    // m365_* entity rows are org-keyed, so erasing them here would wipe data
+    // the still-connected read profile owns.
+    dbMocks.selectResults.push([row({ profile: 'customer-graph-actions' })]);
+    dbMocks.updateResults.push((set) => [row({ profile: 'customer-graph-actions', ...set })]);
+    const { service } = actionsService();
+    await service.disconnectConnection({ id: CONNECTION_ID, orgId: ORG_ID, actorId: ACTOR_ID });
+    expect(lifecycleMocks.disconnected).not.toHaveBeenCalled();
   });
 });
 
