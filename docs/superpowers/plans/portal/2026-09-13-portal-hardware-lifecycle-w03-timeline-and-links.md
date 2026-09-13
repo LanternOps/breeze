@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#5719
+tracking_issue: LanternOps/breeze#5728
 ---
 # Portal Hardware Lifecycle W03: Timeline Hover and Device Links Implementation Plan
 

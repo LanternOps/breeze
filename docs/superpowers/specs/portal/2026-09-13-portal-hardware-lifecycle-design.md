@@ -1,6 +1,7 @@
 ---
 title: Portal Hardware Lifecycle page
 issue: LanternOps/breeze#5719
+tracking_issue: LanternOps/breeze#5728
 status: draft
 depends_on: LanternOps/breeze#5701
 ---

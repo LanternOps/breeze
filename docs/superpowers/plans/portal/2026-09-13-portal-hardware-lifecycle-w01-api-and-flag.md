@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#5719
+tracking_issue: LanternOps/breeze#5728
 ---
 # Portal Hardware Lifecycle W01: Flag, API, and Data Path Implementation Plan
 
