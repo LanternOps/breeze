@@ -68,8 +68,8 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // the gate in services/monitors/monitorService.ts before compiling, and the
   // compiler never takes an owner axis from a request.
   'services/monitors/monitorCompiler.ts': 'stamps compiled_* provenance on a definition the caller already gated via monitorService',
-  // Built-in default monitors: provisions each partner's OWN three monitors +
-  // policy once, from createPartner()/the system-scope partner route/API boot —
+  // Built-in default monitors: provisions each partner's OWN three monitors
+  // once (no policy, no assignment), from createPartner()/the system-scope partner route/API boot —
   // no caller-supplied partner id, never reachable with a partner token's choice
   // of target.
   'services/monitors/builtInMonitors.ts': 'one-time per-partner provisioning of the partner\'s own built-in rows; callers are createPartner(), a requireScope(system) route, and the boot backfill',

@@ -2,12 +2,12 @@
  * Built-in default monitors — CPU, memory and disk usage.
  *
  * Every partner is provisioned three PARTNER-WIDE monitor_definitions rows
- * (tagged `builtin_key`) plus one partner-wide configuration policy, "Breeze
- * built-in monitors", assigned at PARTNER level so the resolver
- * (monitorResolver.ts) reaches every device in every org of that partner.
+ * (tagged `builtin_key`). They are NOT attached to any policy: nothing is
+ * evaluated until the MSP attaches them to a configuration policy (owner
+ * decision 2026-09-13 — no monitoring assigned by default).
  *
- * The rows are ordinary partner-owned monitors: the MSP can retune, disable
- * (per policy or globally), detach, or delete them. Provisioning is a ONE-TIME
+ * The rows are ordinary partner-owned monitors: the MSP can retune, disable,
+ * or delete them. Provisioning is a ONE-TIME
  * event per partner recorded in partners.settings.builtInMonitors, so a
  * deleted built-in never resurrects on the next boot. Threshold changes we
  * make later are explicit upgrades of DEFAULTS (new partners only) — they never
@@ -20,20 +20,12 @@
  */
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../db';
-import {
-  configPolicyAssignments,
-  configPolicyFeatureLinks,
-  configPolicyMonitors,
-  configurationPolicies,
-  monitorDefinitions,
-  partners,
-} from '../../db/schema';
+import { monitorDefinitions, partners } from '../../db/schema';
 import { compileMonitorInTx } from './monitorCompiler';
 import { getMonitorKindSpec } from './kinds';
 import type { MonitorKind } from '@breeze/shared';
 
 export const BUILT_IN_MONITORS_VERSION = 1;
-export const BUILT_IN_MONITORS_POLICY_NAME = 'Breeze built-in monitors';
 
 export interface BuiltInMonitorDefault {
   key: 'cpu_high' | 'memory_high' | 'disk_full';
@@ -87,7 +79,6 @@ type Executor = DbTx | typeof db;
 export interface EnsureBuiltInMonitorsResult {
   provisioned: boolean;
   monitorIds: string[];
-  policyId: string | null;
 }
 
 function autoseedEnabled(): boolean {
@@ -104,7 +95,7 @@ async function isProvisioned(exec: Executor, partnerId: string): Promise<boolean
 }
 
 /**
- * Provision the built-in monitors and their policy for ONE partner. Idempotent
+ * Provision the built-in monitors for ONE partner. Idempotent
  * via the partners.settings marker; a partner that was ever provisioned is
  * left alone even if it since deleted every built-in row.
  *
@@ -117,7 +108,7 @@ export async function ensureBuiltInMonitorsForPartner(
 ): Promise<EnsureBuiltInMonitorsResult> {
   const run = async (tx: DbTx): Promise<EnsureBuiltInMonitorsResult> => {
     if (await isProvisioned(tx, partnerId)) {
-      return { provisioned: false, monitorIds: [], policyId: null };
+      return { provisioned: false, monitorIds: [] };
     }
 
     const monitorIds: string[] = [];
@@ -161,58 +152,14 @@ export async function ensureBuiltInMonitorsForPartner(
       monitorIds.push(created.id);
     }
 
-    let policyId: string | null = null;
-    if (monitorIds.length > 0) {
-      const [policy] = await tx
-        .insert(configurationPolicies)
-        .values({
-          orgId: null,
-          partnerId,
-          name: BUILT_IN_MONITORS_POLICY_NAME,
-          description:
-            'Applies the built-in CPU, memory and disk monitors to every device. Detach a monitor here to stop it fleet-wide, or override thresholds per policy.',
-          status: 'active',
-          createdBy: opts.createdBy ?? null,
-        })
-        .returning({ id: configurationPolicies.id });
-      policyId = policy!.id;
-
-      const items = monitorIds.map((monitorId, idx) => ({ monitorId, enabled: true, overrides: null, sortOrder: idx }));
-      // inline_settings mirrors what addFeatureLink() stores for a 'monitors'
-      // link ({ items }); config_policy_monitors is the normalized copy readers use.
-      const [link] = await tx
-        .insert(configPolicyFeatureLinks)
-        .values({ configPolicyId: policyId, featureType: 'monitors', inlineSettings: { items } })
-        .returning({ id: configPolicyFeatureLinks.id });
-      await tx.insert(configPolicyMonitors).values(
-        items.map((item) => ({
-          featureLinkId: link!.id,
-          monitorId: item.monitorId,
-          enabled: item.enabled,
-          overrides: item.overrides,
-          sortOrder: item.sortOrder,
-        })),
-      );
-      await tx
-        .insert(configPolicyAssignments)
-        .values({
-          configPolicyId: policyId,
-          level: 'partner',
-          targetId: partnerId,
-          priority: 0,
-          assignedBy: opts.createdBy ?? null,
-        })
-        .onConflictDoNothing();
-    }
-
     await tx
       .update(partners)
       .set({
-        settings: sql`COALESCE(${partners.settings}, '{}'::jsonb) || jsonb_build_object('builtInMonitors', jsonb_build_object('version', ${BUILT_IN_MONITORS_VERSION}::int, 'provisionedAt', ${new Date().toISOString()}::text, 'policyId', ${policyId}::text))`,
+        settings: sql`COALESCE(${partners.settings}, '{}'::jsonb) || jsonb_build_object('builtInMonitors', jsonb_build_object('version', ${BUILT_IN_MONITORS_VERSION}::int, 'provisionedAt', ${new Date().toISOString()}::text))`,
       })
       .where(eq(partners.id, partnerId));
 
-    return { provisioned: true, monitorIds, policyId };
+    return { provisioned: true, monitorIds };
   };
 
   if (opts.exec && opts.exec !== db) return run(opts.exec as DbTx);

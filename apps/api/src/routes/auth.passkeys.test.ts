@@ -286,7 +286,7 @@ vi.mock('../services/ipAllowlist', () => ({
 const DEFAULT_EPOCH_ROW = [{ authEpoch: 1, mfaEpoch: 2, emailEpoch: 1, passwordResetEpoch: 1 }];
 
 vi.mock('../services/monitors/builtInMonitors', () => ({
-  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [], policyId: null })),
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
   ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
 }));
 vi.mock('../db', () => {

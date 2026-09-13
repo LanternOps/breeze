@@ -28,9 +28,6 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // therefore reads the AUTHORED links for the policy and its parent and ranks
   // the attachments itself (closest attachment wins, per monitor).
   'services/monitors/monitorResolver.ts',
-  // Built-in default monitors: INSERTs the one 'monitors' link of the seeded
-  // partner-wide policy at provisioning time. Never reads links.
-  'services/monitors/builtInMonitors.ts',
   // #5289 — attachment CRUD and the "which policies attach this monitor" view:
   // the policy's own links, never an inherited projection of them.
   'routes/monitorDefinitions.ts',

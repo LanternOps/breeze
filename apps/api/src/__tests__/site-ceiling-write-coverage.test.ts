@@ -66,13 +66,6 @@ const GOVERNANCE_TABLE_NAMES = [
  * site-ceiling gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CEILING_CHECK: Record<string, string> = {
-  // Built-in default monitors: creates each partner's OWN partner-wide policy
-  // once (no caller-chosen target; site ceilings never apply to a partner-
-  // wide row). Callers are createPartner(), the requireScope(system) partner
-  // route, and the API boot backfill.
-  'services/monitors/builtInMonitors.ts':
-    'one-time per-partner provisioning of a partner-wide policy from createPartner()/system-scope route/boot — no caller-facing request selects the target',
-
   // configurationPolicy.ts is the ONLY place that literally calls
   // .insert/.update/.delete(configurationPolicies | configPolicyFeatureLinks)
   // — routes/configurationPolicies/{crud,featureLinks}.ts and

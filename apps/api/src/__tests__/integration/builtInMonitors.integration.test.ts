@@ -1,8 +1,9 @@
 /**
  * Built-in default monitors — provisioning contract against real Postgres.
  *
- * Proves: (1) one call provisions three partner-wide built-ins + one partner-
- * level policy and every device under the partner resolves all three;
+ * Proves: (1) one call provisions three compiled partner-wide built-ins and
+ * NOTHING is assigned — a device under the partner resolves no monitors until
+ * the MSP attaches them to a policy;
  * (2) a second call is a no-op; (3) a partner that deleted a built-in does NOT
  * get it back (partners.settings marker, not row presence, is the source of
  * truth); (4) the boot backfill only touches never-provisioned partners;
@@ -17,7 +18,6 @@ import {
   alertRules,
   alertTemplates,
   automations,
-  configPolicyAssignments,
   configurationPolicies,
   devices,
   monitorDefinitions,
@@ -25,7 +25,6 @@ import {
 } from '../../db/schema';
 import {
   BUILT_IN_MONITOR_DEFAULTS,
-  BUILT_IN_MONITORS_POLICY_NAME,
   ensureBuiltInMonitorsForAllPartners,
   ensureBuiltInMonitorsForPartner,
 } from '../../services/monitors/builtInMonitors';
@@ -106,20 +105,16 @@ async function marker(partnerId: string) {
 }
 
 describe('ensureBuiltInMonitorsForPartner', () => {
-  it('provisions three compiled partner-wide monitors and a partner-level policy that reaches every device', async () => {
+  it('provisions three compiled partner-wide monitors and assigns NOTHING by default', async () => {
     const partner = await newPartner();
-    const orgA = await createOrganization({ partnerId: partner.id });
-    const orgB = await createOrganization({ partnerId: partner.id });
-    createdOrgIds.push(orgA.id, orgB.id);
-    const siteA = await createSite({ orgId: orgA.id });
-    const siteB = await createSite({ orgId: orgB.id });
-    const deviceA = await insertDevice(orgA.id, siteA.id);
-    const deviceB = await insertDevice(orgB.id, siteB.id);
+    const org = await createOrganization({ partnerId: partner.id });
+    createdOrgIds.push(org.id);
+    const site = await createSite({ orgId: org.id });
+    const device = await insertDevice(org.id, site.id);
 
     const result = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
     expect(result.provisioned).toBe(true);
     expect(result.monitorIds).toHaveLength(BUILT_IN_MONITOR_DEFAULTS.length);
-    expect(result.policyId).toBeTruthy();
 
     const rows = await builtInsFor(partner.id);
     expect(rows.map((r) => r.builtinKey).sort()).toEqual(['cpu_high', 'disk_full', 'memory_high']);
@@ -139,36 +134,23 @@ describe('ensureBuiltInMonitorsForPartner', () => {
       expect(tpl && rule && auto).toBeTruthy();
     }
 
-    const [policy] = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.select().from(configurationPolicies).where(eq(configurationPolicies.id, result.policyId!)),
+    // No policy, no assignment: a device under the partner resolves nothing.
+    const policies = await withDbAccessContext(SYSTEM_CTX, () =>
+      db.select({ id: configurationPolicies.id }).from(configurationPolicies).where(eq(configurationPolicies.partnerId, partner.id)),
     );
-    expect(policy).toMatchObject({ partnerId: partner.id, orgId: null, name: BUILT_IN_MONITORS_POLICY_NAME, status: 'active' });
-    const assignments = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.select().from(configPolicyAssignments).where(eq(configPolicyAssignments.configPolicyId, result.policyId!)),
-    );
-    expect(assignments).toHaveLength(1);
-    expect(assignments[0]).toMatchObject({ level: 'partner', targetId: partner.id });
+    expect(policies).toEqual([]);
+    const effective = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
+    expect(effective).toEqual([]);
 
-    // Fan-out: devices in BOTH orgs of the partner resolve all three, enabled.
-    for (const device of [deviceA, deviceB]) {
-      const effective = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
-      expect(effective.map((m) => m.monitorId).sort()).toEqual(result.monitorIds.slice().sort());
-      expect(effective.every((m) => m.enabled)).toBe(true);
-    }
-
-    expect(await marker(partner.id)).toMatchObject({ version: 1, policyId: result.policyId });
+    expect(await marker(partner.id)).toMatchObject({ version: 1 });
   });
 
   it('is a no-op on the second call', async () => {
     const partner = await newPartner();
     await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
     const again = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
-    expect(again).toEqual({ provisioned: false, monitorIds: [], policyId: null });
+    expect(again).toEqual({ provisioned: false, monitorIds: [] });
     expect(await builtInsFor(partner.id)).toHaveLength(3);
-    const policies = await withDbAccessContext(SYSTEM_CTX, () =>
-      db.select({ id: configurationPolicies.id }).from(configurationPolicies).where(eq(configurationPolicies.partnerId, partner.id)),
-    );
-    expect(policies).toHaveLength(1);
   });
 
   it('never resurrects a built-in the partner deleted', async () => {
