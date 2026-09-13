@@ -38,6 +38,7 @@ import {
   createIntegrationTestClient,
   createOrganization,
   createRole,
+  createSite,
   createUser,
   grantRolePermissions,
   type IntegrationTestClient,
@@ -122,6 +123,18 @@ async function seedOrgPolicy(orgId: string, name: string, status: 'active' | 'in
       .returning({ id: configurationPolicies.id });
     await db.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'organization', targetId: orgId });
     return policy!.id;
+  });
+}
+
+/** An active org-owned policy assigned at SITE level only (a fresh site of the org). */
+async function seedSitePolicy(orgId: string, name: string): Promise<void> {
+  const site = await createSite({ orgId, name: `${name} site` });
+  await withSystemDbAccessContext(async () => {
+    const [policy] = await db
+      .insert(configurationPolicies)
+      .values({ orgId, partnerId: null, name, status: 'active' })
+      .returning({ id: configurationPolicies.id });
+    await db.insert(configPolicyAssignments).values({ configPolicyId: policy!.id, level: 'site', targetId: site.id });
   });
 }
 
@@ -259,6 +272,9 @@ describe('GET /orgs/account-readiness', () => {
     // the same transaction (2026-07-22-partner-export-lock-upgrade-hardening).
     await seedOrgPolicy(orgA, `Board active ${suffix}`, 'active');
     await seedOrgPolicy(orgB, `Board inactive ${suffix}`, 'inactive');
+    // Org C: an ACTIVE policy assigned only at SITE level. "Assigned" counts
+    // org- and partner-level assignments alone, so C must stay unassigned.
+    await seedSitePolicy(orgC, `Board site-only ${suffix}`);
 
     const res = await client.get(readinessPath([orgA, orgB, orgC]));
     expect(res.status, await res.clone().text()).toBe(200);
@@ -304,7 +320,8 @@ describe('GET /orgs/account-readiness', () => {
       orgId: orgC,
       type: 'customer',
       status: 'active',
-      setup: { sites: 0, devices: 0, lastSeenAt: null, policyAssigned: false },
+      // sites: 1 = the site carrying the site-level assignment; still unassigned.
+      setup: { sites: 1, devices: 0, lastSeenAt: null, policyAssigned: false },
       account: { primaryContact: null, billingRoleContact: false, billingAddress: false, pendingInvitations: 0, overdueInvoices: 0 },
       tickets: ZERO_TICKETS,
     });

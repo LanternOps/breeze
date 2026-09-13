@@ -55,7 +55,12 @@ export interface ResolveAcceptedOrgsInput {
  * keyed on ids that are live, this partner's, not the hidden quick_support org,
  * and (partner scope) inside the token's accessible list. Ids that do not
  * survive are simply absent: the endpoint never answers 403 for one of them,
- * matching `auth.canAccessOrg` semantics on GET /organizations/:id.
+ * matching `auth.canAccessOrg` semantics on GET /organizations/:id. Archived
+ * and offboarding orgs sit outside a partner token's accessibleOrgIds
+ * (middleware/auth.ts computeAccessibleOrgIds admits active|trial only) and
+ * are therefore absent too — by design: the board renders no readiness chips
+ * for them (spec "Applicability") and lists them from the org list's
+ * `includeArchived` fetch, never from this endpoint.
  */
 export async function resolveAcceptedOrgs(input: ResolveAcceptedOrgsInput): Promise<AcceptedOrg[]> {
   if (input.orgIds.length === 0) return [];

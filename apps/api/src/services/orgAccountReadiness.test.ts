@@ -254,6 +254,30 @@ describe('loadAccountReadiness', () => {
     expect(result.get(ORG_B)?.policyAssigned).toBe(true);
   });
 
+  it("contacts: a driver that returns bool_or as 't'/'f' text is read as a boolean", async () => {
+    setupDb(
+      new Map([
+        [
+          contacts,
+          [
+            { orgId: ORG_A, hasPrimary: 't', primaryName: 'Ada', primaryEmail: null, primaryPhone: null, primaryMobile: null, billingRole: 'f' },
+            { orgId: ORG_B, hasPrimary: 'f', primaryName: null, primaryEmail: null, primaryPhone: null, primaryMobile: null, billingRole: 't' },
+          ],
+        ],
+      ]),
+    );
+    const result = await loadAccountReadiness({ orgIds: [ORG_A, ORG_B], partnerId: PARTNER_ID, sections: NO_SECTIONS });
+    expect(result.get(ORG_A)).toMatchObject({ primaryContact: { name: 'Ada' }, billingRoleContact: false });
+    expect(result.get(ORG_B)).toMatchObject({ primaryContact: null, billingRoleContact: true });
+  });
+
+  it('devices: an offset-bearing timestamp string is kept as-is and an unparsable one becomes null', async () => {
+    setupDb(new Map([[devices, [{ orgId: ORG_A, count: '1', lastSeenAt: '2026-09-01T12:30:00+02:00' }, { orgId: ORG_B, count: '1', lastSeenAt: 'not a date' }]]]));
+    const result = await loadAccountReadiness({ orgIds: [ORG_A, ORG_B], partnerId: PARTNER_ID, sections: { ...NO_SECTIONS, devices: true } });
+    expect(result.get(ORG_A)?.lastSeenAt).toBe('2026-09-01T10:30:00.000Z');
+    expect(result.get(ORG_B)).toMatchObject({ devices: 1, lastSeenAt: null });
+  });
+
   it('contacts: maps the org-level primary and the billing role from one grouped row', async () => {
     setupDb(
       new Map([
