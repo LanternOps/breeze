@@ -52,7 +52,7 @@ tracking_issue: LanternOps/breeze#5711
 | **No stdin** | `RunCommandParams` has **no stdin field** — there is no way to pipe bytes into a command. This is why `ExecOptions.stdinBytes` is implemented by writing the bytes to a file under `/work/tmp` and running the interpreter through one **compile-time-constant** `sh -c` redirector whose every model-derived value arrives as a positional argument (Task 4 Step 4.5). |
 | Files (write) | `sandbox.writeFiles(files: { path: string; content: string \| Uint8Array; mode?: number }[], opts?: { signal?: AbortSignal })` — "Defaults to writing to `/vercel/sandbox` unless an **absolute path** is specified" (we always pass absolute `/work/**`). No `mkdir -p`: create parents first with `sandbox.mkDir(path)` or `sandbox.fs.mkdir(path, { recursive: true })`. The second argument carries **only** `signal` — `maxTotalBytes` is Breeze's cap, enforced before the call. |
 | Files (read/list) | `sandbox.readFileToBuffer({ path, cwd? }) → Promise<Buffer \| null>` (**`null` = not found**, not a throw) and `sandbox.readFile({ path, cwd? }) → Promise<NodeJS.ReadableStream \| null>`. `sandbox.fs` is a `node:fs/promises`-compatible `FileSystem` with `mkdir/readdir({ withFileTypes: true })/stat/lstat/readFile/writeFile`. There is **no server-side byte cap** on a read — `maxBytes` is enforced after transfer, which the plan states explicitly rather than pretending otherwise. |
-| Stop / usage | `sandbox.stop(opts?) → Promise<SandboxSnapshot & { snapshot?: SnapshotMetadata }>`, where `SandboxSnapshot = Omit<SessionMetaData,'networkPolicy'>`. The session fields that matter (`api-client/validators.d.ts`): **`activeCpuDurationMs?: number`**, **`duration?: number`** (wall ms), `memory: number` (MB), `vcpus: number`, `startedAt?`, `stoppedAt?`, `status`, `networkTransfer?: { ingress; egress }`. Instance getters, populated only once stopped: **`sandbox.activeCpuUsageMs`** ("The amount of CPU used by the session. Only reported once the VM is stopped"), plus cumulative `sandbox.totalActiveCpuDurationMs`, `sandbox.totalDurationMs`, `sandbox.totalEgressBytes`, `sandbox.totalIngressBytes` — all `number \| undefined`. **Both spellings are real and neither is guaranteed present**: the session payload uses `activeCpuDurationMs`/`duration`, the getters use `activeCpuUsageMs`/`totalDurationMs`. `usage()` reads the `stop()` payload first and falls back to the getters (Task 4 Step 4.7). |
+| Stop / usage | `sandbox.stop(opts?) → Promise<SandboxSnapshot & { snapshot?: SnapshotMetadata }>`, where `SandboxSnapshot = Omit<SessionMetaData,'networkPolicy'> & { networkPolicy?: NetworkPolicy }` (the field is not dropped, it is **re-widened to optional** — read it defensively, never assume it is present). The session fields that matter (`api-client/validators.d.ts`): **`activeCpuDurationMs?: number`**, **`duration?: number`** (wall ms), `memory: number` (MB), `vcpus: number`, `startedAt?`, `stoppedAt?`, `status`, `networkTransfer?: { ingress; egress }`. Instance getters, populated only once stopped: **`sandbox.activeCpuUsageMs`** ("The amount of CPU used by the session. Only reported once the VM is stopped"), plus cumulative `sandbox.totalActiveCpuDurationMs`, `sandbox.totalDurationMs`, `sandbox.totalEgressBytes`, `sandbox.totalIngressBytes` — all `number \| undefined`. **Both spellings are real and neither is guaranteed present**: the session payload uses `activeCpuDurationMs`/`duration`, the getters use `activeCpuUsageMs`/`totalDurationMs`. `usage()` reads the `stop()` payload first and falls back to the getters (Task 4 Step 4.7). |
 | Destroy | **Correction to the first draft of this table.** `sandbox.delete(opts?: { deleteOrphanSnapshots?: boolean; signal?: AbortSignal })` exists and takes the purge flag directly — "When true, the snapshots of this sandbox that are not used by any other sandbox are deleted asynchronously too. **Defaults to false**, which keeps them until they expire." So destroy is `stop()` (to capture usage) → `delete({ deleteOrphanSnapshots: true })`, **not** a hand-rolled `Snapshot.list` + per-item `delete()` loop. After `delete()` "the instance becomes inert — all further API calls will throw immediately", which is what makes the second `destroy()` a no-op. With `persistent: false` and no call to `sandbox.snapshot()` no snapshot can be created in the first place; `deleteOrphanSnapshots` is belt-and-braces and the nightly suite is the proof. |
 | Snapshots (nightly assertion only) | `Snapshot.list(params?)` and `Snapshot.get({ snapshotId })` → `Snapshot` with `.id`, `.expiresAt`, `.delete()`. `SnapshotMetadata` fields: `id`, `sourceSessionId`, `region`, `status: 'created' \| 'failed' \| 'deleted'`, `sizeBytes`, `expiresAt?`, `createdAt`, `parentId?`. |
 | Reacquire | `Sandbox.get({ name: string, resume?: boolean, onResume?, signal? })` — the `.d.ts` says **"Defaults to false"** for `resume`; the published docs page says "Defaults to true". **The `.d.ts` of the pinned version wins**, and the reaper passes `resume: false` explicitly so the disagreement cannot matter. v2+ identifies a sandbox by `name` (unique per project), not by a `sandboxId`; therefore `providerRef === sandbox.name`. |
@@ -2230,7 +2230,7 @@ git commit -m "test(ai): shared SandboxBackend contract suite across fake and ve
 - Create: `apps/api/src/__tests__/integration/workspace.vercel.e2e.test.ts`
 - Create: `apps/api/vitest.config.workspace-e2e.ts`
 - Modify: `apps/api/package.json` (`scripts`, alphabetical — between `test:tz` and `test:run`… note the existing block is alphabetical except for the trailing `test:run`; insert `test:workspace-e2e` after `test:tz`)
-- Modify: `apps/api/vitest.integration.config.ts` (`exclude` array, ~line 780 in the tail block)
+- Modify: `apps/api/vitest.integration.config.ts` (`exclude` array, lines 293–326 of a 360-line file — it sits directly after the `include` array and before the `// Migrations run ONCE per invocation here` comment)
 - Create: `.github/workflows/workspace-nightly.yml`
 
 **Interfaces:** none exported.
@@ -3186,105 +3186,184 @@ Expected: `ERROR: new row violates row-level security policy for table "ai_run_w
 
 - [ ] **Step 7.11 — Add the dedicated RLS/cascade integration suite.**
 
-`apps/api/src/__tests__/integration/aiRunWorkspaces.integration.test.ts` — following the house style of the existing `*Rls.integration.test.ts` suites in this directory (read one, e.g. the nearest `ai*` integration suite, for the exact fixture helpers before writing this):
-```ts
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+`apps/api/src/__tests__/integration/aiRunWorkspaces.integration.test.ts`. The house pattern for a live-DB tenancy proof in this directory is `aiAgentsPartnerRls.integration.test.ts` — read it first and copy it structurally: `import './setup'`, fixtures from `db-utils.ts` (`createPartner` / `createOrganization` / `createUser`), writes through the **normal `db` proxy** wrapped in `withDbAccessContext(<attacker context>, …)`, and the SQLSTATE asserted off `err.cause.code`. There is no raw-client escape hatch and none is needed: `DB_CONTEXTLESS_WRITE_STRICT` fires on a **contextless** connection, not on a wrong-tenant one, so an insert made *inside* an attacker's own org context reaches Postgres and is refused by the policy with `42501`.
 
-import { db, withDbAccessContext, withSystemDbAccessContext } from '../../db';
+```ts
+import './setup';
+import { randomUUID } from 'node:crypto';
+import { afterEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { aiAgentRuns, aiAgents } from '../../db/schema';
 import { aiRunWorkspaces } from '../../db/schema/aiWorkspace';
-import { getAppDb } from './db-utils';
-import { seedTwoOrgsWithAgentRuns } from './fixtures';
+import { createOrganization, createPartner, createUser } from './db-utils';
 
 /**
- * Live-DB proof for ai_run_workspaces (spec §6.2). Four properties:
- *  1. an org context cannot SELECT another org's workspace row;
- *  2. an org context cannot INSERT a row for another org (42501);
- *  3. a contextless connection sees nothing (deny, not bypass);
- *  4. deleting the parent run cascades the workspace row away.
+ * Live-DB proof for ai_run_workspaces (spec §6.2). Five properties:
+ *  1. the owning org CAN insert its own row  — the positive control, without
+ *     which the 42501 case below could be green for the wrong reason
+ *     (a typo'd column, a missing table, a fixture that never ran);
+ *  2. an org context CANNOT insert a row for another org (42501);
+ *  3. an org context cannot SELECT another org's workspace row;
+ *  4. deleting the parent run cascades the workspace row away;
+ *  5. at most one LIVE workspace per run (partial unique index).
  *
- * The forge cases run against a RAW breeze_app client (getAppDb), not the
- * guarded `db` proxy, so the deliberate cross-tenant attempt is not caught by
- * the DB_CONTEXTLESS_WRITE_STRICT guard before Postgres gets to refuse it.
+ * Every write goes through the normal `db` proxy inside an explicit
+ * DbAccessContext, exactly as aiAgentsPartnerRls.integration.test.ts does.
+ * The forged insert reuses the VICTIM's own (run_id, org_id) pair so the
+ * composite FK is satisfiable — if the row were refused with 23503 we would
+ * be proving the FK works, not the policy.
  */
+
+function orgContext(orgId: string, partnerId: string): DbAccessContext {
+  return {
+    scope: 'organization',
+    orgId,
+    accessibleOrgIds: [orgId],
+    accessiblePartnerIds: [],
+    userId: null,
+    currentPartnerId: partnerId,
+  };
+}
+
+async function expectSqlState(fn: () => Promise<unknown>, code: string): Promise<void> {
+  let raised: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    raised = err;
+  }
+  expect(raised, `expected SQLSTATE ${code}, but the statement succeeded`).toBeDefined();
+  const cause = (raised as { cause?: { code?: string } })?.cause;
+  expect(cause?.code ?? (raised as { code?: string })?.code).toBe(code);
+}
+
+interface Tenant {
+  partnerId: string;
+  orgId: string;
+  runId: string;
+}
+
+/** One partner + one org + one ai_agents row + one ai_agent_runs row. */
+async function seedTenantWithRun(): Promise<Tenant> {
+  const partner = await createPartner();
+  const org = await createOrganization({ partnerId: partner.id });
+  const user = await createUser({ partnerId: partner.id, orgId: org.id });
+
+  const runId = await withSystemDbAccessContext(async () => {
+    const [agent] = await db
+      .insert(aiAgents)
+      .values({
+        orgId: org.id,
+        partnerId: null,
+        kind: 'triage',
+        name: 'Workspace fixture',
+        createdBy: user.id,
+      })
+      .returning({ id: aiAgents.id });
+    const [run] = await db
+      .insert(aiAgentRuns)
+      .values({
+        agentId: agent!.id,
+        orgId: org.id,
+        triggerKind: 'manual',
+        dedupeKey: `workspace-${randomUUID()}`,
+        modeAtStart: 'shadow',
+        policySnapshot: { schemaVersion: 1 } as never,
+      })
+      .returning({ id: aiAgentRuns.id });
+    return run!.id as string;
+  });
+
+  return { partnerId: partner.id, orgId: org.id, runId };
+}
+
+function workspaceValues(t: Tenant, providerRef: string) {
+  return {
+    orgId: t.orgId,
+    runId: t.runId,
+    backend: 'fake' as const,
+    providerRef,
+    region: 'eu' as const,
+    deadlineAt: new Date(Date.now() + 3_600_000),
+  };
+}
+
+afterEach(async () => {
+  await withSystemDbAccessContext(() => db.delete(aiRunWorkspaces));
+});
+
 describe('ai_run_workspaces RLS', () => {
-  let orgA: string;
-  let orgB: string;
-  let runA: string;
-
-  beforeEach(async () => {
-    ({ orgA, orgB, runA } = await seedTwoOrgsWithAgentRuns());
-    await withSystemDbAccessContext(async () => {
-      await db.insert(aiRunWorkspaces).values({
-        orgId: orgA,
-        runId: runA,
-        backend: 'fake',
-        providerRef: 'fake-seed',
-        region: 'eu',
-        deadlineAt: new Date(Date.now() + 3_600_000),
-      });
-    });
-  });
-
-  afterEach(async () => {
-    await withSystemDbAccessContext(async () => {
-      await db.delete(aiRunWorkspaces);
-    });
-  });
-
-  it('hides another org rows from an org context', async () => {
-    const rows = await withDbAccessContext({ scope: 'org', orgIds: [orgB] }, async () =>
-      db.select().from(aiRunWorkspaces));
-    expect(rows).toEqual([]);
-  });
-
-  it('shows the owning org its own row', async () => {
-    const rows = await withDbAccessContext({ scope: 'org', orgIds: [orgA] }, async () =>
-      db.select().from(aiRunWorkspaces));
+  it('lets the owning org insert and read its own workspace row (positive control)', async () => {
+    const t = await seedTenantWithRun();
+    const rows = await withDbAccessContext(orgContext(t.orgId, t.partnerId), () =>
+      db.insert(aiRunWorkspaces).values(workspaceValues(t, 'fake-own')).returning(),
+    );
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.providerRef).toBe('fake-seed');
+    expect(rows[0]?.orgId).toBe(t.orgId);
+    expect(rows[0]?.status).toBe('creating');
+
+    const read = await withDbAccessContext(orgContext(t.orgId, t.partnerId), () =>
+      db.select().from(aiRunWorkspaces),
+    );
+    expect(read.map((r) => r.providerRef)).toEqual(['fake-own']);
   });
 
   it('refuses a forged cross-tenant insert with 42501', async () => {
-    const app = getAppDb();
-    await app.unsafe(`SELECT set_config('breeze.scope','org',false),
-                             set_config('breeze.org_ids','{${orgB}}',false)`);
-    await expect(
-      app.unsafe(`INSERT INTO ai_run_workspaces (org_id, run_id, backend, provider_ref, region, deadline_at)
-                  VALUES ('${orgA}','${runA}','fake','forged','eu', now() + interval '1 hour')`),
-    ).rejects.toMatchObject({ code: '42501' });
+    const attacker = await seedTenantWithRun();
+    const victim = await seedTenantWithRun();
+    // The victim's own (run_id, org_id) pair — the composite FK is satisfied,
+    // so the ONLY thing that can refuse this row is the policy.
+    await expectSqlState(
+      () =>
+        withDbAccessContext(orgContext(attacker.orgId, attacker.partnerId), () =>
+          db.insert(aiRunWorkspaces).values(workspaceValues(victim, 'forged')).returning(),
+        ),
+      '42501',
+    );
   });
 
-  it('shows nothing on a contextless connection', async () => {
-    const app = getAppDb();
-    const rows = await app.unsafe('SELECT id FROM ai_run_workspaces');
+  it('hides another org’s rows from an org context', async () => {
+    const owner = await seedTenantWithRun();
+    const other = await seedTenantWithRun();
+    await withSystemDbAccessContext(() =>
+      db.insert(aiRunWorkspaces).values(workspaceValues(owner, 'fake-owner')),
+    );
+    const rows = await withDbAccessContext(orgContext(other.orgId, other.partnerId), () =>
+      db.select().from(aiRunWorkspaces),
+    );
     expect(rows).toEqual([]);
   });
 
   it('cascades away when the parent run is deleted', async () => {
+    const t = await seedTenantWithRun();
     await withSystemDbAccessContext(async () => {
-      await db.execute(`DELETE FROM ai_agent_runs WHERE id = '${runA}'`);
-      const rows = await db.select().from(aiRunWorkspaces);
-      expect(rows).toEqual([]);
+      await db.insert(aiRunWorkspaces).values(workspaceValues(t, 'fake-cascade'));
+      await db.delete(aiAgentRuns).where(eq(aiAgentRuns.id, t.runId));
+      expect(await db.select().from(aiRunWorkspaces)).toEqual([]);
     });
   });
 
   it('allows at most one live workspace per run', async () => {
-    await expect(
-      withSystemDbAccessContext(async () => {
-        await db.insert(aiRunWorkspaces).values({
-          orgId: orgA,
-          runId: runA,
-          backend: 'fake',
-          providerRef: 'fake-second',
-          region: 'eu',
-          deadlineAt: new Date(Date.now() + 3_600_000),
-        });
-      }),
-    ).rejects.toMatchObject({ code: '23505' });
+    const t = await seedTenantWithRun();
+    await expectSqlState(
+      () =>
+        withSystemDbAccessContext(async () => {
+          await db.insert(aiRunWorkspaces).values(workspaceValues(t, 'fake-first'));
+          await db.insert(aiRunWorkspaces).values(workspaceValues(t, 'fake-second'));
+        }),
+      '23505',
+    );
   });
 });
 ```
-If `seedTwoOrgsWithAgentRuns` / `getAppDb` do not exist under those exact names, use whatever the neighbouring integration suites actually import — read one first and match it; do **not** invent a new fixture helper, and **never** write a "repair the whole DB" helper (that is what masked the deferrable-FK contract in CI once already).
+
+Do **not** invent fixture helpers: `createPartner` / `createOrganization` / `createUser` are the real exports of `db-utils.ts` (signatures: `createPartner(opts?)`, `createOrganization({ partnerId })`, `createUser({ partnerId, orgId? })`), and **never** write a "repair the whole DB" helper — that is what masked the deferrable-FK contract in CI once already.
+
+- [ ] **Step 7.11b — Prove the red before the green.**
+
+Run the suite against a database that has NOT yet had this wave's migration applied (or with the policy block commented out of the migration) and confirm the forge case is the one that fails — a `42501` that appears without the policy existing would mean the assertion is reading someone else's error.
 
 ```bash
 cd apps/api && npx vitest run --config vitest.integration.config.ts src/__tests__/integration/aiRunWorkspaces.integration.test.ts
@@ -3797,7 +3876,7 @@ cd apps/api && npx vitest run src/jobs/workspaceReaper.test.ts
 
 Then run whatever guards that file:
 ```bash
-cd apps/api && npx vitest run src/services/workerRegistry src/jobs/workerEntrypointClosure.contract.test.ts
+cd apps/api && npx vitest run src/services/workerRegistry src/services/workerEntrypointClosure.contract.test.ts
 ```
 Expected: green. A `workerEntrypointClosure` failure means the reaper's import graph reaches a route or the full service graph — the usual culprit is importing a metrics helper that is not a leaf, which is exactly why `aiWorkspaceMetrics.ts` imports only `metricsRegistry`.
 
@@ -4109,7 +4188,7 @@ git commit -m "feat(ai): sandbox compute pricing — COMPUTE_PRICING and calcula
 **Files:**
 - Modify: `apps/api/src/config/env.ts` (after the `aiOperatorServiceRecoveryEnabled` block, ~line 140)
 - Modify: `apps/api/src/config/validate.ts` (`envObjectSchema` declarations ~line 622; production `superRefine` block ~line 1276, beside the `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` rule)
-- Modify: `apps/api/src/config/validate.test.ts` (or the nearest existing config test — check `ls apps/api/src/config/*.test.ts` first and extend the one that already covers the production `superRefine`)
+- Modify: `apps/api/src/config/validate.test.ts` (the existing `describe('validateConfig', …)` block — its `withEnv` helper and `validEnv` base live at lines 1–42 and are the only harness this wave uses)
 - Modify: `.env.example` (repo root — there is **no** `apps/api/.env.example`; verify with `ls apps/api/.env* 2>/dev/null`)
 
 **Interfaces:**
@@ -4121,77 +4200,108 @@ export function aiWorkspaceEnabled(): boolean;   // isHosted() && AI agents flag
 
 - [ ] **Step 10.1 — Write the failing config test.**
 
-Append to the production-`superRefine` describe in the existing config test file:
+The harness already exists in `apps/api/src/config/validate.test.ts` (lines 1–42): a module-local `withEnv(overrides, fn)` that mutates `process.env` and restores it, a shared `validEnv` base object, and `validateConfig()` — **no arguments; it reads `process.env`**. That is the whole harness: there is no env-parsing function that takes an object and no production-fixture factory, so do not import or invent one. `withEnv` can only *set* keys, so a "missing" variable is expressed as `''`, exactly as the neighbouring `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` cases do (`validate.test.ts:603-635`).
+
+Append inside the existing `describe('validateConfig', …)` block, beside those cases:
 ```ts
-describe('BREEZE_AI_WORKSPACE_ENABLED production gate', () => {
-  const base = productionEnvFixture(); // the helper the neighbouring cases already use
+  // Execution plane W02 (spec §8 "Hosted only", §2.2 D-I). The workspace flag
+  // spends LanternOps' own money in LanternOps' own Vercel tenant, so a
+  // production deploy that turns it on without a backend and credentials must
+  // die at boot, not at the first analysis run.
+  const workspaceProdEnv = {
+    ...validEnv,
+    NODE_ENV: 'production',
+    CORS_ALLOWED_ORIGINS: 'https://app.breeze.io',
+    TRUST_PROXY_HEADERS: 'true',
+    IS_HOSTED: 'true',
+  };
 
-  it('boots when the workspace flag is off, whatever else is unset', () => {
-    expect(() => parseEnv({ ...base, BREEZE_AI_WORKSPACE_ENABLED: 'false' })).not.toThrow();
-    expect(() => parseEnv({ ...base })).not.toThrow();
+  it('boots in production when the workspace flag is off, whatever else is unset', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'false',
+      AI_WORKSPACE_BACKEND: '',
+      VERCEL_SANDBOX_TOKEN: '',
+      VERCEL_TEAM_ID: '',
+      VERCEL_PROJECT_ID: '',
+    }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
   });
 
-  it('refuses the flag without IS_HOSTED=true', () => {
-    expect(() =>
-      parseEnv({
-        ...base,
-        IS_HOSTED: 'false',
-        BREEZE_AI_WORKSPACE_ENABLED: 'true',
-        AI_WORKSPACE_BACKEND: 'vercel',
-        VERCEL_SANDBOX_TOKEN: 't',
-        VERCEL_TEAM_ID: 'team_x',
-        VERCEL_PROJECT_ID: 'prj_x',
-      }),
-    ).toThrowError(/IS_HOSTED/);
+  it('refuses BREEZE_AI_WORKSPACE_ENABLED in production without AI_WORKSPACE_BACKEND', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: '',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/AI_WORKSPACE_BACKEND/);
+    });
   });
 
-  it('refuses the fake backend in production', () => {
-    expect(() =>
-      parseEnv({
-        ...base,
-        IS_HOSTED: 'true',
-        BREEZE_AI_WORKSPACE_ENABLED: 'true',
-        AI_WORKSPACE_BACKEND: 'fake',
-        VERCEL_SANDBOX_TOKEN: 't',
-        VERCEL_TEAM_ID: 'team_x',
-        VERCEL_PROJECT_ID: 'prj_x',
-      }),
-    ).toThrowError(/AI_WORKSPACE_BACKEND/);
+  it('refuses the fake backend in production with the workspace flag on', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'fake',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/AI_WORKSPACE_BACKEND/);
+    });
+  });
+
+  it('refuses the workspace flag without IS_HOSTED=true', () => {
+    withEnv({
+      ...workspaceProdEnv,
+      IS_HOSTED: 'false',
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'vercel',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      expect(() => validateConfig()).toThrow(/IS_HOSTED/);
+    });
   });
 
   it.each(['VERCEL_SANDBOX_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID'])(
-    'refuses the flag without %s',
+    'refuses the workspace flag without %s',
     (missing) => {
-      const env: Record<string, string> = {
-        ...base,
-        IS_HOSTED: 'true',
+      withEnv({
+        ...workspaceProdEnv,
         BREEZE_AI_WORKSPACE_ENABLED: 'true',
         AI_WORKSPACE_BACKEND: 'vercel',
-        VERCEL_SANDBOX_TOKEN: 't',
-        VERCEL_TEAM_ID: 'team_x',
-        VERCEL_PROJECT_ID: 'prj_x',
-      };
-      delete env[missing];
-      expect(() => parseEnv(env)).toThrowError(new RegExp(missing));
+        VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+        VERCEL_TEAM_ID: 'team_xxx',
+        VERCEL_PROJECT_ID: 'prj_xxx',
+        [missing]: '',
+      }, () => {
+        expect(() => validateConfig()).toThrow(new RegExp(missing));
+      });
     },
   );
 
   it('accepts a fully configured hosted deployment', () => {
-    expect(() =>
-      parseEnv({
-        ...base,
-        IS_HOSTED: 'true',
-        BREEZE_AI_WORKSPACE_ENABLED: 'true',
-        AI_WORKSPACE_BACKEND: 'vercel',
-        VERCEL_SANDBOX_TOKEN: 't',
-        VERCEL_TEAM_ID: 'team_x',
-        VERCEL_PROJECT_ID: 'prj_x',
-      }),
-    ).not.toThrow();
+    withEnv({
+      ...workspaceProdEnv,
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      AI_WORKSPACE_BACKEND: 'vercel',
+      VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
+      VERCEL_TEAM_ID: 'team_xxx',
+      VERCEL_PROJECT_ID: 'prj_xxx',
+    }, () => {
+      const config = validateConfig();
+      expect(config.NODE_ENV).toBe('production');
+    });
   });
-});
 ```
-Match `parseEnv` / `productionEnvFixture` to whatever the existing cases in that file actually use — read the neighbouring `RELEASE_ARTIFACT_MANIFEST_PUBLIC_KEYS` case and copy its harness verbatim rather than introducing a second one.
+
+Two things a reviewer should check here. First, the placeholders: `team_xxx` / `prj_xxx` and a literal `prod-test-…` token — never a real Vercel id or token, in this file or in `.env.example`. Second, the `it.each` cases assert on a `RegExp` built from the variable name, so the production rule in Step 10.4 **must name the missing variable in its message** — a generic "Vercel credentials are required" would leave three tests red and the operator guessing.
 
 - [ ] **Step 10.2 — Run it; expect the "accepts" case to pass and every refusal case to fail (no rule exists yet).**
 ```bash

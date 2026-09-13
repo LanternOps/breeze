@@ -31,21 +31,22 @@ tracking_issue: LanternOps/breeze#5711
 - Run one test file with `cd apps/api && npx vitest run src/path/file.test.ts`. Never `pnpm --filter … test -- --run` (the `--` is forwarded literally and vitest falls back to the whole suite in watch mode).
 - Test files live beside their source (`foo.ts` → `foo.test.ts`).
 - The existing run-completed event is **`ai.agent.run.completed`**, not the spec's prose `ai.run.completed`. Use the `ai.agent.*` namespace: the new event is `ai.agent.run.progress`.
+- **Sequencing: depends on W01 landing first (`breezeRegion`, `createArtifact`).** `breezeRegion()` (`apps/api/src/config/env.ts`) and `createArtifact` (`services/artifacts/artifactService.ts`) do not exist on `main` today — they arrive with W01. Do not start Task 7 before W01 is merged into this branch's base, and do not re-create either symbol locally (see reconciliation R1).
 
 ---
 
 ## Cross-wave reconciliation — orchestrator, 2026-09-13 (overrides task bodies where they conflict)
 
-- **R1 Region.** Do NOT create `services/artifacts/artifactRegion.ts` / `ARTIFACT_REGION`. Use W01's `breezeRegion()` from `apps/api/src/config/env.ts` (env `BREEZE_REGION`) wherever this plan calls `resolveArtifactRegion()`. Delete the task step that introduces the resolver and its test.
+- **R1 Region.** Do NOT create a region-resolver module or an `ARTIFACT_REGION` env var under `services/artifacts/`. Use W01's `breezeRegion()` from `apps/api/src/config/env.ts` (env `BREEZE_REGION`) as the region on every `createArtifact` call. The task that introduced a local resolver and its test has been deleted from this plan; do not reinstate it.
 - **R2 Capability mapping.** W03 owns adding `export_dataset` to `TOOL_CAPABILITY` under `workspace` and adding `workspace` to `AgentCapabilityId`/`AGENT_CAPABILITIES` if absent. W04 guards both with a grep and will not double-add.
 - **R3 Progress emitter signature is canonical here:** `emitRunProgress(ctx: RunProgressContext, step: string, label: string)`. W05 assumed `emitRunProgress(orgId, {…})` — W05 adapts to this one.
-- **R4 Context fields.** `ToolExecutionContext` gains, from this wave, `runId?`, `sessionId?` (run ledger session), `runTargets?`, `stagedBytesRemaining?`. W04 overwrites `runTargets`/`stagedBytesRemaining` at admission; W04 also sets `orgId?` (run org) and W05 sets `orgId?` + `chatSessionId?` on the chat path (see W01 R4/R5). Add `orgId?: string` and `chatSessionId?: string | null` to the same interface here so the type lands once.
+- **R4 Context fields — narrowed, 2026-09-13.** `ToolExecutionContext` gains **exactly two** fields from this wave: `runTargets?: readonly string[]` and `stagedBytesRemaining?: number`. Both are release-path *constraints*, which is what that type is for (`toolExecutionContext.ts:39-65` documents it as deliberately narrow). Do **not** add `runId?`, `sessionId?`, `orgId?` or `chatSessionId?` — no wave adds them now. `export_dataset` reads identity from the principal instead: `auth.principal.kind === 'ai_agent' ? auth.principal.runId : null` (`aiAgents/agentAuthContext.ts:78`) and the org from `auth.orgId` (`:89`); with no `ai_agent` principal (direct chat/MCP) the tool returns the typed error `export_requires_run`. W04 overwrites `runTargets`/`stagedBytesRemaining` at admission.
 
 ---
 
-### Task 1: Carry run identity, frozen targets and the staged-bytes budget to tool handlers
+### Task 1: Carry the frozen targets and the staged-bytes budget to tool handlers
 
-Nothing per-run reaches a tool handler today. `ToolExecutionContext` (`services/toolExecutionContext.ts`) carries only `verifiedRunScript` and `actionIntentId`, both set by release paths. `export_dataset` needs the run id (to own the artifact), the run's frozen device targets (spec §8 data minimisation) and the remaining staged-bytes budget (the byte cap).
+No per-run *constraint* reaches a tool handler today. `ToolExecutionContext` (`services/toolExecutionContext.ts`) carries only `verifiedRunScript` and `actionIntentId`, both set by release paths, and its own docs (`:39-65`) say it stays deliberately narrow. `export_dataset` needs two things from the run frame: the frozen device targets (spec §8 data minimisation) and the remaining staged-bytes budget (the byte cap). Both are release-path constraints, so both belong here — and nothing else does. **Run IDENTITY does not go on this type** (reconciliation R4): the run id already rides on the auth principal (`auth.principal.runId` when `kind === 'ai_agent'`, `aiAgents/agentAuthContext.ts:78`) and the org on `auth.orgId` (`:89`), so adding `runId`/`sessionId` here would be a second, drift-prone copy of identity the tool layer can already read.
 
 **Files:**
 - Modify `apps/api/src/services/toolExecutionContext.ts` (type `ToolExecutionContext`, lines ~70–92)
@@ -54,15 +55,11 @@ Nothing per-run reaches a tool handler today. `ToolExecutionContext` (`services/
 
 **Interfaces:**
 
-Produces (new optional fields, flat siblings — every other wave consumes these names verbatim):
+Produces (two new optional fields, flat siblings — every other wave consumes these names verbatim):
 ```ts
 export type ToolExecutionContext = {
   verifiedRunScript?: VerifiedRunScript;
   actionIntentId?: string;
-  /** The `ai_agent_runs.id` this call is executing under. Absent for chat/MCP/script-builder. */
-  runId?: string;
-  /** The run's execution-ledger session id, or null when session creation failed. */
-  sessionId?: string | null;
   /** Device ids frozen at admission. Present ⇒ device-scoped tool args must be a SUBSET. */
   runTargets?: readonly string[];
   /** Bytes this run may still stage into artifacts. */
@@ -84,20 +81,25 @@ import { describe, it, expect } from 'vitest';
 import type { ToolExecutionContext } from '../toolExecutionContext';
 
 describe('ToolExecutionContext run fields', () => {
-  it('accepts runId, sessionId, runTargets and stagedBytesRemaining', () => {
+  it('accepts runTargets and stagedBytesRemaining', () => {
     const ctx: ToolExecutionContext = {
-      runId: '11111111-1111-4111-8111-111111111111',
-      sessionId: null,
       runTargets: ['22222222-2222-4222-8222-222222222222'],
       stagedBytesRemaining: 1024,
     };
     expect(ctx.runTargets).toEqual(['22222222-2222-4222-8222-222222222222']);
     expect(ctx.stagedBytesRemaining).toBe(1024);
   });
+
+  it('stays a constraint type — run identity is NOT copied onto it', () => {
+    // Identity lives on the auth principal (agentAuthContext.ts:78/:89).
+    // @ts-expect-error runId is deliberately absent from ToolExecutionContext (R4)
+    const ctx: ToolExecutionContext = { runId: 'run-1' };
+    expect(ctx).toBeTruthy();
+  });
 });
 ```
-- [ ] Run `cd apps/api && npx vitest run src/services/aiAgents/runLoop.runContext.test.ts` — expect a TypeScript failure: `Object literal may only specify known properties, and 'runId' does not exist in type 'ToolExecutionContext'`.
-- [ ] Add the four fields to `ToolExecutionContext` with the docstrings above, placed after `actionIntentId`. Add this comment block above `runTargets`:
+- [ ] Run `cd apps/api && npx vitest run src/services/aiAgents/runLoop.runContext.test.ts` — expect a TypeScript failure: `Object literal may only specify known properties, and 'runTargets' does not exist in type 'ToolExecutionContext'`.
+- [ ] Add the two fields to `ToolExecutionContext` with the docstrings above, placed after `actionIntentId` — and **only** those two. Add this comment block above `runTargets`:
 ```ts
   /**
    * Device ids frozen at admission for this run (spec §8 data minimisation).
@@ -109,16 +111,18 @@ describe('ToolExecutionContext run fields', () => {
    *
    * ABSENT means "no run frame", not "no restriction" — a direct chat/MCP call
    * has no frozen set, and is bounded by the caller gate alone.
+   *
+   * Only the CONSTRAINT lives here. The run id and org are read from the auth
+   * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
    */
 ```
 - [ ] Re-run the test — expect PASS.
 - [ ] Extend `createAgentRunPreToolUse`'s `args` type in `runLoop.ts` with `runTargets: readonly string[];` and `stagedBytesRemaining: number;`, destructure both alongside `deadlineMs`, and build one shared object right after the destructure:
 ```ts
-  /** Per-invocation run frame handed to every ALLOWED tool call (W03). Built
-   *  once: it is identical for every call in the run. */
+  /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
+   *  Built once: identical for every call in the run. No run id or session id
+   *  here — a tool reads those from the auth principal (R4). */
   const runFrame: ToolExecutionContext = {
-    runId: run.id,
-    sessionId,
     runTargets,
     stagedBytesRemaining,
   };
@@ -134,12 +138,14 @@ with
       : { allowed: true, context: runFrame };
 ```
 and at ~760 replace `return { allowed: true };` with `return { allowed: true, context: runFrame };`.
-- [ ] At the `createAgentRunPreToolUse({ … })` call site (~1495) pass:
+- [ ] At the `createAgentRunPreToolUse({ … })` call site (~1495) pass a **literal** byte budget — `aiToolsExport.ts` does not exist until Task 7, and importing it here would break every `runLoop` test from this task until then:
 ```ts
     runTargets: run.deviceId ? [run.deviceId] : [],
-    stagedBytesRemaining: EXPORT_DEFAULT_MAX_BYTES,
+    // Literal on purpose until Task 7 exists. Task 7 replaces this line with
+    // the real `EXPORT_DEFAULT_MAX_BYTES` import — do not import it now.
+    stagedBytesRemaining: 256 * 1024 * 1024, // EXPORT_DEFAULT_MAX_BYTES — replaced by the real import in Task 7
 ```
-with the import `import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';` and this comment:
+and this comment:
 ```ts
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
@@ -157,7 +163,7 @@ it('createAgentRunPreToolUse accepts runTargets and stagedBytesRemaining', () =>
 });
 ```
 - [ ] Run `cd apps/api && npx vitest run src/services/aiAgents/runLoop.runContext.test.ts src/services/aiAgents/runLoop.test.ts` — expect PASS on both (the second is the regression guard that the existing allow paths still behave).
-- [ ] Commit: `git add apps/api/src/services/toolExecutionContext.ts apps/api/src/services/aiAgents/runLoop.ts apps/api/src/services/aiAgents/runLoop.runContext.test.ts && git commit -m "feat(ai): carry runId, frozen targets and staged-byte budget on ToolExecutionContext"`
+- [ ] Commit: `git add apps/api/src/services/toolExecutionContext.ts apps/api/src/services/aiAgents/runLoop.ts apps/api/src/services/aiAgents/runLoop.runContext.test.ts && git commit -m "feat(ai): carry frozen targets and staged-byte budget on ToolExecutionContext"`
 
 ---
 
@@ -428,15 +434,19 @@ export async function readRunProgress(runId: string): Promise<RunProgressEntry[]
 
 ---
 
-### Task 4: Expose the vulnerability and agent-log query builders for reuse
+### Task 4: Expose the builders the adapters reuse
 
-Five of the seven datasets already call an exported builder. Two do not: `vulnerabilities` (`readDeviceFindings` / `readCatalog` are module-private in `aiToolsVulnerability.ts`) and `agent_logs` (the filter list is built inline in `search_agent_logs`, with no cursor). Export the first pair; extract the second into a shared filter builder that both `search_agent_logs` and the exporter call, so the tool and the export can never disagree about which rows a tenant may see.
+Four builders the adapters need are module-private today: `readDeviceFindings` / `readCatalog` (`aiToolsVulnerability.ts`), the inline agent-log predicate list in `search_agent_logs`, `aiLiveReportAuthority` (`aiToolsFleet.ts:157`) and the custom-field-definition query inlined in `query_custom_fields` (`aiToolsDevice.ts:497-502`). Export or extract each — **never** re-type its body in the adapter file. Each of these carries authz the adapter cannot see: the site axis (`resolveSiteAllowedDeviceIds`), the report execution authority, and the partner-wide `org_id IS NULL` / `partner_id IS NULL` branches of the custom-field definitions. A second copy is a second place to forget them.
 
 **Files:**
 - Modify `apps/api/src/services/aiToolsVulnerability.ts` (lines 92–155: `readCatalog`, `readDeviceFindings`)
 - Modify `apps/api/src/services/aiToolsAgentLogs.ts` (lines 26–145: `search_agent_logs` handler)
+- Modify `apps/api/src/services/aiToolsFleet.ts` (line 157: `aiLiveReportAuthority`)
+- Modify `apps/api/src/services/aiToolsDevice.ts` (lines ~491–556: both `query_custom_fields` branches)
 - Modify `apps/api/src/services/aiToolsAgentLogs.test.ts`
 - Modify `apps/api/src/services/aiToolsVulnerability.test.ts`
+- Modify `apps/api/src/services/aiToolsFleet.test.ts`
+- Create `apps/api/src/services/aiToolsDevice.customFields.test.ts` (there is no `aiToolsDevice.test.ts` in the repo — only `aiToolsDevice.siteScope.test.ts`)
 
 **Interfaces:**
 
@@ -464,6 +474,24 @@ export interface AgentLogQueryFilters {
 export async function buildAgentLogConditions(
   orgId: string, auth: AuthContext, filters: AgentLogQueryFilters,
 ): Promise<SQL[] | null>;
+```
+
+Produces (`aiToolsFleet.ts`) — same body, `export` added:
+```ts
+export async function aiLiveReportAuthority(
+  auth: AuthContext, orgId: string, action: ReportAction,
+): Promise<(Omit<UserReportExecutionAuthority, 'scope'> & { scope: LiveSiteScopeV1 }) | null>;
+```
+
+Produces (`aiToolsDevice.ts`) — the partner-wide-aware definition query, lifted out of both `query_custom_fields` branches:
+```ts
+/** The dual-axis predicate list for custom-field definitions: org-owned rows
+ *  PLUS partner-wide rows (`org_id IS NULL` / `partner_id IS NULL`). */
+export function customFieldDefinitionConditions(auth: AuthContext): SQL[];
+export async function readCustomFieldDefinitions(auth: AuthContext): Promise<Array<{
+  id: string; name: string; fieldKey: string; type: string;
+  required: boolean | null; options: unknown; deviceTypes: unknown; defaultValue: string | null;
+}>>;
 ```
 
 Steps:
@@ -551,7 +579,82 @@ Add `import { type SQL } from 'drizzle-orm';` to the existing drizzle import lin
 ```
 and change the query's `.where(and(...filters))` to `.where(and(...conditions))`.
 - [ ] Run `cd apps/api && npx vitest run src/services/aiToolsAgentLogs.test.ts src/services/aiToolsAgentLogs.siteScope.test.ts` — expect PASS on both (the siteScope suite is the regression guard that the extraction preserved the narrowing).
-- [ ] Commit: `git add apps/api/src/services/aiToolsVulnerability.ts apps/api/src/services/aiToolsVulnerability.test.ts apps/api/src/services/aiToolsAgentLogs.ts apps/api/src/services/aiToolsAgentLogs.test.ts && git commit -m "refactor(ai): export the vulnerability and agent-log query builders for export_dataset"`
+- [ ] Add a failing test to `apps/api/src/services/aiToolsFleet.test.ts`:
+```ts
+it('exports the live report authority resolver for reuse by export_dataset', async () => {
+  const mod = await import('./aiToolsFleet');
+  expect(typeof mod.aiLiveReportAuthority).toBe('function');
+});
+```
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsFleet.test.ts` — expect failure on `typeof mod.aiLiveReportAuthority` being `'undefined'`.
+- [ ] In `aiToolsFleet.ts` add `export` to `async function aiLiveReportAuthority` (line 157). Change nothing else — same body, same callers. It lives in `aiToolsFleet.ts`, **not** `siteScope.ts`; the adapters import it from `./aiToolsFleet`.
+- [ ] Re-run `cd apps/api && npx vitest run src/services/aiToolsFleet.test.ts src/services/aiToolsFleet.siteScope.test.ts` — expect PASS on both.
+- [ ] Write the failing test `apps/api/src/services/aiToolsDevice.customFields.test.ts`:
+```ts
+import { describe, it, expect } from 'vitest';
+
+describe('custom field definition query extraction', () => {
+  it('exports the dual-axis definition reader and its predicate builder', async () => {
+    const mod = await import('./aiToolsDevice');
+    expect(typeof mod.readCustomFieldDefinitions).toBe('function');
+    expect(typeof mod.customFieldDefinitionConditions).toBe('function');
+  });
+
+  it('builds one predicate per axis so partner-wide definitions survive', async () => {
+    // org axis + partner axis = two OR-ed predicates; an org-only `eq` would be one.
+    const { customFieldDefinitionConditions } = await import('./aiToolsDevice');
+    expect(customFieldDefinitionConditions({ orgId: 'org-1', partnerId: 'p-1' } as never)).toHaveLength(2);
+    expect(customFieldDefinitionConditions({ orgId: 'org-1' } as never)).toHaveLength(1);
+  });
+});
+```
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsDevice.customFields.test.ts` — expect failure: `typeof mod.readCustomFieldDefinitions` is `'undefined'`.
+- [ ] In `aiToolsDevice.ts`, lift the definition query out of BOTH `query_custom_fields` branches into module-level exported functions placed directly above `registerDeviceTools`:
+```ts
+/**
+ * Custom-field definitions are a DUAL-AXIS (org XOR partner) config table: a
+ * partner-wide definition has `org_id IS NULL`, and an org-owned one has
+ * `partner_id IS NULL`. An `eq(orgId, auth.orgId)` filter silently drops every
+ * partner-wide field — which for an MSP is most of them. Exported so
+ * `export_dataset`'s `custom_fields` adapter runs this exact predicate list
+ * instead of a second, narrower one.
+ */
+export function customFieldDefinitionConditions(auth: AuthContext): SQL[] {
+  const conditions: SQL[] = [];
+  if (auth.orgId) {
+    conditions.push(
+      sql`(${customFieldDefinitions.orgId} = ${auth.orgId} OR ${customFieldDefinitions.orgId} IS NULL)`
+    );
+  }
+  if (auth.partnerId) {
+    conditions.push(
+      sql`(${customFieldDefinitions.partnerId} = ${auth.partnerId} OR ${customFieldDefinitions.partnerId} IS NULL)`
+    );
+  }
+  return conditions;
+}
+
+export async function readCustomFieldDefinitions(auth: AuthContext) {
+  const conditions = customFieldDefinitionConditions(auth);
+  return db
+    .select({
+      id: customFieldDefinitions.id,
+      name: customFieldDefinitions.name,
+      fieldKey: customFieldDefinitions.fieldKey,
+      type: customFieldDefinitions.type,
+      required: customFieldDefinitions.required,
+      options: customFieldDefinitions.options,
+      deviceTypes: customFieldDefinitions.deviceTypes,
+      defaultValue: customFieldDefinitions.defaultValue,
+    })
+    .from(customFieldDefinitions)
+    .where(conditions.length > 0 ? and(...conditions) : undefined)
+    .orderBy(customFieldDefinitions.name);
+}
+```
+- [ ] Replace the `list_definitions` branch body with `const definitions = await readCustomFieldDefinitions(auth);` (its projection is identical). In the `get_device_values` branch, replace only the inline `const conditions: SQL[] = [];` … block with `const conditions = customFieldDefinitionConditions(auth);` and leave that branch's narrower `.select({...})` projection exactly as it is — it deliberately omits `deviceTypes`, and widening it would change a shipped tool response shape.
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsDevice.customFields.test.ts src/services/aiToolsDevice.siteScope.test.ts` — expect PASS on both.
+- [ ] Commit: `git add apps/api/src/services/aiToolsVulnerability.ts apps/api/src/services/aiToolsVulnerability.test.ts apps/api/src/services/aiToolsAgentLogs.ts apps/api/src/services/aiToolsAgentLogs.test.ts apps/api/src/services/aiToolsFleet.ts apps/api/src/services/aiToolsFleet.test.ts apps/api/src/services/aiToolsDevice.ts apps/api/src/services/aiToolsDevice.customFields.test.ts && git commit -m "refactor(ai): export the query builders export_dataset reuses (vulnerability, agent logs, report authority, custom fields)"`
 
 ---
 
@@ -898,87 +1001,7 @@ export function buildExportStream(
 
 ---
 
-### Task 6: Artifact region helper
-
-W01's contract requires a `region: BlobRegion` on every `createArtifact` call but names no resolver, and `apps/api/src/config/env.ts` has no region variable today. One helper, consumed by W03 and offered to W02/W05.
-
-**Files:**
-- Create `apps/api/src/services/artifacts/artifactRegion.ts`
-- Create `apps/api/src/services/artifacts/artifactRegion.test.ts`
-- Modify `apps/api/.env.example`
-
-**Interfaces:**
-
-Consumes: `export type BlobRegion = 'eu' | 'us';` from `apps/api/src/services/artifacts/blobStorage.ts` (W01).
-
-Produces:
-```ts
-export function resolveArtifactRegion(): BlobRegion; // env ARTIFACT_REGION, default 'eu'
-```
-
-Steps:
-
-- [ ] Write the failing test `apps/api/src/services/artifacts/artifactRegion.test.ts`:
-```ts
-import { describe, it, expect, afterEach } from 'vitest';
-import { resolveArtifactRegion } from './artifactRegion';
-
-const original = process.env.ARTIFACT_REGION;
-afterEach(() => {
-  if (original === undefined) delete process.env.ARTIFACT_REGION;
-  else process.env.ARTIFACT_REGION = original;
-});
-
-describe('resolveArtifactRegion', () => {
-  it('reads ARTIFACT_REGION', () => {
-    process.env.ARTIFACT_REGION = 'us';
-    expect(resolveArtifactRegion()).toBe('us');
-  });
-
-  it('defaults to eu when unset', () => {
-    delete process.env.ARTIFACT_REGION;
-    expect(resolveArtifactRegion()).toBe('eu');
-  });
-
-  it('refuses an unknown region rather than guessing', () => {
-    process.env.ARTIFACT_REGION = 'apac';
-    expect(() => resolveArtifactRegion()).toThrow(/ARTIFACT_REGION/);
-  });
-});
-```
-- [ ] Run `cd apps/api && npx vitest run src/services/artifacts/artifactRegion.test.ts` — expect failure: module not found.
-- [ ] Create `apps/api/src/services/artifacts/artifactRegion.ts`:
-```ts
-/**
- * Which regional blob store this API process writes to.
- *
- * A THROW, not a fallback, on an unknown value: residency is a customer-facing
- * claim (spec §8) and silently writing EU data into a default bucket would be
- * the exact failure the claim exists to prevent.
- */
-import type { BlobRegion } from './blobStorage';
-
-const REGIONS = new Set<string>(['eu', 'us']);
-
-export function resolveArtifactRegion(): BlobRegion {
-  const raw = (process.env.ARTIFACT_REGION ?? 'eu').trim().toLowerCase();
-  if (!REGIONS.has(raw)) {
-    throw new Error(`ARTIFACT_REGION must be 'eu' or 'us' (got ${JSON.stringify(raw)})`);
-  }
-  return raw as BlobRegion;
-}
-```
-- [ ] Append to `apps/api/.env.example`:
-```
-# Regional blob store this API process writes artifacts to: eu | us
-ARTIFACT_REGION=eu
-```
-- [ ] Run `cd apps/api && npx vitest run src/services/artifacts/artifactRegion.test.ts` — expect PASS.
-- [ ] Commit: `git add apps/api/src/services/artifacts/artifactRegion.ts apps/api/src/services/artifacts/artifactRegion.test.ts apps/api/.env.example && git commit -m "feat(ai): resolveArtifactRegion helper for the artifact store"`
-
----
-
-### Task 7: Dataset adapters — one per dataset, each over an existing builder
+### Task 6: Dataset adapters — one per dataset, each over an existing builder
 
 **Files:**
 - Create `apps/api/src/services/aiToolsExportDatasets.ts`
@@ -1006,8 +1029,17 @@ export async function buildAgentLogConditions(orgId: string, auth: AuthContext, 
 // services/reportGenerationService.ts:284 / :395
 export async function generateDeviceInventoryReport(orgId: string, config: Record<string, unknown>, authority: ReportExecutionAuthority): Promise<{ rows: unknown[]; rowCount: number }>;
 export async function generateSoftwareInventoryReport(orgId: string, config: Record<string, unknown>, authority: ReportExecutionAuthority): Promise<{ rows: unknown[]; rowCount: number }>;
-// `aiLiveReportAuthority(auth, orgId, 'read')` (services/siteScope.ts, used by
-// aiToolsFleet.ts:2332) yields the ReportExecutionAuthority both take.
+// `aiLiveReportAuthority(auth, orgId, 'read')` lives in services/aiToolsFleet.ts
+// (line 157, module-private until Task 4 exports it — it is NOT in siteScope.ts)
+// and yields the ReportExecutionAuthority both generators take.
+// NOTE: `generateDeviceInventoryReport` honours `filters.siteIds`/`osTypes` ONLY
+// — it has no `deviceIds` branch (unlike generateSoftwareInventoryReport:~404),
+// so the device_inventory adapter post-filters its rows itself.
+
+// services/aiToolsSiteScope.ts
+export async function resolveSiteAllowedDeviceIds(orgId: string, auth: AuthContext): Promise<string[] | null>;
+// services/aiToolsDevice.ts (Task 4)
+export async function readCustomFieldDefinitions(auth: AuthContext): Promise<Array<{ id: string; name: string; fieldKey: string; type: string }>>;
 
 // services/aiToolsVulnerability.ts (Task 4)
 export async function readDeviceFindings(orgId: string, opts: { status: string; deviceId?: string }): Promise<DeviceRow[]>;
@@ -1030,6 +1062,9 @@ export interface DatasetRequest {
   orgId: string;
   filters: Record<string, unknown>;
   deviceIds: string[] | null;
+  /** The run's frozen target set, or null outside a run frame. Only the
+   *  inventory adapters read it — their generator has no deviceIds filter. */
+  runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
 }
@@ -1052,12 +1087,41 @@ import { DATASET_ADAPTERS, EXPORT_DATASETS } from './aiToolsExportDatasets';
 
 const searchFleetLogs = vi.fn();
 vi.mock('./logSearch', () => ({ searchFleetLogs: (...a: unknown[]) => searchFleetLogs(...a) }));
-vi.mock('./aiToolsSiteScope', () => ({ resolveSiteAllowedDeviceIds: async () => null, SITE_SCOPE_EMPTY_NOTE: '' }));
+
+const resolveSiteAllowedDeviceIds = vi.fn(async () => null as string[] | null);
+vi.mock('./aiToolsSiteScope', () => ({
+  resolveSiteAllowedDeviceIds: (...a: unknown[]) => resolveSiteAllowedDeviceIds(...(a as [])),
+  SITE_SCOPE_EMPTY_NOTE: '',
+}));
+
+const generateDeviceInventoryReport = vi.fn();
+vi.mock('./reportGenerationService', () => ({
+  generateDeviceInventoryReport: (...a: unknown[]) => generateDeviceInventoryReport(...a),
+  generateSoftwareInventoryReport: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+}));
+vi.mock('./aiToolsFleet', () => ({ aiLiveReportAuthority: async () => ({ scope: { kind: 'live_v1' } }) }));
+
+const readCustomFieldDefinitions = vi.fn(async () => [] as Array<Record<string, unknown>>);
+vi.mock('./aiToolsDevice', () => ({
+  readCustomFieldDefinitions: () => readCustomFieldDefinitions(),
+  customFieldDefinitionConditions: () => [],
+}));
+
+const verifyDeviceAccess = vi.fn(async (deviceId: string) => ({ device: { id: deviceId, hostname: `host-${deviceId}`, customFields: { tier: 'gold' } } }));
+vi.mock('./aiTools', () => ({ verifyDeviceAccess: (id: string) => verifyDeviceAccess(id) }));
 
 const auth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: null, canAccessSite: undefined } as never;
+const siteAuth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: ['site-1'], canAccessSite: () => true } as never;
 
 describe('dataset adapters', () => {
-  beforeEach(() => { searchFleetLogs.mockReset(); });
+  beforeEach(() => {
+    searchFleetLogs.mockReset();
+    resolveSiteAllowedDeviceIds.mockReset();
+    resolveSiteAllowedDeviceIds.mockResolvedValue(null);
+    generateDeviceInventoryReport.mockReset();
+    readCustomFieldDefinitions.mockReset();
+    readCustomFieldDefinitions.mockResolvedValue([]);
+  });
 
   it('covers every dataset named in the spec', () => {
     expect(Object.keys(DATASET_ADAPTERS).sort()).toEqual([...EXPORT_DATASETS].sort());
@@ -1077,7 +1141,7 @@ describe('dataset adapters', () => {
       .mockResolvedValueOnce({ results: [{ log: { id: 'b', timestamp: new Date(0), level: 'info', category: 'system', source: 's', eventId: '2', message: 'm2', deviceId: 'd1' }, device: null, site: null }], nextCursor: null, hasMore: false });
 
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: {}, deviceIds: null, siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
     });
 
     const first = await pager(null);
@@ -1090,13 +1154,81 @@ describe('dataset adapters', () => {
     expect(searchFleetLogs.mock.calls[1]![1]).toMatchObject({ cursor: 'cur-1', limit: 500 });
   });
 
-  it('event_logs passes the site-narrowed device set through to the builder', async () => {
+  it('event_logs passes the requested device set through to the builder', async () => {
     searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
     const pager = await DATASET_ADAPTERS.event_logs.createPager({
-      auth, orgId: 'org-1', filters: { level: ['error'] }, deviceIds: ['d1', 'd2'], siteId: null, pageSize: 500,
+      auth, orgId: 'org-1', filters: { level: ['error'] }, deviceIds: ['d1', 'd2'], runTargets: null, siteId: null, pageSize: 500,
     });
     await pager(null);
     expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ deviceIds: ['d1', 'd2'], level: ['error'] });
+  });
+
+  // --- site axis: the narrowing `search_logs` performs at aiToolsEventLogs.ts:84 ---
+
+  it('event_logs narrows a site-restricted caller to its in-scope devices', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue(['d-in-scope']);
+    searchFleetLogs.mockResolvedValue({
+      results: [{ log: { id: 'a', timestamp: new Date(0), level: 'info', category: 'system', source: 's', eventId: '1', message: 'm', deviceId: 'd-in-scope' }, device: null, site: null }],
+      nextCursor: null, hasMore: false,
+    });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d-in-scope'] });
+    expect(page.rows.map((r) => r.deviceId)).toEqual(['d-in-scope']);
+  });
+
+  it('event_logs yields an empty artifact when a site-restricted caller has zero in-scope devices', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue([]);
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(page).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('device_inventory restricts rows to the requested devices even though the generator ignores deviceIds', async () => {
+    generateDeviceInventoryReport.mockResolvedValue({
+      rows: [
+        { hostname: 'host-d1', osType: 'windows' },
+        { hostname: 'host-d2', osType: 'windows' },
+        { hostname: 'host-d3', osType: 'windows' },
+      ],
+      rowCount: 3,
+    });
+    const pager = await DATASET_ADAPTERS.device_inventory.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
+  });
+
+  it('device_inventory falls back to the run target set when no deviceIds were supplied', async () => {
+    generateDeviceInventoryReport.mockResolvedValue({
+      rows: [{ hostname: 'host-d1' }, { hostname: 'host-d9' }],
+      rowCount: 2,
+    });
+    const pager = await DATASET_ADAPTERS.device_inventory.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'], siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
+  });
+
+  it('custom_fields includes partner-wide definitions via the shared reader', async () => {
+    readCustomFieldDefinitions.mockResolvedValue([
+      { id: 'def-partner', name: 'Contract tier', fieldKey: 'tier', type: 'text' },
+    ]);
+    const pager = await DATASET_ADAPTERS.custom_fields.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+    expect(readCustomFieldDefinitions).toHaveBeenCalledTimes(1);
+    expect(page.rows).toEqual([
+      expect.objectContaining({ deviceId: 'd1', fieldKey: 'tier', fieldName: 'Contract tier', value: 'gold' }),
+    ]);
   });
 });
 ```
@@ -1119,7 +1251,7 @@ describe('dataset adapters', () => {
  */
 import { and, desc, gt, lt, or, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { agentLogs, deviceMetrics, customFieldDefinitions, devices } from '../db/schema';
+import { agentLogs, deviceMetrics } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { searchFleetLogs } from './logSearch';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
@@ -1129,7 +1261,11 @@ import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
 } from './reportGenerationService';
-import { aiLiveReportAuthority } from './siteScope';
+// `aiLiveReportAuthority` lives in aiToolsFleet.ts (exported by Task 4), NOT in
+// siteScope.ts — importing it from the latter is a module-not-found at runtime.
+import { aiLiveReportAuthority } from './aiToolsFleet';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { readCustomFieldDefinitions } from './aiToolsDevice';
 import { verifyDeviceAccess } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
 
@@ -1144,6 +1280,10 @@ export interface DatasetRequest {
   orgId: string;
   filters: Record<string, unknown>;
   deviceIds: string[] | null;
+  /** Devices frozen at admission, or null outside a run frame. Only the
+   *  inventory adapters read it (their generator has no deviceIds filter);
+   *  every other adapter is already narrowed by `deviceIds` + its builder. */
+  runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
 }
@@ -1153,6 +1293,18 @@ export interface DatasetAdapter {
   deviceScoped: boolean;
   createPager(req: DatasetRequest): Promise<ExportPager>;
 }
+
+/** The site-axis narrowing `search_logs` does at `aiToolsEventLogs.ts:84`,
+ *  reproduced because that call site is module-private. `null` = unrestricted
+ *  caller; `[]` = restricted caller with ZERO in-scope devices, which must
+ *  yield an empty export rather than an org-wide one. */
+async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
+  if (!req.auth.allowedSiteIds || !req.auth.canAccessSite) return null;
+  return resolveSiteAllowedDeviceIds(req.orgId, req.auth);
+}
+
+/** A pager that yields nothing — the shape a zero-in-scope caller gets. */
+const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
 
 /** A source that produces its whole result in one builder call. Wrapped as a
  *  one-page pager so the writer's cap/preview machinery is identical for all
@@ -1173,8 +1325,15 @@ const eventLogsAdapter: DatasetAdapter = {
   deviceScoped: false,
   async createPager(req) {
     const f = req.filters;
+    // Same two lines `search_logs` runs before it queries (aiToolsEventLogs.ts:84).
+    // `allowedDeviceIds` is the site axis, which RLS does NOT enforce; dropping
+    // it would let a site-restricted tech export the whole org's logs.
+    const allowedDeviceIds = await siteScopedDeviceIds(req);
+    if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
+
     return async (cursor) => {
       const result = await searchFleetLogs(req.auth, {
+        allowedDeviceIds,
         query: typeof f.query === 'string' ? f.query : undefined,
         timeRange: typeof f.timeRange === 'object' && f.timeRange !== null
           ? f.timeRange as { start?: string; end?: string }
@@ -1280,21 +1439,50 @@ const agentLogsAdapter: DatasetAdapter = {
  *  `device_inventory` at 100 rows — the REPORT GENERATORS are the complete
  *  builders behind both, and the ones `generate_report action: 'generate'`
  *  itself calls. Each returns its full result in one call, so one page. The
- *  writer's row/byte caps still apply to what that page yields. */
+ *  writer's row/byte caps still apply to what that page yields.
+ *
+ *  ASYMMETRY TO KNOW: `generateSoftwareInventoryReport` honours
+ *  `filters.deviceIds` (reportGenerationService.ts:~404); `generateDeviceInventoryReport`
+ *  (:284-330) does NOT — it reads `siteIds` and `osTypes` only. Passing
+ *  `deviceIds` to it is silently ignored, so a device-restricted export would
+ *  return the whole org. The device adapter therefore post-filters what comes
+ *  back. Its rows carry `hostname`, not a device id, so the restriction is
+ *  resolved to hostnames through `verifyDeviceAccess` — the same gate the other
+ *  adapters use. FOLLOW-UP (file an issue): give
+ *  `generateDeviceInventoryReport` a real `filters.deviceIds` branch and a
+ *  `deviceId` column, then delete this post-filter. */
+async function restrictionHostnames(req: DatasetRequest): Promise<Set<string> | null> {
+  // `deviceIds` when the caller named devices; otherwise the run's frozen set
+  // (spec §8 data minimisation). Null = no restriction, i.e. a direct call with
+  // no run frame and no device argument.
+  const ids = req.deviceIds ?? req.runTargets;
+  if (!ids || ids.length === 0) return null;
+  const hostnames = new Set<string>();
+  await runWithConcurrency(ids, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
+    const access = await verifyDeviceAccess(deviceId, req.auth);
+    if ('error' in access) return;
+    if (access.device.hostname) hostnames.add(access.device.hostname);
+  });
+  return hostnames;
+}
+
 const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
-    if (!authority) return async () => ({ rows: [], nextCursor: null });
+    if (!authority) return emptyPager;
+    const allowedHostnames = await restrictionHostnames(req);
     return singlePagePager(async () => {
       const result = await generateDeviceInventoryReport(req.orgId, {
         filters: {
-          ...(req.deviceIds ? { deviceIds: req.deviceIds } : {}),
           ...(req.siteId ? { siteIds: [req.siteId] } : {}),
+          ...(Array.isArray(req.filters.osTypes) ? { osTypes: req.filters.osTypes } : {}),
         },
       }, authority);
-      return (result.rows ?? []) as Array<Record<string, unknown>>;
+      const rows = (result.rows ?? []) as Array<Record<string, unknown>>;
+      if (!allowedHostnames) return rows;
+      return rows.filter((row) => typeof row.hostname === 'string' && allowedHostnames.has(row.hostname));
     });
   },
 };
@@ -1304,11 +1492,14 @@ const softwareInventoryAdapter: DatasetAdapter = {
   deviceScoped: false,
   async createPager(req) {
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
-    if (!authority) return async () => ({ rows: [], nextCursor: null });
+    if (!authority) return emptyPager;
+    // This generator DOES honour filters.deviceIds, so the restriction goes
+    // into the query rather than a post-filter.
+    const restrictTo = req.deviceIds ?? req.runTargets;
     return singlePagePager(async () => {
       const result = await generateSoftwareInventoryReport(req.orgId, {
         filters: {
-          ...(req.deviceIds ? { deviceIds: req.deviceIds } : {}),
+          ...(restrictTo && restrictTo.length > 0 ? { deviceIds: restrictTo } : {}),
           ...(req.siteId ? { siteIds: [req.siteId] } : {}),
         },
       }, authority);
@@ -1317,6 +1508,7 @@ const softwareInventoryAdapter: DatasetAdapter = {
   },
 };
 ```
+- [ ] **Caveat to record in the PR body, not to fix here:** `device_inventory` and `software_inventory` each run ONE unbounded `db.select()` inside their generator and return the whole result array. The writer's row and byte caps are applied AFTER that array exists, so on a very large org (hundreds of thousands of devices or millions of installed-software rows) the API process can exhaust memory before a single cap is consulted — the caps bound the ARTIFACT, not the query. Accepted for v1 because both generators are the shipped report path and already carry this shape; **file a follow-up issue** ("give the inventory report generators a keyset cursor so export_dataset can page them") and link it from the PR. Do not paper over it with a `LIMIT` here: a silently-capped inventory export is exactly the "complete-looking prefix" the byte cap exists to prevent.
 - [ ] Add the `metrics` adapter — per device, paced, reusing `analyze_metrics`'s raw-sample read shape:
 ```ts
 /** `analyze_metrics` is single-device by construction (`deviceArgs:
@@ -1386,6 +1578,13 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
 
       const collected: Array<Record<string, unknown>> = [];
       await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
+        // Same per-device gate the metrics and custom_fields adapters make. It
+        // is arguably redundant — `enforceDeviceArgs` already ran over every id
+        // and `readDeviceFindings` is org-scoped — but "arguably redundant" is
+        // not a reason for one of three device-scoped adapters to be the odd
+        // one out; symmetry is what makes a missing gate visible in review.
+        const access = await verifyDeviceAccess(deviceId, req.auth);
+        if ('error' in access) return;
         const findings = await readDeviceFindings(req.orgId, { status, deviceId });
         const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
         const byId = new Map(catalog.map((c) => [c.id, c]));
@@ -1419,16 +1618,11 @@ const customFieldsAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: true,
   async createPager(req) {
-    const definitions = await db
-      .select({
-        id: customFieldDefinitions.id,
-        name: customFieldDefinitions.name,
-        fieldKey: customFieldDefinitions.fieldKey,
-        type: customFieldDefinitions.type,
-      })
-      .from(customFieldDefinitions)
-      .where(eq(customFieldDefinitions.orgId, req.orgId))
-      .orderBy(customFieldDefinitions.name);
+    // Task 4's shared reader, NOT a fresh `eq(orgId, req.orgId)` select: custom
+    // field definitions are org XOR partner: a partner-wide definition has
+    // `org_id IS NULL` and an org filter drops every one of them — which for an
+    // MSP that defines its fields once is most of the fields on the device.
+    const definitions = await readCustomFieldDefinitions(req.auth);
 
     const deviceIds = req.deviceIds ?? [];
     let index = 0;
@@ -1470,13 +1664,17 @@ export const DATASET_ADAPTERS: Readonly<Record<ExportDataset, DatasetAdapter>> =
   custom_fields: customFieldsAdapter,
 };
 ```
-- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExportDatasets.test.ts` — expect all four tests PASS.
-- [ ] Verify no adapter introduced SQL for a dataset that had a builder: `cd apps/api && grep -c 'db$' src/services/aiToolsExportDatasets.ts` — expect exactly 4 (`agent_logs` keyset, `metrics` raw samples, `custom_fields` definitions, and the definitions order-by chain), and confirm by reading that `event_logs`, `device_inventory`, `software_inventory` and `vulnerabilities` contain none.
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExportDatasets.test.ts` — expect all nine tests PASS.
+- [ ] Verify no adapter introduced SQL for a dataset that already had a builder: `cd apps/api && grep -n '\.select(' src/services/aiToolsExportDatasets.ts`. Expect **exactly two** hits, and check each line number against this list:
+  1. the `agent_logs` keyset page — `db.select().from(agentLogs)` inside `agentLogsAdapter`;
+  2. the `metrics` raw-sample read — `db.select().from(deviceMetrics)` inside `metricsAdapter`.
+
+  Any other hit is a defect. In particular there must be NO `.select(` for `event_logs` (uses `searchFleetLogs`), `device_inventory` / `software_inventory` (report generators), `vulnerabilities` (`readDeviceFindings` + `readCatalog`) or `custom_fields` (`readCustomFieldDefinitions` — a local select there would drop partner-wide definitions). Confirm the same by eye: `grep -n 'from(' src/services/aiToolsExportDatasets.ts` should name only `agentLogs` and `deviceMetrics`.
 - [ ] Commit: `git add apps/api/src/services/aiToolsExportDatasets.ts apps/api/src/services/aiToolsExportDatasets.test.ts && git commit -m "feat(ai): dataset adapters over the existing query builders for export_dataset"`
 
 ---
 
-### Task 8: The `export_dataset` tool
+### Task 7: The `export_dataset` tool
 
 **Files:**
 - Create `apps/api/src/services/aiToolsExport.ts`
@@ -1490,6 +1688,10 @@ export interface CreateArtifactInput { orgId: string; runId: string; sessionId?:
 export async function createArtifact(input: CreateArtifactInput): Promise<ArtifactRecord>;
 ```
 Consumes: `AiTool` (`services/aiTools.ts:97`) with the new optional `captureExempt?: boolean` W01 adds.
+
+Consumes: `breezeRegion(): BlobRegion` from `apps/api/src/config/env.ts` (W01, env `BREEZE_REGION`). This is the ONLY region source; this wave writes no local region resolver — reconciliation R1. Both this and `createArtifact` arrive with W01, so this task cannot start before W01 is in the base.
+
+Consumes: `auth.principal` (`middleware/auth.ts`), narrowed with `auth.principal?.kind === 'ai_agent'` to read `runId` — built by `buildAgentAuthContext` (`services/aiAgents/agentAuthContext.ts:78`).
 
 Produces:
 ```ts
@@ -1506,7 +1708,8 @@ import type { AiTool } from './aiTools';
 
 const createArtifact = vi.fn();
 vi.mock('./artifacts/artifactService', () => ({ createArtifact: (i: unknown) => createArtifact(i) }));
-vi.mock('./artifacts/artifactRegion', () => ({ resolveArtifactRegion: () => 'eu' as const }));
+// W01's region accessor — the only region source (reconciliation R1).
+vi.mock('../config/env', () => ({ breezeRegion: () => 'eu' as const }));
 vi.mock('./aiAgents/runProgress', () => ({ emitRunProgress: vi.fn(async () => undefined) }));
 
 const createPager = vi.fn();
@@ -1525,7 +1728,18 @@ vi.mock('./aiToolsExportDatasets', async (importOriginal) => {
 
 const { registerExportTools } = await import('./aiToolsExport');
 
-const auth = { orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: null, user: { id: 'u1' } } as never;
+/** A run's auth context: the run id rides on the principal (agentAuthContext.ts:78). */
+const auth = {
+  orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: null,
+  principal: { kind: 'ai_agent', agentId: 'agent-1', runId: 'run-1' },
+  user: { id: 'agent-1' },
+} as never;
+/** A direct chat/MCP caller: a human principal, so no run to own the artifact. */
+const chatAuth = {
+  orgId: 'org-1', accessibleOrgIds: ['org-1'], allowedSiteIds: null,
+  principal: { kind: 'user', userId: 'u1' },
+  user: { id: 'u1' },
+} as never;
 
 function getTool(): AiTool {
   const map = new Map<string, AiTool>();
@@ -1567,7 +1781,7 @@ describe('export_dataset', () => {
       { rows: [{ id: 4 }], nextCursor: null },
     ]));
     const tool = getTool();
-    const raw = await tool.handler({ dataset: 'event_logs', format: 'jsonl' }, auth, { runId: 'run-1', sessionId: null, runTargets: [], stagedBytesRemaining: 1_000_000 });
+    const raw = await tool.handler({ dataset: 'event_logs', format: 'jsonl' }, auth, { runTargets: [], stagedBytesRemaining: 1_000_000 });
     const parsed = JSON.parse(raw);
     expect(parsed.artifact.handle).toBe('art-1');
     expect(parsed.artifact.rows).toBe(4);
@@ -1587,7 +1801,7 @@ describe('export_dataset', () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler(
       { dataset: 'event_logs', format: 'jsonl', maxRows: 3 }, auth,
-      { runId: 'run-1', sessionId: null, runTargets: [], stagedBytesRemaining: 1_000_000 },
+      { runTargets: [], stagedBytesRemaining: 1_000_000 },
     ));
     expect(parsed.artifact.rows).toBe(3);
     expect(parsed.truncated).toBe(true);
@@ -1605,7 +1819,7 @@ describe('export_dataset', () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler(
       { dataset: 'event_logs', format: 'jsonl' }, auth,
-      { runId: 'run-1', sessionId: null, runTargets: [], stagedBytesRemaining: 4096 },
+      { runTargets: [], stagedBytesRemaining: 4096 },
     ));
     expect(parsed.error).toBe('artifact_bytes_exceeded');
   });
@@ -1614,25 +1828,35 @@ describe('export_dataset', () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler(
       { dataset: 'event_logs', deviceIds: ['d1', 'd-outside'] }, auth,
-      { runId: 'run-1', sessionId: null, runTargets: ['d1'], stagedBytesRemaining: 1_000_000 },
+      { runTargets: ['d1'], stagedBytesRemaining: 1_000_000 },
     ));
     expect(parsed.error).toBe('device_outside_run_targets');
     expect(createArtifact).not.toHaveBeenCalled();
   });
 
-  it('allows deviceIds when no run frame is present (direct chat call)', async () => {
+  it('allows any caller-reachable deviceIds when the run froze no target set', async () => {
     createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
     const tool = getTool();
-    const parsed = JSON.parse(await tool.handler({ dataset: 'event_logs', deviceIds: ['d-any'] }, auth));
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs', deviceIds: ['d-any'] }, auth,
+      { runTargets: [], stagedBytesRemaining: 1_000_000 },
+    ));
     expect(parsed.error).toBeUndefined();
   });
 
-  it('refuses to run without a run frame when asked to persist, with a typed error', async () => {
+  it('takes the run id from the ai_agent principal, not from the context', async () => {
     createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
     const tool = getTool();
-    const parsed = JSON.parse(await tool.handler({ dataset: 'event_logs' }, auth));
-    expect(parsed.artifact.handle).toBe('art-1');
-    expect(createArtifact.mock.calls[0]![0].runId).toBeNull();
+    await tool.handler({ dataset: 'event_logs' }, auth, { runTargets: [], stagedBytesRemaining: 1_000_000 });
+    expect(createArtifact.mock.calls[0]![0]).toMatchObject({ runId: 'run-1', orgId: 'org-1' });
+  });
+
+  it('refuses a direct chat/MCP call with export_requires_run — an artifact needs an owning run', async () => {
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    const tool = getTool();
+    const parsed = JSON.parse(await tool.handler({ dataset: 'event_logs' }, chatAuth));
+    expect(parsed.error).toBe('export_requires_run');
+    expect(createArtifact).not.toHaveBeenCalled();
   });
 
   it('escapes quotes and newlines in CSV output', async () => {
@@ -1647,7 +1871,7 @@ describe('export_dataset', () => {
       return { id: 'art-csv', bytes: captured.length };
     });
     const tool = getTool();
-    await tool.handler({ dataset: 'event_logs', format: 'csv' }, auth, { runId: 'run-1', sessionId: null, runTargets: [], stagedBytesRemaining: 1e6 });
+    await tool.handler({ dataset: 'event_logs', format: 'csv' }, auth, { runTargets: [], stagedBytesRemaining: 1e6 });
     expect(captured.split('\n')[0]).toBe('"name","note"');
     expect(captured).toContain('"say ""hi"""');
     expect(captured).toContain('a\nb"');
@@ -1679,7 +1903,9 @@ import type { AuthContext } from '../middleware/auth';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { createArtifact } from './artifacts/artifactService';
-import { resolveArtifactRegion } from './artifacts/artifactRegion';
+// W01's region accessor (env BREEZE_REGION). The only region source; this
+// wave writes no local region resolver of its own — reconciliation R1.
+import { breezeRegion } from '../config/env';
 import { emitRunProgress } from './aiAgents/runProgress';
 import { DATASET_ADAPTERS, EXPORT_DATASETS, type ExportDataset } from './aiToolsExportDatasets';
 import {
@@ -1738,6 +1964,22 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
         const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         if (!orgId) return JSON.stringify({ error: 'No organization context available' });
 
+        // Run IDENTITY comes from the PRINCIPAL, not from ToolExecutionContext
+        // (reconciliation R4): `buildAgentAuthContext` puts the run id on
+        // `principal` (agentAuthContext.ts:78) and the run org on `auth.orgId`
+        // (:89), so there is nothing to copy and nothing to drift.
+        const runId = auth.principal?.kind === 'ai_agent' ? auth.principal.runId : null;
+
+        // Every artifact is OWNED by a run: that ownership is what scopes it,
+        // expires it and bills it. A direct chat/MCP call has no run to own one,
+        // so it is refused with a typed error instead of being handed an orphan.
+        if (!runId) {
+          return JSON.stringify({
+            error: 'export_requires_run',
+            message: 'export_dataset writes a run-owned artifact and can only be called inside an agent run.',
+          });
+        }
+
         const deviceIds = Array.isArray(input.deviceIds) ? input.deviceIds as string[] : null;
 
         // Spec §8 data minimisation. A run's target set is frozen at admission;
@@ -1772,6 +2014,9 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           orgId,
           filters: (input.filters as Record<string, unknown>) ?? {},
           deviceIds,
+          // Read by the inventory adapters only (their generator has no
+          // deviceIds filter). Empty ⇒ no frozen set, i.e. no restriction.
+          runTargets: runTargets && runTargets.length > 0 ? [...runTargets] : null,
           siteId: typeof input.siteId === 'string' ? input.siteId : null,
           pageSize: EXPORT_PAGE_SIZE,
         });
@@ -1780,28 +2025,23 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
 
         const record = await createArtifact({
           orgId,
-          // A chat call with no run frame still produces an artifact; the
-          // artifact service scopes it by session instead (W01 contract).
-          runId: context?.runId ?? null as unknown as string,
-          sessionId: context?.sessionId ?? null,
+          runId,
           kind: 'input_capture',
           name: `${dataset}.${format === 'csv' ? 'csv' : 'jsonl'}`,
           contentType: CONTENT_TYPES[format],
           body: stream.body,
           maxBytes,
           createdByTool: 'export_dataset',
-          region: resolveArtifactRegion(),
+          region: breezeRegion(),
         });
 
         const stats = await stream.stats;
 
-        if (context?.runId) {
-          await emitRunProgress(
-            { orgId, runId: context.runId },
-            'export',
-            `Exported ${stats.rows} ${dataset} rows${stats.truncated ? ' (truncated)' : ''}`,
-          );
-        }
+        await emitRunProgress(
+          { orgId, runId },
+          'export',
+          `Exported ${stats.rows} ${dataset} rows${stats.truncated ? ' (truncated)' : ''}`,
+        );
 
         return JSON.stringify({
           dataset,
@@ -1830,12 +2070,25 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
   });
 }
 ```
-- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.test.ts` — expect all nine tests PASS.
-- [ ] Commit: `git add apps/api/src/services/aiToolsExport.ts apps/api/src/services/aiToolsExport.test.ts && git commit -m "feat(ai): export_dataset tool streams full datasets into an artifact"`
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.test.ts` — expect all ten tests PASS.
+- [ ] **Swap Task 1's placeholder for the real constant now that this module exists.** In `apps/api/src/services/aiAgents/runLoop.ts` replace
+```ts
+    // Literal on purpose until Task 7 exists. Task 7 replaces this line with
+    // the real `EXPORT_DEFAULT_MAX_BYTES` import — do not import it now.
+    stagedBytesRemaining: 256 * 1024 * 1024, // EXPORT_DEFAULT_MAX_BYTES — replaced by the real import in Task 7
+```
+with
+```ts
+    stagedBytesRemaining: EXPORT_DEFAULT_MAX_BYTES,
+```
+and add `import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';` to the imports at the top of `runLoop.ts`.
+- [ ] Prove the placeholder is gone: `cd apps/api && grep -n '256 \* 1024 \* 1024' src/services/aiAgents/runLoop.ts` — expect **no output** (exit 1) — and `grep -n 'EXPORT_DEFAULT_MAX_BYTES' src/services/aiAgents/runLoop.ts` — expect two hits (the import and the call-site value).
+- [ ] Run `cd apps/api && npx vitest run src/services/aiAgents/runLoop.runContext.test.ts src/services/aiAgents/runLoop.test.ts src/services/aiToolsExport.test.ts` — expect PASS on all three (this is the step that would catch a circular import between `runLoop` and `aiToolsExport`; if one appears, move `EXPORT_DEFAULT_MAX_BYTES`'s import to `./aiToolsExportWriter`, which has no tool-layer dependencies).
+- [ ] Commit: `git add apps/api/src/services/aiToolsExport.ts apps/api/src/services/aiToolsExport.test.ts apps/api/src/services/aiAgents/runLoop.ts && git commit -m "feat(ai): export_dataset tool streams full datasets into an artifact"`
 
 ---
 
-### Task 9: Register `export_dataset` in all six places
+### Task 8: Register `export_dataset` in all six places
 
 **Files:**
 - Modify `apps/api/src/services/aiTools.ts` (import block ~31–83; register calls ~262–300)
@@ -1875,8 +2128,19 @@ describe('export_dataset registration', () => {
     expect(AGENT_CAPABILITIES.find((c) => c.id === 'workspace')?.tone).toBe('standard');
   });
 
-  it('4. is declared on the MCP server', () => {
-    expect(BREEZE_MCP_TOOL_NAMES).toContain('export_dataset');
+  it('4a. is advertised under the SDK-prefixed MCP name', () => {
+    // BREEZE_MCP_TOOL_NAMES is `Object.keys(TOOL_TIERS).map(n => 'mcp__breeze__' + n)`
+    // (aiAgentSdkTools.ts:335), so the bare name never appears — and this
+    // assertion alone only re-tests TOOL_TIERS, which is why 4b exists.
+    expect(BREEZE_MCP_TOOL_NAMES).toContain('mcp__breeze__export_dataset');
+  });
+
+  it('4b. has a real tool() declaration inside createBreezeMcpServer', async () => {
+    const source = await import('node:fs/promises').then((fs) =>
+      fs.readFile(new URL('./aiAgentSdkTools.ts', import.meta.url), 'utf8'));
+    const server = source.slice(source.indexOf('export function createBreezeMcpServer'));
+    expect(server).toContain("'export_dataset'");
+    expect(server).toContain("makeHandler('export_dataset'");
   });
 
   it('5. has a Zod input schema', () => {
@@ -1891,7 +2155,7 @@ describe('export_dataset registration', () => {
   });
 });
 ```
-- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.registration.test.ts` — expect all six to fail.
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.registration.test.ts` — expect all seven to fail (the six registration places, with Place 4 split into 4a/4b).
 - [ ] Place 1: in `aiTools.ts` add `import { registerExportTools } from './aiToolsExport';` beside the other register imports, and `registerExportTools(aiTools);` beside the other register calls.
 - [ ] Place 2: in `aiAgentSdkTools.ts` add to `TOOL_TIERS`, grouped with a comment:
 ```ts
@@ -1938,13 +2202,13 @@ describe('export_dataset registration', () => {
   // 30/5min on purpose.
   export_dataset: { limit: 5, windowSeconds: 300 },
 ```
-- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.registration.test.ts` — expect all six PASS.
+- [ ] Run `cd apps/api && npx vitest run src/services/aiToolsExport.registration.test.ts` — expect all seven PASS.
 - [ ] Run the contract suites that guard these maps: `cd apps/api && npx vitest run src/services/aiAgents/agentToolCatalog.contract.test.ts src/services/aiAgents/agentToolCatalog.categoryParity.test.ts src/services/aiToolsRegistryParity.test.ts src/services/aiTools.deviceArgsCoverage.contract.test.ts` — expect PASS. If `categoryParity` fails on the new capability, add `workspace` to whatever category table it names (read the failure message; it prints the missing key).
 - [ ] Commit: `git add apps/api/src/services/aiTools.ts apps/api/src/services/aiAgentSdkTools.ts apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiToolSchemas.ts apps/api/src/services/aiGuardrails.ts apps/api/src/services/aiToolsExport.registration.test.ts && git commit -m "feat(ai): register export_dataset in all six registries under a new workspace capability"`
 
 ---
 
-### Task 10: Surface progress on the run detail DTO and route
+### Task 9: Surface progress on the run detail DTO and route
 
 **Files:**
 - Modify `packages/shared/src/types/aiAgentRuns.ts` (`AiAgentRunDetailDto` ~494–585)
@@ -2017,7 +2281,7 @@ it('the run detail route exposes progress from the ring', async () => {
 
 ---
 
-### Task 11: Render the progress step list on the run detail page
+### Task 10: Render the progress step list on the run detail page
 
 **Files:**
 - Modify `apps/web/src/components/aiAgents/RunDetailPage.tsx` (helpers ~38–60; the detail body render, beside the existing ledger/trace sections)
@@ -2026,7 +2290,7 @@ it('the run detail route exposes progress from the ring', async () => {
 
 **Interfaces:**
 
-Consumes: `AiAgentRunDetailDto['progress']` (Task 10). The page already fetches the whole DTO via `fetchWithAuth('/ai/agents/runs/${runId}')` and re-polls every `DETAIL_POLL_INTERVAL_MS` while `isLiveRunStatus(run.status)`, so **no new fetch, no SSE, and no new polling loop is needed** — the field arrives on the existing poll.
+Consumes: `AiAgentRunDetailDto['progress']` (Task 9). The page already fetches the whole DTO via `fetchWithAuth('/ai/agents/runs/${runId}')` and re-polls every `DETAIL_POLL_INTERVAL_MS` while `isLiveRunStatus(run.status)`, so **no new fetch, no SSE, and no new polling loop is needed** — the field arrives on the existing poll.
 
 Produces: a `RunProgressList` component, `data-testid="run-detail-progress"` with per-row `run-detail-progress-<ordinal>`.
 
@@ -2103,7 +2367,7 @@ function RunProgressList({
 
 ---
 
-### Task 12: Full verification
+### Task 11: Full verification
 
 **Files:** none modified.
 
@@ -2111,7 +2375,7 @@ Steps:
 
 - [ ] Typecheck the whole API package: `cd apps/api && npx tsc --noEmit -p tsconfig.json` — expect no errors. (There is no root `typecheck` script; turbo/CI runs this.)
 - [ ] Typecheck shared and web: `cd packages/shared && npx tsc --noEmit -p tsconfig.json` and `cd apps/web && npx tsc --noEmit -p tsconfig.json` — expect no errors.
-- [ ] Run the FULL API unit suite, not just touched files — the registry/catalog contracts live in files this wave never opened and a per-file sweep will miss them: `cd apps/api && npx vitest run` — expect PASS. If a `TOOL_TIERS`/catalog/registry contract reds, the fix is a missing entry from Task 9, not a test edit.
+- [ ] Run the FULL API unit suite, not just touched files — the registry/catalog contracts live in files this wave never opened and a per-file sweep will miss them: `cd apps/api && npx vitest run` — expect PASS. If a `TOOL_TIERS`/catalog/registry contract reds, the fix is a missing entry from Task 8, not a test edit.
 - [ ] Run the full web suite: `cd apps/web && npx vitest run` — expect PASS.
 - [ ] Run the full shared suite: `cd packages/shared && npx vitest run` — expect PASS.
 - [ ] Confirm no migration was added by this wave: `git diff --name-only main...HEAD -- apps/api/migrations` — expect empty output.

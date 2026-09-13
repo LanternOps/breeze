@@ -21,7 +21,9 @@ tracking_issue: LanternOps/breeze#5711
 - Hosted-only: `workspace_launch_analysis` is reachable only when `aiWorkspaceEnabled()` (W01: `isHosted() && BREEZE_AI_AGENTS_ENABLED && BREEZE_AI_WORKSPACE_ENABLED`) is true; a self-hoster sees the capability absent, not broken.
 - The chat tool is in `AGENT_HUMAN_ONLY_TOOLS` (`aiGuardrails.ts` ~L417): an `ai_agent` principal may never spawn a run, whatever its allowlist says. An agent that could launch runs could launch runs that launch runs.
 - Per-org switch `organizations.ai_external_processing` is enforced at ADMISSION (W04, `runService.ts`) and re-checked by the tool for a fast typed refusal — never in the process-memoized catalog (spec §8).
-- **SIX-place registration** for the new tool (spec §5.3 names four; `aiToolsRegistryParity.test.ts` enforces two more): (1) the `aiTools` map via `registerWorkspaceLaunchTool()` in `aiTools.ts`; (2) `TOOL_TIERS` in `aiAgentSdkTools.ts`; (3) `TOOL_CAPABILITY` in `agentToolCatalog.ts`; (4) the `tool()` declaration in `createBreezeMcpServer`; (5) `toolInputSchemas` in `services/aiToolSchemas.ts` (a missing entry makes every call fail input validation with "No input schema registered"); (6) `TOOL_PERMISSIONS` in `aiGuardrails.ts`. Every existing registry contract suite must stay green.
+- **SIX-place registration** for the new tool (spec §5.3 names four; `aiToolsRegistryParity.test.ts` enforces two more): (1) the **reserved-name source** in `aiTools.ts` — a `workspaceLaunchToolTiers` table added to `registerReservedAiToolNamePredicate` (L323-325), `getToolTier` (L377-379) and `getAllRegisteredToolNames` (L396-400), **not** an `aiTools` map entry; (2) `TOOL_TIERS` in `aiAgentSdkTools.ts`; (3) `TOOL_CAPABILITY` in `agentToolCatalog.ts`; (4) the `tool()` declaration in `createBreezeMcpServer`, wrapped in `makeSessionAwareHandler`; (5) `toolInputSchemas` in `services/aiToolSchemas.ts` (a missing entry makes every call fail input validation with "No input schema registered"); (6) `TOOL_PERMISSIONS` in `aiGuardrails.ts`. Plus `AGENT_HUMAN_ONLY_TOOLS`. Every existing registry contract suite must stay green.
+- **`workspace_launch_analysis` is a SESSION-ONLY tool and therefore NOT in the `aiTools` execution map** — exactly like `m365_lookup_user`, `m365_disable_user` and every Google tool. `makeSessionAwareHandler` dispatches straight to its `sessionHandler(args, auth, sessionId)` and **never calls `executeTool`** (`aiAgentSdkTools.ts` L625-640, L723), so there is no `ExecuteToolOptions`, no `capture`, and no `ToolExecutionContext` anywhere on this tool's path. Two consequences to carry through every task below: `aiTools.has('workspace_launch_analysis')` is **false**, and `requiresLiveSession('workspace_launch_analysis')` is **true** for free — which is what makes the durable release worker fail such an intent with `session_required` rather than `Unknown tool`.
+- **No `deviceArgs` gate.** `deviceArgs` is a property of an `aiTools` MAP entry, and this tool has none — so the declarative per-device org/site check does not run for it. That check is not skipped, it MOVES: `admitAnalysisRun` validates every named device against the admitting org and returns the `device_not_in_org` refusal (W04). Do not try to re-add a map entry to get `deviceArgs` back; that would make the tool headless-executable with no session, which is the one thing the session-aware registration exists to prevent.
 - The bridge holds NO request transaction. It runs in a Redis `message` callback; every DB read is `runOutsideDbContext(() => withSystemDbAccessContext(...))` pinned to BOTH `ai_agent_runs.id` and `ai_agent_runs.org_id` from the watch registration (the sanctioned background-read shape; the request path is untouched).
 - Late completion with no live session never throws: the bridge drops the delivery, unwatches, and the run page still shows everything.
 - Web mutation handlers MUST go through `runAction` (`apps/web/src/lib/runAction.ts`); `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` guards the adopted set and its `expect(absoluteFiles.length).toBe(N)` count must be bumped deliberately in the same commit that adds a file to `TARGET_GLOBS`.
@@ -40,51 +42,59 @@ tracking_issue: LanternOps/breeze#5711
 ```ts
 // W01
 import {
-  findArtifactForAuth, listArtifactsForAuth, resolveArtifact, openArtifactStream,
+  findArtifactForAuth, resolveArtifact, openArtifactStream,
   toArtifactDto, type ArtifactRecord,
 } from '../services/artifacts/artifactService';
+// NOT `listArtifactsForAuth` — that is the backing call for W01's own
+// `GET /ai/agents/runs/:runId/artifacts` route (R1), which this wave does not
+// build and must not import.
 import { aiRunArtifacts } from '../db/schema/aiWorkspace';
 import { aiWorkspaceEnabled, breezeRegion } from '../config/env';
 import { AI_ARTIFACT_KINDS, type AiArtifactKind, type AiRunArtifactDto } from '@breeze/shared';
 // W02
 import { aiRunWorkspaces } from '../db/schema/aiWorkspace';
-// W04
-import { admitAnalysisRun, type AdmitAnalysisRunResult } from '../services/aiAgents/analysisAdmission';
-// W03 — ToolExecutionContext gains optional `runId`, `sessionId`, `runTargets`,
-// `stagedBytesRemaining`, all set by `runLoop.ts`'s `runFrame` on the AGENT RUN
-// path only.
-import type { ToolExecutionContext } from '../services/toolExecutionContext';
-// W01 — the capture scope, which IS populated on the chat path.
-import { captureScopeFor, type CaptureScope } from '../services/artifacts/toolResultCapture';
+// W04 — import the refusal union, NEVER redeclare it. A local copy is a second
+// source of truth that compiles fine and silently stops covering a refusal W04
+// adds, which is exactly how a technician gets `undefined` for a message.
+import {
+  admitAnalysisRun,
+  type AdmitAnalysisRunInput, type AdmitAnalysisRunResult, type AnalysisAdmissionRefusal,
+} from '../services/aiAgents/analysisAdmission';
+// Existing API (NOT a cross-wave contract) — the session-aware handler factory
+// and the live chat session. Both already shipped; this wave only uses them.
+import { streamingSessionManager, type ActiveSession } from '../services/streamingSessionManager';
 ```
 
-**Cross-wave conflict this wave resolves — read before Task 2.** W03's `ToolExecutionContext.sessionId` is *the run's execution-ledger session id*, and every field in that frame is set by `runLoop.ts` on the agent-run path. **A chat tool call builds no `ToolExecutionContext` at all**, so `workspace_launch_analysis` cannot read the technician's chat session from it — and must not overload W03's `sessionId`, which means something else. The chat path's one per-call channel is W01's `ExecuteToolOptions.capture` (`captureScopeFor(auth, session?)`), which exists precisely because chat tool results become artifacts. Task 2 therefore adds ONE field, distinct from W03's:
+**Cross-wave decision — orchestrator, 2026-09-13. Read before Task 2; it replaces R4 below and everything the first draft of this plan said about `capture`.**
+
+This wave uses **no** `capture`, `captureScopeFor` or `CaptureScope`, and adds **no** field to `ToolExecutionContext`. That type's own docstring is explicit that it carries per-invocation execution inputs and *not* caller identity ("NOT on `AuthContext`. That is a CALLER IDENTITY … Verified release material is a per-invocation EXECUTION INPUT"); a chat session id is an identity, and it has no business there. It currently holds exactly two optional fields and this wave leaves it at two.
+
+Instead, `workspace_launch_analysis` is registered with **`makeSessionAwareHandler`** — the existing, shipped precedent for a session-bound tool, used today by every M365 and Google helpdesk tool (`aiAgentSdkTools.ts` L616-649; examples at L820-831 and L870-875). It gives this tool exactly what it needs and nothing else:
+
+- Its handler signature is `(args, auth, sessionId)`, and the `sessionId` it passes is **`session.breezeSessionId`** — the `ai_sessions.id` of the ACTIVE CHAT SESSION (`aiAgentSdkTools.ts` L723). That is precisely the id `ai_agent_runs.session_id` wants. It is **not** the SDK session id (`ActiveSession.sdkSessionId`) and **not** W03's execution-ledger session.
+- Its docstring records that it "mirrors `makeHandler` EXACTLY": the full `onPreToolUse` chain (TOOL_TIERS gate, guardrails, RBAC `checkToolPermission`, rate limits, tier-3 approval) runs before the handler and `onPostToolUse` after it. Using it costs no enforcement.
+- It **fails closed with no session**: before any enforcement it returns `{ error: 'no_active_session', message: 'No active session.' }` (L653-661). So on the MCP path the tool can never reach the handler with a null session, and a run is never admitted with `sessionId: null`.
+
+**Org resolution.** The org is `auth.orgId`, falling back to the ACTIVE SESSION's `orgId` when `auth.orgId` is null — which is the partner-scope login case. `ActiveSession.orgId` is the right fallback and its own docstring says so: "Canonical org ID for this session, captured at creation time from the `aiSessions` DB row … it is stable for the session's lifetime and is always set, even for system/partner-scoped users who own the session." The handler is handed a session **id**, not the session, so it re-reads the same object the factory did via `streamingSessionManager.get(sessionId)` — the identical lookup `getActiveSession()` performs (`streamingSessionManager.get`, L1053-1056). If neither yields an org, refuse; never guess.
+
+**No session ⇒ no run.** `launchAnalysisFromChat` is also exported for tests and for Task 3's wiring, so it keeps its own guard: called with `sessionId === null` it returns the typed error `chat_session_required` and admits nothing. On the MCP path that branch is unreachable (the factory's `no_active_session` fires first); it exists so the invariant holds for every caller, not just the one.
+
+**`admitAnalysisRun` is W04's, and its shapes are now settled** (W04 plan R1, L67-70 of `2026-09-13-execution-plane-w04-workspace-tools-analysis-profile.md`). Do not redeclare any of this — `import` it. Reproduced here for reading only:
 
 ```ts
-  /**
-   * The CHAT session that issued this call (W01's capture scope), or null for
-   * every non-chat caller. Deliberately NOT `sessionId`: that is W03's field
-   * for an agent run's execution-ledger session, a different thing with a
-   * different lifetime, and one name for two ids is how a run id ends up
-   * stamped on a chat transcript.
-   */
-  chatSessionId?: string | null;
-```
-
-**`admitAnalysisRun` is the one interface this plan INVENTED** (W04's plan was still being written when this one was authored and had not yet named its admission entry point). Required shape — reconcile with W04 before Task 2:
-
-```ts
-// apps/api/src/services/aiAgents/analysisAdmission.ts  (owned by W04)
+// apps/api/src/services/aiAgents/analysisAdmission.ts  (owned by W04 Task 7)
 export type AnalysisAdmissionRefusal =
-  | 'analysis_not_available'        // not hosted, or BREEZE_AI_WORKSPACE_ENABLED off
-  | 'external_processing_disabled'  // organizations.ai_external_processing = false
-  | 'capability_missing'            // `workspace` refs absent from the effective allowlist
-  | 'compute_budget_exceeded'       // org maxComputeCentsPerDay, or the credits leg
+  | 'analysis_not_available'         // not hosted, or BREEZE_AI_WORKSPACE_ENABLED off
+  | 'external_processing_disabled'   // organizations.ai_external_processing = false
+  | 'workspace_capability_missing'   // `workspace` absent from the effective allowlist
+  | 'analysis_region_unavailable'    // no sandbox backend configured for this org's region
+  | 'compute_budget_exceeded'        // org maxComputeCentsPerDay, or the credits leg
   | 'org_budget_exceeded'
   | 'max_concurrent_analysis_runs'
   | 'analysis_rate'
   | 'too_many_input_devices'
-  | 'artifact_forbidden'            // an inputHandle did not resolve in this org
+  | 'device_not_in_org'              // a named device is not in the admitting org
+  | 'artifact_forbidden'             // an inputHandle did not resolve in this org
   | 'enqueue_failed';
 export interface AdmitAnalysisRunInput {
   orgId: string;
@@ -100,11 +110,13 @@ export interface AdmitAnalysisRunInput {
 }
 export type AdmitAnalysisRunResult =
   | { created: true; runId: string; status: AiAgentRunStatus }
-  | { created: false; refusal: AnalysisAdmissionRefusal };
+  | { created: false; refusal: AnalysisAdmissionRefusal; detail?: string };
 export async function admitAnalysisRun(input: AdmitAnalysisRunInput): Promise<AdmitAnalysisRunResult>;
 ```
 
-W03's progress emitter is assumed at `apps/api/src/services/aiAgents/runProgress.ts` exporting `emitRunProgress(orgId, { runId, step, label, ordinal })` and adding `'ai.agent.run.progress'` to `EventType` + `EVENT_TYPES.AI_AGENT_RUN_PROGRESS` in `services/eventBus.ts` (same assumption W04's plan records). This wave only SUBSCRIBES.
+Two members changed from this plan's first draft and both matter: the capability refusal is **`workspace_capability_missing`**, not `capability_missing`, and there are two refusals the draft did not have (`analysis_region_unavailable`, `device_not_in_org`). The refusal arm also carries an optional **`detail`**: free text from the admission path (which device, which cap), for the log and for appending to the technician-facing sentence — never a substitute for one. `REFUSAL_MESSAGES` is typed `Record<AnalysisAdmissionRefusal, string>`, so if W04's union and this map ever disagree the compiler says so at build time rather than the model saying `undefined` to a technician.
+
+W03's progress emitter is assumed at `apps/api/src/services/aiAgents/runProgress.ts` exporting `emitRunProgress(ctx: RunProgressContext, step: string, label: string)` (ctx = `{ orgId, runId }`; ordinal assigned inside) and adding `'ai.agent.run.progress'` to `EventType` + `EVENT_TYPES.AI_AGENT_RUN_PROGRESS` in `services/eventBus.ts` (W04 calls it the same way). This wave only SUBSCRIBES.
 
 **The existing completion event is `ai.agent.run.completed`** (`services/eventBus.ts` L177, published by `finishRun` in `services/aiAgents/runLoop.ts` ~L2068) — the spec's `ai.run.completed` is that event. Its payload is `{ runId, agentId, deviceId, intentIds, costCents, errorCode? }`: it carries **no `sessionId`, no `summary`, no artifacts**, which is why the bridge re-reads the run row.
 
@@ -112,10 +124,10 @@ W03's progress emitter is assumed at `apps/api/src/services/aiAgents/runProgress
 
 ## Cross-wave reconciliation — orchestrator, 2026-09-13 (overrides task bodies where they conflict)
 
-- **R1 Route ownership.** `GET /ai/agents/runs/:runId/artifacts` is W01 Task 10. Remove it from Task 5 here; keep only the DTO consumption and the run-page rendering.
-- **R2 Admission.** `admitAnalysisRun` with the exact `AdmitAnalysisRunInput` / `AnalysisAdmissionRefusal` / `AdmitAnalysisRunResult` shapes in this plan's "Cross-wave imports" is now W04 Task 7's exported wrapper (`services/aiAgents/analysisAdmission.ts`). No change here.
+- **R1 Route ownership.** `GET /ai/agents/runs/:runId/artifacts` is W01 Task 10. **Applied:** Task 5 no longer adds it and must not; Task 5 extends the polled DTO and renders it, nothing more.
+- **R2 Admission.** `admitAnalysisRun` is W04 Task 7's exported wrapper (`services/aiAgents/analysisAdmission.ts`). Its `AdmitAnalysisRunInput` / `AnalysisAdmissionRefusal` / `AdmitAnalysisRunResult` are W04's to declare — **import them, never redeclare them.** The settled union (with `workspace_capability_missing`, `analysis_region_unavailable`, `device_not_in_org`, and the refusal arm's `detail?: string`) is reproduced in "Cross-wave imports" above.
 - **R3 Progress emitter.** W03's canonical signature is `emitRunProgress(ctx: RunProgressContext, step: string, label: string)`, not `emitRunProgress(orgId, {…})`. Adapt the one call site.
-- **R4 Context fields on the chat path.** When the chat lane builds `ToolExecutionContext`, set `orgId = session.orgId` and `chatSessionId = session.id` (W01 capture uses `orgId` and `runId ?? chatSessionId`). W03 declares both optional fields on the interface.
+- **R4 Chat session identity — SUPERSEDED.** The earlier instruction to add `orgId` / `chatSessionId` to `ToolExecutionContext` and to source them from W01's capture scope is **withdrawn in full**. `ToolExecutionContext` gains nothing this wave, and this wave uses no `capture` / `captureScopeFor` / `CaptureScope`. The chat session reaches the tool through `makeSessionAwareHandler`, the shipped precedent — see the Cross-wave decision above, which governs Task 2.
 
 ---
 
@@ -426,23 +438,44 @@ run DTO schema version stays at 1 per its documented bump rule."
 
 **Files:**
 - Create: `apps/api/src/services/workspace/workspaceLaunchTool.ts`, `apps/api/src/services/workspace/workspaceLaunchTool.test.ts`
-- Modify: `apps/api/src/services/aiTools.ts` (import block ~L31-88, register block ~L262-311)
-- Modify: `apps/api/src/services/aiAgentSdkTools.ts` (`TOOL_TIERS` L159-332, `tool()` declarations inside `createBreezeMcpServer` L1210+)
+- Modify: `apps/api/src/services/aiTools.ts` (import block ~L31-89, `registerReservedAiToolNamePredicate` L323-325, `getToolTier` L377-379, `getAllRegisteredToolNames` L396-400 — **no** entry in the `aiTools` map at L262-311)
+- Modify: `apps/api/src/services/aiAgentSdkTools.ts` (`TOOL_TIERS` L159-332, `tool()` declarations inside `createBreezeMcpServer` L1210+ — registered with `makeSessionAwareHandler`, L632)
 - Modify: `apps/api/src/services/aiAgents/agentToolCatalog.ts` (`TOOL_CAPABILITY` L62+)
 - Modify: `apps/api/src/services/aiGuardrails.ts` (`AGENT_HUMAN_ONLY_TOOLS` L417-419, `TOOL_PERMISSIONS` L602+)
 - Modify: `apps/api/src/services/aiToolSchemas.ts` (`toolInputSchemas` L99+)
-- Modify: `apps/api/src/services/toolExecutionContext.ts` (add `chatSessionId`), `apps/api/src/services/aiTools.ts` (`executeTool` merges it from W01's `capture`)
+- **NOT modified: `apps/api/src/services/toolExecutionContext.ts`.** See the Cross-wave decision — no identity field is added to it, this wave or ever by this wave. If your diff touches that file, you have taken the withdrawn R4 path.
 
 **Interfaces:**
-- Consumes: `admitAnalysisRun` (W04), `resolveArtifact` (W01), `aiWorkspaceEnabled` (W01), `AiTool` (`services/aiTools.ts` L97), `captureScopeFor` (W01), `watchRunForSession` (Task 3 — the import resolves once Task 3 lands; do Task 3 first if you prefer a compiling intermediate state).
+- Consumes: `admitAnalysisRun` + `AnalysisAdmissionRefusal` (W04), `resolveArtifact` (W01), `aiWorkspaceEnabled` (W01), `makeSessionAwareHandler` (`aiAgentSdkTools.ts` L632, existing), `streamingSessionManager.get` (`streamingSessionManager.ts` L1053, existing), `watchRunForSession` (Task 3 — the import resolves once Task 3 lands; do Task 3 first if you prefer a compiling intermediate state). **Not** `AiTool`: this tool has no `aiTools` map entry.
 - Produces:
 ```ts
 export const WORKSPACE_LAUNCH_TOOL_NAME = 'workspace_launch_analysis';
 export interface WorkspaceLaunchInput {
   goal: string; deviceIds?: string[]; siteId?: string; inputHandles?: string[];
 }
-export function registerWorkspaceLaunchTool(map: Map<string, AiTool>): void;
-/** Exported for the test and for Task 3's bridge wiring. */
+/**
+ * The tier table — this tool's ONLY presence in `aiTools.ts`. Same shape and
+ * same purpose as `m365ToolTiers` (`aiToolsM365.ts` L46) and `googleToolTiers`
+ * (`aiToolsGoogle.ts` L41): a session-only tool never enters the execution map,
+ * but `getToolTier` still has to answer for it or `checkGuardrails` sees
+ * `tier === undefined` and refuses it as an unknown tool.
+ */
+export const workspaceLaunchToolTiers: Record<string, 1 | 3> = {
+  workspace_launch_analysis: 1,
+};
+/** The `sessionHandler` passed to `makeSessionAwareHandler`. */
+export async function workspaceLaunchAnalysisHandler(
+  args: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string>;
+/**
+ * The session-aware handler body. `sessionId` is the ACTIVE CHAT SESSION's
+ * `breezeSessionId` (an `ai_sessions.id`) — what `makeSessionAwareHandler`
+ * passes as its third argument. Null only when a non-MCP caller invokes this
+ * directly, and that returns `chat_session_required` without admitting.
+ * Exported for the test and for Task 3's bridge wiring.
+ */
 export async function launchAnalysisFromChat(
   input: WorkspaceLaunchInput,
   auth: AuthContext,
@@ -461,14 +494,19 @@ const admitAnalysisRun = vi.hoisted(() => vi.fn());
 const resolveArtifact = vi.hoisted(() => vi.fn());
 const aiWorkspaceEnabled = vi.hoisted(() => vi.fn(() => true));
 const watchRunForSession = vi.hoisted(() => vi.fn());
+const sessionGet = vi.hoisted(() => vi.fn());
 
 vi.mock('../aiAgents/analysisAdmission', () => ({ admitAnalysisRun }));
 vi.mock('../artifacts/artifactService', () => ({ resolveArtifact }));
 vi.mock('../../config/env', () => ({ aiWorkspaceEnabled }));
 vi.mock('./chatRunBridge', () => ({ watchRunForSession }));
+vi.mock('../streamingSessionManager', () => ({
+  streamingSessionManager: { get: sessionGet },
+}));
 
-import { launchAnalysisFromChat, registerWorkspaceLaunchTool, WORKSPACE_LAUNCH_TOOL_NAME } from './workspaceLaunchTool';
-import type { AiTool } from '../aiTools';
+import {
+  launchAnalysisFromChat, workspaceLaunchToolTiers, WORKSPACE_LAUNCH_TOOL_NAME,
+} from './workspaceLaunchTool';
 import type { AuthContext } from '../../middleware/auth';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
@@ -476,11 +514,11 @@ const RUN = '22222222-2222-4222-8222-222222222222';
 const HANDLE = '33333333-3333-4333-8333-333333333333';
 const SESSION = '44444444-4444-4444-8444-444444444444';
 
-function auth(): AuthContext {
+function auth(overrides: Partial<{ orgId: string | null; scope: string }> = {}): AuthContext {
   return {
-    orgId: ORG,
+    orgId: overrides.orgId === undefined ? ORG : overrides.orgId,
     accessibleOrgIds: [ORG],
-    scope: 'organization',
+    scope: overrides.scope ?? 'organization',
     user: { id: '55555555-5555-4555-8555-555555555555' },
   } as unknown as AuthContext;
 }
@@ -490,6 +528,10 @@ beforeEach(() => {
   aiWorkspaceEnabled.mockReturnValue(true);
   resolveArtifact.mockResolvedValue({ id: HANDLE, orgId: ORG, name: 'logs.jsonl' });
   admitAnalysisRun.mockResolvedValue({ created: true, runId: RUN, status: 'queued' });
+  // What `makeSessionAwareHandler` resolved to hand us `sessionId`; re-read here
+  // for its canonical `orgId` (ActiveSession.orgId is always set, even when the
+  // caller's own auth carries none).
+  sessionGet.mockReturnValue({ breezeSessionId: SESSION, orgId: ORG });
 });
 
 describe('workspace_launch_analysis (spec §5.5)', () => {
@@ -520,9 +562,33 @@ describe('workspace_launch_analysis (spec §5.5)', () => {
     expect(watchRunForSession).toHaveBeenCalledWith({ runId: RUN, sessionId: SESSION, orgId: ORG });
   });
 
-  it('does not watch when the call has no chat session', async () => {
-    await launchAnalysisFromChat({ goal: 'g' }, auth(), null);
+  it('refuses outright when there is no chat session — never admits with sessionId null', async () => {
+    // On the MCP path `makeSessionAwareHandler` already fails closed with
+    // `no_active_session`, so this branch is for every OTHER caller. A run
+    // admitted with a null session id has nowhere to deliver its result and no
+    // conversation it belongs to; refusing is the only honest answer.
+    const raw = await launchAnalysisFromChat({ goal: 'g' }, auth(), null);
+    expect(JSON.parse(raw)).toEqual({
+      error: 'chat_session_required',
+      message: 'Analysis runs can only be started from a chat session.',
+    });
+    expect(admitAnalysisRun).not.toHaveBeenCalled();
     expect(watchRunForSession).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the active session org when the caller auth carries none', async () => {
+    // A partner-scope login: `auth.orgId` is null, but the session was created
+    // against exactly one org and `ActiveSession.orgId` is always set.
+    await launchAnalysisFromChat({ goal: 'g' }, auth({ orgId: null, scope: 'partner' }), SESSION);
+    expect(sessionGet).toHaveBeenCalledWith(SESSION);
+    expect(admitAnalysisRun.mock.calls[0]![0]).toMatchObject({ orgId: ORG, sessionId: SESSION });
+  });
+
+  it('refuses when neither the auth nor the session yields an org', async () => {
+    sessionGet.mockReturnValue(undefined);
+    const raw = await launchAnalysisFromChat({ goal: 'g' }, auth({ orgId: null, scope: 'partner' }), SESSION);
+    expect(JSON.parse(raw).error).toBe('org_context_required');
+    expect(admitAnalysisRun).not.toHaveBeenCalled();
   });
 
   it('refuses before admission when the workspace lane is not available', async () => {
@@ -546,6 +612,37 @@ describe('workspace_launch_analysis (spec §5.5)', () => {
     });
   });
 
+  it('has a message for EVERY refusal W04 can return, including the ones added late', async () => {
+    // Typed against W04's union, so this list is the compiler's business too —
+    // but a missing MESSAGE is only a runtime `undefined` in front of a
+    // technician, which is what this test exists to catch. Note the exact
+    // spellings: `workspace_capability_missing` (not `capability_missing`), and
+    // the two refusals the first draft of this plan did not have.
+    for (const refusal of [
+      'analysis_not_available', 'external_processing_disabled', 'workspace_capability_missing',
+      'analysis_region_unavailable', 'compute_budget_exceeded', 'org_budget_exceeded',
+      'max_concurrent_analysis_runs', 'analysis_rate', 'too_many_input_devices',
+      'device_not_in_org', 'artifact_forbidden', 'enqueue_failed',
+    ] as const) {
+      admitAnalysisRun.mockResolvedValue({ created: false, refusal });
+      const parsed = JSON.parse(await launchAnalysisFromChat({ goal: 'g' }, auth(), SESSION));
+      expect(parsed.error).toBe(refusal);
+      expect(typeof parsed.message).toBe('string');
+      expect(parsed.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('appends the admission detail when one is supplied, without replacing the sentence', async () => {
+    admitAnalysisRun.mockResolvedValue({
+      created: false, refusal: 'device_not_in_org', detail: 'device 66666666-… is not in this organization',
+    });
+    const parsed = JSON.parse(await launchAnalysisFromChat({ goal: 'g' }, auth(), SESSION));
+    expect(parsed.error).toBe('device_not_in_org');
+    expect(parsed.message).toContain('device 66666666-…');
+    // The human sentence survives: `detail` is context, never a replacement.
+    expect(parsed.message.length).toBeGreaterThan('device 66666666-… is not in this organization'.length);
+  });
+
   it('refuses an input handle that does not resolve in the caller org, without leaking why', async () => {
     resolveArtifact.mockResolvedValue(null);
     const raw = await launchAnalysisFromChat({ goal: 'g', inputHandles: [HANDLE] }, auth(), SESSION);
@@ -556,14 +653,17 @@ describe('workspace_launch_analysis (spec §5.5)', () => {
     expect(admitAnalysisRun).not.toHaveBeenCalled();
   });
 
-  it('registers itself as a Tier 1 tool', () => {
-    const map = new Map<string, AiTool>();
-    registerWorkspaceLaunchTool(map);
-    expect(map.get(WORKSPACE_LAUNCH_TOOL_NAME)?.tier).toBe(1);
-    expect(map.get(WORKSPACE_LAUNCH_TOOL_NAME)?.deviceArgs).toEqual(['deviceIds']);
+  it('declares Tier 1 in its own tier table, the session-only tool shape', () => {
+    // Session-only tools carry their tier in a table, not in an `aiTools` map
+    // entry — the same shape as `m365ToolTiers` / `googleToolTiers`. Tier 1
+    // because it executes nothing on the fleet: it queues work whose every
+    // fleet-touching step goes back through the tier gate.
+    expect(workspaceLaunchToolTiers[WORKSPACE_LAUNCH_TOOL_NAME]).toBe(1);
   });
 });
 ```
+
+Import `workspaceLaunchToolTiers` alongside the other symbols and drop the `AiTool` import — this suite no longer builds a map.
 
 - [ ] **Step 2.2: Run it and watch it fail**
 
@@ -597,14 +697,23 @@ Create `apps/api/src/services/workspace/workspaceLaunchTool.ts`:
  * Refusals are TYPED (`{ error, message }`), never thrown: the model has to be
  * able to read why it cannot proceed and say so, and a thrown error would be
  * sanitized into prose it cannot act on.
+ *
+ * SESSION BINDING. This is a session-bound tool, registered with
+ * `makeSessionAwareHandler` exactly like the M365 and Google helpdesk tools.
+ * That factory hands the handler `(args, auth, session.breezeSessionId)` — the
+ * `ai_sessions.id` of the live chat session — and fails closed with
+ * `no_active_session` before any enforcement when there is none. Nothing is read
+ * off `ToolExecutionContext`: that type carries per-invocation execution inputs,
+ * not caller identity, and its docstring says so.
  */
-import type Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
-import type { AiTool } from '../aiTools';
 import type { AuthContext } from '../../middleware/auth';
 import { aiWorkspaceEnabled } from '../../config/env';
 import { resolveArtifact } from '../artifacts/artifactService';
+// Import the union; never restate it. A local copy compiles and then silently
+// stops covering a refusal W04 adds.
 import { admitAnalysisRun, type AnalysisAdmissionRefusal } from '../aiAgents/analysisAdmission';
+import { streamingSessionManager } from '../streamingSessionManager';
 import { watchRunForSession } from './chatRunBridge';
 
 export const WORKSPACE_LAUNCH_TOOL_NAME = 'workspace_launch_analysis';
@@ -631,14 +740,18 @@ const REFUSAL_MESSAGES: Record<AnalysisAdmissionRefusal, string> = {
   external_processing_disabled:
     'This organization has not enabled external processing, so analysis runs are turned off. '
     + 'An administrator can enable it under Settings → Organization → AI.',
-  capability_missing:
+  workspace_capability_missing:
     'This organization\'s AI policy does not include the workspace capability, so analysis runs cannot be started.',
+  analysis_region_unavailable:
+    'Analysis runs are not available in this organization\'s region yet. Data never leaves its region, '
+    + 'so a run cannot be moved to another one.',
   compute_budget_exceeded:
     'The organization has reached its daily analysis compute budget. Try again tomorrow or raise the budget.',
   org_budget_exceeded: 'The organization has reached its AI spend budget for the period.',
   max_concurrent_analysis_runs: 'Another analysis run is already in flight for this organization.',
   analysis_rate: 'Too many analysis runs have been started for this organization in the last hour.',
   too_many_input_devices: 'Too many devices were named for one analysis run — narrow the device set and try again.',
+  device_not_in_org: 'One of the devices named for this run is not in this organization.',
   artifact_forbidden: 'One of the supplied artifact handles is not available to this organization.',
   enqueue_failed: 'The analysis run could not be queued. This is a platform fault, not a policy refusal.',
 };
@@ -648,15 +761,19 @@ function toolError(error: string, message: string): string {
 }
 
 /**
- * Resolve the caller's org the same way every org-scoped tool does. A
- * partner-scope technician's chat session is already narrowed to one org by the
- * session's `toolAuth` (`buildDeviceBoundSessionAuth`) or carries a single
- * accessible org; anything wider has no single owner for the run and is refused.
+ * Which org owns this run. `auth.orgId` first; if the caller's auth carries none
+ * — a partner-scope login — fall back to the ACTIVE SESSION's org, which
+ * `ActiveSession.orgId` documents as "captured at creation time from the
+ * aiSessions DB row … always set, even for system/partner-scoped users".
+ *
+ * `accessibleOrgIds` is deliberately NOT consulted. A partner technician's
+ * accessible set spans every customer; picking one out of it would be guessing
+ * whose compute budget to spend and whose data to stage. The session already
+ * knows, or nobody does.
  */
-function resolveCallerOrgId(auth: AuthContext): string | null {
+function resolveRunOrgId(auth: AuthContext, sessionId: string): string | null {
   if (auth.orgId) return auth.orgId;
-  const accessible = auth.accessibleOrgIds ?? [];
-  return accessible.length === 1 ? accessible[0]! : null;
+  return streamingSessionManager.get(sessionId)?.orgId ?? null;
 }
 
 export async function launchAnalysisFromChat(
@@ -668,7 +785,18 @@ export async function launchAnalysisFromChat(
     return toolError('analysis_not_available', REFUSAL_MESSAGES.analysis_not_available);
   }
 
-  const orgId = resolveCallerOrgId(auth);
+  // No session, no run. `makeSessionAwareHandler` already refuses with
+  // `no_active_session` on the MCP path, so this guards every other caller: a
+  // run admitted with `sessionId: null` has no conversation to deliver into and
+  // no `ai_sessions.id` to record, and would finish into nowhere.
+  if (!sessionId) {
+    return toolError(
+      'chat_session_required',
+      'Analysis runs can only be started from a chat session.',
+    );
+  }
+
+  const orgId = resolveRunOrgId(auth, sessionId);
   if (!orgId) {
     return toolError(
       'org_context_required',
@@ -718,112 +846,82 @@ export async function launchAnalysisFromChat(
   });
 
   if (!result.created) {
-    return toolError(result.refusal, REFUSAL_MESSAGES[result.refusal]);
+    // `detail` (when W04 supplies one) names the specific device or cap. It is
+    // APPENDED, never substituted: the sentence is written for a technician and
+    // the detail is machine-shaped context underneath it.
+    const message = result.detail
+      ? `${REFUSAL_MESSAGES[result.refusal]} (${result.detail})`
+      : REFUSAL_MESSAGES[result.refusal];
+    return toolError(result.refusal, message);
   }
 
   // Watch BEFORE returning, so a run that finishes in the seconds between
-  // admission and the model's next token still finds a subscriber. A watch with
-  // no live session is harmless (the bridge drops the delivery and unwatches).
-  if (sessionId) {
-    watchRunForSession({ runId: result.runId, sessionId, orgId });
-  }
+  // admission and the model's next token still finds a subscriber. A watch whose
+  // session is later evicted is harmless (the bridge drops the delivery and
+  // unwatches); `sessionId` is non-null by the guard above.
+  watchRunForSession({ runId: result.runId, sessionId, orgId });
 
   return JSON.stringify({ runId: result.runId, status: result.status });
 }
 
-const definition: Anthropic.Tool = {
-  name: WORKSPACE_LAUNCH_TOOL_NAME,
-  description:
-    'Start a sandboxed analysis run that can compute over fleet data: it exports the datasets it '
-    + 'needs, runs code you write in an isolated workspace with no network and no device access, and '
-    + 'returns findings plus downloadable files. Returns immediately with a run id — the result arrives '
-    + 'later in this conversation. Use it when the question needs aggregation, correlation or a file '
-    + 'the technician can keep, not when a single read tool answers it.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      goal: {
-        type: 'string',
-        maxLength: WORKSPACE_LAUNCH_MAX_GOAL_CHARS,
-        description: 'What the analysis must find out, in the technician\'s own terms.',
-      },
-      deviceIds: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Devices the analysis may query. Frozen at admission as the run\'s target set.',
-      },
-      siteId: { type: 'string', description: 'Restrict the device set to one site.' },
-      inputHandles: {
-        type: 'array',
-        items: { type: 'string' },
-        maxItems: WORKSPACE_LAUNCH_MAX_INPUT_HANDLES,
-        description:
-          'Artifact handles produced earlier in this conversation (for example files read from a device '
-          + 'under approval) to stage into the workspace.',
-      },
-    },
-    required: ['goal'],
-  },
+/**
+ * Tier table — this tool's ONLY presence in `aiTools.ts` (Step 2.8 registers it
+ * there as a reserved-name source). Same shape and same reason as
+ * `m365ToolTiers` (`aiToolsM365.ts` L46): a session-only tool never enters the
+ * `aiTools` execution map, but `getToolTier` must still answer for it or
+ * `checkGuardrails` sees `tier === undefined` and refuses it as unknown.
+ *
+ * Tier 1 because it executes nothing on the fleet — it queues work whose every
+ * fleet-touching step goes back through the tier gate, intents and approvals.
+ */
+export const workspaceLaunchToolTiers: Record<string, 1 | 3> = {
+  [WORKSPACE_LAUNCH_TOOL_NAME]: 1,
 };
 
-export function registerWorkspaceLaunchTool(map: Map<string, AiTool>): void {
-  map.set(WORKSPACE_LAUNCH_TOOL_NAME, {
-    definition,
-    tier: 1,
-    // `context.chatSessionId` — NOT W03's `context.sessionId`, which is an
-    // agent run's execution-ledger session. `context.runId` is absent here by
-    // construction: this tool STARTS a run, it never executes inside one (and
-    // an agent principal cannot reach it at all — AGENT_HUMAN_ONLY_TOOLS).
-    handler: async (input, auth, context) =>
-      launchAnalysisFromChat(input as WorkspaceLaunchInput, auth, context?.chatSessionId ?? null),
-    // Central declarative gate: every named device is checked for org + site
-    // access before the handler runs, so the frozen target set can never span
-    // a tenant boundary.
-    deviceArgs: ['deviceIds'],
-  });
+/**
+ * The body `makeSessionAwareHandler` wraps (Step 2.8). This is the ONLY entry
+ * point: there is no `aiTools` map entry, so `executeTool` never reaches this
+ * tool and neither `ExecuteToolOptions` nor `ToolExecutionContext` appears
+ * anywhere on its path. `requiresLiveSession(WORKSPACE_LAUNCH_TOOL_NAME)` is
+ * therefore true for free, which is what makes the durable release worker
+ * answer `session_required` instead of `Unknown tool`.
+ */
+export async function workspaceLaunchAnalysisHandler(
+  args: Record<string, unknown>,
+  auth: AuthContext,
+  sessionId: string,
+): Promise<string> {
+  return launchAnalysisFromChat(args as unknown as WorkspaceLaunchInput, auth, sessionId);
 }
 ```
 
-- [ ] **Step 2.4: Thread the chat session id to the handler**
+Note what is NOT in this module: no `Anthropic.Tool` definition object and no `AiTool` import, because there is no map entry to carry them. The tool's description and JSON schema live in the `tool()` declaration in `createBreezeMcpServer` (Step 2.8 item 4) and its Zod mirror in `toolInputSchemas` (item 5) — exactly where every M365 and Google session tool keeps them. `WORKSPACE_LAUNCH_MAX_GOAL_CHARS` and `WORKSPACE_LAUNCH_MAX_INPUT_HANDLES` are still exported from here and both of those declarations must be written in terms of them, so the three cannot drift.
 
-Add to `ToolExecutionContext` in `apps/api/src/services/toolExecutionContext.ts`, after W03's `stagedBytesRemaining` (or after `actionIntentId` if W03 has not landed):
+- [ ] **Step 2.4: Confirm there is NO plumbing to add**
 
-```ts
-  /**
-   * The CHAT session that issued this call (execution-plane W05), or null for
-   * every non-chat caller. Sourced from W01's capture scope, which the chat
-   * path already builds so tool results can become artifacts.
-   *
-   * Deliberately NOT `sessionId`: that field (W03) is an AGENT RUN's
-   * execution-ledger session id — a different id with a different lifetime, set
-   * on a different code path. One name for two ids is how a run id ends up
-   * stamped on a chat transcript.
-   */
-  chatSessionId?: string | null;
-```
-
-and in `executeTool` (`apps/api/src/services/aiTools.ts`), immediately before the handler invocation:
-
-```ts
-  // W01 supplies `capture` on the chat path (`captureScopeFor(auth, session)`);
-  // W03 supplies `context` on the agent-run path. They are never both set, but
-  // merging rather than choosing means neither wave has to know about the other.
-  const effectiveContext: ToolExecutionContext | undefined =
-    opts?.capture?.sessionId
-      ? { ...opts.context, chatSessionId: opts.capture.sessionId }
-      : opts?.context;
-```
-
-and pass `effectiveContext` where `opts?.context` was passed.
-
-- [ ] **Step 2.5: Verify the plumbing and run the test**
+There is nothing to thread. The chat session id arrives as the third argument of the session-aware handler, which Step 2.8 registers. Prove the two files this wave must not touch are untouched:
 
 ```bash
-cd apps/api && grep -n "chatSessionId\|capture" src/services/toolExecutionContext.ts src/services/aiTools.ts | head -20
+cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-rapid-cloud-904e
+git diff --stat -- apps/api/src/services/toolExecutionContext.ts   # must be EMPTY
+grep -rn "captureScopeFor\|CaptureScope\|chatSessionId" apps/api/src/services/workspace/  # must print nothing
+```
+
+Read `makeSessionAwareHandler` once before writing the registration, so the contract is in front of you rather than remembered:
+
+```bash
+cd apps/api && sed -n '616,665p' src/services/aiAgentSdkTools.ts
+```
+
+Three things to carry away. Its signature is `(toolName, getAuth, getActiveSession, sessionHandler, onPreToolUse?, onPostToolUse?)`. It calls `sessionHandler(args, auth, session.breezeSessionId)` — the chat `ai_sessions.id`, **not** `sdkSessionId`. And with no active session it returns `{ error: 'no_active_session', message: 'No active session.' }` *before* enforcement, so a run can never be admitted without one.
+
+- [ ] **Step 2.5: Run the tool test**
+
+```bash
 cd apps/api && npx vitest run src/services/workspace/workspaceLaunchTool.test.ts src/services/aiTools.test.ts
 ```
 
-Expected: 7 passed in the tool suite; `aiTools.test.ts` unchanged and green. If W01's `capture` option is not on `ExecuteToolOptions` yet, add `capture?: { sessionId: string | null; runId: string | null }` to it with W01's name verbatim so the two edits converge.
+Expected: 11 passed in the tool suite; `aiTools.test.ts` unchanged and green — this wave adds no parameter to `executeTool` and no field to `ToolExecutionContext`, so that suite has nothing to react to.
 
 - [ ] **Step 2.6: Write the failing six-place-registration test**
 
@@ -837,8 +935,8 @@ import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { TOOL_CAPABILITY } from '../aiAgents/agentToolCatalog';
 import { AGENT_HUMAN_ONLY_TOOLS, TOOL_PERMISSIONS } from '../aiGuardrails';
 import { toolInputSchemas } from '../aiToolSchemas';
-import { aiTools } from '../aiToolNames';
-import '../aiTools';
+import { aiTools, getAllRegisteredToolNames, getToolTier, requiresLiveSession } from '../aiTools';
+import { hasCoreAiToolName } from '../aiToolNames';
 import { WORKSPACE_LAUNCH_TOOL_NAME } from './workspaceLaunchTool';
 
 const SDK_TOOLS_SOURCE = readFileSync(
@@ -847,11 +945,24 @@ const SDK_TOOLS_SOURCE = readFileSync(
 );
 
 describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
-  it('is in the aiTools execution registry', () => {
-    expect(aiTools.has(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
+  it('is a RESERVED name and a recognized tool, but NOT in the aiTools execution map', () => {
+    // The session-only shape, mirroring m365_lookup_user. A map entry would
+    // make it headless-executable with no chat session — precisely what the
+    // session-aware registration exists to prevent.
+    expect(aiTools.has(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(false);
+    expect(hasCoreAiToolName(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
+    expect(getAllRegisteredToolNames()).toContain(WORKSPACE_LAUNCH_TOOL_NAME);
   });
 
-  it('is tiered 1 — it executes nothing on the fleet', () => {
+  it('resolves a tier through getToolTier — otherwise checkGuardrails refuses it as unknown', () => {
+    expect(getToolTier(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(1);
+  });
+
+  it('requires a live session, so a durable release answers session_required not Unknown tool', () => {
+    expect(requiresLiveSession(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
+  });
+
+  it('is tiered 1 in the SDK tier table — it executes nothing on the fleet', () => {
     expect(TOOL_TIERS[WORKSPACE_LAUNCH_TOOL_NAME]).toBe(1);
   });
 
@@ -859,8 +970,12 @@ describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
     expect(TOOL_CAPABILITY[WORKSPACE_LAUNCH_TOOL_NAME]).toBe('workspace');
   });
 
-  it('has a tool() declaration on the Breeze MCP server', () => {
-    expect(SDK_TOOLS_SOURCE).toContain(`makeHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
+  it('has a SESSION-AWARE tool() declaration on the Breeze MCP server', () => {
+    // Session-aware, not plain `makeHandler`: the run must be stamped with the
+    // chat session that started it, and `makeSessionAwareHandler` is also what
+    // fails the call closed when there is no session to stamp.
+    expect(SDK_TOOLS_SOURCE).toContain(`makeSessionAwareHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
+    expect(SDK_TOOLS_SOURCE).not.toContain(`makeHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
   });
 
   it('has an input schema — without one, every call fails validation', () => {
@@ -881,6 +996,20 @@ describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
   it('is human-only — an ai_agent principal may never spawn a run', () => {
     expect(AGENT_HUMAN_ONLY_TOOLS.has(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
   });
+
+  it('puts no identity field on ToolExecutionContext and reads no capture scope', () => {
+    // The withdrawn R4 design threaded the chat session through
+    // `ToolExecutionContext.chatSessionId` and W01's capture scope. That type's
+    // docstring reserves it for per-invocation EXECUTION INPUTS, explicitly not
+    // caller identity; a session id is identity. This asserts the design stayed
+    // withdrawn — the grep is the contract, because the alternative compiles.
+    const contextSource = readFileSync(join(__dirname, '..', 'toolExecutionContext.ts'), 'utf8');
+    expect(contextSource).not.toContain('chatSessionId');
+    const toolSource = readFileSync(join(__dirname, 'workspaceLaunchTool.ts'), 'utf8');
+    expect(toolSource).not.toContain('captureScopeFor');
+    expect(toolSource).not.toContain('CaptureScope');
+    expect(toolSource).not.toContain('chatSessionId');
+  });
 });
 ```
 
@@ -890,19 +1019,51 @@ describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
 cd apps/api && npx vitest run src/services/workspace/workspaceLaunchTool.registration.test.ts
 ```
 
-Expected failure: all eight assertions fail (`expected false to be true`, `expected undefined to be 1`, …).
+Expected failure: every assertion about the tool being KNOWN fails (`hasCoreAiToolName` false, `getToolTier` undefined, `TOOL_TIERS[…]` undefined, no `makeSessionAwareHandler(` in the source, …). Two are green from the start and must STAY green, so read them rather than skimming the summary line: `aiTools.has(...) === false` (it is never a map entry) and the "no identity field" grep (a guard against the withdrawn R4 design, not a red-first step). `requiresLiveSession` is false before registration — it needs `getToolTier` to answer — and turns true with it.
 
 - [ ] **Step 2.8: Register in all six places**
 
-1. `apps/api/src/services/aiTools.ts` — add to the import block (after `import { registerPamTools } from './aiToolsPam';`, ~L83):
+1. `apps/api/src/services/aiTools.ts` — as a **reserved-name source**, not a map entry. Mirror `m365ToolTiers` exactly; there are three touch points and missing any one of them is a distinct silent failure.
+
+Import beside the existing tier-table imports (after `import { googleToolTiers } from './aiToolsGoogle';`, ~L89):
 ```ts
-import { registerWorkspaceLaunchTool } from './workspace/workspaceLaunchTool';
+// Execution plane (spec §5.5). Session-only, like the M365/Google helpdesk
+// tools: it dispatches through makeSessionAwareHandler and is NEVER added to
+// the `aiTools` execution map. Its tier still has to be visible to getToolTier
+// so checkGuardrails can gate it.
+import { workspaceLaunchToolTiers } from './workspace/workspaceLaunchTool';
 ```
-and to the register block (after `registerM365Tools(aiTools);`, ~L311):
+
+Then extend the three readers that already take the two tier tables:
 ```ts
-// Execution plane (spec §5.5). Tier 1, human-only — see AGENT_HUMAN_ONLY_TOOLS.
-registerWorkspaceLaunchTool(aiTools);
+// L323-325 — reserved names. Without this, hasCoreAiToolName is false and the
+// name is treated as unclaimed, so an extension could collide with it.
+registerReservedAiToolNamePredicate(
+  (toolName) => m365ToolTiers[toolName] !== undefined
+    || googleToolTiers[toolName] !== undefined
+    || workspaceLaunchToolTiers[toolName] !== undefined,
+);
+
+// L377-379, inside getToolTier — without this the tier is `undefined` and
+// checkGuardrails refuses the call as an unknown tool.
+  const coreTier = aiTools.get(toolName)?.tier
+    ?? m365ToolTiers[toolName]
+    ?? googleToolTiers[toolName]
+    ?? workspaceLaunchToolTiers[toolName];
+
+// L396-400, inside getAllRegisteredToolNames — without this the tool is absent
+// from the fixed core surface the tier/classification contracts operate on.
+  return [
+    ...aiTools.keys(),
+    ...Object.keys(m365ToolTiers),
+    ...Object.keys(googleToolTiers),
+    ...Object.keys(workspaceLaunchToolTiers),
+  ];
 ```
+
+`requiresLiveSession` needs no edit: it is derived (`!aiTools.has(name) && getToolTier(name) !== undefined`), so it becomes true the moment the three above are in place — which is the behaviour the Step 2.6 assertion pins.
+
+**Import-cycle watch.** `workspaceLaunchTool.ts` no longer imports anything from `aiTools.ts` (the `AiTool` type went with the map entry), so this import is one-directional. Keep it that way: if a later edit makes that module import from `aiTools.ts`, the cycle is real at runtime, not erasable like a type-only one. `m365ToolsHeadless.test.ts` L9-13 documents the same hazard for the M365 table.
 
 2. `apps/api/src/services/aiAgentSdkTools.ts` — in `TOOL_TIERS`, directly after the `google_remove_license: 3,` line (~L331):
 ```ts
@@ -911,7 +1072,7 @@ registerWorkspaceLaunchTool(aiTools);
   // though it is registered in `aiTools`.
   workspace_launch_analysis: 1,
 ```
-and inside `createBreezeMcpServer`'s `tools` array (append beside the other Tier-1 declarations):
+and inside `createBreezeMcpServer`'s `tools` array (append beside the other Tier-1 declarations), registered with **`makeSessionAwareHandler`** — the same factory the M365 and Google tools use (`aiAgentSdkTools.ts` L820-831, L870-875), passing `getActiveSession` through exactly as they do:
 ```ts
     tool(
       'workspace_launch_analysis',
@@ -923,9 +1084,25 @@ and inside `createBreezeMcpServer`'s `tools` array (append beside the other Tier
         siteId: uuid.optional(),
         inputHandles: z.array(uuid).max(20).optional(),
       },
-      makeHandler('workspace_launch_analysis', getAuth, onPreToolUse, onPostToolUse)
+      // Session-aware: the handler is called as
+      // `(args, auth, session.breezeSessionId)`, and the factory refuses with
+      // `no_active_session` before any enforcement when there is no live chat
+      // session — so no run is ever admitted without one to deliver it to.
+      // `workspaceLaunchAnalysisHandler` is the exported body from
+      // services/workspace/workspaceLaunchTool.ts.
+      makeSessionAwareHandler(
+        'workspace_launch_analysis',
+        getAuth,
+        getActiveSession,
+        workspaceLaunchAnalysisHandler,
+        onPreToolUse,
+        onPostToolUse,
+      )
     ),
 ```
+with `import { workspaceLaunchAnalysisHandler } from './workspace/workspaceLaunchTool';` beside the other handler imports.
+
+**Check where you put this.** `getActiveSession` is a parameter of `createBreezeMcpServer` (L1214) and is threaded into the M365/Google definition factories at L2812-2819. Declare this tool somewhere that parameter is in scope — inside `createBreezeMcpServer`'s own `tools` array, not in a factory that was never handed it. A factory without `getActiveSession` compiles happily and then every call returns `no_active_session`.
 
 3. `apps/api/src/services/aiAgents/agentToolCatalog.ts` — in `TOOL_CAPABILITY`, under the `workspace` block W04 adds (create the block here if W04 has not landed yet, and keep both entries alphabetised within it):
 ```ts
@@ -977,7 +1154,12 @@ cd apps/api && npx vitest run \
   src/services/aiGuardrails.agentPrincipal.contract.test.ts
 ```
 
-Expected: all pass. If `agentToolCatalog.categoryParity` or `TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG` complains, add the entry that suite names — it prints the exact list and the exact missing key. (Confirm each path exists first with `ls apps/api/src/services/aiToolsRegistryParity.test.ts`; run whichever parity suites the directory actually carries.)
+Expected: all pass. Two notes before you start editing a parity suite's expectations:
+
+- **A parity suite that compares `TOOL_TIERS` against the `aiTools` MAP will flag this tool as map-missing. That is not a bug to fix by adding a map entry** — it is the session-only shape, and the M365/Google tools are already in whatever allowlist or predicate that suite uses for it. Find how `m365_lookup_user` satisfies the suite and add `workspace_launch_analysis` the same way; if it satisfies it via `getAllRegisteredToolNames()` or `hasCoreAiToolName`, Step 2.8 item 1 has already done the work and the suite should be green.
+- If `agentToolCatalog.categoryParity` or `TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG` complains, add the entry that suite names — it prints the exact list and the exact missing key.
+
+(Confirm each path exists first with `ls apps/api/src/services/aiToolsRegistryParity.test.ts`; run whichever parity suites the directory actually carries. Add `src/services/aiToolNames.test.ts` to the run — it pins `hasCoreAiToolName`'s behaviour across all the reserved-name sources.)
 
 - [ ] **Step 2.10: Commit**
 
@@ -987,11 +1169,14 @@ git add apps/api/src/services/workspace/workspaceLaunchTool.ts \
         apps/api/src/services/workspace/workspaceLaunchTool.registration.test.ts \
         apps/api/src/services/aiTools.ts apps/api/src/services/aiAgentSdkTools.ts \
         apps/api/src/services/aiAgents/agentToolCatalog.ts apps/api/src/services/aiGuardrails.ts \
-        apps/api/src/services/aiToolSchemas.ts apps/api/src/services/toolExecutionContext.ts
+        apps/api/src/services/aiToolSchemas.ts
 git commit -m "feat(ai): workspace_launch_analysis chat tool, registered in all six places
 
-Execution plane W05, spec §5.5. Tier 1 and human-only: an ai_agent principal
-may never spawn a run. Refusals are typed tool errors the model relays."
+Execution plane W05, spec §5.5. Session-only like the M365/Google helpdesk
+tools: it dispatches through makeSessionAwareHandler, never enters the aiTools
+execution map, and cannot be called without a live chat session to stamp on the
+run. Tier 1 and human-only: an ai_agent principal may never spawn a run.
+Refusals are typed tool errors the model relays."
 ```
 
 ---
@@ -1035,10 +1220,12 @@ import type { AiStreamEvent } from '@breeze/shared';
 
 const sessionGet = vi.hoisted(() => vi.fn());
 const readRunForDelivery = vi.hoisted(() => vi.fn());
+const captureException = vi.hoisted(() => vi.fn());
 
 vi.mock('../streamingSessionManager', () => ({
   streamingSessionManager: { get: sessionGet },
 }));
+vi.mock('../sentry', () => ({ captureException }));
 // The Redis client is never constructed in this suite: `deliverRunEvent` is the
 // pure half, and `watchRunForSession` is exercised through the exported registry.
 vi.mock('../redis', () => ({ resolveRedisUrl: () => 'redis://127.0.0.1:6379' }));
@@ -1053,13 +1240,18 @@ const ORG = '11111111-1111-4111-8111-111111111111';
 const RUN = '22222222-2222-4222-8222-222222222222';
 const SESSION = '44444444-4444-4444-8444-444444444444';
 
-function fakeSession() {
+/**
+ * `orgId` and `breezeSessionId` are the two fields `deliverRunEvent` re-asserts
+ * against the watch, so they are overridable — the mismatch tests below depend
+ * on being able to hand back a session that is LIVE but belongs to someone else.
+ */
+function fakeSession(overrides: { orgId?: string; breezeSessionId?: string } = {}) {
   const published: AiStreamEvent[] = [];
   return {
     published,
     session: {
-      breezeSessionId: SESSION,
-      orgId: ORG,
+      breezeSessionId: overrides.breezeSessionId ?? SESSION,
+      orgId: overrides.orgId ?? ORG,
       eventBus: { publish: (e: AiStreamEvent) => { published.push(e); } },
       pendingRunResults: [] as unknown[],
     },
@@ -1147,6 +1339,44 @@ describe('chatRunBridge (spec §5.5)', () => {
 
     expect(published).toEqual([]);
     expect(sessionGet).not.toHaveBeenCalled();
+  });
+
+  it('refuses to publish into a session that belongs to a different org', async () => {
+    // The session id was reused after an eviction and now resolves to a LIVE
+    // session in ANOTHER tenant. Publishing would put this org's summary and
+    // file names into that org's conversation — nothing downstream would catch
+    // it, because an SSE frame never passes through RLS.
+    const { session, published } = fakeSession({ orgId: '77777777-7777-4777-8777-777777777777' });
+    sessionGet.mockReturnValue(session);
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+
+    expect(published).toEqual([]);
+    expect(session.pendingRunResults).toHaveLength(0);
+    // The run row is never even read: nothing is fetched for a delivery that
+    // cannot be made.
+    expect(readRunForDelivery).not.toHaveBeenCalled();
+    // Loud, not silent: this is a registry bug, unlike the no-session drop.
+    expect(captureException).toHaveBeenCalledTimes(1);
+
+    // …and the watch is gone, so a redelivery does not retry the same mistake.
+    await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: RUN } });
+    expect(captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses to publish progress into a session whose identity does not match the watch', async () => {
+    const { session, published } = fakeSession({ breezeSessionId: '88888888-8888-4888-8888-888888888888' });
+    sessionGet.mockReturnValue(session);
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+
+    await deliverRunEvent({
+      type: 'ai.agent.run.progress',
+      payload: { runId: RUN, step: 'export_dataset', label: 'Exported 12,400 rows', ordinal: 2 },
+    });
+
+    expect(published).toEqual([]);
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 
   it('maps a failed run to a run_result the card can render', async () => {
@@ -1415,6 +1645,29 @@ export async function deliverRunEvent(
     return;
   }
 
+  // TENANT ASSERTION — the last gate before customer data enters a conversation.
+  // `streamingSessionManager` is keyed by session id, and session ids are reused
+  // across a restart/eviction cycle: a watch registered for session S in org A
+  // can, after S is evicted and the id re-minted, resolve to a LIVE session in
+  // org B. Publishing there would put one tenant's analysis summary and file
+  // names into another tenant's chat, and nothing downstream would catch it —
+  // the SSE frame never passes through RLS. So re-assert both axes the watch was
+  // registered with, and on any mismatch drop the delivery, unwatch, and report:
+  // this is a bug in the watch registry, not a routine miss, and it must be
+  // loud in Sentry rather than silent like the no-session path above.
+  if (session.orgId !== watch.orgId || session.breezeSessionId !== watch.sessionId) {
+    bridge.unwatch(runId);
+    recordChatRunDelivery('session_mismatch');
+    captureException(
+      new Error(
+        `[ChatRunBridge] session identity mismatch for run ${runId}: `
+        + `watch(org=${watch.orgId}, session=${watch.sessionId}) `
+        + `resolved to session(org=${session.orgId}, session=${session.breezeSessionId})`,
+      ),
+    );
+    return;
+  }
+
   if (event.type === 'ai.agent.run.progress') {
     const { step, label, ordinal } = event.payload;
     if (typeof step !== 'string' || typeof label !== 'string' || typeof ordinal !== 'number') return;
@@ -1564,7 +1817,7 @@ cd apps/api && npx vitest run \
   src/services/streamingSessionManager.test.ts
 ```
 
-Expected: `chatRunBridge.test.ts` 6 passed; the two existing suites unchanged and green.
+Expected: `chatRunBridge.test.ts` 8 passed; the two existing suites unchanged and green.
 
 - [ ] **Step 3.8: Commit**
 
@@ -1595,7 +1848,8 @@ export type WorkspaceCap =
   | 'staged_bytes' | 'staged_files' | 'artifact_bytes' | 'artifact_file_bytes'
   | 'collect_files' | 'stdout_bytes' | 'step_timeout' | 'steps_per_run'
   | 'compute_seconds' | 'compute_cents' | 'input_devices' | 'export_rows';
-export type ChatRunDeliveryOutcome = 'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing';
+export type ChatRunDeliveryOutcome =
+  'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing' | 'session_mismatch';
 export function recordWorkspaceCreate(seconds: number, backend: string, outcome: 'ok' | 'error'): void;
 export function recordWorkspaceStep(exit: 'ok' | 'nonzero' | 'timeout' | 'error'): void;
 export function recordWorkspaceComputeSeconds(backend: string, region: string, seconds: number): void;
@@ -1792,7 +2046,11 @@ export type WorkspaceCap =
   | 'compute_seconds' | 'compute_cents' | 'input_devices' | 'export_rows';
 
 export type ChatRunDeliveryOutcome =
-  | 'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing';
+  | 'progress' | 'completed' | 'failed' | 'no_session' | 'run_missing'
+  /** The watch's org/session did not match the live session found under that
+   *  session id — a cross-tenant delivery was refused. Any non-zero rate here is
+   *  a bug worth paging on, not a capacity signal. */
+  | 'session_mismatch';
 
 export function recordWorkspaceCreate(seconds: number, backend: string, outcome: 'ok' | 'error'): void {
   if (!finite(seconds)) return;
@@ -1880,6 +2138,10 @@ export interface RunWorkspaceRowInput {
 }
 export function mapWorkspaceSteps(raw: unknown): AiAgentRunWorkspaceStepDto[];
 ```
+
+**Scope (R1 — route ownership):** this task extends the POLLED run-detail DTO and nothing else. `GET /ai/agents/runs/:runId/artifacts` is **W01 Task 10's route** — do not add it here, do not test it here, and do not import `listArtifactsForAuth` in `routes/aiAgents.ts`. If a client needs a cheaper refresh than the full trace, it uses W01's route.
+
+**Note (W04 reconciliation):** W04 now surfaces `analysis`, `computeCents` and `computeUsageEstimated` on this DTO as part of its own admission/settlement work. **This wave adds only `artifacts` and `workspace`.** Treat `computeCents` / `computeUsageEstimated` as ALREADY PRESENT on the DTO and on `buildRunTrace`'s input: if W04 has landed, do not re-declare them (a duplicate interface member is a compile error, and a second projection line in the route is a silent divergence); if W04 has not landed yet, add them here exactly as Task 1 Step 1.7 declares them and delete that half of the diff when rebasing onto W04. Everything below that mentions `computeCents` is conditional on that check — run `grep -n "computeCents" packages/shared/src/types/aiAgentRuns.ts apps/api/src/services/aiAgents/runTrace.ts` FIRST.
 
 **Note (W03 reconciliation):** W03 adds `progress: AiAgentRunProgressEntryDto[]` to the same DTO and the same builder, from a Redis ring. The two sets of fields are independent; whichever wave lands second appends its parameters after the other's. The page polls at `DETAIL_POLL_INTERVAL_MS = 5_000`, so all of it arrives on the same tick — this wave adds no second stream to the run page.
 
@@ -2151,35 +2413,7 @@ import { aiRunArtifacts, aiRunWorkspaces } from '../db/schema/aiWorkspace';
 import { toArtifactDto } from '../services/artifacts/artifactService';
 ```
 
-- [ ] **Step 5.8: Add the dedicated artifact-list endpoint**
-
-W01's `AiRunArtifactDto` docstring names `GET /ai/agents/runs/:runId/artifacts` as a surface. Add it immediately after the `GET /runs/:runId` handler, so a client can refresh the list without re-fetching the whole trace:
-
-```ts
-/**
- * Execution plane (spec §7 step 7) — just this run's artifacts. The run-detail
- * DTO already carries them; this exists so the run page (and a ticket-attach
- * dialog) can refresh the list on its own cadence without paying for the
- * ledger, intent, hostname and draft reads the detail route does.
- *
- * `listArtifactsForAuth` (W01) applies `auth.orgCondition` itself, so a run id
- * from another tenant returns an empty list rather than a 403 — the same
- * "never distinguish not-found from forbidden" rule `resolveArtifact` follows.
- */
-aiAgentsRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
-  const runId = uuidParam(c, 'runId');
-  if (!runId) return c.json({ error: 'Run not found' }, 404);
-  const auth = c.get('auth');
-  const artifacts = await listArtifactsForAuth(runId, auth);
-  return c.json({ data: artifacts });
-});
-```
-
-with `import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';`.
-
-**Route-order trap:** `aiAgentsRoutes.get('/:id', …)` at L1629 would capture `/runs` if `/runs/...` were registered after it. Register this beside the existing `/runs/:runId` handler (L1198), which is already before `/:id`.
-
-- [ ] **Step 5.9: Run the route suite**
+- [ ] **Step 5.8: Run the route suite**
 
 ```bash
 cd apps/api && npx vitest run src/routes/aiAgents.test.ts src/services/aiAgents/runTrace.test.ts
@@ -2187,7 +2421,7 @@ cd apps/api && npx vitest run src/routes/aiAgents.test.ts src/services/aiAgents/
 
 Expected: all pass, including the existing run-detail serialization/leak-tripwire tests (`AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS`).
 
-- [ ] **Step 5.10: Commit**
+- [ ] **Step 5.9: Commit**
 
 ```bash
 git add apps/api/src/services/aiAgents/runTrace.ts apps/api/src/services/aiAgents/runTrace.test.ts \
@@ -2452,7 +2686,7 @@ CHECK's artifact arm deliberately permits a null artifact_id for that reason."
 
 **Files:**
 - Modify: `apps/api/src/services/ticketAttachmentStorage.ts` (`AttachmentBackend` L30, `AttachmentBytesRow` L33, `openBytes` L81, `deleteBytes` L101)
-- Modify: `apps/api/src/routes/tickets/attachments.ts` (new POST after the upload handler L209; content route L282-352)
+- Modify: `apps/api/src/routes/tickets/attachments.ts` (new POST after the upload handler L209; **`loadAttachmentRow` L220-254**; content route L282-352)
 - Modify: `apps/api/src/routes/reports/runs.ts` (new POST)
 - Modify/Create: `apps/api/src/routes/tickets/attachments.test.ts`, `apps/api/src/routes/reports/runs.test.ts`
 
@@ -2784,9 +3018,49 @@ In the content route (L282-352), pass the scope and map the expiry:
     }
 ```
 
-and add `artifactId: ticketAttachments.artifactId` plus `orgId: ticketAttachments.orgId` to that route's select projection.
+- [ ] **Step 7.8: Widen `loadAttachmentRow`'s projection — the byte path's only read**
 
-- [ ] **Step 7.8: Add the report attach route**
+The two fields the branch above needs are **not** selected today. `loadAttachmentRow` is in `apps/api/src/routes/tickets/attachments.ts` at **L220-254** — not in `ticketAttachmentStorage.ts`, where you would first look for it — and it is the read behind BOTH content callers (L300 and L373). Its `attachment` projection is an explicit column list ending `sha256`, `createdAt`, with `orgId` and (necessarily) `artifactId` absent. Absent means `undefined`, and `openBytes` reads `undefined` as "no pointer and no scope" and raises `AttachmentExpiredError` — so every artifact-backed download would 410 while the artifact is perfectly alive. Add both:
+
+```ts
+        attachment: {
+          id: ticketAttachments.id,
+          // The byte path resolves an artifact-backed row against the
+          // ATTACHMENT's own org, never the caller's — a partner-scope
+          // technician can reach many orgs and `resolveArtifact` must be asked
+          // about exactly one.
+          orgId: ticketAttachments.orgId,
+          ticketId: ticketAttachments.ticketId,
+          commentId: ticketAttachments.commentId,
+          uploadedByUserId: ticketAttachments.uploadedByUserId,
+          storageBackend: ticketAttachments.storageBackend,
+          storageKey: ticketAttachments.storageKey,
+          data: ticketAttachments.data,
+          // Null on an uploaded row, and ALSO null on an artifact-backed row
+          // whose artifact expired (ON DELETE SET NULL) — that second case is
+          // the 410, and it is unreachable if this column is not selected.
+          artifactId: ticketAttachments.artifactId,
+          contentType: ticketAttachments.contentType,
+          byteSize: ticketAttachments.byteSize,
+          originalFilename: ticketAttachments.originalFilename,
+          sha256: ticketAttachments.sha256,
+          createdAt: ticketAttachments.createdAt,
+        },
+```
+
+Note this function's `WHERE` is `(id, ticketId)` only — no org predicate; tenancy comes from RLS and the route guard. Adding `orgId` to the projection does not change that and must not be mistaken for adding a filter.
+
+The doc comment above it already explains why `data`/`storage_key` are selected here and nowhere else ("this is the byte path — every other read uses `ATTACHMENT_META_COLUMNS`"); extend that sentence to cover `artifact_id` for the same reason, so the next person does not prune it back out as over-selection.
+
+Verify nothing else reads these rows expecting the narrow shape:
+
+```bash
+cd apps/api && grep -n "loadAttachmentRow\|ATTACHMENT_META_COLUMNS" src/routes/tickets/attachments.ts
+```
+
+`ATTACHMENT_META_COLUMNS` (the metadata projection used by every non-byte read) is deliberately left alone: an attachment listing has no business carrying the artifact pointer.
+
+- [ ] **Step 7.9: Add the report attach route**
 
 In `apps/api/src/routes/reports/runs.ts`, beside the existing run routes:
 
@@ -2845,7 +3119,7 @@ reportRunRoutes.post(
 
 (Use whatever router constant and permission constant that file already defines — `grep -n "requirePermission\|Routes.post" apps/api/src/routes/reports/runs.ts` first.)
 
-- [ ] **Step 7.9: Run both route suites**
+- [ ] **Step 7.10: Run both route suites**
 
 ```bash
 cd apps/api && npx vitest run src/routes/tickets/attachments.test.ts src/routes/reports/runs.test.ts
@@ -2853,7 +3127,7 @@ cd apps/api && npx vitest run src/routes/tickets/attachments.test.ts src/routes/
 
 Expected: all pass.
 
-- [ ] **Step 7.10: Commit**
+- [ ] **Step 7.11: Commit**
 
 ```bash
 git add apps/api/src/services/ticketAttachmentStorage.ts \
@@ -2871,9 +3145,9 @@ TICKET's org, not the caller's. An expired artifact answers 410, not 404."
 ### Task 8: Web chat — `run_progress` / `run_result` in the store, and `AiRunCard`
 
 **Files:**
-- Modify: `apps/web/src/stores/processStreamEvent.ts` (`StreamableState` L70-84, the `switch` L92-273)
+- Modify: `apps/web/src/stores/processStreamEvent.ts` (`StreamableState` L70-81, the `switch` L92-273 — which has **no `default:` arm today**)
 - Modify: `apps/web/src/stores/processStreamEvent.test.ts` (`makeState` L4-10)
-- Modify: `apps/web/src/stores/aiStore.ts` (`AiState` L28-84, store literal L86+), `apps/web/src/stores/workspaceStore.ts` (tab state literal ~L56)
+- Modify: `apps/web/src/stores/aiStore.ts` (`AiState` L28-84, store literal L86+), `apps/web/src/stores/workspaceStore.ts` (**the `TabState` interface L19-46 AND `createEmptyTab()` L48-70** — both, see Step 8.3)
 - Create: `apps/web/src/components/ai/AiRunCard.tsx`, `apps/web/src/components/ai/AiRunCard.test.tsx`
 - Modify: `apps/web/src/components/ai/AiChatMessages.tsx` (tool branches L274-311)
 - Modify: `apps/web/src/locales/{en,de-DE,es-419,fr-CA,fr-FR,it-IT,pt-BR,tr-TR}/ai.json`
@@ -2987,6 +3261,54 @@ describe('execution-plane run events (spec §5.5)', () => {
 
 Add `chatRuns: {},` to `makeState()`.
 
+And, in the same file, the guard that keeps a future event from being swallowed:
+
+```ts
+describe('processStreamEvent exhaustiveness', () => {
+  it('has a default arm that type-errors on an unhandled event type', () => {
+    // The switch had no `default:` before this wave, so an event type added to
+    // the shared union and forgotten here did nothing at all — and "did
+    // nothing" is indistinguishable from "never arrived". This pins the guard's
+    // presence so nobody deletes it to get past a compile error.
+    const source = readFileSync(
+      new URL('./processStreamEvent.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('const _exhaustive: never = event;');
+  });
+
+  it('drops an unknown event without throwing or mutating state', () => {
+    // The compile-time half is the real guard; this is the runtime half, for an
+    // event hand-built by an older client that the types cannot see.
+    const state = makeState();
+    let called = false;
+    expect(() =>
+      processStreamEvent(
+        { type: 'not_a_real_event' } as unknown as AiStreamEvent,
+        () => { called = true; },
+        () => state,
+        null,
+      ),
+    ).not.toThrow();
+    expect(called).toBe(false);
+  });
+});
+```
+
+Add `import { readFileSync } from 'node:fs';` and `import type { AiStreamEvent } from '@breeze/shared';` to the test file if they are not already there.
+
+**Verify the compile-time half by hand once, then revert it** — an assertion that a type error *would* occur is not evidence that it does:
+
+```bash
+cd apps/web
+# temporarily add `| { type: 'bogus_event' }` to AiStreamEvent in
+# ../../packages/shared/src/types/ai.ts, then:
+npx tsc --noEmit -p tsconfig.json   # MUST report: Type '{ type: "bogus_event"; }' is not assignable to type 'never'
+git checkout -- ../../packages/shared/src/types/ai.ts
+```
+
+If that command is silent, the guard is not wired up — `event` is being widened somewhere above it — and the whole arm is decorative.
+
 - [ ] **Step 8.2: Run it and watch it fail**
 
 ```bash
@@ -3031,7 +3353,7 @@ with `import type { AiRunResultArtifactRef } from '@breeze/shared';` added to th
   chatRuns: Record<string, ChatRunState>;
 ```
 
-and the two cases, inside the `switch`, before `case 'done'`:
+and **two new `case` labels inside the `switch`, written out explicitly**, before `case 'done'` (the switch currently runs L92-273 with cases `message_start`, `content_delta`, `tool_use_start`, `tool_result`, `approval_required`, `title_updated`, `message_end`, `error`, `plan_approval_required`, `plan_step_start`, `plan_step_complete`, `plan_complete`, `plan_screenshot`, `approval_mode_changed`, `done`):
 
 ```ts
     case 'run_progress': {
@@ -3083,7 +3405,34 @@ and the two cases, inside the `switch`, before `case 'done'`:
     }
 ```
 
-Initialise `chatRuns: {},` in `apps/web/src/stores/aiStore.ts` (both the `AiState` interface and the store literal, beside `messages: []`) and in `apps/web/src/stores/workspaceStore.ts`'s per-tab state literal (~L56), whose tabs satisfy the same `StreamableState` shape.
+**And close the switch with an exhaustiveness guard.** The switch has **no `default:` today** — an unrecognised event falls straight out to the trailing `return null` (L273-276), silently. That is how these two events could have been "added" by extending only the shared union and never noticed here: the store would compile, the tests for the other events would pass, and the card would simply never update. Add, as the last member of the switch:
+
+```ts
+    default: {
+      /*
+       * Every member of `AiStreamEvent` must be handled above. If a new event
+       * type is added to the shared union and not here, `event` is no longer
+       * `never` at this point and THIS LINE fails to compile — which is the
+       * only signal there is, because the runtime behaviour of forgetting a
+       * case is "nothing happens", indistinguishable from an event that never
+       * arrived. Do not "fix" a red here by widening the annotation.
+       */
+      const _exhaustive: never = event;
+      // Unreachable when the compiler is satisfied; kept so a hand-built event
+      // object from an older client is dropped rather than throwing.
+      void _exhaustive;
+      return currentAssistantId;
+    }
+```
+
+Adding this makes the compiler demand a case for every existing member too — if any of the fifteen listed above turns out to be unhandled, handle it or add an explicit no-op case with a comment. Do not delete the guard to get past that.
+
+Then initialise the slice in **both** stores that satisfy `StreamableState`:
+
+- `apps/web/src/stores/aiStore.ts` — add `chatRuns: Record<string, ChatRunState>;` to the `AiState` interface and `chatRuns: {},` to the store literal, beside `messages: []`.
+- `apps/web/src/stores/workspaceStore.ts` — **add `chatRuns: Record<string, ChatRunState>;` to the `TabState` INTERFACE (L19-46, e.g. after `messages: AiMessage[];` at L33), not only to `createEmptyTab()`'s literal (L48-70).** The literal's return type is annotated `: TabState`, so a property that is not on the interface is an excess-property error and the build fails — and if you instead add it only to the interface, `createEmptyTab` fails as incomplete. Both, in the same edit. Import `ChatRunState` from `./processStreamEvent` in each file.
+
+**Do not widen the `any` cast at `workspaceStore.ts` L399-403** — the `tabSet as (fn: (s: any) => Partial<any>) => void` / `tabGet as () => any` pair that hands a tab to `processStreamEvent`. It is already loose enough to swallow a missing `chatRuns` without complaint, which is exactly why the interface edit above has to be deliberate: that cast will NOT catch it for you. Leave it as it is; do not extend it to cover anything new.
 
 - [ ] **Step 8.4: Run it and watch it pass**
 
@@ -3091,7 +3440,7 @@ Initialise `chatRuns: {},` in `apps/web/src/stores/aiStore.ts` (both the `AiStat
 cd apps/web && npx vitest run src/stores/processStreamEvent.test.ts
 ```
 
-Expected: 4 new tests pass; the existing suite green.
+Expected: 6 new tests pass (4 run-event cases + 2 exhaustiveness); the existing suite green.
 
 - [ ] **Step 8.5: Write the failing `AiRunCard` test**
 
@@ -3160,6 +3509,27 @@ describe('AiRunCard (spec §5.5)', () => {
       />,
     );
     expect(getByTestId('ai-run-card-progress').textContent).toContain('Exported 12,400 rows');
+  });
+
+  it('points at the run page when the result arrived with no live stream', async () => {
+    // No `run` prop: the turn was over long before the run finished, so the
+    // summary came from the poll and the conversation itself never showed it.
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    expect((await findByTestId('ai-run-card-offline-notice')).textContent)
+      .toContain('aiRunCard.resultOnRunPage');
+    expect((await findByTestId('ai-run-card-open')).getAttribute('href')).toBe(`/ai-agents/runs/${RUN}`);
+  });
+
+  it('omits that notice when the result was delivered live into this conversation', async () => {
+    const { findByTestId, queryByTestId } = render(
+      <AiRunCard
+        runId={RUN}
+        initialStatus="queued"
+        run={{ runId: RUN, status: 'completed', summary: 'done', artifacts: [], progress: [] }}
+      />,
+    );
+    await findByTestId('ai-run-card-open');
+    expect(queryByTestId('ai-run-card-offline-notice')).toBeNull();
   });
 
   it('stops polling once the run is terminal', async () => {
@@ -3257,6 +3627,9 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
 
   const status = polled?.status ?? run?.status ?? initialStatus;
   const isTerminal = TERMINAL.has(status);
+  /** True only when a `run_result` event actually reached this tab — i.e. a turn
+   *  was open when the run landed. False for the common case (ask, walk away). */
+  const deliveredLive = run !== undefined && TERMINAL.has(run.status);
 
   useEffect(() => {
     stopped.current = false;
@@ -3350,6 +3723,21 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         </div>
       )}
 
+      {/*
+        The run finished while nothing was streaming — no turn was open, so no
+        `run_result` ever reached this tab and the summary above came from the
+        poll, not from the conversation. Say so once, plainly: a technician who
+        walked away needs to know the result exists and where it lives, rather
+        than assuming the conversation simply never answered. `deliveredLive`
+        is the SSE state, so this note never appears for a run the technician
+        watched land.
+      */}
+      {isTerminal && !deliveredLive && (
+        <p data-testid="ai-run-card-offline-notice" className="mt-2 text-xs text-muted-foreground">
+          {t('aiRunCard.resultOnRunPage')}
+        </p>
+      )}
+
       {isTerminal && (
         <a
           data-testid="ai-run-card-open"
@@ -3397,6 +3785,7 @@ Add to `apps/web/src/locales/en/ai.json`:
   "aiRunCard": {
     "title": "Analysis run",
     "openRun": "Open the full run",
+    "resultOnRunPage": "This finished after the conversation moved on — the full result is kept on the run page.",
     "status": {
       "queued": "queued",
       "running": "working",
@@ -3835,7 +4224,7 @@ exit code says 'timed out', never blank — blank reads as success."
 - Modify: `apps/web/src/components/aiAgents/RunArtifactsSection.tsx` (render the button per row)
 - Create: `apps/web/src/components/settings/OrgAiProcessingToggle.tsx` + `.test.tsx`
 - Modify: `apps/web/src/components/settings/OrgSettingsPage.tsx` (mount it in the AI/security tab)
-- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` (`TARGET_GLOBS` L35-281, the count at L468)
+- Modify: `apps/web/src/lib/__tests__/no-silent-mutations.test.ts` (`TARGET_GLOBS` L35-281, the `expect(absoluteFiles.length).toBe(125)` count assertion at ~L602)
 - Modify: `apps/api/src/routes/orgs.ts` (`updateOrganizationSchema` L229, the `updates` mapping ~L2262), `apps/api/src/db/schema/orgs.ts` (the column is W04's; only read it here)
 - Modify: `apps/web/src/locales/*/settings.json`
 
@@ -4195,7 +4584,7 @@ In `apps/web/src/lib/__tests__/no-silent-mutations.test.ts`, add to `TARGET_GLOB
   'apps/web/src/components/settings/OrgAiProcessingToggle.tsx',
 ```
 
-and bump the count assertion at L468 from `125` to `127`. Bump it deliberately — never by resolving a merge hunk.
+and bump the count assertion — `expect(absoluteFiles.length).toBe(125)` at **~L602**, not L468 — from `125` to `127`. Re-read the line before editing (`grep -n 'absoluteFiles.length' apps/web/src/lib/__tests__/no-silent-mutations.test.ts`): the number moves whenever another PR enrols a file, so take whatever is there and add 2. Bump it deliberately — never by resolving a merge hunk.
 
 - [ ] **Step 10.8: Add the i18n keys to all eight locales**
 
@@ -4321,6 +4710,8 @@ Anything the analysis wants *done* comes back as a **proposal**. Proposals are t
 3. When the run finishes, the card shows the summary and one chip per file it produced. Click a chip to download it, or **Open the full run** to see everything.
 
 </Steps>
+
+If the conversation ends before the run does — you closed the tab, your session timed out, or Breeze was updated — **nothing is lost**. The result is always written to the run page, and the card links straight to it. Chat is where you start a run and the convenient place to read it; the run page is where it is kept.
 
 If you already pulled a file from a device in this conversation, Breeze can stage it into the workspace — that is how live device files get analysed, since reading a file off a machine still needs your approval each time.
 
@@ -4668,5 +5059,8 @@ docker compose ls -a --format json | jq -r '.[] | select(.ConfigFiles|test("bree
 3. **`report_runs` gets no export-policy entry and no cascade entry** — it has no `org_id`. Verified against `tenantExportPolicyRegistry.ts` L387-393 and the `report_runs` pre-clear at `tenantCascade.ts` ~L872. The wave brief asked for classification "for both"; only `ticket_attachments` needs it.
 4. **The `artifact` CHECK arm deliberately permits a null `artifact_id`.** Requiring NOT NULL would make the retention sweeper's `DELETE FROM ai_run_artifacts` fail with 23514 — the ON DELETE SET NULL and a NOT NULL arm are contradictory, and the sweeper would wedge silently.
 5. **Partner-level default for `ai_external_processing` is NOT built**, with the reasoning recorded in Task 10. It is a consent flag, not a config policy, and no repo pattern makes an org inherit consent it never gave. Recorded as a follow-up gated on the DPA review (spec §14 Q4).
-6. **`ToolExecutionContext.chatSessionId` is added by this wave, deliberately NOT reusing W03's `sessionId`.** W03's field is an agent run's execution-ledger session id, set only by `runLoop.ts`'s `runFrame`; a chat tool call builds no `ToolExecutionContext` at all. The chat path's channel is W01's capture scope, so `executeTool` merges it into a distinctly named field. Overloading one name for two ids is how a run id ends up stamped on a chat transcript.
-7. **`admitAnalysisRun` is invented here** because W04's plan had not named its admission entry point when this was written. Reconcile before Task 2 — if W04 instead extends `CreateAgentRunInput`, Task 2's single call site changes and nothing else does.
+6. **`ToolExecutionContext` gains nothing, and this wave uses no capture scope.** The earlier design added a `chatSessionId` field there and sourced it from W01's `ExecuteToolOptions.capture`; it is withdrawn. That type's docstring reserves it for per-invocation EXECUTION INPUTS and explicitly not caller identity, and a chat session id is identity. `workspace_launch_analysis` instead uses `makeSessionAwareHandler` — the shipped precedent every M365 and Google session tool already uses — which hands the handler `(args, auth, session.breezeSessionId)` and fails closed with `no_active_session` when there is none. Enforced by a grep assertion in the registration suite, because the withdrawn design compiles perfectly well.
+7. **The tool is SESSION-ONLY: no `aiTools` map entry.** `makeSessionAwareHandler` dispatches straight to its `sessionHandler` and never calls `executeTool`, so a map entry would buy nothing and cost the one guarantee that matters — it would make the tool headless-executable with no chat session to stamp on the run. It therefore follows the `m365ToolTiers` / `googleToolTiers` shape: a `workspaceLaunchToolTiers` table wired into the reserved-name predicate, `getToolTier` and `getAllRegisteredToolNames`. Two knock-ons: `requiresLiveSession` becomes true for free (a durable release answers `session_required`, not `Unknown tool`), and there is no `deviceArgs` gate — per-device org validation lives in `admitAnalysisRun`'s `device_not_in_org` refusal instead.
+8. **`admitAnalysisRun` is W04's and its shapes are settled** (W04 plan R1). Import `AnalysisAdmissionRefusal`; never restate it. The capability refusal is `workspace_capability_missing`, the union gained `analysis_region_unavailable` and `device_not_in_org`, and the refusal arm carries an optional `detail` that is appended to the human sentence rather than replacing it. `REFUSAL_MESSAGES` is typed `Record<AnalysisAdmissionRefusal, string>` so a future addition is a compile error, not an `undefined` in front of a technician.
+9. **`deliverRunEvent` re-asserts org AND session identity before publishing.** Session ids are reused across eviction cycles, so a stale watch can resolve to a live session in another tenant; an SSE frame passes through no RLS, so nothing downstream would catch it. A mismatch drops, unwatches, and reports to Sentry — loud, unlike the routine no-session drop.
+10. **`processStreamEvent` gains an exhaustiveness guard.** The switch had no `default:`, so an event added to the shared union and forgotten in the store did nothing at all, which is indistinguishable from an event that never arrived. The `const _exhaustive: never = event` arm turns that into a compile error, and the compile-time half is verified by hand once (Step 8.1) rather than merely asserted.

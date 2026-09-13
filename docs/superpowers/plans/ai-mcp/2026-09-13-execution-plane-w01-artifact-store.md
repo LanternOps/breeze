@@ -38,7 +38,7 @@ tracking_issue: LanternOps/breeze#5711
 
 1. **`run_id` is NULLABLE** (`ArtifactRecord.runId: string | null`, `CreateArtifactInput.runId: string | null`). The contract typed it `string`, but its own capture rule (`ctx.runId === null && ctx.sessionId === null → return raw`) means chat-session captures with no run DO happen (spec §5.4: "a technician gathers them in chat … each read becomes an artifact"). A composite FK on a nullable column is `MATCH SIMPLE` — unchecked when `run_id` is NULL — so the composite deferrable FK still holds for every run-anchored row. `session_id` is a plain `ai_sessions(id) ON DELETE SET NULL` FK (mirrors `ai_agent_runs.session_id`); there is deliberately NO "run or session" CHECK, so deleting a chat session cannot 23514 and an artifact can outlive both anchors until the sweeper expires it.
 2. **`ArtifactRecord.blobKey: string`** is added (the contract omitted it; `openArtifactStream(record)` / `deleteArtifact(record)` need the key and a re-read per call would reopen the row). Routes project DTO fields explicitly (`toArtifactDto`) so `blobKey` never leaves the API.
-3. **Additional exports** other waves can rely on: `findArtifactForAuth(handle, auth)` and `listArtifactsForAuth(runId, auth)` (route-side, `auth.orgCondition`-scoped; `resolveArtifact(handle, { orgId, runId? })` stays exactly as contracted for tool paths), `toArtifactDto`, `sanitizeArtifactName`, `createMemoryBlobStorage()` + `setBlobStorageForTests()` (`blobStorage.ts`), `captureContextFrom(auth, context, toolName)` + `CaptureContext` (`toolResultCapture.ts`), `ToolExecutionContext.runId` / `.sessionId` (`toolExecutionContext.ts` — see reconciliation R2 below), `compactToolResultForChat(toolName, raw, maxChars?)` third optional parameter and exported `MAX_TOOL_RESULT_CHARS` (`aiToolOutput.ts`), `AiRunArtifactDto` + `AI_ARTIFACT_KINDS` (`packages/shared/src/types/aiArtifacts.ts`), `aiWorkspaceEnabled()` + `breezeRegion()` (`config/env.ts`).
+3. **Additional exports** other waves can rely on: `findArtifactForAuth(handle, auth)` and `listArtifactsForAuth(runId, auth)` (route-side, `auth.orgCondition`-scoped; `resolveArtifact(handle, { orgId, runId? })` stays exactly as contracted for tool paths), `toArtifactDto`, `sanitizeArtifactName`, `createMemoryBlobStorage()` + `setBlobStorageForTests()` (`blobStorage.ts`), `captureContextFrom(auth, opts, toolName)` + `CaptureContext` + `CaptureScope` (`toolResultCapture.ts`), `ExecuteToolOptions.capture` (`aiTools.ts` — see reconciliation R2; `ToolExecutionContext` is NOT modified by this wave), `compactToolResultForChat(toolName, raw, maxChars?)` third optional parameter and exported `MAX_TOOL_RESULT_CHARS` (`aiToolOutput.ts`), `AiRunArtifactDto` + `AI_ARTIFACT_KINDS` (`packages/shared/src/types/aiArtifacts.ts`), `aiWorkspaceEnabled()` + `breezeRegion()` (`config/env.ts`).
 4. **Capture envelope content type is detected**, not fixed: `application/json` when the raw result parses as JSON, else `text/plain; charset=utf-8` (a non-JSON stdout blob labelled JSON would mislead W03's staging step).
 5. **Download streams through the API** (per the wave brief) rather than the spec §5.2 "short-lived signed redirect": streaming is the only way to force `attachment` + `nosniff` on every provider; a presigned redirect is a follow-up if bandwidth demands it.
 6. **`ARTIFACT_BLOB_BACKEND=db` boot-refuses in v1.** There is no generic blob table — `ticket_attachments` is ticket-scoped (`ticket_id NOT NULL`) — and the feature is hosted-only where S3-compatible storage exists. Local dev uses MinIO through the same `s3` path (falls back to the platform `S3_*` vars when `ARTIFACT_S3_*` are unset).
@@ -49,38 +49,81 @@ tracking_issue: LanternOps/breeze#5711
 
 ---
 
-## Cross-wave reconciliation (APPLIED — these override anything below that predates them)
+## Cross-wave reconciliation (final — supersedes any earlier note or code block)
 
-Folded in from the finished W03 plan. Where a task body below still shows the earlier shape, **this section wins** and the task's own steps must be read through it.
+This is the single authoritative statement of the capture contract. Earlier drafts of this plan carried **three** competing generations of it: (1) `captureScopeFor(auth, session)` plus a memoized `sessionId → runId` lookup (`resolveCaptureContext`) behind a new partial `ai_agent_runs(session_id)` index, with an `auth.accessibleOrgIds` single-entry org fallback; (2) a named `ExecuteToolOptions.capture` bag; (3) new `orgId` / `chatSessionId` members on `ToolExecutionContext`. **Generations 1 and 3 are dead.** Generation 2 is the design, and the only one. Where a task body below still contradicts this section, the task body is wrong and the section wins.
 
-- **R1 — `breezeRegion()` is the canonical artifact region resolver.** Every region decision in this wave (`createArtifact`'s `region`, `resolveCaptureContext`, the blob key prefix) reads `breezeRegion()` from `apps/api/src/config/env.ts` (env `BREEZE_REGION`, salvaged Task 2). W03 provisionally wrote `resolveArtifactRegion()` in `services/artifacts/artifactRegion.ts` reading a separate `ARTIFACT_REGION` var; **that resolver re-points to `breezeRegion()` and `ARTIFACT_REGION` is not introduced.** A second region var would let the blob bucket and the sandbox disagree about which region an org is in — precisely the residency claim §8 rests on. No W01 code change is needed: every region read in this plan already goes through `breezeRegion()`.
+**Why not `ToolExecutionContext`.** `toolExecutionContext.ts:39-65` documents that type as deliberately narrow — verified release material, and an argued prohibition on letting caller-identity-ish fields ride along. An `orgId` member is exactly the kind of field it argues against, and the W04 reviewer flagged it as contradicting the type's own header. Capture attribution therefore travels in its own named member on `ExecuteToolOptions`, which that file already documents (lines 472-479) as the NAMED BAG for unrelated per-invocation inputs. `ToolExecutionContext` is **not modified by this wave**.
 
-- **R2 — the capture channel is `ToolExecutionContext`, NOT a new `ExecuteToolOptions.capture` bag.** W03 adds `runId?: string`, `sessionId?: string | null`, `runTargets?: readonly string[]` and `stagedBytesRemaining?: number` to `ToolExecutionContext` (`apps/api/src/services/toolExecutionContext.ts`). W01 declares the first two (it needs them first) and W03 adds the other two to the same type. Concretely, replacing what **Task 8** and **Task 9** describe:
+### The final shape, verbatim
 
-  ```ts
-  // apps/api/src/services/toolExecutionContext.ts — W01 adds these two members.
-  /** The agent run this call belongs to, when one is in flight. W01 artifact capture
-   *  anchors an `input_capture` artifact to it; W03 scopes staging to it. */
-  runId?: string;
-  /** The chat session this call belongs to. Set by the chat/MCP paths; null in a
-   *  headless release path. Capture falls back to resolving `runId` from it. */
-  sessionId?: string | null;
+```ts
+// apps/api/src/services/artifacts/toolResultCapture.ts
 
-  // apps/api/src/services/artifacts/toolResultCapture.ts — replaces `captureScopeFor`/`CaptureScope`.
-  export function captureContextFrom(
-    auth: AuthContext,
-    context: ToolExecutionContext | undefined,
-    toolName: string,
-  ): { orgId: string; runId: string | null; sessionId: string | null; region: BlobRegion; toolName: string } | null;
-  ```
+/** What a CHAT caller supplies. The only thing a call site ever constructs. */
+export interface CaptureScope { orgId: string; sessionId: string }
 
-  Derivation, exactly: `runId` = `context?.runId ?? null`; `sessionId` = `context?.sessionId ?? null`; `orgId` = `auth.orgId`, falling back to the single entry of `auth.accessibleOrgIds` when that array has length 1, else `null` → **no capture**; `region` = `breezeRegion()`. `resolveCaptureContext` keeps its memoized `sessionId → runId` lookup (Task 8 step 3) but runs ONLY when `context.runId` is absent and a `sessionId` is present — a caller that already knows its run never pays for the query, and the memo plus the partial `ai_agent_runs(session_id)` index (Task 8 step 4) still earn their place for the chat path.
+export interface CaptureContext { orgId: string; runId: string | null; sessionId: string | null; region: BlobRegion; toolName: string }
 
-  Consequences for **Task 9**: do NOT add `ExecuteToolOptions.capture` or the `CaptureScope` type. `AiTool.captureExempt` is unchanged. The hook becomes `const ctx = captureContextFrom(auth, opts?.context, toolName); if (!ctx || tool.captureExempt) return rawResult;` — note it now reads the bag member `executeTool` ALREADY has, so the four call sites pass `{ context: { ...verifiedContext, sessionId, runId } }` rather than a second member. `makeHandler` still gains `getActiveSession` (Task 9 step 6) — that is what supplies `sessionId` on the main chat path — but it feeds `context`, not a `capture` key. Two consequences to state in the PR body: (a) `ToolExecutionContext` is currently passed to **core handlers only** (`aiTools.ts:553`), which is fine because the hook reads it inside `executeTool` before dispatch, not inside a handler; (b) `toolExecutionContext.ts`'s header argues the type is release-path material — W01/W03 widen it to "per-invocation execution input" generally, which is consistent with the header's own case for why it is not on `AuthContext`, and the doc comment must be updated to say so rather than left contradicting the new members.
+export function captureContextFrom(
+  auth: AuthContext,
+  opts: { capture?: CaptureScope } | undefined,   // structurally satisfied by ExecuteToolOptions
+  toolName: string,
+): CaptureContext | null {
+  const orgId = opts?.capture?.orgId ?? auth.orgId ?? null;                       // NEVER accessibleOrgIds
+  const runId = auth.principal.kind === 'ai_agent' ? auth.principal.runId : null; // the run path needs no call-site change
+  const sessionId = runId ? null : (opts?.capture?.sessionId ?? null);            // ai_sessions.id; a run-anchored capture stores no session
+  if (!orgId) return null;                        // no org to attribute a tenant-scoped row to → passthrough
+  if (!runId && !sessionId) return null;          // no anchor (MCP server, script builder, intent release) → passthrough
+  return { orgId, runId, sessionId, region: breezeRegion(), toolName };
+}
 
-  **Known limitation to record, not to fix here:** `auth.orgId` is `null` for a partner-scope login, so a partner-scope chat with more than one accessible org produces no capture. The chat path's canonical org is `session.orgId` (`aiAgentSdk.ts:1947-1948`). Deriving from `AuthContext` alone is the cross-wave contract; carrying the session org through `ToolExecutionContext` is a filed follow-up, and the PR body must name it.
+export async function captureLargeToolResult(raw: string, ctx: CaptureContext | null): Promise<string>; // null → return raw unchanged
+```
+
+```ts
+// apps/api/src/services/aiTools.ts — ExecuteToolOptions gains exactly one member:
+  capture?: CaptureScope;
+```
+
+`executeTool`'s **signature is unchanged** — `capture` rides in the options bag it already accepts. The hook inside `executeTool` is, in full:
+
+```ts
+const ctx = tool.captureExempt ? null : captureContextFrom(auth, opts, toolName);
+return captureLargeToolResult(rawResult, ctx);
+```
+
+A `captureExempt` tool and an unattributable call take the SAME path — a null context — so there is exactly one passthrough branch to reason about, and `captureLargeToolResult(raw, null)` returning `raw` byte-identically is the single property both rest on.
+
+- **R1 — `breezeRegion()` is the canonical artifact region resolver.** Every region decision in this wave (`createArtifact`'s `region`, `captureContextFrom`'s `region`, the blob key prefix) reads `breezeRegion()` from `apps/api/src/config/env.ts` (env `BREEZE_REGION`, added in Task 2). W03 provisionally wrote `resolveArtifactRegion()` in `services/artifacts/artifactRegion.ts` reading a separate `ARTIFACT_REGION` var; **that resolver re-points to `breezeRegion()` and `ARTIFACT_REGION` is not introduced.** A second region var would let the blob bucket and the sandbox disagree about which region an org is in — precisely the residency claim §8 rests on.
+
+- **R2 — one named `capture` member, and nothing else.** No `ToolExecutionContext` members are added by W01 (see the header note above). No second `executeTool` parameter. No `captureScopeFor(auth, session)` helper and no `resolveCaptureContext` — **there is no run lookup at all.** Earlier drafts resolved `runId` from a chat session with an indexed, memoized `ai_agent_runs` query; the run id now arrives on the AUTH PRINCIPAL, which the agent run path already builds (`services/aiAgents/agentAuthContext.ts:78` sets `principal: { kind: 'ai_agent', agentId, runId }`, and `:89` sets `orgId: run.orgId`). So `resolveCaptureContext`, its module-level memo and the partial `ai_agent_runs(session_id)` index it needed are **removed, not deferred**. The capture path issues zero queries of its own.
 
 - **R3 — a new tool needs SIX registration places, not four.** Spec §5.3 lists four; the real set is six: (1) the `aiTools` map via a `registerXTools()` call in `aiTools.ts`, (2) `TOOL_TIERS` in `aiAgentSdkTools.ts`, (3) `TOOL_CAPABILITY` + `AGENT_CAPABILITIES` in `aiAgents/agentToolCatalog.ts`, (4) the `tool()` declaration in `createBreezeMcpServer`, (5) `toolInputSchemas` in `aiToolSchemas.ts` (and its per-domain file), (6) `TOOL_PERMISSIONS` in `aiGuardrails.ts`. **W01 registers no new tool**, so this binds only in reverse, for Task 1's removal of the three orphan backup tools: Task 1 covers (2), (4), (5) and (6), and (1) is vacuous (they were never registered — that is the defect). **(3) is not covered by Task 1's written steps** — add a step there before Step 8: `grep -n "get_backup_health\|run_backup_verification\|get_recovery_readiness" apps/api/src/services/aiAgents/agentToolCatalog.ts`; delete any `TOOL_CAPABILITY` entry it finds, and if removing them empties a capability, drop that capability from `AGENT_CAPABILITIES` too. `agentToolCatalog.contract.test.ts` (already in Task 1's step-8 run list) fails on a stale entry, so a red there means this grep found something the steps did not.
+
+- **R4 — the capture org, by path.**
+  - **Run path:** `auth.orgId`. The `ai_agent` principal is built from the run row itself and always carries the run's org (`agentAuthContext.ts:89`, `orgId: run.orgId`), so there is nothing to supply and no call site to change.
+  - **Chat path:** `capture.orgId`, taken from `ActiveSession.orgId` — the canonical org for a session, and the reason `auth.orgId` will not do: it is `null` for a partner-scope login (`aiAgentSdk.ts:1947-1948`).
+  - **Never `auth.accessibleOrgIds`.** Picking the single entry of a one-org array is a guess, and a guessed org on a tenant-scoped row is a tenancy bug waiting for its second org. No org ⇒ no capture ⇒ raw passthrough, not an error.
+
+- **R5 — the anchor, and only one per artifact.** `runId` (from the principal) wins; a run-anchored capture stores `session_id = NULL`, so the run page's list cannot double-count through a session join. A chat capture anchors on `capture.sessionId`, which is `ActiveSession.breezeSessionId` — the `ai_sessions.id` the artifact row's `session_id` FK points at, NOT W03's `ToolExecutionContext.sessionId` (an agent run's execution-ledger session). `runId == null && sessionId == null → passthrough`.
+
+- **R6 — route ownership.** W01 owns `GET /ai/agents/runs/:runId/artifacts`. It is registered **inside `aiAgentsRoutes`** (`routes/aiAgents.ts`), immediately before that file's `get('/runs/:runId', …)`, NOT as a second Hono app mounted at the same `/ai/agents` prefix — see Task 10. W05 Task 5 must NOT re-add it; W05 only consumes the DTO.
+
+### Which call sites change in W01
+
+Exactly one.
+
+| Call site | W01 change |
+|---|---|
+| `aiAgentSdkTools.ts` chat path (`makeHandler`) | **Yes** — pass `capture: { orgId: session.orgId, sessionId: session.breezeSessionId }` from `getActiveSession()`. Requires `makeHandler` to gain `getActiveSession` via the local alias (Task 9 step 6). |
+| Agent run path | None — attribution is already on the `ai_agent` principal. |
+| `makeSessionAwareHandler` (`aiAgentSdkTools.ts:632`) | None — **verified**: it dispatches to `sessionHandler`, not to `executeTool`, so there is no options bag to extend. Revisit only if that changes. |
+| `routes/mcpServer.ts` | None — passes no `capture`, so capture is passthrough by design in W01. |
+| `services/scriptBuilderTools.ts` | None — same; its existing `context` (verified release material) is untouched. |
+| `jobs/intentReleaseWorker.ts` | None — same; its existing `context: { …verifiedContext, actionIntentId }` is untouched. |
+
+Extending the three non-chat callers to attribute captures is later-wave work, and Task 9 pins their passthrough behaviour with a test so a later wave cannot enable them by accident.
 
 ---
 
@@ -104,23 +147,16 @@ Folded in from the finished W03 plan. Where a task body below still shows the ea
 **apps/api — services/artifacts/** (new directory, one responsibility per file)
 - `blobStorage.ts` — `BlobStorage` interface, S3 backend, memory backend, `getBlobStorage()`, errors.
 - `artifactService.ts` — `createArtifact`, `resolveArtifact`, `findArtifactForAuth`, `listArtifactsForAuth`, `openArtifactStream`, `deleteArtifact`, `toArtifactDto`, previews.
-- `toolResultCapture.ts` — `CaptureScope`, `CaptureContext`, `captureScopeFor`, `captureLargeToolResult`.
+- `toolResultCapture.ts` — `CaptureScope`, `CaptureContext`, `captureContextFrom`, `captureLargeToolResult`.
 
 **apps/api — seams modified**
 - `src/services/aiToolOutput.ts` — export `MAX_TOOL_RESULT_CHARS`; envelope-aware compaction with `maxChars`.
 - `src/services/aiTools.ts` — `AiTool.captureExempt`, `ExecuteToolOptions.capture`, the hook.
 - `src/services/aiAgentSdkTools.ts` — `makeToolHandler(…, getActiveSession)` + local `makeHandler` alias; orphan backup tool removal.
 - `src/services/aiGuardrails.ts`, `src/services/aiToolSchemasBackup.ts`, `src/services/helperToolFilter.ts` — orphan backup tool removal.
-- `src/routes/aiArtifacts.ts` (+ `.test.ts`); `src/index.ts` mounts; `src/middleware/selfManagedDbContextRoutes.ts`.
+- `src/routes/aiArtifacts.ts` (+ `.test.ts`) — download only; `src/index.ts` — ONE mount (`/ai/artifacts`).
+- `src/routes/aiAgents.ts` (+ `.test.ts`) — `GET /runs/:runId/artifacts` registered inside `aiAgentsRoutes`, above `/runs/:runId` (R6).
 - `src/jobs/aiArtifactSweeper.ts` (+ `.test.ts`); `src/jobs/scheduleRegistry.ts`; `src/services/workerRegistry.ts`; `src/jobs/workerReadinessManifest.ts`; `src/services/workerEntrypointClosure.contract.test.ts`.
-
----
-
-## Cross-wave reconciliation — orchestrator, 2026-09-13 (overrides task bodies where they conflict)
-
-- **R4 Capture org.** `AuthContext.orgId` is null for partner-scope logins, so the capture context MUST take its org from `ToolExecutionContext.orgId` (new optional field, set by the run path to `run.orgId` in `runFrame`/`createAgentRunPreToolUse` — W04 — and by the chat path to `session.orgId` — W05) and fall back to `auth.orgId` only when that field is absent. This closes the partner-scope gap flagged in the Decisions section; it is NOT a deferred follow-up.
-- **R5 Chat session id.** W03's `ToolExecutionContext.sessionId` is an agent run's execution-ledger session (set only by `runLoop.ts`). The chat path arrives as `ToolExecutionContext.chatSessionId` (W05). Capture scope is `runId ?? chatSessionId`; the passthrough rule is `runId == null && chatSessionId == null → return raw`.
-- **R6 Route ownership.** W01 owns `GET /ai/agents/runs/:runId/artifacts` (Task 10). W05 Task 5 must NOT re-add it; W05 only consumes the DTO.
 
 ---
 
@@ -985,9 +1021,10 @@ Expected: `apps/api/migrations/2026-10-15-160010-backup-snapshots-layout-manifes
 --     ALL DEFERRED` and re-points parent and child org_id in separate
 --     statements (orgLifecycleFoundations.integration.test.ts). ON DELETE
 --     CASCADE: an artifact is meaningless without its run.
---  2. Its target `ai_agent_runs_id_org_uq UNIQUE (id, org_id)` has existed
---     since 2026-09-05-a (renamed by 2026-09-25). Section 0 re-asserts it
---     idempotently rather than assuming.
+--  2. Its target `ai_agent_runs_id_org_uq UNIQUE (id, org_id)` already
+--     exists (src/db/schema/aiAgents.ts:185; shipped 2026-09-05-a, renamed by
+--     2026-09-25), so section 0's guarded ADD CONSTRAINT is a defensive
+--     no-op — it is there for a from-scratch replay, never for a live DB.
 --  3. `source_device_id`, never `device_id` (§6.1): artifacts outlive the
 --     device and must NOT be enrolled in the device cascade / move-org lists,
 --     which key on a `device_id` column. ON DELETE SET NULL.
@@ -1481,6 +1518,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { coerceS3EndpointUrl } from '@breeze/shared';
+import { breezeRegion } from '../../config/env';
 import { classifyS3Failure, isS3NotFound } from '../s3Storage';
 
 /**
@@ -1731,10 +1769,16 @@ function createS3BlobStorage(): BlobStorage {
   };
 }
 
-/** The region prefix of a key. Unknown prefixes fall back to the deployment region. */
+/**
+ * The region prefix of a key. An unknown or missing prefix falls back to the
+ * DEPLOYMENT region (`breezeRegion()`, R1) rather than to a hard-coded 'us':
+ * hard-coding would send an EU deployment's malformed-key lookups at the US
+ * bucket, which is a residency violation dressed as a 404.
+ */
 function regionOfKey(key: string): BlobRegion {
   const prefix = key.split('/', 1)[0];
-  return prefix === 'eu' ? 'eu' : 'us';
+  if (prefix === 'eu' || prefix === 'us') return prefix;
+  return breezeRegion();
 }
 
 // ---------------------------------------------------------------------------
@@ -2780,32 +2824,32 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
 
 ---
 
-### Task 8: `toolResultCapture.ts` — `CaptureContext`, run resolution, threshold, opt-out, `artifact_store_unavailable`
+### Task 8: `toolResultCapture.ts` — `CaptureScope`, `CaptureContext`, `captureContextFrom`, threshold, opt-out, `artifact_store_unavailable`
 
 **Files:**
 - Create: `apps/api/src/services/artifacts/toolResultCapture.ts`
 - Create: `apps/api/src/services/artifacts/toolResultCapture.test.ts` (the spec's `artifactCapture.test.ts`; named for its source file per the repo convention)
-- Modify: `apps/api/migrations/2026-10-16-100000-ai-run-artifacts.sql` (append section 3 — see step 4; the file is created in THIS branch and has not shipped, so appending to it is not "editing a shipped migration")
-- Modify: `apps/api/src/db/schema/aiAgents.ts` (add the matching index entry)
 
 **Interfaces:**
-- Consumes: `MAX_TOOL_RESULT_CHARS` (Task 7), `createArtifact` (Task 5), `BlobStorageUnavailableError`, `BlobTooLargeError` (Task 4), `aiWorkspaceEnabled`, `breezeRegion` (Task 2), `aiAgentRuns` (`../../db/schema`), `AuthContext`.
-- Produces (contract names verbatim, plus the two recorded in decision 3):
+- Consumes: `MAX_TOOL_RESULT_CHARS` (Task 7), `createArtifact`, `buildPreviews`, `ARTIFACT_PREVIEW_BYTES` (Task 5), `BlobStorageUnavailableError`, `BlobRegion` (Task 4), `aiWorkspaceEnabled`, `breezeRegion` (Task 2), `AuthContext` (`../../middleware/auth`).
+- Produces — **exactly the final shape from the reconciliation section, nothing else**:
   ```ts
+  export interface CaptureScope { orgId: string; sessionId: string }
   export interface CaptureContext { orgId: string; runId: string | null; sessionId: string | null; region: BlobRegion; toolName: string }
-  export function captureContextFrom(auth: AuthContext, context: ToolExecutionContext | undefined, toolName: string): CaptureContext | null;
-  export async function captureLargeToolResult(raw: string, ctx: CaptureContext): Promise<string>;
-  export async function resolveCaptureContext(ctx: CaptureContext): Promise<CaptureContext>;  // fills runId from sessionId when absent
+  export function captureContextFrom(auth: AuthContext, opts: { capture?: CaptureScope } | undefined, toolName: string): CaptureContext | null;
+  export async function captureLargeToolResult(raw: string, ctx: CaptureContext | null): Promise<string>;
   export const CAPTURE_MAX_BYTES = 64 * 1024 * 1024;
   ```
+  Nothing else is exported. In particular there is no separate scope-builder helper and no run-resolution helper (generation 1, deleted — see the reconciliation section), and **no** `ToolExecutionContext` member is read here.
 
-> **READ RECONCILIATION R2 FIRST.** The step bodies below were written against an earlier shape that used a `CaptureScope` type and a `captureScopeFor(auth, session)` helper fed by a new `ExecuteToolOptions.capture` member. **That shape is superseded.** Substitute throughout this task: `CaptureScope` → the `ToolExecutionContext` members `runId?` / `sessionId?`; `captureScopeFor(auth, session)` → `captureContextFrom(auth, context, toolName)` with the derivation R2 spells out (`runId` from `context.runId`, `sessionId` from `context.sessionId`, `orgId` from `auth.orgId` or a single `accessibleOrgIds` entry, `region` from `breezeRegion()`). The threshold, passthrough, content-type, preview and `artifact_store_unavailable` behaviour — which is what this task's tests actually pin — is unchanged, as is the memoized session→run lookup and the index in step 4; only the plumbing that hands `runId`/`sessionId` in is different. Rename the test's `captureScopeFor` cases accordingly and add one asserting `context.runId` is preferred over a session lookup.
+**Four decisions this task records.**
 
-**Three decisions this task records.**
+1. **No run lookup, no memo, no new index.** The run id is not discovered, it is already on the caller's identity: the agent run path builds `principal: { kind: 'ai_agent', agentId, runId }` and `orgId: run.orgId` (`services/aiAgents/agentAuthContext.ts:78, :89`). Earlier drafts queried `ai_agent_runs.session_id` behind a module-level memo and added a partial `ai_agent_runs_session_idx` to pay for it; that whole apparatus is **removed**. The capture path issues no queries of its own beyond `createArtifact`'s own insert.
+2. **`runId` wins over `capture.sessionId`.** A run-anchored capture stores `session_id = NULL`, so an artifact has exactly one anchor and the run page's list is not double-counted through a session join.
+3. **The org is never guessed** (R4). `capture.orgId ?? auth.orgId`, full stop — `auth.accessibleOrgIds` is not consulted even when it holds exactly one entry. No org ⇒ no capture ⇒ raw passthrough.
+4. **Content type is detected, not fixed** (decision 4): `application/json` when the raw result parses as JSON, else `text/plain; charset=utf-8`. W03's staging step reads this to decide how to write the file; mislabelling stdout as JSON would break it. And **a blob failure is a typed tool error, never the raw result inline** (spec §9) — returning the raw string on failure would hand the model the exact 30 000-character payload the cap exists to keep out.
 
-1. **`runId` is resolved from `sessionId`, memoized.** There is no run id anywhere in the AI tool path — `AuthContext` has none, `ActiveSession` has none, and `toolExecutionContext.ts:46-69` is an explicit, argued prohibition on hanging per-invocation execution inputs off `AuthContext`. But `ai_agent_runs.session_id` points at exactly the session the tools are running under, so one indexed lookup resolves it. It fires only when a capture actually happens (an oversized result, which is rare), and the result is memoized per session in a bounded module Map, because a session belongs to at most one run for its whole life. **`ai_agent_runs` has no `session_id` index today** (`src/db/schema/aiAgents.ts:186-211` lists twelve indexes, none on `sessionId`) — step 4 adds a partial one, or the lookup is a sequential scan of every run in the fleet.
-2. **Content type is detected, not fixed** (decision 4): `application/json` when the raw result parses as JSON, else `text/plain; charset=utf-8`. W03's staging step reads this to decide how to write the file; mislabelling stdout as JSON would break it.
-3. **A blob failure is a typed tool error, never the raw result inline** (spec §9). Returning the raw string on failure would hand the model the exact 30 000-character payload the cap exists to keep out of the context window.
+**One structural note.** `captureContextFrom`'s second parameter is typed **structurally** as `{ capture?: CaptureScope } | undefined`, not as `ExecuteToolOptions`. `ExecuteToolOptions` satisfies it, so the hook passes `opts` straight through, and this file never imports from `aiTools.ts` — which would be an import cycle, since `aiTools.ts` value-imports this file.
 
 - [ ] **Step 1: Write the failing capture test**
 
@@ -2815,6 +2859,11 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
  * Execution-plane W01, spec §12 "artifactCapture.test.ts": raw bytes persisted,
  * previews raw, threshold boundary, opt-out honoured — plus §9's rule that a
  * blob failure NEVER returns the raw result inline.
+ *
+ * The capture path has NO database access of its own: `captureContextFrom` is
+ * pure and `captureLargeToolResult` only calls `createArtifact`. There is
+ * deliberately no db mock here — if one becomes necessary, a run lookup has
+ * crept back in and the reconciliation section was violated.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -2822,56 +2871,97 @@ const mocks = vi.hoisted(() => ({
   createArtifact: vi.fn(),
   aiWorkspaceEnabled: vi.fn(() => true),
   breezeRegion: vi.fn(() => 'us' as const),
-  runRows: [] as unknown[][],
-  selectCount: 0,
 }));
 
-vi.mock('./artifactService', () => ({ createArtifact: mocks.createArtifact }));
+vi.mock('./artifactService', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  createArtifact: mocks.createArtifact,
+}));
 vi.mock('../../config/env', () => ({
   aiWorkspaceEnabled: mocks.aiWorkspaceEnabled,
   breezeRegion: mocks.breezeRegion,
-}));
-vi.mock('../../db', () => ({
-  db: {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => { mocks.selectCount += 1; return mocks.runRows.shift() ?? []; }),
-        })),
-      })),
-    })),
-  },
 }));
 
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { BlobStorageUnavailableError } from './blobStorage';
 import {
+  captureContextFrom,
   captureLargeToolResult,
-  captureScopeFor,
-  resolveCaptureContext,
-  __resetCaptureRunCacheForTests,
   type CaptureContext,
 } from './toolResultCapture';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
+const OTHER_ORG = '00000000-0000-4000-8000-0000000000a2';
 const RUN = '00000000-0000-4000-8000-0000000000a3';
 const SESSION = '00000000-0000-4000-8000-0000000000a5';
 const HANDLE = '00000000-0000-4000-8000-0000000000a4';
 
 const ctx = (over: Partial<CaptureContext> = {}): CaptureContext => ({
-  orgId: ORG, runId: RUN, sessionId: SESSION, region: 'us', toolName: 'search_logs', ...over,
+  orgId: ORG, runId: RUN, sessionId: null, region: 'us', toolName: 'search_logs', ...over,
 });
 
+/** An org-scoped human login. */
+const orgAuth = { principal: { kind: 'user_session' }, orgId: ORG, accessibleOrgIds: [ORG] } as never;
+/** A partner-scope login: `auth.orgId` is null even though orgs are reachable. */
+const partnerAuth = { principal: { kind: 'user_session' }, orgId: null, accessibleOrgIds: [ORG] } as never;
+/** The agent run path: agentAuthContext.ts builds exactly this. */
+const runAuth = {
+  principal: { kind: 'ai_agent', agentId: 'ag1', runId: RUN },
+  orgId: ORG, accessibleOrgIds: [ORG],
+} as never;
+
 beforeEach(() => {
-  mocks.createArtifact.mockReset().mockResolvedValue({ id: HANDLE, bytes: 30_000 });
+  mocks.createArtifact.mockReset().mockResolvedValue({
+    id: HANDLE, bytes: 30_000, contentType: 'application/json',
+  });
   mocks.aiWorkspaceEnabled.mockReturnValue(true);
-  mocks.runRows.length = 0;
-  mocks.selectCount = 0;
-  __resetCaptureRunCacheForTests();
+  mocks.breezeRegion.mockReturnValue('us');
 });
 afterEach(() => vi.clearAllMocks());
 
 const big = (chars: number) => JSON.stringify({ rows: 'r'.repeat(chars) });
+
+describe('captureContextFrom — run path attributes from the principal (reconciliation R4/R5)', () => {
+  it('anchors on the run and takes the org from auth, with no call-site input at all', () => {
+    expect(captureContextFrom(runAuth, undefined, 'search_logs'))
+      .toEqual({ orgId: ORG, runId: RUN, sessionId: null, region: 'us', toolName: 'search_logs' });
+  });
+
+  it('keeps the RUN anchor and stores no session even when a chat scope is also supplied', () => {
+    const resolved = captureContextFrom(runAuth, { capture: { orgId: OTHER_ORG, sessionId: SESSION } }, 't');
+    expect(resolved).toMatchObject({ runId: RUN, sessionId: null });
+  });
+});
+
+describe('captureContextFrom — chat path attributes from ExecuteToolOptions.capture', () => {
+  it('anchors on the session, with the session org, when auth.orgId is null (partner-scope login)', () => {
+    expect(captureContextFrom(partnerAuth, { capture: { orgId: ORG, sessionId: SESSION } }, 'get_event_logs'))
+      .toEqual({ orgId: ORG, runId: null, sessionId: SESSION, region: 'us', toolName: 'get_event_logs' });
+  });
+
+  it("prefers the session's org over auth.orgId when the two disagree", () => {
+    expect(captureContextFrom({ principal: { kind: 'user_session' }, orgId: OTHER_ORG } as never,
+      { capture: { orgId: ORG, sessionId: SESSION } }, 't')?.orgId).toBe(ORG);
+  });
+
+  it('returns null for a partner-scope call with no capture scope — NEVER guesses from accessibleOrgIds', () => {
+    expect(captureContextFrom(partnerAuth, undefined, 't')).toBeNull();
+    // Even a single accessible org is a guess, and a guessed org on a
+    // tenant-scoped row is a tenancy bug waiting for its second org (R4).
+    expect(captureContextFrom({ principal: { kind: 'user_session' }, orgId: null, accessibleOrgIds: [ORG] } as never,
+      undefined, 't')).toBeNull();
+  });
+
+  it('returns null when there is an org but no anchor — mcpServer / scriptBuilder / intentRelease pass through', () => {
+    expect(captureContextFrom(orgAuth, undefined, 't')).toBeNull();
+    expect(captureContextFrom(orgAuth, {}, 't')).toBeNull();
+  });
+
+  it('reads the region through breezeRegion()', () => {
+    mocks.breezeRegion.mockReturnValue('eu' as never);
+    expect(captureContextFrom(runAuth, undefined, 't')?.region).toBe('eu');
+  });
+});
 
 describe('captureLargeToolResult — threshold boundary (spec §5.2)', () => {
   it('returns the raw string UNCHANGED at exactly MAX_TOOL_RESULT_CHARS', async () => {
@@ -2891,22 +2981,26 @@ describe('captureLargeToolResult — threshold boundary (spec §5.2)', () => {
 });
 
 describe('captureLargeToolResult — passthrough cases', () => {
-  it('returns raw when there is neither a run nor a session (spec contract)', async () => {
+  it('returns raw for a NULL context — the path both an unattributable call and a captureExempt tool take', async () => {
+    // The hook in executeTool (Task 9) passes null for a captureExempt tool and
+    // whatever captureContextFrom returned otherwise, so this one branch is the
+    // whole passthrough surface.
     const raw = big(30_000);
-    expect(await captureLargeToolResult(raw, ctx({ runId: null, sessionId: null }))).toBe(raw);
+    expect(await captureLargeToolResult(raw, null)).toBe(raw);
     expect(mocks.createArtifact).not.toHaveBeenCalled();
   });
 
-  it('returns raw when the workspace flag is off — self-hosters see today\'s bytes exactly', async () => {
+  it("returns raw when the workspace flag is off — self-hosters see today's bytes exactly", async () => {
     mocks.aiWorkspaceEnabled.mockReturnValue(false);
     const raw = big(30_000);
     expect(await captureLargeToolResult(raw, ctx())).toBe(raw);
     expect(mocks.createArtifact).not.toHaveBeenCalled();
   });
 
-  it('captures a run-only context (chat session ended, run still going)', async () => {
-    await captureLargeToolResult(big(30_000), ctx({ sessionId: null }));
+  it('captures a session-anchored context (a plain chat with no run)', async () => {
+    await captureLargeToolResult(big(30_000), ctx({ runId: null, sessionId: SESSION }));
     expect(mocks.createArtifact).toHaveBeenCalledTimes(1);
+    expect((mocks.createArtifact.mock.calls[0]![0] as Record<string, unknown>).runId).toBeNull();
   });
 });
 
@@ -2919,7 +3013,7 @@ describe('captureLargeToolResult — what is persisted (spec §5.2)', () => {
     expect(arg.createdByTool).toBe('get_event_logs');
     expect(arg.orgId).toBe(ORG);
     expect(arg.runId).toBe(RUN);
-    expect(arg.sessionId).toBe(SESSION);
+    expect(arg.sessionId).toBeNull();
     expect(arg.region).toBe('us');
     expect((arg.body as Buffer).toString('utf8')).toBe(raw);   // RAW, not compacted
   });
@@ -2962,42 +3056,6 @@ describe('captureLargeToolResult — failure (spec §9)', () => {
     expect((JSON.parse(out) as { error: string }).error).toBe('artifact_store_unavailable');
   });
 });
-
-describe('captureScopeFor / resolveCaptureContext', () => {
-  it('prefers the session org over auth.orgId, which is null for a partner-scope login', () => {
-    const auth = { orgId: null, accessibleOrgIds: [ORG] } as never;
-    expect(captureScopeFor(auth, { breezeSessionId: SESSION, orgId: ORG, deviceId: null })).toEqual({
-      orgId: ORG, sessionId: SESSION, sourceDeviceId: null,
-    });
-  });
-
-  it('returns null when no org can be established (nothing to attribute an artifact to)', () => {
-    expect(captureScopeFor({ orgId: null, accessibleOrgIds: [] } as never, null)).toBeNull();
-    expect(captureScopeFor({ orgId: null, accessibleOrgIds: null } as never, null)).toBeNull();
-  });
-
-  it('resolves runId from the session exactly once, then serves the memo', async () => {
-    mocks.runRows.push([{ id: RUN }]);
-    const a = await resolveCaptureContext({ orgId: ORG, sessionId: SESSION }, 'search_logs');
-    const b = await resolveCaptureContext({ orgId: ORG, sessionId: SESSION }, 'search_logs');
-    expect(a?.runId).toBe(RUN);
-    expect(b?.runId).toBe(RUN);
-    expect(mocks.selectCount).toBe(1);
-  });
-
-  it('memoizes a NEGATIVE lookup too — a plain chat session must not re-query per capture', async () => {
-    mocks.runRows.push([]);
-    expect((await resolveCaptureContext({ orgId: ORG, sessionId: SESSION }, 't'))?.runId).toBeNull();
-    expect((await resolveCaptureContext({ orgId: ORG, sessionId: SESSION }, 't'))?.runId).toBeNull();
-    expect(mocks.selectCount).toBe(1);
-  });
-
-  it('never queries when there is no session', async () => {
-    const resolved = await resolveCaptureContext({ orgId: ORG, sessionId: null }, 't');
-    expect(resolved?.runId).toBeNull();
-    expect(mocks.selectCount).toBe(0);
-  });
-});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -3009,9 +3067,6 @@ Expected: FAIL — `Failed to resolve import "./toolResultCapture"`.
 
 ```ts
 // apps/api/src/services/artifacts/toolResultCapture.ts
-import { and, eq } from 'drizzle-orm';
-import { db } from '../../db';
-import { aiAgentRuns } from '../../db/schema';
 import { aiWorkspaceEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
@@ -3031,10 +3086,16 @@ import type { BlobRegion } from './blobStorage';
  * which `compactToolResultForChat` then compacts in place (Task 7). The model
  * keeps exactly the view it has today PLUS a handle it can stage.
  *
- * PASSTHROUGH IS THE DEFAULT. With the flag off, with no org, with neither a run
- * nor a session, at or below the threshold, or for a `captureExempt` tool, the
- * raw string is returned byte-identically — a self-hoster's tool results are
+ * PASSTHROUGH IS THE DEFAULT. With a null context — no org, no anchor, or a
+ * `captureExempt` tool — with the flag off, or at or below the threshold, the
+ * raw string is returned byte-identically. A self-hoster's tool results are
  * unchanged by this wave.
+ *
+ * NO DATABASE ACCESS OF ITS OWN. Attribution is already present at the call:
+ * the agent run path carries it on the auth PRINCIPAL, and the chat path hands
+ * in a `CaptureScope`. An earlier draft resolved the run from the session with
+ * a memoized query behind a dedicated partial index; that is gone. If this file
+ * ever needs `db` again, the contract has been broken.
  *
  * FAILURE IS NEVER A FALLBACK (§9). A blob or row failure yields
  * `{ error: 'artifact_store_unavailable' }`; returning the raw result inline
@@ -3044,85 +3105,64 @@ import type { BlobRegion } from './blobStorage';
 /** Refuse to buffer more than this into one artifact. Far above any tool result. */
 export const CAPTURE_MAX_BYTES = 64 * 1024 * 1024;
 
+/**
+ * What a CHAT caller supplies through `ExecuteToolOptions.capture` — the only
+ * thing any call site ever constructs. Both fields come from the active session
+ * (`ActiveSession.orgId` / `.breezeSessionId`), because `auth.orgId` is null for
+ * a partner-scope login and a chat call has no run to anchor to.
+ */
+export interface CaptureScope {
+  orgId: string;
+  /** `ai_sessions.id` — what the artifact row's `session_id` FK points at. */
+  sessionId: string;
+}
+
 export interface CaptureContext {
   orgId: string;
+  /** The agent run this capture belongs to, or null for a plain chat capture. */
   runId: string | null;
+  /** `ai_sessions.id`. Always null when `runId` is set — one anchor per artifact. */
   sessionId: string | null;
   region: BlobRegion;
   toolName: string;
 }
 
-/** What a CALLER can cheaply supply; `runId` and `region` are derived here. */
-export interface CaptureScope {
-  orgId: string;
-  sessionId: string | null;
-  sourceDeviceId?: string | null;
-}
-
 /**
- * Build a scope from the caller's identity and (when it has one) its chat
- * session. `session.orgId` WINS: `auth.orgId` is null for a partner-scope
- * login, which is exactly the bug `aiAgentSdk.ts:1947-1948` documents for tool
- * audit rows. `accessibleOrgIds` is used only as the single-org fallback — with
- * several accessible orgs there is no unambiguous attribution, so no capture.
+ * Derive the capture attribution for one `executeTool` invocation, or null for
+ * "do not capture" (which is passthrough, never an error).
+ *
+ * TWO PATHS, ONE FUNCTION (reconciliation R4/R5):
+ *
+ *   - The AGENT RUN path needs no call-site change at all. Its auth context is
+ *     built from the run row itself, so `auth.principal` already carries
+ *     `runId` and `auth.orgId` already IS `run.orgId`
+ *     (services/aiAgents/agentAuthContext.ts:78, :89).
+ *   - The CHAT path supplies `opts.capture` from its active session, because
+ *     `auth.orgId` is null for a partner-scope login and there is no run.
+ *
+ * THE ORG IS NEVER GUESSED. `auth.accessibleOrgIds` is deliberately NOT
+ * consulted: picking the single entry of a one-org array is a guess, and a
+ * guessed org on a tenant-scoped row is a tenancy bug waiting for its second
+ * org. No org means no capture.
+ *
+ * ONE ANCHOR. `runId` wins; a run-anchored artifact stores no session, so the
+ * run page's list cannot double-count through a session join.
+ *
+ * The options parameter is typed STRUCTURALLY rather than as
+ * `ExecuteToolOptions`: `aiTools.ts` value-imports this module, so importing
+ * its type back would be a cycle. `ExecuteToolOptions` satisfies this shape.
  */
-export function captureScopeFor(
+export function captureContextFrom(
   auth: AuthContext,
-  session?: { breezeSessionId: string; orgId: string; deviceId: string | null } | null,
-): CaptureScope | null {
-  if (session?.orgId) {
-    return { orgId: session.orgId, sessionId: session.breezeSessionId, sourceDeviceId: session.deviceId };
-  }
-  if (auth.orgId) return { orgId: auth.orgId, sessionId: null };
-  const accessible = auth.accessibleOrgIds;
-  if (Array.isArray(accessible) && accessible.length === 1) {
-    return { orgId: accessible[0]!, sessionId: null };
-  }
-  return null;
-}
-
-/**
- * Session -> run memo. A session belongs to at most one run for its whole life,
- * so this is resolved once and reused; a NEGATIVE result is memoized too, or an
- * ordinary chat session would re-query on every oversized result. Bounded so a
- * long-lived API process cannot grow it without limit.
- */
-const MAX_RUN_CACHE = 5_000;
-const runIdBySession = new Map<string, string | null>();
-
-/** Test seam only. */
-export function __resetCaptureRunCacheForTests(): void {
-  runIdBySession.clear();
-}
-
-export async function resolveCaptureContext(
-  scope: CaptureScope,
+  opts: { capture?: CaptureScope } | undefined,
   toolName: string,
-): Promise<CaptureContext | null> {
-  if (!scope.orgId) return null;
-  const base = { orgId: scope.orgId, sessionId: scope.sessionId, region: breezeRegion(), toolName };
-  if (!scope.sessionId) return { ...base, runId: null };
-
-  if (runIdBySession.has(scope.sessionId)) {
-    return { ...base, runId: runIdBySession.get(scope.sessionId)! };
-  }
-  let runId: string | null = null;
-  try {
-    const [row] = await db
-      .select({ id: aiAgentRuns.id })
-      .from(aiAgentRuns)
-      .where(and(eq(aiAgentRuns.sessionId, scope.sessionId), eq(aiAgentRuns.orgId, scope.orgId)))
-      .limit(1);
-    runId = row?.id ?? null;
-  } catch (err) {
-    // A lookup fault must not break the tool call; the artifact simply lands
-    // without a run anchor and is still reachable by session.
-    console.error('[artifacts] run lookup for capture failed', err);
-    return { ...base, runId: null };
-  }
-  if (runIdBySession.size >= MAX_RUN_CACHE) runIdBySession.clear();
-  runIdBySession.set(scope.sessionId, runId);
-  return { ...base, runId };
+): CaptureContext | null {
+  const orgId = opts?.capture?.orgId ?? auth.orgId ?? null;
+  const runId = auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
+  const sessionId = runId ? null : (opts?.capture?.sessionId ?? null);
+  if (!orgId) return null;
+  if (!runId && !sessionId) return null;
+  return { orgId, runId, sessionId, region: breezeRegion(), toolName };
 }
 
 function looksLikeJson(raw: string): boolean {
@@ -3136,9 +3176,12 @@ function looksLikeJson(raw: string): boolean {
   }
 }
 
-export async function captureLargeToolResult(raw: string, ctx: CaptureContext): Promise<string> {
+export async function captureLargeToolResult(
+  raw: string,
+  ctx: CaptureContext | null,
+): Promise<string> {
+  if (ctx === null) return raw;
   if (raw.length <= MAX_TOOL_RESULT_CHARS) return raw;
-  if (ctx.runId === null && ctx.sessionId === null) return raw;
   if (!aiWorkspaceEnabled()) return raw;
 
   const isJson = looksLikeJson(raw);
@@ -3187,69 +3230,30 @@ export async function captureLargeToolResult(raw: string, ctx: CaptureContext): 
 }
 ```
 
-- [ ] **Step 4: Add the `ai_agent_runs(session_id)` index the run lookup needs**
-
-`ai_agent_runs` has twelve indexes and none on `session_id` (`src/db/schema/aiAgents.ts:186-211`), so `resolveCaptureContext`'s lookup would sequentially scan every run in the fleet. Append a section 3 to the migration this branch created (it has not shipped — it lands in this same PR, so appending is not editing a shipped migration; re-confirm with `git log --oneline -- apps/api/migrations/2026-10-16-100000-ai-run-artifacts.sql` showing only this branch's commits):
-
-```sql
--- ---------------------------------------------------------------------------
--- 3. Run lookup by session (W01 capture path)
---
--- services/artifacts/toolResultCapture.ts resolves a capture's run_id from the
--- chat session the tools run under; ai_agent_runs had no session_id index, so
--- that lookup was a sequential scan of every run in the deployment. Partial:
--- session_id is NULL for the lifetime of any run whose best-effort session
--- write never landed (runLoop.ts), and those rows are never the lookup target.
--- ---------------------------------------------------------------------------
-
-CREATE INDEX IF NOT EXISTS ai_agent_runs_session_idx
-  ON ai_agent_runs (session_id)
-  WHERE session_id IS NOT NULL;
-```
-
-And the Drizzle mirror in `apps/api/src/db/schema/aiAgents.ts`, beside the other `ai_agent_runs` indexes (~line 193):
-
-```ts
-  // W01 capture path: services/artifacts/toolResultCapture.ts resolves a
-  // capture's run from its session. Partial — a run with no session is never
-  // the lookup target.
-  sessionIdx: index('ai_agent_runs_session_idx')
-    .on(table.sessionId)
-    .where(sql`${table.sessionId} IS NOT NULL`),
-```
-
-(`sql` is already imported in that file; if the surrounding entries use the array form `(t) => [...]` rather than the object form, follow the file.)
-
-- [ ] **Step 5: Run the capture test, the schema drift check and the migration contracts**
+- [ ] **Step 4: Run the capture test**
 
 ```bash
-cd apps/api && npx vitest run src/services/artifacts/toolResultCapture.test.ts \
-  src/db/autoMigrate.test.ts src/db/migrationRlsScope.test.ts
+cd apps/api && npx vitest run src/services/artifacts/toolResultCapture.test.ts
 ```
-Expected: capture PASS (16 tests); migration contracts PASS (section 3 is DDL, so no `breeze.scope` election is required).
+Expected: PASS (19 tests). No migration or Drizzle-schema change belongs to this task — if you find yourself adding an `ai_agent_runs(session_id)` index, a run lookup has crept back in; re-read the reconciliation section.
 
-```bash
-set -a; . ../../.env.test; set +a
-cd /Users/toddhebebrand/.herdr/worktrees/breeze/worktree-rapid-cloud-904e/apps/api && pnpm db:check-drift
-```
-Expected: no drift (the partial index exists in both the migration and the Drizzle schema). If drizzle-kit cannot express the partial predicate identically, drop the `WHERE` from BOTH sides rather than leaving them different.
-
-- [ ] **Step 6: Typecheck and commit**
+- [ ] **Step 5: Typecheck and commit**
 
 ```bash
 cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json
 git add apps/api/src/services/artifacts/toolResultCapture.ts \
-  apps/api/src/services/artifacts/toolResultCapture.test.ts \
-  apps/api/migrations/2026-10-16-100000-ai-run-artifacts.sql \
-  apps/api/src/db/schema/aiAgents.ts
+  apps/api/src/services/artifacts/toolResultCapture.test.ts
 git commit -m "feat(ai): capture oversized tool results as input_capture artifacts
 
 Spec §5.2/§9. Fires on the same MAX_TOOL_RESULT_CHARS the chat compaction uses,
 persists the RAW bytes, and returns { artifact, compacted } so the model keeps its
-current view plus a stageable handle. Passthrough with the flag off, with no org, or
-with neither run nor session. A store failure returns artifact_store_unavailable and
-never the raw result inline. Adds the partial ai_agent_runs(session_id) index the
-run resolution needs.
+current view plus a stageable handle. The agent run path attributes from the auth
+principal (agentAuthContext already carries runId and run.orgId); the chat path hands
+in a CaptureScope from its active session. The org is never guessed from
+accessibleOrgIds, and the capture path makes no database read of its own. A null
+context (no org, no anchor, or a captureExempt tool), the flag off, or a result at or
+below the threshold all pass the raw string through byte-identically. A store failure
+returns artifact_store_unavailable and never the raw result inline.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
@@ -3257,43 +3261,33 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
 
 ---
 
-### Task 9: The hook inside `executeTool`, `AiTool.captureExempt`, and the four call sites that supply a scope
+### Task 9: `ExecuteToolOptions.capture`, `AiTool.captureExempt`, the hook inside `executeTool`, and the ONE call site that supplies a scope
 
 **Files:**
-- Modify: `apps/api/src/services/aiTools.ts:97-134` (`AiTool.captureExempt`), `:480-491` (`ExecuteToolOptions.capture`), `:548-554` (the hook)
+- Modify: `apps/api/src/services/aiTools.ts:97-134` (`AiTool.captureExempt`), `:480-491` (`ExecuteToolOptions.capture`), `:548-554` (the hook on the two handler returns)
 - Create: `apps/api/src/services/aiTools.capture.test.ts`
-- Modify: `apps/api/src/services/aiAgentSdkTools.ts:434-442` (`makeHandler` gains `getActiveSession`), `:518-531` (pass the scope)
-- Modify: `apps/api/src/routes/mcpServer.ts:1289-1296` (pass the scope)
-- Modify: `apps/api/src/services/scriptBuilderTools.ts:160-172` (pass the scope)
-- Modify: `apps/api/src/jobs/intentReleaseWorker.ts:1132-1140` (pass the scope)
+- Modify: `apps/api/src/services/aiAgentSdkTools.ts:434-442` (`makeHandler` → `makeToolHandler(…, getActiveSession)` + local alias), `:518-531` (supply the scope)
+- **NOT modified:** `apps/api/src/services/toolExecutionContext.ts` (see below), `apps/api/src/routes/mcpServer.ts`, `apps/api/src/services/scriptBuilderTools.ts`, `apps/api/src/jobs/intentReleaseWorker.ts` (see step 7).
 
 **Interfaces:**
-- Consumes: `captureScopeFor`, `resolveCaptureContext`, `captureLargeToolResult`, `CaptureScope` (Task 8).
+- Consumes: `captureContextFrom`, `captureLargeToolResult`, `CaptureScope` (Task 8). Those three are the whole surface — the generation-1 scope-builder and run-resolution helpers do not exist.
 - Produces:
   ```ts
   // AiTool gains, as its LAST optional field:
   captureExempt?: boolean;          // default false — structured tools stay inline (spec §5.2)
-  // ToolExecutionContext gains (see reconciliation R2 — NOT a new ExecuteToolOptions member):
-  runId?: string;
-  sessionId?: string | null;
-  ```
 
-> **READ RECONCILIATION R2 FIRST.** The steps below were written against an earlier shape that added `ExecuteToolOptions.capture?: CaptureScope`. **Do not add that member and do not define `CaptureScope`.** The capture attribution rides on `ToolExecutionContext` — the bag member `executeTool` already accepts and already threads as `opts?.context` — so every "pass the scope" instruction below becomes "extend the `context` this call site already builds". Concretely: **Step 4**'s `ExecuteToolOptions.capture` block is replaced by the two `ToolExecutionContext` members above (declared in `toolExecutionContext.ts`, whose header doc comment must be widened from "release-path material" to "per-invocation execution input" in the same commit); the hook body becomes
-> ```ts
-> const ctx = captureContextFrom(auth, opts?.context, toolName);
-> if (!ctx || tool.captureExempt) return rawResult;
-> try { return await captureLargeToolResult(rawResult, await resolveCaptureContext(ctx)); }
-> catch (err) { console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err); return rawResult; }
-> ```
-> **Steps 6 and 7**'s four call sites pass `{ context: { ...verifiedContext, sessionId, runId } }` instead of a `capture` key — `makeHandler` still gains `getActiveSession` (step 6), but it feeds `session.breezeSessionId` into `context.sessionId`. `mcpServer.ts` passes `{ context: { sessionId: sessionId ?? null } }`; `intentReleaseWorker.ts` keeps its existing `context` and adds nothing (a release path has no session, and `auth.orgId` carries the org). The test file's assertions on `{ capture: … }` become assertions on `{ context: … }`; every behaviour it pins — inert without attribution, `captureExempt` honoured, error envelopes not captured, fail-open — is unchanged.
->
-> **Also record in the PR body** the R2 limitation: `auth.orgId` is null for a partner-scope login, so such a chat produces no capture until the session org is carried through `ToolExecutionContext` (filed follow-up).
+  // ExecuteToolOptions gains exactly one member:
+  capture?: CaptureScope;           // chat-path attribution; the run path needs none
+  ```
+  `executeTool`'s **signature is unchanged** — `capture` rides in the options bag it already accepts.
 
 **Where exactly the hook goes and why.** `executeTool` (lines 493-555) is the single dispatch point every core and extension handler result passes through, and it does NOT import `aiToolOutput.ts` — compaction happens at the four callers, immediately after the `await`. So the hook sits on the two `return` statements at lines 553-554, which is "after the handler, before any compaction" exactly as the spec requires. The early returns above it (lines 529, 539, 546) are the tool's own error envelopes — short by construction, never captured, and a capture there would be nonsense.
 
-**Why a scope on `ExecuteToolOptions` rather than on `AuthContext`.** `toolExecutionContext.ts:46-69` is an explicit, argued prohibition: `AuthContext` is a caller IDENTITY read by every tenancy gate, and a per-invocation execution input must not ride on it. `ExecuteToolOptions` is already documented (lines 472-479) as the NAMED BAG for exactly this class of member. The scope is also OPTIONAL everywhere, so a caller that does not pass it gets today's behaviour with no branch.
+**Why a named `capture` member on `ExecuteToolOptions`, and NOT `ToolExecutionContext` or `AuthContext`.** `toolExecutionContext.ts:39-65` documents `ToolExecutionContext` as deliberately narrow — verified release material — and argues explicitly against letting caller-identity-ish fields ride along; an `orgId` member there is precisely what it argues against, and the W04 reviewer flagged an earlier draft of this plan for proposing one. The same file's argument rules out `AuthContext` even more strongly: it is a caller IDENTITY read by every tenancy gate, and a per-invocation execution input must not extend it. `ExecuteToolOptions` is already documented (lines 472-479) as the NAMED BAG for exactly this class of unrelated per-invocation member. **`ToolExecutionContext` is not modified by this wave.** `capture` is optional everywhere, so a caller that omits it gets today's behaviour with no branch taken.
 
-**The `makeHandler` gap.** `makeSessionAwareHandler` (line 632) takes `getActiveSession`; its sibling `makeHandler` (line 434) — the MAIN chat path and the only one of the two that actually calls `executeTool` — does not. Without a session it has no org it can trust (`auth.orgId` is null for a partner-scope login) and no session to resolve a run from, so the hook would be permanently inert on the path that matters most. Capture cannot instead move to `createSessionPostToolUse` (`aiAgentSdk.ts:1944`): the `output` string has ALREADY been compacted once by the time it arrives there, so the oversized original is gone.
+**The run path needs no call-site change at all.** `services/aiAgents/agentAuthContext.ts` builds the run's auth context from the run row: `principal: { kind: 'ai_agent', agentId, runId }` (line 78) and `orgId: run.orgId` (line 89). `captureContextFrom` reads both, so every agent-run tool call is attributed without anyone passing anything.
+
+**The `makeHandler` gap.** `makeSessionAwareHandler` (line 632) takes `getActiveSession`; its sibling `makeHandler` (line 434) — the MAIN chat path and the only one of the two that actually calls `executeTool` — does not. Without the session it has no org it can trust (`auth.orgId` is null for a partner-scope login) and no `ai_sessions.id` to anchor on, so the hook would be permanently inert on the path that matters most. Capture cannot instead move to `createSessionPostToolUse` (`aiAgentSdk.ts:1944`): the `output` string has ALREADY been compacted once by the time it arrives there, so the oversized original is gone. And note `makeSessionAwareHandler` itself needs no change — **verified**: it dispatches to `sessionHandler`, not to `executeTool`, so it has no options bag to extend.
 
 - [ ] **Step 1: Write the failing hook test**
 
@@ -3301,32 +3295,37 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
 // apps/api/src/services/aiTools.capture.test.ts
 /**
  * Execution-plane W01 (spec §5.2, §12). The hook sits inside executeTool, after
- * the handler and BEFORE any compaction, and is inert unless a caller supplies
- * a capture scope. `captureExempt` opts a structured tool out.
+ * the handler and BEFORE any compaction. It is inert unless the call is
+ * attributable — an ai_agent principal (run path) or an ExecuteToolOptions
+ * `capture` scope (chat path). `captureExempt` opts a structured tool out by
+ * taking the same null-context path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(async (raw: string) => raw),
-  resolve: vi.fn(async (scope: unknown, toolName: string) => ({
-    orgId: (scope as { orgId: string }).orgId, runId: null, sessionId: null, region: 'us', toolName,
-  })),
 }));
 
-vi.mock('./artifacts/toolResultCapture', () => ({
+vi.mock('./artifacts/toolResultCapture', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
   captureLargeToolResult: mocks.capture,
-  resolveCaptureContext: mocks.resolve,
 }));
 
 import { aiTools, executeTool, type AiTool } from './aiTools';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
+const RUN = '00000000-0000-4000-8000-0000000000a3';
+const SESSION = '00000000-0000-4000-8000-0000000000a5';
+
 const auth = {
   principal: { kind: 'user_session' },
   user: { id: 'u1', email: 'u@example.com', name: 'U', isPlatformAdmin: false },
   token: null, partnerId: null, orgId: ORG, scope: 'organization',
   accessibleOrgIds: [ORG], orgCondition: () => undefined, canAccessOrg: () => true,
 } as never;
+
+/** What services/aiAgents/agentAuthContext.ts builds for an agent run. */
+const runAuth = { ...(auth as object), principal: { kind: 'ai_agent', agentId: 'ag1', runId: RUN } } as never;
 
 const BIG = JSON.stringify({ rows: 'r'.repeat(30_000) });
 
@@ -3342,34 +3341,44 @@ function register(name: string, result: string, extra: Partial<AiTool> = {}): ()
 }
 
 let cleanup: Array<() => void> = [];
-beforeEach(() => { mocks.capture.mockClear(); mocks.resolve.mockClear(); });
+beforeEach(() => { mocks.capture.mockClear(); });
 afterEach(() => { cleanup.forEach((fn) => fn()); cleanup = []; });
 
 describe('executeTool capture hook', () => {
-  it('is INERT when no capture scope is supplied — result is byte-identical', async () => {
+  it('is INERT for an ordinary chat call with no scope — result is byte-identical', async () => {
     cleanup.push(register('cap_plain', BIG));
     expect(await executeTool('cap_plain', {}, auth)).toBe(BIG);
-    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
   });
 
-  it('routes the raw handler result through capture when a scope IS supplied', async () => {
-    cleanup.push(register('cap_scoped', BIG));
+  it('routes the RAW handler result through capture for an agent RUN, with no caller input', async () => {
+    cleanup.push(register('cap_run', BIG));
     mocks.capture.mockResolvedValueOnce('{"artifact":{"handle":"h"},"compacted":"x"}');
-    const out = await executeTool('cap_scoped', {}, auth, { capture: { orgId: ORG, sessionId: null } });
+    const out = await executeTool('cap_run', {}, runAuth);
     expect(mocks.capture).toHaveBeenCalledTimes(1);
-    expect(mocks.capture.mock.calls[0]![0]).toBe(BIG);     // RAW, uncompacted
+    expect(mocks.capture.mock.calls[0]![0]).toBe(BIG);              // RAW, uncompacted
+    expect(mocks.capture.mock.calls[0]![1]).toMatchObject({ orgId: ORG, runId: RUN, sessionId: null });
     expect(out).toBe('{"artifact":{"handle":"h"},"compacted":"x"}');
   });
 
-  it('honours captureExempt — a structured tool stays inline (spec §5.2)', async () => {
+  it('routes a CHAT call through when a capture scope is supplied', async () => {
+    cleanup.push(register('cap_chat', BIG));
+    await executeTool('cap_chat', {}, auth, { capture: { orgId: ORG, sessionId: SESSION } });
+    expect(mocks.capture.mock.calls[0]![1]).toMatchObject({ orgId: ORG, runId: null, sessionId: SESSION });
+  });
+
+  it('honours captureExempt — a structured tool takes the null-context path and stays inline', async () => {
     cleanup.push(register('cap_exempt', BIG, { captureExempt: true }));
-    expect(await executeTool('cap_exempt', {}, auth, { capture: { orgId: ORG, sessionId: null } })).toBe(BIG);
-    expect(mocks.capture).not.toHaveBeenCalled();
+    const out = await executeTool('cap_exempt', {}, auth, { capture: { orgId: ORG, sessionId: SESSION } });
+    expect(out).toBe(BIG);
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
   });
 
   it('does not capture the tool-error envelopes executeTool returns before the handler', async () => {
     cleanup.push(register('cap_gated', BIG, { deviceArgs: ['deviceId'] }));
-    const out = await executeTool('cap_gated', { deviceId: 'not-a-uuid' }, auth, { capture: { orgId: ORG, sessionId: null } });
+    const out = await executeTool('cap_gated', { deviceId: 'not-a-uuid' }, auth, {
+      capture: { orgId: ORG, sessionId: SESSION },
+    });
     expect(JSON.parse(out)).toHaveProperty('error');
     expect(mocks.capture).not.toHaveBeenCalled();
   });
@@ -3377,14 +3386,31 @@ describe('executeTool capture hook', () => {
   it('never lets a capture fault fail the tool call — the raw result still returns', async () => {
     cleanup.push(register('cap_boom', BIG));
     mocks.capture.mockRejectedValueOnce(new Error('unexpected'));
-    expect(await executeTool('cap_boom', {}, auth, { capture: { orgId: ORG, sessionId: null } })).toBe(BIG);
+    expect(await executeTool('cap_boom', {}, auth, { capture: { orgId: ORG, sessionId: SESSION } })).toBe(BIG);
+  });
+});
+
+describe('the three non-chat call sites are passthrough by design in W01 (reconciliation R2)', () => {
+  // Each case builds the EXACT options bag its call site builds today: none of
+  // them supplies `capture`. If a later wave starts attributing one of these,
+  // this suite goes red and the change becomes a decision rather than an accident.
+  it('routes/mcpServer.ts passes no options at all', async () => {
+    cleanup.push(register('cap_mcp', BIG));
+    expect(await executeTool('cap_mcp', {}, auth)).toBe(BIG);
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
   });
 
-  it('skips capture when the scope cannot be resolved to an org', async () => {
-    cleanup.push(register('cap_noorg', BIG));
-    mocks.resolve.mockResolvedValueOnce(null);
-    expect(await executeTool('cap_noorg', {}, auth, { capture: { orgId: ORG, sessionId: null } })).toBe(BIG);
-    expect(mocks.capture).not.toHaveBeenCalled();
+  it('services/scriptBuilderTools.ts passes only verified release material', async () => {
+    cleanup.push(register('cap_sb', BIG));
+    const context = { verifiedRunScript: undefined } as never;
+    expect(await executeTool('cap_sb', {}, auth, { context })).toBe(BIG);
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
+  });
+
+  it('jobs/intentReleaseWorker.ts passes an actionIntentId and no capture scope', async () => {
+    cleanup.push(register('cap_intent', BIG));
+    expect(await executeTool('cap_intent', {}, auth, { context: { actionIntentId: 'i1' } })).toBe(BIG);
+    expect(mocks.capture).toHaveBeenCalledWith(BIG, null);
   });
 });
 ```
@@ -3420,20 +3446,27 @@ In the same file, inside `ExecuteToolOptions` (after `context?: ToolExecutionCon
 ```ts
   /**
    * Where an oversized result should be attributed if it has to be captured
-   * (execution-plane spec §5.2). OPTIONAL AND ABSENT BY DEFAULT: a caller that
-   * omits it gets today's behaviour with no branch taken. It rides here rather
-   * than on `AuthContext` for the reason toolExecutionContext.ts argues at
-   * length — `AuthContext` is a caller identity read by every tenancy gate, and
-   * this is a per-invocation execution input.
+   * (execution-plane spec §5.2). Supplied by the CHAT path only, from its
+   * active session: `auth.orgId` is null for a partner-scope login, and a chat
+   * call has no run to anchor to. The AGENT RUN path supplies nothing — its
+   * auth context is built from the run row and already carries both the org and
+   * the run id (services/aiAgents/agentAuthContext.ts).
+   *
+   * OPTIONAL AND ABSENT BY DEFAULT: a caller that omits it gets today's
+   * behaviour with no branch taken. It rides here rather than on
+   * `ToolExecutionContext` (documented as deliberately narrow, verified-release
+   * material) or on `AuthContext` (a caller identity read by every tenancy
+   * gate) — this bag is what toolExecutionContext.ts's own argument points at
+   * for unrelated per-invocation inputs.
    */
   capture?: CaptureScope;
 ```
 
-Add the import beside the other service imports at the top of `aiTools.ts`:
+Add the imports beside the other service imports at the top of `aiTools.ts`:
 
 ```ts
 import type { CaptureScope } from './artifacts/toolResultCapture';
-import { captureLargeToolResult, resolveCaptureContext } from './artifacts/toolResultCapture';
+import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
 ```
 
 Then replace the two final returns (lines 548-554) with:
@@ -3454,14 +3487,16 @@ Then replace the two final returns (lines 548-554) with:
   // applied to the tool-error envelopes returned above: they are short by
   // construction and an artifact of an error string is nonsense.
   //
-  // Fully fail-open: capture is an enhancement, never a reason a tool call
-  // fails. `captureLargeToolResult` already turns a STORE failure into a typed
-  // tool error (§9); this catch is only for the unexpected.
-  if (!opts?.capture || tool.captureExempt) return rawResult;
+  // A captureExempt tool and an unattributable call take the SAME null-context
+  // path, so there is exactly one passthrough branch. `captureLargeToolResult`
+  // returns the raw string unchanged for a null context, below the threshold,
+  // and with the workspace flag off, and turns a STORE failure into a typed
+  // tool error (§9) rather than the raw result inline. This catch is only for
+  // the genuinely unexpected: capture is an enhancement, never a reason a tool
+  // call fails.
+  const captureCtx = tool.captureExempt ? null : captureContextFrom(auth, opts, toolName);
   try {
-    const ctx = await resolveCaptureContext(opts.capture, toolName);
-    if (!ctx) return rawResult;
-    return await captureLargeToolResult(rawResult, ctx);
+    return await captureLargeToolResult(rawResult, captureCtx);
   } catch (err) {
     console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err);
     return rawResult;
@@ -3478,9 +3513,9 @@ cd apps/api && npx vitest run src/services/aiTools.capture.test.ts src/services/
 ```
 Expected: both PASS. `aiTools.test.ts` must be green WITHOUT edits — that is the proof the hook is inert for every existing caller.
 
-- [ ] **Step 6: Give `makeHandler` a session and pass the scope (main chat path)**
+- [ ] **Step 6: Give `makeHandler` a session and supply the scope (the ONE call site that changes)**
 
-`apps/api/src/services/aiAgentSdkTools.ts` — change the signature at line 434 to mirror its sibling at 632:
+`apps/api/src/services/aiAgentSdkTools.ts` — change the signature at line 434 to mirror its sibling at 632, renaming it so a local alias can keep the ~90 declaration sites unchanged:
 
 ```ts
 function makeToolHandler(
@@ -3492,13 +3527,14 @@ function makeToolHandler(
 ) {
 ```
 
-and at the top of `createBreezeMcpServer`, where `makeHandler` is currently referenced by every `tool()` declaration, add a local alias so the ~90 call sites do not change:
+and at the top of `createBreezeMcpServer`, where `makeHandler` is currently referenced by every `tool()` declaration, add the alias:
 
 ```ts
   // One alias so the tool() declarations below keep their four-argument shape
-  // while the underlying handler also receives the session (W01 capture needs
-  // the session's org and its run). getActiveSession is undefined for the
-  // headless/agent server, in which case capture falls back to auth.orgId.
+  // while the underlying handler also receives the session. W01 capture needs
+  // the session's org (auth.orgId is null for a partner-scope login) and its
+  // ai_sessions id. getActiveSession is undefined for the headless/agent
+  // server, where the ai_agent principal already carries the run and org.
   const makeHandler = (
     toolName: string,
     auth: () => AuthContext,
@@ -3509,19 +3545,19 @@ and at the top of `createBreezeMcpServer`, where `makeHandler` is currently refe
 
 (`getActiveSession` is already a parameter of `createBreezeMcpServer` — it is what `makeSessionAwareHandler` is given at line 635. Confirm with `grep -n 'getActiveSession' apps/api/src/services/aiAgentSdkTools.ts` before editing.)
 
-Then at the call site (lines 518-527):
+Then at the call site (lines 518-531):
 
 ```ts
       const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
-      // W01: attribute any oversized result to this session's org and run.
+      // W01: attribute an oversized result to this session's org and session.
       // `session.orgId` is the canonical org — `auth.orgId` is null for a
-      // partner-scope login (aiAgentSdk.ts:1947-1948).
+      // partner-scope login (aiAgentSdk.ts:1947-1948) — and
+      // `session.breezeSessionId` IS the ai_sessions.id the artifact row's
+      // session_id FK points at.
       const session = getActiveSession?.();
-      const capture = captureScopeFor(auth, session ? {
-        breezeSessionId: session.breezeSessionId,
-        orgId: session.orgId,
-        deviceId: session.deviceId,
-      } : null) ?? undefined;
+      const capture: CaptureScope | undefined = session
+        ? { orgId: session.orgId, sessionId: session.breezeSessionId }
+        : undefined;
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () =>
           executeTool(toolName, args, auth, {
@@ -3534,53 +3570,20 @@ Then at the call site (lines 518-527):
       );
 ```
 
-This replaces the `verifiedContext ? … : …` ternary at 524-526. The comment at 521-523 explained that a bag carrying `context: undefined` would be a behaviour change — the spread form preserves that property for both members: an absent scope means no `capture` key at all.
+This replaces the `verifiedContext ? … : …` ternary at 524-526. The comment at 521-523 explained that a bag carrying `context: undefined` would be a behaviour change for every ordinary chat tool call — the spread form preserves that property for both members: an absent scope means no `capture` key at all, and an absent verified context means no `context` key at all.
 
-Add the import: `import { captureScopeFor } from './artifacts/toolResultCapture';`
+Add the import: `import type { CaptureScope } from './artifacts/toolResultCapture';`
 
-- [ ] **Step 7: Pass the scope at the other three `executeTool` call sites**
+- [ ] **Step 7: Confirm the other three call sites are genuinely untouched**
 
-`apps/api/src/routes/mcpServer.ts:1295` — `executionOrgId` (line 1279) is the authoritative execution org on this path, NOT `auth.orgId`; `sessionId` (parameter, line 1130) may be undefined:
+`routes/mcpServer.ts`, `services/scriptBuilderTools.ts` and `jobs/intentReleaseWorker.ts` supply no `capture` in W01 and therefore pass through (R2). This is a decision, not an oversight — attributing them is later-wave work — and step 1's second `describe` block pins it. Verify nothing crept in:
 
-```ts
-      const result = await executeTool(toolName, toolInput, auth, {
-        // W01: `executionOrgId` is the resolved execution org for this call
-        // (resolveMcpExecutionContext) — the only trustworthy attribution here.
-        ...(executionOrgId ? { capture: { orgId: executionOrgId, sessionId: sessionId ?? null } } : {}),
-      });
+```bash
+cd apps/api && grep -n 'capture:\|CaptureScope\|captureContextFrom\|captureLargeToolResult' \
+  src/routes/mcpServer.ts src/services/scriptBuilderTools.ts src/jobs/intentReleaseWorker.ts \
+  || echo 'OK: the three non-chat call sites are unchanged'
 ```
-
-`apps/api/src/services/scriptBuilderTools.ts:160-171` — no session exists on this path, so the scope comes from `auth` alone and yields a run-less, session-less artifact only when the caller has exactly one accessible org (`captureScopeFor` returns null otherwise, and `captureLargeToolResult` passes through when both anchors are null anyway — which is the common case here; the call is included for uniformity, not because it will usually fire):
-
-```ts
-      const capture = captureScopeFor(auth) ?? undefined;
-      const result = await withTimeout(
-        runOutsideDbContext(() =>
-          withDbAccessContext(
-            dbAccessContextFromAuth(auth),
-            () => executeTool(toolName, args, auth, {
-              ...(verifiedContext ? { context: verifiedContext } : {}),
-              ...(capture ? { capture } : {}),
-            }),
-          ),
-        ),
-        TOOL_EXECUTION_TIMEOUT_MS,
-        toolName,
-      );
-```
-
-`apps/api/src/jobs/intentReleaseWorker.ts:1132-1135` — the intent row carries an immutable `org_id`, which is the right attribution:
-
-```ts
-          () =>
-            executeTool(intent.actionName, intent.arguments, auth, {
-              context: { ...verifiedContext, actionIntentId: intent.id },
-              // W01: the intent's own immutable org, never auth.orgId.
-              capture: { orgId: intent.orgId, sessionId: null },
-            });
-```
-
-(Confirm the column is exposed as `intent.orgId` on that row — `grep -n 'intent\.orgId\|intent\.org_id' apps/api/src/jobs/intentReleaseWorker.ts`. If the select does not project it, add `orgId` to that projection.)
+Expected: the `echo` fires. Record in the PR body that MCP-server, script-builder and intent-release tool results are not captured in W01.
 
 - [ ] **Step 8: Run every touched call site's suite**
 
@@ -3601,16 +3604,19 @@ Expected: all PASS. The `makeToolHandler` rename plus the `makeHandler` alias mu
 ```bash
 cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json
 git add apps/api/src/services/aiTools.ts apps/api/src/services/aiTools.capture.test.ts \
-  apps/api/src/services/aiAgentSdkTools.ts apps/api/src/routes/mcpServer.ts \
-  apps/api/src/services/scriptBuilderTools.ts apps/api/src/jobs/intentReleaseWorker.ts
+  apps/api/src/services/aiAgentSdkTools.ts
 git commit -m "feat(ai): hook large-result capture into executeTool, before any compaction
 
-Spec §5.2. AiTool.captureExempt opts a structured tool out; ExecuteToolOptions.capture
-carries the per-invocation attribution (never AuthContext — see toolExecutionContext.ts).
+Spec §5.2. ExecuteToolOptions.capture carries the chat path's per-invocation
+attribution — never AuthContext (a caller identity) and never ToolExecutionContext
+(documented as deliberately narrow, verified-release material). The agent run path
+supplies nothing: its auth context is built from the run row and already carries the
+run id and org. AiTool.captureExempt opts a structured tool out by taking the same
+null-context path an unattributable call takes, so there is one passthrough branch.
 The hook sits on executeTool's handler return, so all four callers are covered by one
-edit; it is inert without a scope and fails open. makeHandler now receives the session
-its sibling makeSessionAwareHandler already had, so the main chat path can attribute an
-artifact to a session's org and run.
+edit, and it fails open. makeHandler now receives the session its sibling
+makeSessionAwareHandler already had; the MCP-server, script-builder and intent-release
+paths stay passthrough in W01 and a test pins that.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
@@ -3618,26 +3624,34 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
 
 ---
 
-### Task 10: Routes — `GET /ai/artifacts/:id` (attachment download) and `GET /ai/agents/runs/:runId/artifacts`
+### Task 10: Routes — `GET /ai/artifacts/:id` (attachment download) and `GET /ai/agents/runs/:runId/artifacts` (inside `aiAgentsRoutes`)
 
 **Files:**
 - Create: `apps/api/src/routes/aiArtifacts.ts`, `apps/api/src/routes/aiArtifacts.test.ts`
-- Modify: `apps/api/src/index.ts:140` (import) and `:979-982` (mounts, BEFORE `/ai/agents` and `/ai`)
+- Modify: `apps/api/src/routes/aiAgents.ts` — add `aiAgentsRoutes.get('/runs/:runId/artifacts', …)` **immediately before** the existing `aiAgentsRoutes.get('/runs/:runId', …)` at line 1198
+- Modify: `apps/api/src/routes/aiAgents.test.ts` — route-precedence test
+- Modify: `apps/api/src/index.ts:~142` (import) and the mount block at `:979-987` — **one** new mount, `/ai/artifacts`, immediately before `api.route('/ai', aiRoutes)`
 
 **Interfaces:**
 - Consumes: `findArtifactForAuth`, `listArtifactsForAuth`, `openArtifactStream`, `toArtifactDto` (Task 5); `BlobNotFoundError`, `BlobStorageUnavailableError` (Task 4); `authMiddleware`, `requirePermission`, `requireScope` (`../middleware/auth`); `PERMISSIONS.AI_AGENTS_READ` (`../services/permissions`); `safeContentDispositionFilename` (`../utils/httpHeaders`); `captureException` (`../services/sentry`).
 - Produces:
   ```ts
-  export const aiArtifactRoutes: Hono;      // mounted at /ai/artifacts  -> GET /:id
-  export const aiRunArtifactRoutes: Hono;   // mounted at /ai/agents     -> GET /runs/:runId/artifacts
+  // apps/api/src/routes/aiArtifacts.ts
+  export const aiArtifactRoutes: Hono;                                  // mounted at /ai/artifacts -> GET /:id
   export function artifactDownloadContentType(stored: string): string;  // fixed safe map
+  // apps/api/src/routes/aiAgents.ts — no new export; the list route joins the existing router.
   ```
+  There is deliberately **no** `aiRunArtifactRoutes` export and **no** second mount.
 
-**RBAC — identical to the AI run detail route** (`routes/aiAgents.ts:99-101, 1198`): `requireScope('organization','partner','system')` + `requirePermission(PERMISSIONS.AI_AGENTS_READ…)`, org scoping by `auth.orgCondition(...)` AND-ed into the WHERE, and a **bare 404 on every miss** — a wrong-org artifact must be indistinguishable from a non-existent one (spec §5.2: handles are opaque). There is no 403 branch in the handler; the only 403s come from the two middlewares.
+**Why the list route lives inside `aiAgentsRoutes` (reconciliation R6).** `index.ts:979-982` already mounts `aiAgentsRoutes` at `/ai/agents`, and that router owns `GET /runs/:runId` (`routes/aiAgents.ts:1198`) as well as the `/:id` pattern behind the #4189 capture bug. Mounting a **second** Hono app at the same `/ai/agents` prefix would put two independent routers in a precedence relationship that is decided by mount order in a third file, invisible from either router — exactly the failure mode #4189 was. It would also give the run-artifact list a different RBAC declaration site from the run detail it belongs to, free to drift. Registering the route in the SAME router, one line above `get('/runs/:runId', …)`, makes the precedence local, greppable and testable in the file that owns both paths, and it reuses that file's already-declared `scopes` / `requireAiRead` / `uuidParam` verbatim.
+
+Hono matches in registration order, and `/runs/:runId` would otherwise match `/runs/<id>/artifacts` only if the param pattern were greedy — it is not — so this ordering is belt-and-braces rather than strictly required. It is still mandatory here: it costs nothing, it is the convention the `/ai/agents/schedules` mount comment already records, and step 5's test pins it so a future reorder cannot quietly break it.
+
+**RBAC — identical to the AI run detail route** (`routes/aiAgents.ts:99-101, 1198`): `requireScope('organization','partner','system')` + `requirePermission(PERMISSIONS.AI_AGENTS_READ…)`, org scoping by `auth.orgCondition(...)` AND-ed into the WHERE, and a **bare 404 on every miss** for the download — a wrong-org artifact must be indistinguishable from a non-existent one (spec §5.2: handles are opaque). There is no 403 branch in either handler; the only 403s come from the two middlewares.
 
 **Rendering (spec §8):** always `Content-Disposition: attachment`, always `X-Content-Type-Options: nosniff`, and the content type comes from a FIXED SAFE MAP, never from the stored string. This differs deliberately from `contentDispositionFor` in `routes/tickets/attachments.ts:262`, which serves `inline` for images: an artifact is model- or sandbox-produced content and **no artifact is ever rendered inline**, image or not. A stored type outside the map becomes `application/octet-stream`.
 
-- [ ] **Step 1: Write the failing route test**
+- [ ] **Step 1: Write the failing download-route test**
 
 ```ts
 // apps/api/src/routes/aiArtifacts.test.ts
@@ -3646,6 +3660,10 @@ Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
  * response, a fixed safe content-type map (an HTML artifact is NEVER served as
  * text/html), a bare 404 for another org's handle (not 403), 503 — never a
  * silent 404 — for a storage fault, and 404 for a genuinely missing object.
+ *
+ * The per-run LIST route is not here: it lives in routes/aiAgents.ts, beside
+ * the run detail it shares a prefix with, and is tested in aiAgents.test.ts
+ * where its route precedence can actually be observed.
  */
 import { Hono } from 'hono';
 import { Readable } from 'node:stream';
@@ -3653,7 +3671,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   find: vi.fn(),
-  list: vi.fn(),
   open: vi.fn(),
   captureException: vi.fn(),
 }));
@@ -3661,7 +3678,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../services/artifacts/artifactService', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   findArtifactForAuth: mocks.find,
-  listArtifactsForAuth: mocks.list,
   openArtifactStream: mocks.open,
 }));
 vi.mock('../middleware/auth', () => ({
@@ -3679,12 +3695,11 @@ const ART = '00000000-0000-4000-8000-0000000000a4';
 const RUN = '00000000-0000-4000-8000-0000000000a3';
 
 import { BlobNotFoundError, BlobStorageUnavailableError } from '../services/artifacts/blobStorage';
-import { aiArtifactRoutes, aiRunArtifactRoutes, artifactDownloadContentType } from './aiArtifacts';
+import { aiArtifactRoutes, artifactDownloadContentType } from './aiArtifacts';
 
 function app() {
   const a = new Hono();
   a.route('/api/v1/ai/artifacts', aiArtifactRoutes);
-  a.route('/api/v1/ai/agents', aiRunArtifactRoutes);
   return a;
 }
 
@@ -3699,7 +3714,7 @@ function record(over: Record<string, unknown> = {}) {
   };
 }
 
-beforeEach(() => { mocks.find.mockReset(); mocks.list.mockReset(); mocks.open.mockReset(); });
+beforeEach(() => { mocks.find.mockReset(); mocks.open.mockReset(); });
 
 describe('artifactDownloadContentType — fixed safe map (spec §8)', () => {
   it('passes the handful of safe types through', () => {
@@ -3777,31 +3792,6 @@ describe('GET /api/v1/ai/artifacts/:id', () => {
     expect(res.headers.get('Content-Disposition')).not.toContain('\n');
   });
 });
-
-describe('GET /api/v1/ai/agents/runs/:runId/artifacts', () => {
-  it('returns DTOs with no blobKey and a download path each', async () => {
-    mocks.list.mockResolvedValue([record()]);
-    const res = await app().request(`/api/v1/ai/agents/runs/${RUN}/artifacts`);
-    expect(res.status).toBe(200);
-    const body = await res.json() as { data: Array<Record<string, unknown>> };
-    expect(body.data).toHaveLength(1);
-    expect(Object.keys(body.data[0]!)).not.toContain('blobKey');
-    expect(body.data[0]!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART}`);
-  });
-
-  it('returns an empty list — not a 404 — for a run with no artifacts or another org\'s run', async () => {
-    mocks.list.mockResolvedValue([]);
-    const res = await app().request(`/api/v1/ai/agents/runs/${RUN}/artifacts`);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [] });
-  });
-
-  it('400s a non-uuid runId without querying', async () => {
-    const res = await app().request('/api/v1/ai/agents/runs/nope/artifacts');
-    expect(res.status).toBe(400);
-    expect(mocks.list).not.toHaveBeenCalled();
-  });
-});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -3809,7 +3799,7 @@ describe('GET /api/v1/ai/agents/runs/:runId/artifacts', () => {
 Run: `cd apps/api && npx vitest run src/routes/aiArtifacts.test.ts`
 Expected: FAIL — `Failed to resolve import "./aiArtifacts"`.
 
-- [ ] **Step 3: Write `aiArtifacts.ts`**
+- [ ] **Step 3: Write `aiArtifacts.ts` (download only)**
 
 ```ts
 // apps/api/src/routes/aiArtifacts.ts
@@ -3820,22 +3810,24 @@ import { authMiddleware, requirePermission, requireScope } from '../middleware/a
 import { PERMISSIONS } from '../services/permissions';
 import { captureException } from '../services/sentry';
 import { safeContentDispositionFilename } from '../utils/httpHeaders';
-import {
-  findArtifactForAuth,
-  listArtifactsForAuth,
-  openArtifactStream,
-  toArtifactDto,
-} from '../services/artifacts/artifactService';
+import { findArtifactForAuth, openArtifactStream } from '../services/artifacts/artifactService';
 import { BlobNotFoundError } from '../services/artifacts/blobStorage';
 
 /**
- * AI artifact download and per-run listing (execution-plane spec §5.2, §8).
+ * AI artifact DOWNLOAD (execution-plane spec §5.2, §8).
  *
- * RBAC is identical to `GET /ai/agents/runs/:runId` (routes/aiAgents.ts): the
- * same scope set, the same ai_agents:read permission, org scoping through
- * `auth.orgCondition`, and a BARE 404 on every miss. A handle is opaque, so
- * "exists but not yours" must be indistinguishable from "does not exist" —
- * there is deliberately no 403 branch in these handlers.
+ * The per-run LISTING is deliberately NOT here: it is
+ * `GET /ai/agents/runs/:runId/artifacts`, and it is registered inside
+ * `aiAgentsRoutes` (routes/aiAgents.ts) beside the run detail it shares a
+ * prefix with. Mounting a second Hono app at `/ai/agents` would make the
+ * precedence between the two depend on mount order in index.ts, invisible from
+ * either router — the shape of #4189.
+ *
+ * RBAC is identical to `GET /ai/agents/runs/:runId`: the same scope set, the
+ * same ai_agents:read permission, org scoping through `auth.orgCondition`, and
+ * a BARE 404 on every miss. A handle is opaque, so "exists but not yours" must
+ * be indistinguishable from "does not exist" — there is deliberately no 403
+ * branch in this handler.
  *
  * RENDERING (§8): every response is `Content-Disposition: attachment` plus
  * `X-Content-Type-Options: nosniff`, and the content type comes from the fixed
@@ -3849,9 +3841,6 @@ import { BlobNotFoundError } from '../services/artifacts/blobStorage';
 
 export const aiArtifactRoutes = new Hono();
 aiArtifactRoutes.use('*', authMiddleware);
-
-export const aiRunArtifactRoutes = new Hono();
-aiRunArtifactRoutes.use('*', authMiddleware);
 
 const requireAiRead = requirePermission(PERMISSIONS.AI_AGENTS_READ.resource, PERMISSIONS.AI_AGENTS_READ.action);
 const scopes = requireScope('organization', 'partner', 'system');
@@ -3927,72 +3916,152 @@ aiArtifactRoutes.get('/:id', scopes, requireAiRead, async (c) => {
     'Cache-Control': 'private, no-store',
   });
 });
+```
 
-// GET /ai/agents/runs/:runId/artifacts — the run page's list (W05 renders it).
-aiRunArtifactRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
-  const runId = c.req.param('runId');
-  if (!UUID.safeParse(runId).success) {
-    return c.json({ error: 'Invalid run id', code: 'INVALID_RUN_ID' }, 400);
-  }
+- [ ] **Step 4: Write the failing route-precedence test in `aiAgents.test.ts`**
+
+Append to `apps/api/src/routes/aiAgents.test.ts`, following that file's existing mocking conventions (read its top ~80 lines first — it already mocks `../middleware/auth` and the db; add `listArtifactsForAuth` / `toArtifactDto` to the mocks the same way, and reuse its existing `app()`/request helper rather than building a new one):
+
+```ts
+describe('GET /ai/agents/runs/:runId/artifacts (execution-plane W01, reconciliation R6)', () => {
+  it('returns DTOs with no blobKey and a download path each', async () => {
+    mockListArtifactsForAuth.mockResolvedValue([artifactRecord()]);
+    const res = await request(`/api/v1/ai/agents/runs/${RUN}/artifacts`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toHaveLength(1);
+    expect(Object.keys(body.data[0]!)).not.toContain('blobKey');
+    expect(body.data[0]!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART}`);
+  });
+
+  it("returns an empty list — not a 404 — for a run with no artifacts or another org's run", async () => {
+    mockListArtifactsForAuth.mockResolvedValue([]);
+    const res = await request(`/api/v1/ai/agents/runs/${RUN}/artifacts`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+  });
+
+  it('400s a non-uuid runId without querying', async () => {
+    const res = await request('/api/v1/ai/agents/runs/nope/artifacts');
+    expect(res.status).toBe(400);
+    expect(mockListArtifactsForAuth).not.toHaveBeenCalled();
+  });
+
+  // THE PRECEDENCE ASSERTION. Both paths live in one router, so registration
+  // order inside this file is the only thing that separates them — and that
+  // order is what #4189 got wrong when a sibling path was owned by a different
+  // app. If /runs/:runId ever moves above /runs/:runId/artifacts, the first
+  // case here still passes only if Hono's param matching stays non-greedy;
+  // the second is what actually breaks, and it must not.
+  it('routes /runs/<uuid>/artifacts to the LIST and /runs/<uuid> to the run DETAIL', async () => {
+    mockListArtifactsForAuth.mockResolvedValue([]);
+    const list = await request(`/api/v1/ai/agents/runs/${RUN}/artifacts`);
+    expect(list.status).toBe(200);
+    expect(await list.json()).toEqual({ data: [] });
+    expect(mockListArtifactsForAuth).toHaveBeenCalledTimes(1);
+
+    const detail = await request(`/api/v1/ai/agents/runs/${RUN}`);
+    expect(detail.status).toBe(200);
+    // The run-detail body, NOT an artifact list: `data` is the list route's
+    // envelope and must not appear here.
+    expect(await detail.json()).not.toHaveProperty('data');
+    expect(mockListArtifactsForAuth).toHaveBeenCalledTimes(1);   // detail did not hit the list
+  });
+});
+```
+
+Run: `cd apps/api && npx vitest run src/routes/aiAgents.test.ts -t 'artifacts'`
+Expected: FAIL — 404 on `/runs/<uuid>/artifacts` (the route does not exist yet).
+
+- [ ] **Step 5: Register the list route inside `aiAgentsRoutes`, above `/runs/:runId`**
+
+`apps/api/src/routes/aiAgents.ts` — insert immediately BEFORE the `aiAgentsRoutes.get('/runs/:runId', …)` declaration at line 1198:
+
+```ts
+/**
+ * The run's artifacts (execution-plane spec §5.2/§8, W01). Registered HERE, in
+ * the router that already owns `/runs/:runId`, rather than in its own app
+ * mounted at the same `/ai/agents` prefix: two routers behind one prefix put
+ * their precedence in index.ts's mount order, invisible from either file, which
+ * is the shape of #4189. Keep this ABOVE `/runs/:runId`.
+ *
+ * An empty list rather than a 404 for another org's run: the run-detail route
+ * below already owns the exists/not-exists answer, and duplicating it here
+ * would add a second, independently-driftable disclosure surface. `blobKey`
+ * never leaves the API — `toArtifactDto` projects fields explicitly.
+ */
+aiAgentsRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
+  const runId = uuidParam(c, 'runId');
+  if (!runId) return c.json({ error: 'Invalid run id', code: 'INVALID_RUN_ID' }, 400);
+
   const auth = c.get('auth');
-  // An empty list rather than a 404 for another org's run: the run-detail route
-  // already owns the exists/not-exists answer, and duplicating it here would
-  // add a second, independently-driftable disclosure surface.
   const records = await listArtifactsForAuth(runId, auth);
   return c.json({ data: records.map(toArtifactDto) });
 });
 ```
 
-- [ ] **Step 4: Mount both routers**
+and add to that file's imports:
+
+```ts
+import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
+```
+
+`scopes`, `requireAiRead` (both declared at `:99-101`) and `uuidParam` (`:125`) are reused verbatim — that reuse is the point of putting the route here, since the run detail and its artifact list cannot drift apart on authorization or id validation.
+
+- [ ] **Step 6: Mount the download router in `index.ts` — ONE new mount**
 
 `apps/api/src/index.ts` — add beside the other AI imports (~line 142):
 
 ```ts
-import { aiArtifactRoutes, aiRunArtifactRoutes } from './routes/aiArtifacts';
+import { aiArtifactRoutes } from './routes/aiArtifacts';
 ```
 
-and in the mount block (lines 978-987), BEFORE `api.route('/ai/agents', aiAgentsRoutes)` and before `api.route('/ai', aiRoutes)`, matching the `/ai/agents/schedules` precedent:
+and in the mount block (lines 978-987), immediately BEFORE `api.route('/ai', aiRoutes)` (line 986):
 
 ```ts
-// BEFORE /ai/agents: aiAgentsRoutes owns /:id. `/runs/:runId/artifacts` is
-// three segments so it cannot actually collide, but the ordering convention in
-// this block is deeper-prefix-first and is what keeps #4189 from recurring.
-api.route('/ai/agents', aiRunArtifactRoutes);
-api.route('/ai/agents', aiAgentsRoutes);
-// BEFORE /ai: aiRoutes owns broad paths.
+// BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
+// the per-run artifact LIST lives inside aiAgentsRoutes itself (see
+// routes/aiAgents.ts, above its /runs/:runId), so no second router shares
+// that prefix.
 api.route('/ai/artifacts', aiArtifactRoutes);
 ```
 
-Place `api.route('/ai/artifacts', aiArtifactRoutes)` immediately before `api.route('/ai', aiRoutes)` (line 986).
+Leave `api.route('/ai/agents', aiAgentsRoutes)` and the `/ai/agents/schedules` mount above it exactly as they are.
 
-- [ ] **Step 5: Run the route test and the route-registration contracts**
+- [ ] **Step 7: Run the route tests and the route-registration contracts**
 
 ```bash
-cd apps/api && npx vitest run src/routes/aiArtifacts.test.ts
+cd apps/api && npx vitest run src/routes/aiArtifacts.test.ts src/routes/aiAgents.test.ts
 npx vitest run src/index.test.ts src/routes/routeRegistration 2>/dev/null || true
-grep -rn "aiArtifactRoutes" src/index.ts
+grep -n "aiArtifactRoutes" src/index.ts
+grep -n "runs/:runId" src/routes/aiAgents.ts
 ```
-Expected: the route suite PASS (13 tests); `grep` shows the import and both mounts. If this repo has a route-inventory or permission-coverage contract test (`ls src/__tests__ | grep -i route`, `grep -rln "api.route(" src/*.test.ts`), run it and add the two new paths wherever it expects an entry.
+Expected: both route suites PASS (the download suite 11 tests; `aiAgents.test.ts` green including the four new cases). `grep` shows one import and one mount for `aiArtifactRoutes`, and `/runs/:runId/artifacts` appearing on a LOWER line number than `/runs/:runId`. If this repo has a route-inventory or permission-coverage contract test (`ls src/__tests__ | grep -i route`, `grep -rln "api.route(" src/*.test.ts`), run it and add the new paths wherever it expects an entry.
 
-- [ ] **Step 6: Decide the self-managed-DB-context question explicitly**
+- [ ] **Step 8: Decide the self-managed-DB-context question explicitly**
 
-These routes hold a pooled connection for the duration of a blob stream, which is exactly the #1448 shape `selfManagedDbContextRoutes.ts` exists for. **Do not add an entry yet** — the row read completes before `openArtifactStream` is called, and Hono's `c.body(stream)` returns before the bytes flow, so the handler itself is short. Record this in the PR body as a watch item: if `ai-artifacts` shows up in a pool-hold investigation, the fix is one entry:
+The download route holds a pooled connection for the duration of a blob stream, which is exactly the #1448 shape `selfManagedDbContextRoutes.ts` exists for. **Do not add an entry yet** — the row read completes before `openArtifactStream` is called, and Hono's `c.body(stream)` returns before the bytes flow, so the handler itself is short. Record this in the PR body as a watch item: if `ai-artifacts` shows up in a pool-hold investigation, the fix is one entry:
 
 ```ts
   { method: 'GET', pattern: /^\/api\/v1\/ai\/artifacts\/[^/]+\/?$/ },
 ```
 
-- [ ] **Step 7: Typecheck and commit**
+- [ ] **Step 9: Typecheck and commit**
 
 ```bash
 cd apps/api && NODE_OPTIONS=--max-old-space-size=8192 npx tsc --noEmit -p tsconfig.json
-git add apps/api/src/routes/aiArtifacts.ts apps/api/src/routes/aiArtifacts.test.ts apps/api/src/index.ts
+git add apps/api/src/routes/aiArtifacts.ts apps/api/src/routes/aiArtifacts.test.ts \
+  apps/api/src/routes/aiAgents.ts apps/api/src/routes/aiAgents.test.ts apps/api/src/index.ts
 git commit -m "feat(ai): artifact download and per-run listing routes
 
 Spec §8. Every download is Content-Disposition: attachment + nosniff with the content
 type from a fixed allowlist — an HTML artifact is served as octet-stream, never inline.
 A wrong-org handle 404s exactly like a missing one (handles are opaque, §5.2); a storage
-fault is 503, never a silent 404. RBAC matches GET /ai/agents/runs/:runId.
+fault is 503, never a silent 404. RBAC matches GET /ai/agents/runs/:runId because the
+per-run listing is registered in aiAgentsRoutes itself, one line above that route,
+reusing its scopes/permission/uuidParam — not as a second app behind the same /ai/agents
+prefix, whose precedence would live in index.ts's mount order (#4189). A precedence test
+pins both paths.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01MwUHaGwobGHrTgu8TcCWqr"
@@ -4395,8 +4464,10 @@ for f in apps/api/src/jobs/scheduleRegistry.ts apps/api/src/services/workerRegis
   printf '%-70s %s\n' "$f" "$(grep -c 'aiArtifactSweeper\|ai-artifact-expiry-sweeper' "$f")"
 done   # every line must be >= 1
 
-# Routes mounted, and mounted in the right order.
-grep -n 'aiArtifactRoutes\|aiRunArtifactRoutes' apps/api/src/index.ts   # expect 3: import + two mounts
+# Routes: ONE new mount in index.ts, and the per-run listing inside aiAgentsRoutes.
+grep -n 'aiArtifactRoutes' apps/api/src/index.ts          # expect 2: one import + one mount
+grep -c "api.route('/ai/agents'" apps/api/src/index.ts    # expect 1 — no second router on that prefix
+grep -n "runs/:runId" apps/api/src/routes/aiAgents.ts     # /runs/:runId/artifacts on the LOWER line (R6)
 
 # Env: every new var in both .env.example files and both compose api blocks.
 for v in BREEZE_AI_WORKSPACE_ENABLED BREEZE_REGION ARTIFACT_BLOB_BACKEND \
@@ -4409,8 +4480,22 @@ done   # every column must be >= 1
 # R1: no second region variable was introduced anywhere.
 grep -rn 'ARTIFACT_REGION' apps/api/src packages .env.example || echo 'OK: no ARTIFACT_REGION (breezeRegion is canonical)'
 
-# R2: no parallel capture channel survived the reconciliation.
-grep -rn 'CaptureScope\|captureScopeFor\|capture?:' apps/api/src/services/aiTools.ts || echo 'OK: capture rides on ToolExecutionContext'
+# R2: exactly one capture channel survived the reconciliation.
+grep -rn 'captureScopeFor\|resolveCaptureContext' apps/api/src packages \
+  || echo 'OK: no generation-1 capture helpers anywhere'
+git diff --stat origin/main -- apps/api/src/services/toolExecutionContext.ts \
+  | grep . && echo 'FAIL: ToolExecutionContext must not be modified by W01' \
+  || echo 'OK: ToolExecutionContext untouched'
+grep -n 'capture?: CaptureScope' apps/api/src/services/aiTools.ts   # exactly one hit
+grep -rn 'accessibleOrgIds' apps/api/src/services/artifacts/ \
+  | grep -v 'NEVER\|never\|NOT consulted' \
+  && echo 'FAIL: the capture org must never be derived from accessibleOrgIds' \
+  || echo 'OK: no accessibleOrgIds org fallback'
+
+# R6: the per-run listing lives INSIDE aiAgentsRoutes, above /runs/:runId, and
+# there is no second router mounted at /ai/agents.
+grep -n "runs/:runId" apps/api/src/routes/aiAgents.ts    # /artifacts must be the LOWER line number
+grep -c "api.route('/ai/agents'" apps/api/src/index.ts   # must be exactly 1
 ```
 
 Any line whose count is 0 where a count was expected is a missing registration — go back to the owning task. **Do not proceed on a judgement call that an entry "is not needed"**; the only exempt list is the device cascade, and that exemption is what `source_device_id` buys.
@@ -4518,7 +4603,7 @@ Full `apps/api` unit suite; the RLS/cascade/export-policy/org-merge integration 
 
 ## Follow-ups filed, not fixed here
 - Real handlers for the three removed backup tools.
-- Partner-scope chat captures: `auth.orgId` is null for a partner-scope login, so the session org needs to travel through `ToolExecutionContext` before those captures can be attributed.
+- MCP-server, script-builder and intent-release tool results are not captured in W01: those call sites supply no `capture` scope, so they pass through by design. Attributing them is later-wave work. (The partner-scope chat gap is CLOSED here, not deferred — the chat path supplies `capture.orgId` from `ActiveSession.orgId`, and the agent run path attributes from the `ai_agent` principal.)
 - `ticketAttachmentStorage.ts` is untouched; converting its per-row `s3|db` model onto the region-keyed `BlobStorage` is its own change.
 - Presigned-redirect downloads, if API-streamed bandwidth becomes a problem.
 
