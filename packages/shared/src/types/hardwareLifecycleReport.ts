@@ -32,6 +32,8 @@ export type HardwareLifecycleDeviceRow = {
   /** Last signed-in person, cleaned of domain noise; null for servers,
    *  manual assets and service accounts. The customer-facing identity. */
   user?: string | null;
+  /** Servers plan on their own replace-age and sit in their own section. */
+  deviceKind?: 'workstation' | 'server';
   site?: string | null;
   manufacturer?: string | null;
   model?: string | null;
@@ -71,6 +73,8 @@ export type HardwareLifecycleSummary = {
   generatedAt?: string;
   /** The replacement age the bands were computed with (config, default 4). */
   replaceAgeYears?: number;
+  /** Servers' replacement age (config, default 5); absent on legacy snapshots. */
+  serverReplaceAgeYears?: number;
   computers?: {
     total?: number;
     byReplacement?: Partial<Record<ReplacementStatus, number>>;

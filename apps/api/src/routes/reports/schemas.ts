@@ -88,6 +88,7 @@ export const securityCompliancePostureConfigFields = {
 export const hardwareLifecycleConfigSchema = z.object({
   sites: z.array(z.string().guid()).optional().default([]),
   replaceAgeYears: z.number().int().min(1).max(15).optional().default(4),
+  serverReplaceAgeYears: z.number().int().min(1).max(15).optional().default(5),
   includeManualAssets: z.boolean().optional().default(true),
   includeOtherEquipment: z.boolean().optional().default(true),
 });
@@ -98,6 +99,7 @@ export const hardwareLifecycleConfigSchema = z.object({
 export const hardwareLifecycleConfigFields = {
   sites: z.array(z.string().guid()).optional(),
   replaceAgeYears: z.number().int().min(1).max(15).optional(),
+  serverReplaceAgeYears: z.number().int().min(1).max(15).optional(),
   includeManualAssets: z.boolean().optional(),
   includeOtherEquipment: z.boolean().optional(),
 };

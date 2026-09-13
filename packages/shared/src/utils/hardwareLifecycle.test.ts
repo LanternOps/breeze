@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   addYears,
   buildAtAGlanceProse,
+  buildReplacementSchedule,
   cleanUserName,
+  displayPersonName,
   rowLabel,
   rowMention,
   shortHostname,
@@ -259,10 +261,52 @@ describe('customer-facing identity', () => {
   });
 
   it('rowLabel leads with the person and model when a user is known', () => {
-    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', model: 'Latitude 7410' }))).toBe('priya.n — Latitude 7410');
-    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n' }))).toBe('priya.n');
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', model: 'Latitude 7410' }))).toBe('Priya N — Latitude 7410');
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n' }))).toBe('Priya N');
     expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local' }))).toBe('branch-lt-12');
     expect(rowLabel(row({ name: 'Front desk', hostname: 'fd-01.corp.local' }))).toBe('Front desk');
+  });
+
+  it('displayPersonName turns a login into a name without inventing one', () => {
+    expect(displayPersonName('CORP\\lena.k')).toBe('Lena K');
+    expect(displayPersonName('marcus_o')).toBe('Marcus O');
+    expect(displayPersonName('aisha')).toBe('Aisha');
+    expect(displayPersonName('Dan Reyes')).toBe('Dan Reyes');
+    expect(displayPersonName('NT AUTHORITY\\SYSTEM')).toBeNull();
+  });
+
+  it('buildReplacementSchedule groups now, next quarters, later and unknown', () => {
+    const rows = [
+      row({ name: 'a', replaceBy: '2021-04-01', replacement: 'replace' }),
+      row({ name: 'b', replaceBy: '2026-06-01', replacement: 'replace' }),
+      row({ name: 'c', replaceBy: '2026-11-11', replacement: 'due_soon' }),
+      row({ name: 'd', replaceBy: '2027-03-01', replacement: 'due_soon' }),
+      row({ name: 'e', replaceBy: '2029-01-01', replacement: 'supported' }),
+      row({ name: 'f' }),
+    ];
+    expect(buildReplacementSchedule(rows, TODAY).map((g) => [g.label, g.rows.map((r) => r.name), g.countOnly])).toEqual([
+      ['Now', ['a', 'b'], false],
+      ['Q4 2026', ['c'], false],
+      ['Q1 2027', ['d'], false],
+      ['Later', ['e'], true],
+      ['Purchase date unknown', ['f'], true],
+    ]);
+  });
+
+  it('recommends an OS upgrade, not a purchase, for on-track hardware without security updates', () => {
+    const rows = [
+      row({ name: 'new-lt', user: 'kim', model: 'Latitude 5550', replaceBy: '2029-01-01', replacement: 'supported', osSupport: 'ended' }),
+    ];
+    expect(buildHardwareLifecycleRecommendations(rows, TODAY)).toEqual([
+      "Upgrade the operating system on Kim's Latitude 5550; the hardware itself is fine for now and does not need replacing yet.",
+    ]);
+  });
+
+  it('never truncates silently', () => {
+    const rows = Array.from({ length: 5 }, (_, i) => row({ name: `d${i}`, replaceBy: '2026-12-01', replacement: 'due_soon' }));
+    const lines = buildHardwareLifecycleRecommendations(rows, TODAY);
+    expect(lines.filter((l) => l.startsWith('Order a replacement'))).toHaveLength(3);
+    expect(lines).toContain('2 more computers come due within the year; see the schedule above.');
   });
 
   it('rowMention reads as a person would say it in a sentence', () => {

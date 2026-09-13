@@ -264,18 +264,72 @@ export function shortHostname(value: string | null | undefined): string {
 
 type Identity = Pick<HardwareLifecycleDeviceRow, 'name' | 'hostname' | 'user' | 'model'>;
 
-/** Table identity: "Priya — Latitude 7410", else the short device name. */
+/** "lena.k" → "Lena K", "marcus_o" → "Marcus O", "Dan Reyes" → unchanged. */
+export function displayPersonName(raw: string | null | undefined): string | null {
+  const user = cleanUserName(raw);
+  if (!user) return null;
+  if (/\s/.test(user)) return user;
+  return user
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+/** Table identity: "Priya N — Latitude 7410", else the short device name. */
 export function rowLabel(row: Identity): string {
-  const user = cleanUserName(row.user);
+  const user = displayPersonName(row.user);
   if (user) return row.model ? `${user} — ${row.model}` : user;
   return shortHostname(row.name);
 }
 
-/** Sentence identity: "Priya's Latitude 7410", else the short device name. */
+/** Sentence identity: "Priya N's Latitude 7410", else the short device name. */
 export function rowMention(row: Identity): string {
-  const user = cleanUserName(row.user);
+  const user = displayPersonName(row.user);
   if (user) return `${user}'s ${row.model ?? 'computer'}`;
   return shortHostname(row.name);
+}
+
+/** Cap a name list the way the prose does: four names, then "and N more". */
+export function capNames(names: string[], limit = 4): string {
+  if (names.length <= limit) return humanJoin(names);
+  return `${names.slice(0, limit).join(', ')} and ${names.length - limit} more`;
+}
+
+export type ScheduleGroup = {
+  /** "Now", "Q4 2026", "Later", "Purchase date unknown". */
+  label: string;
+  rows: HardwareLifecycleDeviceRow[];
+  /** Later / unknown groups carry a count only. */
+  countOnly: boolean;
+};
+
+/**
+ * The plan grouped the way a budget is approved: what is due now, then each
+ * of the next four quarters, then everything later, then the undated.
+ */
+export function buildReplacementSchedule(rows: HardwareLifecycleDeviceRow[], today: string = todayIso()): ScheduleGroup[] {
+  const sorted = sortLifecycleRows(rows);
+  const now = sorted.filter((r) => r.replaceBy && r.replaceBy <= today);
+  const future = sorted.filter((r) => r.replaceBy && r.replaceBy > today);
+  const unknown = sorted.filter((r) => !r.replaceBy);
+  const groups: ScheduleGroup[] = [];
+  if (now.length) groups.push({ label: 'Now', rows: now, countOnly: false });
+  const horizon = addYears(today, 1);
+  const byQuarter = new Map<string, HardwareLifecycleDeviceRow[]>();
+  const later: HardwareLifecycleDeviceRow[] = [];
+  for (const r of future) {
+    if (r.replaceBy! <= horizon) {
+      const q = quarterLabel(r.replaceBy!);
+      byQuarter.set(q, [...(byQuarter.get(q) ?? []), r]);
+    } else {
+      later.push(r);
+    }
+  }
+  for (const [label, qRows] of byQuarter) groups.push({ label, rows: qRows, countOnly: false });
+  if (later.length) groups.push({ label: 'Later', rows: later, countOnly: true });
+  if (unknown.length) groups.push({ label: 'Purchase date unknown', rows: unknown, countOnly: true });
+  return groups;
 }
 
 /** Hostname shown under the label when it adds information. */
@@ -425,14 +479,25 @@ export function buildHardwareLifecycleRecommendations(
     lines.push(`Plan replacements for ${listed} this quarter${ageNote}.`);
   }
 
-  if (osEnded.length > 0) {
-    const names = humanJoin(osEnded.slice(0, 4).map(rowMention));
-    const verb = osEnded.length === 1 ? 'no longer receives' : 'no longer receive';
-    const which = osEnded.length === 1 ? 'this one' : 'these';
+  // OS support and hardware age are separate axes. A machine already marked
+  // for replacement is scheduled first; a machine whose hardware is fine needs
+  // an operating-system upgrade, not a purchase.
+  const osEndedReplace = osEnded.filter((r) => r.replacement === 'replace');
+  const osEndedKeep = osEnded.filter((r) => r.replacement !== 'replace');
+  if (osEndedReplace.length > 0) {
+    const names = capNames(osEndedReplace.map(rowMention));
+    const verb = osEndedReplace.length === 1 ? 'no longer receives' : 'no longer receive';
+    const which = osEndedReplace.length === 1 ? 'this one' : 'these';
     lines.push(`${names} ${verb} security updates on the current operating system; prioritize ${which} when scheduling.`);
   }
+  if (osEndedKeep.length > 0) {
+    const names = capNames(osEndedKeep.map(rowMention));
+    const single = osEndedKeep.length === 1;
+    lines.push(`Upgrade the operating system on ${names}; the hardware ${single ? 'itself is' : 'is'} fine for now and ${single ? 'does' : 'these do'} not need replacing yet.`);
+  }
 
-  for (const r of due.slice(0, 3)) {
+  const dueShown = due.slice(0, 3);
+  for (const r of dueShown) {
     if (r.warrantyExtended && r.warrantyEndDate) {
       lines.push(`${rowMention(r)} is covered by warranty until ${monthYearLong(r.warrantyEndDate)}; budget to replace it when coverage ends.`);
     } else if (r.replaceBy && daysBetween(today, r.replaceBy) <= 183) {
@@ -442,6 +507,11 @@ export function buildHardwareLifecycleRecommendations(
     } else {
       lines.push(`Budget for ${rowMention(r)} around ${replaceByLabel(r.replaceBy, today)}; no action needed yet.`);
     }
+  }
+
+  if (due.length > dueShown.length) {
+    const rest = due.length - dueShown.length;
+    lines.push(`${rest} more computer${rest === 1 ? ' comes' : 's come'} due within the year; see the schedule above.`);
   }
 
   if (unknown.length > 0) {

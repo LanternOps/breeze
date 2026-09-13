@@ -37,7 +37,7 @@ const summary: HardwareLifecycleSummary = {
   otherEquipmentCount: 2,
   rows: [
     row({ name: 'SAM4', user: 'CORP\\sam.lee', manufacturer: 'Dell Inc.', model: 'OptiPlex 3050', serialNumber: '255P3W2', os: 'Windows 10 Pro', osSupport: 'ended', purchaseDate: '2019-04-01', purchaseDateSource: 'manual', warrantyEndDate: '2022-04-01', ageYears: 7.1, replaceBy: '2023-04-01', replacement: 'replace', lifeUsed: 1 }),
-    row({ name: 'LAW-SRV', manufacturer: 'Dell Inc.', model: 'PowerEdge T340', os: 'Windows Server 2019', osSupport: 'ending', purchaseDate: '2021-10-01', purchaseDateSource: 'vendor', warrantyEndDate: '2026-11-30', ageYears: 4.7, replaceBy: '2026-11-30', replacement: 'due_soon', warrantyExtended: true, lifeUsed: 0.9 }),
+    row({ name: 'LAW-SRV', deviceKind: 'server', manufacturer: 'Dell Inc.', model: 'PowerEdge T340', os: 'Windows Server 2019', osSupport: 'ending', purchaseDate: '2021-10-01', purchaseDateSource: 'vendor', warrantyEndDate: '2026-11-30', ageYears: 4.7, replaceBy: '2026-11-30', replacement: 'due_soon', warrantyExtended: true, lifeUsed: 0.9 }),
     row({ name: 'MacBook-Air.local', manufacturer: 'Apple Inc.', os: 'macOS 26.3.1' }),
   ],
   other: [
@@ -61,7 +61,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('missing purchase records');
     expect(text).toContain('We also manage');
     // jsPDF escapes parentheses inside text operators.
-    expect(text).toContain("Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(sam.lee's OptiPlex 3050\\).");
+    expect(text).toContain("Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(Sam Lee's OptiPlex 3050\\).");
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
     expect(text).toContain('Unknown age');
@@ -72,7 +72,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Oct 2021 *');
     expect(text).toContain("* Purchase date taken from the manufacturer's ship record.");
     // Identity leads with the person; the hostname rides underneath.
-    expect(text).toContain('sam.lee — OptiPlex 3050');
+    expect(text).toContain('Sam Lee — OptiPlex 3050');
     expect(text).toContain('SAM4');
     expect(text).toContain('MacBook-Air');
     // OS risk is a word, not only a colour; editions are stripped for the reader.
@@ -83,6 +83,12 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('No purchase date');
     expect(text).toContain('past due');
     expect(text).toContain('We plan to replace a computer 4 years after purchase');
+    // Budget scaffold: due now, then by quarter; servers in their own section.
+    expect(text).toContain('Replacement schedule');
+    expect(text).toContain('Workstations and laptops');
+    expect(text).toContain('Servers');
+    expect(text).toContain('We plan to replace a server 4 years after purchase');
+    expect(text).toContain('Expired Apr 2022');
     expect(text).toContain('Ricoh IM C6010 and SonicWALL TZ300');
     expect(text).toContain('What we recommend');
     expect(text).toContain('budget to replace it when coverage ends');

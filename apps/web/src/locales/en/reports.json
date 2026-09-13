@@ -220,7 +220,9 @@
       "includeOtherEquipment": "List other equipment",
       "includeOtherEquipmentHelp": "Printers, network and IoT hardware are listed without a replacement timeline.",
       "replaceAgeYears": "Plan replacement after (years)",
-      "replaceAgeYearsHelp": "A device is due for replacement this many years after purchase, or when active warranty coverage ends if that is later."
+      "replaceAgeYearsHelp": "A computer is due for replacement this many years after purchase, or when its warranty ends if it is still covered and that runs longer.",
+      "serverReplaceAgeYears": "Plan server replacement after (years)",
+      "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
     },
     "reportBuilderPage": {
       "configurationTitle": "Report Configuration",

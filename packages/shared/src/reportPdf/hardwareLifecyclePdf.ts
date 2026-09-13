@@ -24,6 +24,8 @@ import type {
 import {
   buildAtAGlanceProse,
   buildOsProse,
+  buildReplacementSchedule,
+  capNames,
   countByReplacement,
   humanJoin,
   monthYear,
@@ -32,6 +34,7 @@ import {
   REPLACEMENT_LABELS,
   REPLACEMENT_STATUS_ORDER,
   rowLabel,
+  rowMention,
   rowSecondary,
 } from '../utils/hardwareLifecycle';
 
@@ -57,6 +60,7 @@ export type HardwareLifecyclePdfOpts = {
 
 const fill = (doc: jsPDF, c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
 const ink = (doc: jsPDF, c: RGB) => doc.setTextColor(c[0], c[1], c[2]);
+const mix = (a: RGB, b: RGB, t: number): RGB => [0, 1, 2].map((i) => Math.round(a[i]! + (b[i]! - a[i]!) * t)) as RGB;
 
 function bandColors(C: PdfChrome['C']): Record<ReplacementStatus, RGB> {
   return { supported: C.success, due_soon: C.warning, replace: C.danger, unknown: C.faint };
@@ -76,14 +80,15 @@ const COLUMNS: Col[] = [
   { key: 'os', label: 'Operating system', w: 40, halign: 'left' },
   { key: 'ageYears', label: 'Age', w: 13, halign: 'right' },
   { key: 'purchaseDate', label: 'Purchased', w: 21, halign: 'left' },
-  { key: 'warrantyEndDate', label: 'Warranty until', w: 21, halign: 'left' },
+  { key: 'warrantyEndDate', label: 'Warranty', w: 29, halign: 'left' },
   { key: 'replacement', label: 'Status', w: 24, halign: 'left' },
   { key: 'replaceBy', label: 'Replace by', w: 22, halign: 'left' },
-  { key: 'runway', label: 'Service life used', w: 62, halign: 'left' },
+  { key: 'runway', label: 'Service life used', w: 54, halign: 'left' },
 ];
 const DEVICE_COL = COLUMNS.findIndex((c) => c.key === 'device');
 const OS_COL = COLUMNS.findIndex((c) => c.key === 'os');
 const STATUS_COL = COLUMNS.findIndex((c) => c.key === 'replacement');
+const WARRANTY_COL = COLUMNS.findIndex((c) => c.key === 'warrantyEndDate');
 const RUNWAY_COL = COLUMNS.findIndex((c) => c.key === 'runway');
 
 const BODY_FONT = 8;
@@ -132,7 +137,9 @@ function cellText(row: HardwareLifecycleDeviceRow, key: string, today: string): 
   switch (key) {
     case 'ageYears': return ageCell(row);
     case 'purchaseDate': return row.purchaseDate ? `${monthYear(row.purchaseDate)}${row.purchaseDateSource === 'vendor' ? ' *' : ''}` : EM_DASH;
-    case 'warrantyEndDate': return row.warrantyEndDate ? monthYear(row.warrantyEndDate) : EM_DASH;
+    case 'warrantyEndDate':
+      if (!row.warrantyEndDate) return EM_DASH;
+      return row.warrantyEndDate < today ? `Expired ${monthYear(row.warrantyEndDate)}` : monthYear(row.warrantyEndDate);
     case 'replacement': return REPLACEMENT_LABELS[row.replacement] ?? '';
     case 'replaceBy': return replaceByCell(row, today);
     // Drawn by hand in didDrawCell; the cell keeps its text for extraction and
@@ -228,6 +235,90 @@ function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementS
   return drawLegend(doc, chrome, counts, y + barH + 4.2);
 }
 
+/** Paint the three hand-drawn cells: identity, OS with risk tag, service life. */
+function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDeviceRow, data: CellHookData, today: string): void {
+  const { C } = chrome;
+  const colors = bandColors(C);
+  const padX = 1.8;
+  const x = data.cell.x + padX;
+  const w = data.cell.width - padX * 2;
+  const midY = data.cell.y + data.cell.height / 2;
+
+  if (data.column.index === DEVICE_COL) {
+    const label = rowLabel(row);
+    const sub = [rowSecondary(row), row.manufacturer].filter(Boolean).join('  ·  ');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(BODY_FONT);
+    ink(doc, C.ink);
+    if (sub) {
+      doc.text(fitLine(doc, label, w), x, midY - 0.6);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(SUB_FONT);
+      ink(doc, C.muted);
+      doc.text(fitLine(doc, sub, w), x, midY + 2.4);
+    } else {
+      doc.text(fitLine(doc, label, w), x, midY + 1);
+    }
+    return;
+  }
+
+  if (data.column.index === OS_COL) {
+    const os = customerOs(row.os) || (row.kind === 'manual_asset' ? EM_DASH : '');
+    const tag = OS_RISK_TAG[row.osSupport];
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(BODY_FONT);
+    ink(doc, row.replacement === 'unknown' ? C.faint : C.ink);
+    if (tag) {
+      doc.text(fitLine(doc, os, w), x, midY - 0.6);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(SUB_FONT);
+      ink(doc, row.osSupport === 'ended' ? C.danger : C.warning);
+      doc.text(tag, x, midY + 2.4);
+    } else {
+      doc.text(fitLine(doc, os, w), x, midY + 1);
+    }
+    return;
+  }
+
+  if (data.column.index === RUNWAY_COL) {
+    // Track = the planned service life. Fill = how much is used. The
+    // number beside it says what the bar cannot: how far past, or how
+    // long left. Undated rows get a word, not an empty shape.
+    const trackW = w * 0.42;
+    const h = 2.8;
+    const yy = midY - h / 2;
+    doc.setFontSize(7.5);
+    if (row.lifeUsed == null || !row.replaceBy) {
+      doc.setFont('helvetica', 'normal');
+      ink(doc, C.faint);
+      doc.text('No purchase date', x, midY + 1);
+      return;
+    }
+    const years = yearsBetween(today, row.replaceBy);
+    const overdue = row.replaceBy <= today;
+    // Planned life is the track; time past the plan runs on beyond it
+    // (capped at five years) so 5 years overdue looks different from 1.
+    const overrunW = overdue ? trackW * 0.5 * Math.min(years / 5, 1) : 0;
+    fill(doc, C.rule);
+    doc.roundedRect(x, yy, trackW, h, 1.2, 1.2, 'F');
+    if (row.lifeUsed > 0) {
+      fill(doc, colors[row.replacement]);
+      doc.roundedRect(x, yy, Math.max(trackW * Math.min(row.lifeUsed, 1), 2), h, 1.2, 1.2, 'F');
+    }
+    if (overrunW > 1) {
+      // Lighter overrun segment: same hue, marked off from the plan by a gap.
+      fill(doc, mix(colors[row.replacement], C.white, 0.45));
+      doc.roundedRect(x + trackW + 0.7, yy + 0.7, overrunW, h - 1.4, 0.7, 0.7, 'F');
+    }
+    doc.setFont('helvetica', overdue ? 'bold' : 'normal');
+    ink(doc, overdue ? C.danger : C.muted);
+    const text = overdue
+      ? (years < 1 / 24 ? 'Due now' : `${yearsLabel(years)} past due`)
+      : `${yearsLabel(years)} left`;
+    doc.text(text, x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5), midY + 1);
+  }
+}
+
 function ensureSpace(doc: jsPDF, chrome: PdfChrome, y: number, needed: number): number {
   if (y + needed <= chrome.PAGE.footY - 6) return y;
   doc.addPage();
@@ -266,20 +357,49 @@ export function renderHardwareLifecycleReport(
   if (osProse) y = drawProse(doc, chrome, osProse, y);
   y = drawFleetBar(doc, chrome, counts, y + 1);
 
-  // --- Device replacement plan -------------------------------------------------
-  const planHeading = 'Device replacement plan';
-  y = chrome.drawSectionHeading(doc, planHeading, y + 3);
-  // The rule that justifies every red row, at body size — not a disclaimer.
-  y = drawProse(
-    doc,
-    chrome,
-    `We plan to replace a computer ${replaceAge} years after purchase, or when its warranty ends if that is later.`,
-    y + 1,
-  );
+  // --- Replacement schedule ----------------------------------------------------
+  // The plan grouped the way a budget is approved: due now, then each of the
+  // next quarters, then later, then the undated. Counts and names only — no
+  // pricing claims.
+  const schedule = buildReplacementSchedule(rows, today);
+  if (schedule.length > 0) {
+    y = ensureSpace(doc, chrome, y, 14 + schedule.length * 5);
+    y = chrome.drawSectionHeading(doc, 'Replacement schedule', y + 3);
+    const labelW = 40;
+    const textW = PAGE.w - PAGE.mx * 2 - labelW;
+    const mention = (r: HardwareLifecycleDeviceRow) => (r.deviceKind === 'server' ? `${rowMention(r)} (server)` : rowMention(r));
+    y += 1;
+    for (const group of schedule) {
+      const n = group.rows.length;
+      const count = `${n} computer${n === 1 ? '' : 's'}`;
+      const text = group.countOnly ? count : `${count}: ${capNames(group.rows.map(mention))}`;
+      doc.setFontSize(9.5);
+      doc.setFont('helvetica', 'normal');
+      const lines = wrapText(doc, text, textW);
+      y = ensureSpace(doc, chrome, y, lines.length * 4.6 + 1);
+      doc.setFont('helvetica', 'bold');
+      ink(doc, group.label === 'Now' ? C.danger : C.ink);
+      doc.text(group.label, PAGE.mx, y + 3.4);
+      doc.setFont('helvetica', 'normal');
+      ink(doc, C.ink);
+      lines.forEach((line, i) => doc.text(line, PAGE.mx + labelW, y + 3.4 + i * 4.6));
+      y += lines.length * 4.6 + 0.6;
+    }
+    y += 1;
+  }
 
-  if (rows.length === 0) {
-    y = drawProse(doc, chrome, 'No computers to plan for in this scope.', y + 1);
-  } else {
+  // --- Device replacement plan -------------------------------------------------
+  const workstations = rows.filter((r) => r.deviceKind !== 'server');
+  const servers = rows.filter((r) => r.deviceKind === 'server');
+  const serverAge = summary.serverReplaceAgeYears ?? replaceAge;
+
+  const drawPlanTable = (tableRows: HardwareLifecycleDeviceRow[], heading: string, rule: string, startY: number): number => {
+    let ty = chrome.drawSectionHeading(doc, heading, startY);
+    // The rule that justifies every red row, at body size — not a disclaimer.
+    ty = drawProse(doc, chrome, rule, ty + 1);
+    if (tableRows.length === 0) {
+      return drawProse(doc, chrome, 'No computers to plan for in this scope.', ty + 1);
+    }
     const contentW = PAGE.w - PAGE.mx * 2;
     const scale = contentW / COLUMNS.reduce((a, c) => a + c.w, 0);
     const columnStyles: Record<number, { cellWidth: number; halign: Col['halign'] }> = {};
@@ -289,10 +409,10 @@ export function renderHardwareLifecycleReport(
     const continuationTop = PAGE.bandH + 6 + 14;
 
     autoTable(doc, {
-      startY: y,
+      startY: ty,
       margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
       head: [COLUMNS.map((c) => ({ content: c.label, styles: { halign: c.halign } }))],
-      body: rows.map((r) => COLUMNS.map((c) => cellText(r, c.key, today))),
+      body: tableRows.map((r) => COLUMNS.map((c) => cellText(r, c.key, today))),
       theme: 'grid',
       rowPageBreak: 'avoid',
       styles: { fontSize: BODY_FONT, cellPadding: { top: 1.4, bottom: 1.4, left: 1.8, right: 1.8 }, minCellHeight: ROW_MIN_H, lineColor: C.rule, lineWidth: 0.1, textColor: C.ink, valign: 'middle' },
@@ -301,119 +421,65 @@ export function renderHardwareLifecycleReport(
       columnStyles,
       didParseCell: (data: CellHookData) => {
         if (data.section !== 'body') return;
-        const row = rows[data.row.index];
+        const row = tableRows[data.row.index];
         if (!row) return;
         if (data.column.index === STATUS_COL) {
           data.cell.styles.textColor = colors[row.replacement];
           data.cell.styles.fontStyle = 'bold';
+        } else if (data.column.index === WARRANTY_COL && row.warrantyEndDate && row.warrantyEndDate < today) {
+          data.cell.styles.textColor = C.muted;
         } else if (row.replacement === 'unknown' && data.column.index !== DEVICE_COL) {
           data.cell.styles.textColor = C.faint;
         }
       },
       didDrawCell: (data: CellHookData) => {
         if (data.section !== 'body') return;
-        const row = rows[data.row.index];
+        const row = tableRows[data.row.index];
         if (!row) return;
-        const padX = 1.8;
-        const x = data.cell.x + padX;
-        const w = data.cell.width - padX * 2;
-        const midY = data.cell.y + data.cell.height / 2;
-
-        if (data.column.index === DEVICE_COL) {
-          const label = rowLabel(row);
-          const sub = [rowSecondary(row), row.manufacturer].filter(Boolean).join('  ·  ');
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(BODY_FONT);
-          ink(doc, C.ink);
-          if (sub) {
-            doc.text(fitLine(doc, label, w), x, midY - 0.6);
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(SUB_FONT);
-            ink(doc, C.muted);
-            doc.text(fitLine(doc, sub, w), x, midY + 2.4);
-          } else {
-            doc.text(fitLine(doc, label, w), x, midY + 1);
-          }
-          return;
-        }
-
-        if (data.column.index === OS_COL) {
-          const os = customerOs(row.os) || (row.kind === 'manual_asset' ? EM_DASH : '');
-          const tag = OS_RISK_TAG[row.osSupport];
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(BODY_FONT);
-          ink(doc, row.replacement === 'unknown' ? C.faint : C.ink);
-          if (tag) {
-            doc.text(fitLine(doc, os, w), x, midY - 0.6);
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(SUB_FONT);
-            ink(doc, row.osSupport === 'ended' ? C.danger : C.warning);
-            doc.text(tag, x, midY + 2.4);
-          } else {
-            doc.text(fitLine(doc, os, w), x, midY + 1);
-          }
-          return;
-        }
-
-        if (data.column.index === RUNWAY_COL) {
-          // Track = the planned service life. Fill = how much is used. The
-          // number beside it says what the bar cannot: how far past, or how
-          // long left. Undated rows get a word, not an empty shape.
-          const trackW = w * 0.42;
-          const h = 2.8;
-          const yy = midY - h / 2;
-          doc.setFontSize(7.5);
-          if (row.lifeUsed == null || !row.replaceBy) {
-            doc.setFont('helvetica', 'normal');
-            ink(doc, C.faint);
-            doc.text('No purchase date', x, midY + 1);
-            return;
-          }
-          const years = yearsBetween(today, row.replaceBy);
-          const overdue = row.replaceBy <= today;
-          // Planned life is the track; time past the plan runs on beyond it
-          // (capped at three years) so 5 years overdue looks different from 1.
-          const overrunW = overdue ? trackW * 0.5 * Math.min(years / 3, 1) : 0;
-          fill(doc, C.rule);
-          doc.roundedRect(x, yy, trackW, h, 1.2, 1.2, 'F');
-          if (row.lifeUsed > 0) {
-            fill(doc, colors[row.replacement]);
-            doc.roundedRect(x, yy, Math.max(trackW * Math.min(row.lifeUsed, 1), 2), h, 1.2, 1.2, 'F');
-          }
-          if (overrunW > 1) {
-            // Lighter overrun segment: same hue, marked off from the plan by a gap.
-            fill(doc, colors[row.replacement]);
-            doc.roundedRect(x + trackW + 0.7, yy + 0.7, overrunW, h - 1.4, 0.7, 0.7, 'F');
-          }
-          doc.setFont('helvetica', overdue ? 'bold' : 'normal');
-          ink(doc, overdue ? C.danger : C.muted);
-          const text = overdue
-            ? (years < 1 / 24 ? 'Due now' : `${yearsLabel(years)} past due`)
-            : `${yearsLabel(years)} left`;
-          doc.text(text, x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5), midY + 1);
-        }
+        drawHandCell(doc, chrome, row, data, today);
       },
-      // Table-relative page 1 is the cover, whose chrome the caller already
-      // drew; continuation pages need chrome plus their own context line.
+      // Table-relative page 1 is the page the table started on, whose chrome
+      // is already drawn; continuation pages need chrome plus their own context.
       didDrawPage: (data) => {
         if (data.pageNumber <= 1) return;
         chrome.drawHeaderBand(doc);
         chrome.drawFooter(doc);
-        const hy = chrome.drawSectionHeading(doc, `${planHeading} (continued)`, PAGE.bandH + 10);
+        const hy = chrome.drawSectionHeading(doc, `${heading} (continued)`, PAGE.bandH + 10);
         drawLegend(doc, chrome, counts, hy + 1.5);
       },
     });
     const t = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
-    y = typeof t?.finalY === 'number' ? t.finalY : y;
-    if (hasVendorDates) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(7.5);
-      ink(doc, C.faint);
-      doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, y + 3.6);
-      y += 4;
-    }
-    y += 6;
+    return typeof t?.finalY === 'number' ? t.finalY : ty;
+  };
+
+  const workstationHeading = servers.length > 0 ? 'Workstations and laptops' : 'Device replacement plan';
+  // Heading, rule, table head and at least four rows stay together; a table
+  // that would open with two orphan rows starts on the next page instead.
+  const minTableBlock = 16 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
+  y = ensureSpace(doc, chrome, y + 3, minTableBlock);
+  y = drawPlanTable(
+    workstations,
+    workstationHeading,
+    `We plan to replace a computer ${replaceAge} years after purchase, or when its warranty ends if it is still under warranty and that runs longer.`,
+    y,
+  );
+  if (servers.length > 0) {
+    y = ensureSpace(doc, chrome, y + 8, 24 + 7 + ROW_MIN_H * Math.min(3, servers.length));
+    y = drawPlanTable(
+      servers,
+      'Servers',
+      `We plan to replace a server ${serverAge} years after purchase, or when its warranty ends if it is still under warranty and that runs longer. Server replacements are scheduled around your business hours and planned separately from workstations.`,
+      y,
+    );
   }
+  if (hasVendorDates && rows.length > 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    ink(doc, C.faint);
+    doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, y + 3.6);
+    y += 4;
+  }
+  y += 6;
 
   // --- Other equipment ---------------------------------------------------------
   if (other.length > 0) {

@@ -98,6 +98,7 @@ function toDeviceRow(s: Subject, today: string, replaceAgeYears: number): Hardwa
     name: s.name,
     hostname: s.hostname,
     user: s.user,
+    deviceKind: s.category === 'server' ? 'server' : 'workstation',
     site: s.site,
     manufacturer: s.manufacturer,
     model: s.model,
@@ -140,7 +141,7 @@ export async function generateHardwareLifecycleReport(
 
   const restrictedScope = authority.scope.kind === 'restricted' ? authority.scope : null;
   if (restrictedScope && restrictedScope.siteIds.length === 0) {
-    return { rows: [], rowCount: 0, generatedAt, summary: emptySummary(orgId, generatedAt, cfg.replaceAgeYears) };
+    return { rows: [], rowCount: 0, generatedAt, summary: emptySummary(orgId, generatedAt, cfg.replaceAgeYears, cfg.serverReplaceAgeYears) };
   }
 
   const [orgRow] = await db
@@ -255,7 +256,7 @@ export async function generateHardwareLifecycleReport(
   const computers = subjects.filter((s) => isComputer(s) && !(s.kind === 'manual_asset' && s.category === 'unknown'));
   const other = subjects.filter((s) => !computers.includes(s));
 
-  const rows = sortLifecycleRows(computers.map((s) => toDeviceRow(s, today, cfg.replaceAgeYears)));
+  const rows = sortLifecycleRows(computers.map((s) => toDeviceRow(s, today, s.category === 'server' ? cfg.serverReplaceAgeYears : cfg.replaceAgeYears)));
   const otherRows = cfg.includeOtherEquipment
     ? other.map(toOtherRow).sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
     : [];
@@ -264,6 +265,7 @@ export async function generateHardwareLifecycleReport(
     org: { id: orgRow?.id ?? orgId, name: orgRow?.name ?? '' },
     generatedAt,
     replaceAgeYears: cfg.replaceAgeYears,
+    serverReplaceAgeYears: cfg.serverReplaceAgeYears,
     computers: {
       total: rows.length,
       byReplacement: countByReplacement(rows),
@@ -278,11 +280,12 @@ export async function generateHardwareLifecycleReport(
   return { rows, rowCount: rows.length, generatedAt, summary };
 }
 
-function emptySummary(orgId: string, generatedAt: string, replaceAgeYears: number): HardwareLifecycleSummary {
+function emptySummary(orgId: string, generatedAt: string, replaceAgeYears: number, serverReplaceAgeYears: number): HardwareLifecycleSummary {
   return {
     org: { id: orgId, name: '' },
     generatedAt,
     replaceAgeYears,
+    serverReplaceAgeYears,
     computers: { total: 0, byReplacement: { supported: 0, due_soon: 0, replace: 0, unknown: 0 }, byOsSupport: { supported: 0, ending: 0, ended: 0, unclassified: 0 } },
     otherEquipmentCount: 0,
     rows: [],

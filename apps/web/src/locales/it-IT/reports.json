@@ -73,7 +73,9 @@
       "includeOtherEquipment": "Elenca altre apparecchiature",
       "includeOtherEquipmentHelp": "Stampanti, hardware di rete e IoT sono elencati senza calendario di sostituzione.",
       "replaceAgeYears": "Pianifica la sostituzione dopo (anni)",
-      "replaceAgeYearsHelp": "Un dispositivo va sostituito questo numero di anni dopo l’acquisto, o alla fine della garanzia attiva se successiva."
+      "replaceAgeYearsHelp": "Un dispositivo va sostituito questo numero di anni dopo l’acquisto, o alla fine della garanzia attiva se successiva.",
+      "serverReplaceAgeYears": "Plan server replacement after (years)",
+      "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
     },
     "reportBuilderPage": { "configurationTitle": "Configurazione report", "description": "Genera un report una tantum senza salvarlo.", "errors": { "exportFailed": "Esportazione non riuscita. Riprova.", "generatePreview": "Impossibile generare l'anteprima", "generateReportPreview": "Impossibile generare l'anteprima del report" }, "title": "Generatore report ad hoc" },
     "reportEditPage": { "backToReports": "Torna ai report", "description": "Aggiorna la configurazione per \"{{name}}\".", "errors": { "fetchReport": "Impossibile recuperare il report", "generic": "Si è verificato un errore" }, "loading": "Caricamento report...", "notFound": "Report non trovato", "reportsBreadcrumb": "Report", "title": "Modifica report" },

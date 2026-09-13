@@ -3,23 +3,25 @@ import { useTranslation } from 'react-i18next';
 
 export type HardwareLifecycleOptions = {
   replaceAgeYears: number;
+  serverReplaceAgeYears: number;
   includeManualAssets: boolean;
   includeOtherEquipment: boolean;
 };
 
 export const DEFAULT_HARDWARE_LIFECYCLE_OPTIONS: HardwareLifecycleOptions = {
   replaceAgeYears: 4,
+  serverReplaceAgeYears: 5,
   includeManualAssets: true,
   includeOtherEquipment: true,
 };
 
 /** Read the persisted config back into option state (edit page). */
 export function hardwareLifecycleOptionsFromConfig(config: Record<string, unknown>): HardwareLifecycleOptions {
-  const years = typeof config.replaceAgeYears === 'number' && Number.isFinite(config.replaceAgeYears)
-    ? config.replaceAgeYears
-    : DEFAULT_HARDWARE_LIFECYCLE_OPTIONS.replaceAgeYears;
+  const clampYears = (value: unknown, fallback: number) =>
+    Math.min(15, Math.max(1, Math.round(typeof value === 'number' && Number.isFinite(value) ? value : fallback)));
   return {
-    replaceAgeYears: Math.min(15, Math.max(1, Math.round(years))),
+    replaceAgeYears: clampYears(config.replaceAgeYears, DEFAULT_HARDWARE_LIFECYCLE_OPTIONS.replaceAgeYears),
+    serverReplaceAgeYears: clampYears(config.serverReplaceAgeYears, DEFAULT_HARDWARE_LIFECYCLE_OPTIONS.serverReplaceAgeYears),
     includeManualAssets: config.includeManualAssets !== false,
     includeOtherEquipment: config.includeOtherEquipment !== false,
   };
@@ -49,30 +51,58 @@ export function HardwareLifecycleOptionsFields({ value, onChange }: FieldProps) 
   useEffect(() => {
     setYearsDraft((current) => (Number.parseInt(current, 10) === value.replaceAgeYears ? current : String(value.replaceAgeYears)));
   }, [value.replaceAgeYears]);
+  const [serverYearsDraft, setServerYearsDraft] = useState(String(value.serverReplaceAgeYears));
+  useEffect(() => {
+    setServerYearsDraft((current) => (Number.parseInt(current, 10) === value.serverReplaceAgeYears ? current : String(value.serverReplaceAgeYears)));
+  }, [value.serverReplaceAgeYears]);
 
   return (
     <div className="space-y-4">
-      <label className="block rounded-md border p-4">
-        <span className="block text-sm font-medium">{t('reports.lifecycleOptions.replaceAgeYears')}</span>
-        <input
-          data-testid="lifecycle-replace-age-years"
-          type="number"
-          min={1}
-          max={15}
-          step={1}
-          value={yearsDraft}
-          onChange={(event) => {
-            setYearsDraft(event.target.value);
-            const next = Number.parseInt(event.target.value, 10);
-            if (Number.isFinite(next)) onChange({ ...value, replaceAgeYears: Math.min(15, Math.max(1, next)) });
-          }}
-          onBlur={() => setYearsDraft(String(value.replaceAgeYears))}
-          className="mt-2 w-28 rounded-md border bg-background px-3 py-2 text-sm"
-        />
-        <span className="mt-1 block text-xs text-muted-foreground">
-          {t('reports.lifecycleOptions.replaceAgeYearsHelp')}
-        </span>
-      </label>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="block rounded-md border p-4">
+          <span className="block text-sm font-medium">{t('reports.lifecycleOptions.replaceAgeYears')}</span>
+          <input
+            data-testid="lifecycle-replace-age-years"
+            type="number"
+            min={1}
+            max={15}
+            step={1}
+            value={yearsDraft}
+            onChange={(event) => {
+              setYearsDraft(event.target.value);
+              const next = Number.parseInt(event.target.value, 10);
+              if (Number.isFinite(next)) onChange({ ...value, replaceAgeYears: Math.min(15, Math.max(1, next)) });
+            }}
+            onBlur={() => setYearsDraft(String(value.replaceAgeYears))}
+            className="mt-2 w-28 rounded-md border bg-background px-3 py-2 text-sm"
+          />
+          <span className="mt-1 block text-xs text-muted-foreground">
+            {t('reports.lifecycleOptions.replaceAgeYearsHelp')}
+          </span>
+        </label>
+
+        <label className="block rounded-md border p-4">
+          <span className="block text-sm font-medium">{t('reports.lifecycleOptions.serverReplaceAgeYears')}</span>
+          <input
+            data-testid="lifecycle-server-replace-age-years"
+            type="number"
+            min={1}
+            max={15}
+            step={1}
+            value={serverYearsDraft}
+            onChange={(event) => {
+              setServerYearsDraft(event.target.value);
+              const next = Number.parseInt(event.target.value, 10);
+              if (Number.isFinite(next)) onChange({ ...value, serverReplaceAgeYears: Math.min(15, Math.max(1, next)) });
+            }}
+            onBlur={() => setServerYearsDraft(String(value.serverReplaceAgeYears))}
+            className="mt-2 w-28 rounded-md border bg-background px-3 py-2 text-sm"
+          />
+          <span className="mt-1 block text-xs text-muted-foreground">
+            {t('reports.lifecycleOptions.serverReplaceAgeYearsHelp')}
+          </span>
+        </label>
+      </div>
 
       <label className="flex items-start gap-3 rounded-md border p-4">
         <input
