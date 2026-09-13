@@ -238,19 +238,24 @@ function drawHeaderBand(doc: jsPDF, opts: BuildOpts): void {
   // vector mark + partner/Breeze name. A failed embed degrades to the mark+name.
   let drewLogo = false;
   if (branding?.logoDataUrl) {
-    const logoH = 9;
+    // Fit the logo inside a 9 mm × 60 mm box, preserving its aspect: a tall
+    // mark fills the height, a wide wordmark fills the width and shrinks.
+    const maxH = 9;
+    const maxW = 60;
     const aspect = branding.logoAspect && branding.logoAspect > 0 ? branding.logoAspect : 3;
-    const logoW = Math.min(logoH * aspect, 46);
+    const scale = Math.min(maxH, maxW / aspect) / maxH;
+    const logoH = maxH * scale;
+    const logoW = logoH * aspect;
     const pad = 2;
     const chipW = logoW + pad * 2;
-    const chipH = logoH + pad * 2;
+    const chipH = maxH + pad * 2;
     const chipY = yMid - chipH / 2;
     // White safe-area chip so a dark or transparent partner logo always reads on
     // the brand-colour band (letterhead convention).
     set.fill(doc, C.white);
     doc.roundedRect(PAGE.mx, chipY, chipW, chipH, 1.6, 1.6, 'F');
     try {
-      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx + pad, chipY + pad, logoW, logoH, undefined, 'FAST');
+      doc.addImage(branding.logoDataUrl, 'PNG', PAGE.mx + pad, chipY + pad + (maxH - logoH) / 2, logoW, logoH, undefined, 'FAST');
       drewLogo = true;
     } catch {
       // Erase the empty chip and fall back to the Breeze mark + name.
