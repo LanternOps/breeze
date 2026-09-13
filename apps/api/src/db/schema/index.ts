@@ -74,6 +74,7 @@ export * from './aiAlertVerdicts';
 export * from './aiAgentSchedules';
 export * from './aiOperatorTasks';
 export * from './aiKillState';
+export * from './aiWorkspace';
 export * from './monitors';
 export * from './filesystem';
 export * from './sessions';

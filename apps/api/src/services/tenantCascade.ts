@@ -305,6 +305,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_operator_operations',
   'ai_operator_task_outbox',
   'ai_operator_tasks',
+  // Execution plane W01 (spec §6.1): artifact rows. Child of ai_agent_runs via
+  // the composite (run_id, org_id) FK, ON DELETE CASCADE — topologicalCascadeOrder()
+  // reads that edge from pg_constraint and deletes these before the runs. Blob
+  // bytes are pre-cleared in cascadeDeleteOrg step 1a-bis BEFORE any row goes,
+  // because the row is the only index to the key.
+  'ai_run_artifacts',
   'ai_screenshots',
   // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
   // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER
