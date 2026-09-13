@@ -328,7 +328,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-FR.
     'monitoring.json': 7,
-    'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
+    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
@@ -462,7 +462,7 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-CA.
     'monitoring.json': 7,
-    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
+    'organizations.json': 9, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
@@ -786,7 +786,7 @@ const namespaceDuplicateBaselines = {
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
-    'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
+    'organizations.json': 2, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
     'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,

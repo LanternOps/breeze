@@ -199,5 +199,147 @@
         "deleted": "Belge silindi"
       }
     }
+  },
+  "orgBoard": {
+    "title": "Kuruluşlar",
+    "description": "Her müşteri, hâlâ neye ihtiyacı olduğu ve neyin açık olduğu.",
+    "loading": "Kuruluşlar yükleniyor…",
+    "actions": {
+      "addOrganization": "Kuruluş ekle",
+      "tryAgain": "Tekrar deneyin",
+      "clearFilters": "Filtreleri temizle",
+      "openRecord": "Kaydı aç",
+      "contact": "{{name}} ile iletişime geç",
+      "newTicket": "Yeni bilet",
+      "workHere": "Bu kuruluşta çalış",
+      "settings": "Ayarlar",
+      "archive": "Kuruluşu arşivle",
+      "merge": "Başka bir kuruluşla birleştir",
+      "restore": "Geri yükle",
+      "restoring": "Geri yükleniyor…"
+    },
+    "rowMenu": { "label": "{{name}} için işlemler" },
+    "search": { "label": "Kuruluş, kişi ve e-posta ara" },
+    "lens": { "label": "Görünüm", "setup": "Kurulum", "account": "Hesap", "both": "Her ikisi" },
+    "filters": {
+      "label": "Filtrele",
+      "all": "Tümü",
+      "setupIncomplete": "Kurulum tamamlanmadı",
+      "accountMissing": "Hesap verileri eksik",
+      "openTickets": "Açık biletler",
+      "trial": "Deneme",
+      "archived": "Arşivlenenler"
+    },
+    "sort": { "label": "Sırala", "manual": "Elle sıralama", "name": "A'dan Z'ye", "tickets": "Açık biletler" },
+    "columns": { "organization": "Kuruluş", "setup": "Kurulum", "account": "Hesap verileri", "tickets": "Açık biletler", "actions": "Satır işlemleri" },
+    "band": {
+      "label": "Hesap hazırlığı",
+      "all": "Hesaplar",
+      "allSub": "{{trial}} deneme · {{suspended}} askıda",
+      "setupIncomplete": "Kurulum tamamlanmadı",
+      "accountMissing": "Hesap verileri eksik",
+      "openTickets": "Açık biletler",
+      "openTicketsSub": "{{count}} SLA ihlali",
+      "pending": "Kuruluşlar denetleniyor…",
+      "partial": "Bazı kuruluşlar denetlenemedi."
+    },
+    "chips": {
+      "noSite": "Site yok",
+      "noDevices": "Kayıtlı cihaz yok",
+      "noCheckIn": "Hiçbir agent bağlanmadı",
+      "staleCheckIn_one": "{{count}} gündür agent bağlanmadı",
+      "staleCheckIn_other": "{{count}} gündür agent bağlanmadı",
+      "noPolicy": "Atanmış politika yok",
+      "primaryContact": "Birincil kişi",
+      "contactEmail": "Kişi e-postası",
+      "contactPhone": "Kişi telefonu",
+      "billingContact": "Fatura kişisi",
+      "billingAddress": "Fatura adresi",
+      "overdueInvoices_one": "{{count}} gecikmiş fatura",
+      "overdueInvoices_other": "{{count}} gecikmiş fatura",
+      "invitation_one": "{{count}} davet kabul edilmedi",
+      "invitation_other": "{{count}} davet kabul edilmedi",
+      "complete": "Tamam",
+      "notApplicable": "Uygulanamaz",
+      "unavailable": "Kullanılamıyor",
+      "stillNeeded": "Hâlâ gerekli",
+      "link": "{{orgName}} için {{chip}}"
+    },
+    "repair": {
+      "sites": "{{orgName}} için Siteler sekmesini aç",
+      "devices": "{{orgName}} için Cihazlar sekmesini aç",
+      "policies": "Yapılandırma politikalarını aç",
+      "contacts": "{{orgName}} için Kişiler sekmesini aç",
+      "settings": "{{orgName}} ayarlarını aç",
+      "billing": "{{orgName}} için Faturalandırma sekmesini aç"
+    },
+    "tickets": { "open": "{{count}} açık", "awaiting": "{{count}} müşteri yanıtı bekliyor", "sla": "{{count}} SLA ihlali" },
+    "meta": {
+      "workspace": "Çalışma alanı",
+      "devices_one": "{{count}} cihaz",
+      "devices_other": "{{count}} cihaz",
+      "sites_one": "{{count}} site",
+      "sites_other": "{{count}} site",
+      "archivedBadge": "Arşivlendi",
+      "archivingBadge": "Arşivleniyor…",
+      "keptIndefinitely": "Süresiz olarak saklanıyor",
+      "purgeToday": "Bugün kalıcı olarak silinecek",
+      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
+      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek"
+    },
+    "reorder": {
+      "handle": "{{name}} sırasını değiştir",
+      "hint": "Bu kuruluşu taşımak için yukarı ve aşağı ok tuşlarını kullanın.",
+      "dragToReorder": "Yeniden sıralamak için sürükleyin",
+      "moved": "{{name}}, {{total}} kuruluş içinde {{position}}. sıraya taşındı"
+    },
+    "footer": {
+      "summary": "{{accounts}} etkin hesap · {{devices}} cihaz",
+      "summaryWithTickets": "{{accounts}} etkin hesap · {{devices}} cihaz · {{tickets}} açık bilet",
+      "manualHint": "Elle sıralama: bir satırı sürükleyin veya tutamacında ok tuşlarını kullanın."
+    },
+    "empty": {
+      "title": "Henüz kuruluş yok",
+      "description": "Kurulumu ve hesap verilerini izlemeye başlamak için ilk müşterinizi ekleyin.",
+      "noMatches": "Aramanızla veya filtrenizle eşleşen kuruluş yok."
+    },
+    "archived": {
+      "loading": "Arşivlenen kuruluşlar yükleniyor…",
+      "empty": "Arşivlenmiş kuruluş yok.",
+      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
+      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
+      "fetchError": "Arşivlenen kuruluşlar yüklenemedi"
+    },
+    "restore": {
+      "success": "{{name}} geri yüklendi — durum: {{status}}.",
+      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
+      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
+      "errors": {
+        "restore": "Kuruluş geri yüklenemedi",
+        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
+        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
+      }
+    },
+    "add": {
+      "title": "Kuruluş ekle",
+      "description": "Aşağıdaki ayrıntılarla yeni bir kuruluş oluşturun.",
+      "submit": "Kuruluş oluştur",
+      "created": "{{name}} eklendi. Satırı sırada ne kurulacağını gösterir."
+    },
+    "errors": {
+      "fetchOrganizations": "Kuruluşlar getirilemedi",
+      "generic": "Bir hata oluştu",
+      "saveOrder": "Kuruluş sırası kaydedilemedi",
+      "saveOrganization": "Kuruluş kaydedilemedi",
+      "readiness": "Bazı kuruluşların hesap hazırlığı denetlenemedi."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Artan",
+      "descending": "Azalan",
+      "sortBy": "Şuna göre sırala: {{label}}",
+      "sortByWithDirection": "Şuna göre sırala: {{label}}, {{direction}}"
+    }
   }
 }
