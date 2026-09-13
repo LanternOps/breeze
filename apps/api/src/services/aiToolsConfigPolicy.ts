@@ -8,6 +8,7 @@ import {
   alertRuleInlineSettingsSchema,
   monitoringInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
+  warrantyInlineSettingsSchema,
 } from '@breeze/shared/validators';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
@@ -23,6 +24,7 @@ import {
   deleteConfigPolicy,
   addFeatureLink,
   updateFeatureLink,
+  WarrantyConsentError,
   removeFeatureLink,
   listFeatureLinks,
   listAssignments,
@@ -98,6 +100,11 @@ const VALIDATED_INLINE_SETTINGS: Record<string, { schema: { safeParse: (raw: unk
   onedrive_helper: { schema: onedriveHelperInlineSettingsSchema, normalize: true },
   alert_rule: { schema: alertRuleInlineSettingsSchema, normalize: true },
   monitoring: { schema: monitoringInlineSettingsSchema, normalize: false },
+  // #5511 W02: the CLIENT schema, so an assistant that invents an hpCmsl
+  // consent object is told which field is wrong. It still cannot ENABLE
+  // collection — addFeatureLink refuses without an authenticated actor, and
+  // this Tier-2 tool has none.
+  warranty: { schema: warrantyInlineSettingsSchema, normalize: false },
 };
 
 /**
@@ -145,6 +152,22 @@ function rejectElevatedAutomationActions(raw: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * #5511 W02: enabling HP CMSL warranty collection records an acceptance of
+ * HP's licence, which the service will only stamp for an authenticated user —
+ * and this tool never passes one. Map that refusal to a readable tool result:
+ * left to safeHandler it would be scrubbed to the generic "the tool failed",
+ * which tells the assistant neither why nor that a human must do it in the UI.
+ * The message is a fixed literal authored in configurationPolicy.ts, so it
+ * carries no driver or schema detail.
+ */
+function warrantyConsentRefusal(err: unknown): string | null {
+  if (!(err instanceof WarrantyConsentError)) return null;
+  return JSON.stringify({
+    error: `${err.message} Ask a user to switch it on from the policy's Warranty tab, where they accept HP's licence themselves.`,
+  });
 }
 
 function validateInlineSettingsForFeature(
@@ -974,12 +997,19 @@ For link-only types, set featurePolicyId instead of inlineSettings:
         // see the comment on its onConflictDoNothing insert in
         // configurationPolicy.ts for why the raised-violation catch pattern
         // doesn't work inside this tool call's withDbAccessContext transaction.
-        const link = await addFeatureLink(
-          configPolicyId,
-          featureType as any,
-          (input.featurePolicyId as string) ?? null,
-          inlineSettings ?? null
-        );
+        let link;
+        try {
+          link = await addFeatureLink(
+            configPolicyId,
+            featureType as any,
+            (input.featurePolicyId as string) ?? null,
+            inlineSettings ?? null
+          );
+        } catch (err) {
+          const refusal = warrantyConsentRefusal(err);
+          if (refusal) return refusal;
+          throw err;
+        }
         if (!link) {
           return JSON.stringify({ error: `Feature type "${featureType}" already exists on this policy. Use update action instead.` });
         }
@@ -1006,7 +1036,14 @@ For link-only types, set featurePolicyId instead of inlineSettings:
           updates.inlineSettings = inlineSettings;
         }
 
-        const updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
+        let updated;
+        try {
+          updated = await updateFeatureLink(featureLinkId, updates, configPolicyId);
+        } catch (err) {
+          const refusal = warrantyConsentRefusal(err);
+          if (refusal) return refusal;
+          throw err;
+        }
         if (!updated) return JSON.stringify({ error: 'Feature link not found' });
         return JSON.stringify({ success: true, featureLink: updated });
       }

@@ -8,6 +8,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // artefact.
 const { deleteConfigPolicyMock } = vi.hoisted(() => ({ deleteConfigPolicyMock: vi.fn() }));
 
+const { WarrantyConsentErrorMock } = vi.hoisted(() => ({
+  WarrantyConsentErrorMock: class WarrantyConsentError extends Error {
+    readonly code = 'warranty_hp_cmsl_consent_required' as const;
+    constructor(message: string) {
+      super(message);
+      this.name = 'WarrantyConsentError';
+    }
+  },
+}));
+
 const { PolicyHasChildrenErrorMock } = vi.hoisted(() => ({
   PolicyHasChildrenErrorMock: class PolicyHasChildrenError extends Error {
     readonly code = 'POLICY_HAS_CHILDREN' as const;
@@ -106,6 +116,7 @@ vi.mock('./configurationPolicy', () => ({
   // The real class shape — the handler branches on `instanceof`, so the mock has
   // to export a constructor or that check throws on `undefined`.
   PolicyHasChildrenError: PolicyHasChildrenErrorMock,
+  WarrantyConsentError: WarrantyConsentErrorMock,
 }));
 
 import { db } from '../db';
@@ -596,6 +607,47 @@ describe('configuration policy AI tools', () => {
     expect(JSON.parse(output)).toEqual({
       error: 'Feature type "patch" already exists on this policy. Use update action instead.',
     });
+  });
+
+  // #5511 W02: the service refuses to stamp an HP CMSL consent without an
+  // authenticated actor, and this tool never supplies one. The refusal must
+  // reach the assistant as a readable message — the generic sanitizer would
+  // otherwise turn it into "the tool failed", which tells the model nothing
+  // about why or what a human has to do instead.
+  it('surfaces a WarrantyConsentError as a readable refusal on add and update', async () => {
+    vi.mocked(getConfigPolicy).mockResolvedValue({
+      id: POLICY_ID,
+      orgId: ORG_ID,
+      partnerId: null,
+      name: 'Org policy',
+    } as any);
+    vi.mocked(addFeatureLink).mockRejectedValueOnce(new WarrantyConsentErrorMock('needs a human') as any);
+    vi.mocked(updateFeatureLink).mockRejectedValueOnce(new WarrantyConsentErrorMock('needs a human') as any);
+    // existing-link featureType lookup inside the 'update' branch
+    mockSelectRows([{ featureType: 'warranty' }]);
+
+    const tools = new Map<string, any>();
+    registerConfigPolicyTools(tools);
+
+    const added = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'add',
+      configPolicyId: POLICY_ID,
+      featureType: 'warranty',
+      inlineSettings: { hpCmsl: { enabled: true } },
+    }, makeAuth()));
+
+    // Both calls run before any assertion so a red run cannot strand queued
+    // once-mocks into the next test.
+    const updated = JSON.parse(await tools.get('manage_policy_feature_link')!.handler({
+      action: 'update',
+      configPolicyId: POLICY_ID,
+      featureLinkId: 'link-1',
+      inlineSettings: { hpCmsl: { enabled: true } },
+    }, makeAuth()));
+
+    expect(added.error).toContain('needs a human');
+    expect(added.error).not.toBe(GENERIC_TOOL_ERROR_MESSAGE);
+    expect(updated.error).toContain('needs a human');
   });
 
   // #1724 regression: partner-OWNED policies (org_id NULL) were invisible to the

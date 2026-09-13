@@ -56,6 +56,11 @@ import {
   monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   remoteAccessInlineSettingsSchema as remoteAccessCapabilitySettingsSchema,
+  warrantyInlineSettingsSchema,
+  warrantyHpCmslCollectionEffective,
+  readRecordedWarrantyHpCmslConsent,
+  HP_CMSL_EULA_ID,
+  type WarrantyHpCmslConsent,
 } from '@breeze/shared/validators';
 import type { AuthContext } from '../middleware/auth';
 import { normalizePatchInlineSettings, tryNormalizePatchInlineSettings } from './configPolicyPatching';
@@ -1501,11 +1506,94 @@ async function authorizeConfigPolicyAutomationSettings(
   await resolveAutomationReferencesForOwner(tx, policy, actions);
 }
 
+/**
+ * Raised when a caller asks to enable HP CMSL warranty collection but cannot
+ * record an acceptance of HP's licence (#5511 W02, contract D3).
+ *
+ * Its own class, mirroring AutomationReferenceAuthorizationError, so the HTTP
+ * routes and the AI tool can map it to a 400 with a useful message instead of
+ * letting a bare Error reach the global onError handler as a 500.
+ */
+export class WarrantyConsentError extends Error {
+  readonly code = 'warranty_hp_cmsl_consent_required' as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'WarrantyConsentError';
+  }
+}
+
+/**
+ * The authenticated user on whose behalf a warranty consent may be stamped.
+ * Supplied OUT OF BAND by the HTTP routes — never read from the payload, and
+ * never available to `manage_policy_feature_link`, which is why an assistant
+ * cannot switch collection on. `null`/`undefined` means "this caller cannot
+ * accept a licence".
+ */
+export type WarrantyConsentActor = { userId: string } | null | undefined;
+
+/**
+ * Validates a warranty inline-settings payload and returns the value to store.
+ *
+ * Contract, in order:
+ *  1. `warrantyInlineSettingsSchema` has no `consent` key and is `.strict()`,
+ *     so a client-supplied acceptance THROWS here rather than being stripped
+ *     (D3). The HTTP routes catch this earlier and return a coded 400; this
+ *     parse is the backstop for every other caller.
+ *  2. Not enabling collection (absent block, or `enabled: false`) stores the
+ *     parsed value as-is. Any previously recorded acceptance goes with the old
+ *     block: re-enabling later re-consents rather than silently reusing an
+ *     acceptance by a user who may have left the partner.
+ *  3. Enabling with a still-current acceptance already on the row carries that
+ *     acceptance forward verbatim, so an unrelated threshold edit does not
+ *     churn `acceptedAt` or re-attribute who accepted.
+ *  4. Enabling with no acceptance — or one naming a superseded EULA id (D2) —
+ *     stamps a fresh one from `actor` and the SERVER clock, or throws when
+ *     there is no actor.
+ *
+ * Exported for direct unit testing: this function is the whole of the consent
+ * rule, and it is the thing worth pinning.
+ */
+export function resolveWarrantyInlineSettingsForWrite(
+  incoming: unknown,
+  stored: unknown,
+  actor: WarrantyConsentActor,
+): unknown {
+  if (incoming === undefined || incoming === null) return incoming;
+
+  const parsed = warrantyInlineSettingsSchema.parse(incoming);
+  if (parsed.hpCmsl?.enabled !== true) return parsed;
+
+  if (warrantyHpCmslCollectionEffective(stored)) {
+    const carried = readRecordedWarrantyHpCmslConsent(stored) as WarrantyHpCmslConsent;
+    return { ...parsed, hpCmsl: { enabled: true, consent: carried } };
+  }
+
+  if (!actor?.userId) {
+    throw new WarrantyConsentError(
+      'Enabling HP CMSL warranty collection records an acceptance of HP\'s licence, which requires an authenticated user. This caller cannot record one.',
+    );
+  }
+
+  return {
+    ...parsed,
+    hpCmsl: {
+      enabled: true,
+      consent: {
+        acceptedByUserId: actor.userId,
+        acceptedAt: new Date().toISOString(),
+        eulaId: HP_CMSL_EULA_ID,
+      },
+    },
+  };
+}
+
 export async function addFeatureLink(
   configPolicyId: string,
   featureType: ConfigFeatureType,
   featurePolicyId?: string | null,
-  inlineSettings?: unknown
+  inlineSettings?: unknown,
+  consentActor?: WarrantyConsentActor
 ) {
   if (inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = configFeatureInlineSettingsSchema.parse(inlineSettings);
@@ -1521,6 +1609,13 @@ export async function addFeatureLink(
 
   if (featureType === 'device_lifecycle' && inlineSettings !== undefined && inlineSettings !== null) {
     inlineSettings = deviceLifecycleInlineSettingsSchema.parse(inlineSettings);
+  }
+
+  // #5511 W02: warranty gains an hpCmsl block whose consent only the server may
+  // write. There is no stored row yet on this path, so `stored` is null and an
+  // enable always stamps fresh.
+  if (featureType === 'warranty' && inlineSettings !== undefined && inlineSettings !== null) {
+    inlineSettings = resolveWarrantyInlineSettingsForWrite(inlineSettings, null, consentActor);
   }
 
   // Service-level backstop for callers that bypass the HTTP route's validation
@@ -1592,7 +1687,8 @@ export async function addFeatureLink(
 export async function updateFeatureLink(
   linkId: string,
   updates: { featurePolicyId?: string | null; inlineSettings?: unknown },
-  configPolicyId?: string
+  configPolicyId?: string,
+  consentActor?: WarrantyConsentActor
 ) {
   if (updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
     updates.inlineSettings = configFeatureInlineSettingsSchema.parse(updates.inlineSettings);
@@ -1621,6 +1717,18 @@ export async function updateFeatureLink(
 
     if (existing.featureType === 'device_lifecycle' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
       updates.inlineSettings = deviceLifecycleInlineSettingsSchema.parse(updates.inlineSettings);
+    }
+
+    // #5511 W02: same consent rule as addFeatureLink, but with the row's
+    // current settings in hand so a still-current acceptance survives an
+    // unrelated edit. REPLACE semantics (not merge, contract D5): settings sent
+    // without an hpCmsl block drop it, which revokes collection.
+    if (existing.featureType === 'warranty' && updates.inlineSettings !== undefined && updates.inlineSettings !== null) {
+      updates.inlineSettings = resolveWarrantyInlineSettingsForWrite(
+        updates.inlineSettings,
+        existing.inlineSettings,
+        consentActor,
+      );
     }
 
     // Same service-level backstop as addFeatureLink (AI tool path) — see #2320.
