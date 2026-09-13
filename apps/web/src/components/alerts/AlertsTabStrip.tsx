@@ -6,7 +6,8 @@ import { useMlFeatureFlags } from '../../hooks/useMlFeatureFlags';
 const TABS = [
   { href: '/alerts', labelKey: 'alerts' },
   { href: '/alerts/correlations', labelKey: 'correlations' },
-  { href: '/monitoring/rules', labelKey: 'rules' },
+  { href: '/alerts/monitors', labelKey: 'monitors' },
+  { href: '/alerts/rules', labelKey: 'rules' },
   { href: '/alerts/channels', labelKey: 'channels' },
 ] as const;
 
@@ -41,7 +42,8 @@ export default function AlertsTabStrip({ currentPath = '/alerts' }: AlertsTabStr
   const activeHref = useMemo(() => {
     if (path.startsWith('/alerts/correlations')) return '/alerts/correlations';
     if (path.startsWith('/alerts/channels')) return '/alerts/channels';
-    if (path.startsWith('/monitoring/rules')) return '/monitoring/rules';
+    if (path.startsWith('/alerts/monitors')) return '/alerts/monitors';
+    if (path.startsWith('/alerts/rules')) return '/alerts/rules';
     return '/alerts';
   }, [path]);
 

@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../hooks/useMlFeatureFlags', () => ({ useMlFeatureFlags: () => ({ isDisabled: () => false }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
@@ -73,7 +74,7 @@ describe('MonitorsListPage (#5289)', () => {
     render(<MonitorsListPage />);
     await waitFor(() => expect(screen.getByTestId('monitors-list-page')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('monitors-list-new'));
-    expect(navMock).toHaveBeenCalledWith('/monitoring/monitors/new');
+    expect(navMock).toHaveBeenCalledWith('/alerts/monitors/new');
   });
 
   it('deletes a monitor and refetches the list', async () => {

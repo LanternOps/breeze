@@ -618,6 +618,7 @@
     "tabs": {
       "alerts": "Uyarılar",
       "correlations": "Korelasyonlar",
+      "monitors": "Monitörler",
       "rules": "Kurallar",
       "channels": "Kanallar"
     }

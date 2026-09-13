@@ -78,7 +78,7 @@ describe('MonitorEditor (#5289)', () => {
     fireEvent.change(screen.getByTestId('monitor-editor-name'), { target: { value: 'Disk full' } });
     fireEvent.click(screen.getByTestId('monitor-editor-save'));
 
-    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring/monitors/new-1'));
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors/new-1'));
     const call = fetchMock.mock.calls.find(([url, init]) => url === '/monitor-definitions' && (init as RequestInit)?.method === 'POST');
     expect(call).toBeDefined();
     const body = JSON.parse((call![1] as RequestInit).body as string);
@@ -349,7 +349,7 @@ describe('MonitorEditor (#5289)', () => {
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'DELETE' })),
     );
-    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring/monitors'));
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors'));
   });
 
   it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {

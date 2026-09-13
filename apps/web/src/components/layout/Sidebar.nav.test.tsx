@@ -165,12 +165,12 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
   });
 
-  it('labels /monitoring as Monitoring, not Network Monitor (#5288)', () => {
+  it('labels /monitoring as Network Monitor again — monitor config moved under Alerts (2026-09-13)', () => {
     const item = navSections
       .find((s) => s.id === 'fleet-management')!
       .items.find((i) => i.href === '/monitoring')!;
-    expect(item.name).toBe('Monitoring');
-    expect(item.labelKey).toBe('nav.monitoring');
+    expect(item.name).toBe('Network Monitor');
+    expect(item.labelKey).toBe('nav.networkMonitor');
   });
 });
 
@@ -302,7 +302,7 @@ describe('sidebar i18n seed', () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/monitoring" />);
 
-    const nestedLink = await screen.findByText('Monitoramento');
+    const nestedLink = await screen.findByText('Monitoramento de Rede');
     expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
     expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });

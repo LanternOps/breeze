@@ -1,7 +1,4 @@
 ---
-import DashboardLayout from '../../../layouts/DashboardLayout.astro';
-import MonitorsListPage from '../../../components/monitoring/MonitorsListPage';
+// Monitor config lives under Alerts now.
+return Astro.redirect('/alerts/monitors');
 ---
-<DashboardLayout titleKey="titles.monitoringMonitors">
-  <MonitorsListPage client:load />
-</DashboardLayout>

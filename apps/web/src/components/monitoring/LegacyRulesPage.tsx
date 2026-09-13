@@ -4,7 +4,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { ScopeBadge } from '../shared/ScopeBadge';
-import MonitoringTabStrip from './MonitoringTabStrip';
+import AlertsTabStrip from '../alerts/AlertsTabStrip';
 import '../../lib/i18n';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -74,7 +74,7 @@ export default function LegacyRulesPage() {
       }
       const data = await response.json();
       const monitorId = data?.data?.monitorId;
-      if (monitorId) void navigateTo(`/monitoring/monitors/${monitorId}`);
+      if (monitorId) void navigateTo(`/alerts/monitors/${monitorId}`);
       else void fetchRules();
     } catch (err) {
       setRowErrors((prev) => ({
@@ -88,7 +88,7 @@ export default function LegacyRulesPage() {
 
   return (
     <div className="space-y-6" data-testid="legacy-rules-page">
-      <MonitoringTabStrip currentPath="/monitoring/rules" />
+      <AlertsTabStrip currentPath="/alerts/rules" />
       <div>
         <h1 className="text-xl font-semibold tracking-tight">{t('monitoring:legacy.title')}</h1>
         <p className="text-muted-foreground">{t('monitoring:legacy.description')}</p>

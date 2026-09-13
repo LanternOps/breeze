@@ -8,7 +8,7 @@ import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/Res
 import { ScopeBadge } from '../shared/ScopeBadge';
 import { BuiltInBadge } from './BuiltInBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
-import MonitoringTabStrip from './MonitoringTabStrip';
+import AlertsTabStrip from '../alerts/AlertsTabStrip';
 import type { MonitorKind } from '@breeze/shared';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -102,7 +102,7 @@ export default function MonitorsListPage() {
   const renderName = (row: MonitorRow) => (
     <button
       type="button"
-      onClick={() => void navigateTo(`/monitoring/monitors/${row.id}`)}
+      onClick={() => void navigateTo(`/alerts/monitors/${row.id}`)}
       className="text-left text-primary hover:underline"
     >
       {row.name}
@@ -136,7 +136,7 @@ export default function MonitorsListPage() {
 
   return (
     <div className="space-y-6" data-testid="monitors-list-page">
-      <MonitoringTabStrip currentPath="/monitoring/monitors" />
+      <AlertsTabStrip currentPath="/alerts/monitors" />
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('monitoring:list.title')}</h1>
@@ -145,7 +145,7 @@ export default function MonitorsListPage() {
         <button
           type="button"
           data-testid="monitors-list-new"
-          onClick={() => void navigateTo('/monitoring/monitors/new')}
+          onClick={() => void navigateTo('/alerts/monitors/new')}
           className="flex shrink-0 items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <Plus className="h-4 w-4" />
