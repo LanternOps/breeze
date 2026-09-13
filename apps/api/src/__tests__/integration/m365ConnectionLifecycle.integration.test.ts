@@ -1,5 +1,5 @@
 import './setup';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { canonicalGrantKey, M365_PERMISSION_PROFILES } from '@breeze/shared/m365';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../../db';
@@ -7,14 +7,35 @@ import { m365Connections, m365ConsentSessions } from '../../db/schema';
 import { consumeConsentSession } from '../../services/m365ControlPlane/consentSessionService';
 import {
   applyUpgradeVerificationResult,
+  deriveGrantHealth,
   disconnectCustomerGraphReadConnection,
   initiateCustomerGraphReadConsent,
   initiateCustomerGraphReadUpgradeConsent,
   loadRetestSnapshot,
   retestCustomerGraphReadConnection,
 } from '../../services/m365ControlPlane/connectionService';
-import { createOrganization, createPartner, createUser } from './db-utils';
+import {
+  assignUserToOrganization, createOrganization, createPartner, createRole, createUser, grantRolePermissions,
+} from './db-utils';
 import { getTestDb } from './setup';
+import { m365CustomerGraphReadRoutes } from '../../routes/m365CustomerGraphRead';
+import { createAccessToken } from '../../services/jwt';
+import { PERMISSIONS } from '../../services/permissions';
+import { createFakeSyncExecutor, syncSkusResult, type FakeSyncExecutor } from './m365SyncFakeExecutor';
+import { runSyncDomain } from '../../services/m365Sync/run';
+import { claimDueDomains } from '../../services/m365Sync/claim';
+
+// Hoisted mutable holder for the executor signing key: `vi.mock` factories run
+// before any `beforeAll`, so Task 6's fake-executor signing key (only known
+// once `createFakeSyncExecutor()` resolves) has to be threaded through a
+// holder object rather than captured at mock-definition time. Same pattern as
+// m365TenantSync.integration.test.ts's `syncExecutorConfig`. Defaults keep
+// every other test in this file (which never drives a real signed call to the
+// executor) behaving exactly as before.
+const syncExecutorConfig = vi.hoisted(() => ({
+  signingPrivateJwk: {} as Record<string, unknown>,
+  signingKid: 'key-1',
+}));
 
 vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
   loadM365CustomerGraphReadRuntimeConfig: vi.fn(() => ({
@@ -24,10 +45,11 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
     callbackUrl: 'https://console.example.test/api/v1/m365/consent/callback',
     executorUrl: 'https://executor.internal.example.test',
     executorAudience: 'm365-graph-read-executor',
-    executorSigningPrivateJwk: {},
-    executorSigningKid: 'key-1',
+    executorSigningPrivateJwk: syncExecutorConfig.signingPrivateJwk,
+    executorSigningKid: syncExecutorConfig.signingKid,
     onboardingOrgIds: '*',
   })),
+  isM365CustomerGraphReadOnboardingEnabledForOrg: () => true,
 }));
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -435,5 +457,132 @@ describe('customer Graph-read upgrade consent integration', () => {
       .from(m365ConsentSessions)
       .where(eq(m365ConsentSessions.connectionId, fixture.connectionId)));
     expect(sessions).toHaveLength(0);
+  });
+});
+
+// The DB CHECK m365_connections_observed_grants_check requires canonical
+// (resourceApplicationId, appRoleId) order — same requirement the
+// "promotes the manifest in place" case above already works around.
+const V2_GRANTS = [...M365_PERMISSION_PROFILES['customer-graph-read'].applicationPermissionAssignments]
+  .filter((grant) => ![
+    'Policy.Read.All', 'RoleManagement.Read.Directory',
+    'SecurityEvents.Read.All', 'AuditLogsQuery.Read.All',
+  ].includes(grant.value ?? ''))
+  .sort((left, right) => canonicalGrantKey(left).localeCompare(canonicalGrantKey(right)));
+
+describe('customer Graph-read upgrade consent (manifest v2 → v3)', () => {
+  let upgradeExecutor: FakeSyncExecutor;
+
+  beforeAll(async () => {
+    upgradeExecutor = await createFakeSyncExecutor();
+    syncExecutorConfig.signingPrivateJwk = upgradeExecutor.signingPrivateJwk;
+    syncExecutorConfig.signingKid = upgradeExecutor.signingKid;
+  });
+  afterAll(async () => { await upgradeExecutor.close(); });
+
+  function authContextFor(fixture: { orgId: string; actorId: string }) {
+    return {
+      scope: 'organization',
+      orgId: fixture.orgId,
+      accessibleOrgIds: [fixture.orgId],
+      partnerId: null,
+      user: { id: fixture.actorId },
+    } as never;
+  }
+
+  // ownerFixture() alone has no role/permission grant (the rest of this file
+  // only ever drives the service layer directly). The DTO case below goes
+  // through the real HTTP route, which is gated on requireOrgsRead, so this
+  // wraps ownerFixture() with a role carrying that one permission.
+  async function ownerWithOrgsRead() {
+    return withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      const user = await createUser({
+        partnerId: partner.id,
+        orgId: org.id,
+        email: `m365-lifecycle-upgrade-${Date.now()}-${crypto.randomUUID()}@example.com`,
+      });
+      const role = await createRole({ scope: 'organization', orgId: org.id, partnerId: partner.id });
+      await grantRolePermissions(role.id, [PERMISSIONS.ORGS_READ]);
+      await assignUserToOrganization(user.id, org.id, role.id);
+      return { orgId: org.id, actorId: user.id, email: user.email, roleId: role.id };
+    });
+  }
+
+  async function ownerToken(owner: { actorId: string; orgId: string; email: string; roleId: string }) {
+    return createAccessToken({
+      sub: owner.actorId,
+      email: owner.email,
+      roleId: owner.roleId,
+      orgId: owner.orgId,
+      partnerId: null,
+      scope: 'organization',
+      mfa: true,
+      aep: 1,
+      mep: 1,
+      sid: `it-m365-lifecycle-${crypto.randomUUID()}`,
+    });
+  }
+
+  async function v2Connection() {
+    const owner = await ownerWithOrgsRead();
+    const initiated = await initiateCustomerGraphReadConsent({ orgId: owner.orgId, actorId: owner.actorId });
+    const verifiedAt = new Date('2026-09-01T10:00:00.000Z');
+    await withSystemDbAccessContext(() => db.update(m365Connections).set({
+      tenantId: '44444444-4444-4444-8444-444444444444',
+      displayName: 'Contoso',
+      permissionManifestVersion: 2,
+      observedGrants: V2_GRANTS,
+      grantsVerifiedAt: verifiedAt,
+      lastVerifiedAt: verifiedAt,
+      consentedAt: verifiedAt,
+      status: 'active',
+      consentGeneration: 1,
+    }).where(eq(m365Connections.id, initiated.connection.id)));
+    return { owner, connectionId: initiated.connection.id };
+  }
+
+  runDb('derives manifest-stale on a v2 row and exposes it through the read DTO', async () => {
+    const { owner, connectionId } = await v2Connection();
+    const stored = await currentConnection(owner.orgId);
+    expect(deriveGrantHealth(stored!, M365_PERMISSION_PROFILES['customer-graph-read']).state)
+      .toBe('manifest-stale');
+
+    const response = await m365CustomerGraphReadRoutes.request(
+      `/connections?orgId=${owner.orgId}`,
+      { headers: { authorization: `Bearer ${await ownerToken(owner)}` } },
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      connection: { id: connectionId, grantHealth: 'manifest-stale', manifestVersion: 2, currentManifestVersion: 3 },
+    });
+  });
+
+  runDb('keeps syncing on v2 grants while the upgrade is pending', async () => {
+    process.env.M365_TENANT_SYNC_ENABLED = 'true';
+    const { owner, connectionId } = await v2Connection();
+    const admin = getTestDb();
+    await admin.execute(sql`
+      INSERT INTO m365_sync_state (org_id, connection_id, domain, next_sync_at, interval_seconds)
+      VALUES (${owner.orgId}::uuid, ${connectionId}::uuid, 'skus'::m365_sync_domain, now(), 86400)
+      ON CONFLICT (org_id, domain) DO UPDATE SET next_sync_at = now(), lease_until = NULL`);
+
+    await initiateCustomerGraphReadUpgradeConsent({
+      connectionId, orgId: owner.orgId,
+      auth: authContextFor(owner),
+    });
+    const pending = await currentConnection(owner.orgId);
+    expect(pending, 'upgrade consent must not move the connection off active').toMatchObject({
+      status: 'active', permissionManifestVersion: 2,
+    });
+
+    upgradeExecutor.enqueue('m365.sync.skus', syncSkusResult([
+      { skuId: '11111111-0000-4000-8000-00000000000a', skuPartNumber: 'SPB', consumedUnits: 2, enabled: 5 },
+    ]));
+    const [job] = (await claimDueDomains({ limit: 20 })).filter((claimed) => claimed.orgId === owner.orgId);
+    await expect(runSyncDomain(job!)).resolves.toBe('success');
+    const skus = await admin.execute(sql`SELECT graph_id FROM m365_license_skus WHERE org_id = ${owner.orgId}::uuid`);
+    expect(skus as unknown as unknown[]).toHaveLength(1);
   });
 });
