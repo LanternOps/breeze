@@ -176,22 +176,53 @@ export function createFakeSandboxBackend(): FakeSandboxBackend {
         throw new SandboxError('exec_timeout', 'exec requires a non-empty argv', { backend: 'fake' });
       }
       const cwd = opts.cwd ? await hostPath(box, opts.cwd) : box.root;
+      // Argv entries that name a sandbox path are rewritten onto this box's
+      // temp root. The Vercel backend needs no such step — /work IS a real
+      // directory there — so without this the two backends would disagree on
+      // the interface's central case (`exec(h, ['python3', '/work/step-1.py'])`)
+      // and sandboxBackend.contract.test.ts would fail against the fake with a
+      // 127 while passing against vercel. Only tokens under /work are touched;
+      // the interpreter path and ordinary flags are passed through untouched.
+      const argv: string[] = [];
+      for (const token of cmd) {
+        argv.push(
+          token === SANDBOX_ROOT || token.startsWith(`${SANDBOX_ROOT}/`)
+            ? await hostPath(box, token, opts.cwd)
+            : token,
+        );
+      }
       const stdout = createCappedCollector(opts.maxStdoutBytes);
       const stderr = createCappedCollector(opts.maxStdoutBytes);
       const startedAt = Date.now();
 
       return await new Promise<ExecResult>((resolve, reject) => {
         // shell: false is the whole point of this adapter. Never change it.
-        const child = spawn(cmd[0] as string, cmd.slice(1), {
+        const child = spawn(argv[0] as string, argv.slice(1), {
           cwd,
           env: childEnv(path.join(box.root, 'tmp')),
           shell: false,
           stdio: ['pipe', 'pipe', 'pipe'],
+          // Own process group, so the timeout can kill the WHOLE tree. An
+          // interpreter that spawned children (`sh -c 'sleep 120'`) survives a
+          // kill aimed at the direct child only, and its grandchildren keep the
+          // stdout/stderr pipes open — 'close' never fires and exec() hangs past
+          // its own deadline. The real sandbox tears down the entire VM, so the
+          // fake has to match that or the timeout contract is fiction here.
+          detached: true,
         });
         let timedOut = false;
+        const killTree = (): void => {
+          try {
+            if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            // The group is already gone (it exited between the timer firing and
+            // this call). Fall through to the direct kill, which is a no-op too.
+          }
+          child.kill('SIGKILL');
+        };
         const killTimer = setTimeout(() => {
           timedOut = true;
-          child.kill('SIGKILL');
+          killTree();
         }, opts.timeoutMs);
 
         child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
