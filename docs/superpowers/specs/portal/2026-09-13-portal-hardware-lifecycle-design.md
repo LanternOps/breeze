@@ -105,7 +105,7 @@ predicate helper is needed beyond the inline `eq(reports.type, ...)` above.
 ```ts
 {
   type: 'hardware_lifecycle',
-  name: 'Customer portal - Hardware Lifecycle',
+  name: 'Customer portal — Hardware lifecycle' (the file's existing separator; the em-dash rule applies to rendered customer copy, and this string is an internal definition name shown only to technicians),
   config: {
     sites: [],
     replaceAgeYears: 4,
@@ -575,6 +575,20 @@ list endpoint would duplicate `listPortalRuns` filtered to one type.
   and assert a device row link is present once §6's device-link mechanism
   exists (W03). DOM queried by `data-testid` only, per the e2e README
   convention.
+
+### Portal contract tests the plans must satisfy
+
+Two existing contract suites red on any new gated portal surface and are easy
+to miss:
+
+- `apps/portal/src/lib/visibilityGate.test.ts` asserts every `PORTAL_*_DISABLED`
+  code in `apps/api/src/routes/portal/featureFlags.ts` is registered in
+  `apps/portal/src/lib/visibilityGate.ts` (`PORTAL_DISABLED_CODES`). W01 adds
+  `PORTAL_LIFECYCLE_DISABLED` on both sides in the same commit.
+- `apps/portal/src/lib/disabledPageCoverage.test.ts` requires every portal page
+  that calls a gated `portalApi` method to branch on that method's 403 code in
+  its Astro frontmatter. W02 registers `getHardwareLifecycleLatest` in
+  `GATED_API_METHODS` and gives `lifecycle.astro` the frontmatter branch.
 
 ## 9. Rollout
 
