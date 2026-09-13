@@ -106,7 +106,7 @@ export interface FleetDesignLedgerItem {
   rolledBackAt: string | null;
 }
 
-export type FleetDesignRollbackRefusal = 'modified_since_apply' | 'group_has_other_members' | 'policy_missing';
+export type FleetDesignRollbackRefusal = 'modified_since_apply' | 'group_has_other_members' | 'policy_missing' | 'partner_wide_write_denied';
 
 export interface FleetDesignRollbackResult {
   rolledBack: string[];

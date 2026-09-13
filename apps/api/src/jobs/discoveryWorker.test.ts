@@ -425,10 +425,13 @@ describe('processResults — type_source', () => {
     const where = renderSqlQuery(roleUpdate!.where);
     // Reads the ASSET's type_source, not the stale pre-read value.
     expect(where.params).toContain('discoveredAssets.typeSource');
-    // ...and the device's own manual role is protected too, with IS DISTINCT
-    // FROM so a NULL device_role_source (never set) still counts as non-manual.
+    // ...and the device's own manual role is protected too — and so is an
+    // 'ai' role a technician approved from a Fleet Design (W03 #5653). The
+    // COALESCE keeps a NULL device_role_source (never set) counting as
+    // non-manual, as the old IS DISTINCT FROM did.
     expect(where.params).toContain('devices.deviceRoleSource');
-    expect(where.sql).toContain(`is distinct from 'manual'`);
+    expect(where.sql).toContain(`not in ('manual', 'ai')`);
+    expect(where.sql).toContain(`coalesce(`);
   });
 
   it('does not auto-link a same-MAC/private-IP device from a sibling site', async () => {
