@@ -4,7 +4,7 @@ import { escapeCsvCell, escapeTsvCell, neutralizeSpreadsheetFormula } from '@/li
 import { downloadBlob } from '@/lib/downloadBlob';
 import { sanitizeImageSrc } from '@/lib/safeImageSrc';
 import { fetchWithAuth } from '../../stores/auth';
-import { buildReportPdf, type ReportBranding } from '@breeze/shared/reportPdf';
+import { buildReportPdf, parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
 
 // Re-export the shared CSV + download helpers so existing importers of these
 // names from './reportExport' keep working; the canonical definitions now live
@@ -154,13 +154,17 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
     if (!res.ok) return empty;
     const data = (await res.json()) as {
       name?: string;
-      settings?: { branding?: { logoUrl?: string } };
+      settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string } };
     };
     const name = data.name ?? null;
+    const colors = {
+      primaryColor: parseHexColor(data.settings?.branding?.primaryColor) ? data.settings!.branding!.primaryColor! : null,
+      accentColor: parseHexColor(data.settings?.branding?.secondaryColor) ? data.settings!.branding!.secondaryColor! : null,
+    };
     const safeLogoUrl = sanitizeImageSrc(data.settings?.branding?.logoUrl ?? null);
-    if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null };
+    if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null, ...colors };
     const loaded = await loadImageAsPng(safeLogoUrl);
-    return { name, logoDataUrl: loaded?.dataUrl ?? null, logoAspect: loaded?.aspect ?? null };
+    return { name, logoDataUrl: loaded?.dataUrl ?? null, logoAspect: loaded?.aspect ?? null, ...colors };
   } catch {
     return empty;
   }
