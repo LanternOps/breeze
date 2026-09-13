@@ -2797,7 +2797,8 @@ export async function validateFeaturePolicyExists(
     featureType === 'onedrive_helper' ||
     featureType === 'vulnerability' ||
     featureType === 'device_lifecycle' ||
-    featureType === 'monitors'
+    featureType === 'monitors' ||
+    featureType === 'warranty'
   ) {
     // These have no policy table — they require inlineSettings.
     //
