@@ -2958,7 +2958,7 @@ jobs:
           smoke_page "Devices"       "/devices"
           smoke_page "Alerts"        "/alerts"
           smoke_page "Scripts"       "/scripts"
-          smoke_page "Automations"   "/automations"
+          smoke_page "Jobs"          "/jobs"
           smoke_page "Patches"       "/patches"
           smoke_page "Policies"      "/policies"
           smoke_page "Discovery"     "/discovery"

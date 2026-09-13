@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Gestito da un monitor",
+    "description": "Questo record è generato da un monitor e non può essere modificato direttamente. Gestiscilo invece dal monitor.",
+    "open": "Apri monitor",
+    "badge": "Gestito da monitor",
+    "badgeHint": "Gestito da un monitor: modificalo invece dal monitor.",
+    "monitorLabel": "Monitor"
+  }
+}

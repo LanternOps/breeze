@@ -134,6 +134,10 @@ export const JOB_SCHEDULES = {
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',
   'ai-agent-op-evidence-retention': '48 18 * * *',
+  // #5306 — daily sweep of the MFA enrolment grace window: sends the "window
+  // opened" notice and the T-3 reminder to role-forced users who have never
+  // held a factor. Hour 19 was unused; minute 3 keeps the daily (mod 5) lane.
+  'mfa-enrollment-notice-sweep': '3 19 * * *',
   // #2787 item 4 — daily purge of removed devices past their org's
   // device_lifecycle retention window. Hour 8 in the daily (≡3 mod 5) lane
   // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and

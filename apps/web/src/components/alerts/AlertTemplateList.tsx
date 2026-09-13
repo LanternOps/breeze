@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../lib/i18n';
-import { Pencil, Plus, Trash2 } from 'lucide-react';
+import { Link2, Pencil, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
@@ -23,6 +23,10 @@ type AlertTemplate = {
   partnerId: string | null;
   isBuiltIn: boolean;
   autoResolve: boolean;
+  // Non-null when this template was compiled from a monitor definition
+  // (#5287). Read-only here like a built-in: the API 409s
+  // (`alert_template_managed_by_monitor`) on edit/delete.
+  managedByMonitorId?: string | null;
 };
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -63,7 +67,7 @@ export default function AlertTemplateList() {
   useEffect(() => { void fetchTemplates(); }, [fetchTemplates]);
 
   const handleDelete = async (template: AlertTemplate) => {
-    if (template.isBuiltIn) return;
+    if (template.isBuiltIn || template.managedByMonitorId) return;
     if (!window.confirm(t('alertTemplateList.deleteConfirm', { name: template.name }))) return;
     try {
       await runAction({
@@ -196,12 +200,24 @@ export default function AlertTemplateList() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <ScopeBadge
-                      orgId={template.orgId}
-                      partnerId={template.partnerId}
-                      isSystem={template.isBuiltIn}
-                      orgName={orgNameFor(template.orgId)}
-                    />
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <ScopeBadge
+                        orgId={template.orgId}
+                        partnerId={template.partnerId}
+                        isSystem={template.isBuiltIn}
+                        orgName={orgNameFor(template.orgId)}
+                      />
+                      {template.managedByMonitorId && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200"
+                          title={t('monitoring:managed.badgeHint')}
+                          data-testid={`alert-template-managed-badge-${template.id}`}
+                        >
+                          <Link2 className="h-3 w-3" />
+                          {t('monitoring:managed.badge')}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className={cn('inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium', severityStyles[template.severity].className)}>
@@ -216,20 +232,32 @@ export default function AlertTemplateList() {
                         onClick={() => void navigateTo(`/settings/alert-templates/${template.id}`)}
                         data-testid={`alert-template-edit-${template.id}`}
                         className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
-                        title={template.isBuiltIn ? 'View template' : 'Edit template'}
+                        title={
+                          template.managedByMonitorId
+                            ? t('monitoring:managed.badgeHint')
+                            : template.isBuiltIn
+                              ? 'View template'
+                              : 'Edit template'
+                        }
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
                         onClick={() => void handleDelete(template)}
-                        disabled={template.isBuiltIn}
+                        disabled={template.isBuiltIn || Boolean(template.managedByMonitorId)}
                         data-testid={`alert-template-delete-${template.id}`}
                         className={cn(
                           'flex h-8 w-8 items-center justify-center rounded-md text-destructive transition',
-                          template.isBuiltIn ? 'cursor-not-allowed opacity-40' : 'hover:bg-destructive/10'
+                          template.isBuiltIn || template.managedByMonitorId ? 'cursor-not-allowed opacity-40' : 'hover:bg-destructive/10'
                         )}
-                        title={template.isBuiltIn ? 'Built-in templates cannot be deleted' : 'Delete template'}
+                        title={
+                          template.managedByMonitorId
+                            ? t('monitoring:managed.badgeHint')
+                            : template.isBuiltIn
+                              ? 'Built-in templates cannot be deleted'
+                              : 'Delete template'
+                        }
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>

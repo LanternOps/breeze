@@ -1,0 +1,10 @@
+{
+  "managed": {
+    "readOnly": "Gerenciado por um monitor",
+    "description": "Este registro é gerado a partir de um monitor e não pode ser editado diretamente. Gerencie-o a partir do monitor.",
+    "open": "Abrir monitor",
+    "badge": "Gerenciado por monitor",
+    "badgeHint": "Gerenciado por um monitor — edite-o a partir do monitor.",
+    "monitorLabel": "Monitor"
+  }
+}

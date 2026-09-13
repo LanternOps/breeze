@@ -68,6 +68,24 @@ function visibilityCondition(actor: TemplateActor): SQL | undefined {
   return arms.length === 1 ? arms[0]! : or(...arms)!;
 }
 
+/**
+ * The `?orgId=` narrowing filter, dual-axis per CLAUDE.md "Partner-Wide First"
+ * step 3. The web `fetchWithAuth` wrapper pins `orgId` on EVERY request once an
+ * org is open, so a bare `org_id = $1` here hides every partner-wide set the
+ * moment a user visits an org page — the set stops being listable AND, via the
+ * Apply Template modal, stops being applicable (#5675). Gated on partner scope
+ * for the same reason `visibilityCondition` is: an org token carries a
+ * partnerId but must never see partner-wide rows through it.
+ */
+function orgFilterCondition(actor: TemplateActor, orgId: string): SQL {
+  const orgArm = eq(deliverableTemplateSets.orgId, orgId);
+  if (actor.scope !== 'partner' || !actor.partnerId) return orgArm;
+  return or(
+    orgArm,
+    and(isNull(deliverableTemplateSets.orgId), eq(deliverableTemplateSets.partnerId, actor.partnerId)),
+  )!;
+}
+
 const ownerScopeOf = (row: Pick<DeliverableTemplateSetRow, 'orgId'>) =>
   (row.orgId === null ? 'partner' as const : 'organization' as const);
 
@@ -124,7 +142,7 @@ export async function listTemplateSets(actor: TemplateActor, q: { orgId?: string
   if (visibility) conditions.push(visibility);
   if (q.orgId !== undefined) {
     requireOrgAccess(actor, q.orgId);
-    conditions.push(eq(deliverableTemplateSets.orgId, q.orgId));
+    conditions.push(orgFilterCondition(actor, q.orgId));
   }
   const rows = await db.select().from(deliverableTemplateSets)
     .where(conditions.length === 0 ? undefined : and(...conditions))

@@ -1325,6 +1325,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       };
     },
   },
+  {
+    // #5306 — daily email nudge for the MFA enrolment grace window. `global`:
+    // its closure is db + email/i18n/recipientLocale + services/mfaPolicy.ts
+    // (role/settings reads only), never routes/agentWs.ts.
+    name: 'mfaEnrollmentNoticeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/mfaEnrollmentNotice');
+      return {
+        init: m.initializeMfaEnrollmentNoticeWorker,
+        shutdown: m.shutdownMfaEnrollmentNoticeWorker,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

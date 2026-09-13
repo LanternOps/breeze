@@ -18,6 +18,27 @@ const DIRECT_READ_ALLOWLIST = new Set([
   'db/schema/configurationPolicies.ts',
   'db/schema/backup.ts',
   'db/schema/onedriveHelper.ts',
+  // #5289 — config_policy_monitors declares its FK to the link table.
+  'db/schema/monitorDefinitions.ts',
+
+  // #5289 — monitors resolve CUMULATIVELY, which is exactly what the effective
+  // view cannot express: the view hands back a parent's link only for feature
+  // types the child does NOT override, so a child policy with its own monitors
+  // link would silently drop every monitor attached to its parent. The resolver
+  // therefore reads the AUTHORED links for the policy and its parent and ranks
+  // the attachments itself (closest attachment wins, per monitor).
+  'services/monitors/monitorResolver.ts',
+  // #5289 — attachment CRUD and the "which policies attach this monitor" view:
+  // the policy's own links, never an inherited projection of them.
+  'routes/monitorDefinitions.ts',
+  // #5289 — AI-tool mirror of routes/monitorDefinitions.ts above: every read
+  // here is either reporting a monitor's own (authored) policy attachments
+  // (get_monitor) or the attach/detach read-modify-write path over the same
+  // authored rows (currentAttachmentItems, mirroring that file's currentItems).
+  // None of these resolve a policy's EFFECTIVE monitor set — that's
+  // services/monitors/monitorResolver.ts's job — so there is no call site here
+  // that should switch to the view.
+  'services/aiToolsMonitors.ts',
 
   // Authored link CRUD + listFeatureLinks (the editor's own-links view). This
   // file's own effective-config resolver imports the view instead.

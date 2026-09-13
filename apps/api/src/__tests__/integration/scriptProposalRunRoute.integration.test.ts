@@ -42,7 +42,7 @@ async function seedReviewedProposal(orgId: string, deviceId: string): Promise<st
       language: 'bash', content: 'echo hi', goal: 'g', expectedEffect: 'e',
       verification: { kind: 'exit_code', equals: 0 }, deviceIds: [deviceId],
       runAs: 'system', timeoutSeconds: 60,
-    }, { kind: 'chat_session', sessionId: null }));
+    }, { kind: 'chat_session', sessionId: null }, orgId));
   await withSystemDbAccessContext(() => db.update(scriptProposals)
     .set({ status: 'reviewed', riskTier: 'low' }).where(eq(scriptProposals.id, proposal.id)));
   return proposal.id;

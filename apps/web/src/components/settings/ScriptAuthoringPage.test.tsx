@@ -239,6 +239,80 @@ describe('ScriptAuthoringPage', () => {
     expect(queryByTestId('script-lane-reset')).toBeNull();
   });
 
+  it('asks a TOTP approver for a code before resetting an open lane, and sends it', async () => {
+    mockRoutes({
+      org: orgGetBody({
+        laneState: LANE_OPEN,
+        policy: {
+          ownerScope: 'organization',
+          proposingEnabled: true,
+          unattendedEnabled: true,
+          maxUnattendedRiskTier: 'low',
+          unattendedAllowedClasses: ['temp_files'],
+          maxUnattendedPerHour: 5,
+          protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
+          reviewerModel: null,
+          unattendedEnabledAt: '2026-09-01T00:00:00.000Z',
+        },
+      }),
+      usersMe: { mfaMethod: 'totp' },
+      passkeys: { passkeys: [] },
+    });
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-lane-banner')).toBeInTheDocument());
+
+    // First click resolves the factor and reveals the code box — it must NOT
+    // mint with an empty code (issue #5683: the mint 400s `Invalid code`).
+    fireEvent.click(getByTestId('script-lane-reset'));
+
+    const codeInput = await waitFor(() =>
+      within(getByTestId('script-lane-banner')).getByTestId('approver-stepup-code'),
+    ) as HTMLInputElement;
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+
+    fireEvent.change(codeInput, { target: { value: '123456' } });
+    fireEvent.click(getByTestId('script-lane-reset'));
+
+    await waitFor(() => expect(mintStepUpGrant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'ai_script_lane_grant',
+        reauth: { method: 'totp', code: '123456' },
+      }),
+    ));
+
+    await waitFor(() => {
+      const resetCall = fetchWithAuth.mock.calls.find(([url]) => url === '/ai/script-lane/reset');
+      expect(resetCall).toBeDefined();
+      expect(JSON.parse(String((resetCall![1] as RequestInit).body))).toEqual({ stepUpGrant: 'grant-1' });
+    });
+  });
+
+  it('disables the reset button while it resolves the reauth factor', async () => {
+    let releaseUsersMe: (() => void) | null = null;
+    const usersMeGate = new Promise<void>((resolve) => { releaseUsersMe = resolve; });
+    mockRoutes({
+      org: orgGetBody({ laneState: LANE_OPEN }),
+      usersMe: { mfaMethod: 'totp' },
+      passkeys: { passkeys: [] },
+    });
+    const base = fetchWithAuth.getMockImplementation()!;
+    fetchWithAuth.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/users/me') { await usersMeGate; }
+      return base(url, init);
+    });
+
+    const { getByTestId } = renderPage();
+    await waitFor(() => expect(getByTestId('script-lane-banner')).toBeInTheDocument());
+
+    fireEvent.click(getByTestId('script-lane-reset'));
+    // The factor round trip happens BEFORE the mint, so the button must read as
+    // busy for it — otherwise a double-click fires concurrent resets (#5683).
+    await waitFor(() => expect((getByTestId('script-lane-reset') as HTMLButtonElement).disabled).toBe(true));
+    releaseUsersMe!();
+    await waitFor(() => expect((getByTestId('script-lane-reset') as HTMLButtonElement).disabled).toBe(false));
+    expect(mintStepUpGrant).not.toHaveBeenCalled();
+  });
+
   it('surfaces a save failure instead of failing silently', async () => {
     mockRoutes({});
     fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {

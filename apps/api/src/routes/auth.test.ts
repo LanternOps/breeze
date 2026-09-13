@@ -1946,7 +1946,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: false, sms: false, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const mockRedis = {
         get: vi.fn().mockResolvedValue(JSON.stringify({ secret: 'SETUPSECRET123', authEpoch: 1, mfaEpoch: 1 })),
@@ -3146,6 +3147,43 @@ describe('auth routes', () => {
       expect(await res.json()).toEqual({
         allowedMethods: { totp: true, sms: true, passkey: true },
         phoneConfigured: true,
+        mfaEnrollmentRequired: false,
+        mfaGraceEndsAt: null,
+      });
+    });
+
+    // #5306 — the dashboard banner reads the deadline from this endpoint, so it
+    // has to come through verbatim (and alongside the live verdict, so a client
+    // can tell "enrol now" from "enrol by <date>").
+    it('GET /auth/mfa/enrollment-options surfaces an open enrolment grace window', async () => {
+      const deadline = new Date(Date.now() + 9 * 86_400_000).toISOString();
+      vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
+        required: false,
+        allowedMethods: { totp: true, sms: true, passkey: true },
+        pendingEnrollment: { deadline },
+        source: {
+          roleForceMfa: true,
+          settingsRequireMfa: false,
+          killSwitchOff: false,
+          graceWindow: 'active' as const,
+        },
+      });
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ phoneNumber: null, phoneVerified: false }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/auth/mfa/enrollment-options', {
+        headers: { Authorization: 'Bearer valid-token' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        mfaEnrollmentRequired: false,
+        mfaGraceEndsAt: deadline,
       });
     });
 
@@ -3219,7 +3257,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: false, sms: false, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       vi.mocked(verifyPassword).mockResolvedValue(true);
       vi.mocked(getRedis).mockReturnValue({
@@ -3560,7 +3599,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: false, sms: false, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const redis = { get: vi.fn(), setex: vi.fn(), del: vi.fn() };
       vi.mocked(getRedis).mockReturnValue(redis as any);
@@ -4147,7 +4187,8 @@ describe('auth routes', () => {
         return vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
           required: false,
           allowedMethods: { totp: true, sms: true, passkey: true },
-          source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+          pendingEnrollment: null,
+          source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
         });
       }
 
@@ -4414,7 +4455,8 @@ describe('auth routes', () => {
 			policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValue({
 				required: false,
 				allowedMethods: { totp: true, sms: true, passkey: true },
-				source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+				pendingEnrollment: null,
+				source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
 			});
 		});
 
@@ -4617,7 +4659,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: false },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/step-up', {
@@ -4666,7 +4709,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: false, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/step-up', {
@@ -4708,7 +4752,8 @@ describe('auth routes', () => {
 			policySpy.mockResolvedValueOnce({
 				required: true,
 				allowedMethods: { totp: false, sms: true, passkey: true },
-				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+				pendingEnrollment: null,
+				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
 			});
 			vi.mocked(consumeMFAToken).mockResolvedValue(true);
 			vi.mocked(mintStepUpGrant).mockResolvedValue('grant-prohibited-totp');
@@ -4741,7 +4786,8 @@ describe('auth routes', () => {
 			policySpy.mockResolvedValueOnce({
 				required: true,
 				allowedMethods: { totp: true, sms: false, passkey: true },
-				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+				pendingEnrollment: null,
+				source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
 			});
 			const checkVerificationCode = vi.fn().mockResolvedValue({ valid: true, serviceError: false });
 			vi.mocked(getTwilioService).mockReturnValue({
@@ -4878,7 +4924,8 @@ describe('auth routes', () => {
       const policySpy = vi.spyOn(mfaPolicyModule, 'getEffectiveMfaPolicy').mockResolvedValueOnce({
         required: true,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/step-up', {

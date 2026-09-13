@@ -349,9 +349,21 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // GC's unit of work is a storage identity (possibly several backupConfigs
   // rows sharing one bucket), not a single "destination" row.
   gcSkippedIdentities: number;
-  // Subset of gcSkippedIdentities that fail-closed on an unfetchable FILE-type
+  // Subset of gcSkippedIdentities that fail-closed on an unfetchable
   // manifest — the distinct signal of a possible non-self-healing storage leak.
   gcBlockedIdentities: number;
+  // D18 W02: retirement rows CONFIRMED fully swept from storage this run
+  // (durable, via swept_at).
+  gcRetiredSwept: number;
+  // D18 W02: abandoned orphan-manifest prefixes reclaimed this run
+  // (best-effort observability metric, no DB row to confirm against).
+  gcOrphansSwept: number;
+  // D18 W02: identities that ran today's (pre-D18) algorithm only this run
+  // (legacy helper and/or unresolved NULL-storage_identity rows).
+  gcDeferredIdentities: number;
+  // D18 W02: storage_identity values with rows but no current config
+  // producing them (visibility only).
+  gcUnreachableIdentities: number;
 }> {
   // D18 §3.7: this whole function now runs with NO ambient DB context (it is
   // called directly from the worker, no longer inside the blanket wrap) — the
@@ -387,22 +399,30 @@ export async function processCleanupExpiredSnapshots(): Promise<{
   // job: row-level retention already succeeded, and BullMQ would otherwise
   // retry/re-log the whole run over an unrelated object-storage problem.
   //
-  // D18 §3.7 (authoritative shape for W02): ONE shared context for the whole
-  // sweep — matches today's read shape, so sweepUnreferencedBackupObjects's
-  // existing internal db.select(...) calls keep the working GUCs they rely on
-  // (it has no context management of its own). This runs strictly AFTER
-  // every row's retention has already committed independently (Task 9), so a
-  // GC failure here can never roll back a retirement that already committed.
-  // W02 replaces this single wrap with genuinely separate per-identity
-  // contexts managed inside sweepUnreferencedBackupObjects itself.
+  // D18 §3.7 (W02): the call is BARE, at depth 0 — no ambient DB context.
+  // sweepUnreferencedBackupObjects (backupRetention.ts) now opens its own
+  // short per-identity withSystemDbAccessContext calls internally and makes
+  // every storage (list/fetch/delete) call outside any held context; wrapping
+  // the whole call in one context here (the pre-W02 shape) would defeat that
+  // split and pin a pooled connection across every identity's storage I/O.
+  // assertOutsideHeldDbContext inside sweepStorageIdentity is the runtime
+  // tripwire for this invariant.
   let gcDeleted = 0;
   let gcSkippedIdentities = 0;
   let gcBlockedIdentities = 0;
+  let gcRetiredSwept = 0;
+  let gcOrphansSwept = 0;
+  let gcDeferredIdentities = 0;
+  let gcUnreachableIdentities = 0;
   try {
-    const gcResult = await runWithSystemDbAccess(() => sweepUnreferencedBackupObjects());
+    const gcResult = await sweepUnreferencedBackupObjects();
     gcDeleted = gcResult.deleted;
     gcSkippedIdentities = gcResult.skippedIdentities;
     gcBlockedIdentities = gcResult.blockedIdentities;
+    gcRetiredSwept = gcResult.retiredSwept;
+    gcOrphansSwept = gcResult.orphansSwept;
+    gcDeferredIdentities = gcResult.deferredIdentities;
+    gcUnreachableIdentities = gcResult.unreachableIdentities;
   } catch (err) {
     console.error('[BackupWorker] Backup object GC sweep failed — retention run still succeeded:', err);
     captureException(err instanceof Error ? err : new Error(String(err)));
@@ -422,7 +442,11 @@ export async function processCleanupExpiredSnapshots(): Promise<{
     );
   }
 
-  return { deleted, skipped, prunedByMaxVersions, failed, gcDeleted, gcSkippedIdentities, gcBlockedIdentities };
+  return {
+    deleted, skipped, prunedByMaxVersions, failed,
+    gcDeleted, gcSkippedIdentities, gcBlockedIdentities,
+    gcRetiredSwept, gcOrphansSwept, gcDeferredIdentities, gcUnreachableIdentities,
+  };
 }
 
 // ── Backup target resolution ─────────────────────────────────────────────────

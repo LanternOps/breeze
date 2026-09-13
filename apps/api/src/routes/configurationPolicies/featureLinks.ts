@@ -8,6 +8,7 @@ import {
   backupInlineSettingsSchema,
   backupProfileLinkedInlineSettingsSchema,
   monitoringInlineSettingsSchema,
+  monitorsInlineSettingsSchema,
   onedriveHelperInlineSettingsSchema,
   patchInlineSettingsSchema,
 } from '@breeze/shared/validators';
@@ -31,6 +32,9 @@ import {
   PARTNER_LINKABLE_FEATURE_TYPES,
   isBackupProfileReference,
 } from '../../services/configurationPolicy';
+import { isMonitorAttachableToPolicy } from '../../services/monitors/monitorAttachability';
+import { getMonitorDefinition } from '../../services/monitors/monitorService';
+import { pgErrorCode, pgErrorConstraint } from '../../utils/pgErrors';
 import {
   MAX_MAX_SESSION_DURATION_HOURS,
   MIN_MAX_SESSION_DURATION_HOURS,
@@ -42,6 +46,18 @@ import {
   linkIdParamSchema,
 } from './schemas';
 import { AutomationReferenceAuthorizationError } from '../../services/automationReferenceAuthorization';
+
+// The `config_policy_monitors_compat` deferred constraint trigger
+// (2026-10-16-160300-monitor-definitions.sql) is the owner-compatibility
+// authority for monitor attachments — it fires at COMMIT, after the insert
+// this route issues has already returned, so the 23514 surfaces from the
+// `await addFeatureLink(...)` / `await updateFeatureLink(...)` call itself.
+// Mapped to a 400 here rather than left to bubble as a raw 500.
+const MONITOR_NOT_ATTACHABLE_CONSTRAINT = 'config_policy_monitors_compat';
+
+function isMonitorNotAttachableDbError(err: unknown): boolean {
+  return pgErrorCode(err) === '23514' && pgErrorConstraint(err) === MONITOR_NOT_ATTACHABLE_CONSTRAINT;
+}
 
 export const featureLinkRoutes = new Hono();
 const requireConfigPolicyRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -240,6 +256,34 @@ featureLinkRoutes.post(
       // into the stored JSONB mirror on every save.
     }
 
+    if (data.featureType === 'monitors' && data.inlineSettings) {
+      const parsed = monitorsInlineSettingsSchema.safeParse(data.inlineSettings);
+      if (!parsed.success) {
+        return c.json(
+          zodValidationErrorBody('Invalid monitors settings', parsed.error),
+          400
+        );
+      }
+      // Two checks, both BEFORE the write. Visibility gets its own specific
+      // 400; ownership compatibility is checked here rather than by catching
+      // the database's guard, because that guard is a DEFERRABLE INITIALLY
+      // DEFERRED constraint trigger and this route already runs inside the
+      // middleware's ambient transaction — `addFeatureLink`'s own
+      // db.transaction() is a SAVEPOINT whose release never forces the deferred
+      // check, so the 23514 would land at the request's commit, after this
+      // handler returned (same class as #5580).
+      for (const item of parsed.data.items) {
+        const monitor = await getMonitorDefinition(item.monitorId, auth);
+        if (!monitor) {
+          return c.json({ error: 'Unknown monitorId' }, 400);
+        }
+        if (!(await isMonitorAttachableToPolicy(item.monitorId, id))) {
+          return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
+        }
+      }
+      data.inlineSettings = parsed.data;
+    }
+
     // addFeatureLink returns null (instead of throwing) on a duplicate — see the
     // comment on its onConflictDoNothing insert in configurationPolicy.ts for
     // why the raised-violation catch pattern doesn't work inside this route's
@@ -255,6 +299,9 @@ featureLinkRoutes.post(
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (isMonitorNotAttachableDbError(error)) {
+        return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
       throw error;
     }
@@ -420,6 +467,27 @@ featureLinkRoutes.patch(
         }
         // Validate only — see the POST route for why parsed.data isn't written back.
       }
+      if (existingLink.featureType === 'monitors') {
+        const parsed = monitorsInlineSettingsSchema.safeParse(data.inlineSettings);
+        if (!parsed.success) {
+          return c.json(
+            zodValidationErrorBody('Invalid monitors settings', parsed.error),
+            400
+          );
+        }
+        // See the POST handler for why attachability is pre-checked rather
+        // than caught from the deferred trigger.
+        for (const item of parsed.data.items) {
+          const monitor = await getMonitorDefinition(item.monitorId, auth);
+          if (!monitor) {
+            return c.json({ error: 'Unknown monitorId' }, 400);
+          }
+          if (!(await isMonitorAttachableToPolicy(item.monitorId, id))) {
+            return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
+          }
+        }
+        data.inlineSettings = parsed.data;
+      }
     }
 
     let updated;
@@ -428,6 +496,9 @@ featureLinkRoutes.patch(
     } catch (error) {
       if (error instanceof AutomationReferenceAuthorizationError) {
         return c.json({ error: 'Unknown or unauthorized automation reference' }, 400);
+      }
+      if (isMonitorNotAttachableDbError(error)) {
+        return c.json({ error: 'MONITOR_NOT_ATTACHABLE' }, 400);
       }
       throw error;
     }

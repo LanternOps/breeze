@@ -169,6 +169,24 @@ describe('createSession page-context org anchoring (#5593)', () => {
     expect(selectMock).toHaveBeenCalledTimes(1);
   });
 
+  it('prefers the page-context device org over a caller that already has a home org (#5684)', async () => {
+    // The web client pins an org in the selector; a partner tech opening a
+    // device in ANOTHER org must still get a session in the device's org, so
+    // the page-context anchor has to outrank `auth.orgId`, not just the
+    // `accessibleOrgIds[0]` fallback.
+    selectMock
+      .mockReturnValueOnce(devSelect([{ orgId: ORG_B, siteId: null }]))
+      .mockReturnValueOnce(devSelect([{ orgId: ORG_B, siteId: null }]));
+    const valuesSpy = expectInsert();
+
+    const result = await createSession(partnerAuth({ orgId: ORG_A }), {
+      pageContext: devicePageContext,
+    });
+
+    expect(valuesSpy).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_B }));
+    expect(result.orgId).toBe(ORG_B);
+  });
+
   it('leaves an explicit options.orgId authoritative over the page context', async () => {
     selectMock.mockReturnValue(devSelect([{ orgId: ORG_B, siteId: null }]));
     const valuesSpy = expectInsert();

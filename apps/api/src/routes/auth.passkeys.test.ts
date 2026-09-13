@@ -536,7 +536,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
     dbState.selectQueue = [];
     dbState.updateSets = [];
@@ -1120,7 +1121,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: false,
       allowedMethods: { totp: true, sms: true, passkey: false },
-      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
 
     const res = await app.request('/auth/mfa/passkey/verify', {
@@ -1405,7 +1407,8 @@ describe('passkey MFA auth routes', () => {
     vi.mocked(getEffectiveMfaPolicy).mockResolvedValueOnce({
       required: true,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true },
+      pendingEnrollment: null,
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
     });
     dbState.selectQueue.push(
       [{ passwordHash: '$argon2id$hash' }],

@@ -68,6 +68,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_alerts: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
   manage_monitors: 'alerts_monitoring',
+  // #5289 — monitor DEFINITIONS (the authored condition+response object), not
+  // the network monitors `manage_monitors` above covers.
+  list_monitors: 'alerts_monitoring',
+  get_monitor: 'alerts_monitoring',
+  manage_monitor_definitions: 'alerts_monitoring',
   manage_service_monitors: 'alerts_monitoring',
   manage_notification_channels: 'alerts_monitoring',
   manage_maintenance_windows: 'alerts_monitoring', // scheduled alert suppression, not a config policy

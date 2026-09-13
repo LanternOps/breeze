@@ -308,6 +308,7 @@ const EXPECTED_NAMES = [
   'scriptReviewWorker',
   'scriptVerifyWorker',
   'aiBudgetReservationSweep',
+  'mfaEnrollmentNoticeWorker',
 ];
 
 // ---------------------------------------------------------------------------

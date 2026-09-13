@@ -41,6 +41,13 @@ export async function createScriptProposal(
   auth: AuthContext,
   input: ProposeScriptInput,
   author: ScriptProposalAuthor,
+  /**
+   * The org the proposal belongs to — resolved by the CALLER from the target
+   * device (#5682). Never `auth.orgId`: a partner-scope token carries
+   * `orgId: null`, so deriving it from the token inserted NULL and violated
+   * the NOT NULL constraint for every MSP tech. Same class as #5593.
+   */
+  orgId: string,
 ): Promise<{ proposal: ScriptProposalRow; scan: ScriptScanResult }> {
   const scan = scanScriptContent(input.content, input.language);
   const status: ScriptProposalStatus = scan.basicHits.length > 0 ? 'scan_rejected' : 'proposed';
@@ -48,7 +55,7 @@ export async function createScriptProposal(
   const [proposal] = await db
     .insert(scriptProposals)
     .values({
-      orgId: auth.orgId!,
+      orgId,
       authorKind: author.kind,
       sessionId: author.kind === 'chat_session' ? author.sessionId : null,
       agentRunId: author.kind === 'agent_run' ? author.agentRunId : null,
@@ -104,15 +111,22 @@ export async function attachProposalToSession(
   return rows.length === 1;
 }
 
-/** Org-scoped read. Returns null rather than throwing on a cross-org id. */
+/**
+ * Org-scoped read. Returns null rather than throwing on a cross-org id.
+ *
+ * Scoped by the caller's org REACH (`auth.orgCondition`, the same closure the
+ * rest of the app uses), not by `auth.orgId` equality — a partner-scope token
+ * has no `orgId` and would otherwise never resolve its own proposals (#5682).
+ */
 export async function getScriptProposalForPrincipal(
   auth: AuthContext,
   proposalId: string,
 ): Promise<ScriptProposalRow | null> {
+  const orgCond = auth.orgCondition(scriptProposals.orgId);
   const [row] = await db
     .select()
     .from(scriptProposals)
-    .where(and(eq(scriptProposals.id, proposalId), eq(scriptProposals.orgId, auth.orgId!)))
+    .where(orgCond ? and(eq(scriptProposals.id, proposalId), orgCond) : eq(scriptProposals.id, proposalId))
     .limit(1);
   return row ?? null;
 }

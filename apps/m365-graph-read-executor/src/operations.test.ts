@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { completeConsentOperation, readActionOperation, retestOperation } from './operations';
+import type { SyncActionRequest } from '@breeze/shared/m365';
+import { completeConsentOperation, readActionOperation, retestOperation, syncActionOperation } from './operations';
 import { MicrosoftTokenClientError } from './microsoft/tokenClient';
 import { executeGraphReadAction } from './microsoft/readActions';
+import { renderMetrics, resetMetrics } from './metrics';
+import { createSyncContinuationCodec } from './syncContinuation';
+import { createSigninLimiter } from './signinLimiter';
 
 vi.mock('./microsoft/readActions', () => ({
   executeGraphReadAction: vi.fn(),
@@ -11,6 +15,7 @@ const TENANT_ID = '33333333-3333-4333-8333-333333333333';
 const CLIENT_ID = '44444444-4444-4444-8444-444444444444';
 const CALLBACK_URL = 'https://console.example.test/api/v1/m365/consent/callback';
 const READ_ACTION_CORRELATION_ID = '11111111-1111-4111-8111-111111111111';
+const CORRELATION_ID = READ_ACTION_CORRELATION_ID;
 
 function dependencies(observation: Record<string, unknown> = {}) {
   return {
@@ -26,8 +31,48 @@ function dependencies(observation: Record<string, unknown> = {}) {
       probeTenant: vi.fn().mockResolvedValue({ tenantId: TENANT_ID, applicationId: CLIENT_ID, organizationDisplayName: 'Example', observedGrants: null, ...observation }),
       readResource: vi.fn(),
       readCollection: vi.fn(),
+      readSyncCollection: vi.fn(),
     },
   };
+}
+
+/** Same shape as `dependencies()`, plus a graphClient stub that can carry a
+ * whole-domain sync action to completion, so sync-specific tests only need to
+ * override what they care about (e.g. `certificateProvider`). */
+function baseDependencies(overrides: {
+  certificateProvider?: { getConfiguredCertificate(): Promise<{ certificatePem: string; privateKeyPem: string }> };
+} = {}) {
+  const base = dependencies();
+  return {
+    ...base,
+    graphClient: {
+      ...base.graphClient,
+      readSyncCollection: vi.fn().mockResolvedValue({ items: [], stopReason: 'complete' as const, pages: 1 }),
+    },
+    ...overrides,
+  };
+}
+
+function syncDependencies() {
+  return {
+    limits: {
+      syncMaxInFlight: 4,
+      maxInFlight: 32,
+      signinActivityRpm: 4,
+      signinPagesPerCall: 5,
+      maxItemsUsers: 25_000,
+      maxItemsDevices: 25_000,
+      maxItemsCaPolicies: 500,
+      maxItemsSkus: 200,
+      continuationKey: null,
+    },
+    continuations: createSyncContinuationCodec({ key: null }),
+    signinLimiter: createSigninLimiter({ requestsPerMinute: 4 }),
+  };
+}
+
+function validSyncRequest(): SyncActionRequest {
+  return { correlationId: CORRELATION_ID, tenantId: TENANT_ID, action: { type: 'm365.sync.skus' } };
 }
 
 describe('executor operations', () => {
@@ -162,5 +207,40 @@ describe('readActionOperation', () => {
     }, deps);
     expect(credential.certificatePem).toBe('');
     expect(credential.privateKeyPem).toBe('');
+  });
+});
+
+describe('syncActionOperation', () => {
+  it('refuses a non-canonical tenant id before touching the credential', async () => {
+    const certificateProvider = { getConfiguredCertificate: vi.fn() };
+    await expect(syncActionOperation(
+      { correlationId: CORRELATION_ID, tenantId: 'not-a-uuid', action: { type: 'm365.sync.skus' } } as never,
+      { ...baseDependencies({ certificateProvider }), sync: syncDependencies() },
+    )).resolves.toEqual({ success: false, code: 'graph_response_invalid' });
+    expect(certificateProvider.getConfiguredCertificate).not.toHaveBeenCalled();
+  });
+
+  it('maps a credential failure to credential_unavailable', async () => {
+    await expect(syncActionOperation(validSyncRequest(), {
+      ...baseDependencies({ certificateProvider: { getConfiguredCertificate: async () => { throw new Error('kv down'); } } }),
+      sync: syncDependencies(),
+    })).resolves.toEqual({ success: false, code: 'credential_unavailable' });
+  });
+
+  it('zeroes the credential material after the call, success or failure', async () => {
+    const credential = { certificatePem: 'CERT', privateKeyPem: 'KEY' };
+    await syncActionOperation(validSyncRequest(), {
+      ...baseDependencies({ certificateProvider: { getConfiguredCertificate: async () => credential } }),
+      sync: syncDependencies(),
+    });
+    expect(credential).toEqual({ certificatePem: '', privateKeyPem: '' });
+  });
+
+  it('records the action outcome on the metrics counter', async () => {
+    resetMetrics();
+    await syncActionOperation(validSyncRequest(), {
+      ...baseDependencies(), sync: syncDependencies(),
+    });
+    expect(renderMetrics()).toContain('m365_sync_actions_total{action="m365.sync.skus",outcome="ok"}');
   });
 });

@@ -38,6 +38,7 @@ import {
   Activity,
   Layers,
   ScrollText,
+  CalendarClock,
   Download,
   ClipboardCheck,
   ScanSearch,
@@ -205,6 +206,8 @@ export const topLevelNav: NavItem[] = [
   { name: 'Incidents', labelKey: 'nav.incidents', href: '/incidents', icon: ShieldAlert, requiredPermission: { resource: 'alerts', action: 'read' } },
   { name: 'Remote Access', labelKey: 'nav.remoteAccess', href: '/remote', icon: Terminal, requiredPermission: { resource: 'remote', action: 'access' } },
   { name: 'Scripts', labelKey: 'nav.scripts', href: '/scripts', icon: FileCode, requiredPermission: { resource: 'scripts', action: 'read' } },
+  // #5288 — Automations finally get a nav home, as Jobs. /automations redirects here.
+  { name: 'Jobs', labelKey: 'nav.jobs', href: '/jobs', icon: CalendarClock, requiredPermission: { resource: 'automations', action: 'read' } },
   { name: 'Patches', labelKey: 'nav.patches', href: '/patches', icon: Download, requiredPermission: { resource: 'devices', action: 'read' } },
   { name: 'Vulnerabilities', labelKey: 'nav.vulnerabilities', href: '/vulnerabilities', icon: Bug, requiredPermission: { resource: 'devices', action: 'read' } },
 ];
@@ -259,7 +262,8 @@ export const navSections: NavSection[] = [
       // One page with Inventory + Policies tabs; /software-inventory and
       // /software-policies are aliases (see pathAliases).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
-      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      // #5288 — the Monitoring hub: Network today, Monitors (W02) and Delivery tabs.
+      { name: 'Monitoring', labelKey: 'nav.monitoring', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
@@ -451,6 +455,7 @@ const allNavItems: NavItem[] = [
 const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
+  '/monitoring/delivery': '/monitoring',
 };
 
 // Determine which section a given href belongs to (for auto-expand)

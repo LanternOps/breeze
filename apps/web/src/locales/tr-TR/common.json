@@ -20,6 +20,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "Office için AI",
     "networkMonitor": "Ağ İzleyicisi",
+    "jobs": "İşler",
+    "monitoring": "İzleme",
     "networkDiscovery": "Ağ Keşfi",
     "edr": "EDR",
     "dnsSecurity": "DNS Güvenlik",
@@ -82,6 +84,11 @@
     "deviceBackup": "Cihaz Yedekleme",
     "sectionServiceDesk": "Servis masası",
     "serviceManagement": "Servis yönetimi"
+  },
+  "monitoringTabs": {
+    "ariaLabel": "İzleme bölümleri",
+    "network": "Ağ",
+    "delivery": "Teslimat"
   },
   "documentTitles": {
     "dashboard": "Kontrol Paneli",
@@ -2473,5 +2480,10 @@
     "approximateUnavailableStale": "≈ toplam kullanılamıyor — {{codes}} için {{target}} döviz kuru çok eski",
     "approximateUnavailableMixed": "≈ toplam kullanılamıyor — {{codes}} birimi {{target}} para birimine çevrilemedi",
     "approximateUnavailableCodesOverflow": "{{codes}} ve {{more}} tane daha"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Rolünüz iki faktörlü kimlik doğrulama gerektirecek. {{date}} tarihine kadar kurulumu tamamlayın.",
+    "cta": "2FA kur",
+    "dismiss": "İki faktörlü kimlik doğrulama hatırlatıcısını kapat"
   }
 }

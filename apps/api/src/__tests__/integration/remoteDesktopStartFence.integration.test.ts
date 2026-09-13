@@ -151,8 +151,10 @@ async function insertSession(input: {
 }
 
 /**
- * What W03's `commitDesktopTerminalIntent()` will do, written directly because
- * W03 has not shipped: bump the shared generation, record it as the terminal
+ * The raw shape of W03's terminal-intent commit (`terminalIntentSet` in
+ * services/remoteDesktopTerminalIntent.ts), written directly so this file
+ * tests the START side against the bare row contract rather than through the
+ * terminal service: bump the shared generation, record it as the terminal
  * one, and move the phase to 'pending'. Both `set` expressions read the OLD
  * value, so they land on the same number — which is the contract.
  */

@@ -39,6 +39,7 @@ import {
 } from '../db/schema';
 import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
+import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
 import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
 
 // ---------------------------------------------------------------------------
@@ -423,30 +424,24 @@ export async function loadRevocationRecheckRow(
 export async function markSessionRevoked(
   sessionId: string,
   reason: RevocationReason,
-): Promise<{ id: string; type: string; deviceId: string } | null> {
-  const [updated] = await runOutsideDbContext(() =>
+): Promise<TerminalSessionRow | null> {
+  // Through the terminal-intent contract (SEC-038 W03): the revocation bumps
+  // the same generation every start bumps, and the row it returns carries the
+  // terminal generation the follow-up stop must name.
+  const result = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
-      db
-        .update(remoteSessions)
-        .set({
+      commitDesktopTerminalIntent({
+        sessionId,
+        write: {
           status: 'disconnected',
           endedAt: new Date(),
           errorMessage: `revoked:${reason}`,
-        })
-        .where(
-          and(
-            eq(remoteSessions.id, sessionId),
-            sql`${remoteSessions.status} IN ('pending', 'connecting', 'active')`,
-          ),
-        )
-        .returning({
-          id: remoteSessions.id,
-          type: remoteSessions.type,
-          deviceId: remoteSessions.deviceId,
-        }),
+        },
+        phase: 'pending',
+      }),
     ),
   );
-  return updated ?? null;
+  return result.ok ? result.row : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -547,7 +542,7 @@ export interface RenewRevocationLeaseOptions {
   markRevoked?: (
     sessionId: string,
     reason: RevocationReason,
-  ) => Promise<{ id: string; type: string; deviceId: string } | null>;
+  ) => Promise<TerminalSessionRow | null>;
   redis?: Redis | null;
   now?: () => number;
 }

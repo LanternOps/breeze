@@ -7,7 +7,7 @@
     },
     "loading": "Cargando automatización...",
     "breadcrumb": {
-      "automations": "Automatizaciones",
+      "automations": "Trabajos",
       "new": "Nueva automatización",
       "edit": "Editar automatización"
     },
@@ -341,8 +341,8 @@
       "delete": "No se pudo eliminar la automatización"
     },
     "loading": "Cargando automatizaciones...",
-    "title": "Automatizaciones",
-    "description": "Cree y administre flujos de trabajo automatizados.",
+    "title": "Trabajos",
+    "description": "Automatizaciones programadas, bajo demanda, por webhook y por eventos.",
     "actions": {
       "new": "Nueva automatización",
       "deleting": "Eliminando..."
@@ -351,6 +351,14 @@
       "title": "Eliminar automatización",
       "confirmPrefix": "¿Está seguro de que desea eliminar?",
       "confirmSuffix": "Esta acción no se puede deshacer."
+    },
+    "tabs": {
+      "ariaLabel": "Tipos de trabajo",
+      "all": "Todos",
+      "scheduled": "Programados",
+      "on-demand": "Bajo demanda",
+      "webhooks": "Webhooks",
+      "event-rules": "Reglas de eventos"
     }
   },
   "complianceDashboard": {

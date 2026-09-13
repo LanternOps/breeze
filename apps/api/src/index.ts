@@ -26,6 +26,7 @@ import { pamRoutes } from './routes/pam';
 import { scriptRoutes } from './routes/scripts';
 import { scriptLibraryRoutes } from './routes/scriptLibrary';
 import { automationRoutes, automationWebhookRoutes } from './routes/automations';
+import { monitorDefinitionRoutes } from './routes/monitorDefinitions';
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { ticketsRoutes } from './routes/tickets';
@@ -800,6 +801,10 @@ api.route('/script-library', scriptLibraryRoutes);
 api.route('/automations/webhooks', automationWebhookRoutes);
 api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
+// #5289 — monitor DEFINITIONS (the authored object the alert rules above get
+// compiled from). Deliberately NOT '/monitors': that path is already the
+// network-monitor API (routes/monitors.ts).
+api.route('/monitor-definitions', monitorDefinitionRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 // M365 mailbox OAuth + connection routes. Mounted as its OWN top-level router
 // (NOT under ticketsRoutes) and BEFORE /tickets so its literal /tickets/mailbox/*

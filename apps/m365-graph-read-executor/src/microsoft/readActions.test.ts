@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   M365_READ_ACTION_FIELDS,
-  M365_READ_ACTION_IDS,
-  type M365ReadAction,
-  type M365ReadActionId,
+  M365_INTERACTIVE_READ_ACTION_IDS,
+  type M365InteractiveReadAction,
+  type M365InteractiveReadActionId,
 } from '@breeze/shared/m365';
 import { GraphClientError, type MicrosoftGraphClient } from './graphClient';
 import { executeGraphReadAction } from './readActions';
@@ -50,12 +50,15 @@ function createStubGraphClient(options: {
       if (options.throwError) throw options.throwError;
       return options.collection ?? { items: [{ id: 'stub-item-id' }], truncated: false };
     },
+    async readSyncCollection() {
+      throw new Error('readSyncCollection is not used by interactive readActions');
+    },
   };
   return { client, readResourceCalls, readCollectionCalls };
 }
 
 // One minimal valid action per id, and the exact fixed path each must hit.
-const SAMPLE_ACTIONS: Record<M365ReadActionId, M365ReadAction> = {
+const SAMPLE_ACTIONS: Record<M365InteractiveReadActionId, M365InteractiveReadAction> = {
   'm365.user.list': { type: 'm365.user.list' },
   'm365.user.get': { type: 'm365.user.get', userIdOrUpn: 'ada@contoso.com' },
   'm365.signins.list': { type: 'm365.signins.list' },
@@ -70,7 +73,7 @@ const SAMPLE_ACTIONS: Record<M365ReadActionId, M365ReadAction> = {
   'm365.site.get': { type: 'm365.site.get', siteId: SITE_ID },
 };
 
-const EXPECTED_PATH: Record<M365ReadActionId, string> = {
+const EXPECTED_PATH: Record<M365InteractiveReadActionId, string> = {
   'm365.user.list': '/users',
   'm365.user.get': `/users/${encodeURIComponent('ada@contoso.com')}`,
   'm365.signins.list': '/auditLogs/signIns',
@@ -88,7 +91,7 @@ const EXPECTED_PATH: Record<M365ReadActionId, string> = {
 // Actions dispatched via graphClient.readResource (single-object fetch).
 // Everything else — including m365.org.get, which projects the collection's
 // first item into a `resource` result — goes through readCollection.
-const RESOURCE_ACTION_IDS = new Set<M365ReadActionId>([
+const RESOURCE_ACTION_IDS = new Set<M365InteractiveReadActionId>([
   'm365.user.get',
   'm365.intune.device.get',
   'm365.group.get',
@@ -96,7 +99,7 @@ const RESOURCE_ACTION_IDS = new Set<M365ReadActionId>([
 ]);
 
 describe('executeGraphReadAction — dispatch table', () => {
-  it.each(M365_READ_ACTION_IDS)('%s calls the fixed path with the full field allowlist as $select', async (actionId) => {
+  it.each(M365_INTERACTIVE_READ_ACTION_IDS)('%s calls the fixed path with the full field allowlist as $select', async (actionId) => {
     const { client, readResourceCalls, readCollectionCalls } = createStubGraphClient();
     const action = SAMPLE_ACTIONS[actionId];
     const fields = M365_READ_ACTION_FIELDS[actionId];
@@ -277,7 +280,7 @@ describe('executeGraphReadAction — dispatch table', () => {
     expect(readCollectionCalls[0]!.query['$top']).toBeUndefined();
   });
 
-  it.each<[string, M365ReadAction, string | undefined, number, number]>([
+  it.each<[string, M365InteractiveReadAction, string | undefined, number, number]>([
     ['m365.signins.list', { type: 'm365.signins.list' }, '25', 2, 50],
     ['m365.sites.list', { type: 'm365.sites.list', search: 'intranet' }, '25', 1, 25],
     ['m365.org.skus.list', { type: 'm365.org.skus.list' }, undefined, 4, 60],

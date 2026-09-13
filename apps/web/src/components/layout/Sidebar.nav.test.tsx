@@ -155,6 +155,23 @@ describe('navSections structure (#1321, #1324)', () => {
       'administration',
     ]);
   });
+
+  it('exposes Jobs at top level right after Scripts (#5288)', () => {
+    const hrefs = topLevelNav.map((i) => i.href);
+    expect(hrefs.indexOf('/jobs')).toBe(hrefs.indexOf('/scripts') + 1);
+    const jobs = topLevelNav.find((i) => i.href === '/jobs')!;
+    expect(jobs.name).toBe('Jobs');
+    expect(jobs.labelKey).toBe('nav.jobs');
+    expect(jobs.requiredPermission).toEqual({ resource: 'automations', action: 'read' });
+  });
+
+  it('labels /monitoring as Monitoring, not Network Monitor (#5288)', () => {
+    const item = navSections
+      .find((s) => s.id === 'fleet-management')!
+      .items.find((i) => i.href === '/monitoring')!;
+    expect(item.name).toBe('Monitoring');
+    expect(item.labelKey).toBe('nav.monitoring');
+  });
 });
 
 describe('go-to keyboard chords (g then key)', () => {
@@ -285,7 +302,7 @@ describe('sidebar i18n seed', () => {
     await i18n.changeLanguage('pt-BR');
     render(<Sidebar currentPath="/monitoring" />);
 
-    const nestedLink = await screen.findByText('Monitoramento de Rede');
+    const nestedLink = await screen.findByText('Monitoramento');
     expect(nestedLink.closest('a')).toHaveAttribute('href', '/monitoring');
     expect(screen.queryByText('Network Monitor')).not.toBeInTheDocument();
   });

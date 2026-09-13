@@ -519,17 +519,24 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
   // `typeof === 'string'` rather than `!== null`: an absent property (a
   // partially-selected row) would read as MANAGED under `!== null` and start
   // binding/skipping every ordinary customer automation. Fail toward unmanaged.
-  const isManaged = typeof automation.managedByAgentId === 'string';
+  const isAgentManaged = typeof automation.managedByAgentId === 'string';
+  // #5289 — a compiled MONITOR automation binds the same way. It is an ordinary
+  // `alert.triggered` event automation with no conditions and no trigger
+  // deviceIds, so without this it falls through to "every device in the owning
+  // org" (every org under the partner, for a partner-wide monitor): one disk
+  // alert on one workstation would run the monitor's response fleet-wide.
+  const isMonitorManaged = typeof automation.managedByMonitorId === 'string';
+  const isManaged = isAgentManaged || isMonitorManaged;
   let boundDeviceIds: string[] | undefined;
   let triggerContext: AutomationTriggerContext | undefined;
   if (isManaged) {
     const deviceId = typeof payload.deviceId === 'string' ? payload.deviceId : null;
     if (!deviceId) {
       // A managed automation binds to the triggering device — an event with no
-      // device has nothing to triage. Skip loudly, never fan out.
+      // device has nothing to act on. Skip loudly, never fan out.
       return { skipped: 'managed_automation_event_has_no_device' };
     }
-    if (typeof payload.automationId === 'string') {
+    if (isAgentManaged && typeof payload.automationId === 'string') {
       // Alert was CREATED by an automation (create_alert publishes automationId).
       // Triaging automation output invites feedback loops; deliberate default
       // until wave 6 revisits it.

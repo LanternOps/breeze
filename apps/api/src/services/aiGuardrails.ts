@@ -499,6 +499,11 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
   'manage_software_policy', 'manage_browser_policy',
+  // Monitor definitions (#5289 Task 8): ordinary config-object CRUD (create/
+  // update/delete/enable/disable/attach/detach), same class as the software/
+  // browser/peripheral policy tools above — no identity, tenant-destruction,
+  // or restore/rewind action in its surface.
+  'manage_monitor_definitions',
   'network_discovery', 'remediate_sensitive_data',
   'remediate_software_violation', 'remediate_vulnerability',
   'execute_playbook', 'execute_containment',
@@ -962,6 +967,22 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     add: { resource: 'policies', action: 'write' },
     update: { resource: 'policies', action: 'write' },
     remove: { resource: 'policies', action: 'write' },
+  },
+  // Monitor definition tools (#5289 Task 8) — same permission the HTTP routes
+  // require (PERMISSIONS.ALERTS_READ / ALERTS_WRITE, routes/monitorDefinitions.ts).
+  // NOTE: the write tool is manage_monitor_definitions, NOT manage_monitors —
+  // that name is already taken by the unrelated network-monitor CRUD tool
+  // (see the "Monitoring tools" RBAC mappings below).
+  list_monitors: { resource: 'alerts', action: 'read' },
+  get_monitor: { resource: 'alerts', action: 'read' },
+  manage_monitor_definitions: {
+    create: { resource: 'alerts', action: 'write' },
+    update: { resource: 'alerts', action: 'write' },
+    delete: { resource: 'alerts', action: 'write' },
+    enable: { resource: 'alerts', action: 'write' },
+    disable: { resource: 'alerts', action: 'write' },
+    attach: { resource: 'alerts', action: 'write' },
+    detach: { resource: 'alerts', action: 'write' },
   },
   manage_backup_profiles: {
     list: { resource: 'policies', action: 'read' },

@@ -157,3 +157,4 @@ export * from './eventDispatch';
 export * from './metricAnomalyIncidents';
 export * from './agentRollback';
 export * from './offlineTransitionEffects';
+export * from './monitorDefinitions';

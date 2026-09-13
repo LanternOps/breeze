@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import NotificationChannelsPage from '../../components/alerts/NotificationChannelsPage';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+---
+
+<DashboardLayout titleKey="titles.monitoringDelivery">
+  <Breadcrumbs client:load items={[
+    { label: 'Monitoring', href: '/monitoring' },
+    { label: 'Delivery' }
+  ]} />
+  <NotificationChannelsPage client:load tabStrip="monitoring" />
+</DashboardLayout>

@@ -25,7 +25,7 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { deliverableTemplateSets, deliverableTemplateItems, serviceDeliverables, contracts } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
-import { applyTemplateSet, type TemplateActor } from '../../services/deliverableTemplateService';
+import { applyTemplateSet, listTemplateSets, type TemplateActor } from '../../services/deliverableTemplateService';
 
 const SYSTEM_CTX: DbAccessContext = {
   scope: 'system',
@@ -314,6 +314,55 @@ describe('deliverable template RLS (#5573 W05)', () => {
 
       // The row survived every attempt.
       expect(await countSets(SYSTEM_CTX, setId)).toBe(1);
+    });
+  });
+
+  describe('listTemplateSets with a pinned orgId (#5675)', () => {
+    it('returns the partner-wide set alongside the org-owned one for a partner-scope actor', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      createdOrgIds.push(org.id);
+      const partnerWide = uniqueName('Partner wide');
+      const orgOwned = uniqueName('Org owned');
+      await seedSet({ partnerId: partner.id, name: partnerWide });
+      await seedSet({ orgId: org.id, name: orgOwned });
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partner.id,
+        partnerOrgAccess: 'all', accessibleOrgIds: [org.id],
+      };
+      const rows = await withDbAccessContext(partnerContext(partner.id, [org.id]), () =>
+        listTemplateSets(actor, { orgId: org.id }),
+      );
+      const names = rows.map((r) => r.name);
+      expect(names).toContain(orgOwned);
+      expect(names).toContain(partnerWide);
+      expect(rows.find((r) => r.name === partnerWide)?.ownerScope).toBe('partner');
+    });
+
+    it('hides the partner-wide set from an org-scope actor even though RLS would allow the read', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+      createdOrgIds.push(org.id);
+      const partnerWide = uniqueName('Partner wide');
+      const orgOwned = uniqueName('Org owned');
+      const partnerWideId = await seedSet({ partnerId: partner.id, name: partnerWide });
+      await seedSet({ orgId: org.id, name: orgOwned });
+
+      // Positive control: the row IS readable in this very context, so the
+      // exclusion below is the app-layer scope gate and not a missing row.
+      expect(await countSets(orgContext(org.id, partner.id), partnerWideId)).toBe(1);
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'organization', partnerId: partner.id,
+        partnerOrgAccess: null, accessibleOrgIds: [org.id],
+      };
+      const rows = await withDbAccessContext(orgContext(org.id, partner.id), () =>
+        listTemplateSets(actor, { orgId: org.id }),
+      );
+      const names = rows.map((r) => r.name);
+      expect(names).toContain(orgOwned);
+      expect(names).not.toContain(partnerWide);
     });
   });
 

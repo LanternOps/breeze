@@ -2,25 +2,59 @@ import { createHash, randomUUID as nodeRandomUUID, type KeyObject } from 'node:c
 import {
   completeConsentRequestSchema,
   completeConsentResultSchema,
+  m365SyncActionResponseSchema,
   readActionRequestSchema,
   readActionResultSchema,
   retestRequestSchema,
   retestResultSchema,
+  syncActionRequestSchema,
   type CompleteConsentRequest,
   type CompleteConsentResult,
+  type M365SyncActionResult,
+  type M365SyncFailureCode,
   type ReadActionRequest,
   type ReadActionResult,
   type RetestRequest,
   type RetestResult,
+  type SyncActionRequest,
 } from '@breeze/shared/m365';
 import { importJWK, SignJWT, type CryptoKey, type JWK } from 'jose';
+import { z } from 'zod';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024;
 const READ_ACTION_MAX_RESPONSE_BYTES = 256 * 1024;
 const TOKEN_LIFETIME_SECONDS = 60;
+const SYNC_ACTION_TIMEOUT_MS = 130_000;
+const SYNC_ACTION_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const DEFAULT_SYNC_CAPACITY_RETRY_SECONDS = 30;
 
-type ExecutorOperation = 'complete-consent' | 'retest' | 'read-action';
+type ExecutorOperation = 'complete-consent' | 'retest' | 'read-action' | 'sync-action';
+
+/**
+ * An outcome the executor reported. Distinct from GraphReadExecutorClientError,
+ * which still means "we could not get an answer" and is still thrown: a caller
+ * that must back off for a stated number of seconds needs the number, and
+ * collapsing 503 sync_capacity into executor_unavailable throws it away.
+ */
+export interface GraphReadExecutorFailure {
+  success: false;
+  code: M365SyncFailureCode | 'sync_capacity';
+  retryAfterSeconds?: number;
+}
+
+const capacityRefusalSchema = z.object({
+  code: z.literal('sync_capacity'),
+  retryAfterSeconds: z.number().int().min(1).max(300).optional(),
+});
+
+function safeJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
 
 export class GraphReadExecutorClientError extends Error {
   readonly code = 'executor_unavailable' as const;
@@ -35,6 +69,7 @@ export interface GraphReadExecutorClient {
   completeIdentityVerification(input: CompleteConsentRequest): Promise<CompleteConsentResult>;
   retestCustomerGraphRead(input: RetestRequest): Promise<RetestResult>;
   executeReadAction(input: ReadActionRequest): Promise<ReadActionResult>;
+  syncAction(input: SyncActionRequest): Promise<M365SyncActionResult | GraphReadExecutorFailure>;
 }
 
 export interface GraphReadExecutorClientConfig {
@@ -75,6 +110,7 @@ const OPERATION_ENDPOINT_PATHS: Record<ExecutorOperation, string> = {
   'complete-consent': '/v1/complete-consent',
   retest: '/v1/retest',
   'read-action': '/v1/read-action',
+  'sync-action': '/v1/sync-action',
 };
 
 function operationEndpoint(origin: URL, operation: ExecutorOperation): string {
@@ -151,50 +187,47 @@ export function createGraphReadExecutorClient(
     return signingKeyPromise;
   }
 
+  async function dispatch(
+    operation: ExecutorOperation,
+    input: { correlationId: string },
+    timeout: number,
+  ): Promise<Response> {
+    if (!Number.isSafeInteger(timeout) || timeout <= 0) throw unavailable();
+    // This is the sole serialization. The exact bytes are both signed and sent.
+    const rawBody = JSON.stringify(input);
+    const bodySha256 = createHash('sha256').update(rawBody).digest('base64url');
+    const issuedAt = Math.floor(now().getTime() / 1_000);
+    const token = await new SignJWT({ operation, correlationId: input.correlationId, bodySha256 })
+      .setProtectedHeader({ alg: 'EdDSA', kid: config.signingKid })
+      .setIssuer('breeze-api')
+      .setAudience(config.executorAudience)
+      .setSubject('breeze-control-plane')
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + TOKEN_LIFETIME_SECONDS)
+      .setJti(randomUUID())
+      .sign(await signingKey());
+
+    return request(operationEndpoint(executorOrigin, operation), {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeout),
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: rawBody,
+    });
+  }
+
   async function invoke<T>(
     operation: ExecutorOperation,
     input: CompleteConsentRequest | RetestRequest | ReadActionRequest,
     parseResponse: (value: unknown) => T,
     maxBytes: number = maxResponseBytes,
   ): Promise<T> {
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0
-      || !Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-      throw unavailable();
-    }
-
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw unavailable();
     try {
-      // This is the sole serialization. The exact bytes are both signed and sent.
-      const rawBody = JSON.stringify(input);
-      const bodySha256 = createHash('sha256').update(rawBody).digest('base64url');
-      const issuedAt = Math.floor(now().getTime() / 1_000);
-      const token = await new SignJWT({
-        operation,
-        correlationId: input.correlationId,
-        bodySha256,
-      })
-        .setProtectedHeader({ alg: 'EdDSA', kid: config.signingKid })
-        .setIssuer('breeze-api')
-        .setAudience(config.executorAudience)
-        .setSubject('breeze-control-plane')
-        .setIssuedAt(issuedAt)
-        .setExpirationTime(issuedAt + TOKEN_LIFETIME_SECONDS)
-        .setJti(randomUUID())
-        .sign(await signingKey());
-
-      const response = await request(operationEndpoint(executorOrigin, operation), {
-        method: 'POST',
-        redirect: 'error',
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-        },
-        body: rawBody,
-      });
+      const response = await dispatch(operation, input, timeoutMs);
       if (!response.ok || !exactJsonContentType(response)) throw unavailable();
       const rawResponse = await readBoundedResponse(response, maxBytes);
-      const decoded = new TextDecoder('utf-8', { fatal: true }).decode(rawResponse);
-      return parseResponse(JSON.parse(decoded));
+      return parseResponse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(rawResponse)));
     } catch {
       throw unavailable();
     }
@@ -220,6 +253,42 @@ export function createGraphReadExecutorClient(
         (value) => readActionResultSchema.parse(value),
         READ_ACTION_MAX_RESPONSE_BYTES,
       );
+    },
+    async syncAction(input) {
+      const parsed = syncActionRequestSchema.safeParse(input);
+      if (!parsed.success) throw unavailable();
+      let response: Response;
+      let decoded: string;
+      try {
+        response = await dispatch('sync-action', parsed.data, SYNC_ACTION_TIMEOUT_MS);
+        if (!exactJsonContentType(response)) throw unavailable();
+        const raw = await readBoundedResponse(response, SYNC_ACTION_MAX_RESPONSE_BYTES);
+        decoded = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+      } catch {
+        throw unavailable();
+      }
+
+      if (response.status === 503) {
+        const body = capacityRefusalSchema.safeParse(safeJson(decoded));
+        if (!body.success) throw unavailable();
+        return {
+          success: false,
+          code: 'sync_capacity',
+          retryAfterSeconds: body.data.retryAfterSeconds ?? DEFAULT_SYNC_CAPACITY_RETRY_SECONDS,
+        };
+      }
+      if (!response.ok) throw unavailable();
+
+      const parsedResponse = m365SyncActionResponseSchema.safeParse(safeJson(decoded));
+      if (!parsedResponse.success) throw unavailable();
+      if (parsedResponse.data.success) return parsedResponse.data;
+      return {
+        success: false,
+        code: parsedResponse.data.code,
+        ...(parsedResponse.data.retryAfterSeconds === undefined
+          ? {}
+          : { retryAfterSeconds: parsedResponse.data.retryAfterSeconds }),
+      };
     },
   };
 }
