@@ -14,7 +14,7 @@ import { logSync, runSyncDomain } from '../services/m365Sync/run';
 import { m365SyncJobDataSchema } from '../services/m365Sync/types';
 import {
   closeM365SyncQueue, enqueueSyncDomain, getM365SyncQueue, m365SyncBackoff,
-  M365_SYNC_QUEUE, M365_SYNC_TICK_INTERVAL_MS, M365_SYNC_TICK_JOB_ID,
+  M365_SYNC_QUEUE, M365_SYNC_TICK_JOB_ID,
   type M365SyncQueueJobData,
 } from './m365SyncQueue';
 import { attachWorkerObservability, type WorkerFailureClassification } from './workerObservability';
@@ -154,6 +154,16 @@ let worker: Worker<M365SyncQueueJobData> | null = null;
  *
  * No scheduleRegistry slot: that registry allocates coarse (>= hourly)
  * schedules, and a 60 s tick is explicitly exempt.
+ *
+ * The `every` value below is a LITERAL, not the `M365_SYNC_TICK_INTERVAL_MS`
+ * constant exported from `./m365SyncQueue` (deviation from the plan's Step 3
+ * text, which imports it here): `scheduleRegistry.contract.test.ts` ASTs every
+ * `repeat: { every }` site across `apps/api/src` and only resolves same-file
+ * `const` declarations — a cross-file import resolves to UNRESOLVED and fails
+ * the suite. Every other ticker in this directory (e.g. `SWEEP_INTERVAL_MS` /
+ * `SCAN_INTERVAL_MS` style constants) satisfies this by declaring its interval
+ * in the same file; this file has no local declaration to point at, so the
+ * literal is inlined directly. Keep it equal to `M365_SYNC_TICK_INTERVAL_MS`.
  */
 async function scheduleTick(): Promise<void> {
   const queue = getM365SyncQueue();
@@ -166,7 +176,7 @@ async function scheduleTick(): Promise<void> {
   }
   await queue.add('tick', {}, {
     jobId: M365_SYNC_TICK_JOB_ID,
-    repeat: { every: M365_SYNC_TICK_INTERVAL_MS },
+    repeat: { every: 60_000 }, // keep equal to M365_SYNC_TICK_INTERVAL_MS in ./m365SyncQueue
     removeOnComplete: true,
     removeOnFail: { count: 20 },
   });

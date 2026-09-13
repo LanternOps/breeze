@@ -759,6 +759,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // socket-owner, not global: its runtime import closure reaches
+    // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
+    // -> services/m365ControlPlane/readActionService.ts ->
+    // services/aiTools.ts -> services/aiToolsAgentLogs.ts ->
+    // services/commandQueue.ts -> routes/agentWs.ts. Found by
+    // workerEntrypointClosure.contract.test.ts (#4086 Task 5) — flipped from
+    // the plan's initial-pass 'global' guess (M365 tenant sync W04, #5331).
+    name: 'm365SyncWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/m365SyncWorker');
+      return { init: m.initializeM365SyncWorker, shutdown: m.shutdownM365SyncWorker };
+    },
+  },
+  {
     name: 'pax8SyncWorker',
     placement: 'global',
     load: async () => {

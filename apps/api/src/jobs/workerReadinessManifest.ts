@@ -114,6 +114,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('dnsSyncWorker'),
   consumers('s1SyncWorker'),
   consumers('huntressSyncWorker'),
+  // The Worker is constructed unconditionally and attached unconditionally;
+  // M365_TENANT_SYNC_ENABLED gates the TICK registration and the processor
+  // body, not the construction. A flag-gated construction would need its own
+  // ConsumerRequirementRule and would leave every api/all process not-ready on
+  // the default configuration.
+  consumers('m365SyncWorker'),
   consumers('pax8SyncWorker'),
   consumers('tdSynnexSftpSyncWorker'),
   consumers('logForwardingWorker'),

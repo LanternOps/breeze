@@ -289,7 +289,7 @@ const EXPECTED_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
-  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
+  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
