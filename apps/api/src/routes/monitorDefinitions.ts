@@ -582,14 +582,21 @@ monitorDefinitionRoutes.get(
     }
     if (deviceConditions.length === 0) return c.json({ data: [] });
 
-    const orgCondition = auth.orgCondition(devices.orgId);
+    // Site axis: RLS does not defend it, so a site-restricted caller is narrowed
+    // here, inside the query — filtering after the LIMIT would silently drop
+    // in-scope devices. `undefined` = unrestricted; `[]` = no site at all.
+    const allowedSiteIds = auth.allowedSiteIds;
+    if (allowedSiteIds?.length === 0) return c.json({ data: [] });
+
     const candidates = await db
       .select({ id: devices.id, hostname: devices.hostname, displayName: devices.displayName })
       .from(devices)
       .where(
-        orgCondition
-          ? and(orgCondition, sql`(${sql.join(deviceConditions, sql` OR `)})`)
-          : sql`(${sql.join(deviceConditions, sql` OR `)})`,
+        and(
+          auth.orgCondition(devices.orgId),
+          allowedSiteIds ? inArray(devices.siteId, allowedSiteIds) : undefined,
+          sql`(${sql.join(deviceConditions, sql` OR `)})`,
+        ),
       )
       .limit(1000);
 
@@ -628,11 +635,16 @@ monitorDefinitionRoutes.post(
     const orgCondition = auth.orgCondition(devices.orgId);
     if (orgCondition) deviceConditions.push(orgCondition);
     const [device] = await db
-      .select({ id: devices.id })
+      .select({ id: devices.id, siteId: devices.siteId })
       .from(devices)
       .where(and(...deviceConditions))
       .limit(1);
-    if (!device) return c.json({ error: 'Device not found' }, 404);
+    // Same 404 for a device outside the caller's sites as for a missing one, so
+    // a site-restricted technician cannot probe other sites' devices.
+    const allowedSiteIds = auth.allowedSiteIds;
+    if (!device || (allowedSiteIds && !allowedSiteIds.includes(device.siteId))) {
+      return c.json({ error: 'Device not found' }, 404);
+    }
 
     try {
       const result = await evaluateConditions(buildCompiledCondition(monitor), deviceId);

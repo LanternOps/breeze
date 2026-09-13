@@ -160,6 +160,10 @@ import {
   updateFeatureLink as updateFeatureLinkMock,
 } from '../services/configurationPolicy';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
+import { resolveMonitorsForDevice as resolveMonitorsForDeviceMock } from '../services/monitors/monitorResolver';
+import { evaluateConditions as evaluateConditionsMock } from '../services/alertConditions';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const ORG_ID = '33333333-3333-4333-8333-333333333333';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
@@ -481,5 +485,133 @@ describe('DELETE /monitor-definitions/:id/attachments/:attachmentId', () => {
 
     expect(res.status).toBe(204);
     expect(removeFeatureLinkMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Site-axis scoping (#5289 CI fix). Site is an app-layer concept only — RLS
+ * does not defend it — so a site-restricted organization technician
+ * (`auth.allowedSiteIds` set) must never see or probe a device outside their
+ * sites through a monitor. `undefined` = unrestricted; `[]` = no site at all.
+ */
+describe('site scope on device-reading monitor routes', () => {
+  const SITE_A = '88888888-8888-4888-8888-888888888888';
+  const SITE_B = '99999999-9999-4999-8999-999999999999';
+  const DEVICE_IN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const DEVICE_IN_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const dialect = new PgDialect();
+  const resolvedMatch = [
+    { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: POLICY_ID, sourceLevel: 'organization' },
+  ];
+
+  /** selectChain that records every `.where()` argument it receives. */
+  function recordingChain<T>(rows: T, sink: unknown[]) {
+    const chain = selectChain(rows);
+    chain.where = ((w: unknown) => {
+      sink.push(w);
+      return chain;
+    }) as typeof chain.where;
+    return chain;
+  }
+
+  /** Queue the three lookups that precede the device-candidate query. */
+  function queueAttachmentLookups() {
+    selectMock
+      .mockReturnValueOnce(selectChain([{ configPolicyId: POLICY_ID }])) // attaching policies
+      .mockReturnValueOnce(selectChain([])) // child policies
+      .mockReturnValueOnce(selectChain([{ level: 'organization', targetId: ORG_ID }])); // assignments
+  }
+
+  describe('GET /monitor-definitions/:id/devices', () => {
+    it("narrows the candidate device query to the caller's allowed sites", async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      queueAttachmentLookups();
+      const wheres: unknown[] = [];
+      selectMock.mockReturnValueOnce(recordingChain([{ id: DEVICE_IN_A, hostname: 'a', displayName: null }], wheres));
+      vi.mocked(resolveMonitorsForDeviceMock).mockResolvedValue(resolvedMatch as never);
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      expect(wheres).toHaveLength(1);
+      const compiled = dialect.sqlToQuery(wheres[0] as SQL);
+      expect(compiled.sql).toMatch(/"devices"\."site_id" in \(\$\d+\)/);
+      expect(compiled.params).toContain(SITE_A);
+      expect(compiled.params).not.toContain(SITE_B);
+    });
+
+    it('returns no devices and never queries devices for a caller restricted to zero sites', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      queueAttachmentLookups();
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [] }), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: [] });
+      expect(selectMock).toHaveBeenCalledTimes(3); // the device query is never issued
+      expect(resolveMonitorsForDeviceMock).not.toHaveBeenCalled();
+    });
+
+    it('applies no site predicate for an unrestricted caller', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      queueAttachmentLookups();
+      const wheres: unknown[] = [];
+      selectMock.mockReturnValueOnce(
+        recordingChain(
+          [
+            { id: DEVICE_IN_A, hostname: 'a', displayName: null },
+            { id: DEVICE_IN_B, hostname: 'b', displayName: null },
+          ],
+          wheres,
+        ),
+      );
+      vi.mocked(resolveMonitorsForDeviceMock).mockResolvedValue(resolvedMatch as never);
+
+      const res = await jsonRequest(buildApp(), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { data: Array<{ deviceId: string }> };
+      expect(body.data.map((d) => d.deviceId)).toEqual([DEVICE_IN_A, DEVICE_IN_B]);
+      expect(dialect.sqlToQuery(wheres[0] as SQL).sql).not.toMatch(/"site_id"/);
+    });
+  });
+
+  describe('POST /monitor-definitions/:id/test', () => {
+    it("404s without evaluating for a device outside the caller's allowed sites", async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      selectMock.mockReturnValueOnce(selectChain([{ id: DEVICE_IN_B, siteId: SITE_B }]));
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'POST', `/${MONITOR_ID}/test`, {
+        deviceId: DEVICE_IN_B,
+      });
+
+      expect(res.status).toBe(404);
+      expect(evaluateConditionsMock).not.toHaveBeenCalled();
+    });
+
+    it("evaluates a device inside the caller's allowed sites", async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      selectMock.mockReturnValueOnce(selectChain([{ id: DEVICE_IN_A, siteId: SITE_A }]));
+      vi.mocked(evaluateConditionsMock).mockResolvedValue({ matched: false } as never);
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'POST', `/${MONITOR_ID}/test`, {
+        deviceId: DEVICE_IN_A,
+      });
+
+      expect(res.status).toBe(200);
+      expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(evaluateConditionsMock).mock.calls[0]?.[1]).toBe(DEVICE_IN_A);
+    });
+
+    it('evaluates any org device for an unrestricted caller', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      selectMock.mockReturnValueOnce(selectChain([{ id: DEVICE_IN_B, siteId: SITE_B }]));
+      vi.mocked(evaluateConditionsMock).mockResolvedValue({ matched: false } as never);
+
+      const res = await jsonRequest(buildApp(), 'POST', `/${MONITOR_ID}/test`, { deviceId: DEVICE_IN_B });
+
+      expect(res.status).toBe(200);
+      expect(evaluateConditionsMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
