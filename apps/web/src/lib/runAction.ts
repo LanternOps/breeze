@@ -85,7 +85,7 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     // BEFORE the `friendly` hook so a per-call friendly() still overrides it.
     // i18n-dynamic: code is a runtime value, keyUsage can't scan it statically.
     if (code && i18n.exists(`errors:${code}`)) {
-      message = i18n.t(`errors:${code}`);
+      message = i18n.t(/* i18n-dynamic */ `errors:${code}`);
     }
     if (friendlyKey && opts.friendly) {
       const friendly = opts.friendly(friendlyKey);
