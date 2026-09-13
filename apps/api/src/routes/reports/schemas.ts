@@ -21,11 +21,15 @@ export const reportTypeSchema = z.enum([
   // P2-3 (#4190): system-managed. Created only by the AI narrative run's own
   // transaction (`persistNarrativeReport`), never by a human, and never
   // generated on demand (`StoredArtifactOnlyReportError`).
-  'ai_org_narrative'
+  'ai_org_narrative',
+  // Fleet Designer W01 (#5651): system-managed, same shape as
+  // `ai_org_narrative` — created only by `persistFleetDesignReport` inside
+  // the design run's own transaction.
+  'ai_fleet_design'
 ]);
 
 /** Report types a human may never create or generate on demand. */
-const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative']);
+export const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative', 'ai_fleet_design']);
 const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
 
 /** Applied to the CREATE and AD-HOC GENERATE schemas only — never to the read

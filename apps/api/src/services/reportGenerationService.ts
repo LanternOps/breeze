@@ -33,7 +33,13 @@ export type ReportType =
   // reporting "Invalid report type" for a type that is perfectly valid
   // everywhere except here. `reportGenerationService.test.ts` pins the union
   // against `reportTypeEnum` so the two can never drift.
-  | 'ai_org_narrative';
+  | 'ai_org_narrative'
+  // Fleet Designer W01 (#5651). Same "stored, never generated" shape as
+  // `ai_org_narrative` above: the Fleet Design's `report_runs` row is written
+  // once inside the design run's own transaction
+  // (`persistFleetDesignReport`, services/aiAgents/fleetDesignReport.ts) from
+  // a model-authored design no query could reproduce.
+  | 'ai_fleet_design';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -780,6 +786,9 @@ export async function generateReport(
     // P2-3 (#4190) — stored, never generated. See `StoredArtifactOnlyReportError`.
     case 'ai_org_narrative':
       throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — stored, never generated, same as above.
+    case 'ai_fleet_design':
+      throw new StoredArtifactOnlyReportError(type);
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);
@@ -823,6 +832,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // dispatch ever runs, and an empty zero-safe shape would read as "the
     // narrative is empty" for a document that exists and is downloadable.
     case 'ai_org_narrative':
+      throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — refused HERE too, same reason as above.
+    case 'ai_fleet_design':
       throw new StoredArtifactOnlyReportError(type);
     default: {
       const exhaustive: never = type;
