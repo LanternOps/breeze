@@ -8,6 +8,7 @@ import {
   displayPersonName,
   rowLabel,
   rowMention,
+  rowSecondary,
   shortHostname,
   buildHardwareLifecycleRecommendations,
   classifyOsSupport,
@@ -262,7 +263,8 @@ describe('customer-facing identity', () => {
   });
 
   it('rowLabel leads with the person and model when a user is known', () => {
-    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', model: 'Latitude 7410' }))).toBe('Priya N — Latitude 7410');
+    expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', model: 'Latitude 7410' }))).toBe('Priya N');
+    expect(rowSecondary(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n', manufacturer: 'Dell Inc.', model: 'Latitude 7410' }))).toBe('branch-lt-12  ·  Dell Inc. Latitude 7410');
     expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local', user: 'priya.n' }))).toBe('Priya N');
     expect(rowLabel(row({ name: 'branch-lt-12.corp.local', hostname: 'branch-lt-12.corp.local' }))).toBe('branch-lt-12');
     expect(rowLabel(row({ name: 'Front desk', hostname: 'fd-01.corp.local' }))).toBe('Front desk');
@@ -289,7 +291,7 @@ describe('customer-facing identity', () => {
       ['Now', ['a', 'b'], false],
       ['Q4 2026', ['c'], false],
       ['Q1 2027', ['d'], false],
-      ['Later', ['e'], true],
+      ['After Jun 2027', ['e'], true],
       ['Purchase date unknown', ['f'], true],
     ]);
   });

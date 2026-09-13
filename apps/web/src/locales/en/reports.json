@@ -282,7 +282,7 @@
         "otherEquipment": "Other equipment",
         "recommendations": "What we recommend",
         "replaceNow": "Replace now",
-        "unknownAge": "Unknown age"
+        "unknownAge": "Purchase date unknown"
       },
       "reportTypes": {
         "ai_fleet_design": "Fleet Design",

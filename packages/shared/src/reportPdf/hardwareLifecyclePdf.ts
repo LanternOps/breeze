@@ -22,8 +22,7 @@ import type {
   ReplacementStatus,
 } from '../types/hardwareLifecycleReport';
 import {
-  buildAtAGlanceProse,
-  buildOsProse,
+  buildAtAGlanceFacts,
   buildReplacementSchedule,
   capNames,
   countByReplacement,
@@ -83,20 +82,19 @@ const COLUMNS: Col[] = [
   { key: 'ageYears', label: 'Age', w: 13, halign: 'right' },
   { key: 'purchaseDate', label: 'Purchased', w: 21, halign: 'left' },
   { key: 'warrantyEndDate', label: 'Warranty', w: 29, halign: 'left' },
-  { key: 'replacement', label: 'Status', w: 24, halign: 'left' },
-  { key: 'replaceBy', label: 'Replace by', w: 22, halign: 'left' },
+  { key: 'replaceBy', label: 'Status', w: 46, halign: 'left' },
   { key: 'runway', label: 'Service life used', w: 54, halign: 'left' },
 ];
 const DEVICE_COL = COLUMNS.findIndex((c) => c.key === 'device');
 const OS_COL = COLUMNS.findIndex((c) => c.key === 'os');
-const STATUS_COL = COLUMNS.findIndex((c) => c.key === 'replacement');
+const STATUS_COL = COLUMNS.findIndex((c) => c.key === 'replaceBy');
 const WARRANTY_COL = COLUMNS.findIndex((c) => c.key === 'warrantyEndDate');
 const RUNWAY_COL = COLUMNS.findIndex((c) => c.key === 'runway');
 
 const BODY_FONT = 8;
 const SUB_FONT = 6.8;
 const ROW_MIN_H = 9.4;
-const EM_DASH = '—';
+const EM_DASH = '-';
 
 /** Strip edition suffixes a customer does not need ("Windows 11 Pro 24H2" → "Windows 11"). */
 function customerOs(os: string): string {
@@ -123,12 +121,6 @@ function yearsLabel(years: number): string {
   return `${v} yr`;
 }
 
-/** "Overdue" is the Status column's job; here the reader gets the date. */
-function replaceByCell(row: HardwareLifecycleDeviceRow, today: string): string {
-  if (!row.replaceBy) return EM_DASH;
-  return row.replaceBy <= today ? monthYear(row.replaceBy) : quarterLabel(row.replaceBy);
-}
-
 function ageCell(row: HardwareLifecycleDeviceRow): string {
   if (row.ageYears == null || row.ageYears <= 0) return EM_DASH;
   if (row.ageYears < 1) return '<1 yr';
@@ -142,8 +134,7 @@ function cellText(row: HardwareLifecycleDeviceRow, key: string, today: string): 
     case 'warrantyEndDate':
       if (!row.warrantyEndDate) return EM_DASH;
       return row.warrantyEndDate < today ? `Expired ${monthYear(row.warrantyEndDate)}` : monthYear(row.warrantyEndDate);
-    case 'replacement': return REPLACEMENT_LABELS[row.replacement] ?? '';
-    case 'replaceBy': return replaceByCell(row, today);
+    case 'replaceBy':
     // Drawn by hand in didDrawCell; the cell keeps its text for extraction and
     // screen readers but paints nothing itself.
     case 'device':
@@ -178,31 +169,57 @@ function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size 
   return y + lines.length * lineH + 2.5;
 }
 
-/** Big-number callouts in the band colours: "6 Replace now · past due". */
-function drawCallouts(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementStatus, number>, y: number): number {
+/**
+ * The status split as one object: each band's big number and label sit on
+ * top of its own segment of a proportional bar. Numbers, words and colour
+ * carry the same fact once.
+ */
+function drawStatusBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementStatus, number>, y: number): number {
   const { C, PAGE } = chrome;
   const colors = bandColors(C);
-  const visible = (['replace', 'due_soon', 'supported', 'unknown'] as ReplacementStatus[]).filter((s) => (counts[s] ?? 0) > 0);
-  if (visible.length === 0) return y;
-  const slot = Math.min(58, (PAGE.w - PAGE.mx * 2) / visible.length);
+  const order: ReplacementStatus[] = ['replace', 'due_soon', 'supported', 'unknown'];
+  const visible = order.filter((s) => (counts[s] ?? 0) > 0);
+  const total = visible.reduce((a, s) => a + (counts[s] ?? 0), 0);
+  const width = PAGE.w - PAGE.mx * 2;
+  const labelH = 11;
+  const barH = 6;
+  const barY = y + labelH + 1.5;
+  if (total === 0) {
+    fill(doc, C.rule);
+    doc.rect(PAGE.mx, barY, width, barH, 'F');
+    return barY + barH + 3;
+  }
+  const gap = 0.6;
+  const usable = width - gap * (visible.length - 1);
   let x = PAGE.mx;
-  for (const s of visible) {
+  // Labels sit on an even grid; the bar below carries the proportion. Each
+  // label repeats its segment's colour so the two rows read as one object.
+  const slot = width / visible.length;
+  for (const [i, s] of visible.entries()) {
+    const n = counts[s] ?? 0;
+    const w = usable * (n / total);
+    const lx = PAGE.mx + slot * i;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(20);
     ink(doc, colors[s]);
-    const n = String(counts[s] ?? 0);
-    doc.text(n, x, y + 7);
-    const nw = doc.getTextWidth(n);
+    const num = String(n);
+    doc.text(num, lx, y + 7);
+    const nw = doc.getTextWidth(num);
     doc.setFontSize(9);
     ink(doc, C.ink);
-    doc.text(REPLACEMENT_LABELS[s], x + nw + 2.2, y + 3.4);
+    doc.text(REPLACEMENT_LABELS[s], lx + nw + 2.2, y + 3.4);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     ink(doc, C.muted);
-    doc.text(REPLACEMENT_BAND_DESCRIPTIONS[s], x + nw + 2.2, y + 7.2);
-    x += slot;
+    doc.text(REPLACEMENT_BAND_DESCRIPTIONS[s], lx + nw + 2.2, y + 7.2);
+    // Segment: tint above a solid stripe, both the full segment width.
+    fill(doc, mix(colors[s], C.white, 0.82));
+    doc.rect(x, barY, w, barH - 1.1, 'F');
+    fill(doc, colors[s]);
+    doc.rect(x, barY + barH - 1.1, w, 1.1, 'F');
+    x += w + gap;
   }
-  return y + 12;
+  return barY + barH + 3;
 }
 
 /** One-line legend: "● 4 On track (more than a year out)   ● 2 Due soon …". Returns y below it. */
@@ -231,44 +248,6 @@ function drawLegend(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementSta
   return y + 2.5;
 }
 
-function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementStatus, number>, y: number): number {
-  const { C, PAGE } = chrome;
-  const colors = bandColors(C);
-  const total = REPLACEMENT_STATUS_ORDER.reduce((a, s) => a + (counts[s] ?? 0), 0);
-  const width = PAGE.w - PAGE.mx * 2;
-  const barH = 6;
-  if (total > 0) {
-    const visible = REPLACEMENT_STATUS_ORDER.filter((s) => (counts[s] ?? 0) > 0);
-    const gap = 0.6;
-    const usable = width - gap * (visible.length - 1);
-    let x = PAGE.mx;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    for (const s of visible) {
-      const n = counts[s] ?? 0;
-      const w = usable * (n / total);
-      // Same treatment as a status badge in the app: a light tint of the
-      // status colour with the colour itself reserved for the text.
-      // Tint above a solid stripe, both the full segment width, square-cornered
-      // so the stripe reads as the base of the segment rather than a stray rule.
-      fill(doc, mix(colors[s], C.white, 0.82));
-      doc.rect(x, y, w, barH - 1.1, 'F');
-      fill(doc, colors[s]);
-      doc.rect(x, y + barH - 1.1, w, 1.1, 'F');
-      const label = String(n);
-      if (doc.getTextWidth(label) + 3 <= w) {
-        ink(doc, colors[s]);
-        doc.text(label, x + w / 2, y + barH / 2 + 0.75, { align: 'center' });
-      }
-      x += w + gap;
-    }
-  } else {
-    fill(doc, C.rule);
-    doc.roundedRect(PAGE.mx, y, width, barH, 0.8, 0.8, 'F');
-  }
-  return y + barH + 3;
-}
-
 /** Paint the three hand-drawn cells: identity, OS with risk tag, service life. */
 function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDeviceRow, data: CellHookData, today: string): void {
   const { C } = chrome;
@@ -280,7 +259,7 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
 
   if (data.column.index === DEVICE_COL) {
     const label = rowLabel(row);
-    const sub = [rowSecondary(row), row.manufacturer].filter(Boolean).join('  ·  ');
+    const sub = rowSecondary(row) ?? '';
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(BODY_FONT);
     ink(doc, C.ink);
@@ -314,6 +293,26 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
     return;
   }
 
+  if (data.column.index === STATUS_COL) {
+    // One cell says it once: the status word in its colour, then the date
+    // it turns on, muted. "Replace now · was due Mar 2023".
+    const word = REPLACEMENT_LABELS[row.replacement] ?? '';
+    const when = row.replaceBy
+      ? (row.replaceBy <= today ? `was due ${monthYear(row.replaceBy)}` : quarterLabel(row.replaceBy))
+      : null;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(BODY_FONT);
+    ink(doc, colors[row.replacement]);
+    doc.text(word, x, midY + 1);
+    if (when) {
+      const ww = doc.getTextWidth(word);
+      doc.setFont('helvetica', 'normal');
+      ink(doc, C.muted);
+      doc.text(`  ·  ${when}`, x + ww, midY + 1);
+    }
+    return;
+  }
+
   if (data.column.index === RUNWAY_COL) {
     // Track = the planned service life. Fill = how much is used. The
     // number beside it says what the bar cannot: how far past, or how
@@ -322,12 +321,8 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
     const h = 2.8;
     const yy = midY - h / 2;
     doc.setFontSize(7.5);
-    if (row.lifeUsed == null || !row.replaceBy) {
-      doc.setFont('helvetica', 'normal');
-      ink(doc, C.faint);
-      doc.text('No purchase date', x, midY + 1);
-      return;
-    }
+    // Status already says "Purchase date unknown"; the runway cell stays quiet.
+    if (row.lifeUsed == null || !row.replaceBy) return;
     const years = yearsBetween(today, row.replaceBy);
     const overdue = row.replaceBy <= today;
     // Planned life is the track; time past the plan runs on beyond it
@@ -392,11 +387,9 @@ export function renderHardwareLifecycleReport(
   // Numbers first, then the bar that proportions them, then one paragraph of
   // framing. The legend lives with each table, next to the rows it explains.
   y = chrome.drawSectionHeading(doc, 'At a glance', y + 6);
-  y = drawCallouts(doc, chrome, counts, y + 1);
-  y = drawFleetBar(doc, chrome, counts, y);
-  y = drawProse(doc, chrome, buildAtAGlanceProse(rows, other.length), y + 3);
-  const osProse = buildOsProse(rows, { names: false });
-  if (osProse) y = drawProse(doc, chrome, osProse, y - 1);
+  y = drawStatusBar(doc, chrome, counts, y + 2);
+  const facts = buildAtAGlanceFacts(rows);
+  if (facts) y = drawProse(doc, chrome, facts, y + 3);
 
   // --- Replacement schedule ----------------------------------------------------
   // The plan grouped the way a budget is approved: due now, then each of the
@@ -409,15 +402,18 @@ export function renderHardwareLifecycleReport(
   const serverLine = servers
     .filter((r) => r.replaceBy)
     .map((r) => `${rowMention(r)} (${r.replaceBy! <= today ? 'past due' : quarterLabel(r.replaceBy!)})`);
+  const serversNow = servers.filter((r) => r.replaceBy && r.replaceBy <= today).length;
   const scheduleRows: { label: string; text: string; urgent: boolean }[] = schedule
     .filter((g) => !g.countOnly || servers.length > 0 || schedule.some((x) => !x.countOnly))
     .map((g) => {
       const n = g.rows.length;
-      const count = `${n} computer${n === 1 ? '' : 's'}`;
+      // The Now line reconciles with the fleet-wide number above it.
+      const withServers = g.label === 'Now' && serversNow > 0 ? ` and ${serversNow} server${serversNow === 1 ? '' : 's'}` : '';
+      const count = `${n} computer${n === 1 ? '' : 's'}${withServers}`;
       return { label: g.label, text: g.countOnly ? count : `${count}: ${capNames(g.rows.map(rowMention))}`, urgent: g.label === 'Now' };
     });
   if (serverLine.length > 0) {
-    scheduleRows.push({ label: 'Servers', text: `${capNames(serverLine)} — planned separately, outside business hours`, urgent: false });
+    scheduleRows.push({ label: 'Servers', text: `${capNames(serverLine, 8)}; planned separately, outside business hours`, urgent: false });
   }
   // A fleet with nothing due in the next year has no schedule to show.
   if (schedule.some((g) => !g.countOnly) || serverLine.length > 0) {
@@ -477,10 +473,7 @@ export function renderHardwareLifecycleReport(
         if (data.section !== 'body') return;
         const row = tableRows[data.row.index];
         if (!row) return;
-        if (data.column.index === STATUS_COL) {
-          data.cell.styles.textColor = colors[row.replacement];
-          data.cell.styles.fontStyle = 'bold';
-        } else if (data.column.index === WARRANTY_COL && row.warrantyEndDate && row.warrantyEndDate < today) {
+        if (data.column.index === WARRANTY_COL && row.warrantyEndDate && row.warrantyEndDate < today) {
           data.cell.styles.textColor = C.muted;
         } else if (row.replacement === 'unknown' && data.column.index !== DEVICE_COL) {
           data.cell.styles.textColor = C.faint;
@@ -517,12 +510,12 @@ export function renderHardwareLifecycleReport(
     doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, at + 3.8);
     return at + 4.5;
   };
-  const minTableBlock = 22 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
+  const minTableBlock = 26 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
   y = ensureSpace(doc, chrome, y + 6, minTableBlock);
   y = drawPlanTable(
     workstations,
     workstationHeading,
-    `We plan to replace a computer ${replaceAge} years after purchase — or, if it is still under warranty past that point, when the warranty ends.`,
+    `We plan to replace a computer ${replaceAge} years after purchase, or when its warranty ends if it is still covered past that point.`,
     'Computer',
     y,
   );
@@ -532,7 +525,7 @@ export function renderHardwareLifecycleReport(
     y = drawPlanTable(
       servers,
       'Servers',
-      `We plan to replace a server ${serverAge} years after purchase — or, if it is still under warranty past that point, when the warranty ends. Server replacements are scheduled outside your business hours.`,
+      `We plan to replace a server ${serverAge} years after purchase, or when its warranty ends if it is still covered past that point. Server replacements are scheduled outside your business hours.`,
       'Server',
       y,
     );
@@ -560,16 +553,26 @@ export function renderHardwareLifecycleReport(
   if (recs.length > 0) {
     // Reserve the heading plus the first item so the heading is never orphaned;
     // each further item checks its own space and flows onto the next page.
-    y = ensureSpace(doc, chrome, y, 20);
-    y = chrome.drawSectionHeading(doc, 'What we recommend', y + 4);
+    // Measure with the face the lines are drawn in; a bold left over from the
+    // heading would wrap them too wide and run past the margin.
+    doc.setFont('helvetica', 'normal');
     doc.setFontSize(9.5);
     const width = PAGE.w - PAGE.mx * 2 - 6;
     const closingNeeded = opts.contactEmail?.trim() ? 16 : 0;
-    recs.forEach((rec, idx) => {
-      const lines = wrapText(doc, rec, width);
-      // The last item carries the closing line with it so "how to approve"
-      // never lands alone on a fresh page.
+    const wrapped = recs.map((rec) => wrapText(doc, rec, width));
+    const blockH = 14 + wrapped.reduce((a, l) => a + l.length * 5.2 + 1.6, 0) + closingNeeded;
+    // A block that fits in half a page moves as one; a longer one may split,
+    // but then the new page gets the heading again.
+    y = ensureSpace(doc, chrome, y, Math.min(blockH, 90));
+    y = chrome.drawSectionHeading(doc, 'What we recommend', y + 4);
+    wrapped.forEach((lines, idx) => {
+      const pageBefore = doc.getNumberOfPages();
       y = ensureSpace(doc, chrome, y, lines.length * 5.2 + 2 + (idx === recs.length - 1 ? closingNeeded : 0));
+      if (doc.getNumberOfPages() !== pageBefore) {
+        y = chrome.drawSectionHeading(doc, 'What we recommend (continued)', y);
+      }
+      // The heading call above changes the font; restore the measured face.
+      doc.setFontSize(9.5);
       ink(doc, C.primary);
       doc.setFont('helvetica', 'bold');
       doc.text('›', PAGE.mx + 1, y);

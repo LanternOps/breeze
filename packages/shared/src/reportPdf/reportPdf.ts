@@ -1891,7 +1891,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
   const orgName = (opts.summary as { org?: { name?: string } } | undefined)?.org?.name?.trim();
   if (typeof doc.setProperties === 'function') {
     doc.setProperties({
-      title: orgName ? `${reportTypeLabel(opts.reportType)} — ${orgName}` : `${reportTypeLabel(opts.reportType)} report`,
+      title: orgName ? `${reportTypeLabel(opts.reportType)} report for ${orgName}` : `${reportTypeLabel(opts.reportType)} report`,
       subject: `${reportTypeLabel(opts.reportType)} report prepared ${opts.generatedAt}`,
       author: opts.branding?.name?.trim() || 'Breeze',
       creator: 'Breeze RMM',

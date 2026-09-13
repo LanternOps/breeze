@@ -29,7 +29,7 @@ export const REPLACEMENT_LABELS: Readonly<Record<ReplacementStatus, string>> = {
   supported: 'On track',
   due_soon: 'Due soon',
   replace: 'Replace now',
-  unknown: 'Unknown age',
+  unknown: 'Purchase date unknown',
 };
 
 export const REPLACEMENT_BAND_DESCRIPTIONS: Readonly<Record<ReplacementStatus, string>> = {
@@ -262,7 +262,7 @@ export function shortHostname(value: string | null | undefined): string {
   return dot > 0 ? v.slice(0, dot) : v;
 }
 
-type Identity = Pick<HardwareLifecycleDeviceRow, 'name' | 'hostname' | 'user' | 'model'>;
+type Identity = Pick<HardwareLifecycleDeviceRow, 'name' | 'hostname' | 'user' | 'model' | 'manufacturer'>;
 
 /** "lena.k" → "Lena K", "marcus_o" → "Marcus O", "Dan Reyes" → unchanged. */
 export function displayPersonName(raw: string | null | undefined): string | null {
@@ -276,11 +276,9 @@ export function displayPersonName(raw: string | null | undefined): string | null
     .join(' ');
 }
 
-/** Table identity: "Priya N — Latitude 7410", else the short device name. */
+/** Table identity: the person, else the short device name. */
 export function rowLabel(row: Identity): string {
-  const user = displayPersonName(row.user);
-  if (user) return row.model ? `${user} — ${row.model}` : user;
-  return shortHostname(row.name);
+  return displayPersonName(row.user) ?? shortHostname(row.name);
 }
 
 /** Sentence identity: "Priya N's Latitude 7410", else the short device name. */
@@ -327,16 +325,44 @@ export function buildReplacementSchedule(rows: HardwareLifecycleDeviceRow[], tod
     }
   }
   for (const [label, qRows] of byQuarter) groups.push({ label, rows: qRows, countOnly: false });
-  if (later.length) groups.push({ label: 'Later', rows: later, countOnly: true });
+  if (later.length) groups.push({ label: `After ${monthYear(horizon)}`, rows: later, countOnly: true });
   if (unknown.length) groups.push({ label: 'Purchase date unknown', rows: unknown, countOnly: true });
   return groups;
 }
 
-/** Hostname shown under the label when it adds information. */
+/** Subline under the label: hostname (when it adds information) and make + model. */
 export function rowSecondary(row: Identity): string | null {
   const host = shortHostname(row.hostname);
-  if (!host) return null;
-  return host === rowLabel(row) ? null : host;
+  const machine = [row.manufacturer, row.model].filter(Boolean).join(' ');
+  const parts = [host && host !== rowLabel(row) ? host : null, machine || null].filter(Boolean) as string[];
+  return parts.length ? parts.join('  ·  ') : null;
+}
+
+/**
+ * The at-a-glance paragraph for a page that already shows the counts: only
+ * what the numbers cannot say. Empty string when there is nothing to add.
+ */
+export function buildAtAGlanceFacts(rows: HardwareLifecycleDeviceRow[]): string {
+  const n = rows.length;
+  if (n === 0) return 'We are not yet managing any computers for you.';
+  const c = countByReplacement(rows);
+  const sentences: string[] = [];
+  const replace = rows.filter((r) => r.replacement === 'replace');
+  const oldest = Math.max(0, ...replace.map((r) => r.ageYears ?? 0));
+  const ended = rows.filter((r) => r.osSupport === 'ended').length;
+  const frame: string[] = [];
+  if (oldest >= 1) frame.push(`the oldest computer due for replacement is ${Math.floor(oldest)} years old`);
+  if (ended > 0) frame.push(`${ended} no longer receive${ended === 1 ? 's' : ''} security updates`);
+  if (frame.length) {
+    const text = frame.join(', and ');
+    sentences.push(text.charAt(0).toUpperCase() + text.slice(1) + '.');
+  }
+  if (c.unknown > 0) {
+    sentences.push(c.unknown === n
+      ? `We are still confirming purchase dates for ${n === 1 ? 'your computer' : `all ${n} computers`}, so no replacement dates are available yet.`
+      : `We are confirming purchase dates for ${c.unknown} computer${c.unknown === 1 ? '' : 's'}.`);
+  }
+  return sentences.join(' ');
 }
 
 // ---------------------------------------------------------------------------
@@ -486,14 +512,24 @@ export function buildHardwareLifecycleRecommendations(
     lines.push(`This quarter, plan replacements for ${listed}${ageNote}.`);
   }
 
-  for (const srv of servers) {
-    const name = rowMention(srv);
-    if (srv.replacement === 'replace') {
-      const age = srv.ageYears ? ` is ${Math.floor(srv.ageYears)} years old and` : '';
-      lines.push(`Your server ${name}${age} is past its planned life; we will propose a replacement window outside business hours.`);
-    } else if (srv.replacement === 'due_soon' && srv.replaceBy) {
-      lines.push(`Your server ${name} comes due ${quarterLabel(srv.replaceBy)}; we will plan its replacement outside business hours.`);
+  const serverAsks = servers.filter((r) => r.replacement === 'replace' || (r.replacement === 'due_soon' && r.replaceBy));
+  if (serverAsks.length <= 3) {
+    for (const srv of serverAsks) {
+      const name = rowMention(srv);
+      if (srv.replacement === 'replace') {
+        const age = srv.ageYears ? ` is ${Math.floor(srv.ageYears)} years old and` : '';
+        lines.push(`Your server ${name}${age} is past its planned life; we will propose a replacement window outside business hours.`);
+      } else {
+        lines.push(`Your server ${name} comes due ${quarterLabel(srv.replaceBy!)}; we will plan its replacement outside business hours.`);
+      }
     }
+  } else {
+    const past = serverAsks.filter((r) => r.replacement === 'replace').length;
+    const soon = serverAsks.length - past;
+    const parts: string[] = [];
+    if (past) parts.push(`${past} ${past === 1 ? 'is' : 'are'} past planned life`);
+    if (soon) parts.push(`${soon} come${soon === 1 ? 's' : ''} due within the year`);
+    lines.push(`Of your ${servers.length} servers, ${parts.join(' and ')}; we will propose replacement windows outside business hours.`);
   }
 
   // OS support and hardware age are separate axes. A machine already marked

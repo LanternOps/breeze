@@ -56,25 +56,26 @@ describe('hardware lifecycle PDF', () => {
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
     expect(text).toContain('Liggett & Goodman P.C.');
-    expect(text).toContain('1 of your 3 computers is past due for replacement; the oldest is 7 years old and 1 no longer receives security updates.');
-    expect(text).toContain('1 more computer comes due within the year.');
-    expect(text).toContain('missing purchase records');
-    expect(text).toContain('We also manage');
+    expect(text).toContain('The oldest computer due for replacement is 7 years old, and 1 no longer receives security updates.');
+    expect(text).toContain('We are confirming purchase dates for 1 computer.');
+    // The other-device count lives in the byline and its own section, not the glance paragraph.
+    expect(text).not.toContain('We also manage');
+    expect(text).toContain('2 other devices');
     // jsPDF escapes parentheses inside text operators.
-    expect(text).toContain('Operating systems: 1 current; 1 ending support soon; 1 no longer receiving security updates.');
     expect(text).not.toContain('not yet classified');
     expect(text).toContain('To approve or discuss this plan, contact Pat \\(pat@olive.example\\).');
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
-    expect(text).toContain('Unknown age');
+    expect(text).toContain('Purchase date unknown');
     expect(text).toContain('Q4 2026');
-    // Overdue rows show the date they came due; "Replace now" already says overdue.
-    expect(text).toContain('Apr 2023');
+    // One status cell: the word, then the date it turns on.
+    expect(text).toContain('was due Apr 2023');
     expect(text).toContain('Apr 2019');
     expect(text).toContain('Oct 2021 *');
     expect(text).toContain("* Purchase date taken from the manufacturer's ship record.");
     // Identity leads with the person; the hostname rides underneath.
-    expect(text).toContain('Sam Lee — OptiPlex 3050');
+    expect(text).toContain('Sam Lee');
+    expect(text).toContain('Dell Inc. OptiPlex 3050');
     expect(text).toContain('SAM4');
     expect(text).toContain('MacBook-Air');
     // OS risk is a word, not only a colour; editions are stripped for the reader.
@@ -82,7 +83,6 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Support ending');
     expect(text).toContain('Windows 10');
     expect(text).not.toContain('Windows 10 Pro');
-    expect(text).toContain('No purchase date');
     expect(text).toContain('past due');
     expect(text).toContain('We plan to replace a computer 4 years after purchase');
     // Budget scaffold: due now, then by quarter; servers in their own section.
@@ -90,6 +90,7 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Workstations and laptops');
     expect(text).toContain('Servers');
     expect(text).toContain('We plan to replace a server 4 years after purchase');
+    expect(text).not.toContain('—');
     expect(text).toContain('Expired Apr 2022');
     expect(text).toContain('Ricoh IM C6010 and SonicWALL TZ300');
     expect(text).toContain('What we recommend');
