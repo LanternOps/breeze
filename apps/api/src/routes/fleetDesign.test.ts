@@ -87,6 +87,11 @@ const {
   loadLedgerMock: vi.fn(),
 }));
 
+const { fileFleetDesignDocumentMock } = vi.hoisted(() => ({ fileFleetDesignDocumentMock: vi.fn() }));
+vi.mock('../services/fleetDesign/documents', () => ({
+  fileFleetDesignDocument: fileFleetDesignDocumentMock,
+}));
+
 // Keep the real FleetDesignApplyError class (and every other export) so the
 // route's `err instanceof FleetDesignApplyError` check — and this file's own
 // `instanceof` assertions — see the same identity the real module would.
@@ -663,5 +668,67 @@ describe('Fleet Design apply/rollback routes (W03, #5653)', () => {
       expect(res.status).toBe(404);
       await expect(res.json()).resolves.toEqual({ error: 'not_found' });
     });
+  });
+});
+
+describe('POST /ai/fleet-design/:reportRunId/document (W05, #5655)', () => {
+  function buildApp(authOverrides: Record<string, unknown> = {}) {
+    const app = new Hono();
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        scope: 'organization',
+        orgId: ORG_ID,
+        partnerId: null,
+        accessibleOrgIds: [ORG_ID],
+        user: { id: USER_ID, email: 'tech@example.com', name: 'Tech' },
+        principal: { kind: 'user', id: USER_ID },
+        canAccessOrg: (orgId: string) => orgId === ORG_ID,
+        orgCondition: () => undefined,
+        ...authOverrides,
+      } as never);
+      await next();
+    });
+    app.route('/ai/fleet-design', fleetDesignRoutes);
+    return app;
+  }
+
+  beforeEach(() => {
+    fileFleetDesignDocumentMock.mockReset();
+    loadFleetDesignReportMock.mockReset();
+    hasPermMock.mockReturnValue(true);
+    mfaOkMock.mockReturnValue(true);
+  });
+
+  it("resolves the run's org through loadFleetDesignReport and files it with the caller's actor", async () => {
+    loadFleetDesignReportMock.mockResolvedValue({ reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, orgId: ORG_ID, summary: {}, generatedAt: null });
+    fileFleetDesignDocumentMock.mockResolvedValue({ documentId: 'doc-1', alreadyFiled: false, evidence: null });
+    const res = await buildApp().request(`/ai/fleet-design/${REPORT_RUN_ID}/document`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ documentId: 'doc-1', alreadyFiled: false, evidence: null });
+    expect(fileFleetDesignDocumentMock).toHaveBeenCalledTimes(1);
+    expect(fileFleetDesignDocumentMock.mock.calls[0]![0]).toMatchObject({
+      orgId: ORG_ID, reportRunId: REPORT_RUN_ID, actor: { userId: USER_ID, accessibleOrgIds: [ORG_ID] },
+    });
+  });
+
+  it("404s for another org's report run without filing anything", async () => {
+    loadFleetDesignReportMock.mockResolvedValue(null);
+    const res = await buildApp().request(`/ai/fleet-design/${REPORT_RUN_ID}/document`, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(fileFleetDesignDocumentMock).not.toHaveBeenCalled();
+  });
+
+  it('404s for a malformed reportRunId', async () => {
+    const res = await buildApp().request('/ai/fleet-design/not-a-uuid/document', { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(fileFleetDesignDocumentMock).not.toHaveBeenCalled();
+  });
+
+  it('requires documents:write', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai/fleet-design/${REPORT_RUN_ID}/document`, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(hasPermMock).toHaveBeenCalledWith(PERMISSIONS.DOCUMENTS_WRITE.resource, PERMISSIONS.DOCUMENTS_WRITE.action);
+    expect(fileFleetDesignDocumentMock).not.toHaveBeenCalled();
   });
 });

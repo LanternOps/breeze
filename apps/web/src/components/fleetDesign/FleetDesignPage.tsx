@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import "@/lib/i18n";
-import { Download, DraftingCompass, Play, RotateCcw } from "lucide-react";
+import { Download, DraftingCompass, FileText, Play, RotateCcw } from "lucide-react";
 import type { FleetDesignOutcome, FleetDesignLedgerItem, FleetDesignRollbackResult } from "@breeze/shared";
 import { useOrgStore } from "../../stores/orgStore";
 import { fetchWithAuth } from "../../stores/auth";
@@ -17,12 +17,14 @@ import DriftPanel from "./DriftPanel";
 import ApplyDrawer from "./ApplyDrawer";
 import { useDesignSelection } from "./useDesignSelection";
 import {
+  fileAsDocument,
   getDesign,
   listApplied,
   listDesigns,
   rollback,
   startDesignRun,
   type FleetDesignDetail,
+  type FleetDesignFiledDocument,
   type FleetDesignListItem,
 } from "@/lib/api/fleetDesign";
 
@@ -83,6 +85,7 @@ export default function FleetDesignPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const [downloading, setDownloading] = useState(false);
+  const [filing, setFiling] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
@@ -208,6 +211,23 @@ export default function FleetDesignPage() {
       // Already toasted by runAction.
     } finally {
       setRollingBack(false);
+    }
+  };
+
+  const handleFileAsDocument = async () => {
+    if (!selectedRunId) return;
+    setFiling(true);
+    try {
+      await runAction<FleetDesignFiledDocument>({
+        request: () => fileAsDocument(selectedRunId),
+        errorFallback: t("page.fileAsDocumentError"),
+        successMessage: t("page.fileAsDocumentSuccess"),
+        parseSuccess: (d) => d as FleetDesignFiledDocument,
+      });
+    } catch {
+      // Already toasted by runAction.
+    } finally {
+      setFiling(false);
     }
   };
 
@@ -369,6 +389,16 @@ export default function FleetDesignPage() {
             >
               <Download className="h-4 w-4" />
               {t("page.downloadPdf")}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleFileAsDocument()}
+              disabled={filing}
+              data-testid="fleet-design-file-document"
+              className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              <FileText className="h-4 w-4" />
+              {t("page.fileAsDocument")}
             </button>
             {hasAppliedRows && (
               <button

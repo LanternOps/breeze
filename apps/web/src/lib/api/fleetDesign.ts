@@ -5,7 +5,7 @@
 // ambient `fetchWithAuth` and either returns the raw Response (mutations,
 // so callers wrap them in `runAction`) or a parsed, typed body (reads). None
 // of these routes use a `{ data }` envelope — see routes/fleetDesign.ts.
-import type { FleetDesignApproval, FleetDesignApplyPreview, FleetDesignApplyResult, FleetDesignLedgerItem, FleetDesignOutcome, FleetDesignRollbackResult } from '@breeze/shared';
+import type { FleetDesignApproval, FleetDesignApplyPreview, FleetDesignApplyResult, FleetDesignDrift, FleetDesignLedgerItem, FleetDesignOutcome, FleetDesignRollbackResult } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 
 export interface FleetDesignListItem {
@@ -22,7 +22,7 @@ export interface FleetDesignListItem {
 
 /** `report_runs.result.summary.fleetDesign` (partial fields — see the shared type's docstring). */
 export interface FleetDesignSummary {
-  fleetDesign?: { outcome?: FleetDesignOutcome; [key: string]: unknown };
+  fleetDesign?: { outcome?: FleetDesignOutcome; drift?: FleetDesignDrift | null; [key: string]: unknown };
 }
 
 export interface FleetDesignDetail {
@@ -85,6 +85,17 @@ export function apply(reportRunId: string, approval: FleetDesignApproval): Promi
 /** POST .../rollback — raw Response. */
 export function rollback(reportRunId: string): Promise<Response> {
   return fetchWithAuth(`${base(reportRunId)}/rollback`, { method: 'POST' });
+}
+
+export interface FleetDesignFiledDocument {
+  documentId: string;
+  alreadyFiled: boolean;
+  evidence: { deliverableId: string; occurrenceId: string } | null;
+}
+
+/** POST .../document (W05) — files the design PDF in the org's document library; raw Response. */
+export function fileAsDocument(reportRunId: string): Promise<Response> {
+  return fetchWithAuth(`${base(reportRunId)}/document`, { method: 'POST' });
 }
 
 export type { FleetDesignApproval, FleetDesignApplyPreview, FleetDesignApplyResult, FleetDesignLedgerItem, FleetDesignRollbackResult };

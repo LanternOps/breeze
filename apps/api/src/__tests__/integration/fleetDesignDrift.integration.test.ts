@@ -51,13 +51,18 @@ import {
   deviceGroups,
   devices,
   fleetDesignAppliedItems,
+  orgDocuments,
   reportRuns,
   reports,
+  serviceDeliverableEvidence,
+  serviceDeliverableOccurrences,
+  serviceDeliverables,
 } from '../../db/schema';
 import { buildDbAccessContext, buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { applyFleetDesign } from '../../services/fleetDesign/apply';
 import { rollbackFleetDesign } from '../../services/fleetDesign/rollback';
 import { computeDrift, loadApprovedDesign, loadDriftLiveState } from '../../services/fleetDesign/drift';
+import { fileFleetDesignDocument, fleetDesignDocumentFilename } from '../../services/fleetDesign/documents';
 import { loadDesignEvidence } from '../../services/aiAgents/designEvidence';
 import { persistFleetDesignReport } from '../../services/aiAgents/fleetDesignReport';
 
@@ -482,5 +487,71 @@ describe('Fleet Design drift against live Postgres (Fleet Designer W05, #5655)',
     // only matches when the row is partner-wide (`org_id IS NULL`), never a
     // foreign org's row. So org A's policy must NOT appear under org B's call.
     expect(liveB.policies.some((p) => p.id === policyId)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W05 Task 3: org_documents hand-off
+// ---------------------------------------------------------------------------
+
+describe('Fleet Design → org documents hand-off against live Postgres (W05, #5655)', () => {
+  runDb('files the PDF under category baseline, attaches it to the linked deliverable, and is idempotent per run', async () => {
+    const f = await seedFixture();
+    const orgId = f.envA.orgId;
+    const runId = await seedReportRun(orgId, buildDriftOutcome(f.deviceIds));
+    const reportId = await ensureReportDefinition(orgId);
+
+    // A deliverable whose auto-evidence report IS the org's Fleet Design
+    // definition, with one open occurrence — the "quarterly configuration
+    // audit" the deliverables spec describes.
+    const [deliverable] = await getTestDb().insert(serviceDeliverables).values({
+      orgId, name: 'Quarterly configuration audit', cadence: 'quarterly',
+      anchorDueDate: '2026-09-30', effectiveFrom: '2026-01-01', autoEvidenceReportId: reportId,
+    }).returning({ id: serviceDeliverables.id });
+    const [occurrence] = await getTestDb().insert(serviceDeliverableOccurrences).values({
+      orgId, deliverableId: deliverable!.id, nameSnapshot: 'Quarterly configuration audit',
+      periodStart: '2026-07-01', periodEnd: '2026-09-30', dueAt: '2026-09-30', originalDueAt: '2026-09-30', status: 'open',
+    }).returning({ id: serviceDeliverableOccurrences.id });
+
+    // 1. The technician's path: under the caller's own RLS context.
+    const first = await withDbAccessContext(f.dbCtxA, () => fileFleetDesignDocument({
+      orgId, reportRunId: runId,
+      actor: { userId: f.envA.userId, partnerId: f.envA.partnerId, accessibleOrgIds: [orgId] },
+    }));
+    expect(first.alreadyFiled).toBe(false);
+    expect(first.evidence).toEqual({ deliverableId: deliverable!.id, occurrenceId: occurrence!.id });
+
+    const [doc] = await getTestDb().select().from(orgDocuments).where(eq(orgDocuments.id, first.documentId));
+    expect(doc).toBeDefined();
+    expect(doc!.orgId).toBe(orgId);
+    expect(doc!.category).toBe('baseline');
+    expect(doc!.contentType).toBe('application/pdf');
+    expect(doc!.originalFilename).toBe(fleetDesignDocumentFilename(runId));
+    expect(doc!.title.startsWith('Fleet Design')).toBe(true);
+    expect(doc!.byteSize).toBeGreaterThan(1000);
+
+    const evidence = await getTestDb().select().from(serviceDeliverableEvidence)
+      .where(and(eq(serviceDeliverableEvidence.occurrenceId, occurrence!.id), eq(serviceDeliverableEvidence.orgId, orgId)));
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]!.kind).toBe('document');
+    expect(evidence[0]!.documentId).toBe(first.documentId);
+
+    // 2. The scheduled run's path: the system actor, a second time — no twin.
+    const second = await withSystemDbAccessContext(() => fileFleetDesignDocument({
+      orgId, reportRunId: runId, actor: { userId: null, partnerId: f.envA.partnerId, accessibleOrgIds: null },
+    }));
+    expect(second).toEqual({ documentId: first.documentId, alreadyFiled: true, evidence: null });
+    const docs = await getTestDb().select({ id: orgDocuments.id }).from(orgDocuments).where(eq(orgDocuments.orgId, orgId));
+    expect(docs).toHaveLength(1);
+  });
+
+  runDb("refuses another org's report run (404) and files nothing", async () => {
+    const f = await seedFixture();
+    const runId = await seedReportRun(f.envA.orgId, buildDriftOutcome(f.deviceIds));
+    await expect(withSystemDbAccessContext(() => fileFleetDesignDocument({
+      orgId: f.envB.orgId, reportRunId: runId, actor: { userId: null, partnerId: f.envB.partnerId, accessibleOrgIds: null },
+    }))).rejects.toMatchObject({ status: 404 });
+    const docs = await getTestDb().select({ id: orgDocuments.id }).from(orgDocuments).where(eq(orgDocuments.orgId, f.envB.orgId));
+    expect(docs).toHaveLength(0);
   });
 });

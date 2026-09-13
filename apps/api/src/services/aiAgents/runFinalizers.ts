@@ -26,6 +26,7 @@ import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdict
 import { isDesignProfile } from './designProfile';
 import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
 import { computeDrift } from '../fleetDesign/drift';
+import { fileFleetDesignDocument } from '../fleetDesign/documents';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistSweepFindings } from './sweepFindings';
@@ -354,6 +355,26 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
     // TWO ids, never the evidence or the outcome again — see the field's
     // docstring on `AgentRunOutcome.fleetDesignReport`.
     outcome.fleetDesignReport = { reportId, reportRunId };
+
+    // W05 (#5655): a SCHEDULED design files its own PDF in the org's document
+    // library (and onto the linked deliverable); a manual run is filed by the
+    // technician from the page. Best effort AFTER the artifact is linked — a
+    // storage fault must never fail a run whose report already exists.
+    if (ctx.design.scheduleId) {
+      const timezone = ctx.design.evidence.org.timezone;
+      try {
+        // No ambient context here (same as `persistFleetDesignReport`, which
+        // wraps itself); the document service expects one, so provide it.
+        await inSystemDbContext(() => fileFleetDesignDocument({
+          orgId: ctx.run.orgId,
+          reportRunId,
+          actor: { userId: null, partnerId: ctx.orgPartnerId ?? null, accessibleOrgIds: null },
+          timezone,
+        }));
+      } catch (error) {
+        console.error('[aiAgentRunLoop] failed to file the fleet design document', { runId: ctx.run.id, reportRunId, error });
+      }
+    }
     return null;
   } catch (error) {
     if (error instanceof FleetDesignPersistConflictError) {

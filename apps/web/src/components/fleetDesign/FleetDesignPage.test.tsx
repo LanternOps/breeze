@@ -21,6 +21,7 @@ const getDesignMock = vi.fn();
 const listAppliedMock = vi.fn();
 const startDesignRunMock = vi.fn();
 const rollbackMock = vi.fn();
+const fileAsDocumentMock = vi.fn();
 
 vi.mock('@/lib/api/fleetDesign', () => ({
   listDesigns: (...args: unknown[]) => listDesignsMock(...args),
@@ -28,6 +29,7 @@ vi.mock('@/lib/api/fleetDesign', () => ({
   listApplied: (...args: unknown[]) => listAppliedMock(...args),
   startDesignRun: (...args: unknown[]) => startDesignRunMock(...args),
   rollback: (...args: unknown[]) => rollbackMock(...args),
+  fileAsDocument: (...args: unknown[]) => fileAsDocumentMock(...args),
 }));
 
 // The drawer has its own full test suite (ApplyDrawer.test.tsx) — stub it here
@@ -154,6 +156,21 @@ describe('FleetDesignPage', () => {
     expect(banner.textContent).toContain('1 changed');
     expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('Hand-made');
     expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('High CPU');
+  });
+
+  it('files the design as an org document through runAction (W05)', async () => {
+    fileAsDocumentMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ documentId: 'doc-1', alreadyFiled: false, evidence: null }),
+    });
+    window.location.hash = '#run-1';
+    render(<FleetDesignPage />);
+    await waitFor(() => expect(screen.getByTestId('fleet-design-file-document')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('fleet-design-file-document'));
+
+    await waitFor(() => expect(fileAsDocumentMock).toHaveBeenCalledWith('run-1'));
   });
 
   it('renders no drift block when the design has none', async () => {

@@ -48,6 +48,7 @@ import { applyFleetDesign } from '../services/fleetDesign/apply';
 import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
+import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
@@ -72,6 +73,9 @@ const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, P
 // devices:write everywhere else (routes/configurationPolicies/crud.ts,
 // routes/groups.ts). Scripts (W04) will add scripts:write.
 const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+// Filing the design in the org's document library writes an org_documents
+// row — the same gate `routes/orgDocuments.ts` puts on an upload.
+const requireDocumentsWrite = requirePermission(PERMISSIONS.DOCUMENTS_WRITE.resource, PERMISSIONS.DOCUMENTS_WRITE.action);
 
 /**
  * Apply and rollback touch every device a function names, so they need an
@@ -333,4 +337,32 @@ fleetDesignRoutes.get('/:reportRunId/applied', scopes, requireAiRead, async (c) 
   if (!row) return c.json({ error: 'not_found' }, 404);
   const rows = await loadLedger(reportRunId, row.orgId);
   return c.json({ items: rows.map(toLedgerItem) });
+});
+
+// ---------------------------------------------------------------------------
+// W05: file the design PDF in the org's document library
+// ---------------------------------------------------------------------------
+
+fleetDesignRoutes.post('/:reportRunId/document', scopes, requireDocumentsWrite, async (c) => {
+  const auth = c.get('auth');
+  const reportRunId = uuidParam(c, 'reportRunId');
+  if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+  // Same three-way-blind 404 as GET /:reportRunId — the org is the run's own,
+  // never a body/query value.
+  const row = await loadFleetDesignReport(reportRunId, (col) => auth.orgCondition(col));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  const result = await fileFleetDesignDocument({
+    orgId: row.orgId,
+    reportRunId,
+    actor: { userId: auth.user?.id ?? null, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds },
+  });
+  writeRouteAudit(c, {
+    orgId: row.orgId,
+    action: 'fleet_design.document.file',
+    resourceType: 'org_document',
+    resourceId: result.documentId,
+    details: { reportRunId, alreadyFiled: result.alreadyFiled, evidence: result.evidence },
+    result: 'success',
+  });
+  return c.json(result);
 });

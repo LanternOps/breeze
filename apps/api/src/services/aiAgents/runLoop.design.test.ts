@@ -240,6 +240,14 @@ vi.mock('./fleetDesignReport', async (importOriginal) => {
   return { ...actual, persistFleetDesignReport };
 });
 
+// W05 (#5655): a SCHEDULED design run files its own PDF in the org's document
+// library after persistence; a manual run leaves that to the technician.
+const fileFleetDesignDocument = vi.hoisted(() =>
+  vi.fn<(input: unknown) => Promise<{ documentId: string; alreadyFiled: boolean; evidence: null }>>(
+    async () => ({ documentId: 'doc-1', alreadyFiled: false, evidence: null }),
+  ));
+vi.mock('../fleetDesign/documents', () => ({ fileFleetDesignDocument }));
+
 const resolveRecipientUserIds = vi.hoisted(() =>
   vi.fn<(agent: unknown, orgId: string) => Promise<string[]>>(async () => []));
 vi.mock('./recipients', () => ({ resolveRecipientUserIds }));
@@ -854,5 +862,68 @@ describe('finalizeFleetDesign (finish-time persistence)', () => {
     await executeAgentRun(RUN_ID);
 
     expect(persistFleetDesignReport).not.toHaveBeenCalled();
+  });
+
+  describe('documents hand-off (W05, #5655)', () => {
+    it('files the PDF in the org document library after a SCHEDULED run persists, as the system actor', async () => {
+      seedRows();
+      scriptQuery({
+        toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+        assistantText: 'Design complete.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(fileFleetDesignDocument).toHaveBeenCalledTimes(1);
+      expect(fileFleetDesignDocument.mock.calls[0]![0]).toMatchObject({
+        orgId: ORG_ID,
+        reportRunId: REPORT_RUN_ID,
+        actor: { userId: null, accessibleOrgIds: null },
+      });
+      expect(finalTransition()!.patch.errorCode).toBeUndefined();
+    });
+
+    it('does NOT file for a manual run — the technician files it from the page', async () => {
+      seedRows({ scheduleId: null, triggerRef: { siteId: SITE_ID } });
+      scriptQuery({
+        toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+        assistantText: 'Design complete.',
+      });
+
+      await executeAgentRun(RUN_ID);
+
+      expect(persistFleetDesignReport).toHaveBeenCalledTimes(1);
+      expect(fileFleetDesignDocument).not.toHaveBeenCalled();
+    });
+
+    it('a filing failure never fails the run or unlinks the artifact', async () => {
+      seedRows();
+      scriptQuery({
+        toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+        assistantText: 'Design complete.',
+      });
+      fileFleetDesignDocument.mockRejectedValueOnce(new Error('S3 unreachable'));
+
+      await executeAgentRun(RUN_ID);
+
+      const final = finalTransition()!;
+      expect(final.to).toBe('completed');
+      expect(final.patch.errorCode).toBeUndefined();
+      expect((final.patch.outcome as AgentRunOutcome).fleetDesignReport)
+        .toEqual({ reportId: REPORT_ID, reportRunId: REPORT_RUN_ID });
+    });
+
+    it('does not file when persistence failed (nothing to file)', async () => {
+      seedRows();
+      scriptQuery({
+        toolCalls: [{ tool: 'submit_fleet_design', input: VALID_FLEET_DESIGN_SUBMISSION }],
+        assistantText: 'Design complete.',
+      });
+      persistFleetDesignReport.mockRejectedValue(new Error('deadlock detected'));
+
+      await executeAgentRun(RUN_ID);
+
+      expect(fileFleetDesignDocument).not.toHaveBeenCalled();
+    });
   });
 });
