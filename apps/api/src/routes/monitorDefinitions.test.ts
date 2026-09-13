@@ -515,11 +515,11 @@ describe('site scope on device-reading monitor routes', () => {
   }
 
   /** Queue the three lookups that precede the device-candidate query. */
-  function queueAttachmentLookups() {
+  function queueAttachmentLookups(assignment = { level: 'organization', targetId: ORG_ID }) {
     selectMock
       .mockReturnValueOnce(selectChain([{ configPolicyId: POLICY_ID }])) // attaching policies
       .mockReturnValueOnce(selectChain([])) // child policies
-      .mockReturnValueOnce(selectChain([{ level: 'organization', targetId: ORG_ID }])); // assignments
+      .mockReturnValueOnce(selectChain([assignment])); // assignments
   }
 
   describe('GET /monitor-definitions/:id/devices', () => {
@@ -538,6 +538,22 @@ describe('site scope on device-reading monitor routes', () => {
       expect(compiled.sql).toMatch(/"devices"\."site_id" in \(\$\d+\)/);
       expect(compiled.params).toContain(SITE_A);
       expect(compiled.params).not.toContain(SITE_B);
+    });
+
+    it('ANDs the site scope with the assignment targets, never ORs it (site-level assignment outside scope)', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      // The policy targets SITE_B; the caller may only see SITE_A. Both emit a
+      // devices.site_id IN — only the nesting tells scope (AND) from target (OR).
+      queueAttachmentLookups({ level: 'site', targetId: SITE_B });
+      const wheres: unknown[] = [];
+      selectMock.mockReturnValueOnce(recordingChain([], wheres));
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      const compiled = dialect.sqlToQuery(wheres[0] as SQL);
+      expect(compiled.params).toEqual([SITE_A, SITE_B]);
+      expect(compiled.sql).toBe('("devices"."site_id" in ($1) and ("devices"."site_id" in ($2)))');
     });
 
     it('returns no devices and never queries devices for a caller restricted to zero sites', async () => {
@@ -583,6 +599,18 @@ describe('site scope on device-reading monitor routes', () => {
 
       const res = await jsonRequest(buildApp({ allowedSiteIds: [SITE_A] }), 'POST', `/${MONITOR_ID}/test`, {
         deviceId: DEVICE_IN_B,
+      });
+
+      expect(res.status).toBe(404);
+      expect(evaluateConditionsMock).not.toHaveBeenCalled();
+    });
+
+    it('404s without evaluating for a caller restricted to zero sites', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      selectMock.mockReturnValueOnce(selectChain([{ id: DEVICE_IN_A, siteId: SITE_A }]));
+
+      const res = await jsonRequest(buildApp({ allowedSiteIds: [] }), 'POST', `/${MONITOR_ID}/test`, {
+        deviceId: DEVICE_IN_A,
       });
 
       expect(res.status).toBe(404);
