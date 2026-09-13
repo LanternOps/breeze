@@ -64,6 +64,13 @@ const DIRECT_READ_ALLOWLIST = new Set([
   // view would let the designer propose retiring an inherited row the child
   // cannot edit. Never decides what a device gets.
   'services/aiAgents/designEvidence.ts',
+  // Fleet Designer drift (W05): compares the approved design against the
+  // AUTHORED watches and rules of the policies the apply step itself wrote
+  // (and of the policies whose own links the retire step rewrote). Those are
+  // exactly the rows rollback can restore, so inherited rows must not appear:
+  // through the view a parent's link would read as "extra" drift on a child
+  // policy nobody edited. Never decides what a device gets.
+  'services/fleetDesign/drift.ts',
 
   // Standalone-entity delete guards and authored-link editors.
   'routes/updateRingsHelpers.ts',

@@ -99,13 +99,13 @@
     "deviceCount_other": "{{count}} dispositivos",
     "rows": {
       "missing": "Ausente",
-      "extra": "Extra",
+      "extra": "Excedente",
       "changed": "Alterado"
     },
     "columns": {
       "drift": "Desvio",
       "kind": "Tipo",
-      "item": "Item",
+      "item": "Elemento",
       "scope": "Função / política",
       "detail": "Detalhe"
     }

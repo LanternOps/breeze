@@ -99,7 +99,7 @@
     "deviceCount_other": "{{count}} dispositivi",
     "rows": {
       "missing": "Mancante",
-      "extra": "Extra",
+      "extra": "In più",
       "changed": "Modificato"
     },
     "columns": {
