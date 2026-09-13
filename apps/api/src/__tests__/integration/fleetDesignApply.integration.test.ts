@@ -49,6 +49,10 @@ import {
   fleetDesignAppliedItems,
   reportRuns,
   reports,
+  scripts,
+  scriptTags,
+  scriptToTags,
+  scriptVersions,
 } from '../../db/schema';
 import { buildDbAccessContext, buildOrgAccessClosures, type AuthContext } from '../../middleware/auth';
 import { pgErrorCode } from '../../utils/pgErrors';
@@ -800,5 +804,114 @@ describe('Fleet Design apply / rollback / ledger against live Postgres (Fleet De
     const alertRuleLinkAfterRollback = await readAlertRuleLink(f.baselinePolicyId);
     const itemsAfterRollback = (alertRuleLinkAfterRollback?.inlineSettings as { items: Array<{ name: string }> }).items;
     expect(itemsAfterRollback.map((i) => i.name).sort()).toEqual(['KeepRule', 'LegacyDiskRule'].sort());
+  });
+
+  // -------------------------------------------------------------------------
+  // W04 (#5654): step 4 — approved scripts through the bundle importer
+  // -------------------------------------------------------------------------
+  async function scriptTagNames(scriptId: string): Promise<string[]> {
+    const rows = await getTestDb()
+      .select({ name: scriptTags.name })
+      .from(scriptToTags)
+      .innerJoin(scriptTags, eq(scriptTags.id, scriptToTags.tagId))
+      .where(eq(scriptToTags.scriptId, scriptId));
+    return rows.map((r) => r.name);
+  }
+
+  runDb('12. step 4: an approved script is created org-owned, tagged fleet-design, versioned as ai_proposal; the rule naming it carries its id; re-apply is a no-op; rollback untags and keeps it', async () => {
+    const f = await seedFixture();
+    const spoolerRule: FleetDesignRule = { ...GOOD_RULE, name: 'Spooler stuck', action: { kind: 'script', ref: 'Restart print spooler' } };
+    // A same-named script already in the org → the created one is renamed, never versioned over it.
+    const [existing] = await getTestDb().insert(scripts).values({
+      orgId: f.envA.orgId, partnerId: f.envA.partnerId, name: 'Restart print spooler', osTypes: ['windows'], language: 'powershell',
+      content: 'Write-Output "hand-written"', createdBy: f.envA.userId,
+    }).returning({ id: scripts.id });
+    const submission: FleetDesignSubmission = {
+      ...buildSubmission({ functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: spoolerRule }),
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [{ name: 'Restart print spooler', purpose: 'Restart the spooler when jobs pile up', osTypes: ['windows'], language: 'powershell', content: 'Restart-Service Spooler' }] }],
+    };
+    const outcome = fleetDesignOutcomeFromSubmission(submission, {
+      deviceIds: new Set(f.deviceIds), baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] }, generatedAt: new Date().toISOString(),
+    });
+    const runId = await seedReportRun(f.envA.orgId, outcome);
+    const approval: FleetDesignApproval = {
+      functions: ['file_server'], monitoring: ['monitoring:file_server:rule:0'], retired: [], automation: ['automation:file_server:script:0'], legacy: [],
+      roleCorrections: [], displacementsAccepted: [f.baselinePolicyId],
+    };
+
+    const preview = await withDbAccessContext(f.dbCtxA, () => previewFleetDesignApply(f.authA, runId, approval));
+    expect(preview.blockers).toEqual([]);
+    expect(preview.scripts).toEqual([expect.objectContaining({ itemRef: 'automation:file_server:script:0', alreadyExists: true })]);
+
+    const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
+    expect(result.partial).toBeNull();
+    expect(result.applied).toContain('automation:file_server:script:0');
+
+    const ledger = await readLedger(runId);
+    const scriptRow = ledger.find((r) => r.itemRef === 'automation:file_server:script:0')!;
+    expect(scriptRow).toMatchObject({ itemKind: 'script', step: 4, status: 'applied' });
+    const scriptId = scriptRow.createdRefs!.scriptId as string;
+    expect(scriptId).not.toBe(existing!.id);
+
+    const [created] = await getTestDb().select().from(scripts).where(eq(scripts.id, scriptId));
+    expect(created).toMatchObject({
+      orgId: f.envA.orgId, name: 'Restart print spooler (2)', category: 'Fleet Design', origin: 'ai_proposal', originProposalId: null,
+      isSystem: false, acknowledgedSecurityPatterns: [], securityAcknowledgedBy: null, version: 1,
+    });
+    expect(await scriptTagNames(scriptId)).toEqual(['fleet-design']);
+    const versions = await getTestDb().select().from(scriptVersions).where(eq(scriptVersions.scriptId, scriptId));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ version: 1, origin: 'ai_proposal', proposalId: null, reviewId: null, approvedBy: f.envA.userId, approvalMethod: null, content: 'Restart-Service Spooler' });
+    expect(versions[0]!.approvedAt).toBeInstanceOf(Date);
+    // The pre-existing script is untouched.
+    const [untouched] = await getTestDb().select().from(scripts).where(eq(scripts.id, existing!.id));
+    expect(untouched!.content).toBe('Write-Output "hand-written"');
+
+    // The rule that named the proposal now names the created script.
+    const policyId = ledger.find((r) => r.itemRef === 'policy:file_server')!.createdRefs!.policyId as string;
+    const ruleLink = await readAlertRuleLink(policyId);
+    const rationale = (ruleLink?.inlineSettings as { items: Array<{ rationale: string }> }).items[0]!.rationale;
+    expect(rationale).toContain(`[script created: ${scriptId}]`);
+
+    // Re-apply: no second script.
+    const again = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
+    expect(again.applied).toEqual([]);
+    expect(again.skipped).toContain('automation:file_server:script:0');
+    const named = await getTestDb().select({ id: scripts.id }).from(scripts).where(and(eq(scripts.orgId, f.envA.orgId), eq(scripts.category, 'Fleet Design')));
+    expect(named).toHaveLength(1);
+
+    // Rollback: script stays, fleet-design tag gone, policy rollback not refused
+    // (step 4 refreshed its linksSnapshot after appending the script id).
+    const rollback = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId, undefined, { canWriteScripts: true }));
+    expect(rollback.refused).toEqual([]);
+    expect(rollback.rolledBack).toEqual(expect.arrayContaining(['automation:file_server:script:0', 'policy:file_server']));
+    const [afterRollback] = await getTestDb().select().from(scripts).where(eq(scripts.id, scriptId));
+    expect(afterRollback).toBeDefined();
+    expect(afterRollback!.deletedAt).toBeNull();
+    expect(await scriptTagNames(scriptId)).toEqual([]);
+  });
+
+  runDb('13. rollback without scripts:write refuses only the script row; everything else rolls back', async () => {
+    const f = await seedFixture();
+    const submission: FleetDesignSubmission = {
+      ...buildSubmission({ functionKey: 'file_server', deviceIds: f.deviceIds, roleCorrectionDeviceId: f.deviceIds[1], retiredPolicyId: f.baselinePolicyId, rule: GOOD_RULE }),
+      automation: [{ functionKey: 'file_server', playbooks: [], scripts: [{ name: 'Clear temp', purpose: 'Free disk', osTypes: ['windows'], language: 'powershell', content: 'Remove-Item $env:TEMP -Recurse -WhatIf' }] }],
+    };
+    const outcome = fleetDesignOutcomeFromSubmission(submission, {
+      deviceIds: new Set(f.deviceIds), baseline: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] }, generatedAt: new Date().toISOString(),
+    });
+    const runId = await seedReportRun(f.envA.orgId, outcome);
+    const approval: FleetDesignApproval = {
+      functions: ['file_server'], monitoring: [], retired: [], automation: ['automation:file_server:script:0'], legacy: [],
+      roleCorrections: [], displacementsAccepted: [],
+    };
+    const result = await withDbAccessContext(f.dbCtxA, () => applyFleetDesign(f.authA, runId, approval));
+    expect(result.partial).toBeNull();
+    const scriptId = (await readLedger(runId)).find((r) => r.itemKind === 'script')!.createdRefs!.scriptId as string;
+
+    const rollback = await withDbAccessContext(f.dbCtxA, () => rollbackFleetDesign(f.authA, runId));
+    expect(rollback.refused).toEqual([{ itemRef: 'automation:file_server:script:0', reason: 'scripts_write_required' }]);
+    expect(rollback.rolledBack).toContain('functions:file_server');
+    expect(await scriptTagNames(scriptId)).toEqual(['fleet-design']);
   });
 });
