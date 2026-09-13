@@ -324,7 +324,12 @@ export function assembleDesignEvidence(raw: RawDesignEvidence, opts: { limitByte
     },
     automation: {
       playbooks: raw.automation.playbooks.slice(0, DESIGN_EVIDENCE_BOUNDS.playbooks).map((p) => ({ ...p, name: sanitize(p.name) })),
-      scripts: raw.automation.scripts.slice(0, DESIGN_EVIDENCE_BOUNDS.scripts).map((s) => ({
+      // Legacy-import first (stable), so both the count cap here and the
+      // byte trim below — which drops from the END of the list — spend
+      // ordinary library rows before any of the inventory (W04 #5654).
+      scripts: [...raw.automation.scripts]
+        .sort((a, b) => Number(b.legacyImport) - Number(a.legacyImport))
+        .slice(0, DESIGN_EVIDENCE_BOUNDS.scripts).map((s) => ({
         ...s, name: sanitize(s.name), tags: s.tags.map(sanitize), description: sanitize(s.description).slice(0, 200),
       })),
     },
@@ -855,6 +860,15 @@ async function loadAutomation(orgId: string, partnerId: string | null): Promise<
            ) AS tags
     FROM scripts s
     WHERE s.deleted_at IS NULL AND (s.org_id = ${orgId} OR (s.org_id IS NULL AND s.partner_id = ${partnerId}))
+    -- Legacy-import scripts first (W04 #5654): the legacy section owes one
+    -- entry per such script, so an org with more than the bound must lose
+    -- ordinary library rows to the LIMIT, never the inventory.
+    ORDER BY EXISTS (
+               SELECT 1 FROM script_to_tags stt2
+               JOIN script_tags t2 ON t2.id = stt2.tag_id AND (t2.org_id = ${orgId} OR (t2.org_id IS NULL AND t2.partner_id = ${partnerId}))
+               WHERE stt2.script_id = s.id AND lower(t2.name) = 'legacy-import'
+             ) DESC,
+             s.name, s.id
     LIMIT ${DESIGN_EVIDENCE_BOUNDS.scripts}
   `);
   return {
@@ -863,7 +877,7 @@ async function loadAutomation(orgId: string, partnerId: string | null): Promise<
       const tags = s.tags ?? [];
       return {
         id: s.id, name: s.name, language: s.language, osTypes: s.os_types ?? [], tags,
-        legacyImport: tags.includes('legacy-import'),
+        legacyImport: tags.some((t) => t.toLowerCase() === 'legacy-import'),
         description: (s.description ?? '').slice(0, 200),
       };
     }),

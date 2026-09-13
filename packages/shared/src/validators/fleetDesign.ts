@@ -117,6 +117,14 @@ export const fleetDesignSubmissionSchema = z.object({
   v.monitoring.forEach((m, i) => {
     if (!keys.has(m.functionKey)) ctx.addIssue({ code: 'custom', path: ['monitoring', i, 'functionKey'], message: 'monitoring names a function that is not in functions' });
   });
+  // Legacy inventory (W04 #5654): `covered` is only actionable when it says by
+  // what; and one script is classified once — its item ref is `legacy:<scriptId>`.
+  const legacyIds = new Set<string>();
+  v.legacy.forEach((l, i) => {
+    if (l.bucket === 'covered' && !l.coveredBy) ctx.addIssue({ code: 'custom', path: ['legacy', i, 'coveredBy'], message: 'a covered script must name what covers it' });
+    if (legacyIds.has(l.scriptId)) ctx.addIssue({ code: 'custom', path: ['legacy', i, 'scriptId'], message: 'script already classified' });
+    legacyIds.add(l.scriptId);
+  });
 });
 
 export interface FleetDesignOutcomeRefs {

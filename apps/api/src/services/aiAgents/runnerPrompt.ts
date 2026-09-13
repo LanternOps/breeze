@@ -1107,8 +1107,10 @@ const FLEET_DESIGN_SECTION_GUIDANCE: Readonly<Record<(typeof FLEET_DESIGN_SECTIO
     + 'with a reason. Empty is valid.',
   automation: 'per function, built-in playbooks by name or a custom playbook described in prose, and '
     + 'scripts you propose (full content).',
-  legacy: 'for each script tagged legacy-import, its intent and bucket (obsolete | covered | needed); '
-    + 'empty when none.',
+  legacy: 'one entry per script listed above as legacy (empty when there are none). bucket obsolete | covered | needed. '
+    + 'coveredBy names the module, template or playbook that replaces it (required for covered). For needed, '
+    + 'propose the replacement under automation.scripts and say so in notes. Never modify or delete anything '
+    + '— a human decides what happens to each bucket.',
   baseline: 'notes only — the numbers are computed by the system.',
   unsure: 'functions below the threshold, unreachable devices, findings that need a human, and any '
     + 'coarse-role correction (billing-relevant).',
@@ -1222,9 +1224,13 @@ export function buildFleetDesignTaskPrompt(ctx: AgentRunPromptContext): string {
   if (e.automation.playbooks.length || e.automation.scripts.length) {
     lines.push('## Automation catalog');
     for (const p of e.automation.playbooks) lines.push(`playbook ${p.id} "${p.name}"${p.isBuiltIn ? ' (built-in)' : ''}${p.category ? ` [${p.category}]` : ''}`);
+    // Legacy-import scripts get their own line prefix (W04 #5654): the
+    // `legacy` section is "one entry per `legacy:` line", so the model must be
+    // able to tell the inventory it owes from the library it may reuse.
     for (const s of e.automation.scripts) {
+      const tags = s.tags.length ? ` [${s.tags.join(', ')}]` : '';
       lines.push(
-        `script ${s.id} "${s.name}" (${s.language}, ${s.osTypes.join('/')})${s.legacyImport ? ' [legacy-import]' : ''}: ${s.description}`,
+        `${s.legacyImport ? 'legacy' : 'script'}: ${s.id} ${s.name} (${s.language}, ${s.osTypes.join('/')})${tags} — ${s.description || '(no description)'}`,
       );
     }
     lines.push('');
