@@ -20,6 +20,7 @@ import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
+import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -527,6 +528,8 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // monitoring-suppression source, so authoring one is a different class of
   // act from authoring any other link — but only the INPUT says which it is,
   // so it cannot be classified by (tool, action) in the static tables.
+  // #5511 W02: same reasoning for a warranty link that switches on device-side
+  // HP CMSL collection — the pair is unchanged, the predicate gained an arm.
   'manage_policy_feature_link:add',
   'manage_policy_feature_link:update',
 ]);
@@ -537,25 +540,39 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * ask the SAME question — a second copy of this predicate is how a tier and
  * its scope drift apart.
  *
- * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
- * which is safe here because the handler writes exactly the featureType it was
- * given, so a value that is not the literal 'maintenance' cannot create a
- * maintenance link either. The handler's own principal check (D9.3) is the
- * belt to this brace for `update`, where featureType is not a required input.
+ * Two arms, both on manage_policy_feature_link's add/update:
+ *
+ *  - `featureType === 'maintenance'` (RMM-QA-176 D9). Strict `===`: a
+ *    non-string featureType stays at the base tier, which is safe here because
+ *    the handler writes exactly the featureType it was given, so a value that
+ *    is not the literal 'maintenance' cannot create a maintenance link either.
+ *    The handler's own principal check (D9.3) is the belt to this brace for
+ *    `update`, where featureType is not a required input.
+ *
+ *  - an inlineSettings payload that would leave HP CMSL warranty collection
+ *    ON (#5511 W02, contract D4). Enabling it installs HP's CMSL module on
+ *    every HP endpoint the policy reaches, which is a software deployment —
+ *    gated behind devices.execute + MFA on the HTTP routes, and this tool
+ *    reaches addFeatureLink without passing through any of them. Keyed on the
+ *    SETTINGS CONTENT rather than on featureType precisely because featureType
+ *    is not a required input on `update`, which is the call that turns
+ *    collection on for an existing link. A warranty link carrying only alert
+ *    thresholds installs nothing and deliberately stays at the base tier.
  *
  * The action guard is not decoration: without it a read (`list`) carrying a
- * stray featureType argument would be escalated into an approval that the MCP
- * transport then denies outright.
+ * stray featureType or inlineSettings argument would be escalated into an
+ * approval that the MCP transport then denies outright.
  */
 export function isInputAwareTier3(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
 ): boolean {
+  if (toolName !== 'manage_policy_feature_link') return false;
+  if (action !== 'add' && action !== 'update') return false;
   return (
-    toolName === 'manage_policy_feature_link' &&
-    (action === 'add' || action === 'update') &&
     input.featureType === 'maintenance'
+    || warrantyHpCmslRequested(input.inlineSettings)
   );
 }
 
@@ -622,7 +639,8 @@ export function resolveApprovalScope(
     // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
     // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
     // escalations and manage_configuration_policy's own create/update/delete —
-    // authoring policy configuration, not an externally binding act.
+    // authoring policy configuration, not an externally binding act. The
+    // #5511 hpCmsl arm resolves here too, for the same reason.
     return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
@@ -2474,6 +2492,12 @@ function buildApprovalDescription(
     case 'manage_policy_feature_link':
       parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
       parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      // #5511 W02: an `update` need not carry featureType, so without this an
+      // approver sees "UPDATE feature link" for a change that installs HP
+      // software on every HP endpoint the policy reaches. Say what it does.
+      if (warrantyHpCmslRequested(input.inlineSettings)) {
+        parts.push('— enables HP CMSL warranty collection (installs HP software on HP devices)');
+      }
       break;
 
     case 'remove_configuration_policy_assignment':
