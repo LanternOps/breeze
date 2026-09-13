@@ -445,13 +445,16 @@ export function buildAtAGlanceProse(rows: HardwareLifecycleDeviceRow[], otherCou
 }
 
 /** "Operating systems: 6 current; 1 ending support soon (LAW-SRV); …" */
-export function buildOsProse(rows: HardwareLifecycleDeviceRow[]): string | null {
+export function buildOsProse(rows: HardwareLifecycleDeviceRow[], opts: { names?: boolean } = {}): string | null {
+  const names = opts.names ?? true;
   const c = countByOsSupport(rows);
   const parts: string[] = [];
   if (c.supported) parts.push(`${c.supported} current`);
-  if (c.ending) parts.push(`${c.ending} ending support soon (${humanJoin(namesWithOsStatus(rows, 'ending'))})`);
-  if (c.ended) parts.push(`${c.ended} no longer receiving security updates (${humanJoin(namesWithOsStatus(rows, 'ended'))})`);
-  if (c.unclassified) parts.push(`${c.unclassified} not yet classified`);
+  if (c.ending) parts.push(`${c.ending} ending support soon${names ? ` (${humanJoin(namesWithOsStatus(rows, 'ending'))})` : ''}`);
+  if (c.ended) parts.push(`${c.ended} no longer receiving security updates${names ? ` (${humanJoin(namesWithOsStatus(rows, 'ended'))})` : ''}`);
+  // "Not yet classified" is our state, not the customer's; only the named
+  // (verbose) form carries it.
+  if (c.unclassified && names) parts.push(`${c.unclassified} not yet classified`);
   if (parts.length === 0) return null;
   return `Operating systems: ${parts.join('; ')}.`;
 }
@@ -463,10 +466,14 @@ export function buildHardwareLifecycleRecommendations(
 ): string[] {
   const lines: string[] = [];
   const sorted = sortLifecycleRows(rows);
-  const replace = sorted.filter((r) => r.replacement === 'replace');
-  const due = sorted.filter((r) => r.replacement === 'due_soon');
+  // Servers are planned separately (business-hours windows), so the
+  // workstation asks never lead with a server.
+  const servers = sorted.filter((r) => r.deviceKind === 'server');
+  const workstations = sorted.filter((r) => r.deviceKind !== 'server');
+  const replace = workstations.filter((r) => r.replacement === 'replace');
+  const due = workstations.filter((r) => r.replacement === 'due_soon');
   const unknown = sorted.filter((r) => r.replacement === 'unknown');
-  const osEnded = sorted.filter((r) => r.osSupport === 'ended');
+  const osEnded = workstations.filter((r) => r.osSupport === 'ended');
 
   if (replace.length > 0) {
     const oldest = replace[0]!;
@@ -474,9 +481,19 @@ export function buildHardwareLifecycleRecommendations(
       ? humanJoin(replace.map(rowMention))
       : `the ${replace.length} computers marked Replace now`;
     const ageNote = oldest.ageYears
-      ? `, starting with ${rowMention(oldest)} (${Math.round(oldest.ageYears)} years old)`
+      ? `, starting with ${rowMention(oldest)} (${Math.floor(oldest.ageYears)} years old)`
       : '';
-    lines.push(`Plan replacements for ${listed} this quarter${ageNote}.`);
+    lines.push(`This quarter, plan replacements for ${listed}${ageNote}.`);
+  }
+
+  for (const srv of servers) {
+    const name = rowMention(srv);
+    if (srv.replacement === 'replace') {
+      const age = srv.ageYears ? ` is ${Math.floor(srv.ageYears)} years old and` : '';
+      lines.push(`Your server ${name}${age} is past its planned life; we will propose a replacement window outside business hours.`);
+    } else if (srv.replacement === 'due_soon' && srv.replaceBy) {
+      lines.push(`Your server ${name} comes due ${quarterLabel(srv.replaceBy)}; we will plan its replacement outside business hours.`);
+    }
   }
 
   // OS support and hardware age are separate axes. A machine already marked

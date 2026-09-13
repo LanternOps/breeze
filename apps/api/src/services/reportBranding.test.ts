@@ -78,7 +78,7 @@ describe('loadReportBrandingForOrg', () => {
       ]),
     );
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: png(1, 2), logoAspect: 0.5, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
   it('external https logo URL: name resolves, logo degrades to null (server cannot format-verify it)', async () => {
@@ -88,7 +88,7 @@ describe('loadReportBrandingForOrg', () => {
       ]),
     );
     const branding = await loadReportBrandingForOrg(ORG_ID);
-    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null });
+    expect(branding).toEqual({ name: 'Olive MSP', logoDataUrl: null, logoAspect: null, primaryColor: null, accentColor: null, contactEmail: null, contactName: null });
   });
 
   it('org has no partner: all-null branding', async () => {

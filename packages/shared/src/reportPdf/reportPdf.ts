@@ -129,6 +129,9 @@ export type ReportBranding = {
   primaryColor?: string | null;
   /** Partner brand accent (ribbon, section ticks); derived from the primary when null. */
   accentColor?: string | null;
+  /** Partner contact for the closing "to approve or discuss" line; null hides it. */
+  contactEmail?: string | null;
+  contactName?: string | null;
 };
 
 export type BuildOpts = {
@@ -1957,7 +1960,7 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     renderHardwareLifecycleReport(
       doc,
       opts.summary as HardwareLifecycleSummary,
-      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
       {
         C,
         PAGE,

@@ -154,12 +154,14 @@ export async function loadPartnerBranding(): Promise<ReportBranding> {
     if (!res.ok) return empty;
     const data = (await res.json()) as {
       name?: string;
-      settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string } };
+      settings?: { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
     };
     const name = data.name ?? null;
     const colors = {
       primaryColor: parseHexColor(data.settings?.branding?.primaryColor) ? data.settings!.branding!.primaryColor! : null,
       accentColor: parseHexColor(data.settings?.branding?.secondaryColor) ? data.settings!.branding!.secondaryColor! : null,
+      contactEmail: data.settings?.contact?.email?.trim() || null,
+      contactName: data.settings?.contact?.name?.trim() || null,
     };
     const safeLogoUrl = sanitizeImageSrc(data.settings?.branding?.logoUrl ?? null);
     if (!safeLogoUrl) return { name, logoDataUrl: null, logoAspect: null, ...colors };

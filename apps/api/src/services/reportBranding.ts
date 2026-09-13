@@ -33,7 +33,7 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     .where(eq(organizations.id, orgId))
     .limit(1);
   if (!row?.partnerName) return empty;
-  const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string } };
+  const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
   const logoUrl = settings.branding?.logoUrl ?? null;
   // Colours ride along only when they parse as hex; the renderer falls back
   // to the Breeze palette for anything else.
@@ -49,6 +49,8 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     logoAspect: aspect,
     primaryColor,
     accentColor,
+    contactEmail: settings.contact?.email?.trim() || null,
+    contactName: settings.contact?.name?.trim() || null,
   };
 }
 

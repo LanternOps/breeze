@@ -52,7 +52,7 @@ const summary: HardwareLifecycleSummary = {
 
 describe('hardware lifecycle PDF', () => {
   it('renders the cover, plan table, other equipment and recommendations', () => {
-    const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'OliveTech', logoDataUrl: null, logoAspect: null } });
+    const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'OliveTech', logoDataUrl: null, logoAspect: null, contactEmail: 'pat@olive.example', contactName: 'Pat' } });
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
     expect(text).toContain('Liggett & Goodman P.C.');
@@ -61,7 +61,9 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('missing purchase records');
     expect(text).toContain('We also manage');
     // jsPDF escapes parentheses inside text operators.
-    expect(text).toContain("Operating systems: 1 current; 1 ending support soon \\(LAW-SRV\\); 1 no longer receiving security updates \\(Sam Lee's OptiPlex 3050\\).");
+    expect(text).toContain('Operating systems: 1 current; 1 ending support soon; 1 no longer receiving security updates.');
+    expect(text).not.toContain('not yet classified');
+    expect(text).toContain('To approve or discuss this plan, contact Pat \\(pat@olive.example\\).');
     expect(text).toContain('Replace now');
     expect(text).toContain('Due soon');
     expect(text).toContain('Unknown age');
@@ -110,8 +112,17 @@ describe('hardware lifecycle PDF', () => {
     const text = pdfText(doc);
     expect(text.match(/HARDWARE LIFECYCLE/g)?.length).toBe(doc.getNumberOfPages());
     // Every continuation page restates the plan heading and the legend.
-    expect(text.match(/Device replacement plan \\\(continued\\\)/g)?.length).toBe(doc.getNumberOfPages() - 1);
-    expect(text.match(/60 Replace now/g)?.length).toBe(doc.getNumberOfPages());
+    const continued = text.match(/Device replacement plan \\\(continued\\\)/g)?.length ?? 0;
+    expect(continued).toBeGreaterThanOrEqual(doc.getNumberOfPages() - 2);
+    expect(continued).toBeLessThanOrEqual(doc.getNumberOfPages() - 1);
+    // A legend where the table starts and on every continuation page (the
+    // callout draws its number and label as separate text objects; the table
+    // may start on page 2 when the cover is full).
+    const legends = text.match(/60 Replace now/g)?.length ?? 0;
+    expect(legends).toBeGreaterThanOrEqual(doc.getNumberOfPages() - 1);
+    expect(legends).toBeLessThanOrEqual(doc.getNumberOfPages());
+    // The closing data note never gets a page of its own.
+    expect(text.match(/HARDWARE LIFECYCLE/g)?.length).toBe(doc.getNumberOfPages());
   });
 
   it('falls back to the generic table when the snapshot has no rows array', () => {

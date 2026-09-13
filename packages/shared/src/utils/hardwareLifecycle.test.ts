@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addYears,
   buildAtAGlanceProse,
+  buildOsProse,
   buildReplacementSchedule,
   cleanUserName,
   displayPersonName,
@@ -210,7 +211,7 @@ describe('buildHardwareLifecycleRecommendations', () => {
       row({ name: 'MacBook-Air.local' }),
     ];
     expect(buildHardwareLifecycleRecommendations(rows, TODAY)).toEqual([
-      'Plan replacements for SAM4, GBG-LT, llr and reception this quarter, starting with SAM4 (7 years old).',
+      'This quarter, plan replacements for SAM4, GBG-LT, llr and reception, starting with SAM4 (7 years old).',
       'SAM4 no longer receives security updates on the current operating system; prioritize this one when scheduling.',
       'LAW-SRV is covered by warranty until November 2026; budget to replace it when coverage ends.',
       'Budget for SAM23 around Q2 2027; no action needed yet.',
@@ -236,7 +237,7 @@ describe('buildHardwareLifecycleRecommendations', () => {
   it('collapses a long replace list', () => {
     const rows = Array.from({ length: 8 }, (_, i) => row({ name: `pc${i}`, replaceBy: '2024-01-01', replacement: 'replace' }));
     expect(buildHardwareLifecycleRecommendations(rows, TODAY)[0]).toBe(
-      'Plan replacements for the 8 computers marked Replace now this quarter.',
+      'This quarter, plan replacements for the 8 computers marked Replace now.',
     );
   });
 });
@@ -302,6 +303,24 @@ describe('customer-facing identity', () => {
     ]);
   });
 
+  it('keeps servers out of the workstation ask and gives them their own line', () => {
+    const rows = [
+      row({ name: 'srv-files-02', deviceKind: 'server', replaceBy: '2022-05-22', replacement: 'replace', ageYears: 9.3 }),
+      row({ name: 'ops-lt-04', user: 'dan', model: 'EliteBook', replaceBy: '2023-03-15', replacement: 'replace', ageYears: 7.5 }),
+      row({ name: 'srv-dc-01', deviceKind: 'server', replaceBy: '2027-08-01', replacement: 'due_soon' }),
+    ];
+    expect(buildHardwareLifecycleRecommendations(rows, TODAY)).toEqual([
+      "This quarter, plan replacements for Dan's EliteBook, starting with Dan's EliteBook (7 years old).",
+      'Your server srv-files-02 is 9 years old and is past its planned life; we will propose a replacement window outside business hours.',
+      'Your server srv-dc-01 comes due Q3 2027; we will plan its replacement outside business hours.',
+    ]);
+  });
+
+  it('buildOsProse can speak in counts only for customer copy', () => {
+    const rows = [row({ name: 'a', osSupport: 'ended' }), row({ name: 'b', osSupport: 'supported' }), row({ name: 'c', osSupport: 'unclassified' })];
+    expect(buildOsProse(rows, { names: false })).toBe('Operating systems: 1 current; 1 no longer receiving security updates.');
+  });
+
   it('never truncates silently', () => {
     const rows = Array.from({ length: 5 }, (_, i) => row({ name: `d${i}`, replaceBy: '2026-12-01', replacement: 'due_soon' }));
     const lines = buildHardwareLifecycleRecommendations(rows, TODAY);
@@ -324,10 +343,10 @@ describe('customer-facing identity', () => {
       row({ name: 'e.corp.local', replaceBy: '2025-08-01', replacement: 'replace', ageYears: 4.8 }),
     ];
     expect(buildHardwareLifecycleRecommendations(rows, TODAY)[0]).toBe(
-      "Plan replacements for the 5 computers marked Replace now this quarter, starting with Priya's T14 (7 years old).",
+      "This quarter, plan replacements for the 5 computers marked Replace now, starting with Priya's T14 (7 years old).",
     );
     expect(buildHardwareLifecycleRecommendations(rows.slice(0, 2), TODAY)[0]).toBe(
-      "Plan replacements for Priya's T14 and b this quarter, starting with Priya's T14 (7 years old).",
+      "This quarter, plan replacements for Priya's T14 and b, starting with Priya's T14 (7 years old).",
     );
   });
 

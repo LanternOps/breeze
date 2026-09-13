@@ -56,6 +56,8 @@ export type PdfChrome = {
 export type HardwareLifecyclePdfOpts = {
   generatedAt: string;
   partnerName: string | null;
+  contactEmail?: string | null;
+  contactName?: string | null;
 };
 
 const fill = (doc: jsPDF, c: RGB) => doc.setFillColor(c[0], c[1], c[2]);
@@ -130,7 +132,7 @@ function replaceByCell(row: HardwareLifecycleDeviceRow, today: string): string {
 function ageCell(row: HardwareLifecycleDeviceRow): string {
   if (row.ageYears == null || row.ageYears <= 0) return EM_DASH;
   if (row.ageYears < 1) return '<1 yr';
-  return `${Math.round(row.ageYears)} yr`;
+  return `${Math.floor(row.ageYears)} yr`;
 }
 
 function cellText(row: HardwareLifecycleDeviceRow, key: string, today: string): string {
@@ -171,9 +173,36 @@ function drawProse(doc: jsPDF, chrome: PdfChrome, text: string, y: number, size 
   doc.setFontSize(size);
   ink(doc, color ?? C.ink);
   const lines = wrapText(doc, text, width);
-  const lineH = size * 0.5;
+  const lineH = size * 0.56;
   lines.forEach((line, i) => doc.text(line, PAGE.mx, y + i * lineH));
-  return y + lines.length * lineH + 1.5;
+  return y + lines.length * lineH + 2.5;
+}
+
+/** Big-number callouts in the band colours: "6 Replace now · past due". */
+function drawCallouts(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementStatus, number>, y: number): number {
+  const { C, PAGE } = chrome;
+  const colors = bandColors(C);
+  const visible = (['replace', 'due_soon', 'supported', 'unknown'] as ReplacementStatus[]).filter((s) => (counts[s] ?? 0) > 0);
+  if (visible.length === 0) return y;
+  const slot = Math.min(58, (PAGE.w - PAGE.mx * 2) / visible.length);
+  let x = PAGE.mx;
+  for (const s of visible) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    ink(doc, colors[s]);
+    const n = String(counts[s] ?? 0);
+    doc.text(n, x, y + 7);
+    const nw = doc.getTextWidth(n);
+    doc.setFontSize(9);
+    ink(doc, C.ink);
+    doc.text(REPLACEMENT_LABELS[s], x + nw + 2.2, y + 3.4);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    ink(doc, C.muted);
+    doc.text(REPLACEMENT_BAND_DESCRIPTIONS[s], x + nw + 2.2, y + 7.2);
+    x += slot;
+  }
+  return y + 12;
 }
 
 /** One-line legend: "● 4 On track (more than a year out)   ● 2 Due soon …". Returns y below it. */
@@ -207,7 +236,7 @@ function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementS
   const colors = bandColors(C);
   const total = REPLACEMENT_STATUS_ORDER.reduce((a, s) => a + (counts[s] ?? 0), 0);
   const width = PAGE.w - PAGE.mx * 2;
-  const barH = 5.2;
+  const barH = 6;
   if (total > 0) {
     const visible = REPLACEMENT_STATUS_ORDER.filter((s) => (counts[s] ?? 0) > 0);
     const gap = 0.6;
@@ -218,13 +247,16 @@ function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementS
     for (const s of visible) {
       const n = counts[s] ?? 0;
       const w = usable * (n / total);
-      fill(doc, colors[s]);
+      // Same treatment as a status badge in the app: a light tint of the
+      // status colour with the colour itself reserved for the text.
+      fill(doc, mix(colors[s], C.white, 0.82));
       doc.roundedRect(x, y, w, barH, 0.8, 0.8, 'F');
-      // Count on the segment itself, so the bar reads without the legend.
+      fill(doc, colors[s]);
+      doc.rect(x + 0.8, y + barH - 0.9, Math.max(w - 1.6, 0.5), 0.9, 'F');
       const label = String(n);
       if (doc.getTextWidth(label) + 3 <= w) {
-        ink(doc, C.white);
-        doc.text(label, x + w / 2, y + barH / 2 + 0.95, { align: 'center' });
+        ink(doc, colors[s]);
+        doc.text(label, x + w / 2, y + barH / 2 + 0.75, { align: 'center' });
       }
       x += w + gap;
     }
@@ -232,7 +264,7 @@ function drawFleetBar(doc: jsPDF, chrome: PdfChrome, counts: Record<ReplacementS
     fill(doc, C.rule);
     doc.roundedRect(PAGE.mx, y, width, barH, 0.8, 0.8, 'F');
   }
-  return drawLegend(doc, chrome, counts, y + barH + 4.2);
+  return y + barH + 3;
 }
 
 /** Paint the three hand-drawn cells: identity, OS with risk tag, service life. */
@@ -298,24 +330,29 @@ function drawHandCell(doc: jsPDF, chrome: PdfChrome, row: HardwareLifecycleDevic
     const overdue = row.replaceBy <= today;
     // Planned life is the track; time past the plan runs on beyond it
     // (capped at five years) so 5 years overdue looks different from 1.
-    const overrunW = overdue ? trackW * 0.5 * Math.min(years / 5, 1) : 0;
+    const overrunW = overdue ? trackW * 0.35 * Math.min(years / 5, 1) : 0;
     fill(doc, C.rule);
     doc.roundedRect(x, yy, trackW, h, 1.2, 1.2, 'F');
     if (row.lifeUsed > 0) {
-      fill(doc, colors[row.replacement]);
+      // Bars carry the status hue at the weight the app gives a filled
+      // badge, not full saturation; the Status word already shouts.
+      fill(doc, mix(colors[row.replacement], C.white, 0.3));
       doc.roundedRect(x, yy, Math.max(trackW * Math.min(row.lifeUsed, 1), 2), h, 1.2, 1.2, 'F');
     }
     if (overrunW > 1) {
       // Lighter overrun segment: same hue, marked off from the plan by a gap.
-      fill(doc, mix(colors[row.replacement], C.white, 0.45));
+      fill(doc, mix(colors[row.replacement], C.white, 0.62));
       doc.roundedRect(x + trackW + 0.7, yy + 0.7, overrunW, h - 1.4, 0.7, 0.7, 'F');
     }
-    doc.setFont('helvetica', overdue ? 'bold' : 'normal');
-    ink(doc, overdue ? C.danger : C.muted);
+    doc.setFont('helvetica', 'normal');
+    ink(doc, overdue ? mix(C.danger, C.ink, 0.25) : C.muted);
     const text = overdue
       ? (years < 1 / 24 ? 'Due now' : `${yearsLabel(years)} past due`)
       : `${yearsLabel(years)} left`;
-    doc.text(text, x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5), midY + 1);
+    const tx = x + trackW + overrunW + (overrunW > 1 ? 3.2 : 2.5);
+    // Never paint past the cell: step down a size if the label would not fit.
+    if (tx + doc.getTextWidth(text) > x + w) doc.setFontSize(SUB_FONT);
+    doc.text(text, tx, midY + 1);
   }
 }
 
@@ -340,7 +377,6 @@ export function renderHardwareLifecycleReport(
   const replaceAge = summary.replaceAgeYears ?? 4;
   const counts = countByReplacement(rows);
   const colors = bandColors(C);
-  const hasVendorDates = rows.some((r) => r.purchaseDateSource === 'vendor');
 
   let y = chrome.drawTitleBlock(
     doc,
@@ -351,55 +387,71 @@ export function renderHardwareLifecycleReport(
   );
 
   // --- At a glance -----------------------------------------------------------
-  y = chrome.drawSectionHeading(doc, 'At a glance', y + 2);
-  y = drawProse(doc, chrome, buildAtAGlanceProse(rows, other.length), y + 1);
-  const osProse = buildOsProse(rows);
-  if (osProse) y = drawProse(doc, chrome, osProse, y);
-  y = drawFleetBar(doc, chrome, counts, y + 1);
+  // Numbers first, then the bar that proportions them, then one paragraph of
+  // framing. The legend lives with each table, next to the rows it explains.
+  y = chrome.drawSectionHeading(doc, 'At a glance', y + 6);
+  y = drawCallouts(doc, chrome, counts, y + 1);
+  y = drawFleetBar(doc, chrome, counts, y);
+  y = drawProse(doc, chrome, buildAtAGlanceProse(rows, other.length), y + 3);
+  const osProse = buildOsProse(rows, { names: false });
+  if (osProse) y = drawProse(doc, chrome, osProse, y - 1);
 
   // --- Replacement schedule ----------------------------------------------------
   // The plan grouped the way a budget is approved: due now, then each of the
   // next quarters, then later, then the undated. Counts and names only — no
   // pricing claims.
-  const schedule = buildReplacementSchedule(rows, today);
-  if (schedule.length > 0) {
-    y = ensureSpace(doc, chrome, y, 14 + schedule.length * 5);
-    y = chrome.drawSectionHeading(doc, 'Replacement schedule', y + 3);
-    const labelW = 40;
-    const textW = PAGE.w - PAGE.mx * 2 - labelW;
-    const mention = (r: HardwareLifecycleDeviceRow) => (r.deviceKind === 'server' ? `${rowMention(r)} (server)` : rowMention(r));
-    y += 1;
-    for (const group of schedule) {
-      const n = group.rows.length;
-      const count = `${n} computer${n === 1 ? '' : 's'}`;
-      const text = group.countOnly ? count : `${count}: ${capNames(group.rows.map(mention))}`;
-      doc.setFontSize(9.5);
-      doc.setFont('helvetica', 'normal');
-      const lines = wrapText(doc, text, textW);
-      y = ensureSpace(doc, chrome, y, lines.length * 4.6 + 1);
-      doc.setFont('helvetica', 'bold');
-      ink(doc, group.label === 'Now' ? C.danger : C.ink);
-      doc.text(group.label, PAGE.mx, y + 3.4);
-      doc.setFont('helvetica', 'normal');
-      ink(doc, C.ink);
-      lines.forEach((line, i) => doc.text(line, PAGE.mx + labelW, y + 3.4 + i * 4.6));
-      y += lines.length * 4.6 + 0.6;
-    }
-    y += 1;
-  }
-
-  // --- Device replacement plan -------------------------------------------------
   const workstations = rows.filter((r) => r.deviceKind !== 'server');
   const servers = rows.filter((r) => r.deviceKind === 'server');
   const serverAge = summary.serverReplaceAgeYears ?? replaceAge;
+  const schedule = buildReplacementSchedule(workstations, today);
+  const serverLine = servers
+    .filter((r) => r.replaceBy)
+    .map((r) => `${rowMention(r)} (${r.replaceBy! <= today ? 'past due' : quarterLabel(r.replaceBy!)})`);
+  const scheduleRows: { label: string; text: string; urgent: boolean }[] = schedule
+    .filter((g) => !g.countOnly || servers.length > 0 || schedule.some((x) => !x.countOnly))
+    .map((g) => {
+      const n = g.rows.length;
+      const count = `${n} computer${n === 1 ? '' : 's'}`;
+      return { label: g.label, text: g.countOnly ? count : `${count}: ${capNames(g.rows.map(rowMention))}`, urgent: g.label === 'Now' };
+    });
+  if (serverLine.length > 0) {
+    scheduleRows.push({ label: 'Servers', text: `${capNames(serverLine)} — planned separately, outside business hours`, urgent: false });
+  }
+  // A fleet with nothing due in the next year has no schedule to show.
+  if (schedule.some((g) => !g.countOnly) || serverLine.length > 0) {
+    y = ensureSpace(doc, chrome, y, 16 + scheduleRows.length * 6);
+    y = chrome.drawSectionHeading(doc, 'Replacement schedule', y + 6);
+    const labelW = 40;
+    const textW = PAGE.w - PAGE.mx * 2 - labelW;
+    y += 2;
+    for (const item of scheduleRows) {
+      doc.setFontSize(9.5);
+      doc.setFont('helvetica', 'normal');
+      const lines = wrapText(doc, item.text, textW);
+      y = ensureSpace(doc, chrome, y, lines.length * 5.2 + 1);
+      doc.setFont('helvetica', 'bold');
+      ink(doc, C.ink);
+      doc.text(item.label, PAGE.mx, y + 3.6);
+      doc.setFont('helvetica', 'normal');
+      ink(doc, C.ink);
+      lines.forEach((line, i) => doc.text(line, PAGE.mx + labelW, y + 3.6 + i * 5.2));
+      y += lines.length * 5.2 + 1.4;
+    }
+    y += 2;
+  }
 
-  const drawPlanTable = (tableRows: HardwareLifecycleDeviceRow[], heading: string, rule: string, startY: number): number => {
+  // --- Device replacement plan -------------------------------------------------
+
+  const drawPlanTable = (tableRows: HardwareLifecycleDeviceRow[], heading: string, rule: string, firstColumn: string, startY: number): number => {
     let ty = chrome.drawSectionHeading(doc, heading, startY);
     // The rule that justifies every red row, at body size — not a disclaimer.
     ty = drawProse(doc, chrome, rule, ty + 1);
     if (tableRows.length === 0) {
       return drawProse(doc, chrome, 'No computers to plan for in this scope.', ty + 1);
     }
+    // The legend counts this table's rows, so it always reconciles with them.
+    const tableCounts = countByReplacement(tableRows);
+    ty = drawLegend(doc, chrome, tableCounts, ty + 1.5);
     const contentW = PAGE.w - PAGE.mx * 2;
     const scale = contentW / COLUMNS.reduce((a, c) => a + c.w, 0);
     const columnStyles: Record<number, { cellWidth: number; halign: Col['halign'] }> = {};
@@ -409,9 +461,9 @@ export function renderHardwareLifecycleReport(
     const continuationTop = PAGE.bandH + 6 + 14;
 
     autoTable(doc, {
-      startY: ty,
+      startY: ty + 1,
       margin: { top: continuationTop, left: PAGE.mx, right: PAGE.mx, bottom: 16 },
-      head: [COLUMNS.map((c) => ({ content: c.label, styles: { halign: c.halign } }))],
+      head: [COLUMNS.map((c, i) => ({ content: i === DEVICE_COL ? firstColumn : c.label, styles: { halign: c.halign } }))],
       body: tableRows.map((r) => COLUMNS.map((c) => cellText(r, c.key, today))),
       theme: 'grid',
       rowPageBreak: 'avoid',
@@ -445,7 +497,7 @@ export function renderHardwareLifecycleReport(
         chrome.drawHeaderBand(doc);
         chrome.drawFooter(doc);
         const hy = chrome.drawSectionHeading(doc, `${heading} (continued)`, PAGE.bandH + 10);
-        drawLegend(doc, chrome, counts, hy + 1.5);
+        drawLegend(doc, chrome, tableCounts, hy + 1.5);
       },
     });
     const t = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable;
@@ -455,36 +507,41 @@ export function renderHardwareLifecycleReport(
   const workstationHeading = servers.length > 0 ? 'Workstations and laptops' : 'Device replacement plan';
   // Heading, rule, table head and at least four rows stay together; a table
   // that would open with two orphan rows starts on the next page instead.
-  const minTableBlock = 16 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
-  y = ensureSpace(doc, chrome, y + 3, minTableBlock);
-  y = drawPlanTable(
-    workstations,
-    workstationHeading,
-    `We plan to replace a computer ${replaceAge} years after purchase, or when its warranty ends if it is still under warranty and that runs longer.`,
-    y,
-  );
-  if (servers.length > 0) {
-    y = ensureSpace(doc, chrome, y + 8, 24 + 7 + ROW_MIN_H * Math.min(3, servers.length));
-    y = drawPlanTable(
-      servers,
-      'Servers',
-      `We plan to replace a server ${serverAge} years after purchase, or when its warranty ends if it is still under warranty and that runs longer. Server replacements are scheduled around your business hours and planned separately from workstations.`,
-      y,
-    );
-  }
-  if (hasVendorDates && rows.length > 0) {
+  const footnote = (tableRows: HardwareLifecycleDeviceRow[], at: number): number => {
+    if (!tableRows.some((r) => r.purchaseDateSource === 'vendor')) return at;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     ink(doc, C.faint);
-    doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, y + 3.6);
-    y += 4;
+    doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, at + 3.8);
+    return at + 4.5;
+  };
+  const minTableBlock = 22 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
+  y = ensureSpace(doc, chrome, y + 6, minTableBlock);
+  y = drawPlanTable(
+    workstations,
+    workstationHeading,
+    `We plan to replace a computer ${replaceAge} years after purchase — or, if it is still under warranty past that point, when the warranty ends.`,
+    'Computer',
+    y,
+  );
+  y = footnote(workstations, y);
+  if (servers.length > 0) {
+    y = ensureSpace(doc, chrome, y + 10, 30 + 7 + ROW_MIN_H * Math.min(3, servers.length));
+    y = drawPlanTable(
+      servers,
+      'Servers',
+      `We plan to replace a server ${serverAge} years after purchase — or, if it is still under warranty past that point, when the warranty ends. Server replacements are scheduled outside your business hours.`,
+      'Server',
+      y,
+    );
+    y = footnote(servers, y);
   }
-  y += 6;
+  y += 8;
 
   // --- Other equipment ---------------------------------------------------------
   if (other.length > 0) {
-    y = ensureSpace(doc, chrome, y, 22);
-    y = chrome.drawSectionHeading(doc, 'Other equipment we manage', y + 2);
+    y = ensureSpace(doc, chrome, y, 24);
+    y = chrome.drawSectionHeading(doc, 'Other equipment we manage', y + 4);
     const names = other.map((o) => [o.manufacturer, o.model].filter(Boolean).join(' ') || o.name);
     const listed = names.length <= 8 ? humanJoin(names) : `${names.slice(0, 8).join(', ')} and ${names.length - 8} more`;
     y = drawProse(
@@ -501,27 +558,41 @@ export function renderHardwareLifecycleReport(
   if (recs.length > 0) {
     // Reserve the heading plus the first item so the heading is never orphaned;
     // each further item checks its own space and flows onto the next page.
-    y = ensureSpace(doc, chrome, y, 18);
-    y = chrome.drawSectionHeading(doc, 'What we recommend', y + 2);
+    y = ensureSpace(doc, chrome, y, 20);
+    y = chrome.drawSectionHeading(doc, 'What we recommend', y + 4);
     doc.setFontSize(9.5);
     const width = PAGE.w - PAGE.mx * 2 - 6;
-    for (const rec of recs) {
+    const closingNeeded = opts.contactEmail?.trim() ? 16 : 0;
+    recs.forEach((rec, idx) => {
       const lines = wrapText(doc, rec, width);
-      y = ensureSpace(doc, chrome, y, lines.length * 4.8 + 2);
+      // The last item carries the closing line with it so "how to approve"
+      // never lands alone on a fresh page.
+      y = ensureSpace(doc, chrome, y, lines.length * 5.2 + 2 + (idx === recs.length - 1 ? closingNeeded : 0));
       ink(doc, C.primary);
       doc.setFont('helvetica', 'bold');
       doc.text('›', PAGE.mx + 1, y);
       ink(doc, C.ink);
       doc.setFont('helvetica', 'normal');
-      lines.forEach((line, i) => doc.text(line, PAGE.mx + 6, y + i * 4.8));
-      y += lines.length * 4.8 + 1;
-    }
+      lines.forEach((line, i) => doc.text(line, PAGE.mx + 6, y + i * 5.2));
+      y += lines.length * 5.2 + 1.6;
+    });
+  }
+
+  // --- How to act --------------------------------------------------------------
+  const contact = opts.contactEmail?.trim();
+  if (contact) {
+    const who = opts.contactName?.trim() ? `${opts.contactName.trim()} (${contact})` : contact;
+    y = ensureSpace(doc, chrome, y + 2, 12);
+    y = drawProse(doc, chrome, `To approve or discuss this plan, contact ${who}. We will send quotes for the "Now" group first.`, y + 3);
   }
 
   // --- Data note -----------------------------------------------------------------
-  y = ensureSpace(doc, chrome, y, 8);
+  // A one-line note never earns a page of its own: when it does not fit, it
+  // sits just above the footer rule instead.
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   ink(doc, C.faint);
-  doc.text(`Figures come from live device records as of ${opts.generatedAt}.`, PAGE.mx, y + 3);
+  const note = `Figures come from live device records as of ${opts.generatedAt}.`;
+  const noteY = y + 4 <= PAGE.footY - 6 ? y + 4 : PAGE.footY - 2.5;
+  doc.text(note, PAGE.mx, noteY);
 }
