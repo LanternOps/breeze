@@ -284,7 +284,9 @@ export function renderHardwareLifecycleReport(
   // --- What we recommend -------------------------------------------------------
   const recs = Array.isArray(summary.recommendations) ? summary.recommendations : [];
   if (recs.length > 0) {
-    y = ensureSpace(doc, chrome, y, 12 + recs.length * 5.5);
+    // Reserve the heading plus the first item so the heading is never orphaned;
+    // each further item checks its own space and flows onto the next page.
+    y = ensureSpace(doc, chrome, y, 18);
     y = chrome.drawSectionHeading(doc, 'What we recommend', y + 2);
     doc.setFontSize(9.5);
     const width = PAGE.w - PAGE.mx * 2 - 6;
