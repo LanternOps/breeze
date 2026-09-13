@@ -402,8 +402,8 @@ describe('GET /orgs/account-readiness', () => {
   // and requirePermission -> getUserPermissions resolves a role solely from a
   // partner_users / organization_users membership, so such a token answers
   // 403 "No permissions found" on EVERY requirePermission route — GET /orgs
-  // included, same chain. That is a pre-existing platform gap, not a W01
-  // defect; it is recorded in the W01 PR as a follow-up.
+  // included, same chain. Pre-existing platform gap, not a W01 defect:
+  // tracked in #5733.
 
   runDb('withholds tickets and invoices when the partner is not in native service-management mode', async () => {
     const board = await seedBoard();
