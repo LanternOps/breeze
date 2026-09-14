@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Activité de l'IA",
+    "count": "{{count}} actions envoyées au cours des {{days}} derniers jours",
+    "tooltip": "Comptabilise les scripts et commandes envoyés par l'IA enregistrés sur cet appareil. Une annulation compte comme une action distincte. Enregistré de façon raisonnable, sans garantie d'exhaustivité."
+  },
   "deviceChangeHistoryTab": {
     "title": "Historique des modifications",
     "loading": "Chargement de l'historique des modifications…",

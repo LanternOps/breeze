@@ -8,6 +8,7 @@ import {
   rowSecondary,
 } from '@breeze/shared';
 import type { HardwareLifecycleDeviceRow, ReplacementStatus } from '@breeze/shared';
+import { withBase } from '@/lib/basePath';
 import { CELL, ROW, TH } from '../portal/ui';
 import { TimelineCell } from './TimelineCell';
 
@@ -99,7 +100,17 @@ export function LifecyclePlanTable({
               return (
                 <tr key={row.id} data-testid={`lifecycle-plan-row-${row.id}`} className={ROW}>
                   <td className={cn(CELL, 'font-semibold text-foreground')}>
-                    <span className="block font-semibold text-foreground">{label}</span>
+                    {row.kind === 'device' ? (
+                      <a
+                        href={withBase(`/devices#${row.id}`)}
+                        data-testid={`lifecycle-plan-row-link-${row.id}`}
+                        className="block font-semibold text-foreground underline-offset-4 hover:underline"
+                      >
+                        {label}
+                      </a>
+                    ) : (
+                      <span className="block font-semibold text-foreground">{label}</span>
+                    )}
                     {secondary && <span className="block text-xs text-muted-foreground">{secondary}</span>}
                   </td>
                   <td className={CELL}>

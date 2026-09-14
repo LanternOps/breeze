@@ -60,6 +60,7 @@ const ACTION_RULES: { prefix: string; icon: LucideIcon }[] = [
   { prefix: "device.command", icon: Power }, // reboot / shutdown / wake / lock / refresh
   { prefix: "script.", icon: Terminal }, // run / cancel
   { prefix: "ai.script.", icon: Sparkles }, // #5022 W05 — AI-authored script runs
+  { prefix: "ai.command.", icon: Sparkles }, // #5022 W01/W02 — AI-dispatched device commands
   { prefix: "device.remote_access", icon: Monitor }, // remote session launched
   { prefix: "device.patch", icon: Download }, // patch install / rollback
   { prefix: "device.software", icon: Package }, // software install / uninstall / update

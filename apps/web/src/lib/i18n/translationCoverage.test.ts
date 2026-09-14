@@ -76,6 +76,8 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     'devices.json': 175,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
     'fleetDesign.json': 2,
@@ -198,6 +200,9 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     'devices.json': 126,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -321,6 +326,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -456,6 +464,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -604,6 +615,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 43,
@@ -705,6 +719,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -790,6 +807,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 22,

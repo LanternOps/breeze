@@ -52,7 +52,11 @@ import {
 import { assignUserToOrganization, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { resolveEffectiveAgentSystem } from '../../services/aiAgents/effectivePolicy';
-import { handleTicketCreatedEvent } from '../../services/aiAgents/ticketHelpdeskSubscriber';
+import {
+  handleTicketCreatedEvent,
+  handleTicketCommentedEvent,
+  MAX_TRIAGE_RUNS_PER_TICKET,
+} from '../../services/aiAgents/ticketHelpdeskSubscriber';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { persistTicketTriage } from '../../services/aiAgents/ticketTriageFindings';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
@@ -309,6 +313,181 @@ describe('ticket-triage admission — outbox event -> subscriber -> dedupe (Task
 
     expect(run).toBeDefined();
     expect(run.modeAtStart).toBe('shadow');
+  });
+});
+
+/** Inserts a real, live ticket_comments row. Defaults to a genuinely
+ *  human-authored, public comment — exactly what `loadVerifiedHumanComment`
+ *  DB-verifies. Pass `originPrincipalKind: 'ai_agent'` + `agentRunId` to seed
+ *  an AI-authored note instead (real FK — `agentRunId` must reference a row
+ *  that actually exists in `ai_agent_runs`). */
+async function seedTicketComment(
+  ticketId: string,
+  overrides: Partial<typeof ticketComments.$inferInsert> = {},
+): Promise<typeof ticketComments.$inferSelect> {
+  const adminDb = getTestDb() as any;
+  const [comment] = await adminDb.insert(ticketComments).values({
+    ticketId,
+    content: 'Still seeing the issue, any update?',
+    isPublic: true,
+    originPrincipalKind: 'user',
+    ...overrides,
+  }).returning();
+  return comment;
+}
+
+function ticketCommentedEventFor(scenario: TriageScenario, ticketId: string, commentId: string): BreezeEvent {
+  return {
+    id: randomUUID(),
+    type: 'ticket.commented',
+    orgId: scenario.org.id,
+    source: 'ticket-triage-integration-test',
+    priority: 'normal',
+    payload: { ticketId, commentId },
+    metadata: { timestamp: new Date().toISOString() },
+  };
+}
+
+describe('W02 per-event helpdesk admissions — dedupe key, recency-ordered loop guard, triage ceiling (#4212)', () => {
+  it('two human comments admit two runs with distinct dedupe keys', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+
+    const c1 = await seedTicketComment(ticket.id, { createdAt: new Date('2026-09-14T10:00:00Z') });
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, c1.id));
+
+    const c2 = await seedTicketComment(ticket.id, { createdAt: new Date('2026-09-14T11:00:00Z') });
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, c2.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    expect(runs).toHaveLength(2);
+    const dedupeKeys = runs.map((r: { dedupeKey: string }) => r.dedupeKey).sort();
+    expect(dedupeKeys).toEqual([`ticket-commented:${c1.id}`, `ticket-commented:${c2.id}`].sort());
+  });
+
+  it('an agent note followed by a redelivered older human comment admits nothing', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    // A real, already-admitted run — its id is the FK target for the AI
+    // note's agent_run_id below.
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    // The agent's own note, posted AFTER the human comment that triggered it
+    // (real chronology: human speaks, then the agent replies).
+    await seedTicketComment(ticket.id, {
+      content: 'AI triage note.',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+      createdAt: new Date('2026-09-14T12:00:00Z'),
+    });
+    // A human comment that is OLDER than the agent's note — simulating a
+    // redelivered/delayed `ticket.commented` event for a comment the agent
+    // already responded to. Must not re-admit.
+    const staleHuman = await seedTicketComment(ticket.id, {
+      createdAt: new Date('2026-09-14T11:00:00Z'),
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, staleHuman.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // Only the ORIGINAL seeded run — no new run admitted for the stale comment.
+    expect(runs).toHaveLength(1);
+    expect(runs[0].id).toBe(run.id);
+  });
+
+  // Review follow-up (pr-test-analyzer): the mirror of the test above — an
+  // agent note followed by a GENUINELY LATER human comment must re-admit.
+  // Proves the "admit" side of the recency-ordered guard against real
+  // Postgres `ORDER BY created_at DESC LIMIT 1` and timestamp comparison,
+  // not just mocks — this is the actual value proposition of #4212 over the
+  // old permanent latch.
+  it('an agent note followed by a genuinely newer human comment re-admits', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    await seedTicketComment(ticket.id, {
+      content: 'AI triage note.',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+      createdAt: new Date('2026-09-14T11:00:00Z'),
+    });
+    // Genuinely newer than the agent's note — the customer replied again.
+    const newerHuman = await seedTicketComment(ticket.id, {
+      createdAt: new Date('2026-09-14T12:00:00Z'),
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, newerHuman.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // The original seeded run PLUS a new one admitted for the newer comment.
+    expect(runs).toHaveLength(2);
+    const dedupeKeys = runs.map((r: { dedupeKey: string }) => r.dedupeKey);
+    expect(dedupeKeys).toContain(`ticket-commented:${newerHuman.id}`);
+  });
+
+  // Review follow-up (pr-test-analyzer): proves the per-comment dedupe key's
+  // idempotency against the REAL `ai_agent_runs_org_dedupe_key_uq` unique
+  // constraint, not just that two DIFFERENT comments get two different keys
+  // (already covered above) — a redelivered outbox event for the SAME
+  // comment must collapse to a no-op, exactly like the pre-existing
+  // `ticket.created` redelivery test at the top of this file.
+  it('redelivering the same comment id twice admits only one run', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const comment = await seedTicketComment(ticket.id);
+
+    const event = ticketCommentedEventFor(scenario, ticket.id, comment.id);
+    await handleTicketCommentedEvent(event);
+    // Redelivery of the identical event — the exact scenario the dedupe key
+    // exists for.
+    await handleTicketCommentedEvent(event);
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.dedupeKey, `ticket-commented:${comment.id}`)));
+
+    expect(runs).toHaveLength(1);
+  });
+
+  it('the sixth human comment on one ticket admits nothing (per-ticket triage-run ceiling)', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+
+    for (let i = 0; i < MAX_TRIAGE_RUNS_PER_TICKET; i++) {
+      await seedTicketTriageRun(scenario, ticket.id);
+    }
+
+    const sixthComment = await seedTicketComment(ticket.id);
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, sixthComment.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // Ceiling reached — no 6th run admitted.
+    expect(runs).toHaveLength(MAX_TRIAGE_RUNS_PER_TICKET);
   });
 });
 
@@ -600,5 +779,126 @@ describe('applyAiFieldUpdates — real-change guard against live Postgres (#4466
     const afterTicket = await loadTicket(ticket.id);
     expect(afterTicket.categoryId).toBe(current.id);
     expect(afterTicket.fieldProvenance).toEqual({ categoryId: 'user' });
+  });
+});
+
+/**
+ * W03 (#4209) — the two properties of the autonomous private-note lane that
+ * only a real database can prove. Appended as its own describe block (imports
+ * are local on purpose) so this wave and its in-flight siblings union-merge.
+ */
+describe('autonomous private-note lane — DB-enforced privacy + audit trail (#4209)', () => {
+  it('rejects a forged PUBLIC ai_agent comment at the database level', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+    // The admin connection BYPASSES RLS, so a pass here cannot be an RLS
+    // policy quietly doing the work — the CHECK constraint is the only thing
+    // left that can refuse this row.
+    const adminDb = getTestDb() as any;
+
+    // Drizzle re-wraps the driver error as `Failed query: …` and keeps the
+    // Postgres error (with its constraint name and 23514 code) on `.cause`, so
+    // assert there rather than on the wrapper's message — matching on the
+    // wrapper alone would pass for ANY failed insert, including a NOT NULL or
+    // FK violation, and prove nothing about the CHECK.
+    const forged = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: null,
+      portalUserId: null,
+      authorName: 'Forged Agent',
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content: 'this should never reach the customer portal',
+      isPublic: true,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+    }).then(() => null, (err: unknown) => err);
+
+    expect(forged).toBeInstanceOf(Error);
+    const cause = (forged as { cause?: { code?: string; constraint_name?: string } }).cause;
+    expect(cause?.code).toBe('23514');
+    expect(cause?.constraint_name).toBe('ticket_comments_agent_note_private_chk');
+
+    // Control: the identical row with is_public=false is accepted, so the
+    // rejection above is the CHECK's scoped predicate and not some unrelated
+    // NOT NULL / FK failure.
+    const [ok] = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: null,
+      portalUserId: null,
+      authorName: 'Helpdesk Agent',
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content: 'private is fine',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+    }).returning();
+    expect(ok.isPublic).toBe(false);
+  });
+
+  it('still admits a PUBLIC comment from a human principal — the CHECK is scoped to ai_agent rows', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const adminDb = getTestDb() as any;
+
+    const [row] = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: scenario.creator.id,
+      authorName: 'Tess Tech',
+      authorType: 'internal',
+      commentType: 'comment',
+      content: 'Replying to the customer.',
+      isPublic: true,
+      originPrincipalKind: 'user',
+    }).returning();
+
+    expect(row.isPublic).toBe(true);
+  });
+
+  it('an autonomous note leaves exactly one ai_agent audit row naming the run', async () => {
+    const { auditLogs } = await import('../../db/schema');
+    const { addAiTriageNote } = await import('../../services/ticketService');
+
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    const { comment } = await withSystemDbAccessContext(() =>
+      addAiTriageNote(ticket.id, run.id, 'Spooler crashed twice; driver update queued.', scenario.org.id, 'Helpdesk Agent'),
+    );
+
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.actorId, run.id)));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actorType).toBe('ai_agent');
+    expect(rows[0].action).toBe('ticket.comment');
+    expect(rows[0].resourceType).toBe('ticket');
+    expect(rows[0].orgId).toBe(scenario.org.id);
+    expect(rows[0].details).toMatchObject({
+      commentId: comment.id,
+      agentRunId: run.id,
+      isInternal: true,
+      isPublic: false,
+    });
+
+    // The idempotent retry (same run) returns the existing comment and must
+    // NOT add a second audit row — otherwise a redelivered job inflates the
+    // compliance record.
+    const retry = await withSystemDbAccessContext(() =>
+      addAiTriageNote(ticket.id, run.id, 'Spooler crashed twice; driver update queued.', scenario.org.id, 'Helpdesk Agent'),
+    );
+    expect(retry.comment.id).toBe(comment.id);
+
+    const afterRetry = await adminDb
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.actorId, run.id)));
+    expect(afterRetry).toHaveLength(1);
   });
 });

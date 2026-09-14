@@ -121,6 +121,7 @@ vi.mock('./helpers', () => ({
 }));
 
 import { eventsRoutes, likePrefixPattern, formatActionMessage, mergeFeedPage, FEED_TOTAL_CAP } from './events';
+import { db } from '../../db';
 
 describe('likePrefixPattern (action-prefix LIKE escaping)', () => {
   it('appends a trailing wildcard for a clean dotted prefix', () => {
@@ -387,6 +388,79 @@ describe("GET /devices/:id/events — org scoping of the audit feed (BREEZE-B)",
       expect(serialized).toContain('org_id');
       expect(serialized).toContain('org-123');
     }
+  });
+});
+
+// #5022 W02 code review finding: `ai.script.executed` / `ai.command.executed`
+// audit rows carry the RAW aiSessionId/aiAgentRunId in `details` (written by
+// aiOriginColumns() in commandQueue.ts/scriptDispatch.ts). This feed requires
+// only devices:read — no owner/site-scope check like resolveAiOriginSummary's
+// — so returning `details` verbatim would hand every technician the exact
+// provenance pointer OD-9 A's authorized-summary endpoint exists to withhold
+// from a non-owner. The kind (`aiInitiatorKind`) is fine to disclose; the ids
+// are not.
+describe('GET /devices/:id/events — redacts raw AI provenance ids from details (#5022 OD-9 A)', () => {
+  let app: Hono;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCappedCounts = [];
+    cappedCountWhereArgs.length = 0;
+    cappedCountLimitArgs.length = 0;
+    app = new Hono();
+    app.route('/devices', eventsRoutes);
+  });
+
+  it('strips aiSessionId and aiAgentRunId from an ai.script.executed row, keeping aiInitiatorKind', async () => {
+    vi.mocked(db.select).mockImplementationOnce(() => ({
+      from: vi.fn(() => ({
+        leftJoin: vi.fn(() => ({
+          where: vi.fn(() => ({
+            orderBy: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: 'audit-1',
+                  timestamp: new Date('2026-02-08T00:00:00.000Z'),
+                  sortKey: '1',
+                  action: 'ai.script.executed',
+                  actorType: 'ai_agent',
+                  actorEmail: null,
+                  actorId: 'agent-1',
+                  resourceType: 'device',
+                  resourceId: '11111111-1111-1111-1111-111111111111',
+                  resourceName: 'host-1',
+                  result: 'dispatched',
+                  details: {
+                    executionId: 'exec-1',
+                    aiInitiatorKind: 'ai_assistant',
+                    aiSessionId: 'sess-super-secret',
+                    aiAgentRunId: 'run-super-secret',
+                  },
+                  errorMessage: null,
+                  ipAddress: null,
+                  initiatedBy: 'ai',
+                  actorName: null,
+                },
+              ]),
+            })),
+          })),
+        })),
+      })),
+    }) as never);
+
+    const res = await app.request(
+      '/devices/11111111-1111-1111-1111-111111111111/events',
+      { method: 'GET', headers: { Authorization: 'Bearer token' } }
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const row = body.data.find((r: { action: string }) => r.action === 'ai.script.executed');
+    expect(row).toBeDefined();
+    expect(row.details).toMatchObject({ executionId: 'exec-1', aiInitiatorKind: 'ai_assistant' });
+    expect(row.details).not.toHaveProperty('aiSessionId');
+    expect(row.details).not.toHaveProperty('aiAgentRunId');
+    expect(JSON.stringify(body)).not.toContain('sess-super-secret');
+    expect(JSON.stringify(body)).not.toContain('run-super-secret');
   });
 });
 
