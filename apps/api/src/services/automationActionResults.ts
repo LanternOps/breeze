@@ -58,7 +58,13 @@ type ActionState = {
   commandId: string | null;
   scriptExecutionId: string | null;
   deploymentResultId: string | null;
-  agentRunId: string | null;
+  /**
+   * #5290 — optional on the READ shape so the many existing callers/fixtures
+   * that predate the column keep compiling; a row selected from the table
+   * always carries it (null when unset). `correlationsPatch` normalises
+   * `undefined` to null before comparing.
+   */
+  agentRunId?: string | null;
 };
 
 type ActionPatch = Partial<{
@@ -95,7 +101,7 @@ function correlationsPatch(state: ActionState, input: Correlations): ActionPatch
   for (const key of ['commandId', 'scriptExecutionId', 'deploymentResultId', 'agentRunId'] as const) {
     const proposed = input[key];
     if (proposed === undefined) continue;
-    const current = state[key];
+    const current = state[key] ?? null;
     if (current !== null && current !== proposed) return null;
     if (current === null) patch[key] = proposed;
   }

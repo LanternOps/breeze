@@ -47,6 +47,13 @@ export interface CreateAlertParams {
    * (the compiled rule is an implementation detail they never see).
    */
   monitorId?: string | null;
+  /** #5290 — the breach episode this alert belongs to. */
+  episodeId?: string | null;
+  /**
+   * #5290 — recurrence escalation. A requires-human alert is NEVER
+   * auto-resolved and never auto-suppressed by an AI verdict.
+   */
+  requiresHuman?: boolean;
 }
 
 // Rule with template info for evaluation
@@ -134,7 +141,10 @@ async function publishAlertTriggeredOrRollback(opts: {
  * @returns Created alert ID, or null if blocked by cooldown/dedupe
  */
 export async function createAlert(params: CreateAlertParams): Promise<string | null> {
-  const { ruleId, deviceId, orgId, severity, title, message, context, monitorId } = params;
+  const {
+    ruleId, deviceId, orgId, severity, title, message, context, monitorId,
+    episodeId, requiresHuman,
+  } = params;
 
   // Get the rule to check cooldown settings
   const [rule] = await db
@@ -211,6 +221,8 @@ export async function createAlert(params: CreateAlertParams): Promise<string | n
       message,
       context: context ?? {},
       monitorId: monitorId ?? null,
+      episodeId: episodeId ?? null,
+      requiresHuman: requiresHuman ?? false,
       status: 'active',
       triggeredAt: new Date()
     })
@@ -285,6 +297,19 @@ export interface CreateSourcedAlertParams {
    * pass it explicitly (including `null`) when the caller already knows it.
    */
   siteId?: string | null;
+  /**
+   * #5289 — the monitor definition behind this alert, when there is one. A
+   * rule-less monitor alert (the recurrence escalation) sources its delivery
+   * channels and escalation policy from the monitor via this id.
+   */
+  monitorId?: string | null;
+  /** #5290 — the breach episode this alert belongs to. */
+  episodeId?: string | null;
+  /**
+   * #5290 — recurrence escalation. NEVER auto-resolved, never auto-suppressed
+   * by an AI verdict, always its own correlation root.
+   */
+  requiresHuman?: boolean;
 }
 
 /**
@@ -322,6 +347,9 @@ export async function createSourcedAlert(params: CreateSourcedAlertParams): Prom
       title,
       message,
       context,
+      monitorId: params.monitorId ?? null,
+      episodeId: params.episodeId ?? null,
+      requiresHuman: params.requiresHuman ?? false,
       status: 'active',
       triggeredAt: triggeredAt ?? new Date()
     })

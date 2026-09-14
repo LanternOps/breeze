@@ -91,7 +91,7 @@ describe('resetMonitorEscalation', () => {
 
     await resetMonitorEscalation({ monitorId: MONITOR, deviceId: DEVICE, auth: auth() });
 
-    const set = state.capturedSets[0];
+    const set = state.capturedSets[0]!;
     expect(set.escalatedAt).toBeNull();
     expect(set.escalationAlertId).toBeNull();
     expect(set.responsesPaused).toBe(false);
@@ -102,7 +102,7 @@ describe('resetMonitorEscalation', () => {
 
     await resetMonitorEscalation({ monitorId: MONITOR, deviceId: DEVICE, auth: auth() });
 
-    const set = state.capturedSets[0];
+    const set = state.capturedSets[0]!;
     expect(set.episodesInWindow).toBe(0);
     expect(set.windowStartedAt).toBeNull();
   });
@@ -112,7 +112,7 @@ describe('resetMonitorEscalation', () => {
 
     await resetMonitorEscalation({ monitorId: MONITOR, deviceId: DEVICE, auth: auth() });
 
-    const set = state.capturedSets[0];
+    const set = state.capturedSets[0]!;
     expect(set.resetAt).toBeInstanceOf(Date);
     expect(set.resetBy).toBe('user-1');
   });
