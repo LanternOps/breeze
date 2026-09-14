@@ -140,10 +140,24 @@ export function alertExposureCte(orgIds: readonly string[], from: string, throug
  * a free L-minute head start.
  *
  * `alerts.status` is ('active','acknowledged','resolved','suppressed','dismissed').
- * **`suppressed` and `dismissed` are not resolutions** — counting a suppression
- * as an outcome would make noise suppression look like fixing things. They are
- * treated as right-censored at their status timestamp when one exists
- * (`dismissed_at`), and otherwise censored at the window bound.
+ * **`resolved` is the ONLY status that counts as an outcome.** Counting a
+ * suppression or a dismissal would make noise suppression look like fixing
+ * things.
+ *
+ * A suppressed or dismissed alert is therefore right-censored at the window
+ * bound — **not** at `suppressed_until` / `dismissed_at`, deliberately:
+ *
+ *  - The PRIMARY statistic is unaffected either way. `proportionWithinHorizon`
+ *    counts only `observed` outcomes, and a dismissal is never `observed`, so
+ *    the choice of censoring instant cannot move it.
+ *  - For the Kaplan–Meier refinement, censoring at the dismissal instant would
+ *    be **informative censoring** — the reason for leaving the risk set is
+ *    correlated with the outcome — which is precisely the assumption KM needs
+ *    and would bias survival upward. Censoring at the window bound states what
+ *    is actually known: this alert did not reach resolution for that long.
+ *
+ * Pinned by `alertCohortQuery`'s case in `impactMeasured.contract.test.ts` and
+ * by the suppressed-alert case in `impactMeasuredSignals.integration.test.ts`.
  *
  * @param orgCondition The caller's `auth.orgCondition(alerts.orgId)`, applied on
  *        top of RLS and on top of `orgIds`: partner scope means ACCESSIBLE orgs,

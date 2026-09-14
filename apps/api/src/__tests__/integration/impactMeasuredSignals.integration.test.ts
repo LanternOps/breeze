@@ -38,6 +38,7 @@ import {
   alertTemplates,
   alerts,
   devices,
+  ticketDrafts,
   tickets,
   timeEntries,
 } from '../../db/schema';
@@ -250,7 +251,10 @@ async function seedTicket(t: Tenant, opts: {
   category: string;
   createdAt: Date;
   firstResponseAt?: Date | null;
+  /** Exposure via a started agent run. */
   exposed: boolean;
+  /** Exposure via an AI DRAFT alone, with no run attached to the ticket. */
+  exposedByDraft?: boolean;
   deletedAt?: Date | null;
 }): Promise<string> {
   const [row] = await admin().insert(tickets).values({
@@ -279,6 +283,19 @@ async function seedTicket(t: Tenant, opts: {
       ticketId: row!.id,
       queuedAt: contact,
       startedAt: contact,
+    });
+  }
+
+  if (opts.exposedByDraft) {
+    // No run attached to the ticket at all: a draft is exposure in its own
+    // right, which is the whole reason ticketExposureCte has a second branch.
+    await admin().insert(ticketDrafts).values({
+      orgId: t.orgId,
+      ticketId: row!.id,
+      kind: 'reply',
+      content: 'Signals fixture draft',
+      state: 'active',
+      createdAt: plusMinutes(opts.createdAt, 2),
     });
   }
   return row!.id;
@@ -411,6 +428,91 @@ describe('measured impact — ticket first-response signal', () => {
     expect(c.aiTouched.n).toBe(N);
     expect(signal.exposureAgeMinutes).toBe(TICKET_EXPOSURE_AGE_MINUTES);
     expect(signal.horizonHours).toBe(4);
+  });
+
+  it('counts an AI DRAFT as exposure even with no run attached to the ticket', async () => {
+    const t = await createTenant();
+    const created = at(DAY, 16);
+    for (let i = 0; i < N; i += 1) {
+      await seedTicket(t, {
+        priority: 'urgent',
+        category: 'drafted',
+        createdAt: created,
+        firstResponseAt: plusMinutes(created, 40),
+        exposed: false,
+        exposedByDraft: true,
+      });
+      await seedTicket(t, {
+        priority: 'urgent',
+        category: 'drafted',
+        createdAt: created,
+        firstResponseAt: plusMinutes(created, 40),
+        exposed: false,
+      });
+    }
+
+    const signal = await withDbAccessContext(dbContextFor(t), () =>
+      loadTicketFirstResponseSignal(orgAuth(t), windowFor(t)));
+
+    const c = signal.cohorts.find((x) => x.key === 'urgent|drafted')!;
+    // Without the ticket_drafts branch the AI arm would be empty and the whole
+    // cohort would vanish behind the display gate.
+    expect(c.aiTouched.n).toBe(N);
+    expect(c.untouched.n).toBe(N);
+  });
+
+  it('withholds a cohort whose OTHER arm is below the gate, however large this one is', async () => {
+    const t = await createTenant();
+    const created = at(DAY, 17);
+    // Deliberately asymmetric: a big AI arm and a tiny untouched one. Showing
+    // this cohort would invite a comparison of a solid number against noise.
+    for (let i = 0; i < N * 2; i += 1) {
+      await seedTicket(t, {
+        priority: 'high',
+        category: 'lopsided',
+        createdAt: created,
+        firstResponseAt: plusMinutes(created, 30),
+        exposed: true,
+      });
+    }
+    for (let i = 0; i < 3; i += 1) {
+      await seedTicket(t, {
+        priority: 'high',
+        category: 'lopsided',
+        createdAt: created,
+        firstResponseAt: plusMinutes(created, 30),
+        exposed: false,
+      });
+    }
+
+    const signal = await withDbAccessContext(dbContextFor(t), () =>
+      loadTicketFirstResponseSignal(orgAuth(t), windowFor(t)));
+
+    expect(signal.cohorts.find((x) => x.key === 'high|lopsided')).toBeUndefined();
+  });
+
+  it('reports insufficient_followup when the window cannot contain L + H', async () => {
+    const t = await createTenant();
+    // Triggered late on the LAST day of the window: created_at + L + 4h runs
+    // past the window's exclusive upper bound, so no row has enough follow-up.
+    const created = at(THROUGH, 23, 30);
+    for (let i = 0; i < N; i += 1) {
+      await seedTicket(t, {
+        priority: 'low',
+        category: 'latewindow',
+        createdAt: created,
+        firstResponseAt: null,
+        exposed: i % 2 === 0,
+      });
+    }
+
+    const signal = await withDbAccessContext(dbContextFor(t), () =>
+      loadTicketFirstResponseSignal(orgAuth(t), windowFor(t)));
+
+    // NOT 'insufficient_data': there is plenty of data, the window is just too
+    // short to answer the question yet. Conflating the two would tell a partner
+    // their AI did nothing when the honest answer is "ask again later".
+    expect(signal).toMatchObject({ cohorts: [], omitted: 'insufficient_followup' });
   });
 
   it('excludes soft-deleted tickets', async () => {

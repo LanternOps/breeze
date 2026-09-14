@@ -10,7 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { ALERT_EXPOSURE_AGE_MINUTES, TICKET_EXPOSURE_AGE_MINUTES } from '@breeze/shared';
 
 import { UNGROUPED_VERDICT_DELAY_MINUTES } from '../../jobs/alertVerdictScheduler';
-import { alertCohortQuery, alertExposureCte, ticketCohortQuery } from './impactMeasuredCohorts';
+import {
+  alertCohortQuery,
+  alertExposureCte,
+  ticketCohortQuery,
+  ticketExposureCte,
+} from './impactMeasuredCohorts';
 
 const dialect = new PgDialect();
 const render = (fragment: Parameters<PgDialect['sqlToQuery']>[0]) => dialect.sqlToQuery(fragment).sql;
@@ -94,7 +99,43 @@ describe('alertCohortQuery', () => {
   });
 
   it('does not treat suppressed or dismissed as a resolution', () => {
-    expect(sqlText).toMatch(/'resolved'/);
+    // `resolved` must be the ONLY status that counts as an outcome. A bare
+    // `toMatch(/'resolved'/)` would still pass if someone widened the predicate
+    // to `status IN ('resolved','suppressed','dismissed')` -- which is exactly
+    // the regression this test exists to catch -- so assert the equality shape
+    // AND the absence of the other two literals.
+    expect(sqlText).toMatch(/"status"\s*=\s*'resolved'/i);
+    expect(sqlText).not.toMatch(/'suppressed'/i);
+    expect(sqlText).not.toMatch(/'dismissed'/i);
+    expect(sqlText).not.toMatch(/"status"\s+in\s*\(/i);
+  });
+});
+
+describe('ticketExposureCte', () => {
+  const sqlText = render(ticketExposureCte(ORGS, FROM, THROUGH));
+
+  it('counts an AI DRAFT as exposure, not only an agent run', () => {
+    // A draft is written for a ticket without necessarily having a run attached
+    // to that ticket, so dropping this branch would silently shrink the AI arm.
+    expect(sqlText).toContain('ticket_drafts');
+    expect(sqlText).toContain('ai_agent_runs');
+    expect((sqlText.match(/union all/gi) ?? []).length).toBe(1);
+  });
+
+  it('ignores a run that never started', () => {
+    expect(sqlText).toMatch(/"started_at"\s+is not null/i);
+  });
+
+  it('takes the earliest contact and scopes every branch by org', () => {
+    expect(sqlText).toMatch(/min\(/i);
+    expect((sqlText.match(/"org_id" in/gi) ?? []).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('converts both timestamptz sources to the naive UTC instant', () => {
+    // ticket_drafts.created_at and ai_agent_runs.started_at are BOTH timestamptz;
+    // tickets.created_at is not. Comparing them uncast shifts the bound.
+    expect(sqlText).toMatch(/"started_at"\s+at time zone 'UTC'/i);
+    expect(sqlText).toMatch(/"created_at"\s+at time zone 'UTC'/i);
   });
 });
 

@@ -52,19 +52,47 @@ interface CohortRow {
   hasFollowup: boolean;
 }
 
-/** Postgres returns numerics as strings through postgres.js; coerce defensively. */
-function toNumber(value: unknown): number {
+/**
+ * Postgres returns numerics as strings through postgres.js, so a cast is needed
+ * — but a value that will not parse is an ANOMALY, not a zero.
+ *
+ * Substituting 0 here would feed a fabricated 0-minute resolution into the
+ * Kaplan-Meier curve or a fabricated 0-minute labour entry into the median, and
+ * nobody downstream could tell. This band's whole purpose is to be trustworthy,
+ * so an unparseable value fails loudly (a visible 500) rather than quietly
+ * dragging an arm toward "faster".
+ */
+function toNumber(value: unknown, column: string): number {
   const n = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
+  if (!Number.isFinite(n)) {
+    throw new Error(
+      `[impactMeasured] non-numeric value for "${column}" (${typeof value}) — refusing to substitute 0`,
+    );
+  }
+  return n;
 }
 
 function toBoolean(value: unknown): boolean {
   return value === true || value === 't' || value === 'true';
 }
 
+/**
+ * Run a cohort query.
+ *
+ * A non-array result is a driver/shape fault, and returning `[]` for it would
+ * surface as `omitted: 'insufficient_data'` — telling a partner their AI did
+ * nothing when in truth the query never produced rows. Throw instead, so the
+ * failure reaches the route's error path where it is visible. (Same fail-loud
+ * shape as `ticketContext.ts`'s raw-SQL helper.)
+ */
 async function executeRows(fragment: SQL): Promise<Record<string, unknown>[]> {
   const rows = (await db.execute(fragment)) as unknown;
-  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  if (!Array.isArray(rows)) {
+    throw new Error(
+      `[impactMeasured] cohort query returned a non-array result (${typeof rows}) — refusing to report it as "no data"`,
+    );
+  }
+  return rows as Record<string, unknown>[];
 }
 
 /**
@@ -156,7 +184,7 @@ export async function loadAlertResolutionSignal(
       label: typeof row.rule_name === 'string' && row.rule_name.length > 0 ? row.rule_name : ruleId,
       aiTouched: toBoolean(row.ai_touched),
       observed: toBoolean(row.observed),
-      minutes: toNumber(row.minutes),
+      minutes: toNumber(row.minutes, 'minutes'),
       hasFollowup: toBoolean(row.has_followup),
     };
   });
@@ -185,7 +213,7 @@ export async function loadTicketFirstResponseSignal(
       label: category.length > 0 ? `${priority} · ${category}` : priority,
       aiTouched: toBoolean(row.ai_touched),
       observed: toBoolean(row.observed),
-      minutes: toNumber(row.minutes),
+      minutes: toNumber(row.minutes, 'minutes'),
       hasFollowup: toBoolean(row.has_followup),
     };
   });
@@ -244,7 +272,7 @@ export async function loadTechnicianMinutes(
       bucket = { label, ai: [], untouched: [] };
       byKey.set(key, bucket);
     }
-    (aiTouched ? bucket.ai : bucket.untouched).push(toNumber(row.recorded_minutes));
+    (aiTouched ? bucket.ai : bucket.untouched).push(toNumber(row.recorded_minutes, 'recorded_minutes'));
   }
 
   const cohorts: TechnicianMinutesCohort[] = [];
