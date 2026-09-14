@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
@@ -2634,10 +2634,16 @@ export async function moveTicketOrg(
     // today: nothing writes agent_run_id yet (the autonomous-note lane is
     // deferred; see the column comment in db/schema/portal.ts). Tracked in #4644
     // so the contract is in place before that lane ships.
+    // #4211 (W01): proposedByRunId is the same class of reverse pointer as
+    // agentRunId above (a link back to a source-org ai_agent_runs row), so it
+    // is cleared in the SAME statement rather than a second UPDATE.
     await tx
       .update(ticketComments)
-      .set({ agentRunId: null })
-      .where(and(eq(ticketComments.ticketId, ticketId), isNotNull(ticketComments.agentRunId)));
+      .set({ agentRunId: null, proposedByRunId: null })
+      .where(and(
+        eq(ticketComments.ticketId, ticketId),
+        or(isNotNull(ticketComments.agentRunId), isNotNull(ticketComments.proposedByRunId)),
+      ));
     guard = await assertTicketMoveCurrencyCompatible(tx, {
       ticketIds: [ticketId],
       sourceCurrency: sourceOrg.currencyCode,
@@ -2662,6 +2668,7 @@ export async function moveTicketOrg(
       // Runs remain in the source org; never link this destination comment
       // back to a source-org run after the detach above.
       agentRunId: null,
+      proposedByRunId: null,
       commentType: 'system',
       content: `Moved to ${targetOrg.name}` + (strandedCount > 0
         ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`

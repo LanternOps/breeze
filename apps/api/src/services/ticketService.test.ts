@@ -3830,6 +3830,34 @@ describe('moveTicketOrg', () => {
     }));
   });
 
+  it('nulls proposed_by_run_id alongside agent_run_id on a cross-org move (#4211)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    // The ticket_comments detach UPDATE clears BOTH reverse pointers in one
+    // statement (agentRunId per #4524, proposedByRunId per #4211) so a
+    // target-org comment never names a source-org run under either column.
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agentRunId: null, proposedByRunId: null })
+    );
+    // The system feed-entry insert also carries proposedByRunId: null,
+    // alongside the pre-existing agentRunId: null.
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1', agentRunId: null, proposedByRunId: null, commentType: 'system'
+    }));
+  });
+
   it('detaches requester_contact_id in the SAME UPDATE that re-stamps org_id', async () => {
     // #3258 W03 final review C1: `tickets_requester_contact_org_fk` is
     // COMPOSITE (requester_contact_id, org_id) -> contacts(id, org_id) and
