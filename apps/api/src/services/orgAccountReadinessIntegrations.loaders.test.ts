@@ -10,10 +10,27 @@ import { db } from '../db';
 import {
   accountingConnections,
   accountingEntityMappings,
+  dnsFilterIntegrations,
+  huntressIntegrations,
+  huntressOrgMappings,
+  m365Connections,
   organizationExternalLinks,
+  pax8CompanyMappings,
+  pax8Integrations,
   psaConnections,
+  s1Integrations,
+  s1OrgMappings,
 } from '../db/schema';
-import { loadAccounting, loadPsaAndExternal } from './orgAccountReadinessIntegrations';
+import {
+  loadAccounting,
+  loadDns,
+  loadHuntress,
+  loadIntegrationReadiness,
+  loadM365,
+  loadPax8,
+  loadPsaAndExternal,
+  loadSentinelOne,
+} from './orgAccountReadinessIntegrations';
 
 const PARTNER = '00000000-0000-0000-0000-00000000aaaa';
 const ORG_A = '11111111-1111-1111-1111-111111111111';
@@ -146,5 +163,139 @@ describe('loadPsaAndExternal', () => {
     expect(out.connectors).toEqual([{ system: 'psa', state: 'connected', provider: 'zendesk' }]);
     expect(out.rows).toEqual([]);
     expect(wheres.has(organizationExternalLinks)).toBe(false);
+  });
+});
+
+const NOW = new Date('2026-09-13T12:00:00.000Z');
+
+describe('loadPax8', () => {
+  it('returns nothing without billing:manage', async () => {
+    setupDb(new Map());
+    expect(await loadPax8(PARTNER, [ORG_A], { accounting: true, pax8: false })).toEqual({ connectors: [], rows: [] });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('reads mappings only under the ACTIVE integration and mirrors its sync state', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [pax8Integrations, [
+        { id: 'old', isActive: false, lastSyncStatus: 'success' },
+        { id: 'live', isActive: true, lastSyncStatus: 'failed' },
+      ]],
+      [pax8CompanyMappings, [{ orgId: ORG_A }]],
+    ]));
+    const out = await loadPax8(PARTNER, [ORG_A, ORG_B], { accounting: false, pax8: true });
+    expect(out.connectors).toEqual([{ system: 'pax8', state: 'error' }]);
+    expect(out.rows).toEqual([{ orgId: ORG_A, integration: { system: 'pax8', state: 'error', reason: 'sync_failed' } }]);
+    const where = compiled(wheres, pax8CompanyMappings);
+    expect(where.sql).toContain('"pax8_company_mappings"."integration_id" = ');
+    expect(where.sql).toContain('"pax8_company_mappings"."partner_id" = ');
+    expect(where.sql).toContain('"pax8_company_mappings"."ignored" = ');
+    expect(where.sql).toContain('"pax8_company_mappings"."org_id" in (');
+    expect(where.params).toEqual(['live', PARTNER, false, ORG_A, ORG_B]);
+  });
+
+  it('with only inactive integrations reports disabled and reads no mappings', async () => {
+    setupDb(new Map<unknown, unknown[]>([[pax8Integrations, [{ id: 'old', isActive: false, lastSyncStatus: null }]]]));
+    const out = await loadPax8(PARTNER, [ORG_A], { accounting: false, pax8: true });
+    expect(out).toEqual({ connectors: [{ system: 'pax8', state: 'disabled' }], rows: [] });
+    expect(wheres.has(pax8CompanyMappings)).toBe(false);
+  });
+});
+
+describe('loadM365', () => {
+  it('excludes revoked rows in SQL and derives one row per profile', async () => {
+    setupDb(new Map<unknown, unknown[]>([[m365Connections, [
+      { orgId: ORG_A, status: 'active', expiresAt: null, lastErrorCode: null },
+      { orgId: ORG_A, status: 'degraded', expiresAt: null, lastErrorCode: null },
+    ]]]));
+    const out = await loadM365([ORG_A], NOW);
+    expect(out.connectors).toEqual([]);
+    expect(out.rows).toEqual([
+      { orgId: ORG_A, integration: { system: 'm365', state: 'linked' } },
+      { orgId: ORG_A, integration: { system: 'm365', state: 'error', reason: 'degraded' } },
+    ]);
+    const where = compiled(wheres, m365Connections);
+    expect(where.sql).toContain('"m365_connections"."org_id" in (');
+    expect(where.sql).toContain('"m365_connections"."revoked_at" is null');
+    expect(where.sql).toContain('"m365_connections"."status" <> ');
+    expect(where.params).toEqual([ORG_A, 'revoked']);
+  });
+});
+
+describe('loadDns', () => {
+  it('reads active integrations of the accepted orgs', async () => {
+    setupDb(new Map<unknown, unknown[]>([[dnsFilterIntegrations, [{ orgId: ORG_A, lastSyncStatus: null }]]]));
+    const out = await loadDns([ORG_A]);
+    expect(out.rows).toEqual([{ orgId: ORG_A, integration: { system: 'dns_filter', state: 'pending', reason: 'never_synced' } }]);
+    const where = compiled(wheres, dnsFilterIntegrations);
+    expect(where.sql).toContain('"dns_filter_integrations"."is_active" = ');
+    expect(where.params).toEqual([ORG_A, true]);
+  });
+});
+
+describe('loadHuntress / loadSentinelOne', () => {
+  it('Huntress: connector from all rows, mapping state from the joined parent, join carries the partner', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [huntressIntegrations, [{ id: 'h1', isActive: false, lastSyncStatus: 'success' }]],
+      [huntressOrgMappings, [{ orgId: ORG_A, isActive: false, lastSyncStatus: 'success' }]],
+    ]));
+    const out = await loadHuntress(PARTNER, [ORG_A]);
+    expect(out.connectors).toEqual([{ system: 'huntress', state: 'disabled' }]);
+    expect(out.rows).toEqual([{ orgId: ORG_A, integration: { system: 'huntress', state: 'error', reason: 'connector_error' } }]);
+    const join = compiled(joins, huntressOrgMappings);
+    expect(join.sql).toContain('"huntress_integrations"."partner_id" = ');
+    expect(join.params).toEqual([PARTNER]);
+    const where = compiled(wheres, huntressOrgMappings);
+    expect(where.sql).toContain('"huntress_org_mappings"."partner_id" = ');
+    expect(where.sql).toContain('"huntress_org_mappings"."org_id" in (');
+    expect(where.params).toEqual([PARTNER, ORG_A]);
+  });
+
+  it('SentinelOne: active parent never synced → pending never_synced; a partial sync is linked', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [s1Integrations, [{ id: 's1', isActive: true, lastSyncStatus: null }]],
+      [s1OrgMappings, [
+        { orgId: ORG_A, isActive: true, lastSyncStatus: null },
+        { orgId: ORG_B, isActive: true, lastSyncStatus: 'partial' },
+      ]],
+    ]));
+    const out = await loadSentinelOne(PARTNER, [ORG_A, ORG_B]);
+    expect(out.connectors).toEqual([{ system: 'sentinelone', state: 'connected' }]);
+    expect(out.rows).toEqual([
+      { orgId: ORG_A, integration: { system: 'sentinelone', state: 'pending', reason: 'never_synced' } },
+      { orgId: ORG_B, integration: { system: 'sentinelone', state: 'linked' } },
+    ]);
+  });
+
+  it('a partner with no Huntress row mentions no connector and reads no mappings', async () => {
+    setupDb(new Map<unknown, unknown[]>([[huntressIntegrations, []]]));
+    expect(await loadHuntress(PARTNER, [ORG_A])).toEqual({ connectors: [], rows: [] });
+    expect(wheres.has(huntressOrgMappings)).toBe(false);
+  });
+});
+
+describe('loadIntegrationReadiness', () => {
+  it('composes every source, aggregates per org and keys every accepted org', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [accountingConnections, [{ id: 'c1', provider: 'quickbooks', status: 'connected' }]],
+      [accountingEntityMappings, [{ orgId: ORG_A, provider: 'quickbooks', linkStatus: 'confirmed', syncStatus: 'synced', lastError: null }]],
+      [psaConnections, []],
+      [organizationExternalLinks, []],
+      [pax8Integrations, []],
+      [m365Connections, [
+        { orgId: ORG_A, status: 'active', expiresAt: null, lastErrorCode: null },
+        { orgId: ORG_A, status: 'verifying', expiresAt: null, lastErrorCode: null },
+      ]],
+      [dnsFilterIntegrations, []],
+      [huntressIntegrations, []],
+      [s1Integrations, []],
+    ]));
+    const out = await loadIntegrationReadiness({ partnerId: PARTNER, orgIds: [ORG_A, ORG_B], grants: { accounting: true, pax8: true }, now: NOW });
+    expect(out.connectors).toEqual([{ system: 'quickbooks', state: 'connected' }]);
+    expect(out.byOrg.get(ORG_A)).toEqual([
+      { system: 'quickbooks', state: 'linked' },
+      { system: 'm365', state: 'pending', reason: 'consent_pending' },
+    ]);
+    expect(out.byOrg.get(ORG_B)).toEqual([]);
   });
 });

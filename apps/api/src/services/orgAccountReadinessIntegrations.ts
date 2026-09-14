@@ -9,13 +9,21 @@
  * without a database; the loaders (further down) only fetch rows and feed them
  * through these functions.
  */
-import { and, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   accountingConnections,
   accountingEntityMappings,
+  dnsFilterIntegrations,
+  huntressIntegrations,
+  huntressOrgMappings,
+  m365Connections,
   organizationExternalLinks,
+  pax8CompanyMappings,
+  pax8Integrations,
   psaConnections,
+  s1Integrations,
+  s1OrgMappings,
 } from '../db/schema';
 
 export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone';
@@ -331,4 +339,162 @@ export async function loadPsaAndExternal(
     // is deliberately neither a PSA row nor an identity badge.
   }
   return { connectors, rows: [...rows, ...identity] };
+}
+
+/** Pax8. Gated on billing:manage — the grant every Pax8 read route requires (routes/pax8.ts). */
+export async function loadPax8(
+  partnerId: string,
+  orgIds: readonly string[],
+  grants: IntegrationGrants,
+): Promise<SourceResult> {
+  if (!grants.pax8) return EMPTY;
+  const integrations = await db
+    .select({ id: pax8Integrations.id, isActive: pax8Integrations.isActive, lastSyncStatus: pax8Integrations.lastSyncStatus })
+    .from(pax8Integrations)
+    .where(eq(pax8Integrations.partnerId, partnerId));
+  const state = activeRowConnectorState(integrations, 'failed');
+  if (state === null) return EMPTY;
+  const connectors: Connector[] = [{ system: 'pax8', state }];
+  const active = integrations.find((row) => row.isActive);
+  if (!active || orgIds.length === 0) return { connectors, rows: [] };
+
+  const mappings = await db
+    .select({ orgId: pax8CompanyMappings.orgId })
+    .from(pax8CompanyMappings)
+    .where(
+      and(
+        eq(pax8CompanyMappings.integrationId, active.id),
+        eq(pax8CompanyMappings.partnerId, partnerId),
+        eq(pax8CompanyMappings.ignored, false),
+        inArray(pax8CompanyMappings.orgId, [...orgIds]),
+      ),
+    );
+  const mappingState = pax8MappingState(state);
+  const rows: OrgIntegrationRow[] = [];
+  for (const m of mappings) {
+    if (m.orgId !== null) rows.push({ orgId: m.orgId, integration: { system: 'pax8', ...mappingState } });
+  }
+  return { connectors, rows };
+}
+
+/** Microsoft 365: one row per (org, profile); revoked rows are excluded in SQL. No partner connector exists. */
+export async function loadM365(orgIds: readonly string[], now: Date): Promise<SourceResult> {
+  if (orgIds.length === 0) return EMPTY;
+  const connections = await db
+    .select({
+      orgId: m365Connections.orgId,
+      status: m365Connections.status,
+      expiresAt: m365Connections.expiresAt,
+      lastErrorCode: m365Connections.lastErrorCode,
+    })
+    .from(m365Connections)
+    .where(
+      and(
+        inArray(m365Connections.orgId, [...orgIds]),
+        isNull(m365Connections.revokedAt),
+        ne(m365Connections.status, 'revoked'),
+      ),
+    );
+  const rows: OrgIntegrationRow[] = [];
+  for (const c of connections) {
+    if (c.orgId !== null) rows.push({ orgId: c.orgId, integration: { system: 'm365', ...m365State(c, now) } });
+  }
+  return { connectors: [], rows };
+}
+
+/** DNS filter: active integrations of the accepted orgs. No partner connector exists. */
+export async function loadDns(orgIds: readonly string[]): Promise<SourceResult> {
+  if (orgIds.length === 0) return EMPTY;
+  const integrations = await db
+    .select({ orgId: dnsFilterIntegrations.orgId, lastSyncStatus: dnsFilterIntegrations.lastSyncStatus })
+    .from(dnsFilterIntegrations)
+    .where(and(inArray(dnsFilterIntegrations.orgId, [...orgIds]), eq(dnsFilterIntegrations.isActive, true)));
+  return {
+    connectors: [],
+    rows: integrations.map((row) => ({ orgId: row.orgId, integration: { system: 'dns_filter', ...dnsState(row) } })),
+  };
+}
+
+export async function loadHuntress(partnerId: string, orgIds: readonly string[]): Promise<SourceResult> {
+  const integrations = await db
+    .select({ id: huntressIntegrations.id, isActive: huntressIntegrations.isActive, lastSyncStatus: huntressIntegrations.lastSyncStatus })
+    .from(huntressIntegrations)
+    .where(eq(huntressIntegrations.partnerId, partnerId));
+  const state = activeRowConnectorState(integrations, 'error');
+  if (state === null) return EMPTY;
+  const connectors: Connector[] = [{ system: 'huntress', state }];
+  if (orgIds.length === 0) return { connectors, rows: [] };
+
+  const mappings = await db
+    .select({
+      orgId: huntressOrgMappings.orgId,
+      isActive: huntressIntegrations.isActive,
+      lastSyncStatus: huntressIntegrations.lastSyncStatus,
+    })
+    .from(huntressOrgMappings)
+    .innerJoin(
+      huntressIntegrations,
+      and(eq(huntressOrgMappings.integrationId, huntressIntegrations.id), eq(huntressIntegrations.partnerId, partnerId)),
+    )
+    .where(and(eq(huntressOrgMappings.partnerId, partnerId), inArray(huntressOrgMappings.orgId, [...orgIds])));
+  const rows: OrgIntegrationRow[] = [];
+  for (const m of mappings) {
+    if (m.orgId !== null) rows.push({ orgId: m.orgId, integration: { system: 'huntress', ...parentMappingState(m) } });
+  }
+  return { connectors, rows };
+}
+
+export async function loadSentinelOne(partnerId: string, orgIds: readonly string[]): Promise<SourceResult> {
+  const integrations = await db
+    .select({ id: s1Integrations.id, isActive: s1Integrations.isActive, lastSyncStatus: s1Integrations.lastSyncStatus })
+    .from(s1Integrations)
+    .where(eq(s1Integrations.partnerId, partnerId));
+  const state = activeRowConnectorState(integrations, 'error');
+  if (state === null) return EMPTY;
+  const connectors: Connector[] = [{ system: 'sentinelone', state }];
+  if (orgIds.length === 0) return { connectors, rows: [] };
+
+  const mappings = await db
+    .select({
+      orgId: s1OrgMappings.orgId,
+      isActive: s1Integrations.isActive,
+      lastSyncStatus: s1Integrations.lastSyncStatus,
+    })
+    .from(s1OrgMappings)
+    .innerJoin(
+      s1Integrations,
+      and(eq(s1OrgMappings.integrationId, s1Integrations.id), eq(s1Integrations.partnerId, partnerId)),
+    )
+    .where(and(eq(s1OrgMappings.partnerId, partnerId), inArray(s1OrgMappings.orgId, [...orgIds])));
+  const rows: OrgIntegrationRow[] = [];
+  for (const m of mappings) {
+    if (m.orgId !== null) rows.push({ orgId: m.orgId, integration: { system: 'sentinelone', ...parentMappingState(m) } });
+  }
+  return { connectors, rows };
+}
+
+/**
+ * Entry point. Runs inside the caller's request transaction (single
+ * connection): Promise.all is orchestration only, not parallelism. Never
+ * escape the context to get parallelism (spec, implementation rules).
+ */
+export async function loadIntegrationReadiness(input: {
+  partnerId: string;
+  orgIds: readonly string[];
+  grants: IntegrationGrants;
+  now: Date;
+}): Promise<IntegrationReadiness> {
+  const { partnerId, orgIds, grants, now } = input;
+  const sources = await Promise.all([
+    loadAccounting(partnerId, orgIds, grants),
+    loadPsaAndExternal(partnerId, orgIds),
+    loadPax8(partnerId, orgIds, grants),
+    loadM365(orgIds, now),
+    loadDns(orgIds),
+    loadHuntress(partnerId, orgIds),
+    loadSentinelOne(partnerId, orgIds),
+  ]);
+  const connectors = sources.flatMap((s) => s.connectors);
+  const rows = sources.flatMap((s) => s.rows);
+  return { connectors, byOrg: aggregateIntegrations(orgIds, rows) };
 }
