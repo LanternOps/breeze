@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Verify upsertAgentWarranty maps agent-reported coverage kind to the right
 // persisted status / is_subscription flag without a live DB (#1320).
@@ -69,6 +70,16 @@ function captureUpdate() {
 
 function inDays(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** Compile a captured drizzle `where(...)` condition (SQL text + bound
+ *  params) so a test can assert on the actual guard, not just that `where`
+ *  was called. The mocked schema (above) binds column refs as plain strings,
+ *  so `sql`${col} IS DISTINCT FROM 'manual'`` compiles the column reference
+ *  itself into `params`, while the operator and literal ride in `sql`. */
+function compileWhere(condition: unknown): { sql: string; params: unknown[] } {
+  const dialect = new PgDialect();
+  return dialect.sqlToQuery(condition as Parameters<PgDialect['sqlToQuery']>[0]);
 }
 
 describe('upsertAgentWarranty coverage-kind mapping', () => {
@@ -216,7 +227,7 @@ describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
 
   it('writes a vendor-sourced purchase date on the device when the lookup reports a ship date', async () => {
     captureUpsert();
-    const { set } = captureUpdate();
+    const { set, where } = captureUpdate();
     providerMock.mockReturnValue({
       lookup: vi.fn().mockResolvedValue(new Map([['SN1', {
         found: true, entitlements: [], warrantyStartDate: '2024-01-10', warrantyEndDate: inDays(400), shipDate: '2024-01-05',
@@ -227,6 +238,16 @@ describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
 
     expect(updateMock).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ purchaseDate: '2024-01-05', purchaseDateSource: 'vendor' }));
+
+    // The manual-value guard: a caller-typed purchase date must never be
+    // silently overwritten by a vendor ship date. Deleting the guard from
+    // the source's `where(...)` must fail this assertion, not just the
+    // `set` shape above.
+    expect(where).toHaveBeenCalledTimes(1);
+    const compiled = compileWhere(where.mock.calls[0]![0]);
+    expect(compiled.sql).toContain("IS DISTINCT FROM 'manual'");
+    expect(compiled.params).toContain('devices.purchaseDateSource');
+    expect(compiled.params).toContain(DEVICE_ID);
   });
 
   it('does not touch the purchase date when the vendor reports none', async () => {
@@ -245,7 +266,7 @@ describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
 
   it('targets the manual asset row for a manual-asset subject', async () => {
     captureUpsert();
-    const { set } = captureUpdate();
+    const { set, where } = captureUpdate();
     providerMock.mockReturnValue({
       lookup: vi.fn().mockResolvedValue(new Map([['SN2', {
         found: true, entitlements: [], warrantyStartDate: null, warrantyEndDate: inDays(100), shipDate: '2023-06-01',
@@ -256,5 +277,11 @@ describe('vendor ship date → purchase date (Hardware Lifecycle)', () => {
 
     expect(updateMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'manualAssets.id' }));
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ purchaseDate: '2023-06-01', purchaseDateSource: 'vendor' }));
+
+    expect(where).toHaveBeenCalledTimes(1);
+    const compiled = compileWhere(where.mock.calls[0]![0]);
+    expect(compiled.sql).toContain("IS DISTINCT FROM 'manual'");
+    expect(compiled.params).toContain('manualAssets.purchaseDateSource');
+    expect(compiled.params).toContain('ma-1');
   });
 });

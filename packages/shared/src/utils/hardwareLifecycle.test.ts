@@ -21,6 +21,7 @@ import {
   replaceByLabel,
   replacementDueDate,
   sortLifecycleRows,
+  warrantyExtendsLife,
 } from './hardwareLifecycle';
 import type { HardwareLifecycleDeviceRow } from '../types/hardwareLifecycleReport';
 
@@ -60,6 +61,29 @@ describe('replacementDueDate', () => {
 
   it('honours a configured replacement age', () => {
     expect(replacementDueDate('2021-07-15', null, { today: TODAY, replaceAgeYears: 5 })).toBe('2026-07-15');
+  });
+});
+
+describe('warrantyExtendsLife', () => {
+  it('is false when the warranty end merely EQUALS the age-rule due date — it must run LONGER to count as extending', () => {
+    // purchase 2021-07-15 + 4y = 2025-07-15; warranty ends exactly there too.
+    expect(warrantyExtendsLife('2021-07-15', '2025-07-15', '2025-07-15', { today: TODAY })).toBe(false);
+  });
+
+  it('is true when the warranty end runs BEYOND the age-rule due date', () => {
+    // purchase 2021-07-15 + 4y = 2025-07-15; warranty covers to 2026-01-01,
+    // which is what replacementDueDate would report as the due date.
+    expect(warrantyExtendsLife('2021-07-15', '2026-01-01', '2026-01-01', { today: TODAY })).toBe(true);
+  });
+
+  it('is true for an active warranty when the purchase date is unknown — nothing to compare against, so the coverage itself is trusted', () => {
+    expect(warrantyExtendsLife(null, '2027-05-01', '2027-05-01', { today: TODAY })).toBe(true);
+  });
+
+  it('is false for an already-expired warranty even when it equals the due date', () => {
+    // purchase 2019-04-01 + 4y = 2023-04-01; warranty expired 2022-04-01,
+    // which does not run past the age-rule date.
+    expect(warrantyExtendsLife('2019-04-01', '2022-04-01', '2022-04-01', { today: TODAY })).toBe(false);
   });
 });
 

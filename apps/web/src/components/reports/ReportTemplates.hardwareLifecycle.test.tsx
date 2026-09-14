@@ -68,7 +68,7 @@ describe('ReportTemplates — Hardware Lifecycle card', () => {
     expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it('posts the edited replacement age and toggles', async () => {
+  it('posts the edited replacement age and toggles, with the workstation and server ages kept independent', async () => {
     mockTemplatesFetch(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ data: { id: 'rep-1' } }) }));
     render(<ReportTemplates />);
     const user = userEvent.setup();
@@ -77,12 +77,20 @@ describe('ReportTemplates — Hardware Lifecycle card', () => {
     const years = screen.getByTestId('lifecycle-replace-age-years');
     await user.clear(years);
     await user.type(years, '5');
+    // A distinct value from the workstation field above — proves the two
+    // land under their own keys rather than one overwriting the other.
+    const serverYears = screen.getByTestId('lifecycle-server-replace-age-years');
+    await user.clear(serverYears);
+    await user.type(serverYears, '8');
     await user.click(screen.getByTestId('lifecycle-include-other-equipment'));
     await user.click(screen.getByTestId('lifecycle-create-report'));
 
     await waitFor(() => expect(postCallBody()).toBeDefined());
+    expect(postCallBody().config.replaceAgeYears).toBe(5);
+    expect(postCallBody().config.serverReplaceAgeYears).toBe(8);
     expect(postCallBody().config).toMatchObject({
       replaceAgeYears: 5,
+      serverReplaceAgeYears: 8,
       includeManualAssets: true,
       includeOtherEquipment: false,
     });

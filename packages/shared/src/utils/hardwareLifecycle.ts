@@ -22,6 +22,10 @@ import type {
 } from '../types/hardwareLifecycleReport';
 
 export const HARDWARE_LIFECYCLE_DEFAULT_REPLACE_AGE_YEARS = 4;
+/** Matches `serverReplaceAgeYears`'s `.default(5)` in
+ *  `apps/api/src/routes/reports/schemas.ts` — the fallback a legacy snapshot
+ *  (persisted before that field existed) must use, never the workstation age. */
+export const HARDWARE_LIFECYCLE_DEFAULT_SERVER_REPLACE_AGE_YEARS = 5;
 
 export const REPLACEMENT_STATUS_ORDER: readonly ReplacementStatus[] = ['supported', 'due_soon', 'replace', 'unknown'];
 

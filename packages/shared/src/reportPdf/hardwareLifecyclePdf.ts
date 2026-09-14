@@ -26,6 +26,7 @@ import {
   buildReplacementSchedule,
   capNames,
   countByReplacement,
+  HARDWARE_LIFECYCLE_DEFAULT_SERVER_REPLACE_AGE_YEARS,
   humanJoin,
   monthYear,
   quarterLabel,
@@ -432,7 +433,11 @@ export function renderHardwareLifecycleReport(
   // pricing claims.
   const workstations = rows.filter((r) => r.deviceKind !== 'server');
   const servers = rows.filter((r) => r.deviceKind === 'server');
-  const serverAge = summary.serverReplaceAgeYears ?? replaceAge;
+  // A legacy snapshot predating this field has no serverReplaceAgeYears of its
+  // own — fall back to the documented server default (5), never to the
+  // workstation's replaceAgeYears, which would silently mislabel the server
+  // plan whenever the two ages diverge.
+  const serverAge = summary.serverReplaceAgeYears ?? HARDWARE_LIFECYCLE_DEFAULT_SERVER_REPLACE_AGE_YEARS;
   const schedule = buildReplacementSchedule(workstations, today);
   const serverLine = servers
     .filter((r) => r.replaceBy)

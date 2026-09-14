@@ -109,6 +109,29 @@ describe('report config schema', () => {
     expect(parsed.config.includeOtherEquipment).toBe(false);
   });
 
+  it('round-trips serverReplaceAgeYears independently of replaceAgeYears on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Lifecycle', type: 'hardware_lifecycle',
+      config: { replaceAgeYears: 4, serverReplaceAgeYears: 6 },
+    });
+    expect(parsed.config.replaceAgeYears).toBe(4);
+    expect(parsed.config.serverReplaceAgeYears).toBe(6);
+  });
+
+  it('rejects replaceAgeYears/serverReplaceAgeYears outside [1, 15] and non-integers', () => {
+    for (const field of ['replaceAgeYears', 'serverReplaceAgeYears'] as const) {
+      expect(() =>
+        createReportSchema.parse({ name: 'x', type: 'hardware_lifecycle', config: { [field]: 0 } })
+      ).toThrow();
+      expect(() =>
+        createReportSchema.parse({ name: 'x', type: 'hardware_lifecycle', config: { [field]: 16 } })
+      ).toThrow();
+      expect(() =>
+        createReportSchema.parse({ name: 'x', type: 'hardware_lifecycle', config: { [field]: 4.5 } })
+      ).toThrow();
+    }
+  });
+
   it('preserves posture backupRequired on create and update', () => {
     const created = createReportSchema.parse({
       name: 'Workstation posture',

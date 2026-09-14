@@ -51,7 +51,7 @@ const summary: HardwareLifecycleSummary = {
 };
 
 describe('hardware lifecycle PDF', () => {
-  it('renders the cover, plan table, other equipment and recommendations', () => {
+  it('renders the cover, plan table, other equipment and recommendations (legacy snapshot: no serverReplaceAgeYears falls back to the server default, not replaceAgeYears)', () => {
     const doc = buildReportPdf([], { ...opts, summary, branding: { name: 'OliveTech', logoDataUrl: null, logoAspect: null, contactEmail: 'pat@olive.example', contactName: 'Pat' } });
     const text = pdfText(doc);
     expect(text).toContain('Hardware Lifecycle Report');
@@ -90,7 +90,11 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('Replacement schedule');
     expect(text).toContain('Workstations and laptops');
     expect(text).toContain('Servers');
-    expect(text).toContain('We plan to replace a server 4 years after purchase');
+    // summary fixture sets replaceAgeYears: 4 but omits serverReplaceAgeYears
+    // entirely (a legacy snapshot predating that field) — the server line
+    // must fall back to the documented default (5), never mirror the
+    // workstation's 4.
+    expect(text).toContain('We plan to replace a server 5 years after purchase');
     expect(text).not.toContain('—');
     expect(text).toContain('Expired Apr 2022');
     expect(text).toContain('Ricoh IM C6010 and SonicWALL TZ300');
@@ -98,6 +102,14 @@ describe('hardware lifecycle PDF', () => {
     expect(text).toContain('budget to replace it when coverage ends');
     expect(text).toContain('Figures come from live device records');
     expect(text).toContain('HARDWARE LIFECYCLE');
+  });
+
+  it('uses an explicit serverReplaceAgeYears for the server footer, distinct from the workstation age', () => {
+    const doc = buildReportPdf([], { ...opts, summary: { ...summary, serverReplaceAgeYears: 6 } });
+    const text = pdfText(doc);
+    expect(text).toContain('We plan to replace a computer 4 years after purchase');
+    expect(text).toContain('We plan to replace a server 6 years after purchase');
+    expect(text).not.toContain('We plan to replace a server 4 years after purchase');
   });
 
   it('renders an empty snapshot without throwing', () => {
