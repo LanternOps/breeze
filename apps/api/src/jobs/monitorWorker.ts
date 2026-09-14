@@ -649,13 +649,20 @@ async function processCheckResult(data: ProcessCheckResultJobData): Promise<{
   return { resultWritten: true };
 }
 
-export async function processScheduler(): Promise<{ enqueued: number }> {
-  const now = new Date();
-
-  // Phase 1 — read due monitors inside a short system DB context, then let it
-  // CLOSE. Everything after this is pure Redis/BullMQ work; holding it inside
-  // the context would pin a pooled connection idle-in-transaction for the whole
-  // enqueue loop, starving the connection pool (#1105).
+/**
+ * Every (monitor, org) pair due for a check right now (#5291 W04).
+ *
+ * Split out of `processScheduler` so the fan-out can be proven against REAL
+ * Postgres under REAL RLS without a Redis/BullMQ stack — see
+ * networkMonitorPartnerRls.integration.test.ts. Pure reads, no side effects.
+ */
+export async function selectDueMonitorJobs(
+  now: Date = new Date(),
+): Promise<Array<{ monitorId: string; orgId: string }>> {
+  // Read due monitors inside a short system DB context, then let it CLOSE. The
+  // caller's enqueue loop is pure Redis/BullMQ work; holding the context across
+  // it would pin a pooled connection idle-in-transaction for the whole loop,
+  // starving the connection pool (#1105).
   const dueMonitors = await runWithSystemDbAccess(() =>
     db
       .select({
@@ -674,7 +681,7 @@ export async function processScheduler(): Promise<{ enqueued: number }> {
       )
   );
 
-  if (dueMonitors.length === 0) return { enqueued: 0 };
+  if (dueMonitors.length === 0) return [];
 
   // #5291 W04 - expand each due monitor into the orgs it must run FOR. An
   // org-owned row is itself; a partner-wide row (org_id NULL) fans out one job
@@ -720,6 +727,13 @@ export async function processScheduler(): Promise<{ enqueued: number }> {
     }
     for (const orgId of orgIds) jobs.push({ monitorId: monitor.id, orgId });
   }
+
+  return jobs;
+}
+
+export async function processScheduler(): Promise<{ enqueued: number }> {
+  const jobs = await selectDueMonitorJobs();
+  if (jobs.length === 0) return { enqueued: 0 };
 
   // Phase 2 — enqueue checks with NO DB context open (pure Redis/BullMQ).
   let enqueued = 0;
