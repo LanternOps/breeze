@@ -128,6 +128,8 @@ export interface EvaluationResult {
   triggered: boolean;
   conditionsMet: string[];
   conditionsNotMet: string[];
+  /** #5290 — 'unknown' when ANY evaluated leaf reported dataAvailable === false. */
+  dataState: 'ok' | 'unknown';
   context: {
     metric?: string;
     actualValue?: number;
@@ -144,4 +146,11 @@ export interface ConditionResult {
   passed: boolean;
   description: string;
   actualValue?: number;
+  /**
+   * #5290 — false when the handler could not observe the device at all (no
+   * samples in the window, no inventory row, agent never reported). ABSENT
+   * MEANS TRUE: a handler that does not opt in keeps today's semantics.
+   * Never conflate this with `passed: false`, which means "observed, healthy".
+   */
+  dataAvailable?: boolean;
 }
