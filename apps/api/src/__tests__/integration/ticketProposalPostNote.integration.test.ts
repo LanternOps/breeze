@@ -104,6 +104,24 @@ describe('postProposalNote — live Postgres (#4211)', () => {
     expect(row.commentType).toBe('internal');
   });
 
+  it('#4211 review: a duplicate call for the SAME run recovers via the unique index instead of duplicating the note', async () => {
+    const { ticket, run, technician } = await seedTicketWithProposal();
+    const actor = { userId: technician.id, name: technician.name };
+
+    const first = await withSystemDbAccessContext(() =>
+      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', actor),
+    );
+    const second = await withSystemDbAccessContext(() =>
+      postProposalNote(ticket.id, run.id, 'Spooler wedged; restarted the service.', actor),
+    );
+
+    expect(second.comment.id).toBe(first.comment.id);
+
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb.select().from(ticketComments).where(eq(ticketComments.ticketId, ticket.id));
+    expect(rows).toHaveLength(1);
+  });
+
   it('the helpdesk loop guard still sees the ticket as human-only', async () => {
     const { ticket, run, technician } = await seedTicketWithProposal();
 

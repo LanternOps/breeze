@@ -240,6 +240,15 @@ export const ticketComments = pgTable('ticket_comments', {
   // human-authored (origin_principal_kind='user', user_id=<tech>) and MUST NOT
   // trip the helpdesk loop guard — see the migration header. FK
   // (ON DELETE SET NULL) is SQL-only, same circular-import reason as agentRunId.
+  //
+  // #4211 review: also carries a partial unique index,
+  // ticket_comments_one_proposal_note_per_run_uq ON ticket_comments
+  // (proposed_by_run_id) WHERE proposed_by_run_id IS NOT NULL AND
+  // origin_principal_kind = 'user' — at most one technician-posted proposal
+  // note per run, same idempotency shape as agent_run_id's own
+  // ticket_comments_one_ai_note_per_run_uq. Not modeled in Drizzle for the
+  // same "partial index" reason as that index and ticketDrafts.ts's
+  // ticket_drafts_active_uq.
   proposedByRunId: uuid('proposed_by_run_id')
 });
 

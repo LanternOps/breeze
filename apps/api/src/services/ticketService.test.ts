@@ -4245,4 +4245,30 @@ describe('postProposalNote (#4211)', () => {
     await expect(postProposalNote(TICKET_ID, OTHER_RUN_ID, 'x', { userId: USER_ID }))
       .rejects.toMatchObject({ status: 404 });
   });
+
+  it('recovers via ticket_comments_one_proposal_note_per_run_uq on a duplicate retry (#4211 review)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([{ id: RUN_ID }]) // run lookup
+      .mockResolvedValueOnce([{ id: 'existing-comment' }]); // catch's existing-row lookup
+    dbMocks.insertReturning.mockRejectedValueOnce(Object.assign(new Error('duplicate key value'), { code: '23505' }));
+
+    const result = await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(result.comment).toEqual({ id: 'existing-comment' });
+    // No duplicate side effects: the original successful attempt already
+    // emitted the event/outbox/audit row, so a recovered retry must not
+    // re-fire them.
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-unique-violation insert failure unchanged', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' }))
+      .rejects.toThrow('connection reset');
+  });
 });

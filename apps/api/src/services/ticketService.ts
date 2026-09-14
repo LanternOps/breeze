@@ -1706,41 +1706,82 @@ export async function postProposalNote(
     .limit(1);
   if (!run) throw new TicketServiceError('Proposal run not found for this ticket', 404);
 
-  const inserted = await db.insert(ticketComments).values({
-    ticketId,
-    userId: actor.userId,
-    authorName: actor.name ?? null,
-    authorType: 'internal',
-    commentType: 'internal',
-    content,
-    isPublic: false,
-    originPrincipalKind: 'user',
-    agentRunId: null,
-    proposedByRunId: runId
-  }).returning({ id: ticketComments.id });
-  const comment = inserted[0];
-  if (!comment) throw new TicketServiceError('Failed to post proposal note', 500);
+  // #4211 review: idempotent per run via ticket_comments_one_proposal_note_per_run_uq
+  // (partial unique on proposed_by_run_id WHERE ... AND origin_principal_kind='user')
+  // — a retry after a partial failure (the caller observed an error from
+  // emitTicketEvent/writeTicketOutbox/createAuditLogAsync below, but the
+  // ticket_comments insert had already committed) returns the EXISTING row
+  // rather than creating a second, duplicate technician-attributed note.
+  //
+  // The insert is wrapped in its own `db.transaction()` — a SAVEPOINT, since
+  // this function always runs inside the caller's own request/system
+  // transaction (withDbAccessContext/withSystemDbAccessContext) — for the
+  // SAME reason as clientAiExchange.ts's contact-link insert: postgres.js
+  // marks the WHOLE surrounding transaction aborted after any failed
+  // statement ("current transaction is aborted, commands ignored until end
+  // of transaction block", 25P02). Catching the unique-violation below and
+  // then running the recovery SELECT on that same poisoned transaction would
+  // itself throw 25P02 — confirmed by a live-Postgres test before this
+  // savepoint was added, an unguarded version of this catch block does NOT
+  // actually recover. `addAiTriageNote` above predates this discovery and
+  // shares the same unguarded shape; out of scope to fix here.
+  let comment: { id: string };
+  let recoveredFromDuplicate = false;
+  try {
+    const inserted = await db.transaction((tx) =>
+      tx.insert(ticketComments).values({
+        ticketId,
+        userId: actor.userId,
+        authorName: actor.name ?? null,
+        authorType: 'internal',
+        commentType: 'internal',
+        content,
+        isPublic: false,
+        originPrincipalKind: 'user',
+        agentRunId: null,
+        proposedByRunId: runId
+      }).returning({ id: ticketComments.id })
+    );
+    const row = inserted[0];
+    if (!row) throw new TicketServiceError('Failed to post proposal note', 500);
+    comment = row;
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    const existing = await db
+      .select({ id: ticketComments.id })
+      .from(ticketComments)
+      .where(and(eq(ticketComments.proposedByRunId, runId), eq(ticketComments.originPrincipalKind, 'user')))
+      .limit(1);
+    const row = existing[0];
+    if (!row) throw err;
+    comment = row;
+    recoveredFromDuplicate = true;
+  }
 
-  await emitTicketEvent({
-    type: 'ticket.commented',
-    ticketId,
-    orgId: ticket.orgId,
-    partnerId: ticket.partnerId ?? null,
-    actorUserId: actor.userId,
-    payload: { commentId: comment.id, isPublic: false }
-  });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
-  await createAuditLogAsync({
-    orgId: ticket.orgId,
-    actorId: actor.userId,
-    actorType: 'user',
-    action: 'ticket.comment',
-    resourceType: 'ticket',
-    resourceId: ticketId,
-    details: { commentId: comment.id, isInternal: true, fromAgentRunId: runId },
-    result: 'success',
-    initiatedBy: 'ai'
-  });
+  // The side effects below (event/outbox/audit) already fired for the
+  // ORIGINAL successful insert — a recovered duplicate must not re-fire them.
+  if (!recoveredFromDuplicate) {
+    await emitTicketEvent({
+      type: 'ticket.commented',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: actor.userId,
+      payload: { commentId: comment.id, isPublic: false }
+    });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: actor.userId,
+      actorType: 'user',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { commentId: comment.id, isInternal: true, fromAgentRunId: runId },
+      result: 'success',
+      initiatedBy: 'ai'
+    });
+  }
 
   return { comment };
 }
