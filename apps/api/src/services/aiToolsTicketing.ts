@@ -66,6 +66,28 @@ function agentRunIdFrom(auth: AuthContext): string | null {
   return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
 }
 
+/**
+ * #4209 (W03): the refusal the three users-FK actions return for an ai_agent
+ * principal.
+ *
+ * `assign` writes `tickets.assigned_to`; `update_status` and `create` write
+ * `created_by`/actor columns and emit `actorUserId`. All three go through
+ * `actorFrom(auth)`, whose `auth.user.id` for an ai_agent principal is an
+ * `aiAgents.id` — attribution only, never a `users` row (agentAuthContext.ts).
+ * Writing it into any of those columns forges a foreign key and fails at
+ * runtime with a 23503 the agent cannot interpret.
+ *
+ * The `comment`, `update_fields` and `draft` branches each got a real
+ * agent-principal design (addAiTriageNote, applyAiFieldUpdates, ticket_drafts);
+ * these three did not, so they refuse rather than guess. Supporting them means
+ * designing agent attribution for assignment, status and creation — a product
+ * decision, tracked separately. A stable, typed error code is what lets the
+ * agent's tool loop relay the limitation instead of retrying a 23503.
+ */
+function refuseAgentPrincipal(action: string): string {
+  return JSON.stringify({ success: false, error: 'agent_principal_unsupported_action', action });
+}
+
 /** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */
 function isUniqueViolation(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
@@ -474,6 +496,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
         if (!input.orgId) return JSON.stringify({ error: 'orgId is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
@@ -540,6 +563,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── assign ────────────────────────────────────────────────────────────
       if (action === 'assign') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for assign action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -554,6 +578,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
         if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
         // Exactly one of status / statusName must be provided.
