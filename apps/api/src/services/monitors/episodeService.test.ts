@@ -515,6 +515,59 @@ describe('recordMonitorEvaluation', () => {
     expect(result.needsEscalationAlert).toBe(true);
   });
 
+  it('asks for the escalation alert on a CONTINUING breach too, not just a new episode', async () => {
+    // The latch fires as an episode OPENS, so the pair is left with an open
+    // episode immediately afterwards. If only the new-episode branch reported
+    // needsEscalationAlert, a device stuck in continuous breach whose alert
+    // failed would wait for a recover + re-breach before anything retried it.
+    state.selectRows = [
+      [stateRow({
+        currentEpisodeId: EPISODE,
+        lastState: 'breach',
+        escalatedAt: new Date('2026-09-13T11:00:00Z'),
+        escalationAlertId: null,
+        responsesPaused: true,
+      })],
+    ];
+    state.insertRows = [[]];
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+    });
+
+    expect(result.episodeOpened).toBe(false);
+    expect(result.episodeId).toBe(EPISODE);
+    expect(result.needsEscalationAlert).toBe(true);
+    // Still not a re-latch: the state is untouched.
+    expect(result.latched).toBe(false);
+    expect(updateSets().every((s) => s.escalatedAt === undefined)).toBe(true);
+  });
+
+  it('does not ask for an escalation alert on a continuing breach once one exists', async () => {
+    state.selectRows = [
+      [stateRow({
+        currentEpisodeId: EPISODE,
+        lastState: 'breach',
+        escalatedAt: new Date(),
+        escalationAlertId: 'alert-1',
+        responsesPaused: true,
+      })],
+    ];
+    state.insertRows = [[]];
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+    });
+
+    expect(result.needsEscalationAlert).toBe(false);
+  });
+
   it('does not ask for an escalation alert once one exists', async () => {
     state.selectRows = [
       [stateRow({ escalatedAt: new Date(), escalationAlertId: 'alert-1', responsesPaused: true })],

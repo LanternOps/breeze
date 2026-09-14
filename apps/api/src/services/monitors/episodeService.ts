@@ -132,6 +132,9 @@ export async function recordMonitorEvaluation(
         episodeClosed: false,
         episodesInWindow: current.episodesInWindow ?? 0,
         latched: false,
+        // Always false on the non-breach branches: the caller can only fire the
+        // latch with an episode id, and `unknown` means we could not observe the
+        // device at all. The next breach sweep carries the retry.
         needsEscalationAlert: false,
         responsesPaused: current.responsesPaused ?? false,
       };
@@ -190,7 +193,11 @@ export async function recordMonitorEvaluation(
         episodeClosed: false,
         episodesInWindow: current.episodesInWindow ?? 0,
         latched: false,
-        needsEscalationAlert: false,
+        // The latch fires as an episode OPENS, so a just-latched pair sits on
+        // THIS branch from the very next sweep onward. Reporting false here
+        // would make the retry wait for a recover + re-breach, and a device
+        // stuck in continuous breach would never get its requires-human alert.
+        needsEscalationAlert: Boolean(current.escalatedAt) && !current.escalationAlertId,
         responsesPaused: current.responsesPaused ?? false,
       };
     }
