@@ -31,7 +31,7 @@ const assertionKey = (approvalId: string, userId: string): string =>
 
 export type ApproverDevice = {
   credentialId: string;
-  transports?: PasskeyTransport[] | string[] | null;
+  transports?: PasskeyTransport[] | null;
 };
 
 export type ApproverRegistrationStoreFields = PasskeyRegistrationStoreFields & {
@@ -106,7 +106,7 @@ export async function generateApproverRegistrationOptions(input: {
     attestationType: 'none',
     excludeCredentials: (input.existing ?? []).map((c) => ({
       id: c.credentialId,
-      transports: (c.transports ?? undefined) as PasskeyTransport[] | undefined
+      transports: c.transports ?? undefined
     })),
     authenticatorSelection: {
       // spec §7.2 — Windows Hello / Touch ID, device-bound.
@@ -155,7 +155,7 @@ export async function generateApprovalAssertionOptions(input: {
   const cfg = resolveWebAuthnConfig();
   const allowCredentials = input.devices.map((d) => ({
     id: d.credentialId,
-    transports: (d.transports ?? undefined) as PasskeyTransport[] | undefined
+    transports: d.transports ?? undefined
   }));
 
   const options = await generateAuthenticationOptions({
