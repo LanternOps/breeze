@@ -132,6 +132,7 @@ runDb('GET /orgs/account-readiness — W03 integrations, contracts, backup', () 
     const [qbo] = await db.insert(accountingConnections)
       .values({ partnerId, provider: 'quickbooks', environment: 'sandbox', status: 'connected' })
       .returning({ id: accountingConnections.id });
+    if (!qbo) throw new Error('failed to seed accounting connection');
     await db.insert(accountingEntityMappings).values([
       { integrationId: qbo.id, partnerId, breezeEntityType: 'org', breezeEntityId: linked, remoteEntityType: 'Customer', remoteEntityId: 'cust-linked', linkStatus: 'confirmed', syncStatus: 'synced' },
       { integrationId: qbo.id, partnerId, breezeEntityType: 'org', breezeEntityId: pending, remoteEntityType: 'Customer', remoteEntityId: 'cust-pending', linkStatus: 'suggested', syncStatus: 'pending' },
@@ -156,6 +157,7 @@ runDb('GET /orgs/account-readiness — W03 integrations, contracts, backup', () 
     const [pax8Live] = await db.insert(pax8Integrations)
       .values({ partnerId, name: 'Pax8', clientIdEncrypted: 'x', clientSecretEncrypted: 'y', tokenUrl: 'https://login.pax8.com/oauth/token', isActive: true, lastSyncStatus: 'success' })
       .returning({ id: pax8Integrations.id });
+    if (!pax8Old || !pax8Live) throw new Error('failed to seed pax8 integrations');
     await db.insert(pax8CompanyMappings).values([
       { integrationId: pax8Old.id, partnerId, pax8CompanyId: 'c-old', pax8CompanyName: 'Old', orgId: pending, ignored: false },
       { integrationId: pax8Live.id, partnerId, pax8CompanyId: 'c-live', pax8CompanyName: 'Live', orgId: linked, ignored: false },
@@ -198,12 +200,14 @@ runDb('GET /orgs/account-readiness — W03 integrations, contracts, backup', () 
     const [huntress] = await db.insert(huntressIntegrations)
       .values({ partnerId, name: 'Huntress', apiKeyEncrypted: 'k', isActive: false, lastSyncStatus: 'success' })
       .returning({ id: huntressIntegrations.id });
+    if (!huntress) throw new Error('failed to seed huntress integration');
     await db.insert(huntressOrgMappings).values({ integrationId: huntress.id, partnerId, huntressOrgId: 'h-1', orgId: broken });
 
     // --- SentinelOne: active, synced → linked on `linked`; never synced would be pending (covered by unit tests)
     const [s1] = await db.insert(s1Integrations)
       .values({ partnerId, name: 'S1', apiTokenEncrypted: 't', managementUrl: 'https://example.sentinelone.net', isActive: true, lastSyncStatus: 'success' })
       .returning({ id: s1Integrations.id });
+    if (!s1) throw new Error('failed to seed sentinelone integration');
     await db.insert(s1OrgMappings).values({ integrationId: s1.id, partnerId, s1SiteId: 's-1', orgId: linked });
 
     // --- Contracts: evergreen active on `linked`; expired active on `pending`; paused on `broken`
@@ -223,6 +227,7 @@ runDb('GET /orgs/account-readiness — W03 integrations, contracts, backup', () 
     const [qConn] = await db.insert(accountingConnections)
       .values({ partnerId: q.id, provider: 'xero', environment: 'sandbox', status: 'reauth_required' })
       .returning({ id: accountingConnections.id });
+    if (!qConn) throw new Error('failed to seed foreign accounting connection');
     await db.insert(accountingEntityMappings).values({
       integrationId: qConn.id, partnerId: q.id, breezeEntityType: 'org', breezeEntityId: foreignOrg,
       remoteEntityType: 'Customer', remoteEntityId: 'xero-1', linkStatus: 'confirmed', syncStatus: 'synced',
@@ -330,7 +335,7 @@ runDb('GET /orgs/account-readiness — W03 integrations, contracts, backup', () 
     expect(appsOnly.capabilities).toMatchObject({ integrations: true, contracts: false, backup: false });
     expect(appsOnly.connectors!.map((c) => c.system).sort()).toEqual(['huntress', 'psa', 'sentinelone']);
     expect(badges(appsOnly, linked).map((b) => b.system)).toEqual(['psa', 'm365', 'dns_filter', 'sentinelone', 'external']);
-    expect(appsOnly.orgs[0].account).not.toHaveProperty('activeContracts');
-    expect(appsOnly.orgs[0].setup).not.toHaveProperty('backupApplicable');
+    expect(appsOnly.orgs[0]!.account).not.toHaveProperty('activeContracts');
+    expect(appsOnly.orgs[0]!.setup).not.toHaveProperty('backupApplicable');
   });
 });
