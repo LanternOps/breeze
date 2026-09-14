@@ -385,7 +385,7 @@ describe('handleTicketCreatedEvent', () => {
 // comment on a ticket.
 // -----------------------------------------------------------------------
 describe('handleTicketCommentedEvent', () => {
-  it('admits a triage run when the comment DB-verifies as human/public and matches the ticket/org, using the SAME dedupe key as ticket.created', async () => {
+  it('admits a triage run when the comment DB-verifies as human/public and matches the ticket/org, using a per-comment dedupe key (#4212)', async () => {
     mockCommentVerification([{ id: COMMENT_ID }]);
     mockCleanTicket();
 
@@ -397,7 +397,7 @@ describe('handleTicketCommentedEvent', () => {
         kind: 'helpdesk',
         triggerKind: 'ticket',
         ticketId: TICKET_ID,
-        dedupeKey: `ticket-created:${TICKET_ID}`,
+        dedupeKey: `ticket-commented:${COMMENT_ID}`,
         profile: 'triage',
       }),
     );
@@ -487,27 +487,37 @@ describe('handleTicketCommentedEvent', () => {
     ]);
   });
 
-  // Dedupe first-wins contract (brief step 1): `ticket.created` then
-  // `ticket.commented` for the SAME ticket both pass the identical dedupe
-  // key — admission itself (createAndEnqueueAgentRun, mocked here) is what
-  // collapses the second call into a no-op, exactly like the existing
-  // duplicate-ticket.created test above.
-  it('dedupe first-wins: ticket.created then ticket.commented use the SAME dedupe key', async () => {
+  // #4212: per-event dedupe key — a SECOND human comment on the same ticket
+  // gets its OWN key and can admit its own re-triage run, unlike the old
+  // shared `ticket-created:<ticketId>` key which capped a ticket at one
+  // triage run for life (the superseded "first-admitting-event-wins"
+  // contract).
+  it('a second human comment admits a second run under its own dedupe key (#4212)', async () => {
+    mockCommentVerification([{ id: 'c1' }]);
     mockCleanTicket();
-    mockCommentVerification([{ id: COMMENT_ID }]);
+    mockCommentVerification([{ id: 'c2' }]);
     mockCleanTicket();
-    createAndEnqueueAgentRun
-      .mockResolvedValueOnce({ created: true, run: { id: 'run-1' } })
-      .mockResolvedValueOnce({ created: false, skipped: 'duplicate' });
 
-    await handleTicketCreatedEvent(ticketCreatedEvent());
-    await handleTicketCommentedEvent(ticketCommentedEvent());
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c2', isPublic: true } }));
 
     expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
     const dedupeKeys = createAndEnqueueAgentRun.mock.calls.map(
       ([input]) => (input as { dedupeKey: string }).dedupeKey,
     );
-    expect(dedupeKeys).toEqual([`ticket-created:${TICKET_ID}`, `ticket-created:${TICKET_ID}`]);
+    expect(dedupeKeys).toEqual(['ticket-commented:c1', 'ticket-commented:c2']);
+  });
+
+  // The created lane's key is untouched by #4212 — only the commented lane
+  // moved off the shared `ticket-created:<ticketId>` string.
+  it('leaves the created lane key untouched (#4212)', async () => {
+    mockCleanTicket();
+
+    await handleTicketCreatedEvent(ticketCreatedEvent());
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: `ticket-created:${TICKET_ID}` }),
+    );
   });
 });
 

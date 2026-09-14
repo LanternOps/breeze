@@ -28,11 +28,12 @@
  *  - `ticket.commented`: admits ONLY on a comment that DB-verifies as
  *    genuinely human-authored, public, and actually attached to this
  *    ticket/org (`loadVerifiedHumanComment` — never trusts the event
- *    payload's own claims about the comment). Uses the SAME dedupe key as
- *    `ticket.created` (`ticket-created:<ticketId>`) — one triage run per
- *    ticket, first admitting event wins; this shared string IS the
- *    first-human-comment-or-creation contract, not an accident (see
- *    `admitTriageRun`'s call sites).
+ *    payload's own claims about the comment). Dedupe key
+ *    `ticket-commented:<commentId>` (#4212) — the comment IS the event, so
+ *    its id is the natural per-event idempotency key. Before #4212 this lane
+ *    shared `ticket-created:<ticketId>` with the created lane (the
+ *    "first-admitting-event-wins contract"), capping a ticket at one triage
+ *    run for life; #4212 deliberately supersedes that.
  *  - `ticket.status_changed`: admits ONLY when the new status is `resolved`
  *    AND the ticket (re-read fresh, never trusted from the payload) carries
  *    no resolution note AND has no `active` `resolution_note` draft already
@@ -366,10 +367,9 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
  * (missing ticketId/commentId/orgId) is logged and dropped, never thrown;
  * anything past that point throws on failure for queue-mode retry.
  *
- * Uses the SAME dedupe key as `ticket.created`
- * (`ticket-created:<ticketId>`) — see this file's header for why that is
- * the deliberate, load-bearing first-admitting-event-wins contract, not a
- * naming accident.
+ * Dedupe key `ticket-commented:<commentId>` (#4212) — per-EVENT, not
+ * per-ticket; see this file's header for why the created lane keeps its own
+ * separate key.
  */
 export async function handleTicketCommentedEvent(event: BreezeEvent): Promise<void> {
   const payload = event.payload as { ticketId?: unknown; commentId?: unknown } | null | undefined;
@@ -399,7 +399,15 @@ export async function handleTicketCommentedEvent(event: BreezeEvent): Promise<vo
       return;
     }
 
-    await admitTriageRun(orgId, ticketId, `ticket-created:${ticketId}`);
+    // #4212: per-EVENT dedupe. The comment IS the event, so its id is the
+    // natural idempotency key: a redelivered outbox row for the same comment
+    // collides on ai_agent_runs_org_dedupe_key_uq and no-ops, while the NEXT
+    // human comment gets its own key and can admit its own re-triage run.
+    // Before this change the commented lane shared `ticket-created:<ticketId>`
+    // with the created lane, which capped the ticket at one triage run for
+    // life (the "first-admitting-event-wins contract" the old header comment
+    // described — deliberately superseded here).
+    await admitTriageRun(orgId, ticketId, `ticket-commented:${commentId}`);
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,
