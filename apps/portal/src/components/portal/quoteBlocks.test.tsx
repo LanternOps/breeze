@@ -89,7 +89,7 @@ describe('QuoteBlocks — contract block rendering', () => {
     ];
     renderBlocks(blocks);
     const el = screen.getByTestId('contract-block');
-    expect(el.textContent).toContain('Contract file unavailable');
+    expect(el.textContent).toContain('Agreement file unavailable');
     expect(el.querySelector('iframe')).toBeNull();
   });
 });
