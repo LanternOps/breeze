@@ -618,20 +618,28 @@ describe('autonomous private-note lane — DB-enforced privacy + audit trail (#4
     // left that can refuse this row.
     const adminDb = getTestDb() as any;
 
-    await expect(
-      adminDb.insert(ticketComments).values({
-        ticketId: ticket.id,
-        userId: null,
-        portalUserId: null,
-        authorName: 'Forged Agent',
-        authorType: 'ai_agent',
-        commentType: 'internal',
-        content: 'this should never reach the customer portal',
-        isPublic: true,
-        originPrincipalKind: 'ai_agent',
-        agentRunId: run.id,
-      }),
-    ).rejects.toThrow(/ticket_comments_agent_note_private_chk/);
+    // Drizzle re-wraps the driver error as `Failed query: …` and keeps the
+    // Postgres error (with its constraint name and 23514 code) on `.cause`, so
+    // assert there rather than on the wrapper's message — matching on the
+    // wrapper alone would pass for ANY failed insert, including a NOT NULL or
+    // FK violation, and prove nothing about the CHECK.
+    const forged = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: null,
+      portalUserId: null,
+      authorName: 'Forged Agent',
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content: 'this should never reach the customer portal',
+      isPublic: true,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+    }).then(() => null, (err: unknown) => err);
+
+    expect(forged).toBeInstanceOf(Error);
+    const cause = (forged as { cause?: { code?: string; constraint_name?: string } }).cause;
+    expect(cause?.code).toBe('23514');
+    expect(cause?.constraint_name).toBe('ticket_comments_agent_note_private_chk');
 
     // Control: the identical row with is_public=false is accepted, so the
     // rejection above is the CHECK's scoped predicate and not some unrelated

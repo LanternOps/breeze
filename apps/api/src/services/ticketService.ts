@@ -1632,7 +1632,17 @@ export async function addAiTriageNote(
   }
 
   try {
-    const inserted = await db.insert(ticketComments).values({
+    // #4209 (W03): the insert is wrapped in its own `db.transaction()` — a
+    // SAVEPOINT, since this always runs inside the caller's own request/system
+    // transaction. Without it the unique-violation recovery below does NOT
+    // actually work: postgres.js marks the WHOLE surrounding transaction
+    // aborted after a failed statement, so the recovery SELECT throws 25P02
+    // ("current transaction is aborted") instead of returning the existing
+    // row. PROVEN by aiAgentTicketTriage.integration.test.ts's retry case,
+    // which red'd with exactly that error before this savepoint was added —
+    // the same discovery postProposalNote's header records, which flagged this
+    // function as sharing the unguarded shape.
+    const inserted = await db.transaction((tx) => tx.insert(ticketComments).values({
       ticketId,
       userId: null,
       portalUserId: null,
@@ -1643,7 +1653,7 @@ export async function addAiTriageNote(
       isPublic: false,
       originPrincipalKind: 'ai_agent',
       agentRunId: runId
-    }).returning({ id: ticketComments.id });
+    }).returning({ id: ticketComments.id }));
     const comment = inserted[0];
     if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
 

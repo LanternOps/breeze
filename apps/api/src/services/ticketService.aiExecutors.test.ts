@@ -36,10 +36,14 @@ const updateWhereMock = vi.fn();
 const insertValuesMock = vi.fn();
 const selectWhereMock = vi.fn();
 
-vi.mock('../db', () => ({
-  runOutsideDbContext: (fn: () => unknown) => fn(),
-  withSystemDbAccessContext: (fn: () => unknown) => fn(),
-  db: {
+vi.mock('../db', () => {
+  const dbMock: Record<string, unknown> = {
+    // #4209 (W03): addAiTriageNote wraps its insert in db.transaction() (a
+    // SAVEPOINT) so the unique-violation recovery is not run on a transaction
+    // postgres.js has already marked aborted. The callback receives the same
+    // builder surface, so handing it `dbMock` keeps the insert queue shared
+    // and lets the queued 23505 propagate exactly as the real driver's would.
+    transaction: vi.fn((fn: (tx: unknown) => unknown) => fn(dbMock)),
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn((w: unknown) => {
@@ -78,8 +82,13 @@ vi.mock('../db', () => ({
         };
       }),
     })),
-  },
-}));
+  };
+  return {
+    runOutsideDbContext: (fn: () => unknown) => fn(),
+    withSystemDbAccessContext: (fn: () => unknown) => fn(),
+    db: dbMock,
+  };
+});
 
 import { tickets, ticketComments, ticketCategories } from '../db/schema';
 import {
