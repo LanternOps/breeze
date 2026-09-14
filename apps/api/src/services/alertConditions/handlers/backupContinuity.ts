@@ -94,6 +94,15 @@ export const backupContinuityHandler: ConditionHandler = {
       };
     }
 
+    // An out-of-enum `check` must not fall through into the counting branch
+    // below and be answered as if it had said 'consecutive_failures'. Reachable
+    // only from a stored condition that diverged from what validate() allowed
+    // (a manual DB edit, or a row written by an older validator), so it is an
+    // anomaly worth naming rather than a silent non-breach.
+    if (cond.check !== 'consecutive_failures') {
+      return { passed: false, description: `Unknown backup continuity check: ${String(cond.check)}` };
+    }
+
     // consecutive_failures: walk newest-first, counting only terminal
     // outcomes. A 'failed' job counts as a failure. 'cancelled' and 'partial'
     // are neither a failure nor a success — they neither reset the streak

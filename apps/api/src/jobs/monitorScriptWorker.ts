@@ -100,7 +100,15 @@ async function resolveCandidateOrgIds(monitor: {
   partnerId: string | null;
 }): Promise<string[]> {
   if (monitor.orgId) return [monitor.orgId];
-  if (!monitor.partnerId) return [];
+  if (!monitor.partnerId) {
+    // monitor_definitions_one_owner_chk is supposed to make this unreachable.
+    // "Should never happen" is exactly the category this wave stopped trusting
+    // silently: unlogged, the monitor would drop out of every tick forever.
+    console.warn(
+      `[monitorScriptWorker] Monitor ${monitor.id} has neither org nor partner owner; skipping`,
+    );
+    return [];
+  }
 
   const rows = await db
     .select({ id: organizations.id })
@@ -181,7 +189,13 @@ export async function processScriptMonitorTick(): Promise<ScriptMonitorTickResul
       }
 
       const orgIds = await resolveCandidateOrgIds(monitor);
-      if (orgIds.length === 0) continue;
+      if (orgIds.length === 0) {
+        // Either an ownerless row or a fan-out over the cap — both are logged
+        // above, and both are operational problems rather than "nothing to do",
+        // so the tick result must not report them as a clean zero.
+        result.errors++;
+        continue;
+      }
 
       const deviceRows: CandidateDevice[] = await db
         .select({

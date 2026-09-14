@@ -317,6 +317,11 @@ describe('recordMonitorCheckResult', () => {
       status: 'offline',
       responseMs: 250,
       error: 'timeout'
+    }, {
+      // The reporting device and its org; supplying it here keeps these
+      // pre-existing cases on the normal path, where no org fallback read runs.
+      orgId: 'org-1',
+      deviceId: 'device-1',
     });
 
     // #5241: the alert must go through the shared create+publish path so
@@ -376,6 +381,11 @@ describe('recordMonitorCheckResult', () => {
       status: 'offline',
       responseMs: 250,
       error: 'timeout'
+    }, {
+      // The reporting device and its org; supplying it here keeps these
+      // pre-existing cases on the normal path, where no org fallback read runs.
+      orgId: 'org-1',
+      deviceId: 'device-1',
     });
 
     expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(1);
@@ -427,6 +437,11 @@ describe('recordMonitorCheckResult', () => {
       status: 'offline',
       responseMs: 250,
       error: 'timeout'
+    }, {
+      // The reporting device and its org; supplying it here keeps these
+      // pre-existing cases on the normal path, where no org fallback read runs.
+      orgId: 'org-1',
+      deviceId: 'device-1',
     });
 
     expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledTimes(2);
@@ -461,6 +476,11 @@ describe('recordMonitorCheckResult', () => {
       monitorId: 'monitor-1',
       status: 'online',
       responseMs: 22
+    }, {
+      // The reporting device and its org; supplying it here keeps these
+      // pre-existing cases on the normal path, where no org fallback read runs.
+      orgId: 'org-1',
+      deviceId: 'device-1',
     });
 
     expect(vi.mocked(resolveAlert)).toHaveBeenCalledWith(
@@ -510,7 +530,7 @@ describe('recordMonitorCheckResult', () => {
         error: `probe failed, key follows:\n${pem}`,
         nested: { hint: `still leaking:\n${pem}` },
       },
-    });
+    }, { orgId: 'org-1', deviceId: 'device-1' });
 
     // network_monitor_results row: error + every string inside details redacted.
     const inserted = txInsertValues.mock.calls[0]![0] as {
@@ -623,7 +643,10 @@ describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => 
  * RUNNING org off the job, never off the monitor.
  */
 describe('partner-wide network monitors (#5291 W04)', () => {
+  let agentSelectWhereArgs: unknown;
+
   beforeEach(() => {
+    agentSelectWhereArgs = undefined;
     vi.clearAllMocks();
     ctxState.depth = 0;
     ctxState.events = [];
@@ -632,6 +655,20 @@ describe('partner-wide network monitors (#5291 W04)', () => {
   });
 
   it('fans a partner-wide monitor out to ONE JOB PER ORG under its partner', async () => {
+    // A REALISTIC BullMQ getJob: it returns a job that has already been added
+    // under the same stable id. With a monitor-only dedupe key, orgs 2..N would
+    // find org 1's still-waiting job, `isReusableState` would short-circuit,
+    // and they would silently never be enqueued. Mocking getJob as a flat
+    // `null` hides that entirely, so this fixture is what makes the assertion
+    // below a real control rather than a tautology.
+    const addedByJobId = new Map<string, { id: string }>();
+    queueMock.getJob.mockImplementation((async (jobId: string) => addedByJobId.get(jobId) ?? null) as never);
+    queueMock.add.mockImplementation((async (_name: string, _data: unknown, opts: { jobId?: string }) => {
+      const job = { id: opts?.jobId ?? 'job-1', getState: async () => 'waiting', remove: async () => undefined };
+      if (opts?.jobId) addedByJobId.set(opts.jobId, job);
+      return job;
+    }) as never);
+
     vi.mocked(db.select)
       .mockReturnValueOnce(selectWhereResolved([
         { id: 'm-partner', orgId: null, partnerId: 'p1', pollingInterval: 60, lastChecked: null },
@@ -676,7 +713,16 @@ describe('partner-wide network monitors (#5291 W04)', () => {
 
     expect(result).toEqual({ dispatched: false, agentId: null });
     expect(vi.mocked(dispatchCommandToAgent)).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('org-foreign'));
+    // Assert the DROP REASON, not merely that the org id appears: a bypassed
+    // guard falls through to selectExecutionAgentForMonitor and warns "No
+    // online agent for org org-foreign", which also contains the org id. Only
+    // the mismatch branch says why the job was refused.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('neither its own org nor an org under its partner'),
+    );
+    // A bypassed guard would skip the membership probe and spend the second
+    // queued read on agent selection instead; the count pins which one ran.
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     warn.mockRestore();
   });
 
@@ -686,13 +732,25 @@ describe('partner-wide network monitors (#5291 W04)', () => {
         { id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, isActive: true, name: 'GW', target: '10.0.0.1', monitorType: 'icmp_ping' },
       ]) as any)
       .mockReturnValueOnce(selectLimitResolved([{ id: 'org-a' }]) as any)
-      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-a' }]) as any);
+      // Agent lookup. The PREDICATE is captured, not discarded: selectLimitResolved
+      // throws its `where` arguments away, so without this the test would pass
+      // identically if device selection were reverted to the monitor's (NULL) org.
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation((...args: unknown[]) => {
+            agentSelectWhereArgs = args;
+            return { limit: vi.fn().mockResolvedValue([{ agentId: 'agent-a' }]) };
+          }),
+        }),
+      } as any);
     vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
     vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'sent', via: 'local' } as never);
 
     const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'm-partner', orgId: 'org-a' });
 
     expect(result).toEqual({ dispatched: true, agentId: 'agent-a' });
+    expect(agentSelectWhereArgs, 'the agent lookup never ran').toBeDefined();
+    expect(JSON.stringify(agentSelectWhereArgs)).toContain('org-a');
   });
 
   it('stamps every result row with the running org and the probe device', async () => {
@@ -718,5 +776,113 @@ describe('partner-wide network monitors (#5291 W04)', () => {
       orgId: 'org-a',
       deviceId: 'device-a',
     }));
+  });
+
+  it('falls back to the MONITOR\'s org when the reporter carried none (Redis-down direct path)', async () => {
+    // agentWs resolves the reporting device live; if that row is gone
+    // mid-session the reporter carries no org. Writing org_id NULL for an
+    // ORG-OWNED monitor would make the result invisible to every org-scoped
+    // reader — it would just disappear from that customer's history with
+    // nothing to explain it.
+    const values = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.transaction).mockImplementation((async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    })) as any);
+    vi.mocked(db.select)
+      // the new pre-insert org resolution
+      .mockReturnValueOnce(selectLimitResolved([{ orgId: 'org-owner' }]) as any)
+      // post-tx monitor read
+      .mockReturnValueOnce(selectLimitResolved([
+        { id: 'monitor-1', orgId: 'org-owner', assetId: null, name: 'Edge Ping', target: '8.8.8.8', monitorType: 'icmp_ping', consecutiveFailures: 0 },
+      ]) as any)
+      // no alert rules
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult('monitor-1', { monitorId: 'monitor-1', status: 'online', responseMs: 5 });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-owner' }));
+  });
+
+  it('leaves org_id NULL only when the monitor is partner-wide AND the reporter carried no org', async () => {
+    // The one genuinely unattributable case: there is no tenant to guess.
+    const values = vi.fn().mockResolvedValue(undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.transaction).mockImplementation((async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    })) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([{ orgId: null }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([
+        { id: 'monitor-1', orgId: null, partnerId: 'p1', assetId: null, name: 'GW', target: '10.0.0.1', monitorType: 'icmp_ping', consecutiveFailures: 0 },
+      ]) as any);
+
+    await recordMonitorCheckResult('monitor-1', { monitorId: 'monitor-1', status: 'online', responseMs: 5 });
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({ orgId: null }));
+    // …and it says so, rather than skipping alert evaluation silently.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('partner-wide'));
+    warn.mockRestore();
+  });
+
+  it('attributes a partner-wide monitor\'s ALERT to the running org, not the (null) definition owner', async () => {
+    // Every other alert case in this file uses an org-owned monitor, where
+    // runningOrgId trivially equals monitor.orgId — so none of them would catch
+    // evaluateMonitorAlertRules being reverted to read monitor.orgId. Here the
+    // definition owns no org at all: reverting would dedupe and create the
+    // alert against a null tenant.
+    vi.mocked(db.transaction).mockImplementation((async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    })) as any);
+
+    let alertDedupeWhereArgs: unknown;
+    vi.mocked(db.select)
+      // post-tx monitor read: partner-wide, so orgId is NULL
+      .mockReturnValueOnce(selectLimitResolved([{
+        id: 'm-partner',
+        orgId: null,
+        partnerId: 'p1',
+        assetId: null,
+        name: 'GW',
+        target: '10.0.0.1',
+        monitorType: 'icmp_ping',
+        consecutiveFailures: 3,
+      }]) as any)
+      // one active offline rule
+      .mockReturnValueOnce(selectWhereResolved([{
+        id: 'rule-1',
+        monitorId: 'm-partner',
+        condition: 'offline',
+        threshold: null,
+        severity: 'high',
+        message: null,
+        isActive: true,
+      }]) as any)
+      // probe-device pick for the RUNNING org
+      .mockReturnValueOnce(selectWhereOrderLimitResolved([{ id: 'device-a' }]) as any)
+      // existing-alert dedupe read — capture its predicate
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation((...args: unknown[]) => {
+            alertDedupeWhereArgs = args;
+            return Promise.resolve([]);
+          }),
+        }),
+      } as any);
+
+    await recordMonitorCheckResult(
+      'm-partner',
+      { monitorId: 'm-partner', status: 'offline', responseMs: 0 },
+      { orgId: 'org-a', deviceId: 'device-a' },
+    );
+
+    expect(vi.mocked(createSourcedAlert)).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-a', deviceId: 'device-a' }),
+    );
+    // The dedupe read must be scoped the same way, or a recovered sibling org
+    // would suppress this org's alert.
+    expect(JSON.stringify(alertDedupeWhereArgs)).toContain('org-a');
   });
 });

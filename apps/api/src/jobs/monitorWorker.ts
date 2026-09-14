@@ -561,16 +561,34 @@ export async function recordMonitorCheckResult(
   };
   const now = new Date();
 
+  // Resolve the org the result belongs to BEFORE the insert. The reporter
+  // carries it on both normal paths, but the Redis-down direct path
+  // (agentWs.ts) resolves it from a live `devices` read that can miss if the
+  // device row was removed mid-session — and an org-owned monitor's result
+  // written with org_id NULL is invisible to every org-scoped reader, i.e. it
+  // silently disappears from that customer's history. Falling back to the
+  // monitor's own org is exact for an org-owned monitor; a partner-wide one
+  // genuinely has no org to fall back to and is handled below.
+  let runningOrgId = reporter?.orgId ?? null;
+  if (!runningOrgId) {
+    const [owner] = await db
+      .select({ orgId: networkMonitors.orgId })
+      .from(networkMonitors)
+      .where(eq(networkMonitors.id, monitorId))
+      .limit(1);
+    runningOrgId = owner?.orgId ?? null;
+  }
+
   // Use a transaction to keep results table and monitor state in sync
   await db.transaction(async (tx) => {
     // Write to results table
     await tx.insert(networkMonitorResults).values({
       monitorId,
-      // Worker-created child rows take the DEVICE's org (#5291 W04). Both
-      // callers (the agentWs direct path and processCheckResult) resolve it,
-      // so NULL here only ever means a queue payload enqueued before this wave
-      // landed - a window of minutes, and org_id is nullable for exactly that.
-      orgId: reporter?.orgId ?? null,
+      // Worker-created child rows take the DEVICE's org (#5291 W04), with the
+      // monitor's own org as the fallback resolved above. NULL here means the
+      // monitor is partner-wide AND the reporter carried no device org, which
+      // is the one case where there is genuinely no tenant to attribute to.
+      orgId: runningOrgId,
       deviceId: reporter?.deviceId ?? null,
       status: result.status,
       responseMs: result.responseMs ?? null,
@@ -610,10 +628,8 @@ export async function recordMonitorCheckResult(
 
   if (!monitor) return;
 
-  // The org the probe ran for. A partner-wide monitor owns no org, so without a
-  // reporter org there is nothing to attribute an alert to - skip rather than
-  // guess a tenant.
-  const runningOrgId = reporter?.orgId ?? monitor.orgId;
+  // A partner-wide monitor owns no org, so if the reporter carried none either
+  // there is nothing to attribute an alert to - skip rather than guess a tenant.
   if (!runningOrgId) {
     console.warn(
       `[MonitorWorker] Skipping alert evaluation for partner-wide monitor ${monitor.id}: result carried no reporting org`
@@ -758,7 +774,14 @@ export async function enqueueMonitorCheck(
   meta: QueueActorMeta = MONITOR_DISPATCH_META,
 ): Promise<string> {
   const queue = getMonitorQueue();
-  const stableJobId = `monitor-check-${monitorId}`;
+  // #5291 W04 — the org is PART OF THE KEY. A partner-wide monitor fans out one
+  // job per org under the partner in a single scheduler tick; with a
+  // monitor-only key the first org's job would still be `waiting` when the
+  // second org's call arrived, `isReusableState` would return that job id, and
+  // orgs 2..N would silently never be enqueued at all — the exact no-error
+  // no-op class this wave exists to remove. The key was correct before W04,
+  // when one network_monitors row was always exactly one org.
+  const stableJobId = `monitor-check-${monitorId}-${orgId}`;
   const existing = await queue.getJob(stableJobId);
   if (existing) {
     const state = await existing.getState();

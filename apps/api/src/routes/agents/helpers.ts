@@ -2091,10 +2091,19 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<Monitorin
     let condition: Record<string, unknown>;
     try {
       condition = applyOverrides(spec, def.condition, overridesById.get(def.id) ?? null);
-    } catch {
+    } catch (err) {
       // An out-of-range override is an authoring bug on ONE monitor. Dropping
       // that monitor is right; failing the whole heartbeat block would strand
-      // every other watch on the device.
+      // every other watch on the device. But it is NOT transient — it recurs on
+      // every heartbeat forever — so it must be visible: without this log the
+      // watch simply vanishes from the device's config with nothing anywhere
+      // to explain it. Mirrors monitorScriptWorker's handling of the same throw.
+      console.error('[monitoring] dropping monitor with an invalid override', {
+        monitorId: def.id,
+        deviceId,
+        error: err,
+      });
+      captureException(err);
       continue;
     }
 

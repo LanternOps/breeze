@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../../db';
-import { networkMonitorResults, networkMonitors } from '../../../db/schema';
+import { devices, networkMonitorResults, networkMonitors } from '../../../db/schema';
 import type { ConditionHandler } from '../registry';
 import type { ConditionResult, NetworkCheckCondition } from '../types';
 
@@ -12,9 +12,15 @@ import type { ConditionResult, NetworkCheckCondition } from '../types';
  * verdict back off `network_monitor_results`. The two halves are deliberately
  * decoupled through that table — nothing here talks to an agent.
  *
- * The results row carries its own `org_id` since W04 (a partner-wide parent has
- * none), so the newest N rows for the managed monitor are already narrowed to
- * the reading tenant by RLS; no org predicate is needed or wanted here.
+ * The results read is scoped to the EVALUATED DEVICE'S OWN ORG explicitly, and
+ * must not rely on RLS to do it: the alert sweep runs this handler inside
+ * `runWithSystemDbAccess` (jobs/alertWorker.ts), where
+ * `breeze_current_scope() = 'system'` short-circuits
+ * `network_monitor_results_isolation` to always-true. A partner-wide check
+ * produces results for EVERY org under the partner against the same managed
+ * row, so an unscoped read would blend those timelines: a healthy org would
+ * inherit a sibling's outage, and a genuinely down org's streak would be
+ * masked by a sibling's more recent `online` row.
  *
  * `passed: true` means the monitor BREACHES.
  */
@@ -40,10 +46,26 @@ export const networkCheckHandler: ConditionHandler = {
       return { passed: false, description: 'Network check not provisioned yet' };
     }
 
+    // The running org comes from the DEVICE, never from the definition owner
+    // (which is NULL for a partner-wide check). A device we cannot read is a
+    // deny, not an all-clear.
+    const [device] = await db
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+
+    if (!device) {
+      return { passed: false, description: 'Device not found for network check evaluation' };
+    }
+
     const rows = await db
       .select({ status: networkMonitorResults.status, timestamp: networkMonitorResults.timestamp })
       .from(networkMonitorResults)
-      .where(and(eq(networkMonitorResults.monitorId, managed.id)))
+      .where(and(
+        eq(networkMonitorResults.monitorId, managed.id),
+        eq(networkMonitorResults.orgId, device.orgId),
+      ))
       .orderBy(desc(networkMonitorResults.timestamp))
       .limit(needed);
 
