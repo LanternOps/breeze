@@ -19,7 +19,8 @@ import {
   organizations,
   sites,
   configPolicyAlertRules,
-  monitorDefinitions
+  monitorDefinitions,
+  monitorDeviceState
 } from '../db/schema';
 import { eq, and, inArray, isNull, isNotNull, or, sql, type SQL } from 'drizzle-orm';
 import { evaluateConditions, evaluateAutoResolveConditions, interpolateTemplate } from './alertConditions';
@@ -31,6 +32,13 @@ import { enqueueAlertCorrelation } from '../jobs/alertCorrelation';
 import { captureException } from './sentry';
 import { resolveMonitorsForDevice } from './monitors/monitorResolver';
 import { applyOverrides, getMonitorKindSpec } from './monitors/kinds';
+import {
+  recordMonitorEvaluation,
+  detachMonitorFromDevice,
+  linkEpisodeAlert,
+  type MonitorObservation,
+} from './monitors/episodeService';
+import { fireEscalationLatch } from './monitors/escalationLatch';
 
 // Types for alert creation
 export interface CreateAlertParams {
@@ -65,6 +73,12 @@ export interface RuleWithTemplate {
   effectiveCooldownMinutes: number;
   notificationChannelIds: string[];
   escalationPolicyId?: string;
+  /**
+   * #5290 — the monitor definition behind a compiled rule, carried through from
+   * the batched read above so the episode seam needs no extra query per rule.
+   * Null for an ordinary standalone rule.
+   */
+  monitor: typeof monitorDefinitions.$inferSelect | null;
 }
 
 /**
@@ -956,7 +970,10 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
       effectiveSeverity,
       effectiveCooldownMinutes: (overrides?.cooldownMinutes as number) ?? template.cooldownMinutes,
       notificationChannelIds: (overrides?.notificationChannelIds as string[]) ?? [],
-      escalationPolicyId: overrides?.escalationPolicyId as string | undefined
+      escalationPolicyId: overrides?.escalationPolicyId as string | undefined,
+      monitor: rule.managedByMonitorId
+        ? monitorDefinitionsById.get(rule.managedByMonitorId) ?? null
+        : null
     });
   }
 
@@ -986,11 +1003,67 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
   }
 
   const createdAlerts: string[] = [];
+  // #5290 — every monitor the sweep actually evaluated for this device. Any
+  // monitor_device_state row NOT in this set has stopped resolving to the
+  // device (attachment removed, policy unassigned, attachment disabled), which
+  // closes its open episode as `monitor_detached` after the loop.
+  const evaluatedMonitorIds = new Set<string>();
 
-  for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes } of applicableRules) {
+  for (const { rule, template, effectiveConditions, effectiveSeverity, effectiveCooldownMinutes, monitor } of applicableRules) {
     try {
       // Evaluate conditions
       const result = await evaluateConditions(effectiveConditions, deviceId);
+
+      // #5290 — the episode seam sits HERE, after the evaluation and BEFORE
+      // createAlert, on purpose:
+      //   * cooldown and flapping (both inside createAlert) gate the ALERT but
+      //     never the episode — noise controls cannot hide a loop;
+      //   * the escalation latch and its pause are durable before createAlert
+      //     publishes `alert.triggered`, so the compiled response automation
+      //     can never be queued between the latch and the pause;
+      //   * a non-triggering evaluation, which today does nothing at all, now
+      //     closes the open episode.
+      let episodeId: string | null = null;
+      if (rule.managedByMonitorId && monitor) {
+        evaluatedMonitorIds.add(rule.managedByMonitorId);
+        try {
+          const observation: MonitorObservation = result.triggered
+            ? 'breach'
+            : result.dataState === 'unknown'
+              ? 'unknown'
+              : 'ok';
+          const outcome = await recordMonitorEvaluation({
+            monitor,
+            deviceId,
+            // ALWAYS the DEVICE's org (#5290): a partner-wide monitor has no
+            // org of its own and its episodes are org-scoped.
+            orgId: device.orgId,
+            observation,
+          });
+          episodeId = outcome.episodeId;
+          if (outcome.latched && outcome.episodeId) {
+            await fireEscalationLatch({
+              monitor,
+              deviceId,
+              orgId: device.orgId,
+              episodeId: outcome.episodeId,
+              episodesInWindow: outcome.episodesInWindow,
+            });
+          }
+        } catch (error) {
+          // Episode bookkeeping must never cost the device its alert.
+          console.error(
+            `[AlertService] Episode bookkeeping failed for monitor=${rule.managedByMonitorId} device=${deviceId}:`,
+            error
+          );
+          captureException(error, undefined, {
+            area: 'monitors',
+            issue: 'episode_record_failed',
+            monitorId: rule.managedByMonitorId,
+            deviceId,
+          });
+        }
+      }
 
       if (result.triggered) {
         // Build template context
@@ -1022,6 +1095,7 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
           // #5289 — provenance, so the alert links to the authored monitor
           // rather than to the compiled rule the technician never sees.
           monitorId: rule.managedByMonitorId ?? null,
+          episodeId,
           context: {
             ...result.context,
             conditionsMet: result.conditionsMet,
@@ -1033,6 +1107,14 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
 
         if (alertId) {
           createdAlerts.push(alertId);
+          if (episodeId) {
+            await linkEpisodeAlert(episodeId, alertId).catch((error) => {
+              console.error(
+                `[AlertService] Failed to link alert ${alertId} to episode ${episodeId}:`,
+                error
+              );
+            });
+          }
         }
       }
     } catch (error) {
@@ -1040,7 +1122,43 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
     }
   }
 
+  await detachUnresolvedMonitors(deviceId, evaluatedMonitorIds);
+
   return createdAlerts;
+}
+
+/**
+ * #5290 — close the open episode of every monitor that still has state for this
+ * device but no longer resolves to it. One indexed read per sweep
+ * (`monitor_device_state_device_idx`).
+ */
+async function detachUnresolvedMonitors(
+  deviceId: string,
+  evaluatedMonitorIds: Set<string>
+): Promise<void> {
+  try {
+    const open = await db
+      .select({ monitorId: monitorDeviceState.monitorId })
+      .from(monitorDeviceState)
+      .where(
+        and(
+          eq(monitorDeviceState.deviceId, deviceId),
+          isNotNull(monitorDeviceState.currentEpisodeId)
+        )
+      );
+
+    for (const row of open) {
+      if (evaluatedMonitorIds.has(row.monitorId)) continue;
+      await detachMonitorFromDevice(row.monitorId, deviceId);
+    }
+  } catch (error) {
+    console.error(`[AlertService] Failed to detach stale monitor episodes for device ${deviceId}:`, error);
+    captureException(error, undefined, {
+      area: 'monitors',
+      issue: 'episode_detach_failed',
+      deviceId,
+    });
+  }
 }
 
 // ============================================
