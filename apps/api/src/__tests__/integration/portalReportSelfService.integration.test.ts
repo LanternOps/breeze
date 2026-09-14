@@ -360,6 +360,19 @@ describe('hardware_lifecycle visibility follows enable_lifecycle', () => {
     const fixture = await seedLifecycleFixture(true);
     const otherSiteId = crypto.randomUUID();
 
+    const scope = {
+      version: 1,
+      kind: 'unrestricted',
+      orgId: fixture.org.id,
+    } as const;
+    const mspAuthority: UserReportExecutionAuthority = {
+      principalKind: 'user',
+      principalUserId: crypto.randomUUID(),
+      scope,
+      capturedAt: new Date(),
+      fingerprint: siteScopeFingerprint(scope),
+    };
+
     await withSystemDbAccessContext(() =>
       db.insert(reports).values({
         orgId: fixture.org.id,
@@ -375,8 +388,7 @@ describe('hardware_lifecycle visibility follows enable_lifecycle', () => {
           includeOtherEquipment: false,
         },
         portalSelfService: false,
-        executionScopeKind: 'unrestricted',
-        executionScopePrincipalKind: 'user',
+        ...persistedSiteScopeValues(mspAuthority),
       }),
     );
 

@@ -793,11 +793,14 @@ describe('latestPortalHardwareLifecycleRun', () => {
   });
 
   it('pins the lookup to the org, the type, the portal flag, and completion', async () => {
-    state.selected.mockReset().mockResolvedValue([{
-      id: RUN_ID,
-      result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
-      completedAt: new Date('2026-09-02T18:00:00.000Z'),
-    }]);
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
 
     await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
 
@@ -815,13 +818,16 @@ describe('latestPortalHardwareLifecycleRun', () => {
   });
 
   it('formats generatedAt from the run completion time, not the stored summary', async () => {
-    state.selected.mockReset().mockResolvedValue([{
-      id: RUN_ID,
-      // A stale generatedAt inside the stored result must not win: the run row
-      // is the authority for when the customer's plan was actually produced.
-      result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
-      completedAt: new Date('2026-09-02T18:00:00.000Z'),
-    }]);
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        // A stale generatedAt inside the stored result must not win: the run
+        // row is the authority for when the customer's plan was produced.
+        result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
 
     const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
 
@@ -832,11 +838,20 @@ describe('latestPortalHardwareLifecycleRun', () => {
   });
 
   it('formats generatedAt in the caller timezone', async () => {
-    state.selected.mockReset().mockResolvedValue([{
-      id: RUN_ID,
-      result: { summary: {} },
-      completedAt: new Date('2026-09-03T02:00:00.000Z'),
-    }]);
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-03T02:00:00.000Z'),
+      }])
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-03T02:00:00.000Z'),
+      }]);
 
     const utc = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
     const denver = await latestPortalHardwareLifecycleRun(
@@ -850,7 +865,10 @@ describe('latestPortalHardwareLifecycleRun', () => {
   });
 
   it('uses the typed not-found error when the org has no completed run', async () => {
-    state.selected.mockReset().mockResolvedValue([]);
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValue([]);
 
     await expect(
       latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
@@ -858,14 +876,43 @@ describe('latestPortalHardwareLifecycleRun', () => {
   });
 
   it('returns a null summary rather than throwing when the result has none', async () => {
-    state.selected.mockReset().mockResolvedValue([{
-      id: RUN_ID,
-      result: null,
-      completedAt: new Date('2026-09-02T18:00:00.000Z'),
-    }]);
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: null,
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
 
     const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
     expect(dto.summary).toBeNull();
+  });
+
+  it('refuses to answer at all when the org flag is off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: false }])
+      // Queued but must never be reached: the flag check comes first, so the
+      // run row below is not what the rejection is coming from.
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
+
+    await expect(
+      latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+    expect(state.selected).toHaveBeenCalledOnce();
+  });
+
+  it('refuses when the org has no portal_branding row at all', async () => {
+    state.selected.mockReset().mockResolvedValue([]);
+
+    await expect(
+      latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });
 });
 

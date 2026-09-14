@@ -516,8 +516,12 @@ export async function generatePortalReport(args: {
  * stamped, which can be stale relative to the row; the run is the authority
  * for when the customer's plan was actually produced.
  *
- * Reached only through /reports/lifecycle/*, which carries both the
- * enableReports and enableLifecycle gates, so no flag check is repeated here.
+ * Today this is reached only through /reports/lifecycle/*, which carries both
+ * the enableReports and enableLifecycle gates. The flag is re-checked here
+ * anyway, so the service is safe for any future caller that is not behind that
+ * mount (an SSR page, a worker, an AI tool), and so every read in this file
+ * answers the flag the same way rather than one of them depending on where it
+ * happens to be mounted.
  */
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
@@ -528,6 +532,10 @@ export async function latestPortalHardwareLifecycleRun(
   orgId: string,
   timezone: string,
 ): Promise<HardwareLifecyclePortalLatestDto> {
+  if (!await portalLifecycleEnabled(orgId)) {
+    throw new PortalReportNotFoundError();
+  }
+
   const [row] = await db.select({
     id: reportRuns.id,
     result: reportRuns.result,
