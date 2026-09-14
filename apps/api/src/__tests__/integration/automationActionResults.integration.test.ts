@@ -88,7 +88,7 @@ describe('automation action results', () => {
     expect(Object.keys(getTenantExportPolicyRegistry().automation_action_results!.columns).sort()).toEqual([
       'action_index', 'action_type', 'command_id', 'completed_at', 'created_at', 'deployment_result_id',
       'device_id', 'error', 'id', 'message', 'org_id', 'output', 'run_id', 'script_execution_id',
-      'status', 'terminal_source', 'updated_at',
+      'status', 'terminal_source', 'trigger_key', 'trigger_kind', 'trigger_ref_id', 'updated_at',
     ].sort());
   });
 
