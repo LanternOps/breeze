@@ -81,3 +81,46 @@ describe('script_versions has exactly one writer', () => {
     expect(src).toMatch(/\.insert\(\s*scriptVersions\s*\)/);
   });
 });
+
+/**
+ * The mirror contract (#5622): every file that INSERTS a `scripts` row must
+ * also cut that row's v1 version in the same unit of work.
+ *
+ * The scan above only sees writers of `script_versions`. It is blind to the
+ * opposite defect — a create path that inserts into `scripts` and never cuts a
+ * version, leaving a HEADLESS script whose `headScriptVersion()` is null
+ * forever. `db/seed.ts` shipped exactly that (#5622): it never imports
+ * `scriptVersions`, so nothing in the sole-writer scan could have noticed.
+ *
+ * Text scan, same style as above: no import graph is loaded, so a partial
+ * db/schema mock elsewhere cannot make this vacuous.
+ */
+const SCRIPT_INSERTERS: ReadonlySet<string> = new Set<string>([
+  'db/seed.ts',
+  'routes/scripts.ts',
+  'services/scriptWrite.ts',
+  'services/scriptClone.ts',
+  'services/systemScriptLibrary.ts',
+]);
+
+describe('every scripts insert cuts a v1 version', () => {
+  const inserters = listTsFiles(API_SRC)
+    .map((full) => ({ rel: relative(API_SRC, full).split(sep).join('/'), full }))
+    .filter(({ rel }) => !rel.endsWith('.test.ts') && !rel.startsWith('__tests__/'))
+    .filter(({ full }) => /\.insert\(\s*scripts\s*\)/.test(readFileSync(full, 'utf8')));
+
+  it('the scan is not vacuous', () => {
+    expect(inserters.map((f) => f.rel).sort()).toEqual([...SCRIPT_INSERTERS].sort());
+  });
+
+  it.each([...SCRIPT_INSERTERS])('%s cuts a version for the row it inserts', (rel) => {
+    const src = readFileSync(join(API_SRC, ...rel.split('/')), 'utf8');
+    expect(
+      src,
+      `${rel} inserts into \`scripts\` but never calls cutScriptVersion (directly or via ` +
+        `insertScriptRow). A script created without a v1 row is headless: headScriptVersion() ` +
+        `returns null for it forever, and script_versions is append-only so it cannot be ` +
+        `repaired afterwards (#5622).`
+    ).toMatch(/cutScriptVersion|insertScriptRow/);
+  });
+});
