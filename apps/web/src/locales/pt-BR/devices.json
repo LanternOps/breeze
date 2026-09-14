@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Atividade de IA",
+    "count": "{{count}} ações despachadas nos últimos {{days}} dias",
+    "tooltip": "Conta os scripts e comandos despachados por IA registrados neste dispositivo. Um cancelamento conta como uma ação própria. Registrado em caráter de melhor esforço."
+  },
   "deviceChangeHistoryTab": {
     "title": "Histórico de alterações",
     "loading": "Carregando histórico de alterações…",

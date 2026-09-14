@@ -331,6 +331,10 @@ export function QuoteDetailView({ detail, error, statusCode }: QuoteDetailViewPr
           </div>
         </section>
 
+        {/* Two distinct free-text columns, both genuinely terms: `terms` is the
+            API-only legacy field, `termsAndConditions` is what the quote editor
+            writes. The quote's notes live in `introNotes`, elsewhere on the page.
+            Spec 2026-09-14 §3 checked this and left both labels as-is. */}
         {quote.terms && <DocumentTerms label="Terms">{quote.terms}</DocumentTerms>}
         {quote.termsAndConditions && (
           <DocumentTerms label="Terms & Conditions" testId="quote-terms-conditions">{quote.termsAndConditions}</DocumentTerms>

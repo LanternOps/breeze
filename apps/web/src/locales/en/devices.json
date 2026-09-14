@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "AI activity",
+    "count": "{{count}} actions dispatched in the last {{days}} days",
+    "tooltip": "Counts AI-dispatched scripts and commands recorded on this device. A cancel counts as its own action. Recorded on a best-effort basis."
+  },
   "deviceChangeHistoryTab": {
     "title": "Change History",
     "loading": "Loading change history…",

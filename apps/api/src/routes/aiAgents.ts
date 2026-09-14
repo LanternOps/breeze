@@ -85,6 +85,7 @@ import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
+import { summarizeDeliveries } from '../services/reportRunDelivery';
 import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
@@ -1452,6 +1453,31 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     }
     : null;
 
+  // #4248 W03 (Task 10, OD-7 B) — the narrative's EMAIL delivery counts.
+  // Gated on the artifact read above having found the run's artifact under
+  // the caller's own org pin + RLS: `report_run_deliveries` carries no
+  // org_id (its tenancy is the grandparent `reports` row), so that read is
+  // the tenancy check for this one. Read under the request's own context —
+  // the parent-FK-join policy admits it.
+  //
+  // COUNTS ONLY, and each bucket keeps its own meaning: `refused` is
+  // terminal (authority, no address, or a provider refusal — three causes, so
+  // the copy must not name one), `pending` is not-yet-delivered, `unknown` is
+  // ambiguous. `recipientsUnresolved` comes off the outcome and is the reason
+  // this object is returned even when there are ZERO delivery rows: otherwise
+  // a failed recipient lookup renders exactly like an org with no recipients.
+  const recipientsUnresolved = run.outcome?.narrativeRecipientsUnresolved === true;
+  const narrativeDelivery = run.profile === 'narrative' && narrativeArtifact && run.reportRunId
+    ? await summarizeDeliveries(run.reportRunId).then((s) => ({
+      total: s.total,
+      sent: s.sent,
+      refused: s.failed,
+      pending: s.pending,
+      unknown: s.unknown,
+      recipientsUnresolved,
+    }))
+    : null;
+
   // Fleet Designer W01 (#5651), Task 9 — the linked fleet design artifact's
   // provenance scalars, projected out of `report_runs.result` BY POSTGRES
   // for the same reason the narrative read above is: that jsonb carries the
@@ -1549,6 +1575,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     narrativeArtifact,
     draftRows,
     fleetDesignArtifact,
+    narrativeDelivery,
   );
   return c.json({ data: detail });
 });

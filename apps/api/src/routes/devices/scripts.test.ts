@@ -23,7 +23,10 @@ vi.mock('../../db/schema', () => ({
     startedAt: 'startedAt',
     completedAt: 'completedAt',
     createdAt: 'createdAt',
-    deviceId: 'deviceId'
+    deviceId: 'deviceId',
+    aiInitiatorKind: 'aiInitiatorKind',
+    aiSessionId: 'aiSessionId',
+    aiAgentRunId: 'aiAgentRunId'
   },
   scripts: {
     id: 'id',
@@ -222,5 +225,108 @@ describe('device scripts routes', () => {
 
     expect(res.status).toBe(403);
     expect(vi.mocked(db.select)).not.toHaveBeenCalled();
+  });
+
+  // #5022 W02 — AI initiator projection. OD-9 A: the raw session/run ids are
+  // deliberately not selectable here; disclosure only happens through the
+  // authorized GET /devices/:id/ai-origin endpoint (Task 2).
+  describe('AI initiator projection (#5022 W02)', () => {
+    it('projects the AI initiator kind and an origin-presence flag', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-1',
+        orgId: 'org-123',
+        hostname: 'host-1'
+      } as never);
+
+      const executionRows = [
+        {
+          id: 'exec-1',
+          scriptId: 'script-1',
+          scriptName: 'Collect Inventory',
+          status: 'completed',
+          aiInitiatorKind: 'ai_assistant',
+          hasAiOrigin: true,
+          startedAt: new Date('2026-02-08T00:00:00.000Z'),
+          completedAt: new Date('2026-02-08T00:00:03.000Z'),
+          createdAt: new Date('2026-02-08T00:00:00.000Z')
+        }
+      ];
+
+      const limit = vi.fn().mockResolvedValue(executionRows);
+      const orderBy = vi.fn().mockReturnValue({ limit });
+      const where = vi.fn().mockReturnValue({ orderBy });
+      const leftJoin = vi.fn().mockReturnValue({ where });
+      const from = vi.fn().mockReturnValue({ leftJoin });
+
+      vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+      const res = await app.request('/devices/device-1/scripts', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0]).toMatchObject({ aiInitiatorKind: 'ai_assistant', hasAiOrigin: true });
+
+      // The load-bearing assertion: the route's SELECT literal actually asks
+      // for these columns — a real Postgres select() can't return a column it
+      // didn't request, so a mocked row alone would only prove the test
+      // rigged the output.
+      const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(selectArg.aiInitiatorKind).toBe('aiInitiatorKind');
+      expect(selectArg).toHaveProperty('hasAiOrigin');
+    });
+
+    it('never REQUESTS the raw session or run id columns in the list projection', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-1',
+        orgId: 'org-123',
+        hostname: 'host-1'
+      } as never);
+
+      const limit = vi.fn().mockResolvedValue([
+        { id: 'exec-1', scriptId: 'script-1', scriptName: 'x', status: 'completed', aiInitiatorKind: 'ai_agent', hasAiOrigin: true }
+      ]);
+      const orderBy = vi.fn().mockReturnValue({ limit });
+      const where = vi.fn().mockReturnValue({ orderBy });
+      const leftJoin = vi.fn().mockReturnValue({ where });
+      const from = vi.fn().mockReturnValue({ leftJoin });
+      vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+      const body = await (
+        await app.request('/devices/device-1/scripts', { headers: { Authorization: 'Bearer token' } })
+      ).json();
+
+      const selectArg = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(selectArg).not.toHaveProperty('aiSessionId');
+      expect(selectArg).not.toHaveProperty('aiAgentRunId');
+      expect(JSON.stringify(body)).not.toContain('sess-');
+      expect(JSON.stringify(body)).not.toContain('run-');
+    });
+
+    it('reports an unmarked row as null, never as a human attribution', async () => {
+      vi.mocked(getDeviceWithOrgCheck).mockResolvedValueOnce({
+        id: 'device-1',
+        orgId: 'org-123',
+        hostname: 'host-1'
+      } as never);
+
+      const limit = vi.fn().mockResolvedValue([
+        { id: 'exec-1', scriptId: 'script-1', scriptName: 'x', status: 'completed', aiInitiatorKind: null, hasAiOrigin: false }
+      ]);
+      const orderBy = vi.fn().mockReturnValue({ limit });
+      const where = vi.fn().mockReturnValue({ orderBy });
+      const leftJoin = vi.fn().mockReturnValue({ where });
+      const from = vi.fn().mockReturnValue({ leftJoin });
+      vi.mocked(db.select).mockReturnValueOnce({ from } as never);
+
+      const body = await (
+        await app.request('/devices/device-1/scripts', { headers: { Authorization: 'Bearer token' } })
+      ).json();
+
+      expect(body.data[0].aiInitiatorKind).toBeNull();
+      expect(body.data[0].hasAiOrigin).toBe(false);
+    });
   });
 });

@@ -1,4 +1,13 @@
 {
+  "aiInitiator": {
+    "assistant": "Assistant IA",
+    "agent": "Agent IA",
+    "originUnavailable": "Origine non disponible",
+    "openSession": "Ouvrir la conversation",
+    "openAgentRun": "Ouvrir l'exécution de l'agent",
+    "tool": "Outil : {{name}}",
+    "occurredAt": "Survenu le {{time}}"
+  },
   "lists": {
     "separator": ", "
   },

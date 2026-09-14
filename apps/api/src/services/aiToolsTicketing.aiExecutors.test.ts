@@ -485,3 +485,50 @@ describe('comment routes ai_agent-principal calls to addAiTriageNote (P2-4, #419
     expect(serviceMocks.addAiTriageNote).not.toHaveBeenCalled();
   });
 });
+
+// #4209 (W03). `assign`, `update_status` and `create` call actorFrom(auth)
+// unconditionally, and for an ai_agent principal `auth.user.id` is an
+// `aiAgents.id` (attribution only — agentAuthContext.ts), never a `users` row.
+// Writing it into tickets.assigned_to / created_by is a users-FK forge that
+// would surface in production as a 23503. They refuse instead, loudly and by a
+// stable error code, until agent attribution for assignment/status is designed.
+describe('manage_tickets refuses the three users-FK actions for an ai_agent principal (#4209)', () => {
+  const CASES = [
+    { action: 'assign', input: { action: 'assign', ticketId: TICKET_ID, assigneeId: 'user-9' }, humanMock: 'assignTicket' },
+    { action: 'update_status', input: { action: 'update_status', ticketId: TICKET_ID, status: 'resolved' }, humanMock: 'changeTicketStatus' },
+    { action: 'create', input: { action: 'create', subject: 'Printer down', orgId: ORG_ID }, humanMock: 'createTicket' },
+  ] as const;
+
+  for (const { action, input, humanMock } of CASES) {
+    it(`${action} returns a typed refusal and writes nothing`, async () => {
+      // Queue a visible ticket anyway: the refusal must fire even when every
+      // other precondition is satisfiable, so a green here is not "the lookup
+      // happened to miss".
+      queueSelect(tickets, [accessibleTicket()]);
+
+      const out = await getTool().handler(input as Record<string, unknown>, makeAgentAuth());
+
+      const parsed = JSON.parse(out);
+      expect(parsed).toEqual({ error: 'agent_principal_unsupported_action', action });
+      // Guards the classifier contract in aiAgentSdkTools.ts: a payload
+      // carrying `success`/`data`/`configured` is EXEMPTED from being flagged
+      // as a tool error, which would log this refusal as an ordinary success.
+      expect(parsed).not.toHaveProperty('success');
+      expect(parsed).not.toHaveProperty('data');
+      expect(parsed).not.toHaveProperty('configured');
+      expect(serviceMocks[humanMock]).not.toHaveBeenCalled();
+      expect(topUpdateSetMock).not.toHaveBeenCalled();
+      expect(txInsertValuesMock).not.toHaveBeenCalled();
+    });
+
+    it(`${action} still works for a user_session principal`, async () => {
+      queueSelect(tickets, [accessibleTicket()]);
+      serviceMocks[humanMock].mockResolvedValue({ id: TICKET_ID });
+
+      const out = await getTool().handler(input as Record<string, unknown>, makeHumanAuth());
+
+      expect(JSON.parse(out)).not.toMatchObject({ error: 'agent_principal_unsupported_action' });
+      expect(serviceMocks[humanMock]).toHaveBeenCalledTimes(1);
+    });
+  }
+});

@@ -60,6 +60,13 @@ const LAW_SRV = row({
 
 const MACBOOK_AIR = row({ name: 'MacBook-Air.local', manufacturer: 'Apple Inc.', os: 'macOS 26.3.1' });
 
+const MANUAL_ASSET = row({
+  name: 'PRINTER1',
+  kind: 'manual_asset',
+  manufacturer: 'HP',
+  model: 'LaserJet Pro',
+});
+
 describe('LifecyclePlanTable', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -160,5 +167,33 @@ describe('LifecyclePlanTable', () => {
       />,
     );
     expect(screen.getByTestId('lifecycle-timeline-cell')).toBeInTheDocument();
+  });
+
+  it('links a device row\'s Computer cell to /devices#<id>', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[SAM4]}
+      />,
+    );
+    const link = screen.getByTestId('lifecycle-plan-row-link-SAM4');
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', '/devices#SAM4');
+    expect(link).toHaveTextContent('Sam Lee');
+  });
+
+  it('renders a manual asset\'s Computer cell as plain text, never a link', () => {
+    render(
+      <LifecyclePlanTable
+        sectionId="workstations"
+        title="Workstations and laptops"
+        ruleSentence="rule sentence"
+        rows={[MANUAL_ASSET]}
+      />,
+    );
+    expect(screen.queryByTestId('lifecycle-plan-row-link-PRINTER1')).toBeNull();
+    expect(screen.getByTestId('lifecycle-plan-row-PRINTER1')).toHaveTextContent('LaserJet Pro');
   });
 });

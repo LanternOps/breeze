@@ -129,3 +129,32 @@ describe('ContractDetail — executed documents section', () => {
     clickSpy.mockRestore();
   });
 });
+
+describe('ContractDetail — invoice note (spec §3)', () => {
+  it('renders the contract terms as an Invoice note row next to Notes', async () => {
+    const detail: ContractDetailData = {
+      ...activeDetail,
+      contract: { ...activeDetail.contract, notes: 'Renewal call booked', terms: 'Net 30. Late fees apply after 15 days.' },
+    };
+    render(<ContractDetail detail={detail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('contract-documents-section')).toBeInTheDocument());
+    expect(screen.getByText('Invoice note')).toBeInTheDocument();
+    expect(screen.getByText('Net 30. Late fees apply after 15 days.')).toBeInTheDocument();
+    // The billing contract's own Notes row is unaffected.
+    expect(screen.getByText('Notes')).toBeInTheDocument();
+    expect(screen.getByText('Renewal call booked')).toBeInTheDocument();
+  });
+
+  it('omits the Invoice note row when the contract has no terms', async () => {
+    render(<ContractDetail detail={activeDetail} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId('contract-documents-section')).toBeInTheDocument());
+    expect(screen.queryByText('Invoice note')).toBeNull();
+  });
+
+  it('titles the panel Signed agreements and explains what they are', async () => {
+    render(<ContractDetail detail={activeDetail} onChanged={vi.fn()} />);
+    const section = await screen.findByTestId('contract-documents-section');
+    expect(section).toHaveTextContent('Signed agreements');
+    expect(section).toHaveTextContent('Accepted with the quote, pinned to the template version the customer saw.');
+  });
+});

@@ -984,6 +984,57 @@ describe('backup result persistence', () => {
     expect(setArg.referencedFiles).toBe(17);
   });
 
+  it('finalizes transferredSize as uploaded bytes (bytesBackedUp minus referencedBytes) on completion (#5410)', async () => {
+    const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 10_047, bytesBackedUp: 185_000_000, referencedBytes: 185_000_000, referencedFiles: 10_047 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as { totalSize: number; transferredSize: number };
+    // A fully-deduped incremental run protected the whole corpus but uploaded nothing.
+    expect(setArg.totalSize).toBe(185_000_000);
+    expect(setArg.transferredSize).toBe(0);
+  });
+
+  it('finalizes transferredSize as bytesBackedUp when the agent reports no dedup stats (full backup / old agent)', async () => {
+    const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4, bytesBackedUp: 185_000_000 },
+    });
+
+    // The terminal result overwrites whatever mid-run counter an API restart left behind.
+    const setArg = updateChain.set.mock.calls[0][0] as { transferredSize: number };
+    expect(setArg.transferredSize).toBe(185_000_000);
+  });
+
+  it('leaves transferredSize untouched when the terminal result carries no byte count', async () => {
+    const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
+    vi.mocked(db.update).mockReturnValue(updateChain as any);
+
+    await applyBackupCommandResultToJob({
+      jobId: 'job-1',
+      orgId: 'org-1',
+      deviceId: 'device-1',
+      resultStatus: 'completed',
+      result: { filesBackedUp: 4 },
+    });
+
+    const setArg = updateChain.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(setArg).not.toHaveProperty('transferredSize');
+  });
+
   it('does not write referencedSize/referencedFiles when the agent result carries neither (old agent)', async () => {
     const updateChain = chainMock([{ id: 'job-1', orgId: 'org-1', configId: null, backupType: 'file' }]);
     vi.mocked(db.update).mockReturnValue(updateChain as any);

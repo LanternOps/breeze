@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, Download, Monitor } from 'lucide-react';
 import { publicApiPath, type Device } from '@/lib/api';
 import { cn, formatDate, formatRelativeTime } from '@/lib/utils';
@@ -124,7 +124,28 @@ function moreFacts(device: Device): { label: string; text: string; title?: strin
   ];
 }
 
+/** How long a device row linked to from the lifecycle plan table stays
+ *  highlighted after landing, in milliseconds. */
+const HIGHLIGHT_DURATION_MS = 3000;
+
 export function DeviceList({ devices, error }: DeviceListProps) {
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+
+  // Runs once on mount: a link from the lifecycle plan table lands here as
+  // `/devices#<deviceId>` (hash-based UI state per CLAUDE.md, not a query
+  // param). Scroll the matching row into view and ring-highlight it briefly.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id = window.location.hash.slice(1);
+    if (!id || !devices.some((d) => d.id === id)) return;
+
+    setHighlightedId(id);
+    rowRefs.current[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const timer = setTimeout(() => setHighlightedId(null), HIGHLIGHT_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   if (error) {
     // The transport error is ours to read, not the customer's: they can act on
     // "ask your IT team", never on a connection string.
@@ -207,7 +228,13 @@ export function DeviceList({ devices, error }: DeviceListProps) {
                 return (
                   <tr
                     key={device.id}
-                    className={ROW}
+                    ref={(el) => {
+                      rowRefs.current[device.id] = el;
+                    }}
+                    className={cn(
+                      ROW,
+                      highlightedId === device.id && 'ring-2 ring-primary ring-inset',
+                    )}
                     data-testid={`portal-device-${device.id}`}
                   >
                     {/* order-* reorders the phone card: name and status share

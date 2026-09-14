@@ -70,7 +70,8 @@
         "autoIssue": "Emissione automatica",
         "renewal": "Rinnovo",
         "estimatedPerPeriod": "Stima / periodo",
-        "notes": "Note"
+        "notes": "Note",
+        "invoiceNote": "Nota in fattura"
       },
       "values": {
         "noDrafts": "No (bozze)"
@@ -147,7 +148,8 @@
         "confirm": "Elimina bozza"
       },
       "documents": {
-        "title": "Documenti eseguiti",
+        "title": "Accordi firmati",
+        "subtitle": "Accettati insieme al preventivo e fissati alla versione del modello vista dal cliente.",
         "columns": {
           "template": "Template",
           "signer": "Firmatario",
@@ -155,8 +157,8 @@
           "quote": "Preventivo"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Nessun documento eseguito.",
-        "loadError": "Impossibile caricare i documenti eseguiti.",
+        "empty": "Nessun accordo firmato.",
+        "loadError": "Impossibile caricare gli accordi firmati.",
         "downloadError": "Impossibile scaricare il PDF.",
         "download": "Scarica PDF",
         "preparing": "Preparazione…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Contenuto",
-        "notesOptional": "Note (facoltative)",
-        "termsOptional": "Termini (facoltativi, mostrati sulla fattura)",
+        "notesOptional": "Note (facoltative, aggiunte al blocco Note delle fatture generate)",
+        "termsOptional": "Nota in fattura (facoltativa, aggiunta al blocco Note delle fatture generate)",
         "termsPlaceholder": "es. 30 giorni netto. Rinnovo automatico salvo annullamento 30 giorni prima."
       },
       "lines": {
@@ -397,8 +399,8 @@
     },
     "tabs": {
       "contracts": "Contratti",
-      "templates": "Template",
-      "documents": "Documenti",
+      "templates": "Modelli di accordo",
+      "documents": "Accordi firmati",
       "currencyMismatches": "Discrepanze di valuta"
     },
     "currencyMismatches": {
@@ -459,16 +461,16 @@
       }
     },
     "templatesTab": {
-      "title": "Template di contratto",
-      "description": "Documenti di contratto riutilizzabili che puoi allegare ai preventivi accettati.",
-      "newTemplate": "Nuovo template",
+      "title": "Modelli di accordo",
+      "description": "Il tuo contratto quadro e le tue condizioni standard. Aggiungine uno a un preventivo e il cliente lo firma insieme alla proposta; la copia firmata viene archiviata nel contratto che quel preventivo crea.",
+      "newTemplate": "Nuovo modello di accordo",
       "includeArchived": "Mostra archiviati",
       "allOrgs": "Tutte le org",
       "ownerOrg": "Organizzazione",
       "noVersions": "Nessuna versione",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Archivia",
-      "loadError": "Impossibile caricare i template di contratto",
+      "loadError": "Impossibile caricare i modelli di accordo",
       "createError": "Impossibile creare il template",
       "created": "Template creato",
       "archiveError": "Impossibile archiviare il template",
@@ -484,36 +486,36 @@
         "archived": "Archiviato"
       },
       "empty": {
-        "title": "Nessun template",
-        "description": "Crea il primo template di contratto per iniziare."
+        "title": "Nessun modello di accordo",
+        "description": "Aggiungi una sola volta il tuo contratto quadro o le tue condizioni standard, poi inseriscili in qualsiasi preventivo. I clienti li firmano al momento dell'accettazione."
       },
       "createDialog": {
-        "title": "Nuovo template di contratto",
+        "title": "Nuovo modello di accordo",
         "name": "Nome",
         "namePlaceholder": "es. Accordo quadro per servizi",
         "description": "Descrizione",
         "descriptionPlaceholder": "Riepilogo facoltativo di questo template",
         "scope": "Proprietà",
         "allOrganizations": "Tutte le organizzazioni",
-        "partnerWide": "Template a livello partner",
+        "partnerWide": "Modello a livello partner",
         "thisOrgOnly": "Solo questa organizzazione",
         "organization": "Organizzazione",
         "selectOrg": "Seleziona un'organizzazione",
         "orgRequired": "Seleziona un'organizzazione per un template di proprietà dell'organizzazione.",
         "nameRequired": "Inserisci un nome per il template.",
         "cancel": "Annulla",
-        "create": "Crea template",
+        "create": "Crea modello di accordo",
         "creating": "Creazione…"
       }
     },
     "documentsTab": {
-      "title": "Documenti",
-      "description": "Documenti di contratto eseguiti non ancora collegati a un contratto.",
+      "title": "Accordi firmati",
+      "description": "Accordi firmati non ancora collegati a un contratto. Collega ciascuno perché compaia sul contratto che regola.",
       "empty": {
-        "title": "Nessun documento non collegato",
-        "description": "I documenti eseguiti vengono mostrati qui finché non sono collegati a un contratto."
+        "title": "Nessun accordo firmato non collegato",
+        "description": "Gli accordi firmati vengono mostrati qui finché non sono collegati a un contratto."
       },
-      "loadError": "Impossibile caricare i documenti.",
+      "loadError": "Impossibile caricare gli accordi firmati.",
       "columns": {
         "template": "Template",
         "signer": "Firmatario",
@@ -535,8 +537,8 @@
         "confirm": "Collega",
         "linking": "Collegamento…"
       },
-      "linkSuccess": "Documento collegato al contratto.",
-      "linkError": "Impossibile collegare il documento a quel contratto."
+      "linkSuccess": "Accordo firmato collegato al contratto.",
+      "linkError": "Impossibile collegare l'accordo firmato a quel contratto."
     },
     "templateEditor": {
       "back": "Indietro",
@@ -562,7 +564,7 @@
       "publish": "Pubblica",
       "publishDirtyHint": "Salva la bozza prima di pubblicare",
       "body": "Corpo",
-      "bodyAria": "Corpo del template di contratto",
+      "bodyAria": "Corpo del modello di accordo",
       "preview": "Anteprima",
       "edit": "Modifica",
       "saveDraft": "Salva bozza",
@@ -579,7 +581,7 @@
       "publishError": "Impossibile pubblicare la versione",
       "publishSuccess": "Versione pubblicata",
       "warnings": {
-        "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il corpo dei contratti supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
+        "markupRemoved": "Salvato, ma è stata rimossa una formattazione non supportata: {{tags}}. Il corpo degli accordi supporta titoli, grassetto, corsivo, sottolineato, elenchi e collegamenti."
       }
     }
   },
@@ -684,7 +686,7 @@
         "image": "Immagine",
         "pricingTable": "Tabella prezzi",
         "richText": "Testo formattato",
-        "contract": "Contratto",
+        "contract": "Accordo / condizioni",
         "table": "Tabella",
         "callout": "Riquadro"
       },
@@ -735,7 +737,7 @@
       "emptyBlocks": "Nessun contenuto. Aggiungi un'intestazione, testo formattato o una tabella prezzi qui sotto.",
       "errors": {
         "addCatalogItem": "Impossibile aggiungere l'elemento di catalogo.",
-        "addContractSection": "Impossibile aggiungere la sezione contratto",
+        "addContractSection": "Impossibile aggiungere la sezione accordo",
         "addDistributorItem": "Impossibile aggiungere l'elemento del distributore.",
         "addImageSection": "Impossibile aggiungere la sezione immagine.",
         "addLine": "Impossibile aggiungere la riga.",
@@ -750,7 +752,7 @@
         "importPax8Product": "Impossibile importare il prodotto Pax8.",
         "lineAddedCatalogSaveFailed": "Riga aggiunta, ma il salvataggio nel catalogo non è riuscito.",
         "lineNeedsNameOrDescription": "Una riga deve avere un nome o una descrizione.",
-        "loadContractTemplates": "Impossibile caricare i template di contratto",
+        "loadContractTemplates": "Impossibile caricare i modelli di accordo",
         "moveLine": "Impossibile spostare la riga.",
         "quantityWholeGreaterThanZero": "Inserisci una quantità intera maggiore di 0.",
         "removeLine": "Impossibile rimuovere la riga.",
@@ -846,7 +848,7 @@
         "savedToCatalog": "Salvato nel catalogo",
         "sectionAdded": "Sezione aggiunta",
         "sectionRemoved": "Sezione rimossa",
-        "contractSectionAdded": "Sezione contratto aggiunta"
+        "contractSectionAdded": "Sezione accordo aggiunta"
       },
       "symbols": {
         "check": "✓",
@@ -892,8 +894,9 @@
         "reshapedWarning": "Questa tabella superava il limite di {{columns}} colonne x {{rows}} righe ed è stata adattata. Il salvataggio sostituisce la tabella memorizzata con quella mostrata qui."
       },
       "terms": {
-        "placeholder": "Termini di pagamento, clausole di garanzia, ecc.",
-        "title": "Termini e condizioni"
+        "placeholder": "Termini di pagamento, note di consegna, ecc.",
+        "title": "Termini e condizioni (testo semplice)",
+        "helper": "Per condizioni legali riutilizzabili aggiungi una sezione Accordo / condizioni: il cliente la firma insieme alla proposta."
       },
       "title": {
         "label": "Titolo preventivo",
@@ -904,10 +907,10 @@
         "perYear": "/anno"
       },
       "contract": {
-        "templateLabel": "Template di contratto",
+        "templateLabel": "Modello di accordo",
         "templatePlaceholder": "Seleziona un template…",
-        "noTemplates": "Nessun template di contratto. Creane uno in Contratti → Template.",
-        "noPublishedVersion": "Questo template non ha ancora una versione pubblicata. Pubblicalo prima di allegarlo.",
+        "noTemplates": "Nessun modello di accordo. <templatesLink>Creane uno</templatesLink> in Contratti → Modelli di accordo.",
+        "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",
         "autoHint": "Questi valori vengono risolti dal preventivo quando la proposta viene inviata.",
@@ -916,7 +919,7 @@
         "labelPlaceholder": "Etichetta facoltativa (es. Accordo quadro per servizi)",
         "variableRequired": "Inserisci un valore",
         "variableUnresolved": "Questa variabile è ancora non risolta",
-        "untitledTemplate": "Contratto",
+        "untitledTemplate": "Accordo",
         "readOnlyHint": "Rimuovi e riaggiungi questa sezione per cambiare template, versione o variabili.",
         "updateToVersion": "Aggiorna a v{{version}}",
         "saveVariables": "Salva variabili",
@@ -1292,8 +1295,8 @@
       },
       "additionalItems": "Elementi aggiuntivi",
       "contract": {
-        "download": "Scarica contratto",
-        "previewTitle": "Documento contratto {{name}}",
+        "download": "Scarica accordo",
+        "previewTitle": "Accordo {{name}}",
         "unavailable": "File contratto non disponibile",
         "versionFooter": "{{name}} — v{{version}}"
       },
