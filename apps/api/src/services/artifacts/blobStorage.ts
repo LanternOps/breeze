@@ -1,11 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { Readable } from 'node:stream';
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
+import { Readable, Transform, pipeline } from 'node:stream';
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { coerceS3EndpointUrl } from '@breeze/shared';
 import { breezeRegion } from '../../config/env';
 import { classifyS3Failure, isS3NotFound } from '../s3Storage';
@@ -27,7 +23,23 @@ import { classifyS3Failure, isS3NotFound } from '../s3Storage';
  *    BEFORE the row.
  *  - **`maxBytes` aborts the stream** rather than truncating: a truncated blob
  *    whose sha256 was computed over the truncated bytes would look intact
- *    forever. Over-cap is a typed error the caller turns into a tool error.
+ *    forever. Over-cap is a typed error the caller turns into a tool error, and
+ *    the multipart upload is ABORTED so no partial object survives the refusal.
+ *  - **The put STREAMS** through `@aws-sdk/lib-storage`'s multipart `Upload`
+ *    (W06, #5774 decision B — supersedes W01 decision 8, which buffered the
+ *    whole body). Peak resident memory is bounded by
+ *    `ARTIFACT_UPLOAD_PART_SIZE * ARTIFACT_UPLOAD_QUEUE_SIZE`, NEVER by
+ *    `maxBytes`: W03's `EXPORT_DEFAULT_MAX_BYTES` is 256 MiB and `Buffer.concat`
+ *    over that roughly doubled peak RSS, so a full-budget export could OOM an
+ *    API pod. There is ONE upload path — a sub-part body still goes through
+ *    `Upload`, which issues a single `PutObject` internally.
+ *  - **The object carries no `sha256` metadata.** A multipart upload has to name
+ *    its metadata at `CreateMultipartUpload`, before the digest of the streamed
+ *    bytes exists. Nothing reads the object metadata (verified 2026-09-14: the
+ *    only consumer of an artifact digest is `ai_run_artifacts.sha256`, written
+ *    by `artifactService.createArtifact` from this function's return value), so
+ *    the row stays the single source of truth rather than paying a self-copy
+ *    round-trip to restore a field with no reader.
  *  - **A put failure is never a silent fallback** (§9). It throws
  *    `BlobStorageUnavailableError`; the capture path turns that into
  *    `{ error: 'artifact_store_unavailable' }` and does NOT return the raw
@@ -91,13 +103,58 @@ export function blobKeyFor(region: BlobRegion, now: Date = new Date()): string {
   return `${region}/${yyyy}/${mm}/${randomUUID()}`;
 }
 
+/** Multipart part size. Peak RSS per in-flight part; 8 MiB is the lib-storage default floor. */
+export const ARTIFACT_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
+/** Parts uploaded concurrently. Peak ≈ PART_SIZE * QUEUE_SIZE (~16 MiB), independent of `maxBytes`. */
+export const ARTIFACT_UPLOAD_QUEUE_SIZE = 2;
+
+/**
+ * A pass-through that counts and hashes bytes as they flow and FAILS the stream
+ * at `maxBytes` — the streaming half of the abort-never-truncate invariant.
+ *
+ * The cap error is kept on the handle as well as emitted, because the consumer
+ * (`Upload`) may surface a *different* error once it tears down (an abort that
+ * itself failed, for instance). `put` re-throws the captured `BlobTooLargeError`
+ * so the refusal is never masked by its own cleanup.
+ */
+function boundedHashingPassThrough(maxBytes: number) {
+  const hash = createHash('sha256');
+  let bytes = 0;
+  let capError: BlobTooLargeError | null = null;
+
+  const stream = new Transform({
+    transform(chunk: Buffer | string, _encoding, callback) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes + buffer.length > maxBytes) {
+        capError = new BlobTooLargeError(maxBytes);
+        callback(capError);
+        return;
+      }
+      bytes += buffer.length;
+      hash.update(buffer);
+      callback(null, buffer);
+    },
+  });
+
+  return {
+    stream,
+    get bytes() {
+      return bytes;
+    },
+    get capError(): BlobTooLargeError | null {
+      return capError;
+    },
+    digest: () => hash.digest('hex'),
+  };
+}
+
 /**
  * Read a body into memory, hashing as we go, and REFUSE at `maxBytes`.
  *
- * In-memory rather than a multipart `@aws-sdk/lib-storage` upload (decision 8):
- * the capture path already holds the whole string in memory, and every W01/W03
- * cap is far below `CAPTURE_MAX_BYTES`. If a later wave needs > 64 MiB single
- * blobs, add `lib-storage` and stream through it — the interface does not change.
+ * Retained ONLY for `createMemoryBlobStorage`, the in-process test double, which
+ * has no provider to stream to. The S3 path streams (see the header comment);
+ * W01's decision 8 — "in-memory rather than a multipart `lib-storage` upload" —
+ * is superseded by W06 (#5774) and must not be reinstated for a real provider.
  */
 async function collectBounded(
   body: Buffer | NodeJS.ReadableStream,
@@ -196,31 +253,57 @@ function unavailable(operation: string, err: unknown): BlobStorageUnavailableErr
   return new BlobStorageUnavailableError(classification.message, { cause: err });
 }
 
-function createS3BlobStorage(): BlobStorage {
+export function createS3BlobStorage(
+  /** `clientFor` is injectable so a test can drive the REAL `Upload` against a stub client. */
+  deps: { clientFor?: (region: BlobRegion) => S3Client } = {},
+): BlobStorage {
+  const resolveClient = deps.clientFor ?? clientFor;
   return {
     async put({ region, contentType, body, maxBytes }) {
-      // Bound + hash BEFORE touching the provider, so an over-cap body costs no
-      // request and leaves no partial object.
-      const { buffer, sha256 } = await collectBounded(body, maxBytes);
+      // A Buffer's size is known up front, so refuse it before spending a request.
+      if (Buffer.isBuffer(body) && body.length > maxBytes) throw new BlobTooLargeError(maxBytes);
+
+      const source: Readable = Buffer.isBuffer(body)
+        ? Readable.from([body])
+        : (body as unknown as Readable);
+      const counter = boundedHashingPassThrough(maxBytes);
       const key = blobKeyFor(region);
       const sse = platformEnv('ARTIFACT_S3_SSE');
+      // Resolve config BEFORE opening the upload: a misconfiguration is a
+      // BlobStorageUnavailableError, not a dangling multipart upload.
+      const bucket = bucketFor(region);
+      const client = resolveClient(region);
+
+      // `pipeline` (not `.pipe`) so a cap refusal destroys the SOURCE too — a
+      // half-read export must not be left dribbling into a dead transform.
+      pipeline(source, counter.stream, () => {
+        // Errors reach `Upload` through the destroyed stream; `counter.capError`
+        // carries the refusal. Nothing to do here, but the callback is required.
+      });
+
       try {
-        await clientFor(region).send(
-          new PutObjectCommand({
-            Bucket: bucketFor(region),
+        await new Upload({
+          client,
+          partSize: ARTIFACT_UPLOAD_PART_SIZE,
+          queueSize: ARTIFACT_UPLOAD_QUEUE_SIZE,
+          // Abort on failure so an over-cap or faulted body leaves no parts.
+          leavePartsOnError: false,
+          params: {
+            Bucket: bucket,
             Key: key,
-            Body: buffer,
-            ContentLength: buffer.length,
+            Body: counter.stream,
             ContentType: contentType,
-            Metadata: { sha256 },
             ...(sse ? { ServerSideEncryption: sse as 'AES256' } : {}),
-          }),
-        );
+          },
+        }).done();
       } catch (err) {
+        // The cap wins over whatever the teardown reported (e.g. a failed abort).
+        if (counter.capError) throw counter.capError;
+        if (err instanceof BlobTooLargeError) throw err;
         if (err instanceof BlobStorageUnavailableError) throw err;
         throw unavailable('put', err);
       }
-      return { key, bytes: buffer.length, sha256 };
+      return { key, bytes: counter.bytes, sha256: counter.digest() };
     },
 
     async openStream(key) {
