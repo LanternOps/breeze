@@ -1739,3 +1739,66 @@ describe('created_by FK guard (#3978)', () => {
     ]);
   });
 });
+
+// ============================================================================
+// #5022 W01 — the aiOrigin conduit.
+//
+// `queueCommand` is one of the five insert chokepoints. The origin arrives on
+// the options bag (no chokepoint receives an AuthContext) and must be stamped
+// onto the device_commands row verbatim, with all three columns explicitly
+// NULL when no origin was supplied. Asserted against the VALUES object the
+// insert actually received — never with a deep-search matcher over the mock.
+// ============================================================================
+describe('aiOrigin conduit (#5022 W01)', () => {
+  async function captureQueueCommandInsert(
+    run: () => Promise<unknown>,
+  ): Promise<Record<string, unknown>> {
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-ai' }]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as never);
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]),
+        }),
+      }),
+    } as never);
+
+    await run();
+
+    expect(insertValues).toHaveBeenCalledTimes(1);
+    return insertValues.mock.calls[0]![0] as Record<string, unknown>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockResolvedValue(undefined);
+  });
+
+  it('queueCommand stamps the three AI columns from options.aiOrigin', async () => {
+    const values = await captureQueueCommandInsert(() =>
+      queueCommand('dev-1', 'list_processes', {}, 'user-1', {
+        aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
+      }),
+    );
+
+    expect(values).toMatchObject({
+      aiInitiatorKind: 'ai_assistant',
+      aiSessionId: 'sess-1',
+      aiAgentRunId: null,
+    });
+  });
+
+  it('leaves all three NULL when no origin is supplied', async () => {
+    const values = await captureQueueCommandInsert(() =>
+      queueCommand('dev-1', 'list_processes', {}, 'user-1'),
+    );
+
+    expect(values).toMatchObject({
+      aiInitiatorKind: null,
+      aiSessionId: null,
+      aiAgentRunId: null,
+    });
+  });
+});

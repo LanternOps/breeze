@@ -13,6 +13,8 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { CommandTypes, queueCommand } from './commandQueue';
+import { aiOriginColumns } from './aiOriginColumns';
+import type { AiOriginRef } from '@breeze/shared';
 import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
@@ -136,6 +138,13 @@ export type DispatchScriptInput = {
    * opt-in rather than a fourth path that quietly never checked.
    */
   bypassMaintenanceWindow?: boolean;
+  /**
+   * #5022 W01 — who DECIDED this run, when an AI surface did. Stamped onto
+   * BOTH the `script_executions` row and the `device_commands` row this
+   * dispatch queues. Do not hand-thread it: AI callers go through
+   * `services/aiDispatch.ts`, whose signatures make it mandatory.
+   */
+  aiOrigin?: AiOriginRef;
 };
 
 export type DispatchScriptResult =
@@ -551,6 +560,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         safeTriggeredBy,
         targetSessionId: input.targetSessionId ?? null,
         provenance: input.provenance,
+        aiOrigin: input.aiOrigin,
       }) as typeof scriptExecutions.$inferInsert)
       .returning({ id: scriptExecutions.id });
     if (!execution) {
@@ -649,6 +659,9 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // reconnects".
       deliverBy,
       submittedOrgId: device.orgId,
+      // #5022 W01: the script's own command row carries the origin too, so a
+      // reader of device_commands alone can still answer "who decided this".
+      ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -851,6 +864,7 @@ function buildExecutionValues(input: {
   safeTriggeredBy?: string | null;
   targetSessionId?: number | null;
   provenance?: ScriptDispatchProvenance;
+  aiOrigin?: AiOriginRef;
 }): Record<string, unknown> {
   const { device, source, provenance } = input;
   const isProposal = source.kind === 'proposal';
@@ -895,6 +909,10 @@ function buildExecutionValues(input: {
     approvalMethod: provenance?.approvalMethod ?? null,
     reviewRiskTier: provenance?.reviewRiskTier ?? null,
     reviewSummary: provenance?.reviewSummary?.slice(0, 600) ?? null,
+    // --- AI origin attribution (#5022 W01) ---
+    // Always all three keys, explicitly NULL when absent: an omitted key would
+    // be dropped by Drizzle, which is "unattributed by omission".
+    ...aiOriginColumns(input.aiOrigin),
   };
 }
 

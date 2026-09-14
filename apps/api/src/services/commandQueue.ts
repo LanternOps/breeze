@@ -59,6 +59,8 @@ export const SEND_RETRY_DELAY_MS = 500;
 // existing `import { CommandTypes } from './commandQueue'` keeps working.
 export { CommandTypes, type CommandType } from './commandTypes';
 import { CommandTypes, type CommandType } from './commandTypes';
+import type { AiOriginRef } from '@breeze/shared';
+import { aiOriginColumns } from './aiOriginColumns';
 
 export interface CommandPayload {
   [key: string]: unknown;
@@ -98,6 +100,7 @@ export interface QueuedCommand {
 
 type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+
 /** Persist a command inside a caller-owned transaction without dispatch side effects. */
 export async function insertQueuedCommandInTransaction(
   tx: CommandQueueTx,
@@ -113,6 +116,15 @@ export async function insertQueuedCommandInTransaction(
      * and which rolls back the caller's whole transaction (#3525 W02b).
      */
     createdBy: string | null;
+    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+    aiOrigin?: AiOriginRef;
+    /**
+     * Which consumer on the device picks this up. Defaults to 'agent' (the
+     * column default). Needed so callers that previously hand-rolled a
+     * `tx.insert(deviceCommands)` to set it can route through this chokepoint
+     * instead — see aiDispatch.contract.test.ts.
+     */
+    targetRole?: 'agent' | 'watchdog';
   },
 ): Promise<QueuedCommand> {
   const [command] = await tx.insert(deviceCommands).values({
@@ -122,6 +134,8 @@ export async function insertQueuedCommandInTransaction(
     payload: input.payload,
     status: 'pending',
     createdBy: input.createdBy,
+    ...(input.targetRole ? { targetRole: input.targetRole } : {}),
+    ...aiOriginColumns(input.aiOrigin),
   }).returning();
   if (!command) throw new Error('failed to persist queued command');
   return command as QueuedCommand;
@@ -491,7 +505,21 @@ export async function queueCommand(
   // enqueue, compared at claim time to cancel rows whose device has since moved
   // org. Both are optional so legacy callers keep today's semantics
   // (deliver_by NULL = the reaper's created_at + execution-timeout rule).
-  options: { commandId?: string; deliverBy?: Date | null; submittedOrgId?: string } = {}
+  options: {
+    commandId?: string;
+    deliverBy?: Date | null;
+    submittedOrgId?: string;
+    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+    aiOrigin?: AiOriginRef;
+    /**
+     * #5022 W01 — suppress the `ai.command.executed` audit row for this
+     * dispatch because the CALLER already writes one for the same mutation
+     * (scriptDispatch writes `ai.script.executed` for the script_executions
+     * row and then queues its command through here). Keeps the
+     * one-row-per-dispatched-mutation property W02's count depends on.
+     */
+    suppressAiCommandAudit?: boolean;
+  } = {}
 ): Promise<QueuedCommand> {
   // #4093 — agent-binary updates must not be created here. This insert site
   // cannot set target_role (the row would default to 'agent', which has no
@@ -532,6 +560,7 @@ export async function queueCommand(
         createdBy: safeUserId,
         ...(options.deliverBy ? { deliverBy: options.deliverBy } : {}),
         ...(options.submittedOrgId ? { submittedOrgId: options.submittedOrgId } : {}),
+        ...aiOriginColumns(options.aiOrigin),
       })
       .returning(),
   );
@@ -715,6 +744,8 @@ export async function queueCommandForExecution(
     expectedOrgId?: string;
     /** Explicit override; wins over the registry default and the flag. */
     offlinePolicy?: OfflinePolicy;
+    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+    aiOrigin?: AiOriginRef;
   } = {}
 ): Promise<QueueCommandForExecutionResult> {
   const res = await dispatchDeviceCommand({
@@ -722,6 +753,7 @@ export async function queueCommandForExecution(
     type,
     payload,
     ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.aiOrigin !== undefined ? { aiOrigin: options.aiOrigin } : {}),
     ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
     ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
     ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
@@ -823,6 +855,8 @@ export interface ExecuteCommandOptions {
    * timeoutMs than they would for an agent command.
    */
   targetRole?: 'agent' | 'watchdog';
+  /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+  aiOrigin?: AiOriginRef;
 }
 
 /**
@@ -1179,6 +1213,7 @@ async function dispatchPreparedCommand(
           // must stay off its allowlist so a real raw insert still trips it.)
           deliverBy: deliverByFor({ kind: 'reject' }),
           submittedOrgId: device.orgId,
+          ...aiOriginColumns(options.aiOrigin),
         })
         .returning(),
     );
