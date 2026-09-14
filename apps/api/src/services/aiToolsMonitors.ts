@@ -47,6 +47,9 @@ import {
   MonitorValidationError,
   updateMonitorDefinition,
 } from './monitors/monitorService';
+import { listMonitorDeviceActivity, listMonitorEpisodes } from './monitors/episodeQueries';
+import { resetMonitorEscalation } from './monitors/episodeReset';
+import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import {
   createMonitorDefinitionSchema,
   updateMonitorDefinitionSchema,
@@ -77,6 +80,38 @@ function safeHandler(toolName: string, fn: Handler): Handler {
 
 function ownerScopeOf(row: { orgId: string | null }): 'organization' | 'partner' {
   return row.orgId ? 'organization' : 'partner';
+}
+
+/**
+ * Best-effort audit write for the monitor AI tools — never blocks the tool
+ * result (mirrors `auditOrgToolEvent` in `aiToolsOrgs.ts`).
+ */
+function auditMonitorToolEvent(
+  auth: AuthContext,
+  entry: {
+    orgId: string | null;
+    action: string;
+    resourceType: string;
+    resourceId?: string;
+    resourceName?: string;
+    details?: Record<string, unknown>;
+  },
+): void {
+  try {
+    writeAuditEvent(requestLikeFromSnapshot({}), {
+      orgId: entry.orgId,
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+      action: entry.action,
+      resourceType: entry.resourceType,
+      resourceId: entry.resourceId,
+      resourceName: entry.resourceName,
+      result: 'success',
+      details: { ...entry.details, tool_name: 'reset_monitor_escalation' },
+    });
+  } catch (err) {
+    console.error('[reset_monitor_escalation] audit write failed', err);
+  }
 }
 
 async function attachmentCountsFor(monitorIds: string[]): Promise<Map<string, number>> {
@@ -240,6 +275,92 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
           automationId: monitor.compiledAutomationId,
         },
       });
+    }),
+  });
+
+  // ============================================
+  // get_monitor_activity — Tier 2 (read)
+  // ============================================
+  registerTool({
+    tier: 2,
+    definition: {
+      name: 'get_monitor_activity',
+      description:
+        'Get per-device breach state and recent breach episodes for a monitor definition: current state, open episode, recurrence-window count, escalation/pause status, and the episode history. Read-only — use reset_monitor_escalation to clear an escalated latch.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          monitorId: { type: 'string', description: 'Monitor definition UUID' },
+          deviceId: { type: 'string', description: 'Filter to a single device UUID' },
+          limit: { type: 'number', description: 'Max episodes to return (default 50, max 200)' },
+        },
+        required: ['monitorId'],
+      },
+    },
+    handler: safeHandler('get_monitor_activity', async (input, auth) => {
+      if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
+
+      const monitor = await getMonitorDefinition(input.monitorId as string, auth);
+      if (!monitor) return JSON.stringify({ error: 'Monitor not found or access denied' });
+
+      const deviceId = typeof input.deviceId === 'string' ? input.deviceId : undefined;
+      const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
+
+      const activity = await listMonitorDeviceActivity(monitor.id, auth);
+      const devices = deviceId ? activity.filter((row) => row.deviceId === deviceId) : activity;
+
+      const { episodes, nextCursor } = await listMonitorEpisodes(monitor.id, auth, {
+        ...(deviceId ? { deviceId } : {}),
+        limit,
+      });
+
+      return JSON.stringify({
+        monitorId: monitor.id,
+        devices,
+        episodes,
+        nextCursor,
+      });
+    }),
+  });
+
+  // ============================================
+  // reset_monitor_escalation — Tier 2 (write, audited)
+  // ============================================
+  registerTool({
+    tier: 2,
+    definition: {
+      name: 'reset_monitor_escalation',
+      description:
+        'Clear a recurrence-escalation latch for one monitor/device pair: resumes automatic responses and restarts the recurrence window. Does NOT close the open episode and does NOT resolve or acknowledge the requires-human alert — a device still in breach is still in breach.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          monitorId: { type: 'string', description: 'Monitor definition UUID' },
+          deviceId: { type: 'string', description: 'Device UUID' },
+        },
+        required: ['monitorId', 'deviceId'],
+      },
+    },
+    handler: safeHandler('reset_monitor_escalation', async (input, auth) => {
+      if (!input.monitorId) return JSON.stringify({ error: 'monitorId is required' });
+      if (!input.deviceId) return JSON.stringify({ error: 'deviceId is required' });
+
+      const monitor = await getMonitorDefinition(input.monitorId as string, auth);
+      if (!monitor) return JSON.stringify({ error: 'Monitor not found or access denied' });
+
+      const deviceId = input.deviceId as string;
+      const result = await resetMonitorEscalation({ monitorId: monitor.id, deviceId, auth });
+
+      auditMonitorToolEvent(auth, {
+        orgId: monitor.orgId ?? null,
+        action: 'monitor.escalation.reset',
+        resourceType: 'monitor_definition',
+        resourceId: monitor.id,
+        resourceName: monitor.name,
+        details: { monitorId: monitor.id, deviceId, reset: result.reset },
+      });
+
+      return JSON.stringify({ reset: result.reset });
     }),
   });
 
