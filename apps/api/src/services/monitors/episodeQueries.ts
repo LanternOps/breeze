@@ -1,0 +1,168 @@
+/**
+ * Read models for monitor episode activity (#5287 W03 / #5290).
+ *
+ * Both functions run under the REQUEST's own DB context, so RLS scopes them to
+ * the caller's orgs. Deliberately NOT wrapped in
+ * `runOutsideDbContext(() => withSystemDbAccessContext(...))`: these are plain
+ * org-scoped reads, and that pattern double-holds a pooled connection under the
+ * request transaction and bypasses RLS entirely (#2417).
+ */
+
+import { and, desc, eq, lt, isNull, type SQL } from 'drizzle-orm';
+import { db } from '../../db';
+import { devices, monitorDeviceState, monitorEpisodes } from '../../db/schema';
+import type { MonitorDeviceLastState } from '../../db/schema/monitorEpisodes';
+import type { AuthContext } from '../../middleware/auth';
+
+export interface MonitorDeviceActivity {
+  deviceId: string;
+  deviceName: string;
+  orgId: string;
+  lastState: MonitorDeviceLastState;
+  lastEvaluatedAt: string | null;
+  currentEpisodeId: string | null;
+  openSince: string | null;
+  episodesInWindow: number;
+  windowStartedAt: string | null;
+  escalatedAt: string | null;
+  escalationAlertId: string | null;
+  responsesPaused: boolean;
+  resetAt: string | null;
+  resetBy: string | null;
+}
+
+export interface EpisodeView {
+  id: string;
+  deviceId: string;
+  deviceName: string | null;
+  orgId: string;
+  startedAt: string;
+  endedAt: string | null;
+  endReason: string | null;
+  alertId: string | null;
+  responseRunId: string | null;
+  responseOutcome: string | null;
+}
+
+const iso = (value: Date | string | null | undefined): string | null => {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+};
+
+export async function listMonitorDeviceActivity(
+  monitorId: string,
+  auth: AuthContext,
+): Promise<MonitorDeviceActivity[]> {
+  const conditions: (SQL | undefined)[] = [
+    eq(monitorDeviceState.monitorId, monitorId),
+    auth.orgCondition(monitorDeviceState.orgId),
+  ];
+
+  const rows = await db
+    .select({
+      deviceId: monitorDeviceState.deviceId,
+      orgId: monitorDeviceState.orgId,
+      lastState: monitorDeviceState.lastState,
+      lastEvaluatedAt: monitorDeviceState.lastEvaluatedAt,
+      currentEpisodeId: monitorDeviceState.currentEpisodeId,
+      episodesInWindow: monitorDeviceState.episodesInWindow,
+      windowStartedAt: monitorDeviceState.windowStartedAt,
+      escalatedAt: monitorDeviceState.escalatedAt,
+      escalationAlertId: monitorDeviceState.escalationAlertId,
+      responsesPaused: monitorDeviceState.responsesPaused,
+      resetAt: monitorDeviceState.resetAt,
+      resetBy: monitorDeviceState.resetBy,
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+      openSince: monitorEpisodes.startedAt,
+    })
+    .from(monitorDeviceState)
+    .innerJoin(devices, eq(devices.id, monitorDeviceState.deviceId))
+    .leftJoin(
+      monitorEpisodes,
+      and(
+        eq(monitorEpisodes.id, monitorDeviceState.currentEpisodeId),
+        isNull(monitorEpisodes.endedAt),
+      ),
+    )
+    .where(and(...conditions))
+    .limit(1000);
+
+  return rows.map((row) => ({
+    deviceId: row.deviceId,
+    deviceName: row.displayName || row.hostname || row.deviceId,
+    orgId: row.orgId,
+    lastState: row.lastState,
+    lastEvaluatedAt: iso(row.lastEvaluatedAt),
+    currentEpisodeId: row.currentEpisodeId,
+    openSince: iso(row.openSince),
+    episodesInWindow: row.episodesInWindow,
+    windowStartedAt: iso(row.windowStartedAt),
+    escalatedAt: iso(row.escalatedAt),
+    escalationAlertId: row.escalationAlertId,
+    responsesPaused: row.responsesPaused,
+    resetAt: iso(row.resetAt),
+    resetBy: row.resetBy,
+  }));
+}
+
+export async function listMonitorEpisodes(
+  monitorId: string,
+  auth: AuthContext,
+  opts: { deviceId?: string; limit: number; cursor?: string },
+): Promise<{ episodes: EpisodeView[]; nextCursor: string | null }> {
+  const conditions: (SQL | undefined)[] = [
+    eq(monitorEpisodes.monitorId, monitorId),
+    auth.orgCondition(monitorEpisodes.orgId),
+  ];
+  if (opts.deviceId) conditions.push(eq(monitorEpisodes.deviceId, opts.deviceId));
+  // Keyset pagination on the same key the list is ordered by. An unparseable
+  // cursor is ignored rather than 500ing the page.
+  if (opts.cursor) {
+    const cursorDate = new Date(opts.cursor);
+    if (!Number.isNaN(cursorDate.getTime())) {
+      conditions.push(lt(monitorEpisodes.startedAt, cursorDate));
+    }
+  }
+
+  const rows = await db
+    .select({
+      id: monitorEpisodes.id,
+      deviceId: monitorEpisodes.deviceId,
+      orgId: monitorEpisodes.orgId,
+      startedAt: monitorEpisodes.startedAt,
+      endedAt: monitorEpisodes.endedAt,
+      endReason: monitorEpisodes.endReason,
+      alertId: monitorEpisodes.alertId,
+      responseRunId: monitorEpisodes.responseRunId,
+      responseOutcome: monitorEpisodes.responseOutcome,
+      hostname: devices.hostname,
+      displayName: devices.displayName,
+    })
+    .from(monitorEpisodes)
+    .leftJoin(devices, eq(devices.id, monitorEpisodes.deviceId))
+    .where(and(...conditions))
+    .orderBy(desc(monitorEpisodes.startedAt))
+    .limit(opts.limit + 1);
+
+  const page = rows.slice(0, opts.limit);
+  const nextCursor = rows.length > opts.limit
+    ? iso(page[page.length - 1]?.startedAt)
+    : null;
+
+  return {
+    episodes: page.map((row) => ({
+      id: row.id,
+      deviceId: row.deviceId,
+      deviceName: row.displayName || row.hostname || null,
+      orgId: row.orgId,
+      startedAt: iso(row.startedAt)!,
+      endedAt: iso(row.endedAt),
+      endReason: row.endReason,
+      alertId: row.alertId,
+      responseRunId: row.responseRunId,
+      responseOutcome: row.responseOutcome,
+    })),
+    nextCursor,
+  };
+}
