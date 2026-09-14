@@ -58,6 +58,10 @@
       "escalate": "Escalar a una persona",
       "deployed": "Desplegado en"
     },
+    "tabs": {
+      "settings": "Configuración",
+      "activity": "Actividad"
+    },
     "fields": {
       "name": "Nombre",
       "description": "Descripción",
@@ -257,6 +261,50 @@
     "empty": "Todavía no hay dispositivos cubiertos por este monitor.",
     "errors": {
       "fetch": "No se pudieron cargar los dispositivos"
+    }
+  },
+  "activity": {
+    "title": "Actividad",
+    "columns": {
+      "device": "Dispositivo",
+      "state": "Estado",
+      "openSince": "Abierto desde",
+      "episodesInWindow": "Episodios en la ventana",
+      "escalated": "Escalado",
+      "responses": "Respuestas"
+    },
+    "state": {
+      "ok": "Saludable",
+      "breach": "Incumplimiento",
+      "unknown": "Desconocido"
+    },
+    "responses": {
+      "active": "Activas",
+      "paused": "Respuestas en pausa hasta restablecer"
+    },
+    "reset": {
+      "button": "Restablecer escalamiento",
+      "confirm": "¿Restablecer el escalamiento para {{device}}? Esto reinicia el contador de recurrencia y reanuda las respuestas automáticas. No cierra el episodio abierto ni resuelve la alerta.",
+      "success": "Escalamiento restablecido",
+      "error": "No se pudo restablecer el escalamiento"
+    },
+    "empty": {
+      "title": "Aún no hay actividad",
+      "body": "Este monitor todavía no ha evaluado ningún dispositivo."
+    },
+    "episodes": {
+      "title": "Episodios",
+      "endReason": {
+        "recovered": "Recuperado",
+        "monitorDetached": "Monitor desvinculado"
+      },
+      "outcome": {
+        "queued": "En cola",
+        "completed": "Completado",
+        "failed": "Fallido",
+        "skippedPaused": "Omitido (respuestas en pausa)",
+        "skippedNoResponse": "Omitido (sin respuesta configurada)"
+      }
     }
   }
 }

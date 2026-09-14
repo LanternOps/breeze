@@ -291,6 +291,11 @@ const TARGET_GLOBS = [
   // fleet — a silent failure here reads as "applied" while nothing landed.
   'src/components/fleetDesign/FleetDesignPage.tsx',
   'src/components/fleetDesign/ApplyDrawer.tsx',
+  // Monitor Activity tab (#5287 W03 / #5290): the escalation Reset button is
+  // this file's only mutation, and a silent failure here would leave a tech
+  // believing responses resumed and the recurrence counter cleared when they
+  // did not.
+  'src/components/monitoring/MonitorActivityTab.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -620,7 +625,9 @@ describe('no silent mutations in targeted set', () => {
     // fleetDesign/ApplyDrawer.tsx, so the count was 130. Account board (W02,
     // #5723) replaces the deleted OrganizationsPage.tsx entry with two files
     // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
-    expect(absoluteFiles.length).toBe(131);
+    // Monitor Activity tab (#5287 W03 / #5290) adds MonitorActivityTab.tsx, so
+    // the count is now 132.
+    expect(absoluteFiles.length).toBe(132);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

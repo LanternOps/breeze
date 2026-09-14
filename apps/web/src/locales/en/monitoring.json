@@ -58,6 +58,10 @@
       "escalate": "Escalate to a human",
       "deployed": "Deployed to"
     },
+    "tabs": {
+      "settings": "Settings",
+      "activity": "Activity"
+    },
     "fields": {
       "name": "Name",
       "description": "Description",
@@ -257,6 +261,50 @@
     "empty": "No devices are covered by this monitor yet.",
     "errors": {
       "fetch": "Failed to load devices"
+    }
+  },
+  "activity": {
+    "title": "Activity",
+    "columns": {
+      "device": "Device",
+      "state": "State",
+      "openSince": "Open since",
+      "episodesInWindow": "Episodes in window",
+      "escalated": "Escalated",
+      "responses": "Responses"
+    },
+    "state": {
+      "ok": "Healthy",
+      "breach": "Breach",
+      "unknown": "Unknown"
+    },
+    "responses": {
+      "active": "Active",
+      "paused": "Responses paused until reset"
+    },
+    "reset": {
+      "button": "Reset escalation",
+      "confirm": "Reset the escalation for {{device}}? This clears the recurrence counter and resumes automatic responses. It does not close the open episode or resolve the alert.",
+      "success": "Escalation reset",
+      "error": "Failed to reset escalation"
+    },
+    "empty": {
+      "title": "No activity yet",
+      "body": "This monitor hasn't evaluated any device yet."
+    },
+    "episodes": {
+      "title": "Episodes",
+      "endReason": {
+        "recovered": "Recovered",
+        "monitorDetached": "Monitor detached"
+      },
+      "outcome": {
+        "queued": "Queued",
+        "completed": "Completed",
+        "failed": "Failed",
+        "skippedPaused": "Skipped (responses paused)",
+        "skippedNoResponse": "Skipped (no response configured)"
+      }
     }
   }
 }

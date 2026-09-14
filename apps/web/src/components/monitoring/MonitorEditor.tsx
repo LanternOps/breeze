@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useHashState } from '@/lib/useHashState';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -26,6 +27,7 @@ import ActionsEditor, {
 import MonitorConditionFields from './MonitorConditionFields';
 import DeployMonitorDialog from './DeployMonitorDialog';
 import MonitorDevicesTable from './MonitorDevicesTable';
+import MonitorActivityTab from './MonitorActivityTab';
 import { defaultConditionFor } from './monitorKindFields';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import Breadcrumbs from '../layout/Breadcrumbs';
@@ -131,6 +133,15 @@ export interface MonitorEditorProps {
   monitorId?: string;
 }
 
+type EditorTab = 'settings' | 'activity';
+
+// Pure hash parser (leading `#` already stripped by useHashState), following
+// the CLAUDE.md hash-tab convention (see DeviceDetails.tsx's tabFromHash).
+function tabFromHash(hash: string): EditorTab | undefined {
+  const seg = hash.split('/')[0] ?? '';
+  return seg === 'settings' || seg === 'activity' ? seg : undefined;
+}
+
 export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const isNew = !monitorId;
@@ -158,6 +169,14 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [builtinKey, setBuiltinKey] = useState<string | null>(null);
+
+  const [hashTab, setHashTab] = useHashState<EditorTab>('settings', tabFromHash);
+  // The Activity tab needs a saved monitor id (#5290); an unsaved monitor
+  // simply never shows it, so a stale `#activity` hash (e.g. a bookmark from
+  // an old monitor that was deleted and re-created as `isNew`) falls back to
+  // Settings rather than rendering a blank tab — same posture as
+  // DeviceDetails' `#linked-profiles` fallback.
+  const activeTab: EditorTab = isNew ? 'settings' : hashTab;
 
   const methods = useForm<MonitorFormValues>({
     resolver: zodResolver(monitorFormSchema),
@@ -303,6 +322,11 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const handleKindChange = (kind: MonitorKind) => {
     setValue('kind', kind, { shouldDirty: true });
     setValue('condition', defaultConditionFor(kind), { shouldDirty: true });
+  };
+
+  const switchTab = (tab: EditorTab) => {
+    window.location.hash = tab;
+    setHashTab(tab);
   };
 
   const onSubmit = async (values: MonitorFormValues) => {
@@ -468,6 +492,34 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
           )}
         </div>
 
+        {!isNew && (
+          <div className="flex gap-2 border-b" role="tablist" data-testid="monitor-editor-tabs">
+            {(['settings', 'activity'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab}
+                data-testid={`monitor-editor-tab-${tab}`}
+                onClick={() => switchTab(tab)}
+                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                  activeTab === tab
+                    ? 'border-primary text-foreground'
+                    : 'border-transparent text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {t(/* i18n-dynamic */ `monitoring:editor.tabs.${tab}`)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {activeTab === 'activity' && !isNew && monitorId ? (
+          <MonitorActivityTab monitorId={monitorId} recurrenceThreshold={watch('recurrenceThreshold')} />
+        ) : null}
+
+        {activeTab === 'settings' && (
+        <>
         {!isNew && testOpen && (
           <div className="rounded-lg border bg-card p-4 shadow-xs" data-testid="monitor-editor-test-panel">
             <div className="flex flex-wrap items-end gap-3">
@@ -866,6 +918,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
             </button>
           </div>
         </form>
+        </>
+        )}
 
         {!isNew && monitorId && (
           <DeployMonitorDialog

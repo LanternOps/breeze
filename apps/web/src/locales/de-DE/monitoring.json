@@ -58,6 +58,10 @@
       "escalate": "An eine Person eskalieren",
       "deployed": "Bereitgestellt für"
     },
+    "tabs": {
+      "settings": "Einstellungen",
+      "activity": "Aktivität"
+    },
     "fields": {
       "name": "Name",
       "description": "Beschreibung",
@@ -257,6 +261,50 @@
     "empty": "Diesem Monitor sind noch keine Geräte zugeordnet.",
     "errors": {
       "fetch": "Geräte konnten nicht geladen werden"
+    }
+  },
+  "activity": {
+    "title": "Aktivität",
+    "columns": {
+      "device": "Gerät",
+      "state": "Status",
+      "openSince": "Offen seit",
+      "episodesInWindow": "Episoden im Zeitfenster",
+      "escalated": "Eskaliert",
+      "responses": "Reaktionen"
+    },
+    "state": {
+      "ok": "Normal",
+      "breach": "Verletzung",
+      "unknown": "Unbekannt"
+    },
+    "responses": {
+      "active": "Aktiv",
+      "paused": "Reaktionen pausiert bis zum Zurücksetzen"
+    },
+    "reset": {
+      "button": "Eskalation zurücksetzen",
+      "confirm": "Eskalation für {{device}} zurücksetzen? Dies setzt den Wiederholungszähler zurück und nimmt automatische Reaktionen wieder auf. Die offene Episode wird dadurch nicht geschlossen und der Alarm nicht aufgelöst.",
+      "success": "Eskalation zurückgesetzt",
+      "error": "Eskalation konnte nicht zurückgesetzt werden"
+    },
+    "empty": {
+      "title": "Noch keine Aktivität",
+      "body": "Dieser Monitor hat noch kein Gerät ausgewertet."
+    },
+    "episodes": {
+      "title": "Episoden",
+      "endReason": {
+        "recovered": "Erholt",
+        "monitorDetached": "Monitor getrennt"
+      },
+      "outcome": {
+        "queued": "Eingereiht",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "skippedPaused": "Übersprungen (Reaktionen pausiert)",
+        "skippedNoResponse": "Übersprungen (keine Reaktion konfiguriert)"
+      }
     }
   }
 }
