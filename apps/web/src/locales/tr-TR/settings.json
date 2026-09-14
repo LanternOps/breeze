@@ -1872,7 +1872,8 @@
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",
           "intent_error": "Onay oluşturulamadı",
-          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı",
+          "intent_invalid_provenance": "Onay doğrulanamadı (dahili hata)"
         }
       },
       "narrative": {

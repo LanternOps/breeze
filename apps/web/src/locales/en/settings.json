@@ -1872,7 +1872,8 @@
           "not_allowlisted": "Tool not allowed for this agent",
           "no_eligible_approvers": "No eligible approvers",
           "intent_error": "Could not create the approval",
-          "max_actions_per_run": "Action limit reached for this run"
+          "max_actions_per_run": "Action limit reached for this run",
+          "intent_invalid_provenance": "The approval could not be validated (internal error)"
         }
       },
       "narrative": {

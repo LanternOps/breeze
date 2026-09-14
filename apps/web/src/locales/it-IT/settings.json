@@ -1872,7 +1872,8 @@
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",
           "intent_error": "Impossibile creare l’approvazione",
-          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "intent_invalid_provenance": "Impossibile convalidare l’approvazione (errore interno)"
         }
       },
       "narrative": {

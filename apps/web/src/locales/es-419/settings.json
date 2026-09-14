@@ -1872,7 +1872,8 @@
           "not_allowlisted": "Herramienta no permitida para este agente",
           "no_eligible_approvers": "Sin aprobadores elegibles",
           "intent_error": "No se pudo crear la aprobación",
-          "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución"
+          "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución",
+          "intent_invalid_provenance": "No se pudo validar la aprobación (error interno)"
         }
       },
       "narrative": {

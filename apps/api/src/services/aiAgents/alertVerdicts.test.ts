@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
-  AI_AGENT_ALERT_VERDICT_OP_KEY, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, type AlertVerdictOutcome,
+  AI_AGENT_ALERT_VERDICT_OP_KEY, AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, remediationTriggerSchema,
+  type AlertVerdictOutcome,
 } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000e1';
@@ -175,6 +176,9 @@ const createActionIntent = vi.hoisted(() =>
   vi.fn<(auth: unknown, input: Record<string, unknown>) =>
     Promise<{ id: string; status: string; errorCode?: string | null }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
+
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException }));
 
 // Carry-in C (live-verdict partial unique) — `persistAlertVerdict` now
 // generates the new verdict row's id CLIENT-SIDE (`randomUUID()`) so it can
@@ -617,6 +621,89 @@ describe('persistAlertVerdict', () => {
     };
 
     await expect(persistAlertVerdict(runInput, baseVerdict, agentAuth)).rejects.toMatchObject({ code: '23505' });
+  });
+
+  // Review fix (PR #5780, HIGH) — `createActionIntent` validates `trigger`
+  // with `remediationTriggerSchema.parse(...)` (intentService.ts). A
+  // `ZodError` there means THIS file built a malformed trigger — a code
+  // defect, not a business-outcome denial like `org_resolution_failed` —
+  // and must be loud in Sentry with its own reason, never collapsed into
+  // the ordinary `intent_error` bucket.
+  it('reports a ZodError from createActionIntent as intent_invalid_provenance and captures it in Sentry', async () => {
+    state.selectQueue.push([{ configItemName: null, ruleId: null }]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const zodError = remediationTriggerSchema.safeParse({ kind: 'alert', key: '' }).error;
+    createActionIntent.mockRejectedValue(zodError);
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    const result = await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(result.intentId).toBeNull();
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.suggestionReason).toBe('intent_invalid_provenance');
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(zodError, undefined, expect.objectContaining({
+      runId: RUN_ID, alertId: ALERT_ID,
+    }));
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  // Review fix (PR #5780, MEDIUM) — an empty org-pinned `alerts` lookup for
+  // a set `run.alertId` (deleted since, or an org boundary mismatch) must
+  // not silently fall back to an unkeyed trigger; it should say so.
+  it('warns when the trigger alert lookup returns no row for a set run.alertId', async () => {
+    state.selectQueue.push([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[alertVerdicts] trigger alert lookup returned no row; falling back to an unkeyed trigger',
+      expect.objectContaining({ runId: RUN_ID, alertId: ALERT_ID }),
+    );
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      trigger: { kind: 'alert', refId: ALERT_ID, key: 'alert' },
+    }));
+  });
+
+  // A correlation-group run (no `alertId` of its own) that legitimately
+  // reaches `createActionIntent` for a group-member suggestion: the trigger
+  // carries a NULL refId (the run has no owning alert) and the unkeyed
+  // `alert` key, since `run.alertId` is falsy and the trigger-alert lookup
+  // never runs.
+  it('creates an intent for a correlation-group run and stamps a null-refId trigger', async () => {
+    // First select: alertCorrelationMembers membership check (a member).
+    // Second select: the org-scoped alerts.deviceId lookup for the target.
+    state.selectQueue.push([{ id: 'member-1' }]);
+    state.selectQueue.push([{ deviceId: DEVICE_ID }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+
+    const groupRun = { ...runInput, alertId: null, correlationGroupId: GROUP_ID };
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'duplicate_of_group',
+      suggestedAction: { tool: 'manage_alerts', action: 'suppress', alertId: OTHER_ALERT_ID, suppressDuration: 24 },
+    };
+
+    const result = await persistAlertVerdict(groupRun, verdict, agentAuth);
+
+    expect(result.intentId).toBe(INTENT_ID);
+    expect(result.suggestionDisposition).toBe('intent_created');
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      trigger: { kind: 'alert', refId: null, key: 'alert' },
+    }));
   });
 });
 

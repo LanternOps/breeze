@@ -83,6 +83,7 @@
  */
 
 import { and, eq, inArray } from 'drizzle-orm';
+import { ZodError } from 'zod';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_SWEEP_KINDS,
@@ -102,6 +103,7 @@ import {
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
 import { isToolAllowlisted } from './toolAllowlist';
 
 /**
@@ -352,14 +354,32 @@ export async function persistSweepFindings(
         });
       }
     } catch (error) {
-      // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
-      // The message is LOGGED, never persisted (it can echo tool input).
-      record.disposition = 'error';
-      record.reason = 'intent_error';
-      console.warn('[sweepFindings] proposal intent not created', {
-        runId: run.id, findingIndex: index, tool: proposal.tool,
-        error: (error as Error).message,
-      });
+      if (error instanceof ZodError) {
+        // `createActionIntent` validates `trigger` with
+        // `remediationTriggerSchema.parse(...)` (intentService.ts) — a
+        // ZodError here means THIS file built a malformed trigger, a code
+        // defect, not a business-outcome denial like the ones below. Loud in
+        // Sentry, and a distinct reason so it is never confused with an
+        // ordinary refused/cancelled intent.
+        record.disposition = 'error';
+        record.reason = 'intent_invalid_provenance';
+        captureException(error, undefined, {
+          service: 'aiAgents', operation: 'sweepProposals.createActionIntent',
+          runId: run.id, findingIndex: String(index),
+        });
+        console.warn('[sweepFindings] proposal intent trigger failed schema validation', {
+          runId: run.id, findingIndex: index, tool: proposal.tool, error: error.message,
+        });
+      } else {
+        // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
+        // The message is LOGGED, never persisted (it can echo tool input).
+        record.disposition = 'error';
+        record.reason = 'intent_error';
+        console.warn('[sweepFindings] proposal intent not created', {
+          runId: run.id, findingIndex: index, tool: proposal.tool,
+          error: (error as Error).message,
+        });
+      }
     }
 
     proposals.push(record);

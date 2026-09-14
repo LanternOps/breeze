@@ -1872,7 +1872,8 @@
           "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
           "no_eligible_approvers": "Keine berechtigten Genehmiger",
           "intent_error": "Genehmigung konnte nicht erstellt werden",
-          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht",
+          "intent_invalid_provenance": "Genehmigung konnte nicht validiert werden (interner Fehler)"
         }
       },
       "narrative": {

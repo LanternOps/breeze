@@ -517,6 +517,7 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   no_eligible_approvers: true,
   intent_error: true,
   max_actions_per_run: true,
+  intent_invalid_provenance: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**
