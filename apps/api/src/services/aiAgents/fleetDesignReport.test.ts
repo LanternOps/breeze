@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import type { DesignEvidence } from './designEvidence';
-import type { FleetDesignOutcome } from '@breeze/shared';
+import type { FleetDesignDrift, FleetDesignOutcome } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000b1';
 const RUN_ID = '00000000-0000-4000-8000-0000000000b2';
@@ -215,6 +215,8 @@ function evidence(overrides: Partial<DesignEvidence> = {}): DesignEvidence {
     },
     unavailable: [],
     truncated: false,
+    approvedDesign: null,
+    driftLive: null,
     ...overrides,
   };
 }
@@ -401,6 +403,31 @@ describe('persistFleetDesignReport', () => {
       unavailable: [],
     });
     expect(typeof fleetDesign.generatedAt).toBe('string');
+  });
+
+  it('stores drift on the snapshot when the caller supplies one', async () => {
+    queueHappyPath();
+    const drift: FleetDesignDrift = {
+      approvedReportRunId: RUN_ID,
+      appliedAt: '2026-09-01T10:00:00.000Z',
+      missing: [{ functionKey: 'file_server', kind: 'watch', name: 'LanmanServer' }],
+      extra: [],
+      changed: [],
+    };
+
+    await persistFleetDesignReport(input({ drift }));
+
+    const result = state.insertValues[1]!.result as { summary: { fleetDesign: { drift: unknown } } };
+    expect(result.summary.fleetDesign.drift).toEqual(drift);
+  });
+
+  it('stores drift as null on the snapshot when the caller omits it', async () => {
+    queueHappyPath();
+
+    await persistFleetDesignReport(input());
+
+    const result = state.insertValues[1]!.result as { summary: { fleetDesign: { drift: unknown } } };
+    expect(result.summary.fleetDesign.drift).toBeNull();
   });
 
   it('stamps output_url on the artifact and last_generated_at on the definition (org-pinned)', async () => {

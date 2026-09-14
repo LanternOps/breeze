@@ -430,6 +430,35 @@ describe('buildReportPdf: ai_fleet_design', () => {
     expect(text).toContain('cleanup.ps1');
   });
 
+  it('renders a "Drift since the approved design" section before the eight sections when drift is present (W05)', () => {
+    const summary: FleetDesignReportSummary = {
+      fleetDesign: {
+        outcome: outcomeFixture,
+        orgName: 'Acme',
+        drift: {
+          approvedReportRunId: 'run-1',
+          appliedAt: '2026-06-01T10:00:00.000Z',
+          missing: [{ functionKey: 'file_server', kind: 'rule', name: 'SMB share offline' }],
+          extra: [{ policyId: 'p2', policyName: 'Hand-made', kind: 'watch', name: 'Fax', deviceCount: 3 }],
+          changed: [{ functionKey: 'file_server', kind: 'watch', name: 'Spooler', field: 'enabled', approved: 'true', live: 'false' }],
+        },
+      },
+    };
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });
+    const text = pdfCommandText(doc);
+    expect(text).toContain('Drift since the approved design');
+    expect(text).toContain('2026-06-01');
+    expect(text).toContain('SMB share offline');
+    expect(text).toContain('Hand-made');
+    expect(text).toContain('Spooler');
+    expect(text.indexOf('Drift since the approved design')).toBeLessThan(text.indexOf('What was found'));
+  });
+
+  it('omits the drift section when drift is null or absent', () => {
+    const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary: { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme', drift: null } } });
+    expect(pdfCommandText(doc)).not.toContain('Drift since the approved design');
+  });
+
   it('includes the proposals-only footnote', () => {
     const summary: FleetDesignReportSummary = { fleetDesign: { outcome: outcomeFixture, orgName: 'Acme' } };
     const doc = buildReportPdf([], { reportType: 'ai_fleet_design', generatedAt: '2026-09-12 09:00', timezone: 'UTC', summary });

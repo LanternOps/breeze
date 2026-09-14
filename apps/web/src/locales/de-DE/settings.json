@@ -2156,6 +2156,7 @@
           "fixWatchesHeld": "Gehaltene Behebungsüberwachungen",
           "fixWatchesRecurred": "Wiederkehrende Behebungsüberwachungen",
           "narrativesDelivered": "Gelieferte Wöchentliche Berichte",
+          "fleetDesignsDelivered": "Gelieferte Fleet Designs",
           "estTimeSaved": "Geschätzte Zeitersparnis",
           "llmSpend": "LLM-Ausgaben",
           "window": "Berichtszeitraum (Tage)",

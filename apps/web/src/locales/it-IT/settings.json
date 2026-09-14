@@ -2156,6 +2156,7 @@
           "fixWatchesHeld": "Monitoraggi di correzione mantenuti",
           "fixWatchesRecurred": "Monitoraggi di correzione ricorrenti",
           "narrativesDelivered": "Report settimanali consegnati",
+          "fleetDesignsDelivered": "Fleet Design consegnati",
           "estTimeSaved": "Tempo risparmiato stimato",
           "llmSpend": "Spesa LLM",
           "window": "Finestra del report (giorni)",

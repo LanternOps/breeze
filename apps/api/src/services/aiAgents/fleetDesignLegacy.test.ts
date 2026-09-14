@@ -45,6 +45,8 @@ function evidenceFixture(scripts: Script[]): DesignEvidence {
     thresholds: { diskUsedPercent: 80, rebootPendingDays: 7, patchAgeDays: 30, certificateDays: 30, serviceRestartsPer30d: 2 },
     unavailable: [],
     truncated: false,
+    approvedDesign: null,
+    driftLive: null,
   };
 }
 

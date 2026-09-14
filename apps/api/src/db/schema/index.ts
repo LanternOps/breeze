@@ -73,6 +73,7 @@ export * from './aiScriptLaneState';
 export * from './aiAlertVerdicts';
 export * from './aiAgentSchedules';
 export * from './aiOperatorTasks';
+export * from './aiWorkspace';
 export * from './aiKillState';
 export * from './monitors';
 export * from './filesystem';

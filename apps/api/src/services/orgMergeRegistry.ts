@@ -231,6 +231,7 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // nothing — the fence IS the whole disposition, and the rows are then
   // erased with the loser shell like their siblings below.
   ai_operator_tasks: { kind: 'custom', note: 'live tasks are fenced to state=stopping BEFORE ai_agents repoints (resolve phase), then left for erasure with the loser shell — task history never follows a merge, same rule as ai_agent_runs' },
+  ai_run_workspaces: { kind: 'leave-for-erasure', note: 'a workspace is the sandbox record of one run, and runs never follow a merge (ai_agent_runs disposition, 2026-08-23 owner decision); the composite (run_id, org_id) FK also makes a bare org_id repoint fragile — rows die with the loser shell' },
   ai_operator_operations: { kind: 'leave-for-erasure', note: 'operations hang off a task that stays with the source org (ai_operator_tasks disposition) via a composite (task_id, org_id) FK; they are erased with it' },
   ai_operator_task_outbox: { kind: 'leave-for-erasure', note: 'coordinator wake rows for a task that stays with the source org; a fenced task has nothing left to wake, and the rows cascade with the task on erasure' },
   script_proposals: { kind: 'custom', note: 'non-terminal proposals are fenced to status=expired BEFORE devices repoint (resolve phase), then left for erasure with the loser shell — proposal history is source-org incident history, same rule as ai_operator_tasks and ai_agent_runs' },

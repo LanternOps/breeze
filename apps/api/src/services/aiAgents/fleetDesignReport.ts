@@ -45,6 +45,7 @@ import { and, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import {
   type AiAgentRunFleetDesignDto,
+  type FleetDesignDrift,
   type FleetDesignOutcome,
   type FleetDesignReportSummary,
 } from '@breeze/shared';
@@ -79,6 +80,8 @@ export interface FleetDesignPersistInput {
   agent: { id: string; name: string };
   evidence: DesignEvidence;
   outcome: FleetDesignOutcome;
+  /** W05: server-computed drift against the org's applied design; null when there was none. */
+  drift?: FleetDesignDrift | null;
 }
 
 /**
@@ -140,7 +143,7 @@ function countWatchesAndRules(outcome: FleetDesignOutcome): { watchCount: number
 export async function persistFleetDesignReport(
   input: FleetDesignPersistInput,
 ): Promise<{ reportId: string; reportRunId: string; downloadPath: string }> {
-  const { run, agent, evidence, outcome } = input;
+  const { run, agent, evidence, outcome, drift = null } = input;
 
   return inSystemDbContext(async () => {
     // 1. Lock the run and re-check ownership. `FOR UPDATE` holds the row for
@@ -239,6 +242,7 @@ export async function persistFleetDesignReport(
         evidenceTruncated: evidence.truncated,
         devicesNotAssessed: evidence.devicesNotAssessed,
         unavailable: [...evidence.unavailable],
+        drift,
       },
     };
 

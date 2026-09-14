@@ -21,7 +21,7 @@
  */
 import { Hono } from 'hono';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
-import { INVOICE_STATUSES } from '@breeze/shared';
+import { INVOICE_OPEN_STATUSES, TICKET_OPEN_STATUSES, sqlStatusList } from '../services/openWorkStatuses';
 import { db } from '../db';
 import {
   organizations,
@@ -61,21 +61,9 @@ orgSummaryRoutes.use('*', authMiddleware);
 
 const requireOrgRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
 
-// Mirrors OPEN_STATUSES in routes/tickets/tickets.ts. Kept local — that
-// constant scopes the ticketing queue routes, and importing that whole
-// module here for one array would be a needless coupling.
-const TICKET_OPEN_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
-
-// Every invoice status the billing program still considers "outstanding" —
-// i.e. everything except the two terminal states (paid, void) and the
-// pre-issuance draft state.
-const INVOICE_OPEN_STATUSES = INVOICE_STATUSES.filter(
-  (status) => status !== 'draft' && status !== 'paid' && status !== 'void',
-);
-const invoiceOpenStatusesSql = sql.join(
-  INVOICE_OPEN_STATUSES.map((status) => sql`${status}`),
-  sql`, `,
-);
+// Shared with services/orgAccountReadiness.ts so the record Overview and the
+// Organizations board agree on what "open" means (services/openWorkStatuses.ts).
+const invoiceOpenStatusesSql = sqlStatusList(INVOICE_OPEN_STATUSES);
 
 // Matches a trailing UTC 'Z'/'z' or an explicit +HH:MM / +HHMM offset.
 const HAS_TZ_OFFSET = /[Zz]$|[+-]\d\d:?\d\d$/;
@@ -192,10 +180,7 @@ orgSummaryRoutes.get(
     }
 
     if (can(PERMISSIONS.TICKETS_READ)) {
-      const openStatusesSql = sql.join(
-        TICKET_OPEN_STATUSES.map((status) => sql`${status}`),
-        sql`, `,
-      );
+      const openStatusesSql = sqlStatusList(TICKET_OPEN_STATUSES);
       const [row] = await db
         .select({
           open: sql<string>`count(*) FILTER (WHERE ${tickets.status} IN (${openStatusesSql}))`,

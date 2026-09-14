@@ -53,6 +53,8 @@ export const aiSessions = pgTable('ai_sessions', {
   // total_cost_usd, or from per-component pricing when that is 0. It was
   // correct throughout — do not "reconcile" it against the token columns.
   totalCostCents: numeric('total_cost_cents', { precision: 20, scale: 6, mode: 'number' }).notNull().default(0),
+  // Execution plane W02 (spec §6.3): sandbox compute settled onto the session.
+  totalComputeCents: real('total_compute_cents').notNull().default(0),
   turnCount: integer('turn_count').notNull().default(0),
   maxTurns: integer('max_turns').notNull().default(50),
   sdkSessionId: varchar('sdk_session_id', { length: 255 }),
@@ -155,6 +157,8 @@ export const aiCostUsage = pgTable('ai_cost_usage', {
   inputTokens: integer('input_tokens').notNull().default(0),
   outputTokens: integer('output_tokens').notNull().default(0),
   totalCostCents: numeric('total_cost_cents', { precision: 20, scale: 6, mode: 'number' }).notNull().default(0),
+  // Execution plane W02 (spec §6.3): sandbox compute rolled up per period.
+  computeCents: real('compute_cents').notNull().default(0),
   sessionCount: integer('session_count').notNull().default(0),
   messageCount: integer('message_count').notNull().default(0),
   toolExecutionCount: integer('tool_execution_count').notNull().default(0),
@@ -184,6 +188,8 @@ export const aiBudgets = pgTable('ai_budgets', {
   // Property name must equal the partner-JSONB key so the AI_BUDGET_FIELDS
   // merge loop in effectiveSettings.ts reads both sides with one name.
   alertThresholdPercents: integer('alert_threshold_pcts').array(),
+  // Execution plane W02 (spec §6.3): daily per-org sandbox compute ceiling.
+  maxComputeCentsPerDay: integer('max_compute_cents_per_day').notNull().default(500),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
