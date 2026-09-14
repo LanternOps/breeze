@@ -1,7 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { BoardFilter } from '@/lib/orgReadiness';
+import { connectorRepairs, type BoardFilter, type ReadinessConnector } from '@/lib/orgReadiness';
 import { formatNumber } from '@/lib/i18n/format';
+import { integrationSystemName } from './IntegrationBadges';
 
 export interface RollupCell {
   key: BoardFilter;
@@ -20,6 +21,8 @@ export interface RollupBandProps {
   cells: RollupCell[];
   status: RollupStatus;
   onRetry: () => void;
+  /** Partner-level connector state; every not-connected connector renders ONE repair line here (spec: never N per-org problems). */
+  connectors?: ReadinessConnector[] | null;
 }
 
 /**
@@ -28,9 +31,10 @@ export interface RollupBandProps {
  * with Try again when a batch failed. Two per row on a phone, the last cell
  * full width when the count is odd.
  */
-export function RollupBand({ cells, status, onRetry }: RollupBandProps) {
+export function RollupBand({ cells, status, onRetry, connectors }: RollupBandProps) {
   const { t } = useTranslation('organizations');
   const odd = cells.length % 2 === 1;
+  const repairs = connectorRepairs(connectors);
   return (
     <section aria-label={t('orgBoard.band.label')} data-testid="org-board-band" className="space-y-2">
       <div role="group" aria-label={t('orgBoard.band.label')} className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -62,6 +66,26 @@ export function RollupBand({ cells, status, onRetry }: RollupBandProps) {
           );
         })}
       </div>
+      {repairs.length > 0 && (
+        <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs" data-testid="org-board-repairs">
+          {repairs.map((repair) => {
+            const system = integrationSystemName(t, repair.system, { provider: repair.provider });
+            return (
+              <li key={`${repair.system}:${repair.provider ?? ''}`} className="flex items-center gap-1 text-warning-strong">
+                <span aria-hidden="true" className="inline-block h-2 w-2 rounded-full bg-warning" />
+                <a
+                  href={repair.href}
+                  className="underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+                  data-testid={`org-board-repair-${repair.system}`}
+                  aria-label={t('orgBoard.integrations.connectors.openSettings', { system })}
+                >
+                  {t(/* i18n-dynamic */ `orgBoard.integrations.connectors.repair.${repair.state}`, { system })}
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {status === 'partial' && (
         <p role="status" data-testid="org-board-band-partial" className="flex flex-wrap items-center gap-x-3 text-sm text-muted-foreground">
           <span>{t('orgBoard.band.partial')}</span>
