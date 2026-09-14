@@ -1956,6 +1956,9 @@
           },
           "viewApproval": "Consulter dans Approbations"
         },
+        "progress": {
+          "title": "Progression"
+        },
         "ledger": {
           "title": "Exécutions d'outils",
           "empty": "Aucune exécution d'outil enregistrée.",

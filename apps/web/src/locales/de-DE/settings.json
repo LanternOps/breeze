@@ -1956,6 +1956,9 @@
           },
           "viewApproval": "In Genehmigungen prüfen"
         },
+        "progress": {
+          "title": "Fortschritt"
+        },
         "ledger": {
           "title": "Tool-Ausführungen",
           "empty": "Keine Tool-Ausführungen aufgezeichnet.",

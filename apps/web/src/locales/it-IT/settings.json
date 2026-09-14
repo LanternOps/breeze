@@ -1956,6 +1956,9 @@
           },
           "viewApproval": "Rivedi in Approvazioni"
         },
+        "progress": {
+          "title": "Avanzamento"
+        },
         "ledger": {
           "title": "Esecuzioni degli strumenti",
           "empty": "Nessuna esecuzione di strumenti registrata.",

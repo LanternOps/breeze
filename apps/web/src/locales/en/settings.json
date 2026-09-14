@@ -1956,6 +1956,9 @@
           },
           "viewApproval": "Review in Approvals"
         },
+        "progress": {
+          "title": "Progress"
+        },
         "ledger": {
           "title": "Tool executions",
           "empty": "No tool executions recorded.",

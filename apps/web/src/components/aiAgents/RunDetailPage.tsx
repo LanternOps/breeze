@@ -248,6 +248,44 @@ function LedgerTable({ ledger, t }: { ledger: AiAgentRunLedgerEntryDto[]; t: (ke
 }
 
 /**
+ * Execution plane W03 (spec §5.8) — the live progress step list fed by the
+ * SAME `AiAgentRunDetailDto.progress` field the run detail poll already
+ * carries. `null`/empty renders nothing: a finished run whose one-hour
+ * window has expired, or any run from before this field existed, must not
+ * show an empty "Progress" card.
+ */
+function RunProgressList({
+  progress,
+  t,
+}: {
+  progress: AiAgentRunDetailDto['progress'];
+  t: (key: string) => string;
+}) {
+  if (!progress || progress.length === 0) return null;
+  return (
+    <section className="mt-4" data-testid="run-detail-progress">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {t('aiAgentsPage.runs.detail.progress.title')}
+      </h2>
+      <ol className="mt-2 space-y-1 text-sm">
+        {progress.map((entry) => (
+          <li
+            key={entry.ordinal}
+            className="flex flex-wrap items-baseline gap-2"
+            data-testid={`run-detail-progress-${entry.ordinal}`}
+          >
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {new Date(entry.at).toLocaleTimeString()}
+            </span>
+            <span>{entry.label}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+/**
  * `action_intents.status` → i18n label (UI critique finding #2). The eight
  * values come from `actionIntentStatusEnum`
  * (apps/api/src/db/schema/actionIntents.ts); five of them already have a
@@ -1971,6 +2009,13 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           </ul>
         )}
       </div>
+
+      {/* Fed by the SAME 5s poll as everything else on this page
+          (DETAIL_POLL_INTERVAL_MS) — `progress` rides on the run detail DTO.
+          Deliberately not an SSE subscription: the page has no stream, and
+          adding one for telemetry would be a second liveness mechanism to keep
+          in sync with the first. */}
+      <RunProgressList progress={run.progress} t={t} />
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.ledger.title')}</h2>

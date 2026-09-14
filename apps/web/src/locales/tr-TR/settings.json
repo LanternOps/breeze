@@ -1956,6 +1956,9 @@
           },
           "viewApproval": "Onaylar'da incele"
         },
+        "progress": {
+          "title": "İlerleme"
+        },
         "ledger": {
           "title": "Araç yürütmeleri",
           "empty": "Kaydedilmiş araç yürütmesi yok.",

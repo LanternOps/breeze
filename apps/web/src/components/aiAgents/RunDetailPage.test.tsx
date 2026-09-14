@@ -1967,3 +1967,32 @@ describe('RunDetailPage findingsToReview from the server', () => {
     expect(screen.queryByTestId('run-detail-findings-badge')).toBeNull();
   });
 });
+
+describe('RunDetailPage live progress', () => {
+  it('renders the live progress step list in ordinal order', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        status: 'running' as const,
+        progress: [
+          { step: 'admitted', label: 'Run admitted', ordinal: 1, at: '2026-09-13T10:00:00.000Z' },
+          { step: 'export', label: 'Exported 1 200 event_logs rows', ordinal: 2, at: '2026-09-13T10:00:06.000Z' },
+        ],
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    const list = await screen.findByTestId('run-detail-progress');
+    expect(list).toBeInTheDocument();
+    expect(screen.getByTestId('run-detail-progress-1')).toHaveTextContent('Run admitted');
+    expect(screen.getByTestId('run-detail-progress-2')).toHaveTextContent('Exported 1 200 event_logs rows');
+  });
+
+  it('omits the progress section entirely when there are no beats', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, status: 'completed' as const, progress: [] } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await screen.findByTestId('run-detail-ledger-table-wrapper');
+    expect(screen.queryByTestId('run-detail-progress')).toBeNull();
+  });
+});
