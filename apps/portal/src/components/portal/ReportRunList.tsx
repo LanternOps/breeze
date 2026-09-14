@@ -13,13 +13,17 @@ import {
   PageHeader,
 } from './ui';
 
-type ReportType = 'security_compliance_posture' | 'executive_summary';
+type ReportType =
+  | 'security_compliance_posture'
+  | 'executive_summary'
+  | 'hardware_lifecycle';
 
 /** What the reader is told is happening, in their own language. The MSP-side
  *  report definition names are technical; these are not. */
 const GENERATING_COPY: Record<ReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
+  hardware_lifecycle: 'Generating your hardware lifecycle plan…',
 };
 
 /**
@@ -144,6 +148,22 @@ export function ReportRunList({
           {busyType === 'executive_summary'
             ? 'Generating…'
             : 'Generate executive summary'}
+        </button>
+        {/* A peer of the two above, not a promotion. With enableLifecycle off
+            this click lands on the service's not-found path and reads as
+            "not generated yet" — indistinguishable from never-provisioned by
+            design (spec section 4). */}
+        <button
+          type="button"
+          data-testid="portal-reports-generate-lifecycle"
+          disabled={busyType !== null}
+          aria-busy={busyType === 'hardware_lifecycle'}
+          onClick={() => void generate('hardware_lifecycle')}
+          className={BTN_SECONDARY}
+        >
+          {busyType === 'hardware_lifecycle'
+            ? 'Generating…'
+            : 'Generate hardware lifecycle plan'}
         </button>
       </div>
 
