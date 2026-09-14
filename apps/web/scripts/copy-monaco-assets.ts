@@ -8,10 +8,17 @@ import { dirname, join } from 'path';
 // CSP. Runs in the `predev`/`prebuild` lifecycle; the output is gitignored and
 // regenerated from the pinned `monaco-editor` dependency on every build. See
 // #1023 and src/lib/monacoLoader.ts.
-
+//
+// monaco-editor 0.56 dropped the `"./package.json"` subpath export (its
+// `exports` map is now just `"."`, `"./*.js"` and `"./*"` -> `esm/vs/*.js`),
+// so `require.resolve('monaco-editor/package.json')` no longer resolves and
+// instead throws MODULE_NOT_FOUND for `esm/vs/package.json.js`. Resolve the
+// bare `"monaco-editor"` specifier instead: under the `require` condition it
+// points at `min/vs/index.js`, whose dirname is exactly the AMD bundle dir
+// we want to copy.
 const require = createRequire(import.meta.url);
-const monacoPkg = require.resolve('monaco-editor/package.json');
-const src = join(dirname(monacoPkg), 'min', 'vs');
+const monacoMain = require.resolve('monaco-editor');
+const src = dirname(monacoMain);
 const destRoot = join(import.meta.dirname, '..', 'public', 'monaco');
 const dest = join(destRoot, 'vs');
 
