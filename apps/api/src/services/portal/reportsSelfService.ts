@@ -8,7 +8,7 @@ import {
 } from '@breeze/shared';
 import { db } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
-import { reportRuns, reports } from '../../db/schema';
+import { portalBranding, reportRuns, reports } from '../../db/schema';
 import { checkRateLimit, PORTAL_USE_REDIS } from './rateLimit';
 import { getRedis } from '../redis';
 import {
@@ -46,6 +46,17 @@ const PORTAL_DEFINITIONS = [
       maxSecurityStatusAgeDays: 30,
       includeCis: true,
       backupRequired: true,
+    },
+  },
+  {
+    type: 'hardware_lifecycle',
+    name: 'Customer portal — Hardware Lifecycle',
+    config: {
+      sites: [],
+      replaceAgeYears: 4,
+      serverReplaceAgeYears: 5,
+      includeManualAssets: true,
+      includeOtherEquipment: true,
     },
   },
 ] as const;
@@ -119,6 +130,7 @@ export async function provisionPortalReportDefinitions(
 export const PORTAL_REPORT_TYPES = [
   'security_compliance_posture',
   'executive_summary',
+  'hardware_lifecycle',
 ] as const;
 
 export type PortalReportType = typeof PORTAL_REPORT_TYPES[number];
@@ -158,6 +170,64 @@ const PORTAL_REPORT_STATEMENT_TIMEOUT_MS = 60_000;
  */
 async function tightenPortalReportStatementTimeout(): Promise<void> {
   await tightenStatementTimeout(db, PORTAL_REPORT_STATEMENT_TIMEOUT_MS);
+}
+
+/**
+ * The org's `enable_lifecycle` visibility flag, read inside the ambient
+ * organization-scoped RLS transaction the portal auth middleware already
+ * opened. Fail closed exactly like `createPortalFeatureGateStrict`: a missing
+ * portal_branding row, or anything that is not literally `true`, is `false`.
+ */
+export async function portalLifecycleEnabled(orgId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ enableLifecycle: portalBranding.enableLifecycle })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, orgId))
+    .limit(1);
+
+  return row?.enableLifecycle === true;
+}
+
+// Decision B2: the portal's hardware_lifecycle run inherits the MSP's own
+// replacement thresholds so the customer sees the same ages the MSP set, but
+// never the MSP definition's `sites` — that scope may name sites this portal
+// user cannot see, and the portal definition is deliberately org-wide.
+const HARDWARE_LIFECYCLE_INHERITED_KEYS = [
+  'replaceAgeYears',
+  'serverReplaceAgeYears',
+  'includeManualAssets',
+  'includeOtherEquipment',
+] as const;
+
+async function hardwareLifecycleConfigWithInheritance(
+  orgId: string,
+  portalConfig: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const [mspDefinition] = await db
+    .select({ config: reports.config })
+    .from(reports)
+    .where(and(
+      eq(reports.orgId, orgId),
+      eq(reports.type, 'hardware_lifecycle'),
+      eq(reports.portalSelfService, false),
+    ))
+    .orderBy(desc(reports.updatedAt))
+    .limit(1);
+
+  const merged: Record<string, unknown> = { ...portalConfig };
+  const mspConfig = (mspDefinition?.config ?? null) as
+    | Record<string, unknown>
+    | null;
+
+  if (mspConfig) {
+    for (const key of HARDWARE_LIFECYCLE_INHERITED_KEYS) {
+      if (mspConfig[key] !== undefined) merged[key] = mspConfig[key];
+    }
+  }
+
+  // Always org-wide, whatever the MSP row said.
+  merged.sites = [];
+  return merged;
 }
 
 export function portalDefinitionPredicate(
@@ -306,6 +376,23 @@ export async function generatePortalReport(args: {
 
   if (!definition) throw new PortalReportNotFoundError();
 
+  let effectiveConfig = (definition.config ?? {}) as Record<string, unknown>;
+
+  if (args.type === 'hardware_lifecycle') {
+    // The route-level enableLifecycle gate only covers /reports/lifecycle/*.
+    // POST /reports/generate is mounted under /reports/*, which checks
+    // enableReports alone, so the flag has to be enforced here too. Reuse the
+    // existing not-found error rather than a new one: with the flag off the
+    // report is indistinguishable from "never provisioned" by design.
+    if (!await portalLifecycleEnabled(args.orgId)) {
+      throw new PortalReportNotFoundError();
+    }
+    effectiveConfig = await hardwareLifecycleConfigWithInheritance(
+      args.orgId,
+      effectiveConfig,
+    );
+  }
+
   const inFlightKey = `portal:report:in-flight:${args.orgId}:${args.type}`;
   const release = await acquireInFlight(inFlightKey);
 
@@ -340,7 +427,7 @@ export async function generatePortalReport(args: {
       const result = await generateReport(
         definition.type,
         args.orgId,
-        (definition.config ?? {}) as Record<string, unknown>,
+        effectiveConfig,
         authority,
       );
       const previous = await previousBaselineFor(

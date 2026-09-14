@@ -246,7 +246,10 @@ export interface SlaDto {
 export interface PortalRunDto {
   id: string;
   reportId: string;
-  type: 'security_compliance_posture' | 'executive_summary';
+  type:
+    | 'security_compliance_posture'
+    | 'executive_summary'
+    | 'hardware_lifecycle';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;

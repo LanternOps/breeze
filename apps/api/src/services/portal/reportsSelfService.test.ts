@@ -89,6 +89,7 @@ vi.mock('@breeze/shared', async (importOriginal) => ({
 }));
 
 import {
+  PORTAL_REPORT_TYPES,
   generatePortalReport,
   listPortalRuns,
   portalDefinitionPredicate,
@@ -115,6 +116,7 @@ describe('provisionPortalReportDefinitions', () => {
     state.selected.mockResolvedValue([
       { type: 'executive_summary' },
       { type: 'security_compliance_posture' },
+      { type: 'hardware_lifecycle' },
     ]);
     state.insertReturning.mockResolvedValue([]);
     state.updateReturning.mockResolvedValue([]);
@@ -133,7 +135,7 @@ describe('provisionPortalReportDefinitions', () => {
     state.execute.mockResolvedValue([{ prior_ms: 0 }]);
   });
 
-  it('inserts the two fixed customer-safe definitions idempotently', async () => {
+  it('inserts the three fixed customer-safe definitions idempotently', async () => {
     await provisionPortalReportDefinitions({
       orgId: ORG_ID,
       createdBy: USER_ID,
@@ -156,6 +158,18 @@ describe('provisionPortalReportDefinitions', () => {
         orgId: ORG_ID,
         name: 'Customer portal — Security & compliance posture',
         type: 'security_compliance_posture',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Customer portal — Hardware Lifecycle',
+        type: 'hardware_lifecycle',
         schedule: 'one_time',
         format: 'pdf',
         portalSelfService: true,
@@ -240,6 +254,212 @@ describe('portal report SQL scope', () => {
     expect(query.sql).toContain('"reports"."org_id" = $');
     expect(query.sql).toContain('"reports"."portal_self_service" = $');
     expect(query.params).toEqual(expect.arrayContaining([ORG_ID, true]));
+  });
+});
+
+describe('PORTAL_REPORT_TYPES', () => {
+  it('carries hardware_lifecycle as the third self-service member', () => {
+    expect(PORTAL_REPORT_TYPES).toEqual([
+      'security_compliance_posture',
+      'executive_summary',
+      'hardware_lifecycle',
+    ]);
+  });
+});
+
+describe('hardware_lifecycle MSP config inheritance (decision B2)', () => {
+  const PORTAL_DEFINITION_ROW = {
+    id: 'report-hw',
+    orgId: ORG_ID,
+    type: 'hardware_lifecycle',
+    name: 'Customer portal \u2014 Hardware Lifecycle',
+    config: {
+      sites: [],
+      replaceAgeYears: 4,
+      serverReplaceAgeYears: 5,
+      includeManualAssets: true,
+      includeOtherEquipment: true,
+    },
+  };
+
+  const RUNNING_RUN = {
+    id: RUN_ID,
+    reportId: 'report-hw',
+    status: 'running',
+    startedAt: new Date('2026-09-02T11:59:00.000Z'),
+    completedAt: null,
+    rowCount: null,
+    createdAt: new Date('2026-09-02T11:59:00.000Z'),
+  };
+
+  const COMPLETED_RUN = {
+    ...RUNNING_RUN,
+    status: 'completed',
+    completedAt: new Date('2026-09-02T12:00:00.000Z'),
+    rowCount: 3,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.where = undefined;
+    state.checkRateLimit.mockResolvedValue({
+      allowed: true,
+      retryAfterSeconds: 0,
+    });
+    state.previousBaselineFor.mockResolvedValue(undefined);
+    state.insertReturning.mockReset().mockResolvedValue([RUNNING_RUN]);
+    state.updateReturning.mockReset().mockResolvedValue([COMPLETED_RUN]);
+    state.updated.mockReset();
+    state.execute.mockReset().mockResolvedValue([{ prior_ms: 0 }]);
+    state.generateReport.mockReset().mockResolvedValue({ rows: [], rowCount: 3 });
+  });
+
+  it('inherits the four MSP thresholds and never the MSP site scope', async () => {
+    state.selected
+      .mockReset()
+      // 1: the portal definition
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      // 2: the org's enable_lifecycle flag
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      // 3: the org's most recent MSP-side hardware_lifecycle definition
+      .mockResolvedValueOnce([{
+        config: {
+          sites: ['99999999-9999-4999-8999-999999999999'],
+          replaceAgeYears: 6,
+          serverReplaceAgeYears: 8,
+          includeManualAssets: false,
+          includeOtherEquipment: false,
+        },
+      }]);
+
+    await generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    });
+
+    expect(state.generateReport).toHaveBeenCalledWith(
+      'hardware_lifecycle',
+      ORG_ID,
+      {
+        sites: [],
+        replaceAgeYears: 6,
+        serverReplaceAgeYears: 8,
+        includeManualAssets: false,
+        includeOtherEquipment: false,
+      },
+      expect.anything(),
+    );
+  });
+
+  it('falls back to the portal defaults when the org has no MSP definition', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([]);
+
+    await generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    });
+
+    expect(state.generateReport).toHaveBeenCalledWith(
+      'hardware_lifecycle',
+      ORG_ID,
+      {
+        sites: [],
+        replaceAgeYears: 4,
+        serverReplaceAgeYears: 5,
+        includeManualAssets: true,
+        includeOtherEquipment: true,
+      },
+      expect.anything(),
+    );
+  });
+
+  it('scopes the MSP lookup to the org, the type, and the non-portal flag', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([]);
+
+    await generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    });
+
+    // state.where holds the LAST select's predicate, which is the MSP lookup.
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"reports"."org_id" = $');
+    expect(query.sql).toContain('"reports"."type" = $');
+    expect(query.sql).toContain('"reports"."portal_self_service" = $');
+    expect(query.params).toEqual(expect.arrayContaining([
+      ORG_ID,
+      'hardware_lifecycle',
+      false,
+    ]));
+  });
+
+  it('refuses a hardware_lifecycle run when the org flag is off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      .mockResolvedValueOnce([{ enableLifecycle: false }]);
+
+    await expect(generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    })).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    expect(state.generateReport).not.toHaveBeenCalled();
+    expect(state.inserted).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hardware_lifecycle run when the org has no branding row', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      .mockResolvedValueOnce([]);
+
+    await expect(generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    })).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    expect(state.generateReport).not.toHaveBeenCalled();
+  });
+
+  it('leaves a partial MSP config to fall back per key', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([PORTAL_DEFINITION_ROW])
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([{ config: { replaceAgeYears: 7 } }]);
+
+    await generatePortalReport({
+      orgId: ORG_ID,
+      portalUserId: PORTAL_USER_ID,
+      type: 'hardware_lifecycle',
+    });
+
+    expect(state.generateReport).toHaveBeenCalledWith(
+      'hardware_lifecycle',
+      ORG_ID,
+      {
+        sites: [],
+        replaceAgeYears: 7,
+        serverReplaceAgeYears: 5,
+        includeManualAssets: true,
+        includeOtherEquipment: true,
+      },
+      expect.anything(),
+    );
   });
 });
 
