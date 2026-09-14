@@ -177,6 +177,45 @@ describe('resolveAiOriginSummary (#5022 W02, OD-9)', () => {
     expect(dto).toMatchObject({ kind: 'ai_agent', resolvable: true, agentRun: { id: RUN_ID }, label: 'Patch Sentinel' });
   });
 
+  // #5022 W02 code review finding: nothing in the schema prevents a row from
+  // carrying BOTH aiSessionId and aiAgentRunId. `kind` must be the sole
+  // discriminator for which one gets resolved, so a dual-marker row never
+  // mixes an agent-run label with a session-open link or vice versa.
+  it('resolves ONLY the session for a dual-marker row whose kind is ai_assistant, even though aiAgentRunId is also set', async () => {
+    queueSourceRow({
+      aiInitiatorKind: 'ai_assistant',
+      aiSessionId: SESSION_ID,
+      aiAgentRunId: RUN_ID,
+      createdAt: new Date('2026-02-08T00:00:00.000Z'),
+    });
+    vi.mocked(getSession).mockResolvedValueOnce({ id: SESSION_ID, title: 'Support chat' } as never);
+    queueAuditRow(undefined);
+
+    const dto = await resolveAiOriginSummary(authFor('owner-user'), { kind: 'execution', id: EXEC, deviceId: DEV });
+
+    expect(dto).toMatchObject({ kind: 'ai_assistant', resolvable: true, session: { id: SESSION_ID } });
+    expect(dto).not.toHaveProperty('agentRun');
+    expect(JSON.stringify(dto)).not.toContain(RUN_ID);
+  });
+
+  it('resolves ONLY the agent run for a dual-marker row whose kind is ai_agent, even though aiSessionId is also set', async () => {
+    queueSourceRow({
+      aiInitiatorKind: 'ai_agent',
+      aiSessionId: SESSION_ID,
+      aiAgentRunId: RUN_ID,
+      createdAt: new Date('2026-02-08T00:00:00.000Z'),
+    });
+    queueAgentRunRow({ id: RUN_ID, agentName: 'Patch Sentinel' });
+    queueAuditRow(undefined);
+
+    const dto = await resolveAiOriginSummary(authFor('tech'), { kind: 'execution', id: EXEC, deviceId: DEV });
+
+    expect(dto).toMatchObject({ kind: 'ai_agent', resolvable: true, agentRun: { id: RUN_ID } });
+    expect(dto).not.toHaveProperty('session');
+    expect(getSession).not.toHaveBeenCalled();
+    expect(JSON.stringify(dto)).not.toContain(SESSION_ID);
+  });
+
   it('does not fail the summary when the audit row is missing (best-effort, OD-10 A)', async () => {
     queueSourceRow({
       aiInitiatorKind: 'ai_assistant',

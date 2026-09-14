@@ -30,7 +30,6 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
     render(
       <AiInitiatorChip
         kind="ai_assistant"
-        hasOrigin
         loadOrigin={async () => ({
           kind: 'ai_assistant',
           label: 'AI assistant',
@@ -49,7 +48,6 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
     render(
       <AiInitiatorChip
         kind="ai_assistant"
-        hasOrigin
         loadOrigin={async () => ({
           kind: 'ai_assistant',
           label: 'Support chat',
@@ -68,7 +66,6 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
     render(
       <AiInitiatorChip
         kind="ai_agent"
-        hasOrigin
         loadOrigin={async () => ({
           kind: 'ai_agent',
           label: 'Patch sweep agent',
@@ -84,9 +81,15 @@ describe('AiInitiatorChip (#5022 W02, OD-9 A)', () => {
     expect(screen.queryByTestId('ai-origin-open-session')).toBeNull();
   });
 
-  it('does not attach a click affordance without hasOrigin/loadOrigin', () => {
+  it('does not attach a click affordance without loadOrigin', () => {
     render(<AiInitiatorChip kind="ai_assistant" />);
     const chip = screen.getByTestId('ai-initiator-chip');
     expect(chip.closest('button')).toBeNull();
+  });
+
+  it('degrades to "origin unavailable" when loadOrigin rejects, rather than an unhandled rejection', async () => {
+    render(<AiInitiatorChip kind="ai_assistant" loadOrigin={async () => { throw new Error('network error'); }} />);
+    await userEvent.click(screen.getByTestId('ai-initiator-chip'));
+    expect(await screen.findByTestId('ai-origin-unavailable')).toBeInTheDocument();
   });
 });

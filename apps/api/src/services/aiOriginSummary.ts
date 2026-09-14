@@ -55,7 +55,16 @@ export async function resolveAiOriginSummary(
   let session: { id: string } | undefined;
   let agentRun: { id: string } | undefined;
 
-  if (row.aiSessionId) {
+  // `kind` is the discriminator (same convention as `deserializeAiOrigin` in
+  // packages/shared/src/types/aiOrigin.ts): an `ai_assistant` origin resolves
+  // its session, an `ai_agent` origin resolves its run. Nothing in the schema
+  // stops both aiSessionId and aiAgentRunId being non-null on the same row
+  // (#5022 W02 code review finding), and checking both independently would
+  // let a dual-marker row silently mix an agent-run label with a
+  // session-open link (or vice versa) depending on which branch ran last —
+  // an inconsistency nobody decided on. Branching on `kind` instead makes the
+  // resolved id always match the disclosed kind.
+  if (kind === 'ai_assistant' && row.aiSessionId) {
     // Owner-bound by default (SR5-09 / OD-9 A) — NEVER allowAnyOwnerInOrg
     // here. A technician with devices:read does not thereby get transcript
     // access; only the session's own owner does.
@@ -65,9 +74,7 @@ export async function resolveAiOriginSummary(
       resolvable = true;
       if (sessionRow.title) label = sessionRow.title;
     }
-  }
-
-  if (row.aiAgentRunId) {
+  } else if (kind === 'ai_agent' && row.aiAgentRunId) {
     const runRow = await loadAgentRunRow(row.aiAgentRunId, auth);
     if (runRow) {
       agentRun = { id: runRow.id };
@@ -173,7 +180,19 @@ async function loadToolName(source: { kind: 'execution' | 'command'; id: string;
       .limit(1);
     const details = row?.details as { toolName?: unknown } | null | undefined;
     return typeof details?.toolName === 'string' ? details.toolName : null;
-  } catch {
+  } catch (err) {
+    // Best-effort per OD-10 A — never fail the summary over this. But a BARE
+    // swallow here would make a real regression (RLS permission-denied on
+    // audit_logs, a malformed query after a future edit, a DB outage)
+    // observationally identical to "no audit row was ever written," forever,
+    // with nothing in logs or Sentry (#5022 W02 code review finding). Log it;
+    // still return null.
+    console.error('[aiOriginSummary] audit toolName lookup failed', {
+      deviceId: source.deviceId,
+      sourceKind: source.kind,
+      sourceId: source.id,
+      err,
+    });
     return null;
   }
 }

@@ -52,8 +52,15 @@ deviceAiOriginRoutes.get(
   }
 );
 
+// #5022 W02 code review finding: a plain string + parseInt transform always
+// "succeeds" the Zod parse even on garbage input (parseInt('abc') is NaN, and
+// Math.min(NaN, 30) is still NaN) — that NaN then reaches
+// `new Date(...).toISOString()` downstream and throws an uncaught
+// `RangeError`, turning a bad query param into an opaque 500 instead of
+// zValidator's normal readable 400. `z.coerce.number()` makes non-numeric
+// input a genuine parse failure, which zValidator turns into a 400.
 const aiActivityQuerySchema = z.object({
-  days: z.string().optional().transform((v) => Math.min(v ? parseInt(v, 10) : 7, 30)),
+  days: z.coerce.number().int().min(1).max(30).default(7),
 });
 
 // GET /devices/:id/ai-activity — the de-duplicated Overview right-rail count

@@ -571,8 +571,11 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <AiInitiatorChip
                         kind={row.raw.aiInitiatorKind ?? null}
-                        hasOrigin={row.raw.hasAiOrigin}
-                        loadOrigin={row.raw.id ? () => fetchOrigin('execution', row.raw.id!) : undefined}
+                        loadOrigin={
+                          row.raw.hasAiOrigin && row.raw.id
+                            ? () => fetchOrigin('execution', row.raw.id!)
+                            : undefined
+                        }
                       />
                     </td>
                     <td className="px-4 py-3">
@@ -713,8 +716,11 @@ export default function DeviceScriptHistory({ deviceId, timezone, highlightExecu
                     {selectedExecution.id && (
                       <AiInitiatorChip
                         kind={selectedExecution.aiInitiatorKind ?? null}
-                        hasOrigin={selectedExecution.hasAiOrigin}
-                        loadOrigin={() => fetchOrigin('execution', selectedExecution.id!)}
+                        loadOrigin={
+                          selectedExecution.hasAiOrigin
+                            ? () => fetchOrigin('execution', selectedExecution.id!)
+                            : undefined
+                        }
                       />
                     )}
                   </p>

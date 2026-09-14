@@ -28,9 +28,15 @@ import type { AiInitiatorKind, AiOriginSummaryDto } from '@breeze/shared';
 
 type AiInitiatorChipProps = {
   kind: AiInitiatorKind | null;
-  /** Whether the row has a resolvable-in-principle origin worth a popover. */
-  hasOrigin?: boolean;
-  /** Called (once, then cached) when the chip is opened. */
+  /**
+   * Called (once, then cached) when the chip is opened. Its mere presence IS
+   * "this row has an origin worth a popover" — there is deliberately no
+   * separate `hasOrigin` boolean: two independently-settable props gating one
+   * behavior let a caller pass `loadOrigin` and forget the flag (or vice
+   * versa) with no type error, silently degrading the chip to non-clickable
+   * (#5022 W02 code review finding). Pass `undefined` when there's nothing to
+   * resolve.
+   */
   loadOrigin?: () => Promise<AiOriginSummaryDto | null>;
   className?: string;
   testId?: string;
@@ -38,7 +44,6 @@ type AiInitiatorChipProps = {
 
 export function AiInitiatorChip({
   kind,
-  hasOrigin = false,
   loadOrigin,
   className,
   testId = 'ai-initiator-chip',
@@ -51,7 +56,7 @@ export function AiInitiatorChip({
 
   if (kind === null) return null;
 
-  const clickable = hasOrigin && !!loadOrigin;
+  const clickable = !!loadOrigin;
   const label = kind === 'ai_agent' ? t('aiInitiator.agent') : t('aiInitiator.assistant');
 
   const chip = (
@@ -80,6 +85,13 @@ export function AiInitiatorChip({
       setLoading(true);
       void loadOrigin()
         .then((result) => setSummary(result))
+        .catch(() => {
+          // Defensive: today's callers already resolve to null on failure,
+          // but the chip's own correctness shouldn't depend on every future
+          // caller's discipline (#5022 W02 code review finding). A rejection
+          // falls through to the "origin unavailable" state, same as null.
+          setSummary(null);
+        })
         .finally(() => {
           setLoading(false);
           setLoaded(true);
