@@ -17,6 +17,8 @@ const {
   resetMonitorEscalationMock,
   writeRouteAuditMock,
   selectMock,
+  getDeviceWithOrgAndSiteCheckMock,
+  SITE_ACCESS_DENIED,
 } = vi.hoisted(() => ({
   hasPermMock: vi.fn<(resource: string, action: string) => boolean>(() => true),
   mfaOkMock: vi.fn(() => true),
@@ -26,6 +28,8 @@ const {
   resetMonitorEscalationMock: vi.fn(),
   writeRouteAuditMock: vi.fn(),
   selectMock: vi.fn(),
+  getDeviceWithOrgAndSiteCheckMock: vi.fn(),
+  SITE_ACCESS_DENIED: Symbol('SITE_ACCESS_DENIED'),
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -83,6 +87,10 @@ vi.mock('../services/monitors/monitorAttachability', () => ({
   isMonitorAttachableToPolicy: vi.fn(async () => true),
 }));
 vi.mock('../services/auditEvents', () => ({ writeRouteAudit: writeRouteAuditMock }));
+vi.mock('./devices/helpers', () => ({
+  getDeviceWithOrgAndSiteCheck: getDeviceWithOrgAndSiteCheckMock,
+  SITE_ACCESS_DENIED,
+}));
 vi.mock('../db', () => ({ db: { select: selectMock } }));
 
 import { monitorDefinitionRoutes } from './monitorDefinitions';
@@ -147,6 +155,7 @@ beforeEach(() => {
   listMonitorEpisodesMock.mockResolvedValue({ episodes: [episode()], nextCursor: null });
   listMonitorDeviceActivityMock.mockResolvedValue([]);
   resetMonitorEscalationMock.mockResolvedValue({ reset: true });
+  getDeviceWithOrgAndSiteCheckMock.mockResolvedValue({ id: DEVICE_ID, orgId: ORG_ID, siteId: 'site-1' });
   selectMock.mockImplementation(() => selectChain([]));
 });
 
@@ -261,10 +270,29 @@ describe('POST /monitor-definitions/:id/devices/:deviceId/reset', () => {
     expect(resetMonitorEscalationMock).not.toHaveBeenCalled();
   });
 
+  it('returns 403 for a device outside the caller sites (site-scope gate)', async () => {
+    // Site is app-layer only — RLS does not defend it. A site-restricted
+    // technician must not be able to reset escalation state on another site's
+    // device even when the monitor itself is visible to them.
+    getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(SITE_ACCESS_DENIED);
+    const res = await buildApp().request(path, { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect(resetMonitorEscalationMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a device the caller cannot see', async () => {
+    getDeviceWithOrgAndSiteCheckMock.mockResolvedValue(null);
+    const res = await buildApp().request(path, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(resetMonitorEscalationMock).not.toHaveBeenCalled();
+  });
+
   it('returns 200 and { reset: true }', async () => {
     const res = await buildApp().request(path, { method: 'POST' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ reset: true });
+    expect(getDeviceWithOrgAndSiteCheckMock).toHaveBeenCalledWith(expect.anything(), DEVICE_ID, expect.anything());
   });
 
   it('writes an audit entry with action monitor.escalation.reset', async () => {

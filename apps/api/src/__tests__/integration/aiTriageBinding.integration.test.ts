@@ -31,6 +31,7 @@ import {
   aiAgentRuns,
   aiAgents,
   alerts,
+  automationActionResults,
   automationRunDeviceResults,
   automationRuns,
   automations,
@@ -51,6 +52,7 @@ import {
   type AgentRunEnqueuer,
 } from '../../services/aiAgents/runService';
 import { resolveAutomationTargetDeviceIds } from '../../services/automationRuntime';
+import { handleAgentRunTerminalForAutomation } from '../../services/automationTerminalEvidence';
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 type ExecuteRunJobData = Extract<AutomationQueueJobData, { type: 'execute-run' }>;
@@ -373,9 +375,68 @@ describe('managed AI-triage event binding against real Postgres', () => {
     const runId = requireRunId(result);
     await executeQueuedRun(runId);
 
-    const runs = await withSystemDbAccessContext(() =>
+    const loadRun = () => withSystemDbAccessContext(() =>
       db.select().from(automationRuns).where(eq(automationRuns.id, runId)),
     );
+    const loadDeviceResults = () => withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(automationRunDeviceResults)
+        .where(eq(automationRunDeviceResults.runId, runId)),
+    );
+
+    // #5290 — enqueueing the child agent run is NOT a completed remediation.
+    // The action stays queued (carrying the agent-run correlation) and the run
+    // aggregates as still running with nothing succeeded yet; before #5290 this
+    // read `completed` / devicesSucceeded 1 for a triage that had not run.
+    const agentRuns = await allAgentRuns();
+    expect(agentRuns).toHaveLength(1);
+    const agentRunId = agentRuns[0]!.id;
+
+    const queuedRuns = await loadRun();
+    expect(queuedRuns).toHaveLength(1);
+    expect(queuedRuns[0]).toMatchObject({
+      devicesTargeted: 1,
+      devicesSucceeded: 0,
+      devicesFailed: 0,
+      status: 'running',
+    });
+
+    const actionResults = await withSystemDbAccessContext(() =>
+      db
+        .select()
+        .from(automationActionResults)
+        .where(eq(automationActionResults.runId, runId)),
+    );
+    expect(actionResults).toHaveLength(1);
+    expect(actionResults[0]).toMatchObject({
+      deviceId: fixture.deviceA1.id,
+      orgId: fixture.orgA.id,
+      actionType: 'ai_triage',
+      status: 'queued',
+      agentRunId,
+    });
+
+    const queuedDeviceResults = await loadDeviceResults();
+    expect(queuedDeviceResults).toHaveLength(1);
+    expect(queuedDeviceResults[0]).toMatchObject({
+      runId,
+      deviceId: fixture.deviceA1.id,
+      orgId: fixture.orgA.id,
+    });
+    expect(queuedDeviceResults[0]!.status).not.toBe('success');
+
+    // The child run's own terminal event — delivered by the durable
+    // `ai.agent.run.*` subscriber — is what terminalises the action and lets
+    // the run aggregate to completed with exactly the alert device succeeded.
+    await withSystemDbAccessContext(() =>
+      handleAgentRunTerminalForAutomation({
+        type: 'ai.agent.run.completed',
+        payload: { runId: agentRunId },
+      }),
+    );
+
+    const runs = await loadRun();
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
       devicesTargeted: 1,
@@ -384,12 +445,7 @@ describe('managed AI-triage event binding against real Postgres', () => {
       status: 'completed',
     });
 
-    const deviceResults = await withSystemDbAccessContext(() =>
-      db
-        .select()
-        .from(automationRunDeviceResults)
-        .where(eq(automationRunDeviceResults.runId, runId)),
-    );
+    const deviceResults = await loadDeviceResults();
     expect(deviceResults).toHaveLength(1);
     expect(deviceResults[0]).toMatchObject({
       runId,

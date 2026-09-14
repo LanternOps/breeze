@@ -37,6 +37,7 @@ import {
   listMonitorEpisodes,
 } from '../services/monitors/episodeQueries';
 import { resetMonitorEscalation } from '../services/monitors/episodeReset';
+import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './devices/helpers';
 import {
   addFeatureLink,
   assignPolicy,
@@ -694,7 +695,14 @@ monitorDefinitionRoutes.post(
     const monitor = await getMonitorDefinition(id, auth);
     if (!monitor) return c.json({ error: 'Monitor not found' }, 404);
 
-    const result = await resetMonitorEscalation({ monitorId: monitor.id, deviceId, auth });
+    // Site is an app-layer axis only — RLS does not defend it — so the device
+    // must pass the canonical org + site gate before its per-device episode
+    // state is touched (site-scope coverage contract).
+    const device = await getDeviceWithOrgAndSiteCheck(c, deviceId, auth);
+    if (device === SITE_ACCESS_DENIED) return c.json({ error: 'Access to this site denied' }, 403);
+    if (!device) return c.json({ error: 'Device not found' }, 404);
+
+    const result = await resetMonitorEscalation({ monitorId: monitor.id, deviceId: device.id, auth });
 
     writeRouteAudit(c, {
       orgId: monitor.orgId ?? undefined,
