@@ -65,7 +65,7 @@ const N = MEASURED_MIN_COHORT_N + 5; // comfortably over the gate
 
 type Admin = {
   insert: (table: unknown) => {
-    values: (v: unknown) => Promise<unknown> & { returning: () => Promise<Record<string, string>[]> };
+    values: (v: unknown) => Promise<unknown> & { returning: () => Promise<{ id: string }[]> };
   };
 };
 const admin = () => getTestDb() as never as Admin;
@@ -180,6 +180,7 @@ function partnerAuth(t: Tenant): AuthContext {
 
 const partnerDbContextFor = (t: Tenant) => ({
   scope: 'partner' as const,
+  orgId: null,
   currentUserId: t.userId,
   currentPartnerId: t.partnerId,
   accessibleOrgIds: [t.orgId],
@@ -188,6 +189,7 @@ const partnerDbContextFor = (t: Tenant) => ({
 
 const dbContextFor = (t: Tenant) => ({
   scope: 'organization' as const,
+  orgId: t.orgId,
   currentUserId: t.userId,
   currentPartnerId: t.partnerId,
   accessibleOrgIds: [t.orgId],

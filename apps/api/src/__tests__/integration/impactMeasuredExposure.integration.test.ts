@@ -69,7 +69,7 @@ interface Tenant {
 
 async function createTenant(partnerId?: string): Promise<Tenant> {
   const adminDb = getTestDb() as never as {
-    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<Record<string, string>[]> } };
+    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<{ id: string }[]> } };
   };
   const owner = partnerId ?? (await createPartner()).id;
   const org = await createOrganization({ partnerId: owner });
@@ -142,6 +142,7 @@ function orgAuth(t: Tenant): AuthContext {
 
 const dbContextFor = (t: Tenant) => ({
   scope: 'organization' as const,
+  orgId: t.orgId,
   currentUserId: t.userId,
   currentPartnerId: t.partnerId,
   accessibleOrgIds: [t.orgId],
@@ -155,7 +156,7 @@ async function insertAlert(t: Tenant, opts: {
   ruleId?: string;
 }): Promise<string> {
   const adminDb = getTestDb() as never as {
-    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<Record<string, string>[]> } };
+    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<{ id: string }[]> } };
   };
   const [row] = await adminDb.insert(alerts).values({
     orgId: t.orgId,
@@ -172,7 +173,7 @@ async function insertAlert(t: Tenant, opts: {
 
 async function insertRun(t: Tenant, opts: { alertId?: string | null; startedAt: Date | null; queuedAt: Date }): Promise<string> {
   const adminDb = getTestDb() as never as {
-    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<Record<string, string>[]> } };
+    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<{ id: string }[]> } };
   };
   const [row] = await adminDb.insert(aiAgentRuns).values({
     orgId: t.orgId,
@@ -213,7 +214,7 @@ async function insertVerdict(t: Tenant, opts: {
 
 async function insertGroupWithMember(t: Tenant, alertId: string): Promise<string> {
   const adminDb = getTestDb() as never as {
-    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<Record<string, string>[]> } };
+    insert: (table: unknown) => { values: (v: unknown) => { returning: () => Promise<{ id: string }[]> } };
   };
   const [group] = await adminDb.insert(alertCorrelationGroups).values({
     orgId: t.orgId,
