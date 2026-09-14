@@ -44,8 +44,13 @@ export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
  * can never change it — an override that could flip a sweep baseline into a
  * narrative one for a single org would silently produce a run profile the
  * partner never configured.
+ *
+ * AI patch agent (W01) added `patch`: one `patch`-profile run per org that
+ * returns a patch plan (`types/aiPatchPlan.ts`). Like `narrative`/`design` it
+ * sweeps nothing (zero-cardinality `sweepKinds`), and it fires at most once
+ * a day (see `isDailyOrRarerLiteralCron`).
  */
-export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative', 'design'] as const;
+export const AI_AGENT_SCHEDULE_KINDS = ['sweep', 'narrative', 'design', 'patch'] as const;
 export type AiAgentScheduleKind = (typeof AI_AGENT_SCHEDULE_KINDS)[number];
 
 /** Severity a sweep evaluator assigns to one `SweepFinding`. */

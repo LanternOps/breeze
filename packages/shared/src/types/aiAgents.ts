@@ -142,6 +142,21 @@ export interface AiAgentLimits {
   maxDesignRunsPerDay: number;
   designBudgetCentsPerRun: number;
   designMaxTurns: number;
+  /**
+   * AI patch agent (W01) — patch-profile admission caps, counted on their
+   * own like every other profile. A patch run is scheduled once a day per
+   * org (`0 2 * * *` default) plus the occasional manual "Run now", so
+   * `maxPatchRunsPerDay` (2) is enforced at admission rule 6b over the same
+   * rolling 24-hour window the design profile uses, not per hour. Anything
+   * above a couple a day for one org is a re-fire, not load.
+   * `patchMaxTurns` (20) covers one read of the pre-assembled evidence, a
+   * small read-only drill-down floor, and one `submit_patch_plan` call —
+   * see `patchProfile.ts`. Snapshot v11.
+   */
+  maxConcurrentPatchRuns: number;
+  maxPatchRunsPerDay: number;
+  patchBudgetCentsPerRun: number;
+  patchMaxTurns: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -191,6 +206,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxDesignRunsPerDay: 4,
   designBudgetCentsPerRun: 300,
   designMaxTurns: 60,
+  // Patch-profile admission caps (AI patch agent W01) — see
+  // AiAgentLimits.maxConcurrentPatchRuns's docstring.
+  maxConcurrentPatchRuns: 1,
+  maxPatchRunsPerDay: 2,
+  patchBudgetCentsPerRun: 60,
+  patchMaxTurns: 20,
 });
 
 export interface AiAgentTriggers {
@@ -461,19 +482,27 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * `AI_AGENT_LIMIT_DEFAULTS.promoteThreshold` for a pre-v9 snapshot. Every
  * site that switches on `schemaVersion` must tolerate 1 through 9.
  *
- * v10 (this bump, Fleet Designer W01): `maxConcurrentDesignRuns`,
+ * v10 (Fleet Designer W01): `maxConcurrentDesignRuns`,
  * `maxDesignRunsPerDay`, `designBudgetCentsPerRun`, `designMaxTurns` — see
  * `AiAgentLimits.maxConcurrentDesignRuns`'s docstring. Same rule as every
  * prior bump: a v1-v9 in-flight run's snapshot lacks these fields and MUST
  * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
  * pre-v10 snapshot. Every site that switches on `schemaVersion` must
  * tolerate 1 through 10.
+ *
+ * v11 (this bump, AI patch agent W01): `maxConcurrentPatchRuns`,
+ * `maxPatchRunsPerDay`, `patchBudgetCentsPerRun`, `patchMaxTurns` — see
+ * `AiAgentLimits.maxConcurrentPatchRuns`'s docstring. Same rule as every
+ * prior bump: a v1-v10 in-flight run's snapshot lacks these fields and MUST
+ * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
+ * pre-v11 snapshot. Every site that switches on `schemaVersion` must
+ * tolerate 1 through 11.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 10 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 11 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), or 10 (current). Read sites must tolerate all ten. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), or 11 (current). Read sites must tolerate all eleven. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -576,6 +605,16 @@ export interface AiAgentDto {
    * `null` rather than omitting the key.
    */
   lastRunFindingsToReview?: number | null;
+  /**
+   * AI patch agent (W01) — ISO-8601 time of the agent's next scheduled
+   * occurrence: the soonest next firing across its ENABLED partner baselines,
+   * computed by the list route with the same `nextCronOccurrence` helper the
+   * schedules drawer uses, so the card and the drawer cannot disagree.
+   * `null` when the agent has no enabled schedule or its cron cannot be
+   * evaluated. Optional/nullable on the same terms as `lastRunAt` above
+   * (only the list route computes it). Additive — no DTO version bump.
+   */
+  nextOccurrenceAt?: string | null;
   /**
    * Whether `resolveEffectiveAgentInner` would treat this row as effective
    * (#4170) — always `true` for a partner-wide row (`allOrgs`), since it IS
@@ -796,8 +835,16 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * (`types/ticketTriage.ts`) instead of findings, a verdict, or a narrative.
  * Admission is counted against
  * `AiAgentLimits.maxConcurrentTriageRuns`/`maxTriageRunsPerHour`.
+ *
+ * AI patch agent (W01) added `patch`: a device-less, `schedule`- or
+ * manually-triggered run profile driven only by a `patch`-kind agent. It
+ * reads a system-assembled patch evidence bundle and produces a
+ * `PatchPlanOutcome` (`types/aiPatchPlan.ts`) through its one outcome tool,
+ * `submit_patch_plan`. It executes nothing (`maxActionsPerRun` pinned to 0).
+ * Admission is counted against
+ * `AiAgentLimits.maxConcurrentPatchRuns`/`maxPatchRunsPerDay`.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design'] as const;
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch'] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**

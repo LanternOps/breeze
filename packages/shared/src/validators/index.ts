@@ -1019,6 +1019,7 @@ export * from './aiOperator';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 

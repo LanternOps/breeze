@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron, isMonthlyOrRarerLiteralCron } from './aiAgentSchedules';
+import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron, isMonthlyOrRarerLiteralCron, isDailyOrRarerLiteralCron } from './aiAgentSchedules';
 
 const uuid = '11111111-1111-4111-8111-111111111111';
 describe('createAiAgentScheduleSchema', () => {
@@ -231,5 +231,28 @@ describe('design schedule kind', () => {
     expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 1,4,7,10 *' }).success).toBe(true);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 7 * * 1' }).success).toBe(false);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 * *', sweepKinds: ['disk_pressure'] }).success).toBe(false);
+  });
+});
+
+describe('patch schedules (AI patch agent W01)', () => {
+  it('accepts a daily-or-rarer literal cron and rejects a sub-daily one', () => {
+    expect(isDailyOrRarerLiteralCron('0 2 * * *')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('30 2 * * 1')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 2 1 * *')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 2 * * *  ')).toBe(true);
+    expect(isDailyOrRarerLiteralCron('0 * * * *')).toBe(false);    // every hour
+    expect(isDailyOrRarerLiteralCron('0 2,14 * * *')).toBe(false); // twice a day
+    expect(isDailyOrRarerLiteralCron('0 */12 * * *')).toBe(false); // step
+    expect(isDailyOrRarerLiteralCron('0 2-4 * * *')).toBe(false);  // range
+    expect(isDailyOrRarerLiteralCron('0,30 2 * * *')).toBe(false); // minute list
+    expect(isDailyOrRarerLiteralCron('0 24 * * *')).toBe(false);
+    expect(isDailyOrRarerLiteralCron('0 0 2 * * *')).toBe(false);  // 6-field
+  });
+
+  it('accepts a patch baseline and rejects sweep kinds or a sub-daily cron on it', () => {
+    const p = { ownerScope: 'partner', kind: 'patch', agentId: uuid, cron: '0 2 * * *', timezone: 'UTC', enabled: true };
+    expect(createAiAgentScheduleSchema.safeParse(p).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ...p, sweepKinds: ['disk_pressure'] }).success).toBe(false);
+    expect(createAiAgentScheduleSchema.safeParse({ ...p, cron: '0 * * * *' }).success).toBe(false);
   });
 });

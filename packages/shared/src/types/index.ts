@@ -812,6 +812,7 @@ export * from './aiOperator';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './deviceFunction';
 export * from './ticketTriage';
 export * from './aiAgentImpact';

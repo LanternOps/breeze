@@ -81,6 +81,13 @@ const limitsFields = z.object({
   maxDesignRunsPerDay: z.number().int().min(1).max(24),
   designBudgetCentsPerRun: z.number().int().min(25).max(2000),
   designMaxTurns: z.number().int().min(8).max(120),
+  // Patch-profile admission caps (AI patch agent W01) — see
+  // AiAgentLimits.maxConcurrentPatchRuns's docstring. Per-day cap over a
+  // 24h window like design; a patch run is one-per-org-per-day.
+  maxConcurrentPatchRuns: z.number().int().min(1).max(4),
+  maxPatchRunsPerDay: z.number().int().min(1).max(12),
+  patchBudgetCentsPerRun: z.number().int().min(10).max(500),
+  patchMaxTurns: z.number().int().min(4).max(60),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
