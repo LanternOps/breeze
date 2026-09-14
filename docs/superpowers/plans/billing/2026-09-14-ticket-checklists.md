@@ -4,6 +4,7 @@
 spec: docs/superpowers/specs/billing/2026-09-14-ticket-checklists-spec.md
 issue: LanternOps/breeze#5783
 parent_feature: LanternOps/breeze#5573
+tracking_issue: LanternOps/breeze#5808
 ---
 # Ticket checklists + internal instructions on deliverable templates — Plan Index
 
