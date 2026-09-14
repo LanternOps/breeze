@@ -21,7 +21,7 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   antivirus: { check: 'definitions_stale', staleAfterDays: 7 },
   software_presence: { name: 'TeamViewer', presence: 'installed' },
   backup_continuity: { check: 'no_successful_backup', maxAgeHours: 26 },
-  script: { scriptId: '11111111-2222-3333-4444-555555555555', intervalMinutes: 60, timeoutSeconds: 300 },
+  script: { scriptId: '11111111-2222-4333-8444-555555555555', intervalMinutes: 60, timeoutSeconds: 300 },
   network_check: { checkType: 'icmp_ping', target: '10.0.0.1' },
 };
 
