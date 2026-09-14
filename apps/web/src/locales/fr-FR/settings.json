@@ -4481,26 +4481,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Chargement des organisations...",
-    "title": "Organisations",
-    "description": "Gérer les organisations et leurs sites.",
     "actions": {
-      "addOrganization": "Ajouter l’organisation",
-      "tryAgain": "Réessayer",
-      "editOrganization": "Modifier l’organisation",
-      "archiveOrganization": "Archiver l'organisation",
-      "deleting": "Suppression…",
-      "openRecord": "Ouvrir la fiche",
-      "openSettings": "Paramètres",
-      "openSettingsFor": "Paramètres de {{name}}",
-      "openRecordFor": "Ouvrir la fiche de {{name}}",
-      "more": "Autres actions"
+      "tryAgain": "Réessayer"
     },
     "errors": {
-      "fetchOrganizations": "Impossible de récupérer des organisations",
       "generic": "Une erreur s’est produite",
-      "saveOrder": "Impossible d’enregistrer l’ordre organisationnel",
-      "saveOrganization": "Impossible d’enregistrer l’organisation",
       "saveSite": "Impossible d’enregistrer le site ({{status}})",
       "deleteSite": "Impossible de supprimer le site",
       "loadSites": "Impossible de charger les sites de cette organisation."
@@ -4515,39 +4500,8 @@
       "archived": "Archivé",
       "purging": "Purge en cours"
     },
-    "deviceCount": "{{count}} dispositifs",
-    "list": {
-      "title": "Organisations",
-      "empty": "Aucune organisation trouvée.",
-      "noMatches": "Aucune organisation ne correspond à votre recherche ou à votre filtre.",
-      "dragToReorder": "De la traînée à la réorganisation",
-      "searchLabel": "Rechercher des organisations",
-      "reorderHandle": "Réorganiser {{name}}",
-      "reorderHint": "Utilisez les flèches haut et bas pour déplacer cette organisation.",
-      "movedAnnouncement": "{{name}} déplacée en position {{position}} sur {{total}}",
-      "workspaceMarker": "Espace de travail",
-      "sort": {
-        "label": "Trier",
-        "manual": "Ordre manuel",
-        "name": "De A à Z",
-        "devices": "Plus d'appareils"
-      },
-      "filter": {
-        "label": "Filtrer par statut",
-        "all": "Toutes"
-      }
-    },
     "sites": {
       "loading": "Sites de chargement..."
-    },
-    "emptySelection": {
-      "title": "Aucune organisation sélectionnée",
-      "description": "Sélectionnez une organisation pour voir son statut, ses sites et ses actions."
-    },
-    "add": {
-      "title": "Ajouter l’organisation",
-      "description": "Créez une nouvelle organisation avec les détails ci-dessous.",
-      "submit": "Créer une organisation"
     },
     "siteModal": {
       "editTitle": "Modifier le site",
@@ -4568,7 +4522,6 @@
       "blockedMessage_other": "{{name}} contient encore {{count}} appareils. Déplacez-les vers un autre site avant de supprimer celui-ci."
     },
     "merge": {
-      "openButton": "Fusionner avec une autre organisation",
       "title": "Fusionner l'organisation",
       "description": "Déplacez les données de {{name}} vers une organisation survivante. {{name}} est ensuite retirée définitivement et ne peut plus être récupérée.",
       "survivorLabel": "Fusionner avec",
@@ -4636,39 +4589,6 @@
         "archive": "Échec de l'archivage de l'organisation",
         "mfaRequired": "L'archivage des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez."
       }
-    },
-    "archived": {
-      "sectionTitle": "Archivées",
-      "loading": "Chargement des organisations archivées...",
-      "empty": "Aucune organisation archivée.",
-      "noMatches": "Aucune organisation archivée ne correspond à votre recherche.",
-      "badge": "Archivée",
-      "archivingBadge": "Archivage en cours…",
-      "keptIndefinitely": "Conservée indéfiniment",
-      "purgeToday": "Suppression définitive aujourd'hui",
-      "purgeCountdown_one": "Suppression définitive dans {{count}} jour",
-      "purgeCountdown_other": "Suppression définitive dans {{count}} jours",
-      "truncatedNote": "Affichage des {{count}} premières organisations archivées. Effectuez une recherche pour affiner la liste.",
-      "readOnlyNotice": "Cette organisation est archivée et en lecture seule. Restaurez-la pour reprendre un accès normal.",
-      "drainNotice": "Cette organisation est en cours d'archivage — ses agents sont en train d'être désinstallés, et elle reste en lecture seule jusqu'à la fin du processus. Restaurez-la pour annuler et la ramener.",
-      "errors": {
-        "fetch": "Échec du chargement des organisations archivées"
-      }
-    },
-    "restore": {
-      "action": "Restaurer",
-      "restoring": "Restauration...",
-      "success": "{{name}} restaurée — statut : {{status}}.",
-      "recreateRequiredNote": "Avant qu'elle soit à nouveau pleinement utilisable : {{items}}",
-      "suspendedNote": "Elle était suspendue avant son archivage ; elle a donc été restaurée à l'état suspendu — réglez ce point avant qu'elle ne reprenne un accès normal.",
-      "errors": {
-        "restore": "Échec de la restauration de l'organisation",
-        "mfaRequired": "La restauration des organisations nécessite l'authentification multifacteur. Activez la MFA dans les paramètres de sécurité de votre profil, puis réessayez.",
-        "purging": "Cette organisation est déjà en cours de suppression définitive et ne peut plus être restaurée."
-      }
-    },
-    "scope": {
-      "hint": "Votre espace de travail est défini sur {{orgName}}. Les actions de cette page s'appliquent à l'organisation sélectionnée ici."
     }
   },
   "siteDetailPage": {

@@ -26,6 +26,7 @@ const currentPath = Astro.url.pathname;
 
 // Domain-specific accent color for wayfinding — thin 2px bar at top of content area
 const getAccentClass = (path: string): string => {
+  if (path.startsWith('/organizations')) return 'bg-primary';
   if (path.startsWith('/devices') || path.startsWith('/fleet') || path.startsWith('/remote')) return 'bg-primary';
   if (path.startsWith('/security') || path.startsWith('/cis-hardening') || path.startsWith('/audit-baselines') || path.startsWith('/sensitive-data') || path.startsWith('/ai-risk')) return 'bg-warning';
   if (path.startsWith('/alerts')) return 'bg-destructive';

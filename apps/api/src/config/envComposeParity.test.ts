@@ -65,7 +65,6 @@ const ROOT_ALLOWLIST: Record<string, string> = {
   // production boot REFUSES BREEZE_AI_WORKSPACE_ENABLED=true without
   // IS_HOSTED=true, so none of these can ever do anything in the self-host
   // stack. Documented in .env.example so hosted operators can find them.
-  BREEZE_AI_WORKSPACE_ENABLED: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
   AI_WORKSPACE_BACKEND: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
   VERCEL_SANDBOX_TOKEN: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',
   VERCEL_TEAM_ID: 'hosted-only AI execution plane (execution plane W02): the sandbox backend is gated on IS_HOSTED and never runs in the self-host Docker stack, so mapping it into compose would manufacture a knob that does nothing',

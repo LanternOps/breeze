@@ -254,8 +254,48 @@ export default function ReportPreview({
         </div>
       </div>
 
+      {/* Hardware Lifecycle: band counts + the staged plan, instead of the
+          generic summary cards (its summary carries nested rows/arrays). */}
+      {data.type === 'hardware_lifecycle' && data.data.summary && previewMode === 'table' && (() => {
+        const s = data.data.summary as {
+          computers?: { total?: number; byReplacement?: Record<string, number> };
+          otherEquipmentCount?: number;
+          recommendations?: string[];
+        };
+        const bands = s.computers?.byReplacement ?? {};
+        const tiles: { key: string; value: number; tone: string }[] = [
+          { key: 'onTrack', value: bands.supported ?? 0, tone: 'text-success' },
+          { key: 'dueSoon', value: bands.due_soon ?? 0, tone: 'text-warning' },
+          { key: 'replaceNow', value: bands.replace ?? 0, tone: 'text-destructive' },
+          { key: 'unknownAge', value: bands.unknown ?? 0, tone: 'text-muted-foreground' },
+          { key: 'otherEquipment', value: s.otherEquipmentCount ?? 0, tone: '' },
+        ];
+        return (
+          <div className="space-y-4" data-testid="lifecycle-summary">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              {tiles.map((tile) => (
+                <div key={tile.key} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.lifecycle.${tile.key}`)}</p>
+                  <p className={cn('text-2xl font-bold mt-1', tile.tone)}>{tile.value}</p>
+                </div>
+              ))}
+            </div>
+            {Array.isArray(s.recommendations) && s.recommendations.length > 0 && (
+              <div className="rounded-lg border bg-card p-4">
+                <h4 className="text-sm font-semibold mb-3">{t('reports.reportPreview.lifecycle.recommendations')}</h4>
+                <ul className="space-y-2 text-sm">
+                  {s.recommendations.map((line, i) => (
+                    <li key={i} className="flex gap-2"><span className="text-primary">›</span><span>{line}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Summary Cards */}
-      {data.data.summary && previewMode === 'table' && (
+      {data.type !== 'hardware_lifecycle' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">

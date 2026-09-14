@@ -113,6 +113,20 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+export type BreezeRegion = 'eu' | 'us';
+
+// Deployment region. Hosted regions are single-region deployments (one API +
+// worker per region), so the process knows its own region from env and every
+// org it serves lives in it. Used to pick the artifact blob bucket and, later,
+// the sandbox region (spec §8 "Residency"). Previously read inline by
+// routes/mcpServer.ts for partner-trust bootstrap; that reader now calls this.
+// Unrecognised values resolve to 'us' here; config/validate.ts refuses them at
+// boot so a typo cannot reach production.
+export function breezeRegion(): BreezeRegion {
+  const raw = (process.env.BREEZE_REGION ?? '').trim().toLowerCase();
+  return raw === 'eu' ? 'eu' : 'us';
+}
+
 /**
  * AI script authoring, review, and reviewer-gated execution (spec
  * 2026-09-11-ai-script-authoring-and-review-design.md §8).

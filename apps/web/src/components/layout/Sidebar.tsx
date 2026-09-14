@@ -197,7 +197,7 @@ export const topLevelNav: NavItem[] = [
   // #5075 W04 — the customer record is the MSP's primary object, so it is
   // top-level rather than buried under Settings (where it used to live, and no
   // longer does: exactly one Organizations entry exists in the nav).
-  { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
+  { name: 'Organizations', labelKey: 'nav.organizations', href: '/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
   // Unified list: agent devices + manual assets + network assets (#4622, #5228),
   // hence the label. Recently opened devices render under this row — see
   // `renderNavItem` and Sidebar.recents.test.tsx.

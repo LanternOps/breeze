@@ -117,6 +117,17 @@ export const listManualAssetsSchema = z.object({
 // Written array-friendly on purpose: the CSV import path (spec Decision 6,
 // deferred) reuses this element schema verbatim rather than re-deriving
 // validation.
+/** YYYY-MM-DD calendar date; the `date` column type. The regex alone lets
+ *  "2026-02-30" through to Postgres as a 500, so round-trip it via Date.UTC. */
+export const purchaseDateSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD')
+  .refine((v) => {
+    const [y, m, d] = v.split('-').map(Number) as [number, number, number];
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }, 'must be a real calendar date')
+  .nullish();
+
 export const createManualAssetSchema = z.object({
   orgId: z.string().guid(),
   siteId: z.string().guid(),
@@ -130,6 +141,9 @@ export const createManualAssetSchema = z.object({
   assignedContactId: z.string().guid().nullish(),
   notes: z.string().nullish(),
   tags: z.array(z.string()).optional(),
+  // Hardware Lifecycle report. YYYY-MM-DD; null clears. An operator-entered
+  // value is recorded as source 'manual' and is never overwritten by sync.
+  purchaseDate: purchaseDateSchema,
 });
 
 // PATCH /devices/manual/:id. orgId is immutable after create (matching
@@ -199,7 +213,9 @@ export const updateDeviceSchema = z.object({
     z.string().max(100),
     z.union([z.string().max(10000), z.number(), z.boolean(), z.null()])
   ).optional(),
-  deviceRole: z.enum(DEVICE_ROLES).optional()
+  deviceRole: z.enum(DEVICE_ROLES).optional(),
+  // Hardware Lifecycle report — see createManualAssetSchema.purchaseDate.
+  purchaseDate: purchaseDateSchema,
 });
 
 // POST /devices/provision — admin pre-creates a device row + downloadable

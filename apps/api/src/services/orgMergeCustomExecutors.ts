@@ -375,6 +375,49 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
  */
 const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
+/**
+ * ai_run_artifacts (execution-plane W01) — a SPLIT disposition, because the two
+ * anchors a row can have move in opposite directions.
+ *
+ *   RUN-anchored (`run_id IS NOT NULL`): stays with the loser shell and is
+ *     erased with it. `ai_agent_runs` is `leave-for-erasure` and its `org_id`
+ *     is trigger-immutable, and this table's composite
+ *     `(run_id, org_id) -> ai_agent_runs(id, org_id)` FK binds while `run_id`
+ *     is set — so re-pointing one of these rows would 23503 at COMMIT even
+ *     under SET CONSTRAINTS ALL DEFERRED. Run history does not follow a merge
+ *     (2026-08-23 owner decision), and neither does its evidence.
+ *
+ *   SESSION-anchored (`run_id IS NULL`): REPOINTED to the survivor, because
+ *     `ai_sessions` is itself in REPOINT_TABLES. Leaving these behind was the
+ *     original W01 classification and it was wrong in both directions: the
+ *     chat session moves to the survivor while its captured artifacts stay
+ *     pinned to the loser's `org_id`, so RLS (which reads
+ *     `ai_run_artifacts.org_id`, never the session's) hides them from the
+ *     surviving org, and the loser shell's later erasure deletes the rows and
+ *     their blobs out from under a session that is still live. The composite
+ *     run FK is MATCH SIMPLE — unchecked while `run_id` is NULL — so these
+ *     rows re-point with nothing to violate, and the table carries no unique
+ *     constraint, so there is no collision to dedupe.
+ */
+const moveAiRunArtifacts: CustomMergeExecutor = async (loser, survivor) => {
+  const moved = await run(sql`
+    UPDATE ai_run_artifacts
+       SET org_id = ${uuid(survivor)}
+     WHERE org_id = ${uuid(loser)}
+       AND run_id IS NULL`);
+
+  return {
+    moved,
+    dropped: 0,
+    notes: [
+      `ai_run_artifacts: re-tenanted ${moved} chat-session artifact(s) to the surviving organization, `
+      + 'following their ai_sessions rows. Run-anchored artifacts are NOT re-tenanted — agent-run '
+      + 'evidence stays with the source org and is erased with its shell, same rule as the runs '
+      + 'themselves. Download anything still needed before erasing the loser shell.',
+    ],
+  };
+};
+
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 // ---------------------------------------------------------------------------
@@ -1330,6 +1373,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   reports: mergeReports,
   ticket_drafts: moveTicketDrafts,
   ai_operator_tasks: moveAiOperatorTasks,
+  ai_run_artifacts: moveAiRunArtifacts,
   script_proposals: moveScriptProposals,
   m365_sync_state: moveM365SnapshotTable,
   m365_users: moveM365SnapshotTable,

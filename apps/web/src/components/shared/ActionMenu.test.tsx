@@ -96,4 +96,49 @@ describe('ActionMenu', () => {
     render(<ActionMenu label="More actions" items={[]} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
+
+  it('renders an item with `href` as a real link menuitem with a second line, and still closes on activation', () => {
+    const onSelect = vi.fn();
+    render(
+      <ActionMenu
+        label="Row actions"
+        items={[
+          { id: 'open', label: 'Open record', href: '/organizations/abc' },
+          { id: 'contact', label: 'Contact Jane Doe', description: 'jane@alpha.test · +1 555', href: 'mailto:jane@alpha.test', onSelect },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Row actions' }));
+    const link = screen.getByRole('menuitem', { name: /Contact Jane Doe/ });
+    expect(link.tagName).toBe('A');
+    expect(link).toHaveAttribute('href', 'mailto:jane@alpha.test');
+    expect(link).toHaveTextContent('jane@alpha.test · +1 555');
+    expect(screen.getByRole('menuitem', { name: 'Open record' })).toHaveAttribute('href', '/organizations/abc');
+    fireEvent.click(link);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('draws a separator above items that ask for one, and the arrow keys skip it', () => {
+    render(
+      <ActionMenu
+        label="Row actions"
+        items={[
+          { id: 'a', label: 'First', onSelect: () => undefined },
+          { id: 'b', label: 'Second', onSelect: () => undefined, separatorBefore: true },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Row actions' }));
+    expect(screen.getAllByRole('separator')).toHaveLength(1);
+    const first = screen.getByRole('menuitem', { name: 'First' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Second' }));
+  });
+
+  it('puts the trigger on the tabindex the caller asks for (roving rows)', () => {
+    render(<ActionMenu label="Row actions" triggerTabIndex={-1} items={[{ id: 'a', label: 'First', onSelect: () => undefined }]} />);
+    expect(screen.getByRole('button', { name: 'Row actions' })).toHaveAttribute('tabindex', '-1');
+  });
 });

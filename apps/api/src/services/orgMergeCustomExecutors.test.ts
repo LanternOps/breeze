@@ -389,3 +389,36 @@ describe('m365 tenant sync merge disposition', () => {
     expect(executeMock, 'the move half must issue no SQL').toHaveBeenCalledTimes(1);
   });
 });
+
+describe('moveAiRunArtifacts — split disposition by anchor (execution-plane W01)', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('re-points ONLY session-anchored rows, leaving run-anchored evidence with the loser shell', async () => {
+    executeMock.mockResolvedValueOnce({ rowCount: 4 });
+
+    const outcome = await CUSTOM_EXECUTORS.ai_run_artifacts!(L, S);
+
+    expect(outcome).toMatchObject({ moved: 4, dropped: 0 });
+    expect(executeMock, 'exactly one statement — the scoped repoint').toHaveBeenCalledTimes(1);
+
+    const compiled = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL);
+    expect(compiled.sql).toMatch(/update\s+ai_run_artifacts/i);
+    // The anchor split IS the fix: without this predicate the statement would
+    // also drag run-anchored rows off their immutable ai_agent_runs org and
+    // 23503 the whole merge at COMMIT.
+    expect(compiled.sql).toMatch(/run_id\s+is\s+null/i);
+    expect(compiled.sql).not.toMatch(/run_id\s+is\s+not\s+null/i);
+    // Bound params, not SQL text: a text-only assertion would pass against a
+    // statement that moved rows the wrong way.
+    expect(compiled.params).toContain(L);
+    expect(compiled.params).toContain(S);
+    // Survivor is the value being written, loser the row filter.
+    expect(compiled.params.indexOf(S)).toBeLessThan(compiled.params.indexOf(L));
+  });
+
+  it('is registered as a custom policy, not leave-for-erasure', () => {
+    expect(getOrgMergePolicies().get('ai_run_artifacts')?.kind).toBe('custom');
+  });
+});

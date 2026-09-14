@@ -241,7 +241,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           })}
           detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
           actionLabel={t('orgRecord.lifecycle.backToList')}
-          actionHref="/settings/organizations"
+          actionHref="/organizations"
         />
       );
     }
@@ -252,7 +252,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         title={t('orgRecord.notFound.title')}
         description={t('orgRecord.notFound.description')}
         actionLabel={t('orgRecord.notFound.action')}
-        actionHref="/settings/organizations"
+        actionHref="/organizations"
       />
     );
   }
@@ -328,7 +328,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           onMerged={() => undefined}
           onDoneClose={() => {
             setModal(null);
-            void navigateTo('/settings/organizations');
+            void navigateTo('/organizations');
           }}
         />
       )}

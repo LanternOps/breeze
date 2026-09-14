@@ -80,8 +80,9 @@ describe('getRouteScope', () => {
     expect(getRouteScope('/organizations/abc123/anything')).toBe('org-record');
   });
 
-  it('leaves the bare /organizations prefix unregistered (there is no list page at that path)', () => {
-    expect(getRouteScope('/organizations')).toBeNull();
+  it('classifies the organizations BOARD at the bare /organizations path as partner settings (the org picker itself works fleet-wide)', () => {
+    expect(getRouteScope('/organizations')).toBe('partner-settings');
+    expect(getRouteScope('/organizations/')).toBe('partner-settings');
   });
 
   it('does NOT suppress orgId injection on the record — the page passes orgIdOverride per request', () => {

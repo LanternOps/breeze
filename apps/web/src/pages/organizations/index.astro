@@ -1,0 +1,8 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import OrganizationsBoardPage from '../../components/organizations/board/OrganizationsBoardPage';
+---
+
+<DashboardLayout titleKey="titles.organizations">
+  <OrganizationsBoardPage client:load />
+</DashboardLayout>

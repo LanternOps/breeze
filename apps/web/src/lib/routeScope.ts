@@ -60,6 +60,9 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   // The organization RECORD pins its org from the URL (spec D2). It neither
   // requires nor follows the OrgSwitcher; the page owns its own scoping.
   { pattern: /^\/organizations\/[^/]+(\/.*)?$/, kind: 'org-record' },
+  // The organizations BOARD (account-readiness directory, W02): the org picker
+  // itself, so it works fleet-wide like the settings list it replaced.
+  { pattern: /^\/organizations\/?$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/organizations\/[^/]+(\/.*)?$/, kind: 'org-required' },
   { pattern: /^\/settings\/organizations$/, kind: 'partner-settings' },
   { pattern: /^\/settings\/organization$/, kind: 'partner-settings' },
