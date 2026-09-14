@@ -268,6 +268,36 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
   return lifecycleEnabled ? undefined : ne(reports.type, 'hardware_lifecycle');
 }
 
+/**
+ * OD-12 (#5784): a managed evidence run becomes customer-visible on DELIVERY,
+ * not on generation. Without this, `portalRunListPredicate` — which filters only
+ * on org, portal_self_service and status — would show a security artifact at
+ * 05:18 on the due day, before the technician reviewed it.
+ *
+ * Derived, not stamped: the occurrence already carries `delivered_at`,
+ * `delivered_by_user_id` and `delivered_via`, so a `published_at` column would
+ * only add a second copy of the truth that could drift when a delivery is
+ * reverted or the occurrence is waived.
+ *
+ * Runs no deliverable references (ordinary portal self-service) are unaffected.
+ * Fail-closed: a run referenced only by non-delivered occurrences is hidden.
+ * `sd_evidence_report_run_idx` (report_run_id) serves both sub-queries.
+ */
+export function deliveredEvidenceOnly() {
+  return sql`(
+    NOT EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      WHERE e.report_run_id = ${reportRuns.id}
+    )
+    OR EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      JOIN service_deliverable_occurrences o ON o.id = e.occurrence_id
+      WHERE e.report_run_id = ${reportRuns.id}
+        AND o.status = 'delivered'
+    )
+  )`;
+}
+
 export function portalRunPredicate(
   runId: string,
   orgId: string,
@@ -278,6 +308,7 @@ export function portalRunPredicate(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
@@ -290,6 +321,7 @@ export function portalRunListPredicate(
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
