@@ -416,4 +416,41 @@ describe('portalApi customer reports', () => {
       '/api/v1/portal/reports/runs/run-1/csv',
     );
   });
+
+  it('fetches the latest hardware lifecycle run and summary', async () => {
+    const body = {
+      run: { id: 'run-3', generatedAt: 'Jun 10, 2026' },
+      summary: { rows: [], other: [], recommendations: [] },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(body),
+      { status: 200 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getHardwareLifecycleLatest();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      '/portal/reports/lifecycle/latest',
+    );
+    expect(result).toMatchObject({ data: body, statusCode: 200 });
+  });
+
+  it('surfaces a 404 not-generated response for hardware lifecycle latest', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        error: 'Hardware lifecycle report has not been generated yet',
+        code: 'PORTAL_REPORT_NOT_GENERATED',
+      }),
+      { status: 404 },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await portalApi.getHardwareLifecycleLatest();
+
+    expect(result).toMatchObject({
+      code: 'PORTAL_REPORT_NOT_GENERATED',
+      statusCode: 404,
+    });
+  });
 });

@@ -460,6 +460,11 @@
       "discardFailed": "Yapay zeka taslağı silinemedi.",
       "discarded": "Taslak silindi"
     },
+    "aiProposal": {
+      "postAsNote": "Özel not olarak gönder",
+      "posted": "Özel not olarak gönderildi",
+      "postFailed": "Not gönderilemedi"
+    },
     "resolve": {
       "noteLabel": "Çözüm notu (talep sahibi tarafından görülebilir)",
       "submit": "Bileti çözümle"

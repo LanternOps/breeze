@@ -8,7 +8,7 @@ import { navigateTo } from './navigation';
 // into local scope for the InvoiceSummary/InvoiceDetail types below and re-exported
 // (type-only, erased at build) so '@/lib/api' consumers are unaffected.
 import type { BackupDevicesDto, BackupOverviewDto, DashboardDto, DocumentPageSize, DocumentThemeId, EnrichedPortalDevice, InvoiceStatus, PublicQuoteHeader, QuotePresentation, SecurityDevicesDto, SecurityOverviewDto, SlaDto, SupportUsageDto, TicketFormField } from '@breeze/shared';
-import type { PortalRunDto, PortalRunsDto } from '@breeze/shared';
+import type { HardwareLifecycleSummary, PortalRunDto, PortalRunsDto } from '@breeze/shared';
 import type { PortalDocumentsDto, PortalOccurrencesDto, PortalServiceOverviewDto } from '@breeze/shared';
 
 // Client API base. Empty (the default) → same-origin **relative** requests
@@ -309,6 +309,14 @@ export interface PaginatedResult<T> extends ApiResponse<T[]> {
 
 export interface PortalRunsResult extends PaginatedResult<PortalRunDto> {
   timezone?: string;
+}
+
+/** GET /portal/reports/lifecycle/latest response shape. Not exported from
+ *  @breeze/shared (it is declared API-side only), so the portal mirrors it
+ *  locally; the summary payload itself (`HardwareLifecycleSummary`) is shared. */
+export interface HardwareLifecyclePortalLatestDto {
+  run: { id: string; generatedAt: string };
+  summary: HardwareLifecycleSummary | null;
 }
 
 export type Device = EnrichedPortalDevice;
@@ -1252,6 +1260,14 @@ export const portalApi = {
     format: 'pdf' | 'csv',
   ): PublicApiPath =>
     publicApiPath(`/portal/reports/runs/${runId}/${format}`),
+
+  getHardwareLifecycleLatest: (
+    config: ApiRequestConfig = {},
+  ): Promise<ApiResponse<HardwareLifecyclePortalLatestDto>> =>
+    apiGet<HardwareLifecyclePortalLatestDto>(
+      '/portal/reports/lifecycle/latest',
+      config,
+    ),
 
   // W04 — service deliverables
   getService: (

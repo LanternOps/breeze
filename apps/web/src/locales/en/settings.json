@@ -1599,7 +1599,14 @@
     "stateDisabled": "Disabled",
     "runningBadge": {
       "running": "Running",
-      "notRunning": "Not running"
+      "notRunning": "Not running",
+      "inactive": "Enabled (inactive)"
+    },
+    "subsystemDisabled": {
+      "title": "AI agents are disabled on this server",
+      "envFlag": "Set {{flag}} to let agents run. Until then every trigger is skipped.",
+      "killSwitch": "The platform kill switch is engaged. Agents will not run until an administrator clears it.",
+      "skips": "{{total}} trigger(s) skipped recently — {{reasons}}"
     },
     "reenableNote": "Restored, switched off. Review its policy, then turn it on.",
     "chipLabels": {

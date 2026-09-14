@@ -56,6 +56,8 @@ const {
   loadPartnerBaselineKindsMock,
   loadPartnerBaselineCeilingMock,
   buildAgentToolCatalogMock,
+  readAiKillStateMock,
+  readAgentRunSkipSummaryMock,
   listArtifactsForAuthMock,
   toArtifactDtoMock,
 } = vi.hoisted(() => ({
@@ -116,6 +118,12 @@ const {
   // service-layer dependency in this file) so these route tests exercise only
   // routing/auth/the cache header, never the real registry closure.
   buildAgentToolCatalogMock: vi.fn(),
+  // #5380 — GET / 's `system` block. Both have their own unit coverage
+  // (aiKillState.test.ts / skipVisibility.test.ts); mocked here like every
+  // other service-layer dependency so these route tests exercise only how
+  // GET / composes them.
+  readAiKillStateMock: vi.fn(),
+  readAgentRunSkipSummaryMock: vi.fn(),
   // Task 10 (execution-plane W01, reconciliation R6) — GET
   // /runs/:runId/artifacts. Both functions have their own full unit coverage
   // in artifactService.test.ts (Task 5); mocked here (like every other
@@ -123,6 +131,18 @@ const {
   // routing/auth/validation/precedence, never the real DTO projection.
   listArtifactsForAuthMock: vi.fn(),
   toArtifactDtoMock: vi.fn(),
+}));
+
+vi.mock('../services/aiKillState', () => ({
+  readAiKillState: readAiKillStateMock,
+}));
+
+// `services/aiAgents/subsystemState` is deliberately NOT mocked:
+// `aiAgentsEnvFlagEnabled` reads BREEZE_AI_AGENTS_ENABLED at call time, and
+// that read is the behaviour the `system` block's tests drive through
+// process.env.
+vi.mock('../services/aiAgents/skipVisibility', () => ({
+  readAgentRunSkipSummary: readAgentRunSkipSummaryMock,
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -378,7 +398,13 @@ vi.mock('../services/aiAgents/scheduleService', () => ({
 }));
 
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
-vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+vi.mock('../config/env', async (importOriginal) => ({
+  // #5380: `envFlag` stays REAL — `aiAgentsEnvFlagEnabled` reads
+  // BREEZE_AI_AGENTS_ENABLED through it at call time, and that read is the
+  // behaviour the `system` block's tests drive through process.env.
+  ...(await importOriginal<typeof import('../config/env')>()),
+  policyDecideEnabled: envMock.policyDecideEnabled,
+}));
 
 import {
   AI_AGENT_GRADUATION_BY_ORG_BATCH,
@@ -511,6 +537,11 @@ beforeEach(() => {
   getAgentMock.mockResolvedValue(agent());
   loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
   buildAgentToolCatalogMock.mockReturnValue(minimalToolCatalogDto());
+  // #5380 — GET / reads both on every request. `readAiKillState` fails CLOSED
+  // in production (it can never resolve undefined), so the default here is a
+  // clear switch, not a stand-in for "unset".
+  readAiKillStateMock.mockResolvedValue({ killed: false, epoch: 1 });
+  readAgentRunSkipSummaryMock.mockResolvedValue(null);
   verifyDeviceAccessMock.mockResolvedValue({
     device: { id: DEVICE_ID, orgId: ORG_ID, siteId: null },
   });
@@ -3708,7 +3739,19 @@ describe('GET /ai-agents', () => {
     const res = await buildApp().request('/ai-agents');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: [], partnerBaselineKinds: [] });
+    expect(await res.json()).toEqual({
+      data: [],
+      partnerBaselineKinds: [],
+      // #5380 — the subsystem block is reported even with zero agents: "no
+      // agents" and "agents can never run here" are different problems.
+      system: {
+        enabled: false,
+        envFlagEnabled: false,
+        envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+        killSwitchEngaged: false,
+        skips: null,
+      },
+    });
     expect(selectDistinctOnMock).not.toHaveBeenCalled();
   });
 
@@ -4286,6 +4329,96 @@ describe('mapError — org-row supervised keys are grant-only (spec §4.4, #5049
       }),
       422,
     );
+  });
+});
+
+// #5380 — Settings → AI Agents showed a "Running" badge for every enabled
+// agent while `BREEZE_AI_AGENTS_ENABLED` was unset on US prod, so every
+// trigger was a silent no-op and the page said nothing. The list response is
+// the page's only read, so the subsystem state rides along with it.
+describe('GET /ai-agents — system block (#5380)', () => {
+  beforeEach(() => {
+    listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
+    selectDistinctOnMock.mockReturnValue(distinctChain([]));
+    loadPartnerBaselineKindsMock.mockResolvedValue(new Set());
+    readAiKillStateMock.mockResolvedValue({ killed: false, epoch: 1 });
+    readAgentRunSkipSummaryMock.mockResolvedValue(null);
+    delete process.env.BREEZE_AI_AGENTS_ENABLED;
+  });
+
+  it('reports the subsystem as disabled — and names the env var — when the flag is unset', async () => {
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.system).toMatchObject({
+      enabled: false,
+      envFlagEnabled: false,
+      envFlagName: 'BREEZE_AI_AGENTS_ENABLED',
+      killSwitchEngaged: false,
+    });
+  });
+
+  it('reports the subsystem as enabled when the flag is set and the DB kill switch is clear', async () => {
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system).toMatchObject({ enabled: true, envFlagEnabled: true, killSwitchEngaged: false });
+  });
+
+  it('reports NOT enabled when the DB kill switch is engaged even with the env flag on', async () => {
+    process.env.BREEZE_AI_AGENTS_ENABLED = 'true';
+    readAiKillStateMock.mockResolvedValue({ killed: true, epoch: 4 });
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system).toMatchObject({ enabled: false, envFlagEnabled: true, killSwitchEngaged: true });
+  });
+
+  it('passes the caller-visible orgs to the skip summary and returns it verbatim', async () => {
+    readAgentRunSkipSummaryMock.mockResolvedValue({
+      retentionHours: 48,
+      total: 12,
+      reasons: [{ reason: 'kill_switch_off', count: 12, firstAt: null, lastAt: null }],
+    });
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([ORG_ID]);
+    const body = await res.json();
+    expect(body.system.skips).toMatchObject({ total: 12 });
+    expect(body.system.skips.reasons[0].reason).toBe('kill_switch_off');
+  });
+
+  it('scopes the skip summary to a partner caller\'s accessible orgs', async () => {
+    await buildApp(false, {
+      scope: 'partner', orgId: null, partnerId: PARTNER_ID, accessibleOrgIds: [ORG_ID, OTHER_ORG_ID],
+    }).request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([ORG_ID, OTHER_ORG_ID]);
+  });
+
+  // Review finding (#5681): the route documents that a system-scoped caller
+  // (accessibleOrgIds === null) must NOT fan the summary out across every
+  // tenant on the platform. That contract had no test.
+  it('never fans the skip summary out for a system-scoped caller', async () => {
+    await buildApp(false, {
+      scope: 'system', orgId: null, partnerId: null, accessibleOrgIds: null,
+    }).request('/ai-agents');
+
+    expect(readAgentRunSkipSummaryMock).toHaveBeenCalledWith([]);
+  });
+
+  it('reports skips as null (unknown) rather than zero when the counter store is unreachable', async () => {
+    readAgentRunSkipSummaryMock.mockResolvedValue(null);
+
+    const res = await buildApp().request('/ai-agents');
+
+    const body = await res.json();
+    expect(body.system.skips).toBeNull();
   });
 });
 

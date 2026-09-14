@@ -460,6 +460,11 @@
       "discardFailed": "Não foi possível descartar o rascunho da IA.",
       "discarded": "Rascunho descartado"
     },
+    "aiProposal": {
+      "postAsNote": "Publicar como nota privada",
+      "posted": "Publicado como nota privada",
+      "postFailed": "Não foi possível publicar a nota"
+    },
     "resolve": {
       "noteLabel": "Nota de resolução (visível para o solicitante)",
       "submit": "Resolver chamado"

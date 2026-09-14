@@ -58,6 +58,10 @@
       "escalate": "Bir kişiye yükselt",
       "deployed": "Dağıtıldığı yer"
     },
+    "tabs": {
+      "settings": "Ayarlar",
+      "activity": "Etkinlik"
+    },
     "fields": {
       "name": "Ad",
       "description": "Açıklama",
@@ -126,7 +130,12 @@
     "cert_expiry": "Sertifika süresinin dolması",
     "bandwidth": "Bant genişliği",
     "disk_io": "Disk G/Ç",
-    "network_errors": "Ağ hataları"
+    "network_errors": "Ağ hataları",
+    "antivirus": "Antivirüs",
+    "software_presence": "Yazılım varlığı",
+    "backup_continuity": "Yedekleme sürekliliği",
+    "script": "Betik denetimi",
+    "network_check": "Ağ denetimi"
   },
   "fields": {
     "operator": "Karşılaştırma",
@@ -145,7 +154,28 @@
     "withinDays": "Şu gün içinde sona eriyor (gün)",
     "direction": "Yön",
     "errorType": "Hata yönü",
-    "interfaceName": "Arabirim (isteğe bağlı)"
+    "interfaceName": "Arabirim (isteğe bağlı)",
+    "check": "Denetim",
+    "staleAfterDays": "Şu gün sonra eski sayılır (gün)",
+    "minThreatCount": "Asgari tehdit sayısı",
+    "softwareName": "Yazılım adı",
+    "vendor": "Sağlayıcı (isteğe bağlı)",
+    "presence": "Varlık",
+    "version": "Sürüm",
+    "backupCheck": "Denetim",
+    "maxAgeHours": "Azami yaş (saat)",
+    "failureCount": "Hata sayısı",
+    "script": "Çalıştırılacak betik",
+    "scriptSelectPlaceholder": "Bir betik seçin…",
+    "scriptLoadError": "Betikler yüklenemedi",
+    "intervalMinutes": "Şu sıklıkta çalıştır (dakika)",
+    "timeoutSeconds": "Zaman aşımı (saniye)",
+    "breachOnNonZeroExit": "Çıkış kodu sıfır değilse ihlal say",
+    "checkType": "Denetim türü",
+    "target": "Hedef",
+    "port": "Bağlantı noktası",
+    "expectStatus": "Beklenen durum kodu",
+    "pollingIntervalSeconds": "Şu sıklıkta sorgula (saniye)"
   },
   "operators": {
     "gt": "büyüktür",
@@ -183,6 +213,27 @@
     "read": "Okuma",
     "write": "Yazma",
     "total": "Toplam"
+  },
+  "antivirusChecks": {
+    "not_protected": "Korumasız",
+    "definitions_stale": "Tanımlar eski",
+    "realtime_disabled": "Gerçek zamanlı koruma devre dışı",
+    "threats_present": "Tehdit mevcut"
+  },
+  "presences": {
+    "installed": "Yüklü",
+    "not_installed": "Yüklü değil",
+    "version_below": "Şu sürümden düşük"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Başarılı yedekleme yok",
+    "consecutive_failures": "Ardışık hatalar"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP ping testi",
+    "tcp_port": "TCP bağlantı noktası",
+    "http_check": "HTTP denetimi",
+    "dns_check": "DNS denetimi"
   },
   "deploy": {
     "title": "Monitörü dağıt",
@@ -257,6 +308,50 @@
     "empty": "Bu monitör tarafından henüz kapsanan bir cihaz yok.",
     "errors": {
       "fetch": "Cihazlar yüklenemedi"
+    }
+  },
+  "activity": {
+    "title": "Etkinlik",
+    "columns": {
+      "device": "Cihaz",
+      "state": "Durum",
+      "openSince": "Şu zamandan beri açık",
+      "episodesInWindow": "Pencere içindeki olaylar",
+      "escalated": "Yükseltildi",
+      "responses": "Yanıtlar"
+    },
+    "state": {
+      "ok": "Sağlıklı",
+      "breach": "İhlal",
+      "unknown": "Bilinmiyor"
+    },
+    "responses": {
+      "active": "Etkin",
+      "paused": "Sıfırlanana kadar yanıtlar duraklatıldı"
+    },
+    "reset": {
+      "button": "Yükseltmeyi sıfırla",
+      "confirm": "{{device}} için yükseltme sıfırlansın mı? Bu, tekrarlama sayacını sıfırlar ve otomatik yanıtları devam ettirir. Açık olayı kapatmaz veya uyarıyı çözmez.",
+      "success": "Yükseltme sıfırlandı",
+      "error": "Yükseltme sıfırlanamadı"
+    },
+    "empty": {
+      "title": "Henüz etkinlik yok",
+      "body": "Bu izleyici henüz hiçbir cihazı değerlendirmedi."
+    },
+    "episodes": {
+      "title": "Olaylar",
+      "endReason": {
+        "recovered": "Düzeldi",
+        "monitorDetached": "İzleyici ayrıldı"
+      },
+      "outcome": {
+        "queued": "Kuyrukta",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "skippedPaused": "Atlandı (yanıtlar duraklatıldı)",
+        "skippedNoResponse": "Atlandı (yanıt yapılandırılmadı)"
+      }
     }
   }
 }

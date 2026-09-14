@@ -276,6 +276,12 @@ describe('action_intents schema', () => {
         'requestedByUserId',
         'originPrincipalKind',
         'originPrincipalId',
+        // #5022 W01 — the AI surface the intent was created from, so the
+        // origin survives the release worker's from-scratch AuthContext
+        // rebuild. Distinct from originPrincipal*, which is the REQUESTER.
+        'aiOriginKind',
+        'aiOriginSessionId',
+        'aiOriginAgentRunId',
         'requestingApiKeyId',
         'requestingAgentRunId',
         'scopeKind',

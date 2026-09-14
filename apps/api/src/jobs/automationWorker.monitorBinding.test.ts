@@ -55,6 +55,13 @@ vi.mock('../db/schema', () => ({
   devices: {},
   deviceGroupMemberships: {},
   organizations: {},
+  // #5290 — the pause gate reads this table for a monitor-managed automation.
+  monitorDeviceState: { monitorId: 'monitor_id', deviceId: 'device_id', responsesPaused: 'responses_paused' },
+}));
+
+// #5290 — episode bookkeeping is asserted in automationWorker.monitorPause.test.ts.
+vi.mock('../services/monitors/episodeService', () => ({
+  recordEpisodeResponse: vi.fn(async () => undefined),
 }));
 
 vi.mock('../services/eventBus', () => ({

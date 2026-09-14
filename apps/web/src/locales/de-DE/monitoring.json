@@ -58,6 +58,10 @@
       "escalate": "An eine Person eskalieren",
       "deployed": "Bereitgestellt für"
     },
+    "tabs": {
+      "settings": "Einstellungen",
+      "activity": "Aktivität"
+    },
     "fields": {
       "name": "Name",
       "description": "Beschreibung",
@@ -126,7 +130,12 @@
     "cert_expiry": "Zertifikatsablauf",
     "bandwidth": "Bandbreite",
     "disk_io": "Festplatten-E/A",
-    "network_errors": "Netzwerkfehler"
+    "network_errors": "Netzwerkfehler",
+    "antivirus": "Virenschutz",
+    "software_presence": "Softwarevorhandensein",
+    "backup_continuity": "Backup-Kontinuität",
+    "script": "Skriptprüfung",
+    "network_check": "Netzwerkprüfung"
   },
   "fields": {
     "operator": "Vergleich",
@@ -145,7 +154,28 @@
     "withinDays": "Läuft ab innerhalb (Tagen)",
     "direction": "Richtung",
     "errorType": "Fehlerrichtung",
-    "interfaceName": "Schnittstelle (optional)"
+    "interfaceName": "Schnittstelle (optional)",
+    "check": "Prüfung",
+    "staleAfterDays": "Veraltet nach (Tagen)",
+    "minThreatCount": "Mindestanzahl Bedrohungen",
+    "softwareName": "Softwarename",
+    "vendor": "Hersteller (optional)",
+    "presence": "Vorhandensein",
+    "version": "Versionsnummer",
+    "backupCheck": "Prüfung",
+    "maxAgeHours": "Maximales Alter (Stunden)",
+    "failureCount": "Anzahl Fehlschläge",
+    "script": "Skript",
+    "scriptSelectPlaceholder": "Skript auswählen…",
+    "scriptLoadError": "Skripte konnten nicht geladen werden",
+    "intervalMinutes": "Ausführen alle (Minuten)",
+    "timeoutSeconds": "Zeitlimit (Sekunden)",
+    "breachOnNonZeroExit": "Verstoß bei Exit-Code ungleich null",
+    "checkType": "Prüfungstyp",
+    "target": "Ziel",
+    "port": "Portnummer",
+    "expectStatus": "Erwarteter Statuscode",
+    "pollingIntervalSeconds": "Abfrage alle (Sekunden)"
   },
   "operators": {
     "gt": "größer als",
@@ -183,6 +213,27 @@
     "read": "Lesen",
     "write": "Schreiben",
     "total": "Gesamt"
+  },
+  "antivirusChecks": {
+    "not_protected": "Nicht geschützt",
+    "definitions_stale": "Definitionen veraltet",
+    "realtime_disabled": "Echtzeitschutz deaktiviert",
+    "threats_present": "Bedrohungen vorhanden"
+  },
+  "presences": {
+    "installed": "Installiert",
+    "not_installed": "Nicht installiert",
+    "version_below": "Version unter"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Kein erfolgreiches Backup",
+    "consecutive_failures": "Aufeinanderfolgende Fehlschläge"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP-Ping",
+    "tcp_port": "TCP-Port",
+    "http_check": "HTTP-Prüfung",
+    "dns_check": "DNS-Prüfung"
   },
   "deploy": {
     "title": "Monitor bereitstellen",
@@ -257,6 +308,50 @@
     "empty": "Diesem Monitor sind noch keine Geräte zugeordnet.",
     "errors": {
       "fetch": "Geräte konnten nicht geladen werden"
+    }
+  },
+  "activity": {
+    "title": "Aktivität",
+    "columns": {
+      "device": "Gerät",
+      "state": "Status",
+      "openSince": "Offen seit",
+      "episodesInWindow": "Episoden im Zeitfenster",
+      "escalated": "Eskaliert",
+      "responses": "Reaktionen"
+    },
+    "state": {
+      "ok": "Normal",
+      "breach": "Verletzung",
+      "unknown": "Unbekannt"
+    },
+    "responses": {
+      "active": "Aktiv",
+      "paused": "Reaktionen pausiert bis zum Zurücksetzen"
+    },
+    "reset": {
+      "button": "Eskalation zurücksetzen",
+      "confirm": "Eskalation für {{device}} zurücksetzen? Dies setzt den Wiederholungszähler zurück und nimmt automatische Reaktionen wieder auf. Die offene Episode wird dadurch nicht geschlossen und der Alarm nicht aufgelöst.",
+      "success": "Eskalation zurückgesetzt",
+      "error": "Eskalation konnte nicht zurückgesetzt werden"
+    },
+    "empty": {
+      "title": "Noch keine Aktivität",
+      "body": "Dieser Monitor hat noch kein Gerät ausgewertet."
+    },
+    "episodes": {
+      "title": "Episoden",
+      "endReason": {
+        "recovered": "Erholt",
+        "monitorDetached": "Monitor getrennt"
+      },
+      "outcome": {
+        "queued": "Eingereiht",
+        "completed": "Abgeschlossen",
+        "failed": "Fehlgeschlagen",
+        "skippedPaused": "Übersprungen (Reaktionen pausiert)",
+        "skippedNoResponse": "Übersprungen (keine Reaktion konfiguriert)"
+      }
     }
   }
 }

@@ -17,8 +17,10 @@ import SlaChip from './SlaChip';
 import { SlaTimers } from './SlaTimers';
 import TicketTimeBilling from './TicketTimeBilling';
 import TicketPartsCard from './TicketPartsCard';
+import { TicketProposalCard } from '../aiAgents/TicketProposalCard';
 import { formatMoney } from '../billing/shared/format';
 import { statusConfig, priorityConfig, slaState, type TicketDetail, type TicketStatus, type TicketPriority } from './ticketConfig';
+import type { AiAgentRunTicketProposalDto } from '@breeze/shared';
 
 /** Mirrors the API's BlockedCurrencySummary (invoiceService.ts, #3776). */
 interface BlockedCurrencyGroup { currencyCode: string; count: number; amount: string }
@@ -371,6 +373,44 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     void refetchAiDrafts(ticketId);
   }, [ticket, ticketId, refetchAiDrafts]);
 
+  // #4211 (W01) — the newest triage run's ticketProposal, fetched alongside
+  // the AI drafts above. Cleared to null after a successful post (the note
+  // is now on the feed; there's nothing left to "post as me").
+  const [aiProposal, setAiProposal] = useState<{ runId: string; proposal: AiAgentRunTicketProposalDto } | null>(null);
+  const [postingProposal, setPostingProposal] = useState(false);
+
+  const refetchAiProposal = useCallback(async (forTicketId: string) => {
+    // #4211 review: same "best-effort, never clear on failure" contract as
+    // refetchAiDrafts above — the guard against a stale response applies to
+    // EVERY exit path (not just the success one), and a failed fetch/parse
+    // leaves the existing (possibly stale) card rather than nulling it out.
+    // The earlier version nulled aiProposal on !res.ok and on any thrown
+    // error with NO staleness guard on either branch: a slow failing
+    // request for ticket A landing after the technician had already
+    // switched to ticket B would silently wipe B's correctly-loaded,
+    // postable card off the screen.
+    try {
+      const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-proposal`);
+      if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
+      if (!res.ok) return;
+      const body = await res.json();
+      if (ticketIdRef.current !== forTicketId) return; // switched while awaiting .json()
+      setAiProposal(body?.data ?? null);
+    } catch {
+      // Best-effort — leave the existing (possibly stale) card rather than
+      // clearing it out from under an in-progress "post as note" action on
+      // a network blip.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ticket) {
+      setAiProposal(null);
+      return;
+    }
+    void refetchAiProposal(ticketId);
+  }, [ticket, ticketId, refetchAiProposal]);
+
   // Bulk actions in the queue mutate tickets behind the pane's back; the parent
   // bumps refreshToken after a bulk apply so the detail can't go stale. The ref
   // guard makes the effect fire only on an actual token bump — without it, a
@@ -405,6 +445,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     // rather than waiting on the `[ticket, ticketId]` refetch effect.
     setAiDrafts([]);
     setDraftContent({});
+    // #4211 (W01) — same stale-card class the comment above describes: clear
+    // eagerly rather than waiting on the `[ticket, ticketId]` refetch effect.
+    setAiProposal(null);
   }, [ticketId]);
 
   // Opens the resolve form and, when an active `resolution_note` AI draft
@@ -509,6 +552,32 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
     void load({ background: true });
     onChanged?.();
   }, [ticketId, load, onChanged, onTicketPatched]);
+
+  // #4211 (W01) — "Post as private note": posts aiProposal's summary as an
+  // internal note under the calling technician's own identity, then clears
+  // the card (the note is now on the feed; nothing left to post).
+  const postAiProposalNote = useCallback(async (content: string) => {
+    if (!aiProposal || postingProposal) return;
+    setPostingProposal(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/tickets/${ticketId}/ai-proposal/post-note`, {
+          method: 'POST',
+          body: JSON.stringify({ runId: aiProposal.runId, content })
+        }),
+        errorFallback: t('ticketWorkbench.aiProposal.postFailed'),
+        successMessage: t('ticketWorkbench.aiProposal.posted'),
+        onUnauthorized: () => void navigateTo(loginPathWithNext(), { replace: true })
+      });
+      setAiProposal(null);
+      // The post created a new private note — refresh the feed.
+      afterMutation();
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setPostingProposal(false);
+    }
+  }, [afterMutation, aiProposal, postingProposal, ticketId, t]);
 
   // Returns true on success, false on a swallowed ActionError — callers with
   // form state (resolve/pending) must only close/clear when the POST landed.
@@ -1328,6 +1397,16 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
                 </div>
               )}
             </div>
+          </div>
+        )}
+        {aiProposal && (
+          <div className="mt-2">
+            <TicketProposalCard
+              proposal={aiProposal.proposal}
+              t={t}
+              onPostNote={postAiProposalNote}
+              posting={postingProposal}
+            />
           </div>
         )}
         {aiDrafts.map((draft) => (

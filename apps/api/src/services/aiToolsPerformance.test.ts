@@ -8,6 +8,15 @@ vi.mock('../db', () => ({
   },
 }));
 
+// aiToolsPerformance.ts reaches the queue through the mandatory-origin
+// adapter; none of these tests exercise analyze_boot_performance's collection
+// trigger or manage_startup_items, so a bare stub keeps the (much heavier)
+// real commandQueue/dispatchDeviceCommand/scriptDispatch import graph out of
+// this suite.
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(),
+}));
+
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';

@@ -40,6 +40,7 @@ export const PORTAL_GATED_PAGES = [
   '/tickets',
   '/service',
   '/documents',
+  '/reports/lifecycle',
 ] as const;
 
 /**

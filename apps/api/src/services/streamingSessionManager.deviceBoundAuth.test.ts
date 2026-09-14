@@ -240,8 +240,16 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     expect(toolAuth.orgId ?? toolAuth.accessibleOrgIds?.[0]).toBe(DEVICE_ORG);
     // RBAC / rate limits / audit still see the RAW login auth — narrowing must
     // not flip a dual-membership tech from their partner role to an org role.
-    expect(session.auth).toBe(rawAuth);
-    expect(session.toolAuth).not.toBe(rawAuth);
+    // The session auth is the raw login auth PLUS the minted AI origin
+    // (#5022 W01) — never narrowed. Identity-compare the fields that matter
+    // rather than the object reference.
+    expect(session.auth).toMatchObject({
+      orgId: rawAuth.orgId,
+      scope: rawAuth.scope,
+      partnerId: rawAuth.partnerId,
+      user: rawAuth.user,
+    });
+    expect(session.toolAuth).not.toBe(session.auth);
   });
 
   it('re-narrows the refreshed auth on follow-up messages (never reverts to login scope)', async () => {
@@ -271,6 +279,50 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     expect(toolAuth.accessibleOrgIds).toEqual([DEVICE_ORG]);
   });
 
+  it('mints an ai_assistant origin on the session auth and the tool auth (#5022 W01)', async () => {
+    const session = await manager.getOrCreate(
+      'sess-origin-mint',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    const expected = { kind: 'ai_assistant', sessionId: 'sess-origin-mint' };
+    expect(session.auth.aiOrigin).toEqual(expected);
+    expect(session.toolAuth.aiOrigin).toEqual(expected);
+    expect((capturedMcpArgs[0]!.getAuth() as AuthContext).aiOrigin).toEqual(expected);
+  });
+
+  it('re-mints the origin on the REFRESHED auth, so a follow-up message is still attributed', async () => {
+    await manager.getOrCreate(
+      'sess-origin-refresh',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    // Second message: a FRESH request auth with no origin on it at all.
+    const session = await manager.getOrCreate(
+      'sess-origin-refresh',
+      { ...DB_SESSION, deviceId: DEVICE_ID },
+      makePartnerAuth(),
+      undefined,
+      'PROMPT',
+      undefined,
+      PLATFORM_CONFIG,
+    );
+
+    const expected = { kind: 'ai_assistant', sessionId: 'sess-origin-refresh' };
+    expect(session.auth.aiOrigin).toEqual(expected);
+    expect(session.toolAuth.aiOrigin).toEqual(expected);
+  });
+
   it('leaves non-device sessions untouched (partner techs keep fleet-wide reach in general chat)', async () => {
     const auth = makePartnerAuth();
     const session = await manager.getOrCreate(
@@ -284,7 +336,14 @@ describe('getOrCreate — device-bound sessions narrow the tool-facing auth', ()
     );
 
     expect(session.deviceId).toBeNull();
-    expect(capturedMcpArgs[0]!.getAuth()).toBe(auth);
-    expect(session.toolAuth).toBe(auth);
+    // No device narrowing: tool auth IS the session auth (which now also
+    // carries the minted ai_assistant origin, #5022 W01).
+    expect(capturedMcpArgs[0]!.getAuth()).toBe(session.toolAuth);
+    expect(session.toolAuth).toBe(session.auth);
+    expect(session.toolAuth).toMatchObject({
+      orgId: auth.orgId,
+      scope: auth.scope,
+      partnerId: auth.partnerId,
+    });
   });
 });

@@ -163,3 +163,26 @@ describe('automation action-result state machine', () => {
     });
   });
 });
+
+/**
+ * #5290 — a monitor's compiled response records its real terminal state on the
+ * open breach episode. A cancelled run leaves the outcome as it stands: an
+ * operator stop is not evidence that the remediation succeeded or failed.
+ */
+describe('monitor episode response outcome', () => {
+  it.each([
+    ['completed', 'completed'],
+    ['failed', 'failed'],
+    ['partial', 'failed'],
+  ] as const)('maps run status %s to episode outcome %s', (runStatus, expected) => {
+    expect(__testOnly.decideMonitorEpisodeOutcome(runStatus)).toBe(expected);
+  });
+
+  it('returns null for a cancelled run so the existing outcome is preserved', () => {
+    expect(__testOnly.decideMonitorEpisodeOutcome('cancelled')).toBeNull();
+  });
+
+  it('returns null for a run that is still running', () => {
+    expect(__testOnly.decideMonitorEpisodeOutcome('running')).toBeNull();
+  });
+});

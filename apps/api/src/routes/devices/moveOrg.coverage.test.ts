@@ -1302,3 +1302,43 @@ describe('manual_assets cross-org detach coverage (#4622)', () => {
     expect(deviceOrgDenormalizedTables).not.toContain('manual_assets');
   });
 });
+
+// ============================================================================
+// #5022 W01 Task 13 — the device-move AI-origin detach, route-local mirror.
+//
+// `script_executions` IS re-stamped to the target org (it is in
+// CORE_DEVICE_ORG_DENORMALIZED_TABLES), but `ai_agent_runs` deliberately is NOT
+// and `ai_sessions` is re-stamped only when device-bound. So a moved execution
+// can end up pointing at a session or run in a DIFFERENT tenant.
+// ============================================================================
+describe('device move severs cross-tenant AI origin pointers (#5022 W01)', () => {
+  const moveOrgPath = fileURLToPath(new URL('./moveOrg.ts', import.meta.url));
+
+  it('moveOrg nulls ai_session_id and ai_agent_run_id on script_executions', () => {
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    expect(
+      src.replace(/\s+/g, ' '),
+      'a moved execution would otherwise point at a session or run in the SOURCE tenant',
+    ).toMatch(/UPDATE script_executions SET ai_session_id = NULL, ai_agent_run_id = NULL/);
+  });
+
+  it('RETAINS ai_initiator_kind — the fact survives the move, the pointer does not', () => {
+    const src = readFileSync(moveOrgPath, 'utf8');
+
+    expect(src).not.toMatch(/SET[^;]*ai_initiator_kind\s*=\s*NULL/);
+  });
+
+  it('the trigger half carries the same statement, so a direct org_id UPDATE is covered too', () => {
+    const ddl = readdirSync(MIGRATIONS_DIR)
+      .filter((name) => /^\d{4}-.*\.sql$/.test(name))
+      .map((name) => readFileSync(`${MIGRATIONS_DIR}${name}`, 'utf8'))
+      .join('\n')
+      .replace(/\s+/g, ' ');
+
+    expect(
+      ddl,
+      'breeze_cascade_device_org_id() must mirror the route, or a fix-up script that writes devices.org_id directly strands a cross-tenant pointer',
+    ).toMatch(/UPDATE public\.script_executions SET ai_session_id = NULL, ai_agent_run_id = NULL/);
+  });
+});

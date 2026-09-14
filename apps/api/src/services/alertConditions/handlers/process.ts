@@ -25,7 +25,7 @@ export const processHandler: ConditionHandler = {
       .limit(threshold);
 
     if (recentResults.length === 0) {
-      return { passed: false, description: `No check results for process ${cond.processName}` };
+      return { passed: false, description: `No check results for process ${cond.processName}`, dataAvailable: false };
     }
 
     const consecutiveFailures = recentResults.filter(r => r.status !== 'running').length;

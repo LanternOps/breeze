@@ -72,6 +72,10 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   // the network monitors `manage_monitors` above covers.
   list_monitors: 'alerts_monitoring',
   get_monitor: 'alerts_monitoring',
+  // #5290 (W03): per-device breach activity/escalation for a monitor
+  // definition, same capability as the other monitor-definition tools above.
+  get_monitor_activity: 'alerts_monitoring',
+  reset_monitor_escalation: 'alerts_monitoring',
   manage_monitor_definitions: 'alerts_monitoring',
   manage_service_monitors: 'alerts_monitoring',
   manage_notification_channels: 'alerts_monitoring',

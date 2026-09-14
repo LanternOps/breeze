@@ -11,7 +11,8 @@ import { devices, localVaults } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type VaultHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -274,7 +275,9 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
           eq(localVaults.deviceId, vault.deviceId),
         ));
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_vault_sync',
         vault.deviceId,
         CommandTypes.VAULT_SYNC,
         {

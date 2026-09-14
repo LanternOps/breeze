@@ -57,6 +57,17 @@ vi.mock('../../services/ticketService', async () => {
 
 vi.mock('../../services/ticketTriage', () => ticketTriageMocks);
 
+// #4211 (W01) — aiDrafts.ts (mounted under ticketsRoutes) now imports
+// getLatestTicketProposal, which pulls in runTrace.ts's real dependency
+// chain (alertVerdicts/sweepFindings -> actionIntents/intentService ->
+// aiTools.ts) — a much heavier module graph than this file's own minimal
+// `../../db/schema` mock below supports. This suite never exercises the
+// ai-proposal routes (that's aiDrafts.test.ts), so stub the module out
+// entirely rather than widen the schema mock for an unrelated endpoint.
+vi.mock('../../services/aiTicketProposal', () => ({
+  getLatestTicketProposal: vi.fn(),
+}));
+
 vi.mock('../../services/mlFeedbackEmitters', () => ({
   emitTicketTriageFeedback: vi.fn(),
 }));

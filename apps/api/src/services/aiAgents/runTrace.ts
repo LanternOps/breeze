@@ -313,7 +313,7 @@ function pickDraftText(
   return written ? written.content : proposalText;
 }
 
-function mapTicketProposal(
+export function mapTicketProposal(
   proposal: TicketProposalOutcome,
   intentIds: string[],
   draftRows: RunTraceDraftRowInput[],

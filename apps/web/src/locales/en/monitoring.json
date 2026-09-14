@@ -58,6 +58,10 @@
       "escalate": "Escalate to a human",
       "deployed": "Deployed to"
     },
+    "tabs": {
+      "settings": "Settings",
+      "activity": "Activity"
+    },
     "fields": {
       "name": "Name",
       "description": "Description",
@@ -126,7 +130,12 @@
     "cert_expiry": "Certificate expiry",
     "bandwidth": "Bandwidth",
     "disk_io": "Disk I/O",
-    "network_errors": "Network errors"
+    "network_errors": "Network errors",
+    "antivirus": "Antivirus",
+    "software_presence": "Software presence",
+    "backup_continuity": "Backup continuity",
+    "script": "Script check",
+    "network_check": "Network check"
   },
   "fields": {
     "operator": "Comparison",
@@ -145,7 +154,28 @@
     "withinDays": "Expires within (days)",
     "direction": "Direction",
     "errorType": "Error direction",
-    "interfaceName": "Interface (optional)"
+    "interfaceName": "Interface (optional)",
+    "check": "Check",
+    "staleAfterDays": "Stale after (days)",
+    "minThreatCount": "Minimum threats",
+    "softwareName": "Software name",
+    "vendor": "Vendor (optional)",
+    "presence": "Presence",
+    "version": "Version",
+    "backupCheck": "Check",
+    "maxAgeHours": "Max age (hours)",
+    "failureCount": "Failure count",
+    "script": "Script",
+    "scriptSelectPlaceholder": "Select a script…",
+    "scriptLoadError": "Failed to load scripts",
+    "intervalMinutes": "Run every (minutes)",
+    "timeoutSeconds": "Timeout (seconds)",
+    "breachOnNonZeroExit": "Breach on non-zero exit code",
+    "checkType": "Check type",
+    "target": "Target",
+    "port": "Port",
+    "expectStatus": "Expected status code",
+    "pollingIntervalSeconds": "Poll every (seconds)"
   },
   "operators": {
     "gt": "greater than",
@@ -183,6 +213,27 @@
     "read": "Read",
     "write": "Write",
     "total": "Total"
+  },
+  "antivirusChecks": {
+    "not_protected": "Not protected",
+    "definitions_stale": "Definitions stale",
+    "realtime_disabled": "Real-time protection disabled",
+    "threats_present": "Threats present"
+  },
+  "presences": {
+    "installed": "Installed",
+    "not_installed": "Not installed",
+    "version_below": "Version below"
+  },
+  "backupChecks": {
+    "no_successful_backup": "No successful backup",
+    "consecutive_failures": "Consecutive failures"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP ping",
+    "tcp_port": "TCP port",
+    "http_check": "HTTP check",
+    "dns_check": "DNS check"
   },
   "deploy": {
     "title": "Deploy monitor",
@@ -257,6 +308,50 @@
     "empty": "No devices are covered by this monitor yet.",
     "errors": {
       "fetch": "Failed to load devices"
+    }
+  },
+  "activity": {
+    "title": "Activity",
+    "columns": {
+      "device": "Device",
+      "state": "State",
+      "openSince": "Open since",
+      "episodesInWindow": "Episodes in window",
+      "escalated": "Escalated",
+      "responses": "Responses"
+    },
+    "state": {
+      "ok": "Healthy",
+      "breach": "Breach",
+      "unknown": "Unknown"
+    },
+    "responses": {
+      "active": "Active",
+      "paused": "Responses paused until reset"
+    },
+    "reset": {
+      "button": "Reset escalation",
+      "confirm": "Reset the escalation for {{device}}? This clears the recurrence counter and resumes automatic responses. It does not close the open episode or resolve the alert.",
+      "success": "Escalation reset",
+      "error": "Failed to reset escalation"
+    },
+    "empty": {
+      "title": "No activity yet",
+      "body": "This monitor hasn't evaluated any device yet."
+    },
+    "episodes": {
+      "title": "Episodes",
+      "endReason": {
+        "recovered": "Recovered",
+        "monitorDetached": "Monitor detached"
+      },
+      "outcome": {
+        "queued": "Queued",
+        "completed": "Completed",
+        "failed": "Failed",
+        "skippedPaused": "Skipped (responses paused)",
+        "skippedNoResponse": "Skipped (no response configured)"
+      }
     }
   }
 }

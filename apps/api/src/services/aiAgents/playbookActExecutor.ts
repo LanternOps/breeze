@@ -458,6 +458,9 @@ async function readServiceStatus(
       // off, so the run's own org is what keeps the read inside this tenant
       // if the device has been moved since the run started.
       expectedOrgId: run.orgId,
+      // #5022 W01: the act/verify lane never enters `executeTool`, so the
+      // AuthContext carrier is the only route the origin has into it.
+      ...(agentAuth.aiOrigin ? { aiOrigin: agentAuth.aiOrigin } : {}),
     });
   if (result.status !== 'completed') {
     return { ok: false, detail: `service status read did not complete (${result.status})` };

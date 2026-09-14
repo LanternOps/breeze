@@ -809,6 +809,7 @@ export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
+export * from './aiOrigin';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';

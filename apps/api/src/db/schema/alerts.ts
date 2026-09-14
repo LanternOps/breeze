@@ -125,6 +125,12 @@ export const alerts = pgTable('alerts', {
   // can link an alert back to the monitor that authored it. ON DELETE SET NULL
   // in SQL — deleting a monitor must not delete its history.
   monitorId: uuid('monitor_id'),
+  // #5290 — the breach episode this alert belongs to (null for non-monitor
+  // alerts). ON DELETE SET NULL in SQL.
+  episodeId: uuid('episode_id'),
+  // #5290 — a recurrence-escalation alert. NEVER auto-resolved, never
+  // auto-suppressed by an AI verdict, always its own correlation root.
+  requiresHuman: boolean('requires_human').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   // Backs the `alerts.critical` device-filter field (#968).

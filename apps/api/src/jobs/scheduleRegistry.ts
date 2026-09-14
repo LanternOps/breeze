@@ -149,6 +149,11 @@ export const JOB_SCHEDULES = {
   // history. Hour 19 was free in the daily tier; :03 keeps it in the
   // daily = 3 (mod 5) lane.
   'm365-sync-retention': '8 19 * * *',
+  // #5290 (Monitoring & automation unification, W03) — daily prune of CLOSED
+  // monitor_episodes rows past the 400-day retention window (open episodes are
+  // never pruned). Hour 20 was entirely free; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'monitor-episode-retention': '3 20 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0

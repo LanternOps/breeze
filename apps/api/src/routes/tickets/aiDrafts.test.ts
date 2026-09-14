@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { authRef, getScopedTicketOr404Mock, listActiveTicketDraftsMock, sendTicketDraftMock, discardTicketDraftMock } = vi.hoisted(() => ({
+const { authRef, getScopedTicketOr404Mock, listActiveTicketDraftsMock, sendTicketDraftMock, discardTicketDraftMock, getLatestTicketProposalMock, postProposalNoteMock } = vi.hoisted(() => ({
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -16,6 +16,8 @@ const { authRef, getScopedTicketOr404Mock, listActiveTicketDraftsMock, sendTicke
   listActiveTicketDraftsMock: vi.fn(),
   sendTicketDraftMock: vi.fn(),
   discardTicketDraftMock: vi.fn(),
+  getLatestTicketProposalMock: vi.fn(),
+  postProposalNoteMock: vi.fn(),
 }));
 
 vi.mock('../../middleware/auth', async () => ({
@@ -48,8 +50,13 @@ vi.mock('../../services/ticketService', async () => {
     listActiveTicketDrafts: listActiveTicketDraftsMock,
     sendTicketDraft: sendTicketDraftMock,
     discardTicketDraft: discardTicketDraftMock,
+    postProposalNote: postProposalNoteMock,
   };
 });
+
+vi.mock('../../services/aiTicketProposal', () => ({
+  getLatestTicketProposal: getLatestTicketProposalMock,
+}));
 
 // getScopedTicketOr404 is mocked directly above, so the underlying db chain it
 // would otherwise hit never runs in these tests — this stub only needs to
@@ -73,6 +80,8 @@ import { TicketServiceError } from '../../services/ticketService';
 
 const TICKET_ID = '3f2f1d8e-1111-4222-8333-444455556666';
 const DRAFT_ID = 'aaaaaaaa-1111-4222-8333-444455556666';
+const RUN_ID = 'bbbbbbbb-1111-4222-8333-444455556666';
+const COMMENT_ID = 'cccccccc-1111-4222-8333-444455556666';
 
 const STUB_TICKET = { id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1', deviceId: null, subject: 'Printer' };
 
@@ -257,5 +266,90 @@ describe('POST /tickets/:id/ai-drafts/:draftId/discard', () => {
 
     expect(res.status).toBe(404);
     expect(discardTicketDraftMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /tickets/:id/ai-proposal (#4211)', () => {
+  beforeEach(resetAuth);
+
+  it('404s when the ticket is out of scope', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(null);
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal`);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns null data when no triage run produced a proposal', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    getLatestTicketProposalMock.mockResolvedValue(null);
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: null });
+  });
+
+  it('returns the projected proposal', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    getLatestTicketProposalMock.mockResolvedValue({
+      runId: RUN_ID, finishedAt: null, proposal: { version: 1, summary: 's' },
+    });
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal`);
+
+    expect((await res.json()).data.runId).toBe(RUN_ID);
+  });
+});
+
+describe('POST /tickets/:id/ai-proposal/post-note (#4211)', () => {
+  beforeEach(resetAuth);
+
+  it('rejects a body with no runId', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal/post-note`, {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ content: 'x' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('posts with the session actor and returns 201', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+    postProposalNoteMock.mockResolvedValue({ comment: { id: COMMENT_ID } });
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal/post-note`, {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ runId: RUN_ID, content: 'Proposed summary' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(postProposalNoteMock).toHaveBeenCalledWith(
+      TICKET_ID, RUN_ID, 'Proposed summary', expect.objectContaining({ userId: 'u-1' }),
+    );
+  });
+
+  it('never accepts an isPublic field', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(STUB_TICKET);
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal/post-note`, {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ runId: RUN_ID, content: 'x', isPublic: true }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('404s when the ticket is out of scope, without calling the service', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(null);
+
+    const res = await ticketsRoutes.request(`/${TICKET_ID}/ai-proposal/post-note`, {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({ runId: RUN_ID, content: 'x' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(postProposalNoteMock).not.toHaveBeenCalled();
   });
 });
