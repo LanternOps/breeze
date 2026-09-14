@@ -119,6 +119,7 @@ import {
   STALE_CLAIM_MS,
   claimDelivery,
   createPendingDeliveries,
+  listPendingDeliveriesForRun,
   listUnsettledDeliveries,
   recordTransientGateFailure,
   settleDelivery,
@@ -252,6 +253,16 @@ describe('report run delivery state machine (#4248 W03, OD-8)', () => {
       expect(params).toEqual(expect.arrayContaining(['pending', 'claimed', cutoff]));
       expect(params).not.toContain('unknown');
       expect(state.selectLimits).toEqual([25]);
+    });
+  });
+
+  describe('listPendingDeliveriesForRun', () => {
+    it('selects only the pending rows of that run', async () => {
+      state.selectQueue.push([{ id: D1, state: 'pending' }]);
+      expect(await listPendingDeliveriesForRun(RUN)).toEqual([{ id: D1, state: 'pending' }]);
+      const { params } = compiled(state.selectWheres[0]);
+      expect(params).toEqual([RUN, 'pending']);
+      expect(state.contextOpens).toBe(1);
     });
   });
 

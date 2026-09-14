@@ -154,6 +154,17 @@ export async function recordTransientGateFailure(deliveryId: string, error: stri
   );
 }
 
+/** The rows a delivery pass for ONE run still has to attempt. */
+export async function listPendingDeliveriesForRun(reportRunId: string): Promise<DeliveryRow[]> {
+  return inOwnSystemContext(() =>
+    db
+      .select()
+      .from(reportRunDeliveries)
+      .where(and(eq(reportRunDeliveries.reportRunId, reportRunId), eq(reportRunDeliveries.state, 'pending')))
+      .orderBy(reportRunDeliveries.createdAt),
+  );
+}
+
 const UNSETTLED_STATES: readonly ReportRunDeliveryState[] = ['pending', 'claimed'];
 
 /**
