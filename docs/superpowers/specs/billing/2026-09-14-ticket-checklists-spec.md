@@ -684,6 +684,15 @@ reason for the split below.
 
 ## 10. Open Decisions
 
+> **Gate A resolution — 2026-09-14 (Todd: "as recommended").** Every decision below
+> is approved as recommended. The one genuine split, **OD-3, is settled as A (live
+> `checklist_template_id`, delete of an in-use template refused with 409
+> `CHECKLIST_TEMPLATE_IN_USE`)**; Codex's snapshot position (B) is retained below
+> for the record. Upstream constraints restated: instructions are internal-only,
+> the portal shows nothing (§5); onboarding stays a `one_time` deliverable set.
+> Status: `spec-approved` → Stage 3 (plan).
+
+
 Numbered for Todd. Each carries a recommendation; Codex's position is recorded
 where it differed.
 
