@@ -523,6 +523,25 @@ describe('addAiTriageNote audit trail (#4209, W03)', () => {
     });
   });
 
+  it('audits BEFORE the non-transactional side effects, so an outbox failure cannot lose the audit row', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push([{ id: 'comment-1' }]);
+
+    const order: string[] = [];
+    auditMock.mockImplementation(async () => { order.push('audit'); });
+    emitMock.mockImplementation(async () => { order.push('emit'); });
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID);
+
+    // The comment row is already durably committed by the time any of these
+    // run. writeTicketOutbox can throw for reasons that are NOT unique
+    // violations; if it ran first, that throw would skip the audit and leave a
+    // committed autonomous note with no compliance record — while a retry
+    // would return the existing row as a clean success.
+    expect(order[0]).toBe('audit');
+    expect(order).toContain('emit');
+  });
+
   it('does not double-audit when the idempotent retry returns the existing row', async () => {
     queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
     dbState.insertReturningQueue.push(Object.assign(new Error('duplicate key'), { code: '23505' }));

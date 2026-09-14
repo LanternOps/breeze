@@ -83,9 +83,20 @@ function agentRunIdFrom(auth: AuthContext): string | null {
  * designing agent attribution for assignment, status and creation — a product
  * decision, tracked separately. A stable, typed error code is what lets the
  * agent's tool loop relay the limitation instead of retrying a 23503.
+ *
+ * Review finding: the payload carries NO `success` key, on purpose. The SDK's
+ * error classifier (`aiAgentSdkTools.ts`, "Detect error responses returned as
+ * JSON strings by tool handlers") flags a result as a tool error only when
+ * `'error' in parsed && !('success' in parsed) && !('data' in parsed) &&
+ * !('configured' in parsed)`. Adding `success: false` would EXEMPT the refusal
+ * from that check, so it would be recorded by `safePostToolUse` as an ordinary
+ * successful tool call and the MCP content block would omit `isError: true` —
+ * a policy refusal indistinguishable from a success in the execution log,
+ * which is precisely the observability this wave exists to add. The bare
+ * `{ error, … }` shape is also what every other refusal in this file uses.
  */
 function refuseAgentPrincipal(action: string): string {
-  return JSON.stringify({ success: false, error: 'agent_principal_unsupported_action', action });
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
 }
 
 /** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */

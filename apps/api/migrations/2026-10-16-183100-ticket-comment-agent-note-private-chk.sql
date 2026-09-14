@@ -5,9 +5,11 @@
 -- are application-layer. The requirement is "isPublic FORCED false", and the only
 -- place a force survives a future writer is the database.
 --
--- Scoped to origin_principal_kind='ai_agent' ONLY: 'system' rows (org-move feed
--- entries etc.) and 'user' rows are untouched, and 'unknown' stays unconstrained
--- so the fail-closed default value cannot brick an insert path.
+-- Scoped to origin_principal_kind='ai_agent' ONLY: every other value in the
+-- column's CHECK ('user', 'system', 'unknown') is untouched. The column's
+-- DEFAULT is 'user' (portal.ts, a deliberate deviation from action_intents'
+-- fail-closed default), so no existing insert path that omits the column can
+-- be affected by this constraint at all.
 --
 -- NOT VALID is deliberately NOT used: there is no legal pre-existing violating
 -- row (every ai_agent row was written by addAiTriageNote, which has hardcoded

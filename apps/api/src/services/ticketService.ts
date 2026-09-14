@@ -1657,18 +1657,20 @@ export async function addAiTriageNote(
     const comment = inserted[0];
     if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
 
-    await emitTicketEvent({
-      type: 'ticket.commented',
-      ticketId,
-      orgId: ticket.orgId,
-      partnerId: ticket.partnerId ?? null,
-      actorUserId: null,
-      payload: { commentId: comment.id, isPublic: false }
-    });
-    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
-
-    // #4209 (W03): an autonomous write must leave an audit trail. `audit_logs.actor_id`
-    // is uuid NOT NULL with NO FK, so the RUN id is legal there — and it is the
+    // #4209 (W03) review: the audit write is FIRST among the post-insert side
+    // effects, deliberately. Once the savepoint above commits, the comment row
+    // is durable; the three side effects below are not transactional with it.
+    // `writeTicketOutbox` is a plain insert that can throw for reasons that are
+    // NOT unique violations (FK, connection drop) — and if it ran first, that
+    // throw would skip the audit entirely, leaving a committed autonomous
+    // comment with no compliance record, while a caller retry would hit the
+    // one-note-per-run index and return the existing row as a clean success so
+    // nothing ever noticed. Ordering the audit first shrinks that window to
+    // nothing: `createAuditLogAsync` never throws (it swallows into its own
+    // retry queue + Sentry), so it cannot in turn endanger emit/outbox.
+    //
+    // `audit_logs.actor_id` is uuid NOT NULL with NO FK, so the RUN id is legal
+    // there — and it is the
     // right identifier: it is the thing an operator can open, whose policy
     // snapshot froze the gate that authorised this note. Deliberately NOT the
     // all-zero system sentinel other services use: that would erase the only
@@ -1686,6 +1688,16 @@ export async function addAiTriageNote(
       result: 'success',
       initiatedBy: 'ai'
     });
+
+    await emitTicketEvent({
+      type: 'ticket.commented',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: null,
+      payload: { commentId: comment.id, isPublic: false }
+    });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
 
     return { comment };
   } catch (err) {

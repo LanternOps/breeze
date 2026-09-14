@@ -508,11 +508,14 @@ describe('manage_tickets refuses the three users-FK actions for an ai_agent prin
 
       const out = await getTool().handler(input as Record<string, unknown>, makeAgentAuth());
 
-      expect(JSON.parse(out)).toEqual({
-        success: false,
-        error: 'agent_principal_unsupported_action',
-        action,
-      });
+      const parsed = JSON.parse(out);
+      expect(parsed).toEqual({ error: 'agent_principal_unsupported_action', action });
+      // Guards the classifier contract in aiAgentSdkTools.ts: a payload
+      // carrying `success`/`data`/`configured` is EXEMPTED from being flagged
+      // as a tool error, which would log this refusal as an ordinary success.
+      expect(parsed).not.toHaveProperty('success');
+      expect(parsed).not.toHaveProperty('data');
+      expect(parsed).not.toHaveProperty('configured');
       expect(serviceMocks[humanMock]).not.toHaveBeenCalled();
       expect(topUpdateSetMock).not.toHaveBeenCalled();
       expect(txInsertValuesMock).not.toHaveBeenCalled();
