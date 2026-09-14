@@ -164,6 +164,19 @@ describe('loadPsaAndExternal', () => {
     expect(out.rows).toEqual([]);
     expect(wheres.has(organizationExternalLinks)).toBe(false);
   });
+
+  it('never emits an identity badge for quickbooks or xero — the accounting customer import writes exactly these system values on organization_external_links, and loadAccounting already reports the real mapping (or withholds it under accounting:read); a second "external" badge would duplicate or leak it', async () => {
+    setupDb(new Map<unknown, unknown[]>([
+      [psaConnections, []],
+      [organizationExternalLinks, [
+        { orgId: ORG_A, system: 'quickbooks' },
+        { orgId: ORG_A, system: 'xero' },
+        { orgId: ORG_A, system: 'datto_rmm' },
+      ]],
+    ]));
+    const out = await loadPsaAndExternal(PARTNER, [ORG_A]);
+    expect(out.rows).toEqual([{ orgId: ORG_A, integration: { system: 'external', state: 'identity', label: 'datto_rmm' } }]);
+  });
 });
 
 const NOW = new Date('2026-09-13T12:00:00.000Z');

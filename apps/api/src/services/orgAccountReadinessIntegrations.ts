@@ -242,6 +242,20 @@ function accountingSystem(provider: string): 'quickbooks' | 'xero' {
 }
 
 /**
+ * `organization_external_links.system` values that belong to the accounting
+ * vocabulary (written by the QuickBooks/Xero customer import — see
+ * services/accounting/quickbooksCustomerImport.ts's `externalSystem: PROVIDER`,
+ * read back by accountingMappingService.ts). loadAccounting already reports
+ * the real mapping for these under accounting:read (or withholds it entirely
+ * without that grant); an "external identity" fallback must never also claim
+ * them, or a QuickBooks-linked org gets the same system rendered twice — once
+ * real, once as a meaningless identity badge — and a caller without
+ * accounting:read would see the identity badge as a substitute leak of a
+ * fact the grant was meant to withhold.
+ */
+const ACCOUNTING_EXTERNAL_LINK_SYSTEMS = new Set(['quickbooks', 'xero']);
+
+/**
  * QuickBooks / Xero. Gated on accounting:read (spec: "accounting additionally
  * accounting:read"): without it neither the connector nor any org badge exists.
  */
@@ -291,7 +305,8 @@ export async function loadAccounting(
 
 /**
  * PSA (partner-level connections + org-level connections + provider-matching
- * external links) and external identity (every other external link). One
+ * external links) and external identity (every other external link, except
+ * ACCOUNTING_EXTERNAL_LINK_SYSTEMS — those belong to loadAccounting). One
  * psa_connections query — partner axis OR accepted org ids — and one
  * organization_external_links query; the split happens here.
  */
@@ -331,7 +346,7 @@ export async function loadPsaAndExternal(
   for (const link of links) {
     if (enabledProviders.has(link.system)) {
       rows.push({ orgId: link.orgId, integration: { system: 'psa', state: 'linked' } });
-    } else if (!psaProviders.has(link.system)) {
+    } else if (!psaProviders.has(link.system) && !ACCOUNTING_EXTERNAL_LINK_SYSTEMS.has(link.system)) {
       identity.push({ orgId: link.orgId, integration: { system: 'external', state: 'identity', label: link.system } });
     }
     // A link for a partner-level provider that is DISABLED is consumed by the
