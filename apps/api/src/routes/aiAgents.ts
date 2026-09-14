@@ -80,6 +80,7 @@ import { findingsToReviewSql, summaryExcerpt } from '../services/aiAgents/runFin
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { patchPlanDeviceIds } from '../services/aiAgents/patchPlan';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
 import {
@@ -1360,7 +1361,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // run.orgId)` pins the read to the run's OWN org, and the auth condition
   // stays as defence-in-depth beside RLS (matching the two reads above). A
   // device that fails either simply projects a null hostname.
-  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  // AI patch agent W01 (#5747): a patch plan's item devices ride the SAME
+  // batched, run-org-pinned read — model-authored ids, same threat model.
+  const sweepDeviceIds = [...new Set([
+    ...sweepFindingDeviceIds(run.outcome),
+    ...patchPlanDeviceIds(run.outcome),
+  ])];
   const hostnameRows = sweepDeviceIds.length > 0
     ? await db
       .select({ id: devices.id, hostname: devices.hostname })

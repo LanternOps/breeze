@@ -145,6 +145,7 @@ import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile'
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeFleetDesign,
+  finalizePatchPlan,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -2052,6 +2053,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // narrative / triage / design, so at most one of the five error codes
     // below is ever non-null.
     const fleetDesignErrorCode = await finalizeFleetDesign(ctx, result);
+    // AI patch agent W01 (#5747) — sixth in the same row. It only re-validates
+    // the plan and records dispositions (no rows, no intents), so ordering
+    // against the awaiting_approval decision is moot, but it must run before
+    // `finishRun` serializes the outcome. At most one of the six codes below
+    // is ever non-null.
+    const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -2107,6 +2114,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // agent's circuit breaker (which, per Global Constraints, treats a
       // design run's success as circuit-neutral anyway — see `agentCircuit.ts`).
       || outcome.fleetDesign !== undefined
+      // AI patch agent W01 — same rule for a patch run's ONE job.
+      || outcome.patchPlan !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2137,7 +2146,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
     await finishRun(
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
-      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode,
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
+        ?? patchPlanErrorCode,
       result,
     );
   } catch (error) {

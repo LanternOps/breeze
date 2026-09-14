@@ -1147,6 +1147,31 @@ const runDetailResponseSchema = z.object({
       ruleCount: z.number(),
       evidenceTruncated: z.boolean(),
     }).strict().nullable(),
+    // AI patch agent W01 (#5747): `null` for every non-patch run. No raw
+    // patch-id / job-result-id lists — only a per-item count.
+    patch: z.object({
+      scheduleId: z.string().nullable(),
+      occurrenceKey: z.string().nullable(),
+      summary: z.string(),
+      posture: z.object({
+        compliancePct: z.number(), devicesAtRisk: z.number(), oldestOutstandingDays: z.number().nullable(),
+      }).strict().nullable(),
+      items: z.array(z.object({
+        index: z.number(),
+        class: z.string(),
+        severity: z.string(),
+        deviceId: z.string().nullable(),
+        deviceHostname: z.string().nullable(),
+        patchCount: z.number(),
+        title: z.string(),
+        detail: z.string(),
+        disposition: z.enum(['recorded', 'refused']).nullable(),
+        reason: z.string().nullable(),
+      }).strict()),
+      recordedCount: z.number(),
+      refusedCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1363,6 +1388,38 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  it('resolves patch plan item hostnames through the same ONE batched, org-pinned read (AI patch agent W01)', async () => {
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'patch', scheduleId: null, triggerRef: {},
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          patchPlan: {
+            schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+            items: [{ class: 'install', severity: 'high', deviceId: DEVICE_ID, patchIds: ['p1'], title: 'Install KB1', detail: 'why', evidenceRef: 'e' }],
+            dispositions: [{ index: 0, class: 'install', deviceId: DEVICE_ID, disposition: 'recorded' }],
+            evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+          },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const params = sqlParams(hostnameWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(DEVICE_ID);
+    expect(runDetailResponseSchema.parse(body).data.patch!.items[0]).toMatchObject({ deviceHostname: 'WKS-042', disposition: 'recorded', patchCount: 1 });
+    expect(JSON.stringify(body)).not.toContain('"patchIds"');
+  });
+
   it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
     const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
     let hostnameWhere: unknown;

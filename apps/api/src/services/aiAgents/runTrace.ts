@@ -28,6 +28,7 @@ import { projectFleetDesign } from './fleetDesignReport';
 import { projectNarrative } from './narrativeReport';
 import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
+import { projectPatch } from './patchPlan';
 import {
   AI_AGENT_RUN_DTO_SCHEMA_VERSION,
   type AiAgentKind,
@@ -478,5 +479,10 @@ export function buildRunTrace(
     // derived markdown is deliberately left out too, since the detail view
     // renders the structured sections itself.
     fleetDesign: projectFleetDesign(run, outcome, fleetDesignArtifact),
+    // AI patch agent W01 (#5747): null for every non-patch run and for a
+    // patch run that produced no plan — see `projectPatch`'s safe-projection
+    // contract. The raw patch/job-result id lists never reach the wire.
+    // Hostnames ride the same batched map the sweep uses.
+    patch: projectPatch(run, outcome, deviceHostnames),
   };
 }

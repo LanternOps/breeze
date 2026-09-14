@@ -606,3 +606,46 @@ describe('patch plan capture', () => {
     expect(createActionIntent).not.toHaveBeenCalled();
   });
 });
+
+describe('finalizePatchPlan (finish-time re-validation)', () => {
+  it('records a disposition per item and keeps intentIds empty', async () => {
+    seedRows();
+    dbMockState.rowQueues.devices = [[{ id: D1 }]];
+    const withReboot = {
+      ...VALID_PATCH_PLAN,
+      items: [...VALID_PATCH_PLAN.items, { class: 'escalation', severity: 'low', deviceId: D2, title: 'Check WS-02', detail: 'Pending reboot for a while.', evidenceRef: 'rebootBacklog' }],
+    };
+    scriptQuery({ toolCalls: [{ tool: 'submit_patch_plan', input: withReboot }], assistantText: 'Plan complete.' });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    expect(outcome.patchPlan!.dispositions).toEqual([
+      { index: 0, class: 'install', deviceId: D1, disposition: 'recorded' },
+      { index: 1, class: 'escalation', deviceId: D2, disposition: 'refused', reason: 'device_not_in_org' },
+    ]);
+    expect(final.to).toBe('completed');
+    expect(final.patch.intentIds ?? []).toEqual([]);
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('reports patch_plan_missing when the run finished without a submission', async () => {
+    seedRows();
+    await executeAgentRun(RUN_ID);
+    const final = finalTransition()!;
+    expect(final.to).toBe('completed');
+    expect(final.patch.errorCode).toBe('patch_plan_missing');
+  });
+
+  it('a submitted plan counts as producing something — a max-turns cut-off after it is not a failure', async () => {
+    seedRows();
+    scriptQuery({
+      toolCalls: [{ tool: 'submit_patch_plan', input: VALID_PATCH_PLAN }],
+      results: [resultMessage({ subtype: 'error_max_turns', is_error: true })],
+    });
+    dbMockState.rowQueues.devices = [[{ id: D1 }]];
+    await executeAgentRun(RUN_ID);
+    expect(finalTransition()!.to).not.toBe('failed');
+  });
+});
