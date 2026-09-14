@@ -233,7 +233,14 @@ export const ticketComments = pgTable('ticket_comments', {
   // origin_principal_kind = 'ai_agent' — at most one AI-authored comment per
   // run. Not modeled in Drizzle for the same "partial index" reason as
   // ticketDrafts.ts's ticket_drafts_active_uq.
-  agentRunId: uuid('agent_run_id')
+  agentRunId: uuid('agent_run_id'),
+  // #4211 (W01): the agent run whose ticketProposal.summary a TECHNICIAN chose
+  // to post under their own identity. Distinct from agentRunId above, which
+  // means "an agent run wrote this row". A row with proposedByRunId set is
+  // human-authored (origin_principal_kind='user', user_id=<tech>) and MUST NOT
+  // trip the helpdesk loop guard — see the migration header. FK
+  // (ON DELETE SET NULL) is SQL-only, same circular-import reason as agentRunId.
+  proposedByRunId: uuid('proposed_by_run_id')
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {
