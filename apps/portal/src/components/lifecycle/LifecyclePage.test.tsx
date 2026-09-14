@@ -140,6 +140,45 @@ describe('LifecyclePage', () => {
     });
   });
 
+  it('shows a plain error with no retry hint on a non-429 generate failure', async () => {
+    (portalApi.generateReport as ReturnType<typeof vi.fn>).mockResolvedValue({
+      statusCode: 500,
+      error: 'Could not generate the report',
+    });
+
+    render(<LifecyclePage initialRun={null} initialSummary={null} />);
+    fireEvent.click(screen.getByTestId('lifecycle-refresh'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Could not generate the report.')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Try again in about/)).toBeNull();
+  });
+
+  it('surfaces an error and stops spinning when generate succeeds but the refetch fails', async () => {
+    (portalApi.generateReport as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { id: 'run-2', status: 'completed' },
+      statusCode: 200,
+    });
+    (portalApi.getHardwareLifecycleLatest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      statusCode: 500,
+      error: 'Could not load your hardware lifecycle plan.',
+    });
+
+    render(<LifecyclePage initialRun={null} initialSummary={null} />);
+    fireEvent.click(screen.getByTestId('lifecycle-refresh'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Could not load your hardware lifecycle plan.')).toBeInTheDocument();
+    });
+    // The page must not stay in the empty state showing stale nothing, nor
+    // get stuck mid-refresh: the button is clickable again.
+    expect(screen.getByTestId('lifecycle-refresh')).not.toBeDisabled();
+    // No plan data ever arrived, so the empty state (not a half-built report)
+    // is still what's on screen.
+    expect(screen.queryByTestId('lifecycle-status-bar')).toBeNull();
+  });
+
   it('renders only the "Purchase date unknown" schedule group and the confirming-dates sentence for an all-undated fleet', () => {
     const undated = [
       row({ name: 'A', replacement: 'unknown', osSupport: 'unclassified' }),
@@ -157,14 +196,30 @@ describe('LifecyclePage', () => {
     expect(screen.queryByTestId('lifecycle-timeline-grid')).toBeNull();
   });
 
-  it('renders a large fleet inside a horizontally-scrolling wrapper with no pagination', () => {
+  it('renders every row of a large, dated fleet inside a horizontally-scrolling wrapper with no pagination', () => {
+    // Dated (not the row() helper's default null/null), so every row's
+    // TimelineCell actually draws its 20-cell grid — the DOM-heavy case this
+    // test exists to catch, not just an empty timeline column repeated.
     const many = Array.from({ length: 120 }, (_, i) =>
-      row({ name: `WS-${i}`, replacement: 'supported', osSupport: 'supported' }),
+      row({
+        name: `WS-${i}`,
+        replacement: 'supported',
+        osSupport: 'supported',
+        purchaseDate: '2024-01-01',
+        purchaseDateSource: 'manual',
+        replaceBy: '2029-01-01',
+      }),
     );
     render(<LifecyclePage initialRun={RUN} initialSummary={summaryWith(many)} />);
     const table = screen.getByTestId('lifecycle-plan-table-workstations');
     expect(table.querySelector('.overflow-x-auto')).not.toBeNull();
     expect(screen.queryByText(/page 1 of/i)).toBeNull();
     expect(screen.queryByRole('navigation', { name: /pagination/i })).toBeNull();
+
+    // All 120 rows present, none silently truncated, and each one's timeline
+    // grid actually rendered.
+    expect(screen.getAllByTestId('lifecycle-timeline-grid')).toHaveLength(120);
+    expect(screen.getByTestId('lifecycle-plan-row-WS-0')).toBeInTheDocument();
+    expect(screen.getByTestId('lifecycle-plan-row-WS-119')).toBeInTheDocument();
   });
 });

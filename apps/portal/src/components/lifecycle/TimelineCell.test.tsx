@@ -71,6 +71,32 @@ const SYNTHETIC_DUE_THIS_WEEK = row({
   replacement: 'replace',
 });
 
+// Due more than 3 years out (beyond the grid's TIMELINE_QUARTERS window):
+// the grid can't show the quarter, so the label has to say "far out" in words.
+const FAR_OUT_SUPPORTED = row({
+  name: 'FAR1',
+  manufacturer: 'Lenovo',
+  model: 'ThinkPad T14',
+  os: 'Windows 11 Pro',
+  purchaseDate: '2026-01-01',
+  purchaseDateSource: 'manual',
+  replaceBy: '2030-01-01',
+  replacement: 'supported',
+});
+
+// A replace-by date with no purchase record (warranty-derived, no purchase
+// history): the planned-life tint should run from the grid's left edge, not
+// from some finite "bought" quarter.
+const UNKNOWN_PURCHASE_KNOWN_DUE = row({
+  name: 'NOPURCHASE1',
+  manufacturer: 'HP',
+  model: 'EliteDesk 800',
+  os: 'Windows 11 Pro',
+  purchaseDate: null,
+  replaceBy: '2027-06-01',
+  replacement: 'due_soon',
+});
+
 describe('TimelineCell', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -113,5 +139,22 @@ describe('TimelineCell', () => {
   it('renders the "now" label for a row purchased and due this week', () => {
     render(<TimelineCell row={SYNTHETIC_DUE_THIS_WEEK} />);
     expect(screen.getByTestId('lifecycle-timeline-label')).toHaveTextContent('now');
+  });
+
+  it('renders an "N yr out" label when the due date falls beyond the drawn grid', () => {
+    render(<TimelineCell row={FAR_OUT_SUPPORTED} />);
+    expect(screen.getByTestId('lifecycle-timeline-label')).toHaveTextContent(/yr out/);
+  });
+
+  it('tints the whole planned-life run from the grid\'s left edge when purchase date is unknown but due date is known', () => {
+    render(<TimelineCell row={UNKNOWN_PURCHASE_KNOWN_DUE} />);
+    // dueQ = 12 for this fixture; boughtQ is -Infinity, so quarters 0..11 are
+    // all tinted (not just some finite run starting mid-grid).
+    for (let q = 0; q <= 11; q += 1) {
+      expect(screen.getByTestId(`lifecycle-timeline-quarter-${q}`).className).toContain('bg-warning/');
+    }
+    expect(screen.getByTestId('lifecycle-timeline-quarter-12').className).toContain('bg-warning');
+    expect(screen.getByTestId('lifecycle-timeline-quarter-12').className).not.toContain('bg-warning/');
+    expect(screen.queryByTestId('lifecycle-timeline-label')).toBeNull();
   });
 });
