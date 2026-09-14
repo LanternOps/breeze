@@ -31,6 +31,12 @@ interface LoadFailure {
 const CADENCES: readonly DeliverableCadence[] = ['monthly', 'quarterly', 'semiannual', 'annual', 'one_time'];
 const COMPLETION_MODES: readonly DeliverableCompletionMode[] = ['explicit', 'on_ticket_resolve'];
 
+/** Fallback label for a managed evidence type until its wave adds a locale key. */
+function humanizeReportType(type: string): string {
+  const words = type.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 interface ItemFormState {
   name: string;
   cadence: DeliverableCadence;
@@ -523,10 +529,10 @@ export default function DeliverableTemplatesPage() {
                           }
                         >
                           <option value="">{t('form.autoEvidenceNone')}</option>
+                          {/* W01 ships no types; each report-type wave adds its
+                              label under `reports.types` when it lands. */}
                           {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
-                            <option key={type} value={type}>
-                              {t(/* i18n-dynamic */ `autoEvidenceTypes.${type}`, { defaultValue: type })}
-                            </option>
+                            <option key={type} value={type}>{humanizeReportType(type)}</option>
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
