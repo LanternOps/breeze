@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { assertDeviceExecuteAllowedMock, aiQueueCommandForExecutionMock } = vi.hoisted(() => ({
+const { assertDeviceExecuteAllowedMock, aiDispatchDeviceCommandMock } = vi.hoisted(() => ({
   assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
-  aiQueueCommandForExecutionMock: vi.fn(async () => ({ command: { id: 'cmd-1', deviceId: 'd1' } })),
+  aiDispatchDeviceCommandMock: vi.fn(async () => ({
+    ok: true as const,
+    command: { id: 'cmd-1', deviceId: 'd1' },
+    delivery: 'queued_live' as const,
+    deliverBy: null,
+  })),
 }));
 
 // aiToolsBrowser imports the db hub (which pulls commandQueue), so the db mock
@@ -18,7 +23,7 @@ vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => undefined) }));
 // #5022 W01: `apply` no longer hand-rolls a multi-row db.insert(deviceCommands);
 // it queues per device through the mandatory-origin adapter.
 vi.mock('./aiDispatch', () => ({
-  aiQueueCommandForExecution: aiQueueCommandForExecutionMock,
+  aiDispatchDeviceCommand: aiDispatchDeviceCommandMock,
 }));
 vi.mock('./partnerTrust.commands', async () => ({
   ...(await vi.importActual<typeof import('./partnerTrust.commands')>('./partnerTrust.commands')),
@@ -176,7 +181,7 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
       message: 'Remote control and device changes are not available until this account is verified.',
     });
     expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith('d1', 'apply_browser_policy', 'u1');
-    expect(aiQueueCommandForExecutionMock).not.toHaveBeenCalled();
+    expect(aiDispatchDeviceCommandMock).not.toHaveBeenCalled();
   });
 
   it('apply: queues the same command when trust allows execution', async () => {
@@ -200,14 +205,20 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
     expect(result.queueFailures).toBeUndefined();
     // Routed through the mandatory-origin adapter, never a raw insert.
     expect(mockDb.insert).not.toHaveBeenCalled();
-    expect(aiQueueCommandForExecutionMock).toHaveBeenCalledTimes(1);
-    expect(aiQueueCommandForExecutionMock).toHaveBeenCalledWith(
+    expect(aiDispatchDeviceCommandMock).toHaveBeenCalledTimes(1);
+    expect(aiDispatchDeviceCommandMock).toHaveBeenCalledWith(
       expect.objectContaining({ aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-test' } }),
       'manage_browser_policy',
-      'd1',
-      'apply_browser_policy',
-      expect.objectContaining({ policyId: 'p1' }),
-      expect.objectContaining({ userId: 'u1', expectedOrgId: 'org-1' }),
+      expect.objectContaining({
+        deviceId: 'd1',
+        type: 'apply_browser_policy',
+        payload: expect.objectContaining({ policyId: 'p1' }),
+        userId: 'u1',
+        expectedOrgId: 'org-1',
+        // The insert this replaced queued for OFFLINE devices too; `false`
+        // keeps that under every DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED setting.
+        previouslyRejected: false,
+      }),
     );
   });
 });
