@@ -402,5 +402,36 @@ describe('hardware_lifecycle visibility follows enable_lifecycle', () => {
 
     expect(generated.status).toBe('completed');
     expect(generated.type).toBe('hardware_lifecycle');
+
+    // The status alone proves nothing: a run with the inheritance deleted
+    // completes too, just on the portal defaults. The generator echoes the
+    // thresholds it actually ran with into the summary, so read them back off
+    // the STORED run. 6/9 are the MSP row's; the portal defaults are 4/5.
+    const [storedRun] = await withSystemDbAccessContext(() =>
+      db.select({ result: reportRuns.result })
+        .from(reportRuns)
+        .where(eq(reportRuns.id, generated.id)),
+    );
+
+    const summary = (storedRun?.result as {
+      summary?: { replaceAgeYears?: number; serverReplaceAgeYears?: number };
+    } | null)?.summary;
+
+    expect(summary).toBeTruthy();
+    expect(summary?.replaceAgeYears).toBe(6);
+    expect(summary?.serverReplaceAgeYears).toBe(9);
+
+    // The MSP row's single site must not have narrowed the portal run: the
+    // portal definition is deliberately org-wide, and the MSP scope can name
+    // sites this portal user cannot see.
+    const [portalDefinition] = await withSystemDbAccessContext(() =>
+      db.select({ config: reports.config })
+        .from(reports)
+        .where(eq(reports.id, generated.reportId)),
+    );
+    expect((portalDefinition?.config as { sites?: string[] })?.sites)
+      .toEqual([]);
+    expect((portalDefinition?.config as { sites?: string[] })?.sites)
+      .not.toContain(otherSiteId);
   });
 });
