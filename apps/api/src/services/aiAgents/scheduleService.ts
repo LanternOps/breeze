@@ -15,7 +15,7 @@
  *   - ORG override: `org_id` set, `partner_id` NULL, `baseline_schedule_id` →
  *     the baseline it tightens. TIGHTEN-ONLY — see `effectiveSchedule`.
  */
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 import {
   canonicalizeTimezone,
@@ -25,6 +25,7 @@ import {
   isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
+  PATCH_DEFAULT_CRON,
   updateAiAgentScheduleSchema,
   type AiAgentEffectiveScheduleDto,
   type AiAgentKind,
@@ -39,7 +40,7 @@ import {
   withSystemDbAccessContext,
 } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { aiAgentSchedules, aiAgents, organizations, type AiAgentScheduleRow } from '../../db/schema';
+import { aiAgentSchedules, aiAgents, organizations, partners, type AiAgentRow, type AiAgentScheduleRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 
@@ -801,4 +802,86 @@ export async function resolveEffectiveSchedulesForPartner(
   // pooled connection — same skip branch as resolveEffectiveAgentSystem.
   if (getCurrentDbAccessContext()?.scope === 'system') return inner();
   return runOutsideDbContext(() => withSystemDbAccessContext(inner));
+}
+
+/**
+ * AI patch agent W01 (#5747, OD-9 A) — the default cadence. A partner-wide
+ * patch agent that is enabled gets ONE partner baseline `0 2 * * *` (02:00 in
+ * the partner's timezone, UTC fallback), so enabling Patching actually starts
+ * it working (#5382 — an enabled agent with no schedule never ran).
+ *
+ * Called from `agentService` on create-enabled and on the enabled false→true
+ * transition, and from the one-shot boot backfill for agents that were
+ * already enabled before this shipped. Every caller runs it inside a
+ * SAVEPOINT (`db.transaction(tx => ensureDefaultPatchSchedule(row, tx))`) and
+ * passes that `tx` as the executor: postgres-js rethrows a failed statement
+ * when the enclosing scope ends even if the caller caught it, so a statement
+ * issued through the ambient `db` could fail the enable itself.
+ *
+ * Idempotent: a per-agent `pg_advisory_xact_lock` serialises concurrent
+ * callers (two API replicas booting the backfill, or an enable racing it),
+ * then any existing `kind = 'patch'` baseline for the agent means nothing is
+ * created. Never creates for an org-owned, non-patch, disabled or
+ * soft-deleted agent. `createdBy` is null — a system-created row.
+ */
+export type EnsureDefaultPatchScheduleResult =
+  | { created: true }
+  | { created: false; reason: 'not_applicable' | 'exists' };
+
+type ScheduleExecutor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
+
+export async function ensureDefaultPatchSchedule(
+  agent: Pick<AiAgentRow, 'id' | 'kind' | 'orgId' | 'partnerId' | 'enabled' | 'disabledAt'>,
+  executor: ScheduleExecutor,
+): Promise<EnsureDefaultPatchScheduleResult> {
+  if (
+    agent.kind !== 'patch'
+    || agent.orgId !== null
+    || !agent.partnerId
+    || !agent.enabled
+    || agent.disabledAt !== null
+  ) {
+    return { created: false, reason: 'not_applicable' };
+  }
+  const partnerId = agent.partnerId;
+
+  await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ai-patch-default-schedule:${agent.id}`}, 0))`);
+
+  const [existing] = await executor
+    .select({ id: aiAgentSchedules.id })
+    .from(aiAgentSchedules)
+    .where(and(
+      eq(aiAgentSchedules.agentId, agent.id),
+      eq(aiAgentSchedules.kind, 'patch'),
+      isNull(aiAgentSchedules.orgId),
+    ))
+    .limit(1);
+  if (existing) return { created: false, reason: 'exists' };
+
+  const [partner] = await executor
+    .select({ timezone: partners.timezone })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  const timezone = canonicalizeTimezone(partner?.timezone ?? '') ?? 'UTC';
+  if (!partner?.timezone || timezone !== canonicalizeTimezone(partner.timezone)) {
+    console.warn('[aiAgentSchedules] default patch schedule falls back to UTC — partner timezone missing or invalid', {
+      agentId: agent.id, partnerId,
+    });
+  }
+
+  await executor.insert(aiAgentSchedules).values({
+    orgId: null,
+    partnerId,
+    agentId: agent.id,
+    baselineScheduleId: null,
+    kind: 'patch',
+    cron: PATCH_DEFAULT_CRON,
+    timezone,
+    sweepKinds: [],
+    enabled: true,
+    createdBy: null,
+    updatedAt: new Date(),
+  });
+  return { created: true };
 }
