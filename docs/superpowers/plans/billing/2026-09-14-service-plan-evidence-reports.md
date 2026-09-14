@@ -2,6 +2,7 @@
 issue: LanternOps/breeze#5784
 spec: docs/superpowers/specs/billing/2026-09-14-service-plan-evidence-reports-spec.md
 # tracking_issue: added by register_feature at Stage 4 — do not fill in by hand
+tracking_issue: LanternOps/breeze#5812
 ---
 # Evidence Reports for Service Plans — Plan Index
 
