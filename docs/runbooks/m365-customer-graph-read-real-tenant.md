@@ -16,7 +16,6 @@ Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Ne
 
 ## Authoritative permission manifest
 
-
 The expected profile is `customer-graph-read`, manifest version `3`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with exactly these thirteen application roles:
 
 | Permission | App role ID |
