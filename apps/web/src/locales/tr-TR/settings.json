@@ -2152,6 +2152,7 @@
           "fixWatchesHeld": "Tutulan düzeltme izlemeleri",
           "fixWatchesRecurred": "Tekrarlanan düzeltme izlemeleri",
           "narrativesDelivered": "Teslim edilen haftalık raporlar",
+          "fleetDesignsDelivered": "Teslim edilen Fleet Design raporları",
           "estTimeSaved": "Tahmini kazanılan zaman",
           "llmSpend": "LLM harcaması",
           "window": "Rapor penceresi (gün)",

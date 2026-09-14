@@ -113,17 +113,6 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
-// Execution plane (spec docs/superpowers/specs/ai-mcp/2026-09-13-ai-agent-execution-plane-design.md §8).
-// Sub-flag of BREEZE_AI_AGENTS_ENABLED AND hosted-only (D-I): the sandbox lane
-// is the paid channel, and the artifact blob store it needs is S3-compatible
-// object storage a self-hoster is not required to run. Read at CALL time so a
-// test can flip it per case without vi.resetModules(). With this false, every
-// AI tool result is byte-identical to today — the capture hook in
-// services/aiTools.ts returns the raw string untouched.
-export function aiWorkspaceEnabled(): boolean {
-  return isHosted() && AI_AGENTS_ENABLED && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false);
-}
-
 export type BreezeRegion = 'eu' | 'us';
 
 // Deployment region. Hosted regions are single-region deployments (one API +
@@ -186,6 +175,28 @@ export function aiOperatorTasksEnabled(): boolean {
 
 export function aiOperatorServiceRecoveryEnabled(): boolean {
   return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
+}
+
+/**
+ * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
+ *
+ * THREE conditions, all read at CALL time so a test can flip one without
+ * vi.resetModules(): the deployment is hosted, the AI agents platform switch is
+ * on, and this sub-flag is on. Default OFF.
+ *
+ * Hosted-only is not squeamishness: the sandbox runs on a third-party vendor
+ * under LanternOps' own account and billing, so a self-hosted deployment
+ * enabling it would be spending our money in our tenant. config/validate.ts
+ * refuses the flag in production without IS_HOSTED=true, a `vercel` backend and
+ * all three Vercel credentials, so a misconfigured deploy fails at boot rather
+ * than at the first analysis run.
+ */
+export function aiWorkspaceEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
 }
 
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have

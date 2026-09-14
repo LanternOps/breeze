@@ -34,7 +34,10 @@
       "designRate": "Cette organisation a atteint sa limite d'exécutions de conception de flotte pour le moment.",
       "duplicate": "Une exécution de conception de flotte équivalente a déjà été demandée.",
       "generic": "L'exécution n'a pas été lancée ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Classer comme document",
+    "fileAsDocumentSuccess": "Design classé dans la bibliothèque de documents.",
+    "fileAsDocumentError": "Impossible de classer le design comme document."
   },
   "sections": {
     "found": "Ce qui a été trouvé",
@@ -110,5 +113,22 @@
     "no_designer_agent": "Aucun agent concepteur n'est configuré pour cette organisation.",
     "not_found": "Cette conception de flotte est introuvable.",
     "scripts_write_required": "La création de scripts nécessite la permission d'écriture Scripts. Désélectionnez les scripts proposés ou demandez à un administrateur."
+  },
+  "drift": {
+    "banner": "Dérive depuis le design appliqué le {{date}} : {{missing}} manquants, {{extra}} en trop, {{changed}} modifiés.",
+    "deviceCount_one": "{{count}} appareil",
+    "deviceCount_other": "{{count}} appareils",
+    "rows": {
+      "missing": "Manquant",
+      "extra": "En trop",
+      "changed": "Modifié"
+    },
+    "columns": {
+      "drift": "Dérive",
+      "kind": "Type",
+      "item": "Élément",
+      "scope": "Fonction / politique",
+      "detail": "Détail"
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -141,6 +142,16 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   intentIds: uuid('intent_ids').array().notNull().default(sql`'{}'::uuid[]`),
   turnCount: integer('turn_count').notNull().default(0),
   costCents: integer('cost_cents').notNull().default(0),
+  // Execution plane W02 (spec §6.3). `workspaceId` carries NO Drizzle
+  // `.references()` and no SQL FK: a real FK here plus
+  // ai_run_workspaces.run_id -> ai_agent_runs would be a 2-node cycle
+  // topologicalCascadeOrder() cannot resolve (the metric_anomaly_incidents
+  // precedent above). The constrained edge lives on the child table.
+  computeCpuMs: bigint('compute_cpu_ms', { mode: 'number' }),
+  computeWallMs: bigint('compute_wall_ms', { mode: 'number' }),
+  computeCents: integer('compute_cents'),
+  computeReservedCents: integer('compute_reserved_cents'),
+  workspaceId: uuid('workspace_id'),
   errorCode: varchar('error_code', { length: 64 }),
   correlationId: varchar('correlation_id', { length: 64 }),
   queuedAt: timestamp('queued_at', { withTimezone: true }).defaultNow().notNull(),

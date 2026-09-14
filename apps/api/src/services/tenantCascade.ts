@@ -312,6 +312,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // bytes are pre-cleared in cascadeDeleteOrg step 1a-bis BEFORE any row goes,
   // because the row is the only index to the key.
   'ai_run_artifacts',
+  // Execution plane W02 (#5713): one row per sandbox instance, Shape 1 with a
+  // NOT NULL org_id, so an entry here is mandatory. Its only outbound FK is
+  // the composite (run_id, org_id) -> ai_agent_runs ON DELETE CASCADE, and
+  // ai_agent_runs sorts EARLIER in this alphabetical list — harmless, because
+  // the FK carries an explicit ON DELETE and topologicalCascadeOrder()'s
+  // runtime pg_constraint read, not this array, decides the real DELETE order.
+  'ai_run_workspaces',
   'ai_screenshots',
   // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
   // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER

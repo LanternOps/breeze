@@ -25,6 +25,9 @@ import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { persistAlertVerdict, type AlertVerdictIntentInfo } from './alertVerdicts';
 import { isDesignProfile } from './designProfile';
 import { FleetDesignPersistConflictError, persistFleetDesignReport } from './fleetDesignReport';
+import { computeDrift } from '../fleetDesign/drift';
+import { fileFleetDesignDocument } from '../fleetDesign/documents';
+import { captureException } from '../sentry';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { persistSweepFindings } from './sweepFindings';
@@ -331,6 +334,12 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
     return null;
   }
 
+  // W05 (#5655): drift is computed HERE, deterministically, from the approved
+  // design the evidence loader found and the live state it loaded beside it
+  // — never from anything the model submitted. No applied design → null.
+  const { approvedDesign, driftLive } = ctx.design.evidence;
+  const drift = approvedDesign && driftLive ? computeDrift(approvedDesign, driftLive) : null;
+
   try {
     const { reportId, reportRunId } = await persistFleetDesignReport({
       run: {
@@ -342,10 +351,39 @@ export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): 
       agent: { id: ctx.agent.id, name: ctx.agent.name },
       evidence: ctx.design.evidence,
       outcome: outcome.fleetDesign,
+      drift,
     });
     // TWO ids, never the evidence or the outcome again — see the field's
     // docstring on `AgentRunOutcome.fleetDesignReport`.
     outcome.fleetDesignReport = { reportId, reportRunId };
+
+    // W05 (#5655): a SCHEDULED design files its own PDF in the org's document
+    // library (and onto the linked deliverable); a manual run is filed by the
+    // technician from the page. Best effort AFTER the artifact is linked — a
+    // storage fault must never fail a run whose report already exists.
+    if (ctx.design.scheduleId) {
+      const timezone = ctx.design.evidence.org.timezone;
+      try {
+        // No ambient context here (same as `persistFleetDesignReport`, which
+        // wraps itself); the document service expects one, so provide it.
+        await inSystemDbContext(() => fileFleetDesignDocument({
+          orgId: ctx.run.orgId,
+          reportRunId,
+          actor: { userId: null, partnerId: ctx.orgPartnerId ?? null, accessibleOrgIds: null },
+          timezone,
+        }));
+      } catch (error) {
+        // Best effort, but never invisible: a systemic storage or deliverable
+        // fault would otherwise stop every scheduled design filing itself with
+        // no signal at all (the run still completes, so there is no error code
+        // to carry it). Same treatment `designEvidence.ts` gives a loader that
+        // fails without failing the run.
+        console.error('[aiAgentRunLoop] failed to file the fleet design document', { runId: ctx.run.id, reportRunId, error });
+        captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+          service: 'aiAgents', operation: 'fileFleetDesignDocument', runId: ctx.run.id, reportRunId, orgId: ctx.run.orgId,
+        });
+      }
+    }
     return null;
   } catch (error) {
     if (error instanceof FleetDesignPersistConflictError) {

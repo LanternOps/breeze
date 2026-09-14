@@ -403,7 +403,7 @@ function agent(overrides: Record<string, unknown> = {}) {
 
 const ZERO_COUNTERS = {
   alertsJudged: 0, noiseFlagged: 0, suppressionsApplied: 0, ticketsTriaged: 0, draftsSent: 0,
-  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0,
+  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0, fleetDesignsDelivered: 0,
 };
 
 /** Task 8 (#4193 A8): a structurally-valid AiAgentImpactDto for route tests — the DTO's own field-by-field correctness is A7's unit coverage, not this file's. */

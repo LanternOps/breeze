@@ -1356,6 +1356,43 @@ function fleetDesignUnsureBullets(unsure: unknown): string[] {
   return bullets;
 }
 
+/**
+ * W05 (#5655): the server-computed drift between the approved (applied)
+ * design and the live fleet. Drawn FIRST — before the eight sections — because
+ * on a scheduled re-run it is the finding a technician opens the report for.
+ * Rows are read defensively (persisted jsonb) exactly like the sections.
+ */
+function drawFleetDesignDriftSection(doc: jsPDF, opts: BuildOpts, drift: unknown, y: number): number {
+  if (!drift || typeof drift !== 'object') return y;
+  const d = drift as { appliedAt?: unknown; missing?: unknown; extra?: unknown; changed?: unknown };
+  const missing = Array.isArray(d.missing) ? d.missing : [];
+  const extra = Array.isArray(d.extra) ? d.extra : [];
+  const changed = Array.isArray(d.changed) ? d.changed : [];
+  const appliedAt = fdText(d.appliedAt, 10);
+
+  y = ensureFleetDesignRoom(doc, opts, y, 5 + NARRATIVE_LINE_H);
+  y = drawSectionHeading(doc, 'Drift since the approved design', y);
+  const summaryLine = `Design applied ${appliedAt || '—'}: ${missing.length} missing, ${extra.length} extra, ${changed.length} changed.`;
+  y = drawFleetDesignBullets(doc, opts, [summaryLine], y);
+
+  const body: string[][] = [];
+  for (const item of missing) {
+    const m = (item ?? {}) as { functionKey?: unknown; kind?: unknown; name?: unknown };
+    body.push(['Missing', fdText(m.kind) || '—', fdText(m.name) || '—', fdText(m.functionKey) || '—', '—']);
+  }
+  for (const item of changed) {
+    const c = (item ?? {}) as { functionKey?: unknown; kind?: unknown; name?: unknown; field?: unknown; approved?: unknown; live?: unknown };
+    body.push(['Changed', fdText(c.kind) || '—', fdText(c.name) || '—', fdText(c.functionKey) || '—', `${fdText(c.field)}: ${fdText(c.approved)} -> ${fdText(c.live)}`]);
+  }
+  for (const item of extra) {
+    const e = (item ?? {}) as { policyName?: unknown; kind?: unknown; name?: unknown; deviceCount?: unknown };
+    const count = typeof e.deviceCount === 'number' ? `${e.deviceCount} device${e.deviceCount === 1 ? '' : 's'}` : '—';
+    body.push(['Extra', fdText(e.kind) || '—', fdText(e.name) || '—', fdText(e.policyName) || '—', count]);
+  }
+  if (body.length) y = drawFleetDesignTable(doc, opts, [['Drift', 'Kind', 'Item', 'Function / policy', 'Detail']], body, y);
+  return y + NARRATIVE_SECTION_GAP;
+}
+
 function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: BuildOpts): void {
   const orgName = fdText(fd.orgName, NARRATIVE_NAME_MAX_CHARS);
   const agentName = fdText(fd.agentName, NARRATIVE_NAME_MAX_CHARS);
@@ -1379,6 +1416,9 @@ function renderFleetDesignReport(doc: jsPDF, fd: FleetDesignSnapshot, opts: Buil
     doc.text(`Not measured: ${unavailable.join(', ')}`, PAGE.mx, y);
     y += NARRATIVE_LINE_H + 2;
   }
+
+  // W05: drift first, when present. Not one of the eight submission sections.
+  if (fd.drift) y = drawFleetDesignDriftSection(doc, opts, fd.drift, y);
 
   // Closed, exhaustive iteration over FLEET_DESIGN_SECTION_KEYS (never a
   // stored key order) is what makes an unknown/renamed key structurally

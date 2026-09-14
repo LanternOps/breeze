@@ -48,10 +48,12 @@ import { applyFleetDesign } from '../services/fleetDesign/apply';
 import { loadLedger, toLedgerItem } from '../services/fleetDesign/ledger';
 import { FleetDesignApplyError, previewFleetDesignApply } from '../services/fleetDesign/preview';
 import { rollbackFleetDesign } from '../services/fleetDesign/rollback';
+import { fileFleetDesignDocument } from '../services/fleetDesign/documents';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { FLEET_DESIGN_REPORT_TYPE, loadFleetDesignReport } from '../services/aiAgents/fleetDesignReport';
 import { writeRouteAudit } from '../services/auditEvents';
+import { captureException } from '../services/sentry';
 
 export const fleetDesignRoutes = new Hono();
 
@@ -74,6 +76,9 @@ const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, P
 // carries automation refs additionally needs scripts:write — the permission
 // POST /scripts and the bundle importer require (see canWriteScripts).
 const requireDevicesWrite = requirePermission(PERMISSIONS.DEVICES_WRITE.resource, PERMISSIONS.DEVICES_WRITE.action);
+// Filing the design in the org's document library writes an org_documents
+// row — the same gate `routes/orgDocuments.ts` puts on an upload.
+const requireDocumentsWrite = requirePermission(PERMISSIONS.DOCUMENTS_WRITE.resource, PERMISSIONS.DOCUMENTS_WRITE.action);
 
 /**
  * scripts:write, read from the permissions `requireDevicesWrite` just resolved
@@ -90,6 +95,19 @@ function canWriteScripts(c: Context): boolean {
  * (`permissions.allowedSiteIds` set) is refused before any service call —
  * the same read the groups route makes at routes/groups.ts:447.
  */
+/**
+ * Whether the caller carries `contracts:write` — the permission every other
+ * deliverable-evidence route requires. `requirePermission` already resolved
+ * and cached the caller's org-scoped permissions on the context, so this is a
+ * pure read, never a second lookup.
+ */
+function callerCanWriteContracts(c: Context): boolean {
+  const perms = c.get('permissions') as UserPermissions | undefined;
+  return perms
+    ? hasPermission(perms, PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action)
+    : false;
+}
+
 function siteRestricted(c: Context): boolean {
   const perms = c.get('permissions') as UserPermissions | undefined;
   return Array.isArray(perms?.allowedSiteIds);
@@ -349,4 +367,55 @@ fleetDesignRoutes.get('/:reportRunId/applied', scopes, requireAiRead, async (c) 
   if (!row) return c.json({ error: 'not_found' }, 404);
   const rows = await loadLedger(reportRunId, row.orgId);
   return c.json({ items: rows.map(toLedgerItem) });
+});
+
+// ---------------------------------------------------------------------------
+// W05: file the design PDF in the org's document library
+// ---------------------------------------------------------------------------
+
+fleetDesignRoutes.post('/:reportRunId/document', scopes, requireDocumentsWrite, async (c) => {
+  const auth = c.get('auth');
+  const reportRunId = uuidParam(c, 'reportRunId');
+  if (!reportRunId) return c.json({ error: 'not_found' }, 404);
+  // Same three-way-blind 404 as GET /:reportRunId — the org is the run's own,
+  // never a body/query value.
+  const row = await loadFleetDesignReport(reportRunId, (col) => auth.orgCondition(col));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  let result: Awaited<ReturnType<typeof fileFleetDesignDocument>>;
+  try {
+    result = await fileFleetDesignDocument({
+      orgId: row.orgId,
+      reportRunId,
+      actor: { userId: auth.user?.id ?? null, partnerId: auth.partnerId ?? null, accessibleOrgIds: auth.accessibleOrgIds },
+      // Attaching the filed document to a deliverable occurrence can move that
+      // occurrence to `delivered` — a contract-adjacent write every other
+      // evidence route gates on `contracts:write`
+      // (routes/serviceDeliverables.ts). A documents-only caller still files
+      // the document; it just does not get a side door into deliverables.
+      linkDeliverableEvidence: callerCanWriteContracts(c),
+    });
+  } catch (err) {
+    // The document/deliverable services carry their own structural
+    // `status`/`code` (DeliverableServiceError, BlobStorageError) — map them
+    // the way routes/orgDocuments.ts does rather than letting a legitimate
+    // 404/409/503 surface as an opaque 500 from the global handler.
+    if (
+      err && typeof err === 'object' && 'status' in err && 'code' in err
+      && typeof (err as { status: unknown }).status === 'number' && typeof (err as { code: unknown }).code === 'string'
+    ) {
+      const e = err as { status: number; code: string; message?: string };
+      if (e.status >= 500) captureException(err);
+      return c.json({ error: e.message ?? e.code, code: e.code }, e.status as 400);
+    }
+    throw err;
+  }
+  writeRouteAudit(c, {
+    orgId: row.orgId,
+    action: 'fleet_design.document.file',
+    resourceType: 'org_document',
+    resourceId: result.documentId,
+    details: { reportRunId, alreadyFiled: result.alreadyFiled, evidence: result.evidence },
+    result: 'success',
+  });
+  return c.json(result);
 });

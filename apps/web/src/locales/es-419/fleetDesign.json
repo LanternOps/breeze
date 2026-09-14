@@ -34,7 +34,10 @@
       "designRate": "Esta organización alcanzó su límite de ejecuciones de diseño de flota por ahora.",
       "duplicate": "Ya se había solicitado una ejecución de diseño de flota equivalente.",
       "generic": "La ejecución no se inició ({{reason}})."
-    }
+    },
+    "fileAsDocument": "Archivar como documento",
+    "fileAsDocumentSuccess": "Diseño archivado en la biblioteca de documentos.",
+    "fileAsDocumentError": "No se pudo archivar el diseño como documento."
   },
   "sections": {
     "found": "Qué se encontró",
@@ -110,5 +113,22 @@
     "no_designer_agent": "No hay ningún agente diseñador configurado para esta organización.",
     "not_found": "No se encontró este diseño de flota.",
     "scripts_write_required": "Crear scripts requiere el permiso de escritura de Scripts. Deseleccione los scripts propuestos o solicite ayuda a un administrador."
+  },
+  "drift": {
+    "banner": "Desviación desde el diseño aplicado el {{date}}: {{missing}} faltantes, {{extra}} adicionales, {{changed}} modificados.",
+    "deviceCount_one": "{{count}} dispositivo",
+    "deviceCount_other": "{{count}} dispositivos",
+    "rows": {
+      "missing": "Faltante",
+      "extra": "Adicional",
+      "changed": "Modificado"
+    },
+    "columns": {
+      "drift": "Desviación",
+      "kind": "Tipo",
+      "item": "Elemento",
+      "scope": "Función / política",
+      "detail": "Detalle"
+    }
   }
 }
