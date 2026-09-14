@@ -28,9 +28,32 @@ import {
 // siteScope.ts — importing it from the latter is a module-not-found at runtime.
 import { aiLiveReportAuthority } from './aiToolsFleet';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
-import { readCustomFieldDefinitions } from './aiToolsDevice';
-import { verifyDeviceAccess } from './aiTools';
+import type { readCustomFieldDefinitions as ReadCustomFieldDefinitionsFn } from './aiToolsDevice';
+import type { verifyDeviceAccess as VerifyDeviceAccessFn } from './aiTools';
 import { runWithConcurrency, EXPORT_DEVICE_CONCURRENCY, type ExportPager } from './aiToolsExportWriter';
+
+/**
+ * Lazy (call-time) imports of the two hub modules, NOT static ones.
+ *
+ * `aiToolsDevice.ts` already imports a value from `./aiTools`
+ * (`verifyDeviceAccess`), and `aiTools.ts` eagerly calls `registerExportTools`
+ * (this file's consumer) at ITS OWN module top level — so a static import here
+ * closes a 4-hop cycle (aiToolsDevice → aiTools → aiToolsExport →
+ * aiToolsExportDatasets → aiToolsDevice) on top of the pre-existing 2-hop one.
+ * Under Vite's SSR module runner that manifested as a real, order-dependent
+ * "Cannot access '__vite_ssr_import_N__' before initialization" failure that
+ * only reproduced under the full test suite (whichever spec's import graph
+ * happened to reach `aiToolsDevice.ts` first). Every real call site below is
+ * already inside an async function — never module-eval time — so resolving
+ * these via `import()` costs nothing (the module is cached after first load)
+ * and removes this file from the synchronous part of the cycle entirely.
+ */
+async function getVerifyDeviceAccess(): Promise<typeof VerifyDeviceAccessFn> {
+  return (await import('./aiTools')).verifyDeviceAccess;
+}
+async function getReadCustomFieldDefinitions(): Promise<typeof ReadCustomFieldDefinitionsFn> {
+  return (await import('./aiToolsDevice')).readCustomFieldDefinitions;
+}
 
 export const EXPORT_DATASETS = [
   'event_logs', 'agent_logs', 'device_inventory', 'software_inventory',
@@ -216,6 +239,7 @@ async function restrictionHostnames(req: DatasetRequest): Promise<Set<string> | 
   if (!ids || ids.length === 0) return null;
   const hostnames = new Set<string>();
   await runWithConcurrency(ids, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
+    const verifyDeviceAccess = await getVerifyDeviceAccess();
     const access = await verifyDeviceAccess(deviceId, req.auth);
     if ('error' in access) return;
     if (access.device.hostname) hostnames.add(access.device.hostname);
@@ -288,7 +312,8 @@ const metricsAdapter: DatasetAdapter = {
         // The same per-device gate `analyze_metrics` performs. The central
         // `enforceDeviceArgs` gate already ran over `deviceIds`; this is the
         // builder's own check and is kept so the two paths stay identical.
-        const access = await verifyDeviceAccess(deviceId, req.auth);
+        const verifyDeviceAccess = await getVerifyDeviceAccess();
+    const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const samples = await db
           .select()
@@ -335,7 +360,8 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
         // and `readDeviceFindings` is org-scoped — but "arguably redundant" is
         // not a reason for one of three device-scoped adapters to be the odd
         // one out; symmetry is what makes a missing gate visible in review.
-        const access = await verifyDeviceAccess(deviceId, req.auth);
+        const verifyDeviceAccess = await getVerifyDeviceAccess();
+    const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const findings = await readDeviceFindings(req.orgId, { status, deviceId });
         const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
@@ -374,6 +400,7 @@ const customFieldsAdapter: DatasetAdapter = {
     // field definitions are org XOR partner: a partner-wide definition has
     // `org_id IS NULL` and an org filter drops every one of them — which for an
     // MSP that defines its fields once is most of the fields on the device.
+    const readCustomFieldDefinitions = await getReadCustomFieldDefinitions();
     const definitions = await readCustomFieldDefinitions(req.auth);
 
     const deviceIds = req.deviceIds ?? [];
@@ -386,7 +413,8 @@ const customFieldsAdapter: DatasetAdapter = {
 
       const collected: Array<Record<string, unknown>> = [];
       await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-        const access = await verifyDeviceAccess(deviceId, req.auth);
+        const verifyDeviceAccess = await getVerifyDeviceAccess();
+    const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const values = (access.device.customFields ?? {}) as Record<string, unknown>;
         for (const definition of definitions) {

@@ -179,6 +179,7 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'analyze_fleet_metrics',
   'analyze_metrics',
   'configuration_policy_compliance',
+  'export_dataset',
   'get_active_users',
   'get_catalog_item',
   'get_cis_compliance',

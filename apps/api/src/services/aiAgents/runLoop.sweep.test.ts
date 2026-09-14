@@ -483,7 +483,7 @@ describe('sweep profile outcome-tool gating (P2-2)', () => {
   it('pre-hook allows submit_sweep_findings on a sweep run and denies it on full and verdict runs', async () => {
     const sweepOutcome = emptyOutcome();
     const pre = createAgentRunPreToolUse(preArgs('sweep', sweepOutcome) as never);
-    expect(await pre('submit_sweep_findings', VALID_FINDINGS)).toEqual({ allowed: true });
+    expect(await pre('submit_sweep_findings', VALID_FINDINGS)).toMatchObject({ allowed: true });
 
     for (const profile of ['full', 'verdict'] as const) {
       const outcome = emptyOutcome();

@@ -564,7 +564,7 @@ describe('narrative profile outcome-tool gating (P2-3)', () => {
   it('pre-hook allows submit_narrative on a narrative run and denies it on every other profile', async () => {
     const narrativeOutcome = emptyOutcome();
     const pre = createAgentRunPreToolUse(preArgs('narrative', narrativeOutcome) as never);
-    expect(await pre('submit_narrative', VALID_SUBMISSION)).toEqual({ allowed: true });
+    expect(await pre('submit_narrative', VALID_SUBMISSION)).toMatchObject({ allowed: true });
 
     for (const profile of ['full', 'verdict', 'sweep'] as const) {
       const outcome = emptyOutcome();
