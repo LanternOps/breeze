@@ -70,8 +70,18 @@ export async function replayMigration(fileName: string): Promise<void> {
   assertReplayable(fileName, baseContent);
   await db.execute(sql.raw(baseContent));
 
-  const baseDefines = extractDefinedFunctionNames(baseContent);
-  if (baseDefines.length === 0) return;
+  // Transitive closure, not a fixed set (#5788 shard-4 failure): a re-applied
+  // later file may define functions the base file never mentioned (e.g.
+  // 2026-10-14-100000-ai-operator-thin-slice.sql redefines BOTH
+  // breeze_device_child_orgid_tables() AND breeze_cascade_device_org_id()).
+  // Re-applying it rolls the second function back to that file's body, so
+  // every later definer of THAT name must be re-applied too — otherwise the
+  // 2026-10-16-182100 script_executions AI-pointer detach silently vanished
+  // for the rest of the vitest process. Names only ever enter the set at some
+  // index k, and every later definer of them is still ahead in this single
+  // forward scan, so one pass leaves the same bodies a fresh migrate would.
+  const defined = new Set(extractDefinedFunctionNames(baseContent));
+  if (defined.size === 0) return;
 
   const allFilenames = await discoverCoreMigrationFilenames();
   const baseIndex = allFilenames.indexOf(fileName);
@@ -82,8 +92,9 @@ export async function replayMigration(fileName: string): Promise<void> {
   for (const laterFile of allFilenames.slice(baseIndex + 1)) {
     const laterContent = await readMigrationFile(laterFile);
     const laterDefines = extractDefinedFunctionNames(laterContent);
-    if (!laterDefines.some((name) => baseDefines.includes(name))) continue;
+    if (!laterDefines.some((name) => defined.has(name))) continue;
     assertReplayable(laterFile, laterContent);
     await db.execute(sql.raw(laterContent));
+    for (const name of laterDefines) defined.add(name);
   }
 }
