@@ -671,10 +671,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
-    // #5291 W04 — dispatches `script` monitors' diagnostic probes. Global, like
-    // monitorWorker: one sweep per fleet, not one per API replica.
+    // #5291 W04 — dispatches `script` monitors' diagnostic probes.
+    // socket-owner, not global: its runtime import closure reaches
+    // routes/agentWs.ts — jobs/monitorScriptWorker.ts ->
+    // services/scriptDispatch.ts -> routes/agentWs.ts. Same shape as
+    // policyEvaluationWorker above; found by
+    // workerEntrypointClosure.contract.test.ts, not guessed. (monitorWorker
+    // stays 'global' because it dispatches through the agentCommandRelay
+    // facade instead.) The repeatable tick is still consumed once per fleet:
+    // the queue, not the placement, is what serialises it.
     name: 'monitorScriptWorker',
-    placement: 'global',
+    placement: 'socket-owner',
     load: async () => {
       const m = await import('../jobs/monitorScriptWorker');
       return { init: m.initializeMonitorScriptWorker, shutdown: m.shutdownMonitorScriptWorker };

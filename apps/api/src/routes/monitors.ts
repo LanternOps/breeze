@@ -79,8 +79,13 @@ async function hasMonitorSiteAccess(
  * `network_monitors` row (org_id NULL) is always a compiled artefact of a
  * `network_check` monitor definition, owned by the compiler and edited through
  * the monitor editor; exposing it here would let a partner-wide check be
- * mutated outside `canManagePartnerWidePolicies` and outside the managed-row
+ * mutated outside the partner-wide capability gate and outside the managed-row
  * guard. Every caller below therefore gets a monitor narrowed to `orgId: string`.
+ *
+ * (Deliberately not naming the capability helper as a bare identifier here:
+ * partner-wide-write-coverage.test.ts greps for that symbol, and a mention in
+ * prose would silently satisfy the scanner without gating anything. This file
+ * is on that suite's allowlist instead, with the reason spelled out there.)
  */
 type OrgOwnedMonitor = typeof networkMonitors.$inferSelect & { orgId: string };
 
