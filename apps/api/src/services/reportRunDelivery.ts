@@ -25,7 +25,7 @@
  * artifact inside `persistNarrativeReport`'s transaction.
  */
 
-import { and, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { reportRunDeliveries, type ReportRunDeliveryState } from '../db/schema/reports';
 
@@ -180,7 +180,13 @@ export async function listUnsettledDeliveries(olderThan: Date, limit: number): P
       .from(reportRunDeliveries)
       .where(and(
         inArray(reportRunDeliveries.state, [...UNSETTLED_STATES]),
-        lt(sql`COALESCE(${reportRunDeliveries.claimedAt}, ${reportRunDeliveries.createdAt})`, olderThan),
+        // "last state change" = claimed_at for a claimed row, created_at for a
+        // pending one. Typed-column comparisons on purpose: a Date bound
+        // inside a raw sql`` fragment throws at bind time under postgres-js.
+        or(
+          and(isNull(reportRunDeliveries.claimedAt), lt(reportRunDeliveries.createdAt, olderThan)),
+          lt(reportRunDeliveries.claimedAt, olderThan),
+        ),
       ))
       .orderBy(reportRunDeliveries.createdAt)
       .limit(limit),
@@ -188,13 +194,18 @@ export async function listUnsettledDeliveries(olderThan: Date, limit: number): P
 }
 
 /**
- * Per-run counts for the run-detail surface (Task 10). Runs on the AMBIENT
- * handle — from a request it reads under the requester's own RLS context
- * (the parent-FK-join policy admits anyone with org access to the report),
- * and never opens a second pooled connection under a held request transaction.
+ * Per-run counts for the run-detail surface (Task 10) and the delivery pass.
+ *
+ * Inside an ambient context (a request) it reads on THAT handle — under the
+ * requester's own RLS context, which the parent-FK-join policy admits for
+ * anyone with org access to the report — and never opens a second pooled
+ * connection under a held request transaction. With no ambient context (the
+ * delivery pass, the reconciler) it opens its own short system context: a
+ * bare contextless read is a DENY under forced RLS, not a bypass, and would
+ * report every run as undelivered.
  */
 export async function summarizeDeliveries(reportRunId: string): Promise<DeliverySummary> {
-  const [row] = await db
+  const query = () => db
     .select({
       total: sql<number>`count(*)::int`,
       sent: sql<number>`count(*) FILTER (WHERE ${reportRunDeliveries.state} = 'sent')::int`,
@@ -204,6 +215,7 @@ export async function summarizeDeliveries(reportRunId: string): Promise<Delivery
     })
     .from(reportRunDeliveries)
     .where(eq(reportRunDeliveries.reportRunId, reportRunId));
+  const [row] = getCurrentDbAccessContext() ? await query() : await inOwnSystemContext(query);
   return {
     total: Number(row?.total ?? 0),
     sent: Number(row?.sent ?? 0),

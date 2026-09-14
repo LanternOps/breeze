@@ -250,7 +250,16 @@ describe('report run delivery state machine (#4248 W03, OD-8)', () => {
       expect(rows).toEqual([{ id: D1, state: 'pending' }]);
       const { sql, params } = compiled(state.selectWheres[0]);
       expect(sql).toContain('"state" in (');
-      expect(params).toEqual(expect.arrayContaining(['pending', 'claimed', cutoff]));
+      // claimed_at for a claimed row, created_at for a pending one — as typed
+      // column comparisons (a Date inside a raw sql`` fragment throws at bind).
+      expect(sql).toMatch(/"claimed_at" is null and "[^"]*"\."created_at" < \$/);
+      expect(sql).toMatch(/"claimed_at" < \$/);
+      expect(sql).not.toContain('COALESCE');
+      expect(params).toHaveLength(4);
+      expect(params.slice(0, 2)).toEqual(['pending', 'claimed']);
+      for (const bound of params.slice(2)) {
+        expect(new Date(bound as string | Date).toISOString()).toBe(cutoff.toISOString());
+      }
       expect(params).not.toContain('unknown');
       expect(state.selectLimits).toEqual([25]);
     });
@@ -267,11 +276,23 @@ describe('report run delivery state machine (#4248 W03, OD-8)', () => {
   });
 
   describe('summarizeDeliveries', () => {
-    it('counts per state for one run', async () => {
+    it('counts per state for one run, in its own system context when there is no ambient one', async () => {
       state.selectQueue.push([{ total: 5, sent: 2, failed: 1, unknown: 1, pending: 1 }]);
       expect(await summarizeDeliveries(RUN)).toEqual({ total: 5, sent: 2, failed: 1, unknown: 1, pending: 1 });
       const { params } = compiled(state.selectWheres[0]);
       expect(params).toEqual([RUN]);
+      // A bare contextless read is a DENY under forced RLS, not a bypass.
+      expect(state.contextOpens).toBe(1);
+      expect(state.statementScopes).toEqual(['system']);
+    });
+
+    it('reads on the AMBIENT handle inside a request context (never a second pooled connection)', async () => {
+      state.ambientContext = { scope: 'organization' };
+      state.selectQueue.push([{ total: 1, sent: 1, failed: 0, unknown: 0, pending: 0 }]);
+      await summarizeDeliveries(RUN);
+      expect(state.contextOpens).toBe(0);
+      expect(state.outsideExits).toBe(0);
+      expect(state.statementScopes).toEqual(['organization']);
     });
 
     it('returns zeros for a run with no delivery rows', async () => {
