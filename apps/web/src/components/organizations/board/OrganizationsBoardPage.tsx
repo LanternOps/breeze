@@ -488,7 +488,7 @@ export default function OrganizationsBoardPage() {
       }
       return items;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers are stable closures over state setters; restoringOrgId/mode/can/canMergeOrgs are the inputs that change
+    // Deps are intentionally narrow: handlers are stable closures over state setters; restoringOrgId/mode/can/canMergeOrgs are the inputs that change
     [t, restoringOrgId, mode, can, canMergeOrgs],
   );
 
