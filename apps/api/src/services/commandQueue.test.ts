@@ -1996,3 +1996,80 @@ describe('ai.command.executed (#5022 W01)', () => {
     ).resolves.toBeDefined();
   });
 });
+
+// The SECOND emission site: `dispatchPreparedCommand` (reached via
+// `executeCommand`) has its own copy, because it already holds the device row
+// from its precheck and must not repeat the lookup. A test on `queueCommand`
+// alone would leave that copy unguarded.
+describe('ai.command.executed — the executeCommand path (#5022 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    partnerTrustCommandMocks.assertDeviceExecuteAllowed.mockResolvedValue(undefined);
+  });
+
+  function mockExecuteCommandDb() {
+    const device = { id: 'dev-2', status: 'online', orgId: 'org-1', hostname: 'host-a', agentId: null };
+    const completed = { id: 'cmd-ai-exec', status: 'completed', result: { status: 'completed' } };
+
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([device]) }),
+        }),
+      } as never)
+      // users probe
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: 'user-1' }]) }),
+        }),
+      } as never)
+      .mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([completed]) }),
+        }),
+      } as never);
+
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 'cmd-ai-exec' }]) }),
+    } as never);
+  }
+
+  it('writes the row for an AI-dispatched command, using the device already loaded by the precheck', async () => {
+    mockExecuteCommandDb();
+
+    await executeCommand('dev-2', 'list_services', {}, {
+      userId: 'user-1',
+      aiOrigin: { kind: 'ai_agent', agentRunId: 'run-1' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ai.command.executed',
+        initiatedBy: 'ai',
+        actorType: 'ai_agent',
+        resourceType: 'device',
+        resourceId: 'dev-2',
+        resourceName: 'host-a',
+        result: 'dispatched',
+        details: expect.objectContaining({
+          deviceId: 'dev-2',
+          commandType: 'list_services',
+          aiInitiatorKind: 'ai_agent',
+          aiAgentRunId: 'run-1',
+          aiSessionId: null,
+        }),
+      }),
+    );
+  });
+
+  it('writes nothing when the dispatch carries no AI origin', async () => {
+    mockExecuteCommandDb();
+
+    await executeCommand('dev-2', 'list_services', {}, { userId: 'user-1' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const actions = vi.mocked(createAuditLogAsync).mock.calls.map((c) => c[0]!.action);
+    expect(actions).not.toContain('ai.command.executed');
+  });
+});
