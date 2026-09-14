@@ -68,15 +68,21 @@ type PortalReportProvisionArgs = {
   createdBy: string;
 };
 
-export function portalReportDefinitionsInsertQuery(
-  executor: PortalReportInsertExecutor,
-  args: PortalReportProvisionArgs,
-) {
-  const scope = {
-    version: 1,
-    kind: 'unrestricted',
-    orgId: args.orgId,
-  } as const;
+/**
+ * Build ONE portal-self-service report definition row. Extracted from
+ * `portalReportDefinitionsInsertQuery` so #5784's managed-evidence provisioning
+ * can insert a single type on demand, under a caller-supplied executor, without
+ * re-inserting the whole PORTAL_DEFINITIONS array. There is exactly one
+ * row-shape definition; both callers go through it.
+ */
+export function portalReportDefinitionRow(args: {
+  orgId: string;
+  createdBy: string;
+  type: (typeof reports.$inferInsert)['type'];
+  name: string;
+  config: Record<string, unknown>;
+}) {
+  const scope = { version: 1, kind: 'unrestricted', orgId: args.orgId } as const;
   const authority: UserReportExecutionAuthority = {
     principalKind: 'user',
     principalUserId: args.createdBy,
@@ -84,20 +90,31 @@ export function portalReportDefinitionsInsertQuery(
     capturedAt: new Date(),
     fingerprint: siteScopeFingerprint(scope),
   };
-  const scopeValues = persistedSiteScopeValues(authority);
+  return {
+    orgId: args.orgId,
+    name: args.name,
+    type: args.type,
+    config: args.config,
+    schedule: 'one_time' as const,
+    format: 'pdf' as const,
+    portalSelfService: true,
+    createdBy: args.createdBy,
+    ...persistedSiteScopeValues(authority),
+  };
+}
 
+export function portalReportDefinitionsInsertQuery(
+  executor: PortalReportInsertExecutor,
+  args: PortalReportProvisionArgs,
+) {
   return executor
     .insert(reports)
-    .values(PORTAL_DEFINITIONS.map((definition) => ({
+    .values(PORTAL_DEFINITIONS.map((definition) => portalReportDefinitionRow({
       orgId: args.orgId,
-      name: definition.name,
-      type: definition.type,
-      config: definition.config,
-      schedule: 'one_time' as const,
-      format: 'pdf' as const,
-      portalSelfService: true,
       createdBy: args.createdBy,
-      ...scopeValues,
+      type: definition.type,
+      name: definition.name,
+      config: definition.config,
     })))
     .onConflictDoNothing({
       target: [reports.orgId, reports.type],
