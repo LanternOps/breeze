@@ -132,7 +132,9 @@ import {
   recordMonitorEvaluation,
   detachMonitorFromDevice,
   linkEpisodeAlert,
+  recordEpisodeResponse,
 } from './episodeService';
+import { monitorEpisodes } from '../../db/schema';
 
 const MONITOR = '11111111-1111-4111-8111-111111111111';
 const DEVICE = '22222222-2222-4222-8222-222222222222';
@@ -203,6 +205,28 @@ function updateSets(): Record<string, unknown>[] {
   return state.updates
     .map((calls) => calls.find((c) => c.method === 'set')?.args[0])
     .filter((v): v is Record<string, unknown> => !!v);
+}
+
+/**
+ * Compile the `n`th `update(...)` call's WHERE clause as real SQL, by replaying
+ * the captured condition through a standalone `QueryBuilder` SELECT over the
+ * same table (a bare builder cannot compile an UPDATE) — same trick as
+ * episodeReset.test.ts, adapted for a call-recording (not SQL-compiling)
+ * `update` mock.
+ */
+function compiledUpdateWhereSql(n = 0): string {
+  const whereArgs = state.updates[n]?.find((c) => c.method === 'where')?.args[0];
+  if (!whereArgs) return '';
+  try {
+    return new QueryBuilder()
+      .select()
+      .from(monitorEpisodes)
+      .where(whereArgs as never)
+      .toSQL()
+      .sql.toLowerCase();
+  } catch {
+    return '';
+  }
 }
 
 describe('recordMonitorEvaluation', () => {
@@ -571,5 +595,65 @@ describe('linkEpisodeAlert', () => {
     await linkEpisodeAlert(EPISODE, 'alert-1');
 
     expect(updateSets()[0]?.alertId).toBe('alert-1');
+  });
+});
+
+describe('recordEpisodeResponse', () => {
+  it('guards a queued write so it cannot walk a terminal outcome backwards', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({ monitorId: MONITOR, deviceId: DEVICE, outcome: 'queued' });
+
+    const sql = compiledUpdateWhereSql();
+    expect(sql).toContain('response_outcome');
+    expect(sql).toMatch(/response_outcome"? is null or .*response_outcome"? = 'queued'/);
+  });
+
+  it('does NOT guard a completed write', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({ monitorId: MONITOR, deviceId: DEVICE, outcome: 'completed' });
+
+    expect(compiledUpdateWhereSql()).not.toMatch(/is null or/);
+  });
+
+  it('does NOT guard a failed write', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({ monitorId: MONITOR, deviceId: DEVICE, outcome: 'failed' });
+
+    expect(compiledUpdateWhereSql()).not.toMatch(/is null or/);
+  });
+
+  it('writes response_run_id only when runId is provided', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({
+      monitorId: MONITOR,
+      deviceId: DEVICE,
+      outcome: 'completed',
+      runId: 'run-1',
+    });
+
+    expect(updateSets()[0]?.responseRunId).toBe('run-1');
+  });
+
+  it('omits response_run_id when runId is not provided', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({ monitorId: MONITOR, deviceId: DEVICE, outcome: 'completed' });
+
+    expect(updateSets()[0]).not.toHaveProperty('responseRunId');
+  });
+
+  it('scopes the update to the OPEN episode for the (monitor, device) pair', async () => {
+    state.updateRows = [[]];
+
+    await recordEpisodeResponse({ monitorId: MONITOR, deviceId: DEVICE, outcome: 'completed' });
+
+    const sql = compiledUpdateWhereSql();
+    expect(sql).toMatch(/"monitor_id" = \$/);
+    expect(sql).toMatch(/"device_id" = \$/);
+    expect(sql).toMatch(/"ended_at" is null/);
   });
 });

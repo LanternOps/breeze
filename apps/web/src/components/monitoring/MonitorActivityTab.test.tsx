@@ -165,6 +165,33 @@ describe('MonitorActivityTab (#5290)', () => {
     expect(screen.getByTestId('monitor-activity-escalated-d2')).toBeInTheDocument();
   });
 
+  it('refetches and clears the Escalated/paused badges after a successful reset', async () => {
+    let devicesCallCount = 0;
+    const ROWS_AFTER_RESET = ROWS.map((row) =>
+      row.deviceId === 'd2'
+        ? { ...row, escalatedAt: null, escalationAlertId: null, responsesPaused: false }
+        : row,
+    );
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && input.includes('/reset')) return json({ reset: true });
+      if (input.includes('/devices')) {
+        devicesCallCount += 1;
+        return json({ data: devicesCallCount === 1 ? ROWS : ROWS_AFTER_RESET });
+      }
+      return json({ data: [] });
+    });
+    render(<MonitorActivityTab monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-activity-escalated-d2')).toBeInTheDocument());
+    expect(screen.getByTestId('monitor-activity-paused-d2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('monitor-activity-reset-d2'));
+    fireEvent.click(await screen.findByTestId('monitor-activity-reset-confirm'));
+
+    await waitFor(() => expect(devicesCallCount).toBe(2));
+    await waitFor(() => expect(screen.queryByTestId('monitor-activity-escalated-d2')).toBeNull());
+    expect(screen.queryByTestId('monitor-activity-paused-d2')).toBeNull();
+  });
+
   it('hides the reset button when the pair is not escalated', async () => {
     fetchMock.mockResolvedValue(json({ data: ROWS }));
     render(<MonitorActivityTab monitorId="m1" />);
