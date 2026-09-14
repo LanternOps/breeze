@@ -145,8 +145,14 @@ function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
  * reauthorization" warning-count exclusion the narrative needed, and for the
  * defense-in-depth check at the execute-path call site below
  * (`WORKER_EXCLUDED_REPORT_TYPES.includes(report.type)`).
+ *
+ * Exported for `reportScheduleWorker.contract.test.ts` (#4248 W03), which pins
+ * both enforcement sites and the list's parity with the route-side
+ * `INTERNAL_REPORT_TYPES` — the recipient writers refuse on that set, so a
+ * type in one list but not the other is a definition that is either never
+ * delivered or delivered twice.
  */
-const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative', 'ai_fleet_design'] as const;
+export const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative', 'ai_fleet_design'] as const;
 
 export async function findDueReports(
   now: Date,
