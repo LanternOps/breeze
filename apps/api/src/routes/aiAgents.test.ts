@@ -368,6 +368,15 @@ vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
   demoteSupervisedKey: demoteSupervisedKeyMock,
 }));
 
+// AI patch agent W01 (#5747): the list route's next-occurrence column reads
+// baseline cadences through the schedule service, which has its own full unit
+// suite (scheduleService.test.ts) covering the two-branch tenancy posture.
+// Mocked here so these tests exercise the projection, not that read.
+const loadEnabledBaselineCadencesMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/aiAgents/scheduleService', () => ({
+  loadEnabledBaselineCadences: loadEnabledBaselineCadencesMock,
+}));
+
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
 vi.mock('../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
 
@@ -3543,6 +3552,7 @@ describe('GET /ai-agents', () => {
   beforeEach(() => {
     listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
     selectDistinctOnMock.mockReturnValue(distinctChain([]));
+    loadEnabledBaselineCadencesMock.mockResolvedValue([]);
   });
 
   it('selects the latest site-visible run rather than the latest org-visible run', async () => {
@@ -3607,6 +3617,55 @@ describe('GET /ai-agents', () => {
       lastRunFindingsToReview: 6,
     });
     expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  // AI patch agent W01 (#5747), Task 10 — the next-occurrence column. The
+  // cadence read is batched for the whole page, and the occurrence itself is
+  // computed by the SAME shared helper the schedules drawer uses, so the card
+  // and the drawer cannot disagree.
+  it('returns nextOccurrenceAt for an agent with an enabled baseline, from ONE batched read', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-15T02:00:00.000Z');
+    expect(loadEnabledBaselineCadencesMock).toHaveBeenCalledTimes(1);
+    expect(loadEnabledBaselineCadencesMock.mock.calls[0]![1]).toEqual([AGENT_ID]);
+    vi.useRealTimers();
+  });
+
+  it('reports the SOONEST occurrence when an agent has several enabled baselines', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+      { agentId: AGENT_ID, cron: '0 20 * * *', timezone: 'UTC' },
+    ]);
+
+    const body = await (await buildApp().request('/ai-agents')).json();
+
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-14T20:00:00.000Z');
+    vi.useRealTimers();
+  });
+
+  it('returns null when the agent has no enabled baseline', async () => {
+    const body = await (await buildApp().request('/ai-agents')).json();
+    expect(body.data[0].nextOccurrenceAt).toBeNull();
+  });
+
+  it('returns null — never throws — when the stored cron cannot be evaluated', async () => {
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: 'every night', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].nextOccurrenceAt).toBeNull();
   });
 
   it('reports 0 — not null — for a last run that left nothing to review', async () => {

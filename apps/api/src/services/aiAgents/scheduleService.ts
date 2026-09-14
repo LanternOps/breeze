@@ -766,6 +766,86 @@ export async function listSchedules(
   return baselines.map((baseline) => toEffectiveDto(baseline, byBaseline.get(baseline.id), false));
 }
 
+/** One enabled baseline's cadence — everything the next-occurrence column needs
+ *  and nothing else. Deliberately NOT the whole row: `last_run_summary`
+ *  aggregates every org under the partner and must never reach an org caller
+ *  (see `listSchedules`), so it is not selected here at all. */
+export interface BaselineCadence {
+  agentId: string;
+  cron: string;
+  timezone: string;
+}
+
+/**
+ * AI patch agent W01 (#5747) — every ENABLED baseline cadence for a page of
+ * agents, in ONE query.
+ *
+ * The agents list route turns these into each card's `nextOccurrenceAt`. It is
+ * a page-wide batched read for the same reason `loadLastRuns` is: a per-row
+ * query would be one round trip per agent.
+ *
+ * Tenancy is `listSchedules`'s, restated for a read that returns no row
+ * contents: a PARTNER caller reads its own baselines under its own RLS
+ * (`breeze_has_partner_access` passes), while an ORG caller is blind to the
+ * partner axis (#2822) and reads them through `readWithPartnerAxisVisibility`
+ * with a maximally narrow app predicate — this partner's rows, for this
+ * partner's own partner-wide schedulable agents. A caller with neither axis
+ * (no partnerId) gets nothing rather than an unpinned read.
+ *
+ * Overrides are deliberately ignored: an org override carries no cadence of
+ * its own (it may only disable or tighten), so the BASELINE's cron is when the
+ * agent next fires — exactly what `toEffectiveDto` renders in the drawer.
+ */
+export async function loadEnabledBaselineCadences(
+  auth: AuthContext,
+  agentIds: string[],
+): Promise<BaselineCadence[]> {
+  if (agentIds.length === 0) return [];
+  const columns = {
+    agentId: aiAgentSchedules.agentId,
+    cron: aiAgentSchedules.cron,
+    timezone: aiAgentSchedules.timezone,
+  };
+
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return db
+      .select(columns)
+      .from(aiAgentSchedules)
+      .where(and(
+        isNull(aiAgentSchedules.orgId),
+        eq(aiAgentSchedules.partnerId, auth.partnerId),
+        eq(aiAgentSchedules.enabled, true),
+        inArray(aiAgentSchedules.agentId, agentIds),
+      ));
+  }
+
+  if (!auth.partnerId) return [];
+  const partnerId = auth.partnerId;
+
+  return readWithPartnerAxisVisibility(async () => {
+    const partnerWideAgentIds = await db
+      .select({ id: aiAgents.id })
+      .from(aiAgents)
+      .where(and(
+        isNull(aiAgents.orgId),
+        eq(aiAgents.partnerId, partnerId),
+        inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
+        isNull(aiAgents.disabledAt),
+        inArray(aiAgents.id, agentIds),
+      ));
+    if (partnerWideAgentIds.length === 0) return [];
+    return db
+      .select(columns)
+      .from(aiAgentSchedules)
+      .where(and(
+        isNull(aiAgentSchedules.orgId),
+        eq(aiAgentSchedules.partnerId, partnerId),
+        eq(aiAgentSchedules.enabled, true),
+        inArray(aiAgentSchedules.agentId, partnerWideAgentIds.map((a) => a.id)),
+      ));
+  });
+}
+
 /**
  * The sweeper's (Task 9) entry point: every baseline of one partner with its
  * org overrides keyed by org id. Runs in a SYSTEM context — the fixed-tick

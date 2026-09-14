@@ -150,6 +150,7 @@ import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
+import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
@@ -1008,6 +1009,9 @@ api.route('/ai/agents', aiAgentsRoutes);
 // Distinct path prefix from '/ai/agents', so registration order relative to
 // it doesn't matter the way '/ai/agents/schedules' does.
 api.route('/ai/fleet-design', fleetDesignRoutes);
+// AI patch agent W01 (#5747): "Run now" for a patch plan. Same reasoning as
+// the line above — its own prefix, so registration order is irrelevant.
+api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);

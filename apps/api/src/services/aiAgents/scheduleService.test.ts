@@ -135,6 +135,7 @@ import {
   deleteSchedule,
   effectiveSchedule,
   listSchedules,
+  loadEnabledBaselineCadences,
   resolveEffectiveSchedulesForPartner,
   updateSchedule,
 } from './scheduleService';
@@ -1323,5 +1324,61 @@ describe('resolveEffectiveSchedulesForPartner', () => {
 
     const { withSystemDbAccessContext } = await import('../../db');
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+// AI patch agent W01 (#5747), Task 10 — the agents LIST route's
+// next-occurrence column. One batched read for the whole page, on the same
+// two-branch tenancy posture `listSchedules` uses.
+describe('loadEnabledBaselineCadences', () => {
+  it('returns nothing, and issues no query, for an empty agent list', async () => {
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), []);
+    expect(rows).toEqual([]);
+    expect(dbState.reads).toHaveLength(0);
+  });
+
+  it("reads a partner caller's baselines under its OWN RLS context", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    // The fixture store ignores the column projection and hands back whole
+    // rows, so this asserts the three fields the caller reads, not the shape
+    // the real query narrows to.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agentId: AGENT_ID, cron: CRON, timezone: 'Europe/Berlin' });
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    expect(read?.system).toBe(false);
+  });
+
+  it("reads an org caller's partner baselines through the partner-axis escape", async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    dbState.scheduleRows = [[baselineRow({ kind: 'patch' })]];
+
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+
+    expect(rows).toHaveLength(1);
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    // Org-scoped RLS is blind to partner-axis rows (#2822) — without the
+    // escape the card silently shows "—" for every partner-wide agent.
+    expect(read?.system).toBe(true);
+  });
+
+  it('pins the read to the listed agents, to baselines, and to enabled rows', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    const sql = dialect.sqlToQuery(read?.where as SQL);
+    expect(sql.sql).toContain('"org_id" is null');
+    expect(sql.sql).toContain('"enabled"');
+    expect(sql.sql).toContain('"agent_id" in');
+  });
+
+  it('returns nothing for an org whose partner has no schedulable partner-wide agent', async () => {
+    dbState.agentRows = [[]];
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+    expect(rows).toEqual([]);
   });
 });
