@@ -323,10 +323,14 @@ export function createFakeSandboxBackend(): FakeSandboxBackend {
       return out;
     },
 
-    async destroy(h: SandboxHandle): Promise<void> {
+    async destroy(h: SandboxHandle): Promise<SandboxUsage | null> {
       const box = boxes.get(h.providerRef);
       record('destroy', h.providerRef, []);
-      if (!box || box.destroyed) return; // idempotent
+      // Idempotent, and it still hands back what it froze the first time — an
+      // unknown box (this process never created it) has nothing to report, which
+      // is `null`, never a zeroed usage that would bill the run as free.
+      if (!box) return null;
+      if (box.destroyed) return box.frozenUsage ?? null;
       box.frozenUsage = {
         cpuMs: Math.max(0, (processCpuMicros() - box.startedCpuUs) / 1000),
         wallMs: Number((process.hrtime.bigint() - box.startedHrNs) / 1_000_000n),
@@ -334,6 +338,7 @@ export function createFakeSandboxBackend(): FakeSandboxBackend {
       };
       box.destroyed = true;
       await fs.rm(box.root, { recursive: true, force: true });
+      return box.frozenUsage;
     },
 
     async usage(h: SandboxHandle): Promise<SandboxUsage> {

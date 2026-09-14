@@ -26,7 +26,7 @@ const createSeconds = new Histogram({
 
 const destroyFailed = new Counter({
   name: 'ai_workspace_destroy_failed_total',
-  help: 'Workspace sandboxes the reaper could not destroy (each one is a paged destroy_failed row and a billing sandbox we are still paying for)',
+  help: 'Workspace sandboxes the reaper could not destroy — each is a destroy_failed row and a sandbox we are still paying for. The reaper also captureException()s each one, which is what currently pages; an alert rule on this counter is still to be added.',
   labelNames: ['backend', 'region'] as const,
   registers: [metricsRegistry],
 });

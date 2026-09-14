@@ -31,6 +31,7 @@ import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { incWorkspaceDestroyFailed } from '../services/aiWorkspaceMetrics';
 import { getSandboxBackendByName } from '../services/workspace/sandboxBackend';
+import { calculateComputeCents } from '../services/aiComputePricing';
 import { attachWorkerObservability } from './workerObservability';
 
 const QUEUE_NAME = 'workspace-reaper';
@@ -41,6 +42,17 @@ const REAP_INTERVAL_MS = 60 * 1000;
  * dead worker's sandbox is reclaimed inside the same minute. Spec §6 step 6.
  */
 const REAP_GRACE_SECONDS = 120;
+/**
+ * A row is flipped to `destroying` the moment it is claimed, which removes it
+ * from every later claim query. If the process that claimed it dies before it
+ * reaches destroy() — a rolling deploy, an OOM — nothing anywhere ever moves it
+ * back, so the sandbox keeps billing with NOTHING watching it: it never becomes
+ * destroy_failed, so it never pages either. This is the backstop for the
+ * backstop: a `destroying` row older than this is presumed abandoned and
+ * reclaimed. Re-destroying is safe — destroy() is idempotent and treats an
+ * already-gone sandbox as success.
+ */
+const DESTROYING_STALL_SECONDS = 600;
 const MAX_REAP_PER_RUN = 100;
 
 type ReaperJobData = { type: 'reap-expired-workspaces'; queuedAt: string };
@@ -76,23 +88,35 @@ function rowsOf(result: unknown): ClaimedRow[] {
  * destroy() on the same sandbox — then destroys each one.
  */
 export async function reapExpiredWorkspaces(): Promise<{ destroyed: number; failed: number }> {
-  const claimed = await db.execute<ClaimedRow>(sql`
+  // ONE short transaction for the claim. The destroy loop below must NOT run
+  // inside it: each row costs at least two sequential vendor HTTP round-trips,
+  // and holding a pooled connection across up to MAX_REAP_PER_RUN of those —
+  // precisely during the mass-worker-crash backlog this job exists for — is how
+  // a pool gets starved. It would also mean one transient DB error anywhere in
+  // the pass rolls back the bookkeeping for rows whose sandboxes are already,
+  // irreversibly, destroyed.
+  const claimed = await withSystemDbAccessContext(() => db.execute<ClaimedRow>(sql`
     WITH due AS (
       SELECT id
       FROM ai_run_workspaces
       WHERE status <> 'destroyed'
-        AND status <> 'destroying'
-        AND deadline_at < now() - interval '120 seconds'
+        AND (
+          (status <> 'destroying' AND deadline_at < now() - interval '120 seconds')
+          -- Stalled claim: the process that took this row died before it could
+          -- destroy the sandbox. Nothing else would ever look at it again.
+          OR (status = 'destroying'
+              AND destroying_since < now() - interval '600 seconds')
+        )
       ORDER BY deadline_at ASC
       LIMIT ${MAX_REAP_PER_RUN}
       FOR UPDATE SKIP LOCKED
     )
     UPDATE ai_run_workspaces AS w
-    SET status = 'destroying'
+    SET status = 'destroying', destroying_since = now()
     FROM due
     WHERE w.id = due.id
     RETURNING w.id, w.org_id, w.run_id, w.backend, w.provider_ref, w.region;
-  `);
+  `));
 
   const rows = rowsOf(claimed);
   let destroyed = 0;
@@ -101,16 +125,46 @@ export async function reapExpiredWorkspaces(): Promise<{ destroyed: number; fail
   for (const row of rows) {
     try {
       const backend = getSandboxBackendByName(row.backend);
-      await backend.destroy({
+      // destroy() hands back the usage it captured on the way down. This is the
+      // ONLY chance to bill a crash-recovered run: the reaper is in a different
+      // process from the worker that created the sandbox, so there is no cached
+      // usage to read, and the vendor data is unrecoverable once destroy()
+      // completes. A run reclaimed here without this would bill as free.
+      const usage = await backend.destroy({
         backend: row.backend,
         providerRef: row.provider_ref,
         region: row.region,
         createdAt: new Date(0),
       });
-      await db
-        .update(aiRunWorkspaces)
-        .set({ status: 'destroyed', destroyedAt: new Date(), lastError: null })
-        .where(eq(aiRunWorkspaces.id, row.id));
+
+      let computeCents: number | null = null;
+      if (usage) {
+        try {
+          computeCents = calculateComputeCents(row.backend, usage, usage.memAllocatedMb / 1024);
+        } catch (priceErr) {
+          // Pricing refusing is not a reason to leave the row claimed: record
+          // the usage we have and say why the cost is missing.
+          console.error(`[WorkspaceReaper] pricing failed for workspace ${row.id}:`, priceErr);
+        }
+      }
+
+      await withSystemDbAccessContext(() =>
+        db
+          .update(aiRunWorkspaces)
+          .set({
+            status: 'destroyed',
+            destroyedAt: new Date(),
+            cpuMs: usage?.cpuMs ?? null,
+            wallMs: usage?.wallMs ?? null,
+            memAllocatedMb: usage?.memAllocatedMb ?? null,
+            computeCents,
+            // A reclaimed row whose usage the provider could not report is NOT
+            // the same as a cleanly-metered one, and must not be silently
+            // indistinguishable from it: W04 settles these at the reservation.
+            lastError: usage ? null : 'usage unrecoverable — settle at reservation',
+          })
+          .where(eq(aiRunWorkspaces.id, row.id)),
+      );
       destroyed += 1;
     } catch (err) {
       failed += 1;
@@ -118,17 +172,17 @@ export async function reapExpiredWorkspaces(): Promise<{ destroyed: number; fail
       // Spec §9: the row is marked destroy_failed and PAGED. The reaper picks
       // it up again next minute (status <> 'destroyed'), which is the backoff.
       // Never rethrow: one stuck vendor row must not stop the rest draining.
-      await db
+      await withSystemDbAccessContext(() => db
         .update(aiRunWorkspaces)
         .set({
           status: 'destroy_failed',
           destroyAttempts: sql`${aiRunWorkspaces.destroyAttempts} + 1`,
           lastError: message.slice(0, 2000),
         })
-        .where(eq(aiRunWorkspaces.id, row.id))
-        .catch((updateErr) => {
-          console.error('[WorkspaceReaper] Failed to record destroy_failed:', updateErr);
-        });
+        .where(eq(aiRunWorkspaces.id, row.id)),
+      ).catch((updateErr) => {
+        console.error('[WorkspaceReaper] Failed to record destroy_failed:', updateErr);
+      });
       incWorkspaceDestroyFailed({ backend: row.backend, region: row.region });
       console.error(
         `[WorkspaceReaper] destroy failed for workspace ${row.id} (${row.backend}/${row.provider_ref}):`,
@@ -154,7 +208,10 @@ function createWorker(): Worker<ReaperJobData> {
     QUEUE_NAME,
     async (_job: Job<ReaperJobData>) => {
       try {
-        const result = await withSystemDbAccessContext(reapExpiredWorkspaces);
+        // NOT wrapped: reapExpiredWorkspaces opens its own short-lived contexts,
+        // one for the claim and one per row, so no pooled connection is held
+        // across a vendor round-trip.
+        const result = await reapExpiredWorkspaces();
         if (result.destroyed > 0 || result.failed > 0) {
           console.log(
             `[WorkspaceReaper] destroyed ${result.destroyed}, failed ${result.failed}`,

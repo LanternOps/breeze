@@ -1363,6 +1363,25 @@ const envSchema = envObjectSchema
         }
       }
 
+      // The multiplier is the only knob between vendor list price and what an
+      // org is charged. computePriceMultiplier() falls back to 1 for anything
+      // unparseable — the right instinct, since zeroing billing is worse — but
+      // that fallback is silent, so a typo (`1.5x`, a stray comma) would run at
+      // 1x forever and only surface as a margin discrepancy nobody traces back.
+      // Refuse at boot instead. Unset is fine and means 1.
+      const multiplierRaw = data.AI_COMPUTE_PRICE_MULTIPLIER?.trim();
+      if (multiplierRaw) {
+        const multiplier = Number(multiplierRaw);
+        if (!Number.isFinite(multiplier) || multiplier <= 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_COMPUTE_PRICE_MULTIPLIER'],
+            message:
+              `AI_COMPUTE_PRICE_MULTIPLIER must be a finite positive number when set (got "${multiplierRaw}"). Leave it unset for 1x — an unparseable value would silently price every run at 1x.`,
+          });
+        }
+      }
+
       // BYO signing (spec 3a): pointing the deployment at a NON-official
       // release repository only makes sense with a manifest trust root that is
       // the OVERRIDING repository's release key — without one, github-mode

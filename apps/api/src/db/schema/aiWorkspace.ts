@@ -77,6 +77,8 @@ export const aiRunWorkspaces = pgTable('ai_run_workspaces', {
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   readyAt: timestamp('ready_at', { withTimezone: true }),
+  /** Stamped when the reaper claims the row; drives the stalled-claim sweep. */
+  destroyingSince: timestamp('destroying_since', { withTimezone: true }),
   destroyedAt: timestamp('destroyed_at', { withTimezone: true }),
   /** Provider-side hard stop. The reaper's key: anything past this + 120s dies. */
   deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),

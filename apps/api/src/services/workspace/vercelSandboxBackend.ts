@@ -138,7 +138,10 @@ function statusOf(err: unknown): number | null {
   return null;
 }
 
-function mapError(err: unknown, fallback: 'create_failed' | 'destroy_failed' | 'not_found'): SandboxError {
+function mapError(
+  err: unknown,
+  fallback: 'create_failed' | 'destroy_failed' | 'not_found' | 'backend_error',
+): SandboxError {
   if (err instanceof SandboxError) return err;
   const status = statusOf(err);
   if (status === 402 || status === 429) {
@@ -209,7 +212,51 @@ export function createVercelSandboxBackend(): SandboxBackend {
     try {
       return await SandboxCtor.get({ name: h.providerRef, resume: false, ...readVercelCredentials() });
     } catch (err) {
-      throw mapError(err, 'not_found');
+      // mapError still turns a real 404 into not_found. The FALLBACK is
+      // backend_error so a network blip or a 5xx is not reported as "this
+      // sandbox does not exist" — destroy() branches on not_found to decide the
+      // sandbox is already gone, and a transient error read that way would
+      // abandon a sandbox that is still running and still billing.
+      throw mapError(err, 'backend_error');
+    }
+  }
+
+  /**
+   * Server-side half of the path fence. `assertSandboxPath` is purely lexical:
+   * it proves the STRING is under /work, which a symlink planted by the model's
+   * own script trivially satisfies while pointing somewhere else entirely. The
+   * fake backend closes this with realpath and its own comment calls that
+   * load-bearing; the pinned SDK surface exposes no realpath, so this refuses a
+   * symlinked component outright instead.
+   *
+   * Refusing rather than resolving is the right trade here: an analysis
+   * workspace has no legitimate use for a symlink, so "no symlinks under /work"
+   * is both simpler than "symlinks that resolve inside /work" and immune to a
+   * TOCTOU swap between the resolve and the read.
+   *
+   * A component that does not exist yet is fine (writeFiles creates it); only a
+   * component that EXISTS and IS a symlink is refused.
+   */
+  async function assertNoSymlinkComponents(sandbox: AnySandbox, normalized: string): Promise<void> {
+    const parts = normalized.slice(SANDBOX_ROOT.length).split('/').filter(Boolean);
+    let probe = SANDBOX_ROOT;
+    for (const part of parts) {
+      probe = `${probe}/${part}`;
+      let stat: { isSymbolicLink(): boolean };
+      try {
+        stat = await sandbox.fs.lstat(probe);
+      } catch {
+        // Does not exist yet, so nothing here can point anywhere — and every
+        // deeper component is necessarily absent too. Stop walking.
+        return;
+      }
+      if (stat.isSymbolicLink()) {
+        throw new SandboxError(
+          'invalid_path',
+          `path "${normalized}" traverses a symlink at ${probe}; symlinks are refused inside /work`,
+          { backend: 'vercel' },
+        );
+      }
     }
   }
 
@@ -282,6 +329,7 @@ export function createVercelSandboxBackend(): SandboxBackend {
       }
       const sandbox = await acquire(h);
       const cwd = opts.cwd ? assertSandboxPath(opts.cwd) : SANDBOX_ROOT;
+      if (opts.cwd) await assertNoSymlinkComponents(sandbox, cwd);
       const stdout = cappedSink(opts.maxStdoutBytes);
       const stderr = cappedSink(opts.maxStdoutBytes);
 
@@ -363,6 +411,9 @@ export function createVercelSandboxBackend(): SandboxBackend {
       }
       const normalized = files.map((f) => ({ path: assertSandboxPath(f.path), content: f.bytes }));
       const sandbox = await acquire(h);
+      // Checked before ANY write: a symlinked parent would otherwise let a
+      // write land outside /work entirely.
+      for (const f of normalized) await assertNoSymlinkComponents(sandbox, f.path);
       // writeFiles does not create parents (pinned surface).
       const dirs = new Set(normalized.map((f) => f.path.slice(0, f.path.lastIndexOf('/')) || SANDBOX_ROOT));
       try {
@@ -376,11 +427,15 @@ export function createVercelSandboxBackend(): SandboxBackend {
     async readFile(h: SandboxHandle, filePath: string, maxBytes: number): Promise<Buffer> {
       const normalized = assertSandboxPath(filePath);
       const sandbox = await acquire(h);
+      await assertNoSymlinkComponents(sandbox, normalized);
       let buffer: Buffer | null;
       try {
         buffer = await sandbox.readFileToBuffer({ path: normalized });
       } catch (err) {
-        throw mapError(err, 'not_found');
+        // A genuinely missing file is `null`, not a throw (pinned SDK surface),
+        // and is reported as not_found just below. Anything that THROWS here is
+        // a vendor-side failure, so it must not wear the same code.
+        throw mapError(err, 'backend_error');
       }
       if (buffer === null) {
         throw new SandboxError('not_found', `no such file ${filePath}`, { backend: 'vercel' });
@@ -416,14 +471,30 @@ export function createVercelSandboxBackend(): SandboxBackend {
         }
         return out;
       } catch (err) {
-        throw mapError(err, 'not_found');
+        throw mapError(err, 'backend_error');
       }
     },
 
-    async destroy(h: SandboxHandle): Promise<void> {
+    async destroy(h: SandboxHandle): Promise<SandboxUsage | null> {
       const known = boxes.get(h.providerRef);
-      if (known?.destroyed) return; // idempotent
-      const sandbox = await acquire(h);
+      if (known?.destroyed) return known.usage; // idempotent
+      let sandbox: AnySandbox;
+      try {
+        sandbox = await acquire(h);
+      } catch (err) {
+        // The sandbox is already gone vendor-side: a previous destroy succeeded
+        // but died before it could record that, or the provider expired and
+        // collected it. That is SUCCESS, exactly as the delete() 404 below is.
+        // Reporting it as a failure would make the reaper re-mark the row
+        // destroy_failed, re-page, and retry every 60 seconds forever for a
+        // sandbox nobody is paying for — which is how an alert that matters
+        // gets trained into noise.
+        if (err instanceof SandboxError && err.code === 'not_found') {
+          if (known) known.destroyed = true;
+          return known?.usage ?? null;
+        }
+        throw err;
+      }
 
       // stop() is where usage comes from; it must run BEFORE delete(), after
       // which "the instance becomes inert — all further API calls will throw".
@@ -443,12 +514,14 @@ export function createVercelSandboxBackend(): SandboxBackend {
       const wallMs = numberOr(stopped.duration, sandbox.totalDurationMs);
       const memAllocatedMb = numberOr(stopped.memory, sandbox.memory) ?? known?.memAllocatedMb ?? 2048;
 
+      // Computed BEFORE delete(), which makes the instance inert and the numbers
+      // unrecoverable. Returned as well as cached: the reaper has no cached box
+      // to read (different process), and this is its only chance to bill.
+      const captured: SandboxUsage | null =
+        cpuMs === null || wallMs === null ? null : { cpuMs, wallMs, memAllocatedMb };
       if (known) {
-        if (cpuMs === null || wallMs === null) {
-          known.usageUnavailable = true;
-        } else {
-          known.usage = { cpuMs, wallMs, memAllocatedMb };
-        }
+        if (captured === null) known.usageUnavailable = true;
+        else known.usage = captured;
       }
 
       try {
@@ -461,6 +534,7 @@ export function createVercelSandboxBackend(): SandboxBackend {
         }
       }
       if (known) known.destroyed = true;
+      return captured;
     },
 
     async usage(h: SandboxHandle): Promise<SandboxUsage> {

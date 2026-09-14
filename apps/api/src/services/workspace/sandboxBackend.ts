@@ -28,7 +28,13 @@ export type SandboxErrorCode =
   // limit) so W03 can map them to distinct typed tool errors (spec §8 "each cap
   // failure is a typed tool error the model can read, and a counter").
   | 'file_too_large'
-  | 'invalid_path';
+  | 'invalid_path'
+  // An unclassified vendor-side failure: a network blip, a 5xx, an expired
+  // token. Deliberately NOT `not_found`, which callers read as "the path or
+  // sandbox genuinely does not exist" — a transient outage reported as
+  // not_found tells W03's tool layer (and the model, and anyone reading the
+  // run transcript) that a directory is missing when it is merely unreachable.
+  | 'backend_error';
 
 export class SandboxError extends Error {
   readonly code: SandboxErrorCode;
@@ -114,7 +120,19 @@ export interface SandboxBackend {
   readFile(h: SandboxHandle, path: string, maxBytes: number): Promise<Buffer>;
   listFiles(h: SandboxHandle, dir: string): Promise<FileStat[]>;
   /** Idempotent; must also purge any snapshot. Called from a `finally` and from the reaper. */
-  destroy(h: SandboxHandle): Promise<void>;
+  /**
+   * Destroys the sandbox and RETURNS the usage captured on the way down, or
+   * null when the provider reported none.
+   *
+   * The return value is load-bearing for billing, not a convenience. The reaper
+   * runs in a DIFFERENT PROCESS from the worker that created the sandbox, so it
+   * has no in-memory box to read `usage()` from — and `destroy()` ends with a
+   * vendor `delete()`, after which the usage is unrecoverable for good. A
+   * `destroy()` that returned void would therefore make every reaper-recovered
+   * run bill as free, silently and permanently (a worker OOM-killed at minute
+   * 55 of an hour-long sandbox would cost the org nothing).
+   */
+  destroy(h: SandboxHandle): Promise<SandboxUsage | null>;
   /** Read after destroy. Throws `usage_unavailable` when the provider reported nothing. */
   usage(h: SandboxHandle): Promise<SandboxUsage>;
 }

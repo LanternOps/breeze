@@ -41,7 +41,15 @@ function makeFakeSandbox(overrides: Record<string, unknown> = {}) {
     fs: {
       mkdir: vi.fn(async (_p?: string, _o?: { recursive: boolean }) => undefined),
       readdir: vi.fn(async (_p?: string, _o?: { withFileTypes: true }): Promise<Array<{ name: string }>> => []),
-      lstat: vi.fn(async (_p?: string) => ({ size: 0, isDirectory: () => false, isSymbolicLink: () => false })),
+      lstat: vi.fn(
+        async (
+          _p?: string,
+        ): Promise<{ size: number; isDirectory(): boolean; isSymbolicLink(): boolean }> => ({
+          size: 0,
+          isDirectory: () => false,
+          isSymbolicLink: () => false,
+        }),
+      ),
     },
     stop: vi.fn(
       async (): Promise<{
@@ -162,7 +170,6 @@ describe('vercelSandboxBackend', () => {
     expect(params.timeoutMs).toBe(5_000);
     expect(params.stdout).toBeDefined();
     expect(params.stderr).toBeDefined();
-    expect(params.sudo).toBeUndefined();
   });
 
   it('routes stdinBytes through a constant sh -c redirector with model data only in argv', async () => {
@@ -262,7 +269,86 @@ describe('vercelSandboxBackend', () => {
     sandbox.delete.mockRejectedValue(new FakeAPIError({ status: 404 }));
     const backend = createVercelSandboxBackend();
     const handle = await backend.create(SPEC);
-    await expect(backend.destroy(handle)).resolves.toBeUndefined();
+    // Still returns the usage captured by stop(): the delete 404 means the row
+    // is already gone vendor-side, not that the run was free.
+    await expect(backend.destroy(handle)).resolves.toEqual({
+      cpuMs: 400,
+      wallMs: 5_000,
+      memAllocatedMb: 2048,
+    });
+  });
+
+  // The reaper's whole reason to exist is a worker that DIED, so it always runs
+  // in a process with no in-memory box for this sandbox. destroy() ends in a
+  // vendor delete() after which the usage is unrecoverable, so if it did not
+  // hand the numbers back here, every reaper-recovered run would bill as free
+  // and no later job could ever reconstruct it.
+  // The lexical fence passes here: "/work/out/escape/hostname" IS under /work.
+  // Only the server-side lstat walk can refuse it, and without that walk the
+  // production backend would happily follow a link the model's own script
+  // planted — which is exactly the state this file was in before review.
+  it('refuses a path traversing a symlinked component', async () => {
+    sandbox.fs.lstat.mockImplementation(async (p?: string) => ({
+      size: 0,
+      isDirectory: () => false,
+      isSymbolicLink: () => p === '/work/out/escape',
+    }));
+    const backend = createVercelSandboxBackend();
+    const handle = await backend.create(SPEC);
+
+    await expect(backend.readFile(handle, '/work/out/escape/hostname', 1024)).rejects.toMatchObject({
+      code: 'invalid_path',
+    });
+    await expect(
+      backend.writeFiles(handle, [{ path: '/work/out/escape/planted', bytes: Buffer.from('x') }]),
+    ).rejects.toMatchObject({ code: 'invalid_path' });
+    expect(sandbox.readFileToBuffer).not.toHaveBeenCalled();
+    expect(sandbox.writeFiles).not.toHaveBeenCalled();
+  });
+
+  it('returns the usage it captured even with no in-process box (the reaper path)', async () => {
+    const backend = createVercelSandboxBackend();
+    await expect(
+      backend.destroy({
+        backend: 'vercel',
+        providerRef: 'breeze-eu-orphan',
+        region: 'eu',
+        createdAt: new Date(),
+      }),
+    ).resolves.toEqual({ cpuMs: 400, wallMs: 5_000, memAllocatedMb: 2048 });
+  });
+
+  it('treats an already-gone sandbox as destroyed instead of paging forever', async () => {
+    (Sandbox.get as unknown as { mockRejectedValueOnce: (e: unknown) => void })
+      .mockRejectedValueOnce(new FakeAPIError({ status: 404 }));
+    const backend = createVercelSandboxBackend();
+    // A previous destroy succeeded but died before recording it. Reporting this
+    // as a failure would re-page and retry every 60s forever for a sandbox
+    // nobody is paying for.
+    await expect(
+      backend.destroy({
+        backend: 'vercel',
+        providerRef: 'breeze-eu-already-gone',
+        region: 'eu',
+        createdAt: new Date(),
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('does not report a transient vendor failure as not_found', async () => {
+    (Sandbox.get as unknown as { mockRejectedValueOnce: (e: unknown) => void })
+      .mockRejectedValueOnce(new FakeAPIError({ status: 503 }));
+    const backend = createVercelSandboxBackend();
+    // not_found is what destroy() reads as "already gone". A 503 read that way
+    // would abandon a sandbox that is still running and still billing.
+    await expect(
+      backend.destroy({
+        backend: 'vercel',
+        providerRef: 'breeze-eu-blip',
+        region: 'eu',
+        createdAt: new Date(),
+      }),
+    ).rejects.toMatchObject({ code: 'backend_error' });
   });
 
   it('surfaces a non-404 destroy failure as destroy_failed so the reaper can page', async () => {

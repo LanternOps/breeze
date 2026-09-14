@@ -62,7 +62,10 @@ describe('fakeSandboxBackend', () => {
     });
     expect(echoed.exitCode).toBe(0);
     expect(echoed.stdout.toString()).toBe('a; curl example.com\n');
+    // The script-by-path call must also have actually RUN (a mis-resolved
+    // /work path would exit 127 and this case would otherwise not notice).
     expect(res.timedOut).toBe(false);
+    expect(res.stdout.toString()).toContain('hello');
   });
 
   it('does not leak the parent process environment into the child', async () => {
@@ -100,6 +103,24 @@ describe('fakeSandboxBackend', () => {
     expect(res.exitCode).toBeNull();
     expect(res.durationMs).toBeLessThan(10_000);
   });
+
+  // The plain `sh -c 'sleep 30'` case above does NOT discriminate: a POSIX
+  // shell execve-optimises a single trailing command, so `sleep` usually
+  // BECOMES the direct child and a kill aimed at that child alone would still
+  // pass. This case forces a real grandchild (`&` + `wait`), which only the
+  // process-group kill can reap. Without `detached: true` + `process.kill(-pid)`
+  // the surviving grandchild holds stdout/stderr open, 'close' never fires, and
+  // exec() hangs until vitest's own timeout instead of resolving as timedOut.
+  it('kills a GRANDCHILD too, not just the direct child', async () => {
+    const res = await backend.exec(
+      handle,
+      ['/bin/sh', '-c', 'sleep 30 & wait'],
+      { timeoutMs: 300, maxStdoutBytes: 1024 },
+    );
+    expect(res.timedOut).toBe(true);
+    expect(res.exitCode).toBeNull();
+    expect(res.durationMs).toBeLessThan(10_000);
+  }, 15_000);
 
   it('roundtrips writeFiles/readFile and refuses a read over maxBytes', async () => {
     await backend.writeFiles(handle, [{ path: '/work/in/a.txt', bytes: Buffer.from('hello') }]);

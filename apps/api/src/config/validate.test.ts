@@ -2590,6 +2590,30 @@ describe('validateConfig', () => {
       expect(config.NODE_ENV).toBe('production');
     });
   });
+
+  // computePriceMultiplier() falls back to 1 for anything unparseable, silently.
+  // Without a boot-time refusal a typo runs at 1x forever and only ever surfaces
+  // as a margin discrepancy nobody traces back to an env var.
+  it.each(['1.5x', 'abc', '0', '-2', 'NaN'])(
+    'refuses a malformed AI_COMPUTE_PRICE_MULTIPLIER (%s) at boot',
+    (bad) => {
+      withEnv({ ...workspaceProdEnv, AI_COMPUTE_PRICE_MULTIPLIER: bad }, () => {
+        expect(() => validateConfig()).toThrow(/AI_COMPUTE_PRICE_MULTIPLIER/);
+      });
+    },
+  );
+
+  it.each(['1', '1.25', '2.5'])('accepts a valid AI_COMPUTE_PRICE_MULTIPLIER (%s)', (good) => {
+    withEnv({ ...workspaceProdEnv, AI_COMPUTE_PRICE_MULTIPLIER: good }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('leaves AI_COMPUTE_PRICE_MULTIPLIER optional — unset means 1x', () => {
+    withEnv({ ...workspaceProdEnv }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -193,6 +193,30 @@ describe.each(CANDIDATES)('SandboxBackend contract [$label]', (candidate) => {
   );
 
   it(
+    'refuses to read THROUGH a symlink the sandbox itself planted',
+    async () => {
+      // The lexical fence only proves the STRING is under /work. The model's own
+      // script can plant a link there that points anywhere, and every backend
+      // must refuse to follow it — otherwise "every path is confined to /work"
+      // is only true of paths nobody tried to escape with. This case exists
+      // because the fake enforced it and the production backend did not.
+      const made = await backend.exec(handle, ['ln', '-s', '/etc', '/work/out/escape'], {
+        timeoutMs: candidate.timeoutMs,
+        maxStdoutBytes: 1024,
+      });
+      expect(made.exitCode).toBe(0);
+
+      await expect(backend.readFile(handle, '/work/out/escape/hostname', 1024)).rejects.toMatchObject(
+        { code: 'invalid_path' },
+      );
+      await expect(
+        backend.writeFiles(handle, [{ path: '/work/out/escape/planted', bytes: Buffer.from('x') }]),
+      ).rejects.toMatchObject({ code: 'invalid_path' });
+    },
+    candidate.timeoutMs,
+  );
+
+  it(
     'lists files with bytes, isDir and isSymlink',
     async () => {
       await backend.writeFiles(handle, [
@@ -210,8 +234,15 @@ describe.each(CANDIDATES)('SandboxBackend contract [$label]', (candidate) => {
   it(
     'destroys idempotently and then exposes a well-formed usage record',
     async () => {
-      await backend.destroy(handle);
-      await expect(backend.destroy(handle)).resolves.toBeUndefined();
+      // destroy() returns the usage it captured: the reaper runs in a process
+      // that never created this sandbox, and the vendor data is gone the moment
+      // destroy() completes, so this return value is the only chance to bill a
+      // crash-recovered run. Both backends must honour it, and the repeat call
+      // must stay idempotent without losing the numbers.
+      const fromDestroy = await backend.destroy(handle);
+      expect(fromDestroy).not.toBeNull();
+      expect(fromDestroy?.wallMs).toBeGreaterThan(0);
+      await expect(backend.destroy(handle)).resolves.toEqual(fromDestroy);
 
       const usage = await backend.usage(handle);
       expect(usage.cpuMs).toEqual(expect.any(Number));

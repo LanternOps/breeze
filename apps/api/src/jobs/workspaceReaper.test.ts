@@ -108,5 +108,11 @@ describe('reapExpiredWorkspaces', () => {
       fs.readFile(new URL('./workspaceReaper.ts', import.meta.url), 'utf8'));
     const constant = /REAP_GRACE_SECONDS = (\d+)/.exec(source)?.[1];
     expect(source).toContain(`interval '${constant} seconds'`);
+    // Same trap for the stalled-claim window: the SQL uses a literal (so the
+    // planner can prove the partial-index predicate), which means the constant
+    // and the literal are two copies of one number.
+    const stall = /DESTROYING_STALL_SECONDS = (\d+)/.exec(source)?.[1];
+    expect(stall, 'DESTROYING_STALL_SECONDS must exist').toBeDefined();
+    expect(source).toContain(`interval '${stall} seconds'`);
   });
 });

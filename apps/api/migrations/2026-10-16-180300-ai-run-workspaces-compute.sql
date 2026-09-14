@@ -83,6 +83,12 @@ CREATE TABLE IF NOT EXISTS ai_run_workspaces (
 
   created_at timestamptz NOT NULL DEFAULT now(),
   ready_at timestamptz,
+  -- Stamped when the reaper claims a row (status -> 'destroying'). A claimed
+  -- row is invisible to every later claim query, so if the claiming process
+  -- dies before it destroys the sandbox, nothing would ever look at the row
+  -- again and the sandbox would bill forever, unwatched and unpaged. The reaper
+  -- reclaims a 'destroying' row older than this stamp + its stall window.
+  destroying_since timestamptz,
   destroyed_at timestamptz,
   deadline_at timestamptz NOT NULL,
 
