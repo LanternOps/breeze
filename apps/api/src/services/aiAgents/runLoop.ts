@@ -84,6 +84,7 @@ import { resolveLlmConfigForOrg } from '../llm/llmConfigResolver';
 import type { UsableLlmConfig } from '../llm/llmConfigResolver';
 import { buildClaudeSdkChildEnv } from '../streamingSessionManager';
 import type { ToolExecutionContext } from '../toolExecutionContext';
+import { EXPORT_DEFAULT_MAX_BYTES } from '../aiToolsExport';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './agentAuthContext';
 import { resolveActOperation, type ActTarget } from './actManifest';
@@ -1648,9 +1649,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     // array is "no frame" (see ToolExecutionContext.runTargets) — a full-profile
     // run with no device keeps today's behaviour exactly.
     runTargets: run.deviceId ? [run.deviceId] : [],
-    // Literal on purpose until Task 7 exists. Task 7 replaces this line with
-    // the real `EXPORT_DEFAULT_MAX_BYTES` import — do not import it now.
-    stagedBytesRemaining: 256 * 1024 * 1024, // EXPORT_DEFAULT_MAX_BYTES — replaced by the real import in Task 7
+    stagedBytesRemaining: EXPORT_DEFAULT_MAX_BYTES,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
