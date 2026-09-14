@@ -277,13 +277,27 @@ describe('persistAlertVerdict', () => {
 
   // Also covers "bare `manage_alerts` in allowlist → created" (review round
   // 2, IMPORTANT 1a): `runInput.toolAllowlist` is the bare tool name.
-  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it via a separate UPDATE after the verdict row is written, and uses the run\'s own deviceId without an extra query', async () => {
+  it.each([
+    ['CPU Pressure', 'rule-1', 'alert:cpu pressure'],
+    [null, 'rule-1', 'alert:rule-1'],
+  ])('stamps alert occurrence and semantic key from org-pinned metadata (%s)', async (configItemName, ruleId, key) => {
+    state.selectQueue.push([{ configItemName, ruleId }]);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
-    // No `state.selectQueue` entries pushed: `suggestion.alertId ===
-    // run.alertId` short-circuits BOTH the correlation-membership check and
-    // the alerts.deviceId lookup (review round 1 minor fix) — an
-    // unexpected select would throw "no queued select rows" and fail this
-    // test, so the absence of a queued row IS the assertion.
+    await persistAlertVerdict(runInput, {
+      ...baseVerdict,
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    }, agentAuth);
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      trigger: { kind: 'alert', refId: ALERT_ID, key },
+    }));
+    const query = dialect.sqlToQuery(state.selectWheres[0] as SQL);
+    expect(query.params).toContain(ORG_ID);
+    expect(query.params).toContain(ALERT_ID);
+  });
+
+  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it via a separate UPDATE after the verdict row is written, and uses the run\'s own deviceId', async () => {
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+    state.selectQueue.push([{ configItemName: null, ruleId: null }]);
 
     const verdict: AlertVerdictOutcome = {
       ...baseVerdict,
@@ -303,6 +317,7 @@ describe('persistAlertVerdict', () => {
       orgId: ORG_ID,
       reason: verdict.rationale,
       idempotencyKey: `verdict:${RUN_ID}`,
+      trigger: { kind: 'alert', refId: ALERT_ID, key: 'alert' },
     });
     expect(result.intentId).toBe(INTENT_ID);
     expect(result.suggestionDisposition).toBe('intent_created');
@@ -319,6 +334,7 @@ describe('persistAlertVerdict', () => {
   // Review round 2 (IMPORTANT 1a): the specific `manage_alerts:<action>`
   // entry admits it too, not just the bare tool name.
   it('creates the intent when the allowlist carries the specific manage_alerts:suppress entry', async () => {
+    state.selectQueue.push([{ configItemName: null, ruleId: null }]);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
 
     const scopedRun = { ...runInput, toolAllowlist: ['manage_alerts:suppress'] };
@@ -420,6 +436,7 @@ describe('persistAlertVerdict', () => {
   // advertise a dead intent and break the "intent_ids are pending-only"
   // invariant. Mocked with a resolved cancelled snapshot, NOT a rejection.
   it('does not link a cancelled (no_eligible_approvers) intent', async () => {
+    state.selectQueue.push([{ configItemName: null, ruleId: null }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'cancelled', errorCode: 'no_eligible_approvers' });
 
@@ -439,6 +456,7 @@ describe('persistAlertVerdict', () => {
   });
 
   it('treats a genuine createActionIntent throw as intent_error (not a propagated exception)', async () => {
+    state.selectQueue.push([{ configItemName: null, ruleId: null }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     createActionIntent.mockRejectedValue(new Error('org_resolution_failed'));
 

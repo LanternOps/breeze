@@ -845,6 +845,17 @@ describe('executeAgentRun', () => {
       expect((watchOutcome as AgentRunOutcome).executedActions).toHaveLength(1);
     });
 
+    it.each(['alert', 'manual'] as const)('stamps the run cause on %s act executions', async (triggerKind) => {
+      seedRows({ effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }), modeAtStart: 'act', triggerKind, alertId: triggerKind === 'alert' ? ALERT_ID : null });
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({ ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } } }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted.' });
+      await executeAgentRun(RUN_ID);
+      const action = (finalTransition()!.patch.outcome as AgentRunOutcome).executedActions[0];
+      expect(action?.triggerKind).toBe(triggerKind);
+      expect(action?.triggerRefId).toBe(triggerKind === 'alert' ? ALERT_ID : undefined);
+    });
+
     it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
       seedActRun();
       revalidateActExecution.mockResolvedValue({ ok: false, deny: 'Agent is disabled' });

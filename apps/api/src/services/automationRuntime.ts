@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { scriptParametersSchema, type DeploymentTargetConfig } from '@breeze/shared';
+import { scriptParametersSchema, alertTriggerKey, buildTriggerKey, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
@@ -1264,6 +1264,7 @@ type ActionExecutionContext = {
   runId: string;
   /** Present only for event-bound managed runs. */
   trigger?: AutomationTriggerContext;
+  remediationTrigger?: RemediationTrigger;
   device: {
     id: string;
     // Worker-created child rows (alerts, notifications) always take the
@@ -1482,6 +1483,7 @@ export async function executeRunScriptAction(
     source: { kind: 'saved', script, automationRunId: context.runId },
     parameters,
     triggerType: 'automation',
+    trigger: context.remediationTrigger,
     triggeredBy: context.automation.createdBy ?? null,
     createdBy: context.automation.createdBy ?? null,
     // #4888 — `action.runAs` is now narrowed to the `script_run_as` enum by
@@ -1596,6 +1598,7 @@ export async function executeCommandAction(
       provenance: `automation:${context.automation.id}`,
     },
     timeoutSeconds: 300,
+    trigger: context.remediationTrigger,
     runAs: 'system',
     createdBy: context.automation.createdBy ?? null,
     offlinePolicy: automationOfflinePolicy(action.whenOffline),
@@ -2077,12 +2080,30 @@ async function skipTrailingAutomationActions(
   }
 }
 
+/** Use recorded event identity when available; otherwise the configured
+ * automation or policy is the known cause. Do not parse triggeredBy text. */
+function automationRemediationTrigger(source: {
+  automationId?: string;
+  configPolicyId?: string;
+  triggerContext?: AutomationTriggerContext;
+}): RemediationTrigger {
+  if (source.configPolicyId) {
+    return { kind: 'policy', refId: source.configPolicyId, key: buildTriggerKey(['policy', source.configPolicyId]) };
+  }
+  if (source.triggerContext?.alertId) {
+    return { kind: 'alert', refId: source.triggerContext.alertId, key: alertTriggerKey(null, source.triggerContext.ruleId) };
+  }
+  return { kind: 'automation', refId: source.automationId ?? null, key: buildTriggerKey(['automation', source.automationId ?? '']) };
+}
+
 async function seedDeviceAutomationActions(
   runId: string,
   device: { id: string; orgId: string },
   actions: readonly AutomationAction[],
+  trigger: RemediationTrigger,
 ): Promise<void> {
   await withAutomationRuntimeDb(() => seedAutomationActionResults({
+    trigger,
     runId,
     device,
     actions: actions.map((action, actionIndex) => ({ actionIndex, actionType: action.type })),
@@ -2353,6 +2374,7 @@ async function executeAutomationActionsInOrder(args: {
   channelsById: ActionExecutionContext['channelsById'];
   variableScope: TenantVariableScope;
   trigger: AutomationTriggerContext | undefined;
+  remediationTrigger?: RemediationTrigger;
   onFailure: 'stop' | 'continue' | 'notify';
   notificationTargets?: NotificationTargets;
   createdBy: string | null;
@@ -2484,6 +2506,7 @@ async function executeAutomationActionsInOrder(args: {
           channelsById: args.channelsById,
           variableScope: args.variableScope,
           trigger: args.trigger,
+          remediationTrigger: args.remediationTrigger,
         }, device)));
         logs.push(result.log);
         await persistActionExecutionOutcome(args.runId, device.id, actionIndex, result);
@@ -2754,6 +2777,7 @@ function buildActionExecutionContext(base: {
    *  optional property would let the call site silently drop the event
    *  binding and still compile — the exact #3824 failure mode. */
   trigger: AutomationTriggerContext | undefined;
+  remediationTrigger?: RemediationTrigger;
 }, device: ActionExecutionContext['device']): ActionExecutionContext {
   return { ...base, device };
 }
@@ -2852,8 +2876,9 @@ async function executeAutomationRunInner(
   // Seed a per-device result row (pending) for every targeted device so the
   // execution-history UI can show live progress as each device finishes (#2023).
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  const remediationTrigger = automationRemediationTrigger({ automationId, triggerContext });
   for (const device of deviceRows) {
-    await seedDeviceAutomationActions(run.id, device, normalized.actions);
+    await seedDeviceAutomationActions(run.id, device, normalized.actions, remediationTrigger);
   }
 
   const existingLogs = getExistingLogs(run.logs);
@@ -2876,6 +2901,7 @@ async function executeAutomationRunInner(
     channelsById,
     variableScope,
     trigger: triggerContext,
+    remediationTrigger,
     onFailure: normalized.onFailure,
     notificationTargets: normalized.notificationTargets,
     resolvedReferences,
@@ -3151,8 +3177,9 @@ export async function executeConfigPolicyAutomationRun(
   }
 
   await withAutomationRuntimeDb(() => seedAutomationDeviceResults(run.id, deviceRows));
+  const remediationTrigger = automationRemediationTrigger({ configPolicyId });
   for (const device of deviceRows) {
-    await seedDeviceAutomationActions(run.id, device, actions);
+    await seedDeviceAutomationActions(run.id, device, actions, remediationTrigger);
   }
 
   const notificationChannelIds = new Set<string>();
@@ -3197,6 +3224,7 @@ export async function executeConfigPolicyAutomationRun(
     channelsById,
     variableScope,
     trigger: undefined,
+    remediationTrigger,
     onFailure,
     notificationTargets: notifyTargets,
     resolvedReferences: admission.resolvedReferences,
@@ -3243,6 +3271,8 @@ export async function executeConfigPolicyAutomationRun(
 // Exported for unit tests of the #3824 event-target binding. Internal helper,
 // not part of the runtime's public surface.
 export const __testOnly = {
+  automationRemediationTrigger,
+  seedDeviceAutomationActions,
   buildActionExecutionContext,
   executeAction,
   executeAiTriageAction,

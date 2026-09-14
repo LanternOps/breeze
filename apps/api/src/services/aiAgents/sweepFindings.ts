@@ -86,6 +86,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_SWEEP_KINDS,
+  sweepTriggerKey,
   type AiAgentRunSweepDto,
   type AiAgentRunSweepFindingDto,
   type AiSweepKind,
@@ -321,6 +322,7 @@ export async function persistSweepFindings(
 
     try {
       const intent = await createActionIntent(agentAuth, {
+        trigger: { kind: 'sweep_finding', refId: run.id, key: sweepTriggerKey(finding.kind, sweepSubjectKey(finding) ?? '') },
         toolName: proposal.tool,
         input: proposalToolInput(proposal),
         source: 'ai_agent',
@@ -512,4 +514,22 @@ export function projectSweep(
       };
     }),
   };
+}
+
+
+/** Subject of the finding from structured evidence/proposal, never its prose.
+ * This is provenance, not proof that a model-authored subject is trusted. */
+export function sweepSubjectKey(finding: SweepFinding): string | null {
+  const proposal = finding.proposedAction;
+  switch (finding.kind) {
+    case 'service_down':
+      return proposal?.tool === 'manage_services' ? proposal.serviceName
+        : typeof finding.evidence.name === 'string' ? finding.evidence.name : null;
+    case 'disk_pressure':
+      return typeof finding.evidence.mountPoint === 'string' ? finding.evidence.mountPoint : null;
+    case 'unpatched_critical':
+      return proposal?.tool === 'remediate_vulnerability'
+        ? [...proposal.deviceVulnerabilityIds].sort().join(',') || null : null;
+    default: return null;
+  }
 }

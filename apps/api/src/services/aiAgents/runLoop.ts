@@ -517,7 +517,7 @@ export function createAgentRunPreToolUse(args: {
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
   // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
   // Tier-3 proposal reserves under.
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -980,6 +980,7 @@ export function createAgentRunPreToolUse(args: {
         const durationMs = Date.now() - dispatchStartedAt;
 
         outcome.executedActions.push({
+          ...executedActionTrigger(run),
           tool: toolName,
           executionId: '(inline)',
           result: result.execution === 'succeeded' ? 'ok' : 'failed',
@@ -1030,6 +1031,10 @@ export function createAgentRunPostToolUse(args: {
     id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
     /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
     taskId?: string | null;
+    triggerKind?: RunRow['triggerKind'];
+    alertId?: string | null;
+    scheduleId?: string | null;
+    ticketId?: string | null;
   };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
@@ -1135,6 +1140,7 @@ export function createAgentRunPostToolUse(args: {
 
     const action = readToolAction(toolName, input);
     const entry: OutcomeExecutedAction = {
+      ...executedActionTrigger(run),
       tool: toolName,
       ...(action ? { action } : {}),
       executionId: executionId ?? '(inline)',
@@ -1633,6 +1639,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     run: {
       id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
       profile: run.profile, taskId: run.taskId,
+      triggerKind: run.triggerKind, alertId: run.alertId, scheduleId: run.scheduleId, ticketId: run.ticketId,
     },
     agentUserId: agentAuth.user.id,
     design: designRefs,
@@ -2426,4 +2433,18 @@ async function isStoppedBeforeStart(
     console.error('[aiAgentRunLoop] could not re-resolve the effective policy', { orgId, kind, error });
     return true;
   }
+}
+
+
+/** Derive cause from the run, never from model tool arguments. */
+function executedActionTrigger(run: {
+  triggerKind?: OutcomeExecutedAction['triggerKind'];
+  alertId?: string | null;
+  scheduleId?: string | null;
+  ticketId?: string | null;
+}): Pick<OutcomeExecutedAction, 'triggerKind' | 'triggerRefId'> {
+  const refId = run.triggerKind === 'alert' ? run.alertId
+    : run.triggerKind === 'schedule' ? run.scheduleId
+    : run.triggerKind === 'ticket' ? run.ticketId : null;
+  return { triggerKind: run.triggerKind, ...(refId ? { triggerRefId: refId } : {}) };
 }

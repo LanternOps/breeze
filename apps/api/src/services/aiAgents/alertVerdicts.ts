@@ -84,7 +84,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
-import { AI_AGENT_ALERT_VERDICT_OP_KEY } from '@breeze/shared';
+import { AI_AGENT_ALERT_VERDICT_OP_KEY, alertTriggerKey } from '@breeze/shared';
 import type {
   AlertAiVerdictSummaryDto, AlertVerdictOutcome, AlertVerdictSuggestionDisposition,
   AlertVerdictSuggestionReason, AiAgentRunAlertVerdictDto,
@@ -408,6 +408,14 @@ export async function persistAlertVerdict(
   let intentId: string | null = null;
   if (canAttemptIntent && suggestion) {
     try {
+      // The run's triggering occurrence owns provenance, even when a
+      // correlation-group suggestion targets another alert. Read its metadata
+      // under the same org boundary as the verdict, before creating the intent.
+      const [triggerAlert] = run.alertId ? await inSystemDbContext(() => db
+        .select({ configItemName: alerts.configItemName, ruleId: alerts.ruleId })
+        .from(alerts)
+        .where(and(eq(alerts.id, run.alertId!), eq(alerts.orgId, run.orgId)))
+        .limit(1)) : [];
       const intent = await createActionIntent(agentAuth, {
         toolName: 'manage_alerts',
         input: suggestion.action === 'suppress'
@@ -420,6 +428,11 @@ export async function persistAlertVerdict(
         orgId: run.orgId,
         reason: verdict.rationale,
         idempotencyKey: `verdict:${run.id}`,
+        trigger: {
+          kind: 'alert',
+          refId: run.alertId,
+          key: alertTriggerKey(triggerAlert?.configItemName ?? null, triggerAlert?.ruleId ?? null),
+        },
       });
       // CRITICAL fix (review round 1): createActionIntent does NOT throw
       // when nobody can approve — it commits the intent and immediately

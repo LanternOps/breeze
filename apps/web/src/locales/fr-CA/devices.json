@@ -279,7 +279,21 @@
     "couldnTLoadMore": "Je ne pouvais pas charger plus.",
     "viewAllActivity2": "Voir toute l’activité",
     "text": "→",
-    "viewProposal": "Voir la proposition"
+    "viewProposal": "Voir la proposition",
+    "trigger": {
+      "manual": "Déclenchement manuel",
+      "schedule": "Planification",
+      "sweep_finding": "Constat du balayage",
+      "alert": "Alerte",
+      "monitor": "Surveillance",
+      "fleet_finding": "Constat du parc",
+      "policy": "Stratégie",
+      "automation": "Automatisation",
+      "ticket": "Demande de soutien",
+      "anomaly": "Anomalie",
+      "api": "Appel API"
+    },
+    "triggerUnknown": "Déclencheur inconnu"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossible de récupérer l’historique des alertes",

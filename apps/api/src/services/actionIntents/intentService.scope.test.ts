@@ -630,3 +630,27 @@ describe('createActionIntent — a scoped (sweep) intent is never policy-decided
     expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('creation-time remediation trigger', () => {
+  it.each([undefined, { kind: 'sweep_finding' as const, refId: RUN_ID, key: 'sweep:service_down:Spooler' }])('stamps an optional envelope %j', async (trigger) => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+    await createActionIntent(makeAgentAuth(), { ...sweepInput(), trigger });
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      triggerKind: trigger?.kind ?? null,
+      triggerRefId: trigger?.refId ?? null,
+      triggerKey: trigger?.key ?? null,
+    });
+    if (trigger) expect(metricsMock.recordActionIntentEvent).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: 'created', details: expect.objectContaining({ triggerKind: trigger.kind, triggerRefId: trigger.refId, triggerKey: trigger.key }),
+    }));
+  });
+  it('rejects malformed provenance before database access', async () => {
+    await expect(createActionIntent(makeAgentAuth(), {
+      ...sweepInput(), trigger: { kind: 'invalid' as never },
+    })).rejects.toThrow();
+    expect(dbState.insertedActionIntentValues).toEqual([]);
+    expect(authMock.dbAccessContextFromAuth).not.toHaveBeenCalled();
+  });
+});

@@ -183,6 +183,7 @@ describe('persistSweepFindings', () => {
       source: 'ai_agent',
       orgId: ORG_ID,
       reason: 'Spooler is stopped',
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
       idempotencyKey: `sweep:${RUN_ID}:0`,
       scope: { deviceId: DEVICE_A },
     });

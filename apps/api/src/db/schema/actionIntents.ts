@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import {
   bigint,
@@ -198,6 +199,14 @@ export const actionIntents = pgTable(
      * Immutable, covered by action_intents_immutable_trg.
      */
     requestingAgentRunId: uuid('requesting_agent_run_id'),
+    /** Creation-time cause, distinct from the initiator/execution lane.
+     * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+     * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+     * action_intents_block_content_update guards all three on action intents.
+     */
+    triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+    triggerRefId: uuid('trigger_ref_id'),
+    triggerKey: varchar('trigger_key', { length: 200 }),
     // P2-2 typed target scope. `scopeKind` is immutable; `scopeDeviceId` may
     // only tombstone (non-null -> NULL), never retarget — enforced by
     // action_intents_block_content_update() (migrations/2026-09-23-ai-agents-

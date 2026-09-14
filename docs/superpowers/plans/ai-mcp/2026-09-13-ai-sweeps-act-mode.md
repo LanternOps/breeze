@@ -20,7 +20,7 @@ branch: feature/5751-ai-sweeps-act-mode/wave-<sub-issue>
 
 | Wave | Plan file | Migration slot | Depends on |
 |---|---|---|---|
-| **W01 — trigger provenance** (#5744) | `2026-09-13-ai-sweeps-act-mode-01-trigger-provenance.md` | `2026-10-16-181500-remediation-trigger-provenance.sql` | — |
+| **W01 — trigger provenance** (#5744) | `2026-09-13-ai-sweeps-act-mode-01-trigger-provenance.md` | `2026-10-16-181700-remediation-trigger-provenance.sql` | — |
 | **W02 — sweep-condition fix watches** | `2026-09-13-ai-sweeps-act-mode-02-sweep-fix-watches.md` | `2026-10-16-181505-sweep-condition-fix-watches.sql` | W01 (needs `action_intents.trigger_kind`) |
 | **W03 — `expiring_certs`** (#4230) | `2026-09-13-ai-sweeps-act-mode-03-expiring-certs.md` | `2026-10-16-181510-network-monitor-tls-observation.sql` | **nothing** — fully independent, can ship in parallel with W01/W02 |
 | **W04 — the act gate** (#4442) | `2026-09-13-ai-sweeps-act-mode-04-act-gate.md` | `2026-10-16-181520-ai-agent-schedules-act-mode.sql` | W01 **and** W02 |

@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
  * #4451) so the loop itself and its per-profile finalizers (`runFinalizers.ts`)
@@ -63,6 +64,10 @@ export interface OutcomeProposedAction {
 }
 
 export interface OutcomeExecutedAction {
+  /** Creation-time cause; optional for historical outcome JSON. */
+  triggerKind?: RemediationTriggerKind;
+  triggerRefId?: string;
+  triggerKey?: string;
   tool: string;
   action?: string;
   /**

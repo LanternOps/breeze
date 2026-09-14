@@ -403,7 +403,10 @@ eventsRoutes.get(
         name: row.resourceName,
       },
       initiatedBy: row.initiatedBy,
-      details: row.details as Record<string, unknown> | null,
+      // Already selected as JSONB by both feed arms; provenance stays top-level.
+      details: row.details as (Record<string, unknown> & {
+        proposalId?: string | null; triggerKind?: string | null; triggerKey?: string | null;
+      }) | null,
       errorMessage: row.errorMessage,
       ipAddress: row.ipAddress,
     }));

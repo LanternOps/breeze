@@ -32,7 +32,7 @@ type ActivityEvent = {
   initiatedBy?: string | null;
   timestamp?: string;
   actor?: { type?: string; name?: string; email?: string | null };
-  details?: { proposalId?: string | null } | null;
+  details?: { proposalId?: string | null; triggerKind?: string | null; triggerKey?: string | null } | null;
 };
 
 type DeviceActivityFeedProps = {
@@ -462,6 +462,14 @@ export default function DeviceActivityFeed({
                       {initiator && who !== initiator && (
                         <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                           {initiator}
+                        </span>
+                      )}
+                      {e.details?.triggerKind && (
+                        <span
+                          className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                          title={e.details.triggerKey ?? undefined}
+                        >
+                          {t(/* i18n-dynamic */ `deviceActivityFeed.trigger.${e.details.triggerKind}`, { defaultValue: e.details.triggerKind })}
                         </span>
                       )}
                       {automated && (
