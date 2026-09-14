@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { Plus, Pencil, Trash2, LayoutTemplate } from 'lucide-react';
+import { MANAGED_EVIDENCE_REPORT_TYPES, type ManagedEvidenceReportType } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
@@ -37,6 +38,7 @@ interface ItemFormState {
   graceDays: string;
   artifactRequired: boolean;
   completionMode: DeliverableCompletionMode;
+  autoEvidenceReportType: ManagedEvidenceReportType | null;
 }
 
 function blankItemForm(): ItemFormState {
@@ -47,6 +49,7 @@ function blankItemForm(): ItemFormState {
     graceDays: '14',
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
+    autoEvidenceReportType: null,
   };
 }
 
@@ -58,6 +61,7 @@ function itemFormFrom(item: TemplateItem): ItemFormState {
     graceDays: String(item.graceDays),
     artifactRequired: item.artifactRequired,
     completionMode: item.completionMode,
+    autoEvidenceReportType: item.autoEvidenceReportType,
   };
 }
 
@@ -284,6 +288,7 @@ export default function DeliverableTemplatesPage() {
         artifactRequired: itemForm.artifactRequired,
         completionMode: itemForm.completionMode,
         sortOrder,
+        autoEvidenceReportType: itemForm.autoEvidenceReportType,
       };
       const saved = itemEditor.item
         ? await runClientAction(
@@ -501,6 +506,39 @@ export default function DeliverableTemplatesPage() {
                         />
                         {t('templates.form.artifactRequired')}
                       </label>
+                      <div>
+                        <label htmlFor={`${uid}-item-auto-evidence-${set.id}`} className={labelClass}>
+                          {t('templates.form.autoEvidenceReportType')}
+                        </label>
+                        <select
+                          id={`${uid}-item-auto-evidence-${set.id}`}
+                          data-testid="deliverable-template-item-auto-evidence"
+                          className={inputClass}
+                          value={itemForm.autoEvidenceReportType ?? ''}
+                          onChange={(e) =>
+                            setItemForm((f) => ({
+                              ...f,
+                              autoEvidenceReportType: (e.target.value || null) as ManagedEvidenceReportType | null,
+                            }))
+                          }
+                        >
+                          <option value="">{t('form.autoEvidenceNone')}</option>
+                          {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
+                            <option key={type} value={type}>
+                              {t(/* i18n-dynamic */ `autoEvidenceTypes.${type}`, { defaultValue: type })}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
+                        {MANAGED_EVIDENCE_REPORT_TYPES.length === 0 && (
+                          <p
+                            className="mt-1 text-xs text-muted-foreground"
+                            data-testid="deliverable-template-item-auto-evidence-empty"
+                          >
+                            {t('form.autoEvidenceEmpty')}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     {itemError && (
                       <p className="text-sm text-destructive" role="alert" data-testid="deliverable-template-item-error">
