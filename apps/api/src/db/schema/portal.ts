@@ -44,6 +44,10 @@ export const portalBranding = pgTable('portal_branding', {
   // org document library. Same fail-closed shape as the five flags above.
   enableService: boolean('enable_service').notNull().default(false),
   enableDocuments: boolean('enable_documents').notNull().default(false),
+  // Portal Hardware Lifecycle (#5719): required alongside enableReports so an
+  // MSP can turn on generic report self-service before exposing the
+  // replacement plan, which names specific machines.
+  enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
