@@ -28,6 +28,7 @@ vi.mock('../services/urlSafety', () => ({
 }));
 
 import { integrationRoutes } from './integrations';
+import { writeRouteAudit } from '../services/auditEvents';
 
 // These routes seal provider credentials with AAD-bound enc:v3 ciphertext and
 // fail closed (503) when no active key id is configured — which is what the
@@ -253,6 +254,10 @@ describe('integration compatibility routes', () => {
         expect(res.status).toBe(400);
         expect((await res.json()).error).toMatch(/could not be read/i);
         expect(safeFetchMock).not.toHaveBeenCalled();
+        expect(writeRouteAudit).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ action: 'integration.monitoring.test', details: { outcome: 'secret_unreadable' } }),
+        );
       } finally {
         process.env.APP_ENCRYPTION_KEY = priorKey;
       }

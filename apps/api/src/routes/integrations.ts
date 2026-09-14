@@ -251,7 +251,7 @@ function resolveMaskedMonitoringSecrets(
   stored: unknown,
   orgId: string,
   provider: string,
-): { ok: true; config: Record<string, unknown> } | { ok: false; error: string } {
+): { ok: true; config: Record<string, unknown> } | { ok: false; error: string; unreadable?: true } {
   const storedRecord = stored && typeof stored === 'object' && !Array.isArray(stored)
     ? stored as Record<string, unknown>
     : {};
@@ -299,7 +299,7 @@ function openStoredMonitoringSecret(
   orgId: string,
   path: readonly string[],
   label: string,
-): { ok: true; value: string } | { ok: false; error: string } {
+): { ok: true; value: string } | { ok: false; error: string; unreadable?: true } {
   if (typeof sealed !== 'string' || sealed.length === 0) {
     return { ok: false, error: `Enter the ${label} and save before testing` };
   }
@@ -310,8 +310,15 @@ function openStoredMonitoringSecret(
     const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, path) });
     if (!plaintext) return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
     return { ok: true, value: plaintext };
-  } catch {
-    return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
+  } catch (err) {
+    // The operator gets one generic message either way, but the class matters
+    // to whoever reads the logs: SecretKeyMaterialError is an instance-wide
+    // key misconfiguration, a GCM auth failure is this one ciphertext (stale
+    // rotation, or a swapped blob). Name and message only — never the value.
+    const name = err instanceof Error ? err.name : 'Error';
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[integrations] monitoring secret ${path.join('.')} unreadable for org ${orgId}: ${name}: ${message}`);
+    return { ok: false, error: `Stored ${label} could not be read; re-enter it and save`, unreadable: true };
   }
 }
 
@@ -335,7 +342,21 @@ integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner
 
   const stored = monitoringSettings.get(orgResult.orgId)?.[provider];
   const secrets = resolveMaskedMonitoringSecrets(config, stored, orgResult.orgId, provider);
-  if (!secrets.ok) return c.json({ error: secrets.error }, 400);
+  if (!secrets.ok) {
+    if (secrets.unreadable) {
+      // A stored credential that no longer decrypts is worth a trail: it is
+      // either a key rotation that stranded it or a ciphertext that was
+      // moved between paths/tenants. Same audit action, distinct outcome.
+      writeRouteAudit(c, {
+        orgId: orgResult.orgId,
+        action: 'integration.monitoring.test',
+        resourceType: 'integration',
+        resourceName: provider,
+        details: { outcome: 'secret_unreadable' },
+      });
+    }
+    return c.json({ error: secrets.error }, 400);
+  }
 
   const result = await testMonitoringProvider(
     { provider, config: secrets.config, endpointId, allowPrivateNetwork: selfHostAllowsPrivateNetwork() },
