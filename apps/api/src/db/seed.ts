@@ -183,6 +183,10 @@ export const DEFAULT_PERMISSIONS = [
   { resource: 'documents', action: 'read', description: 'View the organization document library and download documents' },
   { resource: 'documents', action: 'write', description: 'Upload, replace, edit, and delete organization documents' },
 
+  // Agreement templates + signed agreements (agreements vocabulary & IA split, W02).
+  { resource: 'agreements', action: 'read', description: 'View agreement templates and signed agreements' },
+  { resource: 'agreements', action: 'write', description: 'Create, edit, publish and archive agreement templates; link signed agreements' },
+
   // Quotes / Proposals (billing program)
   { resource: 'quotes', action: 'read', description: 'View quotes and proposals' },
   { resource: 'quotes', action: 'write', description: 'Create/edit/delete draft quotes and proposal blocks' },
@@ -333,25 +337,27 @@ export const SYSTEM_ROLES: readonly SystemRoleDefinition[] = [
   {
     name: 'Partner Billing',
     scope: 'partner' as const,
-    description: 'Full access to product catalog, quotes, invoices, and contracts',
+    description: 'Full access to product catalog, quotes, invoices, contracts, and agreements',
     forceMfa: false,
     permissions: [
       'catalog:read', 'catalog:write', 'catalog:delete',
       'quotes:read', 'quotes:write', 'quotes:send',
       'invoices:read', 'invoices:write', 'invoices:send', 'invoices:export',
-      'contracts:read', 'contracts:write', 'contracts:manage'
+      'contracts:read', 'contracts:write', 'contracts:manage',
+      'agreements:read', 'agreements:write'
     ]
   },
   {
     name: 'Partner Billing Viewer',
     scope: 'partner' as const,
-    description: 'Read-only access to product catalog, quotes, invoices, and contracts',
+    description: 'Read-only access to product catalog, quotes, invoices, contracts, and agreements',
     forceMfa: false,
     permissions: [
       'catalog:read',
       'quotes:read',
       'invoices:read', 'invoices:export',
-      'contracts:read'
+      'contracts:read',
+      'agreements:read'
     ]
   },
   {
