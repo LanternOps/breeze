@@ -21,7 +21,7 @@ vi.mock('../../stores/auth', () => ({
 
 vi.mock('./TicketPartsCard', () => ({ default: () => <div data-testid="ticket-parts-card-stub" /> }));
 
-type Counts = { done: number; total: number };
+type Counts = { done: number; total: number; known: boolean };
 const checklistStub = vi.hoisted(() => ({ onCountsChange: null as null | ((c: Counts) => void) }));
 vi.mock('./TicketChecklistCard', () => ({
   default: (p: { ticketId: string; onCountsChange?: (c: Counts) => void }) => {
@@ -114,7 +114,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 1, total: 3 });
+    emitCounts({ done: 1, total: 3, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
 
@@ -127,7 +127,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 0, total: 2 });
+    emitCounts({ done: 0, total: 2, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
 
@@ -139,7 +139,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 0, total: 2 });
+    emitCounts({ done: 0, total: 2, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
     fireEvent.click(await screen.findByTestId('ticket-checklist-resolve-confirm-accept'));
@@ -157,7 +157,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 1, total: 3 });
+    emitCounts({ done: 1, total: 3, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
     fireEvent.click(await screen.findByTestId('ticket-checklist-resolve-confirm-accept'));
@@ -170,7 +170,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 3, total: 3 });
+    emitCounts({ done: 3, total: 3, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'resolved' } });
 
@@ -182,7 +182,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 0, total: 0 });
+    emitCounts({ done: 0, total: 0, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
 
@@ -195,11 +195,30 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     expect(screen.queryByTestId('ticket-checklist-resolve-confirm')).toBeNull();
   });
 
+  it('FAILS CLOSED: confirms when the checklist could not be loaded, even though the counts read 0/0', async () => {
+    // A failed fetch leaves the card at 0/0, byte-identical to "no checklist".
+    // Treating that as empty would silently skip the prompt on a network blip —
+    // exactly when the technician most needs to be asked. `known: false` is the
+    // discriminator, and the gate must fail closed on it.
+    mockTicketApi({ 'tk-1': makeTicket() });
+    render(<TicketWorkbench ticketId="tk-1" />);
+    await screen.findByTestId('ticket-workbench');
+    emitCounts({ done: 0, total: 0, known: false });
+
+    fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
+
+    expect(await screen.findByTestId('ticket-checklist-resolve-confirm')).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/tickets/tk-1/status',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('does not confirm for statuses other than resolved/closed', async () => {
     mockTicketApi({ 'tk-1': makeTicket({ status: 'new' }) });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 1, total: 3 });
+    emitCounts({ done: 1, total: 3, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'open' } });
 
@@ -216,7 +235,7 @@ describe('TicketWorkbench checklist resolve/close confirm', () => {
     mockTicketApi({ 'tk-1': makeTicket() });
     render(<TicketWorkbench ticketId="tk-1" />);
     await screen.findByTestId('ticket-workbench');
-    emitCounts({ done: 1, total: 3 });
+    emitCounts({ done: 1, total: 3, known: true });
 
     fireEvent.change(screen.getByTestId('ticket-workbench-status'), { target: { value: 'closed' } });
     fireEvent.click(await screen.findByTestId('ticket-checklist-resolve-confirm-cancel'));

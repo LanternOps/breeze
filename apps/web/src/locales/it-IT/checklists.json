@@ -14,7 +14,8 @@
     "delete": "Elimina",
     "edit": "Modifica",
     "save": "Salva",
-    "cancel": "Annulla"
+    "cancel": "Annulla",
+    "retry": "Riprova"
   },
   "source": {
     "manual": "Manuale",

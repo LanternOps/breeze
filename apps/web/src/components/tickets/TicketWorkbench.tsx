@@ -171,7 +171,9 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   // TicketChecklistCard's onCountsChange; `checklistConfirm` holds the deferred
   // status-change action while the confirm prompt is shown, or null when none
   // is pending.
-  const [checklistCounts, setChecklistCounts] = useState<{ done: number; total: number } | null>(null);
+  const [checklistCounts, setChecklistCounts] = useState<
+    { done: number; total: number; known: boolean } | null
+  >(null);
   const [checklistConfirm, setChecklistConfirm] = useState<(() => void) | null>(null);
   const [railOpen] = useState(true);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
@@ -840,6 +842,11 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const needsChecklistConfirm = useCallback((coreStatus: TicketStatus): boolean => {
     if (coreStatus !== 'resolved' && coreStatus !== 'closed') return false;
     if (!checklistCounts) return false;
+    // Fail CLOSED when the card could not load the checklist: 0/0 from a failed
+    // fetch is byte-identical to "this ticket has no checklist", so treating
+    // unknown as empty would skip the prompt on a network blip — precisely when
+    // the technician most needs to be asked.
+    if (!checklistCounts.known) return true;
     return checklistCounts.total > 0 && checklistCounts.total - checklistCounts.done > 0;
   }, [checklistCounts]);
 
@@ -1540,10 +1547,14 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
           <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2" data-testid="ticket-checklist-resolve-confirm">
             <p className="text-xs font-medium">{t('checklists:resolveConfirm.title')}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {t('checklists:resolveConfirm.body', {
-                count: checklistCounts.total - checklistCounts.done,
-                total: checklistCounts.total,
-              })}
+              {checklistCounts.known
+                ? t('checklists:resolveConfirm.body', {
+                    count: checklistCounts.total - checklistCounts.done,
+                    total: checklistCounts.total,
+                  })
+                : /* The counts are unknown because the checklist failed to load —
+                     say that rather than claiming "0 of 0 steps are unticked". */
+                  t('checklists:errors.loadFailed')}
             </p>
             <div className="mt-1.5 flex justify-end gap-2">
               <button

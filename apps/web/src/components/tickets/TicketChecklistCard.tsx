@@ -20,8 +20,14 @@ interface Props {
   mode?: 'full' | 'compact';
   /** Fired after the initial load and after every successful mutation, so a
    *  host (TicketWorkbench's resolve/close confirm gate) can react to the
-   *  counts without re-fetching itself. */
-  onCountsChange?: (counts: { done: number; total: number }) => void;
+   *  counts without re-fetching itself.
+   *
+   *  `known` is false when the checklist could not be loaded. It exists because
+   *  a failed load leaves `done`/`total` at 0/0, which is byte-identical to a
+   *  ticket that genuinely has no checklist — and a host gating a safety prompt
+   *  on those counts would then silently skip it at exactly the moment it is
+   *  least safe to. Hosts must fail CLOSED on `known: false`. */
+  onCountsChange?: (counts: { done: number; total: number; known: boolean }) => void;
 }
 
 const FRIENDLY: Record<string, string> = {
@@ -32,6 +38,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   const { t } = useTranslation('checklists');
   const [items, setItems] = useState<ChecklistItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [newLabel, setNewLabel] = useState('');
   const [newDetail, setNewDetail] = useState('');
@@ -49,9 +56,16 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     try {
       const summary = await listChecklist(fetchWithAuth, ticketId);
       setItems(summary.items);
+      setLoadFailed(false);
     } catch {
-      // A failed load just leaves the card in its (empty) skeleton state —
-      // same best-effort contract TicketPartsCard's refresh uses.
+      // A failed load is NOT silently equivalent to an empty checklist here,
+      // unlike TicketPartsCard's best-effort refresh. `items` stays [] on
+      // failure, so the counts reported below would read 0/0 — indistinguishable
+      // from a ticket with no checklist — and TicketWorkbench's resolve/close
+      // prompt gates on exactly those counts. Recording the failure is what lets
+      // the card show an error instead of unmounting, and lets the host fail
+      // CLOSED rather than skipping the prompt on a network blip.
+      setLoadFailed(true);
     } finally {
       setLoading(false);
     }
@@ -80,8 +94,8 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   onCountsChangeRef.current = onCountsChange;
 
   useEffect(() => {
-    if (!loading) onCountsChangeRef.current?.({ done, total });
-  }, [loading, done, total]);
+    if (!loading) onCountsChangeRef.current?.({ done, total, known: !loadFailed });
+  }, [loading, done, total, loadFailed]);
 
   const submitAdd = async () => {
     const label = newLabel.trim();
@@ -190,9 +204,32 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     }
   };
 
-  if (!loading && total === 0 && mode === 'full') return null;
+  // A ticket with no checklist gains no clutter — but a ticket whose checklist
+  // FAILED to load is not that ticket, and must not disappear silently.
+  if (!loading && !loadFailed && total === 0 && mode === 'full') return null;
 
   const compact = mode === 'compact';
+
+  if (loadFailed) {
+    return (
+      <div className="mt-3 border-t pt-3" data-testid="ticket-checklist-card">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('card.title')}</p>
+        </div>
+        <p className="mt-1 text-xs text-destructive" data-testid="ticket-checklist-error">
+          {t('errors.loadFailed')}
+        </p>
+        <button
+          type="button"
+          className="mt-1 text-xs underline"
+          data-testid="ticket-checklist-retry"
+          onClick={() => { void refresh(); }}
+        >
+          {t('actions.retry')}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3 border-t pt-3" data-testid="ticket-checklist-card">

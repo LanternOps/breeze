@@ -199,15 +199,41 @@ describe('TicketChecklistCard', () => {
     const onCountsChange = vi.fn();
     fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1', done: true }), item({ id: 'i-2' })]));
     render(<TicketChecklistCard ticketId="tk-1" onCountsChange={onCountsChange} />);
-    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 1, total: 2 }));
+    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 1, total: 2, known: true }));
   });
 
   it('fires onCountsChange after a successful mutation', async () => {
     const onCountsChange = vi.fn();
     fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1', done: false })]));
     render(<TicketChecklistCard ticketId="tk-1" onCountsChange={onCountsChange} />);
-    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 0, total: 1 }));
+    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 0, total: 1, known: true }));
     fireEvent.click(await screen.findByTestId('ticket-checklist-toggle-i-1'));
-    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 1, total: 1 }));
+    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 1, total: 1, known: true }));
+  });
+
+  it('reports known:false when the checklist FAILS to load, instead of a 0/0 that reads as "no checklist"', async () => {
+    // The whole point of `known`: a failed fetch leaves the card at 0/0, which
+    // is byte-identical to a ticket that genuinely has no checklist. Reporting
+    // that as a real count silently disables TicketWorkbench's resolve/close
+    // prompt on a network blip.
+    const onCountsChange = vi.fn();
+    fetchWithAuth.mockImplementation(async () => jsonRes(null, 500));
+    render(<TicketChecklistCard ticketId="tk-1" onCountsChange={onCountsChange} />);
+    await waitFor(() => expect(onCountsChange).toHaveBeenCalledWith({ done: 0, total: 0, known: false }));
+    expect(onCountsChange).not.toHaveBeenCalledWith({ done: 0, total: 0, known: true });
+  });
+
+  it('shows an error with a retry instead of vanishing when the load fails', async () => {
+    // `return null` on an empty checklist is deliberate; doing it on a FAILED
+    // load would leave the technician no affordance telling them the checklist
+    // they cannot see might not be empty.
+    fetchWithAuth.mockImplementation(async () => jsonRes(null, 500));
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    expect(await screen.findByTestId('ticket-checklist-error')).toBeInTheDocument();
+
+    fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1' })]));
+    fireEvent.click(screen.getByTestId('ticket-checklist-retry'));
+    expect(await screen.findByTestId('ticket-checklist-item-i-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-checklist-error')).toBeNull();
   });
 });

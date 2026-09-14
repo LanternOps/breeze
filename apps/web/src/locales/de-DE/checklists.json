@@ -14,7 +14,8 @@
     "delete": "Löschen",
     "edit": "Bearbeiten",
     "save": "Speichern",
-    "cancel": "Abbrechen"
+    "cancel": "Abbrechen",
+    "retry": "Erneut versuchen"
   },
   "source": {
     "manual": "Manuell",

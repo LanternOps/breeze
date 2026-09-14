@@ -14,7 +14,8 @@
     "delete": "Sil",
     "edit": "Düzenle",
     "save": "Kaydet",
-    "cancel": "Vazgeç"
+    "cancel": "Vazgeç",
+    "retry": "Yeniden dene"
   },
   "source": {
     "manual": "Manuel",

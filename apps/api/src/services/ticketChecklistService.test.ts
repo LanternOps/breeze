@@ -168,6 +168,22 @@ describe('patchChecklistItem attestation rules', () => {
     expect(out.done).toBe(false);
   });
 
+  it('editing only the DETAIL of a DONE item also clears the attestation', async () => {
+    // `editsText` covers detail as well as label — the note is part of what the
+    // tick attested to, so the label-only case above does not prove this branch.
+    dbMocks.rows.push(
+      [row({ doneAt: new Date(), doneByUserId: 'user-1', detail: 'Old note' })],
+      [row({ detail: 'New note' })],
+    );
+
+    const out = await patchChecklistItem(ITEM, { detail: 'New note' }, ACTOR);
+
+    expect(dbMocks.set[0]).toEqual(expect.objectContaining({
+      detail: 'New note', doneAt: null, doneByUserId: null,
+    }));
+    expect(out.done).toBe(false);
+  });
+
   it('editing the label of an UNTICKED item does not touch the attestation columns', async () => {
     dbMocks.rows.push([row({ label: 'Old' })], [row({ label: 'New' })]);
 
