@@ -900,6 +900,19 @@ Adding one type touches, in order:
 
 ## 8. Open Decisions
 
+> **Gate A resolution — 2026-09-14 (Todd: "as recommended").** OD-1 … OD-12 are
+> approved as recommended, explicitly including **OD-5 = B** (dedicated managed-
+> evidence execution path on `SystemReportExecutionAuthority`, bound by the closed
+> server-owned registry) and **OD-12 = A** (evidence becomes customer-visible on
+> *delivery*, never on generation). OD-7: firewall/VPN review stays out of scope.
+> **OD-11 day-boundary sub-question** was not recommended either way; the
+> conservative default is taken pending Todd's overrule: generation stays on the
+> due day (#5573 semantics unchanged) and **the artifact states its coverage
+> window explicitly** ("covers <period_start> to <generated_at UTC>"); moving
+> generation to period close (option C) is not adopted. Status: `spec-approved`
+> → Stage 3 (plan).
+
+
 ### OD-1 — How many report types, and which?
 
 - **A — four types** (`threat_detection_review`, `endpoint_management_review`,
