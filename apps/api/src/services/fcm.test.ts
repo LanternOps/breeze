@@ -1,23 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FirebaseMessagingError } from 'firebase-admin/messaging';
 
-const { messagingSend, initializeApp, cert, appsList } = vi.hoisted(() => ({
+const { messagingSend, initializeApp, getApp, cert, appsList } = vi.hoisted(() => ({
   messagingSend: vi.fn(),
   initializeApp: vi.fn(() => ({})),
+  getApp: vi.fn(() => ({})),
   cert: vi.fn((sa: unknown) => sa),
   appsList: [] as unknown[],
 }));
 
-vi.mock('firebase-admin', () => ({
-  default: {
-    get apps() {
-      return appsList;
-    },
-    app: vi.fn(() => ({})),
-    initializeApp,
-    credential: { cert },
-    messaging: () => ({ send: messagingSend }),
-  },
+vi.mock('firebase-admin/app', () => ({
+  getApps: vi.fn(() => appsList),
+  getApp,
+  initializeApp,
+  cert,
 }));
+
+vi.mock('firebase-admin/messaging', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('firebase-admin/messaging')>();
+  return {
+    ...actual,
+    getMessaging: vi.fn(() => ({ send: messagingSend })),
+  };
+});
 
 import {
   isFcmConfigured,
@@ -88,6 +93,35 @@ describe('sendFcmNotification', () => {
   it('reports unregistered:true for a dead token without throwing', async () => {
     process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({ private_key: 'x', client_email: 'y' });
     messagingSend.mockRejectedValueOnce({ code: 'messaging/registration-token-not-registered' });
+
+    const res = await sendFcmNotification('dead-tok', { title: 't', body: 'b' });
+
+    expect(res).toEqual({
+      ok: false,
+      reason: 'messaging/registration-token-not-registered',
+      unregistered: true,
+    });
+  });
+
+  it('reports unregistered:true for a real v14-shaped FirebaseMessagingError (registration-token-not-registered)', async () => {
+    process.env.FIREBASE_SERVICE_ACCOUNT = JSON.stringify({ private_key: 'x', client_email: 'y' });
+    // Construct via the SDK's own error class (not a plain {code} object) so a
+    // firebase-admin major bump that reshapes error internals fails this test
+    // first, before it silently breaks sendFcmNotification's code matching.
+    // The public .d.ts hides the constructor (marked @internal), so we go
+    // through the runtime shape directly — this is what admin.messaging().send()
+    // actually throws.
+    const Ctor = FirebaseMessagingError as unknown as new (info: {
+      code: string;
+      message: string;
+    }) => FirebaseMessagingError;
+    const err = new Ctor({
+      code: 'registration-token-not-registered',
+      message: 'Requested entity was not found.',
+    });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('messaging/registration-token-not-registered');
+    messagingSend.mockRejectedValueOnce(err);
 
     const res = await sendFcmNotification('dead-tok', { title: 't', body: 'b' });
 

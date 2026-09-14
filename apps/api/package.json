@@ -75,7 +75,7 @@
     "bullmq": "^5.81.2",
     "drizzle-orm": "^0.45.2",
     "fast-xml-parser": "^5.9.3",
-    "firebase-admin": "^13.7.0",
+    "firebase-admin": "^14.4.0",
     "google-auth-library": "^10.9.1",
     "hono": "^4.13.5",
     "i18next": "^26.3.6",
