@@ -18,8 +18,10 @@ import { networkErrorsKind } from './networkErrors';
 import { antivirusKind } from './antivirus';
 import { softwarePresenceKind } from './softwarePresence';
 import { backupContinuityKind } from './backupContinuity';
+import { scriptKind } from './script';
+import { networkCheckKind } from './networkCheck';
 
-export type { MonitorKindSpec } from './types';
+export type { MonitorKindSpec, MonitorCompileContext } from './types';
 export { MonitorValidationError } from './types';
 
 /**
@@ -51,6 +53,8 @@ export const MONITOR_KIND_SPECS: Record<MonitorKind, MonitorKindSpec<any>> = {
   antivirus: antivirusKind,
   software_presence: softwarePresenceKind,
   backup_continuity: backupContinuityKind,
+  script: scriptKind,
+  network_check: networkCheckKind,
 };
 
 export function getMonitorKindSpec(kind: string): MonitorKindSpec {

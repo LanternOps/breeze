@@ -27,6 +27,8 @@ import { certExpiryHandler } from './handlers/certExpiry';
 import { antivirusHandler } from './handlers/antivirus';
 import { softwarePresenceHandler } from './handlers/softwarePresence';
 import { backupContinuityHandler } from './handlers/backupContinuity';
+import { scriptMonitorHandler } from './handlers/scriptMonitor';
+import { networkCheckHandler } from './handlers/networkCheck';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -43,6 +45,8 @@ conditionRegistry.register(certExpiryHandler);
 conditionRegistry.register(antivirusHandler);
 conditionRegistry.register(softwarePresenceHandler);
 conditionRegistry.register(backupContinuityHandler);
+conditionRegistry.register(scriptMonitorHandler);
+conditionRegistry.register(networkCheckHandler);
 
 // Re-export types for backward compatibility
 export type {
@@ -62,6 +66,8 @@ export type {
   AntivirusCondition,
   SoftwarePresenceCondition,
   BackupContinuityCondition,
+  ScriptMonitorCondition,
+  NetworkCheckCondition,
   AlertCondition,
   ConditionGroup,
   RootCondition,

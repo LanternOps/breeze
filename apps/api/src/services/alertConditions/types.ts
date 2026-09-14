@@ -131,6 +131,25 @@ export interface BackupContinuityCondition {
   failureCount?: number;
 }
 
+// Script monitor condition. `monitorId` is the MONITOR DEFINITION's id: the
+// handler's evidence is a `script_executions` row stamped with it, which is
+// what separates a monitor's own probe from any other run of the same script.
+export interface ScriptMonitorCondition {
+  type: 'script_monitor';
+  monitorId: string;
+  intervalMinutes: number;
+  breachOnNonZeroExit: boolean;
+}
+
+// Network check condition. `monitorId` is the MONITOR DEFINITION's id, not the
+// managed network_monitors row's — the managed row is found through
+// `managed_by_monitor_id`, so the condition survives a re-provision.
+export interface NetworkCheckCondition {
+  type: 'network_check';
+  monitorId: string;
+  consecutiveFailures?: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -146,7 +165,9 @@ export type AlertCondition =
   | CertExpiryCondition
   | AntivirusCondition
   | SoftwarePresenceCondition
-  | BackupContinuityCondition;
+  | BackupContinuityCondition
+  | ScriptMonitorCondition
+  | NetworkCheckCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {

@@ -671,6 +671,16 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // #5291 W04 — dispatches `script` monitors' diagnostic probes. Global, like
+    // monitorWorker: one sweep per fleet, not one per API replica.
+    name: 'monitorScriptWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/monitorScriptWorker');
+      return { init: m.initializeMonitorScriptWorker, shutdown: m.shutdownMonitorScriptWorker };
+    },
+  },
+  {
     name: 'unifiWorker',
     placement: 'global',
     load: async () => {

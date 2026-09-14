@@ -103,6 +103,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('networkBaselineWorker'),
   consumers('snmpWorker'),
   consumers('monitorWorker'),
+  consumers('monitorScriptWorker'),
   consumers('unifiWorker'),
   consumers('unifiTelemetryWorker'),
   consumers('snmpRetention'),
