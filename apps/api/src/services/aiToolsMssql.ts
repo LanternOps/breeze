@@ -18,7 +18,8 @@ import {
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
@@ -324,7 +325,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_mssql_backup',
         deviceId,
         CommandTypes.MSSQL_BACKUP,
         {
@@ -455,7 +458,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_mssql_database',
         deviceId,
         CommandTypes.MSSQL_RESTORE,
         {
@@ -568,7 +573,9 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'verify_mssql_backup',
         snapshot.deviceId,
         CommandTypes.MSSQL_VERIFY,
         {

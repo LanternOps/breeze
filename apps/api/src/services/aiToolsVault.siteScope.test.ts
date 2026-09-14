@@ -9,7 +9,10 @@ vi.mock('../db', () => ({
 
 vi.mock('./commandQueue', () => ({
   CommandTypes: { VAULT_SYNC: 'vault_sync' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 
 import { db } from '../db';
@@ -44,6 +47,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (siteId) => (!allowedSiteIds ? true : !!siteId && allowedSiteIds.includes(siteId)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 

@@ -254,6 +254,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * route code runs. moveOrg detaches device_id instead — an explicit,
  * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * script_executions IS in the list below and so re-stamps normally, but its AI
+ * ORIGIN POINTERS are detached on the way (#5022 W01): ai_agent_runs above is
+ * not re-stamped and ai_sessions is re-stamped only when device-bound, so a
+ * moved execution could otherwise keep pointing at a session or run in the
+ * source tenant. ai_initiator_kind is RETAINED — the fact that an AI did the
+ * work survives the move; the cross-tenant pointer does not. Mirrored in
+ * moveOrg.ts and in breeze_cascade_device_org_id().
  */
 // offline_transition_effects is intentionally absent: immutable historical source
 // ownership remains with the original org; pending alert admission rejects a moved

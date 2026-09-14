@@ -17,6 +17,7 @@
  */
 import {
   executeCommand,
+  queueCommand,
   queueCommandForExecution,
   insertQueuedCommandInTransaction,
   type ExecuteCommandOptions,
@@ -86,6 +87,25 @@ export async function aiQueueCommandForExecution(
   return queueCommandForExecution(deviceId, type, payload, { ...options, aiOrigin });
 }
 
+/**
+ * The bare `queueCommand` lane. Distinct from `aiQueueCommandForExecution`,
+ * which additionally resolves the offline policy and attempts a live push;
+ * callers that only want the row written (a fan-out over many findings, where
+ * per-device delivery is the reaper's problem) use this one.
+ */
+export async function aiQueueCommand(
+  auth: AiAuth,
+  toolName: string,
+  deviceId: string,
+  type: CommandType | string,
+  payload: CommandPayload = {},
+  userId?: string,
+  options: Omit<Parameters<typeof queueCommand>[4] & object, 'aiOrigin'> = {},
+): Promise<QueuedCommand> {
+  const aiOrigin = requireAiOrigin(auth, toolName);
+  return queueCommand(deviceId, type, payload, userId, { ...options, aiOrigin });
+}
+
 export async function aiDispatchDeviceCommand(
   auth: AiAuth,
   toolName: string,
@@ -96,12 +116,18 @@ export async function aiDispatchDeviceCommand(
 }
 
 export async function aiDispatchScriptToDevice(
-  auth: AiAuth,
+  auth: AiAuth & Partial<Pick<AuthContext, 'user'>>,
   toolName: string,
-  input: Omit<DispatchScriptInput, 'aiOrigin'>,
+  input: Omit<DispatchScriptInput, 'aiOrigin' | 'principalActorId'>,
 ): Promise<DispatchScriptResult> {
   const aiOrigin = requireAiOrigin(auth, toolName);
-  return dispatchScriptToDevice({ ...input, aiOrigin });
+  // #5022 W01: `ai.script.executed` takes its actor from the authenticated
+  // PRINCIPAL. For an autonomous run that principal is the agent, whose id is
+  // an `ai_agents.id` -- legal in `audit_logs.actor_id` (no FK to `users`),
+  // unlike `device_commands.created_by`. Supplied here rather than at every
+  // call site so a caller cannot get the pairing wrong.
+  const principalActorId = aiOrigin.kind === 'ai_agent' ? (auth.user?.id ?? null) : null;
+  return dispatchScriptToDevice({ ...input, aiOrigin, principalActorId });
 }
 
 /**

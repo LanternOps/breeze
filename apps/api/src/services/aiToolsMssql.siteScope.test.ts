@@ -8,7 +8,9 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./commandQueue', () => ({
   CommandTypes: { MSSQL_BACKUP: 'mssql_backup', MSSQL_RESTORE: 'mssql_restore', MSSQL_VERIFY: 'mssql_verify' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 vi.mock('./featureConfigResolver', () => ({ resolveBackupConfigForDevice: vi.fn(async () => ({ configId: 'cfg', featureLinkId: 'fl' })) }));
 
@@ -32,6 +34,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 

@@ -12,6 +12,8 @@
  * (`ai_agent_op_evidence` is `leave-for-erasure`, per `orgMergeRegistry.ts`).
  * `mergeAiAgents` must clear the loser's supervised keys BEFORE repointing.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
@@ -420,5 +422,61 @@ describe('moveAiRunArtifacts — split disposition by anchor (execution-plane W0
 
   it('is registered as a custom policy, not leave-for-erasure', () => {
     expect(getOrgMergePolicies().get('ai_run_artifacts')?.kind).toBe('custom');
+  });
+});
+
+// ============================================================================
+// #5022 W01 Task 14 — script_executions detaches its AI origin on merge.
+//
+// It was a plain `repoint`. It still repoints org_id, but a merged execution
+// must not keep pointing at an `ai_agent_runs` row: runs are
+// `leave-for-erasure` (org_id is trigger-immutable), so the run stays with the
+// loser shell and dies with it while the execution moves to the survivor.
+//
+// `ai_session_id` is NOT actually at risk here — `ai_sessions` is itself in
+// REPOINT_TABLES and follows — but it is nulled together with the run id so
+// merge and device-move behave identically and "the fact survives, the pointer
+// does not" is ONE rule, not two. Do not "simplify" it back.
+// ============================================================================
+describe('script_executions merge policy detaches AI origin pointers (#5022 W01)', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('is classified custom, with a registered move executor', () => {
+    const policies = getOrgMergePolicies();
+
+    expect(policies.get('script_executions')).toMatchObject({ kind: 'custom' });
+    expect(CUSTOM_EXECUTORS.script_executions).toBeTypeOf('function');
+  });
+
+  it('repoints org_id AND nulls both origin pointers in one statement', async () => {
+    executeMock.mockResolvedValueOnce({ rowCount: 3 });
+
+    const result = await CUSTOM_EXECUTORS.script_executions!(L, S);
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const sqlText = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(sqlText).toMatch(/UPDATE script_executions/);
+    expect(sqlText).toMatch(/set org_id =|SET org_id =/i);
+    expect(sqlText).toMatch(/ai_session_id = NULL/i);
+    expect(sqlText).toMatch(/ai_agent_run_id = NULL/i);
+    // ai_initiator_kind is RETAINED.
+    expect(sqlText).not.toMatch(/ai_initiator_kind\s*=\s*NULL/i);
+    expect(result.moved).toBe(3);
+    expect(result.dropped).toBe(0);
+  });
+
+  it('is NOT listed as an executor that never writes org_id — it does write it', () => {
+    // Guards against a copy-paste into CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID
+    // in orgMergeRegistry.integration.test.ts, which would suppress the
+    // assertion that this executor re-tenants its rows at all.
+    const src = readFileSync(
+      fileURLToPath(new URL('./orgMergeCustomExecutors.ts', import.meta.url)),
+      'utf8',
+    ).replace(/\s+/g, ' ');
+
+    expect(src).toMatch(/UPDATE script_executions SET org_id =/);
+    expect(src).toMatch(/ai_agent_run_id = NULL/);
   });
 });

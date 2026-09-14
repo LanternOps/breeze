@@ -96,6 +96,9 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
       // #5264: the run's org travels with the dispatch so a device that has
       // moved tenants since the run started is refused by the precheck.
       userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
+      // #5022 W01: the verify lane never enters executeTool, so the origin is
+      // derived from the run id at the call site.
+      aiOrigin: { kind: 'ai_agent', agentRunId: RUN.id },
     });
   });
 
@@ -178,6 +181,9 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
       // #5264: the run's org travels with the dispatch so a device that has
       // moved tenants since the run started is refused by the precheck.
       userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
+      // #5022 W01: the verify lane never enters executeTool, so the origin is
+      // derived from the run id at the call site.
+      aiOrigin: { kind: 'ai_agent', agentRunId: RUN.id },
     });
   });
 

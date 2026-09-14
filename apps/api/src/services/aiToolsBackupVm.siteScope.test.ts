@@ -8,7 +8,9 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./commandQueue', () => ({
   CommandTypes: { VM_RESTORE_FROM_BACKUP: 'a', VM_INSTANT_BOOT: 'b' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 
 import { db } from '../db';
@@ -29,6 +31,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     token: {} as any, partnerId: null, orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds, canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 // snapshot row first, then target device row { id, siteId }

@@ -34,7 +34,7 @@ import type { AiTool } from './aiTools';
 // Type-only: the runtime import stays dynamic inside the handler.
 import type { CancelOutcome } from './scriptCancellation';
 import type { ToolExecutionContext, VerifiedRunScript } from './toolExecutionContext';
-import { dispatchScriptToDevice } from './scriptDispatch';
+import { aiDispatchScriptToDevice, aiExecuteCommand } from './aiDispatch';
 import { approvalMethodForRelease, assertProposalRunnable, proposalDispatchSnapshot, transitionProposal } from './scriptProposals';
 import { aiScriptAuthoringEnabled } from '../config/env';
 import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './scriptRunRequest';
@@ -271,7 +271,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
       if ('error' in access) { proposalResults[deviceId] = { error: access.error }; continue; }
       try {
         const dispatch = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
-          dispatchScriptToDevice({
+          aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,
             source: { kind: 'proposal', proposal: runnable.proposal, snapshot },
             triggerType: 'manual',
@@ -504,7 +504,7 @@ const runScriptHandler: AiTool['handler'] = async (input, auth, context) => {
             : await loadTenantVariableScope(
                 scriptNeedsVariableScope(script) ? [access.device.orgId] : []
               );
-          return dispatchScriptToDevice({
+          return aiDispatchScriptToDevice(auth, 'run_script', {
             device: access.device,
             source: { kind: 'saved', script },
             parameters: (input.parameters as Record<string, unknown>) ?? {},
@@ -643,8 +643,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
 
       // Import and use executeCommand from commandQueue
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, commandType, payload, {
+      const result = await aiExecuteCommand(auth, 'execute_command', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -797,7 +796,6 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
       const commandTypeMap: Record<string, string> = {
         list: 'list_services',
         start: 'start_service',
@@ -808,7 +806,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const commandType = commandTypeMap[action];
       if (!commandType) return JSON.stringify({ error: `Unknown action: ${action}` });
 
-      const result = await executeCommand(deviceId, commandType, {
+      const result = await aiExecuteCommand(auth, 'manage_services', deviceId, commandType, {
         name: input.serviceName
       }, { userId: auth.user.id, timeoutMs: 30000 });
 
@@ -861,11 +859,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-
       if (action === 'list') {
         const limit = Math.min(Math.max(1, Number(input.limit) || 50), 200);
-        const result = await executeCommand(deviceId, 'list_processes', {
+        const result = await aiExecuteCommand(auth, 'manage_processes', deviceId, 'list_processes', {
           search: input.search ?? undefined,
           sortBy: input.sortBy ?? 'cpu',
           limit
@@ -879,7 +875,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'processId is required for kill action' });
         }
 
-        const result = await executeCommand(deviceId, 'kill_process', {
+        const result = await aiExecuteCommand(auth, 'manage_processes', deviceId, 'kill_process', {
           pid: input.processId
         }, { userId: auth.user.id, timeoutMs: 30000 });
 
@@ -1399,7 +1395,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand, CommandTypes } = await getCommandQueue();
+      const { CommandTypes } = await getCommandQueue();
       const commandTypeMap: Record<string, string> = {
         list: CommandTypes.TASKS_LIST,
         run: CommandTypes.TASK_RUN,
@@ -1419,7 +1415,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         payload.path = input.taskName;
       }
 
-      const result = await executeCommand(deviceId, commandType, payload, {
+      const result = await aiExecuteCommand(auth, 'manage_scheduled_tasks', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000
       });
@@ -1469,7 +1465,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand, CommandTypes } = await getCommandQueue();
+      const { CommandTypes } = await getCommandQueue();
 
       const commandTypeMap: Record<string, string> = {
         read_key: CommandTypes.REGISTRY_VALUES,
@@ -1493,7 +1489,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       if (input.valueData !== undefined) payload.data = input.valueData;
       if (input.valueType) payload.type = input.valueType;
 
-      const result = await executeCommand(deviceId, commandType, payload, {
+      const result = await aiExecuteCommand(auth, 'registry_operations', deviceId, commandType, payload, {
         userId: auth.user.id,
         timeoutMs: 30000,
       });

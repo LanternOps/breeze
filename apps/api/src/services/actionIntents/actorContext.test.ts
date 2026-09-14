@@ -871,3 +871,75 @@ describe('originPrincipalFor — ai_agent', () => {
     } as Partial<ActionIntent>))).toEqual({ kind: 'unknown' });
   });
 });
+
+// ============================================================================
+// #5022 W01 Task 12 — the AI origin survives the approval boundary.
+//
+// `intentReleaseWorker` executes under an AuthContext rebuilt FROM SCRATCH by
+// `revalidateApprovedIntentForRelease`. For a human-owned intent that is
+// `buildUserOwnedAuthContext`, which synthesises the context from the `users`
+// row — so a chat-minted origin would be gone by the time the approved action
+// dispatches. It is read back off the persisted columns instead.
+// ============================================================================
+describe('buildAuthContextForIntent — AI origin reconstruction (#5022 W01)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dbState.selectUsersResults.length = 0;
+    dbState.selectApiKeysResults.length = 0;
+    dbState.selectAgentRunsResults.length = 0;
+    dbState.selectAgentsResults.length = 0;
+    dbState.selectOrgsResults.length = 0;
+    dbState.selectDevicesResults.length = 0;
+  });
+
+  it('reconstructs the AI origin for a human-owned intent created from a chat session', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: 'ai_assistant',
+        aiOriginSessionId: 'sess-1',
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'sess-1' });
+  });
+
+  it('leaves aiOrigin undefined for an intent that had no AI origin', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: null,
+        aiOriginSessionId: null,
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toBeUndefined();
+  });
+
+  it('does not fabricate an origin from ids alone when the persisted kind is missing', async () => {
+    dbState.selectUsersResults.push([activeUser]);
+    permState.getUserPermissions.mockResolvedValueOnce({
+      roleId: 'role-1', accessibleOrgIds: ['org-1'], allowedSiteIds: undefined,
+    });
+
+    const result = await buildAuthContextForIntent(
+      baseIntent({
+        aiOriginKind: null,
+        aiOriginSessionId: 'sess-1',
+        aiOriginAgentRunId: null,
+      } as Partial<ActionIntent>),
+    );
+
+    expect(result?.aiOrigin).toBeUndefined();
+  });
+});

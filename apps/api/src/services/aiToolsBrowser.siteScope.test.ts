@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { assertDeviceExecuteAllowedMock } = vi.hoisted(() => ({
+const { assertDeviceExecuteAllowedMock, aiQueueCommandForExecutionMock } = vi.hoisted(() => ({
   assertDeviceExecuteAllowedMock: vi.fn(async () => undefined),
+  aiQueueCommandForExecutionMock: vi.fn(async () => ({ command: { id: 'cmd-1', deviceId: 'd1' } })),
 }));
 
 // aiToolsBrowser imports the db hub (which pulls commandQueue), so the db mock
@@ -14,6 +15,11 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('./eventBus', () => ({ publishEvent: vi.fn(async () => undefined) }));
+// #5022 W01: `apply` no longer hand-rolls a multi-row db.insert(deviceCommands);
+// it queues per device through the mandatory-origin adapter.
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: aiQueueCommandForExecutionMock,
+}));
 vi.mock('./partnerTrust.commands', async () => ({
   ...(await vi.importActual<typeof import('./partnerTrust.commands')>('./partnerTrust.commands')),
   assertDeviceExecuteAllowed: assertDeviceExecuteAllowedMock,
@@ -52,6 +58,9 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (siteId) => (!allowedSiteIds ? true : !!siteId && allowedSiteIds.includes(siteId)),
+    // #5022 W01: this AuthContext stands in for a chat-minted one; without an
+    // origin the adapter refuses the dispatch by design.
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-test' },
   };
 }
 
@@ -167,7 +176,7 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
       message: 'Remote control and device changes are not available until this account is verified.',
     });
     expect(assertDeviceExecuteAllowedMock).toHaveBeenCalledWith('d1', 'apply_browser_policy', 'u1');
-    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecutionMock).not.toHaveBeenCalled();
   });
 
   it('apply: queues the same command when trust allows execution', async () => {
@@ -181,10 +190,6 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
       .mockReturnValueOnce({
         from: () => ({ where: () => Promise.resolve([{ id: 'd1', hostname: 'host-1' }]) }),
       });
-    mockDb.insert.mockReturnValue({
-      values: () => ({ returning: () => Promise.resolve([{ id: 'cmd-1', deviceId: 'd1' }]) }),
-    });
-
     const result = JSON.parse(await handlerFor('manage_browser_policy')(
       { action: 'apply', policyId: 'p1' },
       makeAuth(undefined),
@@ -192,7 +197,18 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
 
     expect(result.success).toBe(true);
     expect(result.queuedCommands).toBe(1);
-    expect(mockDb.insert).toHaveBeenCalledTimes(1);
+    expect(result.queueFailures).toBeUndefined();
+    // Routed through the mandatory-origin adapter, never a raw insert.
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecutionMock).toHaveBeenCalledTimes(1);
+    expect(aiQueueCommandForExecutionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-test' } }),
+      'manage_browser_policy',
+      'd1',
+      'apply_browser_policy',
+      expect.objectContaining({ policyId: 'p1' }),
+      expect.objectContaining({ userId: 'u1', expectedOrgId: 'org-1' }),
+    );
   });
 });
 

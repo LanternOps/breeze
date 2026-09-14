@@ -145,6 +145,14 @@ export type DispatchScriptInput = {
    * `services/aiDispatch.ts`, whose signatures make it mandatory.
    */
   aiOrigin?: AiOriginRef;
+  /**
+   * #5022 W01 — the AGENT principal's own id (an `ai_agents.id`), used as the
+   * audit row's `actor_id` when `aiOrigin.kind === 'ai_agent'`. Supplied by the
+   * AI dispatch adapter from `auth.user.id`; `audit_logs.actor_id` has no FK to
+   * `users`, so an agent id is a legal value there (unlike
+   * `device_commands.created_by`).
+   */
+  principalActorId?: string | null;
 };
 
 export type DispatchScriptResult =
@@ -538,6 +546,20 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // Attribution for a degraded id survives in the execution record's
   // `parameters` sidecar (below) — never on the users-FK column itself.
   const degradedActorId = actorIsRealUser ? null : actorCandidateId;
+  if (degradedActorId) {
+    // #5022 W01: the mirror of `resolveCommandCreatedBy`'s degrade warning.
+    // The probe is right to degrade (these columns are users FKs), but the
+    // drop used to be observable only in the `$actor` sidecar inside the
+    // execution's `parameters` jsonb. Log it once so a lane that loses the
+    // sidecar too is visible in Postgres/app logs rather than only in a row
+    // nobody reads.
+    console.warn('[scriptDispatch] triggered_by/created_by degraded to NULL: actor is not a users row', {
+      degradedActorId,
+      deviceId: device.id,
+      hasAiOrigin: Boolean(input.aiOrigin),
+      aiInitiatorKind: input.aiOrigin?.kind ?? null,
+    });
+  }
 
   let executionId: string | null = null;
   if (source.kind === 'saved' || source.kind === 'proposal') {
@@ -660,8 +682,11 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       deliverBy,
       submittedOrgId: device.orgId,
       // #5022 W01: the script's own command row carries the origin too, so a
-      // reader of device_commands alone can still answer "who decided this".
-      ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
+      // reader of device_commands alone can still answer "who decided this" --
+      // but NOT a second audit row. This dispatch already writes
+      // `ai.script.executed` below, and W02's Overview count depends on
+      // exactly one `ai.` row per dispatched mutation.
+      ...(input.aiOrigin ? { aiOrigin: input.aiOrigin, suppressAiCommandAudit: true } : {}),
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -793,11 +818,26 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // erasure of the source proposal. Fire-and-forget like every other
   // createAuditLogAsync caller: a lost audit row must never fail the dispatch
   // that already succeeded.
-  if (source.kind === 'proposal' && executionId) {
+  // #5022 W01: the gate is widened from "proposal-backed" to "proposal-backed
+  // OR AI-initiated", so an AI-run LIBRARY script is audited too -- the case
+  // that made an assistant-run saved script indistinguishable from a human one
+  // on the device page.
+  if (executionId && (source.kind === 'proposal' || input.aiOrigin)) {
+    // Actor type and id BOTH derive from the AUTHENTICATED PRINCIPAL, never
+    // from authorship. (#5022 W01: the previous version read actorType off
+    // source.proposal.authorKind while actorId came from the invoker, so an
+    // AI-AUTHORED script hand-run by a human wrote actor_type='ai_agent'
+    // against a HUMAN user id.) Authorship is a separate fact and now lives in
+    // `details.authorKind`.
+    const principalIsAgent = input.aiOrigin?.kind === 'ai_agent';
+    const auditActorType = principalIsAgent ? ('ai_agent' as const) : ('user' as const);
+    const auditActorId = principalIsAgent
+      ? (input.principalActorId ?? SYSTEM_ACTOR_ID)
+      : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
     void createAuditLogAsync({
       orgId: device.orgId,
-      actorType: source.proposal.authorKind === 'agent_run' ? 'ai_agent' : 'user',
-      actorId: safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID,
+      actorType: auditActorType,
+      actorId: auditActorId,
       action: 'ai.script.executed',
       resourceType: 'device',
       resourceId: device.id,
@@ -807,8 +847,16 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       details: {
         executionId,
         commandId: command.id,
-        proposalId: source.proposal.id,
-        sourceKind: 'proposal',
+        proposalId: source.kind === 'proposal' ? source.proposal.id : null,
+        sourceKind: source.kind === 'proposal' ? 'proposal' : 'library',
+        // Authorship — who WROTE the script — kept, but as its own field
+        // rather than laundered into actor_type.
+        authorKind: source.kind === 'proposal' ? source.proposal.authorKind : null,
+        // `resourceId` is already device.id (what the events feed's resource
+        // arm indexes); `deviceId` is set as well so the feed's details arm can
+        // also find it.
+        deviceId: device.id,
+        ...aiOriginColumns(input.aiOrigin),
         approvalMethod: input.provenance?.approvalMethod ?? null,
         reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
         reviewSummary: input.provenance?.reviewSummary ?? null,

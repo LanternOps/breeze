@@ -1296,12 +1296,24 @@ async function handleToolsCall(
   // own success/failure; the wrapper owns the ledger + audit for both outcomes.
   const execute = async (ledger: McpToolExecutionLedgerHandle | null): Promise<Tier3ExecutionOutcome> => {
     try {
-      // #5022 W01: the AI-surface mint site for MCP. The origin comes from the
-      // execution LEDGER, whose `sessionId` is the persisted `ai_sessions.id`
-      // it just created -- never from `ctx.sessionId`, which is the MCP
-      // TRANSPORT session id and resolves to nothing. Tiers below 3 create no
-      // ledger and therefore carry no origin; they are reads.
-      const toolAuth = ledger ? { ...auth, aiOrigin: ledger.aiOrigin } : auth;
+      // #5022 W01: the AI-surface mint site for MCP. When a Tier 3 execution
+      // ledger exists the origin comes from IT, because its `sessionId` is the
+      // persisted `ai_sessions.id` the ledger just created -- never
+      // `ctx.sessionId`, which is the MCP TRANSPORT session id and resolves to
+      // no row at all.
+      //
+      // Tiers below 3 create no ledger, and some of them still reach the
+      // device (`manage_processes` action 'list' dispatches `list_processes`).
+      // They get a kind-only origin: `ai_assistant` with NO sessionId. That is
+      // the truthful record -- an AI assistant decided, and there is no
+      // persisted conversation row to point at -- and it keeps every MCP tool
+      // attributable, which is what makes the fail-closed adapter safe to
+      // apply uniformly. A synthesised uuid here would be a pointer to
+      // nothing; `AiOriginRef.sessionId` is optional precisely for this.
+      const toolAuth = {
+        ...auth,
+        aiOrigin: ledger?.aiOrigin ?? ({ kind: 'ai_assistant' } as const),
+      };
       const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
 
