@@ -258,19 +258,61 @@ function resolveMaskedMonitoringSecrets(
   const resolved: Record<string, unknown> = { ...config };
   for (const [field, value] of Object.entries(config)) {
     if (value !== INTEGRATION_MASKED_SECRET || !isSecretFieldName(field)) continue;
-    const sealed = storedRecord[field];
-    if (typeof sealed !== 'string' || sealed.length === 0) {
-      return { ok: false, error: `Enter the ${provider} ${field} and save before testing` };
+    const opened = openStoredMonitoringSecret(storedRecord[field], orgId, [provider, field], `${provider} ${field}`);
+    if (!opened.ok) return opened;
+    resolved[field] = opened.value;
+  }
+
+  // Webhook endpoint URLs are the one nested secret (integrationSettingsSecrets
+  // isSecretPath): sealed per endpoint under the path part `id:"<id>"`, so a
+  // reorder cannot re-bind one destination's URL to another.
+  if (provider === 'webhooks' && Array.isArray(config.endpoints)) {
+    const storedEndpoints = Array.isArray(storedRecord.endpoints) ? storedRecord.endpoints as unknown[] : [];
+    const endpoints: unknown[] = [];
+    for (const entry of config.endpoints as unknown[]) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { endpoints.push(entry); continue; }
+      const endpoint = { ...(entry as Record<string, unknown>) };
+      if (endpoint.url === INTEGRATION_MASKED_SECRET) {
+        const id = typeof endpoint.id === 'string' && endpoint.id ? endpoint.id : undefined;
+        const stored = id
+          ? storedEndpoints.find((s) => !!s && typeof s === 'object' && (s as Record<string, unknown>).id === id)
+          : undefined;
+        const storedUrl = stored ? (stored as Record<string, unknown>).url : undefined;
+        const opened = openStoredMonitoringSecret(
+          storedUrl,
+          orgId,
+          ['webhooks', 'endpoints', `id:${JSON.stringify(id ?? '')}`, 'url'],
+          'webhook endpoint URL',
+        );
+        if (!opened.ok) return opened;
+        endpoint.url = opened.value;
+      }
+      endpoints.push(endpoint);
     }
-    const plaintext = isEncryptedSecret(sealed)
-      ? decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, [provider, field]) })
-      : sealed;
-    if (!plaintext) {
-      return { ok: false, error: `Stored ${provider} ${field} could not be read; re-enter it and save` };
-    }
-    resolved[field] = plaintext;
+    resolved.endpoints = endpoints;
   }
   return { ok: true, config: resolved };
+}
+
+function openStoredMonitoringSecret(
+  sealed: unknown,
+  orgId: string,
+  path: readonly string[],
+  label: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof sealed !== 'string' || sealed.length === 0) {
+    return { ok: false, error: `Enter the ${label} and save before testing` };
+  }
+  if (!isEncryptedSecret(sealed)) return { ok: true, value: sealed };
+  // decryptSecret THROWS on an AAD mismatch, a retired key id or corrupt
+  // ciphertext; it only returns null for an empty input, excluded above.
+  try {
+    const plaintext = decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, path) });
+    if (!plaintext) return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
+    return { ok: true, value: plaintext };
+  } catch {
+    return { ok: false, error: `Stored ${label} could not be read; re-enter it and save` };
+  }
 }
 
 integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
@@ -309,7 +351,8 @@ integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner
   });
 
   if (!result.ok) {
-    return c.json({ success: false, error: result.message }, result.kind === 'invalid' ? 400 : 502);
+    const status = result.kind === 'invalid' || result.kind === 'blocked' ? 400 : 502;
+    return c.json({ success: false, error: result.message }, status);
   }
   return c.json({ success: true, message: result.message });
 });

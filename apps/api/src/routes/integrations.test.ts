@@ -217,6 +217,56 @@ describe('integration compatibility routes', () => {
       expect(safeFetchMock).not.toHaveBeenCalled();
     });
 
+    it('resolves a masked webhook endpoint URL from the stored sealed settings', async () => {
+      const save = await app.request('/integrations/monitoring', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ webhooks: { enabled: true, endpoints: [
+          { id: 'ep-1', name: 'relay', url: 'https://hooks.example.test/private-token', enabled: true },
+        ] } }),
+      });
+      expect(save.status).toBe(200);
+      safeFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+      const res = await testCall({
+        provider: 'webhooks',
+        endpointId: 'ep-1',
+        config: { enabled: true, endpoints: [{ id: 'ep-1', name: 'relay', url: '********', enabled: true }] },
+      });
+      expect(res.status).toBe(200);
+      expect(safeFetchMock.mock.calls[0]![0]).toBe('https://hooks.example.test/private-token');
+      expect(await res.text()).not.toContain('private-token');
+    });
+
+    it('answers 400, not 500, when a stored credential cannot be decrypted', async () => {
+      const save = await app.request('/integrations/monitoring', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ opsGenie: { enabled: true, apiKey: 'sealed-under-current-key' } }),
+      });
+      expect(save.status).toBe(200);
+      // Rotate the key material out from under the stored ciphertext.
+      const priorKey = process.env.APP_ENCRYPTION_KEY;
+      process.env.APP_ENCRYPTION_KEY = 'a-different-key-after-rotation';
+      try {
+        const res = await testCall({ provider: 'opsGenie', config: { enabled: true, apiKey: '********' } });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/could not be read/i);
+        expect(safeFetchMock).not.toHaveBeenCalled();
+      } finally {
+        process.env.APP_ENCRYPTION_KEY = priorKey;
+      }
+    });
+
+    it('answers 400 for an SSRF-blocked destination', async () => {
+      const blocked = new Error('URL points to blocked address: 10.0.0.5');
+      blocked.name = 'SsrfBlockedError';
+      safeFetchMock.mockRejectedValue(blocked);
+      const res = await testCall({ provider: 'grafana', config: { url: 'http://10.0.0.5', apiKey: 'k' } });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/not an allowed destination/);
+    });
+
     it('posts a test event to the selected webhook endpoint', async () => {
       safeFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
       const res = await testCall({

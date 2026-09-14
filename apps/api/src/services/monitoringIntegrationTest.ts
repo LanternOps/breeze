@@ -23,7 +23,7 @@ export interface MonitoringTestDeps {
 
 export type MonitoringTestResult =
   | { ok: true; message: string }
-  | { ok: false; kind: 'invalid' | 'unreachable' | 'rejected'; message: string };
+  | { ok: false; kind: 'invalid' | 'unreachable' | 'rejected' | 'blocked'; message: string };
 
 interface WebhookEndpointLike {
   id?: unknown;
@@ -45,6 +45,21 @@ function requireHttpUrl(value: unknown, label: string): { ok: true; url: string 
   }
 }
 
+/**
+ * A fetch that threw is either the SSRF guard refusing the target (a policy
+ * decision: retrying will not help, so it is the caller's config that is
+ * wrong) or a genuine network failure. The guard's error is identified by
+ * name so this module stays free of a urlSafety import and testable with a
+ * plain Error.
+ */
+function fetchFailure(e: unknown, host: string): MonitoringTestResult {
+  const err = e instanceof Error ? e : new Error(String(e));
+  if (err.name === 'SsrfBlockedError') {
+    return { ok: false, kind: 'blocked', message: `${host} is not an allowed destination: ${err.message}` };
+  }
+  return { ok: false, kind: 'unreachable', message: `Could not reach ${host}: ${err.message}` };
+}
+
 export async function testMonitoringProvider(input: MonitoringTestInput, deps: MonitoringTestDeps): Promise<MonitoringTestResult> {
   const { provider, config, endpointId, allowPrivateNetwork } = input;
 
@@ -61,8 +76,7 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
       if (res.ok) return { ok: true, message: 'Metrics endpoint is reachable.' };
       return { ok: false, kind: 'unreachable', message: `Prometheus returned HTTP ${res.status}` };
     } catch (e) {
-      const err = e as Error;
-      return { ok: false, kind: 'unreachable', message: `Could not reach ${new URL(base).host}: ${err.message}` };
+      return fetchFailure(e, new URL(base).host);
     }
   }
 
@@ -83,8 +97,7 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
       if (res.status === 401 || res.status === 403) return { ok: false, kind: 'rejected', message: 'Grafana rejected the API key.' };
       return { ok: false, kind: 'unreachable', message: `Grafana returned HTTP ${res.status}` };
     } catch (e) {
-      const err = e as Error;
-      return { ok: false, kind: 'unreachable', message: `Could not reach ${new URL(urlResult.url).host}: ${err.message}` };
+      return fetchFailure(e, new URL(urlResult.url).host);
     }
   }
 
@@ -111,8 +124,7 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
       if (res.status === 401 || res.status === 403) return { ok: false, kind: 'rejected', message: 'Opsgenie rejected the API key.' };
       return { ok: false, kind: 'unreachable', message: `Opsgenie returned HTTP ${res.status}` };
     } catch (e) {
-      const err = e as Error;
-      return { ok: false, kind: 'unreachable', message: `Could not reach api.opsgenie.com: ${err.message}` };
+      return fetchFailure(e, 'api.opsgenie.com');
     }
   }
 
@@ -123,9 +135,15 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
     }
 
     const candidates = endpoints as WebhookEndpointLike[];
-    const selected = (endpointId ? candidates.find((e) => e.id === endpointId) : undefined)
-      ?? candidates.find((e) => e.enabled === true)
-      ?? candidates[0];
+    // A caller that names an endpoint means THAT endpoint. Falling back to
+    // another one would report a verdict for the wrong destination.
+    let selected: WebhookEndpointLike | undefined;
+    if (endpointId !== undefined) {
+      selected = candidates.find((e) => e.id === endpointId);
+      if (!selected) return { ok: false, kind: 'invalid', message: 'Webhook endpoint not found' };
+    } else {
+      selected = candidates.find((e) => e.enabled === true) ?? candidates[0];
+    }
     if (!selected) return { ok: false, kind: 'invalid', message: 'No webhook endpoint to test' };
 
     const urlResult = requireHttpUrl(selected.url, 'Webhook URL');
@@ -145,8 +163,7 @@ export async function testMonitoringProvider(input: MonitoringTestInput, deps: M
       if (res.status === 401 || res.status === 403) return { ok: false, kind: 'rejected', message: `Webhook ${name} rejected the test event (HTTP ${res.status})` };
       return { ok: false, kind: 'unreachable', message: `Webhook ${name} returned HTTP ${res.status}` };
     } catch (e) {
-      const err = e as Error;
-      return { ok: false, kind: 'unreachable', message: `Could not reach ${new URL(urlResult.url).host}: ${err.message}` };
+      return fetchFailure(e, new URL(urlResult.url).host);
     }
   }
 

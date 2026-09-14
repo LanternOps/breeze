@@ -178,6 +178,34 @@ describe('testMonitoringProvider', () => {
     });
   });
 
+  describe('webhook endpoint selection (#5778 review)', () => {
+    it('refuses an endpointId that matches no endpoint instead of testing another one', async () => {
+      const fetch = vi.fn();
+      const result = await testMonitoringProvider(
+        { provider: 'webhooks', endpointId: 'missing', allowPrivateNetwork: false,
+          config: { endpoints: [{ id: 'one', url: 'https://hooks.example.test/one', enabled: true }] } },
+        { fetch },
+      );
+      expect(result).toEqual({ ok: false, kind: 'invalid', message: 'Webhook endpoint not found' });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('SSRF guard', () => {
+    it("classifies a blocked destination as kind 'blocked', not a transient failure", async () => {
+      const blocked = new Error('URL points to blocked address: 169.254.169.254');
+      blocked.name = 'SsrfBlockedError';
+      const fetch = vi.fn().mockRejectedValue(blocked);
+      const result = await testMonitoringProvider(
+        { provider: 'grafana', allowPrivateNetwork: false, config: { url: 'http://169.254.169.254', apiKey: 'k' } },
+        { fetch },
+      );
+      expect(result).toMatchObject({ ok: false, kind: 'blocked' });
+      expect((result as { message: string }).message).toContain('not an allowed destination');
+      expect((result as { message: string }).message).not.toContain('k"');
+    });
+  });
+
   describe('error handling', () => {
     it('returns unreachable when fetch throws and includes host in message without API key', async () => {
       const fetch = vi.fn().mockRejectedValue(new Error('network down'));
