@@ -27,6 +27,7 @@ import {
   type GraphReadExecutorClient,
 } from './graphReadExecutorClient';
 import { loadM365CustomerGraphReadRuntimeConfig } from './runtimeConfig';
+import { onConnectionDisconnected } from '../m365Sync/lifecycle';
 
 const EXECUTABLE_STATUSES = ['active', 'degraded'] as const;
 const CALLBACK_STATUSES = ['pending-consent', 'verifying'] as const;
@@ -1003,7 +1004,7 @@ export function createConnectionService<
         profile,
       });
       const nextAttemptId = randomUUID();
-      return requireCasRow(await db.update(m365Connections).set({
+      const disconnected = await requireCasRow(await db.update(m365Connections).set({
         consentAttemptId: nextAttemptId,
         tenantId: null,
         clientId: '',
@@ -1025,6 +1026,19 @@ export function createConnectionService<
         consentAttemptId: current.consentAttemptId,
         status: current.status,
       })).returning());
+
+      // Spec §5.8: the row survives a disconnect (status 'revoked', tenant
+      // cleared), so no FK cascade fires and the synced tenant snapshot would
+      // otherwise outlive the consent that authorised it. The erasure runs in
+      // THIS transaction — a committed disconnect that left m365_users behind
+      // is a privacy defect, and a throw here rolls the status flip back too.
+      // Only the read profile: the sync reads exclusively through that
+      // connection, and the org-keyed m365_* tables must not be wiped by
+      // disconnecting the separate actions profile while read stays connected.
+      if (profile === 'customer-graph-read') {
+        await onConnectionDisconnected({ id: disconnected.id, orgId: current.orgId });
+      }
+      return disconnected;
     }));
   }
 

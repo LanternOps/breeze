@@ -164,7 +164,7 @@ function weightLabel(t: (key: string) => string, key: (typeof IMPACT_WEIGHT_KEYS
 }
 
 // Same literal-key idiom as windowLabel/weightLabel above — the PDF export
-// covers all ten counters (six have no tile on this page, e.g.
+// covers all eleven counters (seven have no tile on this page, e.g.
 // suppressionsApplied), so it needs its own complete label set.
 function counterMetricLabel(t: (key: string) => string, key: AiAgentImpactCounterKey): string {
   switch (key) {
@@ -188,6 +188,8 @@ function counterMetricLabel(t: (key: string) => string, key: AiAgentImpactCounte
       return t('aiAgentsPage.impact.pdf.metrics.fixWatchesRecurred');
     case 'narrativesDelivered':
       return t('aiAgentsPage.impact.pdf.metrics.narrativesDelivered');
+    case 'fleetDesignsDelivered':
+      return t('aiAgentsPage.impact.pdf.metrics.fleetDesignsDelivered');
     default:
       return key;
   }

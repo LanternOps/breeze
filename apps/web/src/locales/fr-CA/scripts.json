@@ -106,7 +106,8 @@
       "sendNotification": "Envoyer une notification",
       "createAlert": "Créer une alerte",
       "executeCommand": "Exécuter une commande",
-      "deploySoftware": "Déployer un logiciel"
+      "deploySoftware": "Déployer un logiciel",
+      "aiTriage": "Triage par IA"
     },
     "severity": {
       "critical": "Critique",
@@ -133,7 +134,8 @@
       "saveAutomation": "Enregistrer l’automatisation",
       "copyUrl": "Copier l’URL",
       "addCondition": "Ajouter une condition",
-      "addAction": "Ajouter une action"
+      "addAction": "Ajouter une action",
+      "removeAction": "Retirer l'action"
     },
     "scope": {
       "title": "Périmètre",
@@ -1378,6 +1380,8 @@
     "modeSkip": "L'ignorer",
     "modeRename": "Importer sous un nouveau nom",
     "modeNewVersion": "Ajouter comme nouvelle version du script existant",
+    "tagLegacy": "Étiqueter comme importation héritée",
+    "tagLegacyHint": "Ajoute l'étiquette legacy-import pour qu'un Fleet Design puisse répertorier à quoi servaient ces scripts.",
     "partnerWide": "Rendre disponible pour toutes les organisations (à l'échelle du partenaire)",
     "importCommit": "Importer {{count}} scripts",
     "resultSummary": "{{imported}} importés, {{renamed}} renommés, {{versioned}} versionnés, {{skipped}} ignorés, {{failed}} en échec",
@@ -1429,6 +1433,8 @@
     "originSystem": "Intégré",
     "reviewed": "Révisé",
     "editedSinceReview": "Modifié depuis la révision",
+    "notReviewed": "Non révisé",
+    "notReviewedDetail": "Créé par l'IA et approuvé par une personne, mais aucune révision par un modèle n'a été effectuée sur cette version.",
     "provenanceTitle": "Traçabilité",
     "reviewSummary": "Résumé de la révision",
     "approvedBy": "Approuvé par",

@@ -21,7 +21,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Hono, type Context, type Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import { MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
+import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
@@ -1744,7 +1744,7 @@ async function dispatchBootstrapAuthTool(
   const bootstrapCtx = {
     ip: requestIp(c),
     userAgent: c?.req.header('user-agent') ?? null,
-    region: ((process.env.BREEZE_REGION as 'us' | 'eu') ?? 'us') as 'us' | 'eu',
+    region: breezeRegion(),
     apiKey: {
       id: apiKey.id,
       partnerId: auth.partnerId,

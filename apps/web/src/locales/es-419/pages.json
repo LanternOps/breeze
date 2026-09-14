@@ -26,6 +26,9 @@
     "alertsChannels": "Canales de notificación",
     "alertsCorrelations": "Correlaciones de alertas",
     "alertsDetail": "Detalles de la alerta",
+    "alertsMonitors": "Alertas – Monitores",
+    "alertsMonitorDetail": "Alertas – Monitor",
+    "alertsRules": "Alertas – Reglas heredadas",
     "alerts": "Alertas",
     "analytics": "Analítica",
     "approvals": "Aprobaciones",
@@ -74,9 +77,9 @@
     "login": "Iniciar sesión",
     "logs": "Registros",
     "monitoring": "Monitoreo",
-    "monitoringDelivery": "Monitoreo – Entrega",
     "oauthConsent": "Autorizar acceso",
     "onedrive": "OneDrive",
+    "organizations": "Organizaciones",
     "organizationsDetail": "Organización",
     "pam": "Acceso privilegiado",
     "partner": "Portal del socio",
@@ -157,7 +160,8 @@
     "ticketsNew": "Crear ticket",
     "timesheet": "Hoja de tiempo",
     "vulnerabilities": "Vulnerabilidades",
-    "workspace": "Asistente de IA"
+    "workspace": "Asistente de IA",
+    "aiAgentsFleetDesign": "Diseño de flota"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoreo y Gestión Remota",

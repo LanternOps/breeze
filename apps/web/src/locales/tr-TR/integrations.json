@@ -58,7 +58,30 @@
       "disconnectFailed": "Bağlantı kesilemedi.",
       "disconnectSucceeded": "Breeze bağlantısı kesildi.",
       "approveNewPermissions": "Yeni izinleri onayla",
-      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı."
+      "upgradeFailed": "Yeni izinlerin onayı başlatılamadı.",
+      "syncNow": "Şimdi eşitle",
+      "syncFailed": "Kiracı eşitlemesi istenemedi.",
+      "syncSucceeded": "Kiracı eşitlemesi istendi."
+    },
+    "sync": {
+      "lastSynced": "Son eşitleme {{relative}}",
+      "counts": "{{users}} kullanıcı · {{devices}} cihaz",
+      "never": "Henüz eşitlenmedi",
+      "chips": {
+        "partial": "{{domain}}: kısmi",
+        "needsConsent": "{{domain}}: onay gerekiyor",
+        "throttled": "{{domain}}: kısıtlandı",
+        "error": "{{domain}}: hata",
+        "unlicensed": "Oturum açma etkinliği Entra ID P1 gerektirir"
+      },
+      "domains": {
+        "users": "Kullanıcılar",
+        "signin_activity": "Oturum açma etkinliği",
+        "intune_devices": "Intune cihazları",
+        "ca_policies": "Koşullu Erişim",
+        "skus": "Lisanslar",
+        "secure_score": "Güvenlik Puanı"
+      }
     },
     "errors": {
       "consent_expired": "İzin oturumunun süresi doldu. Onaylamayı yeniden başlatın.",

@@ -1,0 +1,262 @@
+{
+  "managed": {
+    "readOnly": "Gerenciado por um monitor",
+    "description": "Este registro é gerado a partir de um monitor e não pode ser editado diretamente. Gerencie-o a partir do monitor.",
+    "open": "Abrir monitor",
+    "badge": "Gerenciado por monitor",
+    "badgeHint": "Gerenciado por um monitor — edite-o a partir do monitor.",
+    "monitorLabel": "Monitor"
+  },
+  "hub": {
+    "title": "Monitoramento e automação",
+    "tabs": {
+      "monitors": "Monitores",
+      "network": "Rede",
+      "delivery": "Entrega",
+      "legacyRules": "Regras legadas"
+    },
+    "ariaLabel": "Seções de monitoramento"
+  },
+  "list": {
+    "title": "Monitores",
+    "description": "Observe uma condição, responda no dispositivo, notifique e escalone quando ela continuar ocorrendo.",
+    "new": "Novo monitor",
+    "empty": "Ainda não há monitores.",
+    "columns": {
+      "name": "Nome",
+      "kind": "Tipo",
+      "severity": "Gravidade",
+      "deployedTo": "Implantado em",
+      "enabled": "Habilitado",
+      "owner": "Responsável"
+    },
+    "allOrgs": "Todas as orgs",
+    "policiesCount_one": "{{count}} política",
+    "policiesCount_other": "{{count}} políticas",
+    "notDeployed": "Não implantado",
+    "errors": {
+      "fetch": "Falha ao carregar os monitores",
+      "delete": "Falha ao excluir o monitor",
+      "toggle": "Falha ao atualizar o monitor"
+    },
+    "deleteConfirm": "Excluir o monitor {{name}}? A regra de alerta e a automação de resposta dele também serão removidas.",
+    "builtIn": "Integrado",
+    "builtInHint": "Provisionado pelo Breeze. Edite os limites, desative ou exclua — ele não voltará."
+  },
+  "editor": {
+    "titleNew": "Novo monitor",
+    "titleEdit": "Editar monitor",
+    "breadcrumb": {
+      "monitors": "Monitores",
+      "new": "Novo monitor"
+    },
+    "sections": {
+      "watch": "O que observar",
+      "noise": "Gravidade e ruído",
+      "respond": "Responder",
+      "notify": "Notificar",
+      "escalate": "Escalonar para uma pessoa",
+      "deployed": "Implantado em"
+    },
+    "fields": {
+      "name": "Nome",
+      "description": "Descrição",
+      "kind": "Tipo",
+      "severity": "Gravidade",
+      "cooldownMinutes": "Intervalo de espera (minutos)",
+      "autoResolve": "Resolver automaticamente quando a condição normalizar",
+      "deliveryMode": "Entrega",
+      "channels": "Canais",
+      "escalationPolicy": "Política de escalonamento",
+      "recurrenceThreshold": "Escalonar após",
+      "recurrenceWindowDays": "episódios em (dias)",
+      "pauseResponses": "Pausar as respostas automáticas até que uma pessoa as redefina",
+      "aiAgent": "Agente de IA (habilita respostas de triagem por IA)"
+    },
+    "deliveryModes": {
+      "inherit": "Usar regras de roteamento",
+      "channels": "Regras de roteamento mais estes canais",
+      "none": "Não notificar"
+    },
+    "agentDeliveredHint": "Essa observação é executada no dispositivo e também deve existir na aba Monitoramento de Serviços e Processos da política, até que isso seja unificado.",
+    "responsesHint": "As respostas são executadas em ordem no dispositivo que sofreu a violação.",
+    "recurrenceHint": "Contado em episódios de violação: um novo episódio só começa depois que a condição se recuperar.",
+    "ownerScope": {
+      "legend": "Proprietário",
+      "partner": "Todas as organizações (todo o parceiro)",
+      "organization": "Somente esta organização"
+    },
+    "actions": {
+      "save": "Salvar monitor",
+      "saving": "Salvando…",
+      "create": "Criar monitor",
+      "test": "Testar em um dispositivo",
+      "deploy": "Implantar em…",
+      "delete": "Excluir"
+    },
+    "errors": {
+      "load": "Falha ao carregar o monitor",
+      "save": "Falha ao salvar o monitor",
+      "delete": "Falha ao excluir o monitor",
+      "test": "Teste falhou",
+      "generic": "Algo deu errado"
+    },
+    "loading": "Carregando monitor…",
+    "noAttachments": "Ainda não implantado em nenhuma política.",
+    "testResult": {
+      "triggered": "Condição atendida em {{device}}",
+      "notTriggered": "Condição não atendida em {{device}}"
+    },
+    "testDialog": {
+      "title": "Testar em um dispositivo",
+      "selectDevice": "Dispositivo",
+      "run": "Executar teste"
+    }
+  },
+  "kinds": {
+    "cpu": "Uso de CPU",
+    "memory": "Uso de memória",
+    "disk": "Uso de disco",
+    "offline": "Dispositivo offline",
+    "event_log": "Log de eventos",
+    "patch_compliance": "Conformidade de patches",
+    "service": "Serviço parado",
+    "process": "Processo parado",
+    "process_resource": "Recurso do processo",
+    "cert_expiry": "Expiração do certificado",
+    "bandwidth": "Largura de banda",
+    "disk_io": "E/S de disco",
+    "network_errors": "Erros de rede"
+  },
+  "fields": {
+    "operator": "Comparação",
+    "value": "Valor",
+    "durationMinutes": "Por pelo menos (minutos)",
+    "category": "Categoria",
+    "level": "Nível",
+    "sourcePattern": "A origem corresponde a",
+    "messagePattern": "A mensagem corresponde a",
+    "countThreshold": "Ocorrências",
+    "windowMinutes": "Dentro de (minutos)",
+    "serviceName": "Nome do serviço",
+    "processName": "Nome do processo",
+    "consecutiveFailures": "Falhas consecutivas",
+    "resource": "Recurso",
+    "withinDays": "Expira em (dias)",
+    "direction": "Direção",
+    "errorType": "Direção do erro",
+    "interfaceName": "Interface (opcional)"
+  },
+  "operators": {
+    "gt": "maior que",
+    "gte": "no mínimo",
+    "lt": "menor que",
+    "lte": "no máximo",
+    "eq": "igual a",
+    "neq": "diferente de"
+  },
+  "severities": {
+    "critical": "Crítico",
+    "high": "Alta",
+    "medium": "Média",
+    "low": "Baixa",
+    "info": "Informativo"
+  },
+  "eventCategories": {
+    "security": "Segurança",
+    "hardware": "Hardware",
+    "application": "Aplicativo",
+    "system": "Sistema"
+  },
+  "eventLevels": {
+    "warning": "Aviso",
+    "error": "Erro",
+    "critical": "Crítico"
+  },
+  "resources": {
+    "cpu": "CPU",
+    "memory": "Memória"
+  },
+  "directions": {
+    "in": "Entrada",
+    "out": "Saída",
+    "read": "Leitura",
+    "write": "Escrita",
+    "total": "Total"
+  },
+  "deploy": {
+    "title": "Implantar monitor",
+    "existingPolicy": "Anexar a uma política de configuração existente",
+    "newPolicy": "Criar uma política para",
+    "levels": {
+      "organization": "esta organização",
+      "site": "um site",
+      "device_group": "um grupo de dispositivos"
+    },
+    "selectPolicy": "Política de configuração",
+    "selectTarget": "Destino",
+    "policyName": "Nome da política",
+    "attach": "Anexar",
+    "cancel": "Cancelar",
+    "detachConfirm": "Desanexar de {{policy}}?",
+    "errors": {
+      "attach": "Falha ao anexar o monitor",
+      "detach": "Falha ao desanexar o monitor"
+    }
+  },
+  "policyTab": {
+    "title": "Monitores",
+    "description": "Monitores anexados a esta política. Linhas desabilitadas desligam um monitor para o escopo desta política; substituições alteram os limites dele.",
+    "attachExisting": "Anexar existente",
+    "createNew": "Criar monitor",
+    "empty": "Nenhum monitor anexado.",
+    "columns": {
+      "monitor": "Monitor",
+      "kind": "Tipo",
+      "enabled": "Habilitado",
+      "overrides": "Substituições",
+      "source": "Origem"
+    },
+    "inherited": "Herdado do nível superior",
+    "overrideEditor": {
+      "title": "Substituição para esta política",
+      "clear": "Limpar substituições"
+    },
+    "save": "Salvar",
+    "errors": {
+      "save": "Falha ao salvar os monitores"
+    }
+  },
+  "legacy": {
+    "title": "Regras de alerta legadas",
+    "description": "Regras de alerta independentes que não são gerenciadas por um monitor. Converta-as para reunir respostas, entrega e escalonamento em um só lugar.",
+    "empty": "Nenhuma regra legada.",
+    "columns": {
+      "name": "Nome",
+      "template": "Modelo",
+      "target": "Destino",
+      "owner": "Responsável",
+      "active": "Ativo"
+    },
+    "convert": "Converter em monitor",
+    "converted": "Convertida",
+    "notConvertible": "As condições desta regra não podem ser expressas como um único monitor.",
+    "errors": {
+      "fetch": "Falha ao carregar as regras de alerta",
+      "convert": "Falha ao converter a regra"
+    }
+  },
+  "devices": {
+    "title": "Dispositivos",
+    "columns": {
+      "device": "Dispositivo",
+      "enabled": "Habilitado",
+      "overrides": "Substituições",
+      "source": "Política de origem"
+    },
+    "empty": "Nenhum dispositivo é coberto por este monitor ainda.",
+    "errors": {
+      "fetch": "Falha ao carregar os dispositivos"
+    }
+  }
+}

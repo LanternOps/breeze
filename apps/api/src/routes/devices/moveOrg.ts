@@ -340,6 +340,33 @@ moveOrgRoutes.post(
               WHERE linked_device_id = ${deviceId}::uuid`,
         );
 
+        // #5329 (M365 tenant sync, spec §3.4) — m365_intune_devices links a
+        // Breeze device to its Intune record via the composite FK
+        // (breeze_device_id, org_id) -> devices(id, org_id). Once the device
+        // leaves the org that link is not merely stale but unrepresentable, so
+        // null it. The ROW survives: it is the SOURCE org's Intune snapshot and
+        // must outlive the link. The next Intune run in the NEW org re-links the
+        // device if it is managed there.
+        //
+        // Placement is load-bearing, exactly as for manual_assets above: the FK
+        // is DEFERRABLE INITIALLY IMMEDIATE, so its check fires at the end of
+        // the `UPDATE devices SET org_id` statement immediately below.
+        //
+        // Unlike the manual_assets case there is no trigger-side mirror at all:
+        // breeze_device_child_orgid_tables() requires a column literally named
+        // `device_id`, and this one is `breeze_device_id`, so
+        // breeze_cascade_device_org_id() never sees the table. This statement is
+        // the only detach on any path.
+        //
+        // Scoped to the SOURCE org as well as the device. An org MERGE never
+        // reaches this route: it deletes the loser org's m365_intune_devices
+        // rows outright in the resolve phase (services/orgMergeCustomExecutors.ts).
+        await tx.execute(
+          sql`UPDATE m365_intune_devices SET breeze_device_id = NULL
+              WHERE breeze_device_id = ${deviceId}::uuid
+                AND org_id = ${sourceOrgId}::uuid`,
+        );
+
         // Flip the device row first so any concurrent agent heartbeat
         // after this point resolves the new org_id.
         const [row] = await tx

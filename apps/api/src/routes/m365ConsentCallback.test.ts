@@ -12,6 +12,23 @@ import {
   parseM365ConsentCallbackQuery,
 } from './m365ConsentCallback';
 
+const { syncMocks } = vi.hoisted(() => ({
+  syncMocks: {
+    flag: vi.fn(() => true),
+    consented: vi.fn(async (_conn: unknown) => {}),
+    upgraded: vi.fn(async (_conn: unknown) => {}),
+  },
+}));
+vi.mock('../config/env', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isM365TenantSyncEnabled: syncMocks.flag,
+}));
+vi.mock('../services/m365Sync/lifecycle', () => ({
+  onConnectionConsented: syncMocks.consented,
+  onConnectionUpgraded: syncMocks.upgraded,
+  onConnectionDisconnected: vi.fn(async () => {}),
+}));
+
 const CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ATTEMPT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ORG_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -1107,5 +1124,167 @@ describe('upgrade consent callback', () => {
     );
 
     expect(response.headers.get('location')).toContain('consent_state_mismatch');
+  });
+});
+
+describe('tenant sync lifecycle from the consent callback (W05, spec §5.8/§10.1)', () => {
+  const identityBinding = {
+    phase: 'identity_verification' as const,
+    rawState: 'identity-state',
+    connectionId: CONNECTION_ID,
+    consentAttemptId: ATTEMPT_ID,
+    tenantHint: TENANT_ID,
+  };
+  const verified = {
+    success: true as const,
+    tenantId: TENANT_ID,
+    applicationId: '22222222-2222-2222-2222-222222222222',
+    organizationDisplayName: 'Contoso',
+    manifestVersion: 3,
+    verifiedAt: '2026-07-14T12:00:00.000Z',
+    grantReconciliation: 'complete' as const,
+    observedGrants: [], missingGrants: [], unexpectedGrants: [],
+    grantsVerifiedAt: '2026-07-14T12:00:00.000Z',
+  };
+  const loadConfig = vi.fn(() => ({
+    clientId: verified.applicationId,
+    callbackUrl: 'https://breeze.example/api/v1/m365/consent/callback',
+  }));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    syncMocks.flag.mockReturnValue(true);
+    syncMocks.consented.mockResolvedValue(undefined);
+    syncMocks.upgraded.mockResolvedValue(undefined);
+  });
+
+  function request(routes: Hono, path = 'consent') {
+    return new Hono().route('/api/v1/m365', routes).request(
+      `/api/v1/m365/${path}/callback?state=identity-state&code=auth-code`,
+      { headers: { cookie: bindingCookie(identityBinding) } },
+    );
+  }
+
+  /** Drives the identity (first-time) branch with the file's DI overrides; lifecycle hooks are the real defaults. */
+  function initialConsent(applied: { status: 'active' | 'degraded' | 'pending-consent'; lastErrorCode: string | null }, profile: 'customer-graph-read' | 'customer-graph-actions' = 'customer-graph-read') {
+    return createM365ConsentCallbackRoutes({
+      profile,
+      readSessionPurpose: vi.fn(async () => 'initial' as const),
+      verifyBindingCookie: vi.fn(() => identityBinding),
+      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+      loadAttempt: vi.fn().mockResolvedValue(profile === 'customer-graph-read' ? attempt('verifying') : actionsAttempt('verifying')),
+      consumeSession: vi.fn().mockResolvedValue({
+        userId: USER_ID, tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
+      }),
+      completeIdentity: vi.fn().mockResolvedValue(verified),
+      applyIdentityResult: vi.fn().mockResolvedValue({
+        ...attempt('verifying'), profile, tenantId: applied.status === 'pending-consent' ? null : TENANT_ID,
+        permissionManifestVersion: 3, status: applied.status, lastErrorCode: applied.lastErrorCode,
+      }),
+      loadConfig,
+      audit: vi.fn(),
+      metric: vi.fn(),
+    });
+  }
+
+  function upgradeConsent(manifestVersion: number, failureCode: string | null = null) {
+    return createM365ConsentCallbackRoutes({
+      readSessionPurpose: vi.fn(async () => 'upgrade' as const),
+      verifyBindingCookie: vi.fn(() => identityBinding),
+      clearBindingCookie: vi.fn(() => 'binding=; Max-Age=0'),
+      loadAttempt: vi.fn(async () => ({ ...attempt('verifying'), status: 'active' as const })),
+      consumeSession: vi.fn(async () => ({
+        userId: USER_ID, purpose: 'upgrade',
+        tenantHintHash: tenantHintHash(TENANT_ID), nonce: 'n', codeVerifier: 'v',
+      })) as never,
+      completeIdentity: vi.fn(async () => ({ ...verified, manifestVersion })) as never,
+      applyUpgradeResult: vi.fn(async () => ({
+        connection: {
+          id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID, status: 'active',
+          lastErrorCode: null, permissionManifestVersion: manifestVersion,
+        },
+        failureCode,
+      })) as never,
+      applyIdentityResult: vi.fn(),
+      loadConfig,
+      audit: vi.fn(),
+      metric: vi.fn(),
+    });
+  }
+
+  it('seeds the sync when a first-time consent verifies ACTIVE', async () => {
+    const response = await request(initialConsent({ status: 'active', lastErrorCode: null }));
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('active');
+    expect(syncMocks.consented).toHaveBeenCalledWith({
+      id: CONNECTION_ID, orgId: ORG_ID, tenantId: TENANT_ID, status: 'active',
+    });
+    expect(syncMocks.upgraded).not.toHaveBeenCalled();
+  });
+
+  it('seeds a DEGRADED connection too', async () => {
+    await request(initialConsent({ status: 'degraded', lastErrorCode: 'grant_missing' }));
+    expect(syncMocks.consented).toHaveBeenCalledWith(expect.objectContaining({ status: 'degraded' }));
+  });
+
+  it('does not seed when verification did not leave the connection executable', async () => {
+    await request(initialConsent({ status: 'pending-consent', lastErrorCode: 'consent_expired' }));
+    expect(syncMocks.consented).not.toHaveBeenCalled();
+  });
+
+  it('does not seed when the tenant-sync flag is off', async () => {
+    syncMocks.flag.mockReturnValue(false);
+    await request(initialConsent({ status: 'active', lastErrorCode: null }));
+    expect(syncMocks.consented).not.toHaveBeenCalled();
+  });
+
+  it('never seeds from the ACTIONS profile callback — the sync reads only through the read connection', async () => {
+    const response = await request(
+      initialConsent({ status: 'active', lastErrorCode: null }, 'customer-graph-actions'),
+      'actions-consent',
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('active');
+    expect(syncMocks.consented).not.toHaveBeenCalled();
+  });
+
+  it('still redirects successfully when the seeding hook throws', async () => {
+    syncMocks.consented.mockRejectedValueOnce(new Error('seed boom'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await request(initialConsent({ status: 'active', lastErrorCode: null }));
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toContain('active');
+      expect(response.headers.get('location')).not.toContain('executor_unavailable');
+    } finally { spy.mockRestore(); }
+  });
+
+  it('re-arms needs_consent domains after an upgrade PROMOTED the manifest, and does not re-seed', async () => {
+    const response = await request(upgradeConsent(3));
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('active');
+    expect(syncMocks.upgraded).toHaveBeenCalledWith({ id: CONNECTION_ID, orgId: ORG_ID });
+    expect(syncMocks.consented).not.toHaveBeenCalled();
+  });
+
+  it('does not re-arm when the upgrade failed in band (a deliberate no-op on the row)', async () => {
+    await request(upgradeConsent(2, 'tenant_mismatch'));
+    expect(syncMocks.upgraded).not.toHaveBeenCalled();
+  });
+
+  it('does not re-arm when the flag is off', async () => {
+    syncMocks.flag.mockReturnValue(false);
+    await request(upgradeConsent(3));
+    expect(syncMocks.upgraded).not.toHaveBeenCalled();
+  });
+
+  it('still redirects successfully when the upgrade hook throws', async () => {
+    syncMocks.upgraded.mockRejectedValueOnce(new Error('reseed boom'));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await request(upgradeConsent(3));
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toContain('active');
+    } finally { spy.mockRestore(); }
   });
 });

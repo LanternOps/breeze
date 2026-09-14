@@ -1510,11 +1510,13 @@
       "timezone": "Fuso horário",
       "kinds": {
         "sweep": "Varredura",
-        "narrative": "Relatório semanal"
+        "narrative": "Relatório semanal",
+        "design": "Projeto de frota"
       },
       "kindsLabel": "Verificações a executar",
       "kind": "Tipo de agendamento",
       "weeklyOnlyHint": "Um relatório semanal é disparado exatamente uma vez por semana: minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana de 0 a 6. Por exemplo, 0 7 * * 1 é executado toda segunda-feira às 07:00.",
+      "monthlyOrRarerHint": "Um projeto de frota é disparado no máximo uma vez por mês: minuto, hora e dia-do-mês (1-28) literais, mês como * ou uma lista separada por vírgulas de meses literais, e * para o dia da semana. Por exemplo, 0 6 1 1,4,7,10 * é executado trimestralmente no dia 1 às 06:00.",
       "kindsRequired": "Selecione pelo menos uma verificação.",
       "enabled": "Ativado",
       "override": "Substituir para esta organização",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "Essa linha de base pertence a outro agente.",
         "agentNotPartnerWide": "Agendamentos de varredura exigem um agente de todo o parceiro.",
         "agentKindNotTriage": "Somente um agente de triagem pode ser agendado.",
+        "agentKindNotDesigner": "Um agendamento de projeto de frota deve ter como destino um agente Projetista de frota.",
         "kindsNotEmpty": "Um agendamento de relatório semanal não executa verificações. Limpe as verificações selecionadas antes de salvar.",
         "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Investiga os alertas novos e propõe o que fazer com eles.",
       "patch": "Revisa as correções pendentes e propõe o que instalar.",
-      "helpdesk": "Assume chamados e propõe respostas e próximos passos."
+      "helpdesk": "Assume chamados e propõe respostas e próximos passos.",
+      "designer": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar."
     },
     "emptyState": {
       "title": "Nenhum agente ainda",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observa e propõe; uma pessoa aprova tudo.",
       "act": "Ação",
       "actConsequence": "Executa as operações permitidas sem um clique. Não há reversão automática.",
-      "actUnavailable": "Ainda não está disponível para este agente."
+      "actUnavailable": "Ainda não está disponível para este agente.",
+      "shadowUnavailableForKind": "Este agente apenas lê e escreve relatórios — não há nada para observar no modo sombra."
     },
     "allOrgs": "Todas as organizações",
     "allOrgsHint": "Em todo o parceiro: vale para cada organização, a menos que uma organização a restrinja.",
@@ -1700,7 +1705,8 @@
     "kinds": {
       "triage": "Triagem de alertas",
       "patch": "Aplicação de patches",
-      "helpdesk": "Central de ajuda"
+      "helpdesk": "Central de ajuda",
+      "designer": "Projetista de frota"
     },
     "modes": {
       "off": "Desligado",
@@ -1835,7 +1841,8 @@
       "profile": {
         "sweep": "Varredura",
         "narrative": "Relatório semanal",
-        "triage": "Triagem de chamados"
+        "triage": "Triagem de chamados",
+        "design": "Projeto de frota"
       },
       "sweep": {
         "title": "Constatações da varredura",
@@ -1882,6 +1889,14 @@
         "openReport": "Abrir relatório",
         "download": "Baixar PDF",
         "downloadFailed": "Não foi possível baixar o PDF."
+      },
+      "fleetDesign": {
+        "title": "Projeto de frota",
+        "counts": "{{functions}} funções · {{watches}} monitoramentos · {{rules}} regras de alerta",
+        "openReport": "Abrir relatório",
+        "download": "Baixar PDF",
+        "downloadFailed": "Não foi possível baixar o PDF.",
+        "truncatedNote": "As evidências foram cortadas — este projeto não viu a frota inteira."
       },
       "noAgent": "Agente desconhecido",
       "loading": "Carregando execuções…",
@@ -2144,6 +2159,7 @@
           "fixWatchesHeld": "Observações de correção mantidas",
           "fixWatchesRecurred": "Observações de correção reincidentes",
           "narrativesDelivered": "Relatórios semanais entregues",
+          "fleetDesignsDelivered": "Fleet Designs entregues",
           "estTimeSaved": "Tempo economizado estimado",
           "llmSpend": "Gasto com LLM",
           "window": "Janela do relatório (dias)",
@@ -2704,7 +2720,8 @@
       "loggedProposalCount_other": "{{count}} propostas registradas",
       "unattendedCount_one": "{{count}} sem supervisão",
       "unattendedCount_other": "{{count}} sem supervisão",
-      "scriptGateNote": "Continua sendo uma solicitação de aprovação até que um script seja autorizado para este agente."
+      "scriptGateNote": "Continua sendo uma solicitação de aprovação até que um script seja autorizado para este agente.",
+      "designerReadOnly": "O Projetista de frota alcança todas as ferramentas somente leitura e uma ferramenta de relatório. Ele não tem capacidades de modificação para escolher."
     },
     "summary": {
       "edit": "Editar",
@@ -2805,6 +2822,11 @@
           "blurb": "Trabalha os tickets à medida que são criados, recebem a primeira resposta ou são resolvidos.",
           "runsWhen": "um ticket é criado, recebe sua primeira resposta, ou é marcado como resolvido",
           "recommended": "reiniciar serviços e liberar espaço em disco para resolver solicitações comuns"
+        },
+        "designer": {
+          "blurb": "Lê toda a frota e escreve um projeto de monitoramento justificado para um técnico aprovar.",
+          "runsWhen": "você inicia um Projeto de frota para uma organização, ou em um agendamento trimestral",
+          "recommended": "uma migração do zero, ou uma auditoria de configuração trimestral"
         }
       },
       "kindCard": {
@@ -4448,27 +4470,10 @@
       "suspended": "Suspenso",
       "churned": "Cancelado",
       "offboarding": "Em desligamento"
+    },
+    "help": {
+      "slug": "Gerado a partir do nome. Único na sua conta; usado pela API e pelas integrações."
     }
-  },
-  "organizationList": {
-    "title": "Organizações",
-    "count": "{{filtered}} de organizações {{total}}",
-    "searchPlaceholder": "Pesquisar organizações",
-    "allStatuses": "Todos os status",
-    "status": {
-      "active": "Ativo",
-      "trial": "Avaliação",
-      "suspended": "Suspenso",
-      "churned": "Cancelado",
-      "offboarding": "Em desligamento",
-      "merging": "Em fusão",
-      "archived": "Arquivado",
-      "purging": "Em exclusão"
-    },
-    "columns": {
-      "devices": "Dispositivos"
-    },
-    "empty": "Nenhuma organização encontrada. Tente ajustar sua pesquisa ou filtros."
   },
   "bulkOrgImport": {
     "title": "Importação em massa",
@@ -4532,23 +4537,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Carregando organizações...",
-    "title": "Organizações e sites",
-    "description": "Gerencie organizações e seus sites.",
     "actions": {
-      "addOrganization": "Adicionar organização",
-      "tryAgain": "Tente novamente",
-      "editOrganization": "Editar organização",
-      "archiveOrganization": "Arquivar organização",
-      "deleting": "Excluindo...",
-      "openRecord": "Abrir registro",
-      "openSettings": "Configurações"
+      "tryAgain": "Tente novamente"
     },
     "errors": {
-      "fetchOrganizations": "Falha ao buscar organizações",
       "generic": "Ocorreu um erro",
-      "saveOrder": "Falha ao salvar a ordem das organizações",
-      "saveOrganization": "Falha ao salvar a organização",
       "saveSite": "Falha ao salvar site ({{status}})",
       "deleteSite": "Falha ao excluir site",
       "loadSites": "Não foi possível carregar os sites desta organização."
@@ -4563,25 +4556,8 @@
       "archived": "Arquivado",
       "purging": "Em exclusão"
     },
-    "deviceCount": "Dispositivos {{count}}",
-    "list": {
-      "title": "Organizações",
-      "searchPlaceholder": "Procurar...",
-      "empty": "Nenhuma organização encontrada.",
-      "noMatches": "Nenhuma organização corresponde à sua pesquisa.",
-      "dragToReorder": "Arraste para reordenar"
-    },
     "sites": {
       "loading": "Carregando sites..."
-    },
-    "emptySelection": {
-      "title": "Nenhuma organização selecionada",
-      "description": "Selecione uma organização na lista para visualizar seus sites."
-    },
-    "add": {
-      "title": "Adicionar organização",
-      "description": "Crie uma nova organização com os detalhes abaixo.",
-      "submit": "Criar organização"
     },
     "siteModal": {
       "editTitle": "Editar site",
@@ -4597,11 +4573,11 @@
     },
     "deleteSite": {
       "title": "Excluir site",
-      "messagePrefix": "Tem certeza de que deseja excluir",
-      "messageSuffix": "Esta ação não pode ser desfeita."
+      "message": "Excluir {{name}}? O site será removido permanentemente e isso não pode ser desfeito.",
+      "blockedMessage_one": "{{name}} ainda tem {{count}} dispositivo. Mova-o para outro site antes de excluir este.",
+      "blockedMessage_other": "{{name}} ainda tem {{count}} dispositivos. Mova-os para outro site antes de excluir este."
     },
     "merge": {
-      "openButton": "Mesclar com outra organização",
       "title": "Mesclar organização",
       "description": "Mova os dados de {{name}} para uma organização sobrevivente. {{name}} é então desativada permanentemente e não pode ser recuperada.",
       "survivorLabel": "Mesclar com",
@@ -4668,36 +4644,6 @@
       "errors": {
         "archive": "Falha ao arquivar a organização",
         "mfaRequired": "Arquivar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Arquivadas",
-      "loading": "Carregando organizações arquivadas...",
-      "empty": "Nenhuma organização arquivada.",
-      "noMatches": "Nenhuma organização arquivada corresponde à sua pesquisa.",
-      "badge": "Arquivada",
-      "archivingBadge": "Arquivando…",
-      "keptIndefinitely": "Mantida indefinidamente",
-      "purgeToday": "Excluída definitivamente hoje",
-      "purgeCountdown_one": "Excluída definitivamente em {{count}} dia",
-      "purgeCountdown_other": "Excluída definitivamente em {{count}} dias",
-      "truncatedNote": "Mostrando as primeiras {{count}} organizações arquivadas. Pesquise para restringir a lista.",
-      "readOnlyNotice": "Esta organização está arquivada e é somente leitura. Restaure-a para retomar o acesso normal.",
-      "drainNotice": "Esta organização está sendo arquivada — seus agentes estão sendo removidos, e ela permanece somente leitura até que o processo termine. Restaure-a para cancelar e trazê-la de volta.",
-      "errors": {
-        "fetch": "Falha ao carregar as organizações arquivadas"
-      }
-    },
-    "restore": {
-      "action": "Restaurar",
-      "restoring": "Restaurando...",
-      "success": "{{name}} restaurada — status: {{status}}.",
-      "recreateRequiredNote": "Antes que ela esteja totalmente utilizável de novo: {{items}}",
-      "suspendedNote": "Ela estava suspensa antes de ser arquivada, então foi restaurada como suspensa — resolva isso antes que ela retome o acesso normal.",
-      "errors": {
-        "restore": "Falha ao restaurar a organização",
-        "mfaRequired": "Restaurar organizações requer autenticação multifator. Ative o MFA nas configurações de segurança do seu perfil e tente novamente.",
-        "purging": "Esta organização já está sendo excluída definitivamente e não pode mais ser restaurada."
       }
     }
   },
@@ -4796,7 +4742,9 @@
     "count": "{{filtered}} de sites {{total}}",
     "searchPlaceholder": "Pesquisar sites",
     "actions": {
-      "add": "Adicionar site"
+      "add": "Adicionar site",
+      "editSite": "Editar {{name}}",
+      "deleteSite": "Excluir {{name}}"
     },
     "columns": {
       "timezone": "Fuso horário",
@@ -5389,6 +5337,7 @@
       "openTitle": "O modo sem supervisão está pausado",
       "openBody": "{{reason}} As execuções sem supervisão são recusadas até que um aprovador redefina o modo. As aprovações continuam funcionando normalmente.",
       "reset": "Redefinir o modo",
+      "resetStepUpBody": "Redefinir a faixa não assistida exige uma nova verificação de segurança.",
       "resetSuccess": "O modo sem supervisão está funcionando novamente.",
       "resetFailed": "Não foi possível redefinir o modo."
     },

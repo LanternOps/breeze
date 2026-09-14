@@ -53,6 +53,7 @@
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
     "aiImpact": "AI Impact",
+    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -84,11 +85,6 @@
     "deviceBackup": "Device Backup",
     "sectionServiceDesk": "Service Desk",
     "serviceManagement": "Service Management"
-  },
-  "monitoringTabs": {
-    "ariaLabel": "Monitoring sections",
-    "network": "Network",
-    "delivery": "Delivery"
   },
   "documentTitles": {
     "dashboard": "Dashboard",
@@ -2480,5 +2476,10 @@
     "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
     "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Your role will require two-factor authentication. Enrol by {{date}}.",
+    "cta": "Set up 2FA",
+    "dismiss": "Dismiss two-factor authentication reminder"
   }
 }

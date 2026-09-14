@@ -29,8 +29,28 @@ const { authRef, mocks } = vi.hoisted(() => ({
     buildBindingCookie: vi.fn(() => 'binding-cookie=opaque; HttpOnly; SameSite=Lax'),
     audit: vi.fn(),
     canAccessOrg: vi.fn(),
+    syncFlag: vi.fn(() => true),
+    slot: vi.fn(async (_orgId: string): Promise<{ allowed: true } | { allowed: false; retryAfterSeconds: number }> => ({ allowed: true })),
+    releaseSlot: vi.fn(async (_orgId: string) => {}),
+    requestSync: vi.fn(async (_input: unknown) => {}),
+    summary: vi.fn(async (_orgId: string, _tenantId: string | null): Promise<unknown> => null),
   },
 }));
+
+vi.mock('../config/env', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  isM365TenantSyncEnabled: mocks.syncFlag,
+}));
+vi.mock('../services/m365Sync/onDemandLimiter', () => ({
+  ON_DEMAND_SYNC_WINDOW_SECONDS: 900,
+  consumeOnDemandSyncSlot: mocks.slot,
+  releaseOnDemandSyncSlot: mocks.releaseSlot,
+}));
+vi.mock('../services/m365Sync/lifecycle', () => ({
+  ON_DEMAND_SYNC_DOMAINS: ['users', 'intune_devices', 'ca_policies', 'skus', 'secure_score'],
+  requestOnDemandSync: mocks.requestSync,
+}));
+vi.mock('../services/m365Sync/summary', () => ({ loadSyncSummary: mocks.summary }));
 
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn(async (c: any, next: any) => {
@@ -165,6 +185,10 @@ beforeEach(() => {
     lastVerifiedAt: null, grantHealth: undefined,
   }));
   mocks.buildBindingCookie.mockReturnValue('binding-cookie=opaque; HttpOnly; SameSite=Lax');
+  mocks.syncFlag.mockReturnValue(true);
+  mocks.slot.mockResolvedValue({ allowed: true });
+  mocks.requestSync.mockResolvedValue(undefined);
+  mocks.summary.mockResolvedValue(null);
   mocks.canAccessOrg.mockImplementation(
     (orgId: string) => authRef.current?.accessibleOrgIds === null
       || authRef.current?.accessibleOrgIds.includes(orgId) === true,
@@ -546,5 +570,135 @@ describe('POST /m365/connections/:id/upgrade-consent', () => {
     );
 
     expect(response.status).toBe(409);
+  });
+});
+
+describe('POST /m365/connections/:id/sync (W05, spec §5.2)', () => {
+  const postSync = (orgId = ORG_ID) => app().request(
+    `/m365/connections/${CONNECTION_ID}/sync?orgId=${orgId}`,
+    { method: 'POST' },
+  );
+
+  beforeEach(() => {
+    mocks.list.mockResolvedValue([connection()]);
+  });
+
+  it('requests the five non-sign-in domains and echoes them', async () => {
+    const response = await postSync();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      requested: true,
+      domains: ['users', 'intune_devices', 'ca_policies', 'skus', 'secure_score'],
+    });
+    expect(mocks.slot).toHaveBeenCalledWith(ORG_ID);
+    expect(mocks.requestSync).toHaveBeenCalledWith({ orgId: ORG_ID, connectionId: CONNECTION_ID });
+  });
+
+  it('is MFA-gated exactly like retest', async () => {
+    authRef.current = auth({ mfa: false });
+    expect((await postSync()).status).toBe(403);
+    expect(mocks.slot).not.toHaveBeenCalled();
+    expect(mocks.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('requires organizations:write', async () => {
+    authRef.current = auth({ permissions: new Set(['organizations:read']) });
+    expect((await postSync()).status).toBe(403);
+    expect(mocks.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the tenant-sync flag is off, WITHOUT burning a slot', async () => {
+    mocks.syncFlag.mockReturnValue(false);
+    expect((await postSync()).status).toBe(404);
+    expect(mocks.slot).not.toHaveBeenCalled();
+    expect(mocks.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('returns 429 with retryAfter and a Retry-After header when limited', async () => {
+    mocks.slot.mockResolvedValue({ allowed: false, retryAfterSeconds: 412 });
+    const response = await postSync();
+    expect(response.status).toBe(429);
+    expect(response.headers.get('retry-after')).toBe('412');
+    await expect(response.json()).resolves.toMatchObject({ retryAfter: 412 });
+    expect(mocks.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('404s an unknown connection id BEFORE consuming a slot', async () => {
+    mocks.list.mockResolvedValue([]);
+    expect((await postSync()).status).toBe(404);
+    expect(mocks.slot).not.toHaveBeenCalled();
+  });
+
+  it('404s a connection that is not executable', async () => {
+    mocks.list.mockResolvedValue([connection({ status: 'revoked' })]);
+    expect((await postSync()).status).toBe(404);
+    expect(mocks.slot).not.toHaveBeenCalled();
+  });
+
+  it('404s a connection in another organization', async () => {
+    const response = await postSync(OTHER_ORG_ID);
+    expect(response.status).toBe(404);
+    expect(mocks.requestSync).not.toHaveBeenCalled();
+  });
+
+  it('accepts a degraded connection — a missing optional grant still syncs the rest', async () => {
+    mocks.list.mockResolvedValue([connection({ status: 'degraded' })]);
+    expect((await postSync()).status).toBe(200);
+  });
+
+  it('records the sync_requested audit event', async () => {
+    await postSync();
+    expect(mocks.audit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'm365.customer_graph_read.sync_requested',
+      orgId: ORG_ID,
+      connectionId: CONNECTION_ID,
+      outcome: 'initiated',
+      actorId: USER_ID,
+    }));
+  });
+
+  it('releases the slot and answers 409 when the claim/enqueue fails, recording no event', async () => {
+    mocks.requestSync.mockRejectedValue(new Error('redis down'));
+    const response = await postSync();
+    expect(response.status).toBe(409);
+    expect(mocks.releaseSlot).toHaveBeenCalledWith(ORG_ID);
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /m365/connections exposes the sync block on the ENVELOPE (W05)', () => {
+  const SUMMARY = { lastSuccessAt: '2026-09-08T09:00:00.000Z', users: 128, devices: 96, domains: [] };
+
+  it('carries syncEnabled true and the summary, read for the connection tenant', async () => {
+    mocks.list.mockResolvedValue([connection()]);
+    mocks.summary.mockResolvedValue(SUMMARY);
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+    expect(body.syncEnabled).toBe(true);
+    expect(body.sync).toEqual(SUMMARY);
+    expect(mocks.summary).toHaveBeenCalledWith(ORG_ID, TENANT_ID);
+  });
+
+  it('carries syncEnabled false and a null sync block when the flag is off', async () => {
+    mocks.syncFlag.mockReturnValue(false);
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+    expect(body.syncEnabled).toBe(false);
+    expect(body.sync).toBeNull();
+    expect(mocks.summary).not.toHaveBeenCalled();
+  });
+
+  it('keeps the envelope key set exact and never puts sync fields on the connection DTO', async () => {
+    mocks.list.mockResolvedValue([connection()]);
+    const body = await (await app().request(`/m365/connections?orgId=${ORG_ID}`)).json();
+    expect(Object.keys(body).sort()).toEqual(['connection', 'onboardingEnabled', 'profile', 'sync', 'syncEnabled']);
+    expect(body.connection).not.toHaveProperty('sync');
+    expect(body.connection).not.toHaveProperty('syncEnabled');
+    expect(body.connection).toMatchObject({
+      grantHealth: expect.any(String), manifestVersion: 3, currentManifestVersion: expect.any(Number),
+    });
+  });
+
+  it('passes a null tenant when there is no connection', async () => {
+    await app().request(`/m365/connections?orgId=${ORG_ID}`);
+    expect(mocks.summary).toHaveBeenCalledWith(ORG_ID, null);
   });
 });

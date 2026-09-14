@@ -27,6 +27,7 @@ import { UNINSTALL_REASON_DEVICE_REMOVE } from '../services/deviceUninstallDrain
 import { captureException } from '../services/sentry';
 import { recordBackupCommandTimeout, recordRestoreTimeout } from '../services/backupMetrics';
 import { revokeViewerSession } from '../services/viewerTokenRevocation';
+import { terminalIntentSet } from '../services/remoteDesktopTerminalIntent';
 import { backupHelperSupportsQueue } from '../services/backupHelperCapabilities';
 import { queueBackupStopCommand, CommandTypes } from '../services/commandQueue';
 import { envInt } from '../utils/envInt';
@@ -1255,11 +1256,11 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Pending/connecting sessions older than 10 minutes
   const pendingResult = await db
     .update(remoteSessions)
-    .set({
+    .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: connection was never established',
-    })
+    }, 'pending'))
     .where(
       and(
         inArray(remoteSessions.status, ['pending', 'connecting']),
@@ -1271,11 +1272,11 @@ async function reapStaleRemoteSessions(): Promise<number> {
   // Zombie active sessions older than 24 hours
   const activeResult = await db
     .update(remoteSessions)
-    .set({
+    .set(terminalIntentSet({
       status: 'disconnected',
       endedAt: new Date(),
       errorMessage: 'Session timed out: exceeded maximum session duration',
-    })
+    }, 'pending'))
     .where(
       and(
         eq(remoteSessions.status, 'active'),

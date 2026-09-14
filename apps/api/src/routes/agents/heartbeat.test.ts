@@ -181,6 +181,10 @@ vi.mock('./helpers', () => ({
   buildHelperConfigUpdate: vi.fn(() => undefined),
   buildPamConfigUpdate: vi.fn(async () => ({ uacInterceptionEnabled: false })),
   buildPatchSourceConfigUpdate: vi.fn(async () => ({ exclusiveWindowsUpdate: false })),
+  // Default OFF, mirroring buildPatchSourceConfigUpdate: every heartbeat test
+  // that does not care about warranty still exercises the delivery merge rather
+  // than the builder-throws path.
+  buildWarrantyConfigUpdate: vi.fn(async () => ({ hpCmslEnabled: false })),
   // Null = no onedrive policy for the device. Tests that exercise delivery
   // override this per-test. Omitting it entirely would make every heartbeat
   // test silently exercise only the builder-throws path (undefined is not a
@@ -3154,6 +3158,54 @@ describe('POST /agents/:id/heartbeat — uacInterceptionEnabled delivery', () =>
     const body = (await resp.json()) as Record<string, unknown>;
     const configUpdate = body.configUpdate as Record<string, unknown> | null;
     expect(configUpdate?.patch_source_settings).toBeUndefined();
+  });
+
+  it('includes warranty_settings in configUpdate when HP CMSL collection is enabled (#5511 W02)', async () => {
+    const { buildWarrantyConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: true });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    // Snake_case INSIDE the block too — contract D6 pins the wire shape.
+    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: true });
+  });
+
+  it('delivers warranty_settings false when no warranty policy resolves (revoke-on-unassign)', async () => {
+    const { buildWarrantyConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWarrantyConfigUpdate).mockResolvedValueOnce({ hpCmslEnabled: false });
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.warranty_settings).toEqual({ hp_cmsl_enabled: false });
+  });
+
+  it('omits warranty_settings entirely when the warranty resolver throws (no unintended revocation)', async () => {
+    const { buildWarrantyConfigUpdate } = await import('./helpers');
+    vi.mocked(buildWarrantyConfigUpdate).mockRejectedValueOnce(new Error('boom'));
+
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(minimalHeartbeatBody),
+    });
+
+    expect(resp.status).toBe(200);
+    const body = (await resp.json()) as Record<string, unknown>;
+    const configUpdate = body.configUpdate as Record<string, unknown> | null;
+    expect(configUpdate?.warranty_settings).toBeUndefined();
   });
 
   it('delivers onedrive_helper_settings in configUpdate alongside other config (post-#1105 hoist merge)', async () => {

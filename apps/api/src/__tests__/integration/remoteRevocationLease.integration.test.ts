@@ -200,8 +200,18 @@ describe('revocation lease against live Postgres', () => {
     expect(row!.errorMessage).toBe('revoked:permissions_changed');
     expect(row!.endedAt).not.toBeNull();
 
+    // The revocation goes through the terminal-intent contract (SEC-038 W03):
+    // the row handed to the teardown names the terminal generation the stop
+    // must carry, and the phase is 'pending' until the agent acknowledges it.
     expect(teardownDisconnectedSessions).toHaveBeenCalledWith([
-      { id: f.session.id, type: 'desktop', deviceId: f.device.id },
+      expect.objectContaining({
+        id: f.session.id,
+        type: 'desktop',
+        deviceId: f.device.id,
+        status: 'disconnected',
+        terminalGeneration: 1n,
+        terminationPhase: 'pending',
+      }),
     ]);
   });
 

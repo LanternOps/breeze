@@ -30,6 +30,10 @@ export type Script = {
   origin?: ScriptOrigin;
   /** True when the version at `scripts.version` (the head) carries a review. */
   reviewedAtHead?: boolean;
+  /** Set when the script originated from a reviewed AI proposal. Null/undefined
+   *  for an `ai_proposal`-origin script created via Fleet Design apply, which
+   *  is AI-authored and human-approved but never model-reviewed (#5654). */
+  originProposalId?: string | null;
 };
 
 type Organization = {
@@ -372,7 +376,7 @@ export default function ScriptList({
                           >
                             {t('provenance.reviewed')}
                           </span>
-                        ) : (
+                        ) : script.originProposalId ? (
                           // Honest downgrade (spec §4.1): a human edit cuts a
                           // head with no review, so the badge must stop
                           // claiming the AI review still describes the code.
@@ -381,6 +385,17 @@ export default function ScriptList({
                             className="inline-flex items-center rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning"
                           >
                             {t('provenance.editedSinceReview')}
+                          </span>
+                        ) : (
+                          // No originProposalId at all (e.g. Fleet Design
+                          // apply, #5654): AI-authored, human-approved at
+                          // apply, but never model-reviewed. "Edited since
+                          // review" would falsely imply a review once existed.
+                          <span
+                            data-testid={`script-badge-not-reviewed-${script.id}`}
+                            className="inline-flex items-center rounded-full bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium"
+                          >
+                            {t('provenance.notReviewed')}
                           </span>
                         )
                       )}

@@ -34,7 +34,7 @@ Each organization can enable or disable portal features independently through th
 
 ### Visibility settings
 
-The service-insight sections — Dashboard, Security, Backups, Reports, and support usage — are controlled separately, per organization, and every one of them starts **off**. You decide which customers get to see what.
+The service-insight sections — Dashboard, Security, Backups, Reports, support usage, and (from v0.113.0) Service and Documents — are controlled separately, per organization, and every one of them starts **off**. You decide which customers get to see what.
 
 | Toggle | Default | What the customer sees |
 |--------|---------|------------------------|
@@ -43,6 +43,8 @@ The service-insight sections — Dashboard, Security, Backups, Reports, and supp
 | **Backups** | Off | Backup coverage, verification, restore tests, and readiness |
 | **Reports** | Off | The ability to generate and download approved reports |
 | **Support usage** | Off | Month-to-date billable support-time totals, and SLA badges in the ticket list |
+| **Service** | Off | Scheduled deliverables, what was delivered, and key dates (v0.113.0+) |
+| **Documents** | Off | The documents you have shared with them, for download (v0.113.0+) |
 
 To change them:
 
@@ -52,7 +54,7 @@ To change them:
 
 2. Open the **Customer Portal** tab (under **Portal & Branding**).
 
-3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns on all five at once.
+3. In the **Visibility** panel, turn on the sections this customer should see. **Enable all visibility** turns them all on at once.
 
 4. Save. The customer's next page load reflects the change.
 
@@ -204,6 +206,22 @@ With **Reports** visibility on, the customer can generate and download reports t
 A finished run offers both **PDF** and **CSV** downloads. These are the same report types described in [Reports](/features/reports/); only the trigger is different.
 
 With Reports off, a customer who navigates to the reports URL is redirected to their proposals — the same as every other section that is off.
+
+---
+
+## Service
+
+With **Service** visibility on, the customer sees the [service deliverables](/features/contracts/#service-deliverables) you have marked **Show in customer portal**: what is scheduled, what was delivered and when, and the organization's upcoming key dates. It is the "what am I paying you for" view at the level of individual commitments — the monthly patch report, the quarterly review — rather than a dashboard summary.
+
+Deliverables and key dates without **Show in customer portal** stay internal even when the section is on. With Service off, a customer who navigates to the service URL is redirected to their proposals.
+
+---
+
+## Documents
+
+With **Documents** visibility on, the customer can download the files in the organization's document library that you have marked **Visible in the customer portal** — runbooks, baselines, policies, and evidence attached to delivered work.
+
+The library itself lives on the organization's **Documents** tab in the Breeze dashboard (`Organizations → (organization) → Documents`), gated by the `documents:read` / `documents:write` permissions. Upload a PDF, JPEG, PNG or WebP up to 10 MB, categorise it (Baseline, Runbook, Policy, Evidence, Report, Export or Other), and decide per file whether it is portal-visible. Replacing a file keeps the earlier version as downloadable history; superseded versions can no longer be replaced or deleted. Evidence attached to a service deliverable is filed here automatically.
 
 ---
 

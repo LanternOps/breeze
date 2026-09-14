@@ -1510,11 +1510,13 @@
       "timezone": "Timezone",
       "kinds": {
         "sweep": "Sweep",
-        "narrative": "Weekly report"
+        "narrative": "Weekly report",
+        "design": "Fleet design"
       },
       "kindsLabel": "Checks to run",
       "kind": "Schedule type",
       "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
+      "monthlyOrRarerHint": "A fleet design fires at most once a month: a literal minute, hour and day-of-month (1-28), month as * or a comma list of literal months, and * for day-of-week. For example 0 6 1 1,4,7,10 * runs quarterly on the 1st at 06:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
       "override": "Override for this org",
@@ -1554,6 +1556,7 @@
         "baselineAgentMismatch": "That baseline belongs to a different agent.",
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
         "agentKindNotTriage": "Only a triage agent can be scheduled.",
+        "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
         "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
       }
@@ -1564,7 +1567,8 @@
     "kindHints": {
       "triage": "Investigates new alerts and proposes what to do about them.",
       "patch": "Reviews missing patches and proposes what to install.",
-      "helpdesk": "Picks up tickets and proposes replies and next steps."
+      "helpdesk": "Picks up tickets and proposes replies and next steps.",
+      "designer": "Reads the whole fleet and writes a justified monitoring design for a technician to approve."
     },
     "emptyState": {
       "title": "No agents yet",
@@ -1579,7 +1583,8 @@
       "shadowConsequence": "Observes and proposes; a human approves everything.",
       "act": "Act",
       "actConsequence": "Executes allowed operations without a click. No automatic rollback.",
-      "actUnavailable": "Not available for this agent yet."
+      "actUnavailable": "Not available for this agent yet.",
+      "shadowUnavailableForKind": "This agent only reads and writes reports — there is nothing to shadow."
     },
     "allOrgs": "All orgs",
     "allOrgsHint": "Partner-wide: applies to every organization unless an organization tightens it.",
@@ -1700,7 +1705,8 @@
     "kinds": {
       "triage": "Alert triage",
       "patch": "Patching",
-      "helpdesk": "Help desk"
+      "helpdesk": "Help desk",
+      "designer": "Fleet designer"
     },
     "modes": {
       "off": "Off",
@@ -1835,7 +1841,8 @@
       "profile": {
         "sweep": "Sweep",
         "narrative": "Weekly report",
-        "triage": "Ticket triage"
+        "triage": "Ticket triage",
+        "design": "Fleet design"
       },
       "sweep": {
         "title": "Sweep findings",
@@ -1882,6 +1889,14 @@
         "openReport": "Open report",
         "download": "Download PDF",
         "downloadFailed": "Could not download the PDF."
+      },
+      "fleetDesign": {
+        "title": "Fleet Design",
+        "counts": "{{functions}} functions · {{watches}} watches · {{rules}} alert rules",
+        "openReport": "Open report",
+        "download": "Download PDF",
+        "downloadFailed": "Could not download the PDF.",
+        "truncatedNote": "The evidence was cut short — this design did not see the whole fleet."
       },
       "noAgent": "Unknown agent",
       "loading": "Loading runs…",
@@ -2144,6 +2159,7 @@
           "fixWatchesHeld": "Fix watches held",
           "fixWatchesRecurred": "Fix watches recurred",
           "narrativesDelivered": "Weekly reports delivered",
+          "fleetDesignsDelivered": "Fleet Designs delivered",
           "estTimeSaved": "Estimated time saved",
           "llmSpend": "LLM spend",
           "window": "Reporting window (days)",
@@ -2704,7 +2720,8 @@
       "loggedProposalCount_other": "{{count}} logged proposals",
       "unattendedCount_one": "{{count}} unattended",
       "unattendedCount_other": "{{count}} unattended",
-      "scriptGateNote": "Stays an approval request until a script is authorized for this agent."
+      "scriptGateNote": "Stays an approval request until a script is authorized for this agent.",
+      "designerReadOnly": "The Fleet designer reaches every read-only tool and one report tool. It has no mutating capabilities to choose."
     },
     "summary": {
       "edit": "Edit",
@@ -2805,6 +2822,11 @@
           "blurb": "Works tickets as they're created, replied to, or resolved.",
           "runsWhen": "a ticket is created, gets its first reply, or is marked resolved",
           "recommended": "restarting services and clearing disk space to resolve common requests"
+        },
+        "designer": {
+          "blurb": "Reads the whole fleet and writes a justified monitoring design for a technician to approve.",
+          "runsWhen": "you start a Fleet Design for an organization, or on a quarterly schedule",
+          "recommended": "a clean-slate migration, or a quarterly configuration audit"
         }
       },
       "kindCard": {
@@ -4448,27 +4470,10 @@
       "suspended": "Suspended",
       "churned": "Churned",
       "offboarding": "Offboarding"
+    },
+    "help": {
+      "slug": "Generated from the name. Unique within your account; used by the API and integrations."
     }
-  },
-  "organizationList": {
-    "title": "Organizations",
-    "count": "{{filtered}} of {{total}} organizations",
-    "searchPlaceholder": "Search organizations",
-    "allStatuses": "All statuses",
-    "status": {
-      "active": "Active",
-      "trial": "Trial",
-      "suspended": "Suspended",
-      "churned": "Churned",
-      "offboarding": "Offboarding",
-      "merging": "Merging…",
-      "archived": "Archived",
-      "purging": "Purging"
-    },
-    "columns": {
-      "devices": "Devices"
-    },
-    "empty": "No organizations found. Try adjusting your search or filters."
   },
   "bulkOrgImport": {
     "title": "Bulk import",
@@ -4532,23 +4537,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Loading organizations...",
-    "title": "Organizations & Sites",
-    "description": "Manage organizations and their sites.",
     "actions": {
-      "addOrganization": "Add organization",
-      "tryAgain": "Try again",
-      "editOrganization": "Edit organization",
-      "archiveOrganization": "Archive organization",
-      "deleting": "Deleting...",
-      "openRecord": "Open record",
-      "openSettings": "Settings"
+      "tryAgain": "Try again"
     },
     "errors": {
-      "fetchOrganizations": "Failed to fetch organizations",
       "generic": "An error occurred",
-      "saveOrder": "Failed to save organization order",
-      "saveOrganization": "Failed to save organization",
       "saveSite": "Failed to save site ({{status}})",
       "deleteSite": "Failed to delete site",
       "loadSites": "Couldn't load sites for this organization."
@@ -4563,25 +4556,8 @@
       "archived": "Archived",
       "purging": "Purging"
     },
-    "deviceCount": "{{count}} devices",
-    "list": {
-      "title": "Organizations",
-      "searchPlaceholder": "Search...",
-      "empty": "No organizations found.",
-      "noMatches": "No organizations match your search.",
-      "dragToReorder": "Drag to reorder"
-    },
     "sites": {
       "loading": "Loading sites..."
-    },
-    "emptySelection": {
-      "title": "No organization selected",
-      "description": "Select an organization from the list to view its sites."
-    },
-    "add": {
-      "title": "Add Organization",
-      "description": "Create a new organization with the details below.",
-      "submit": "Create organization"
     },
     "siteModal": {
       "editTitle": "Edit Site",
@@ -4597,11 +4573,11 @@
     },
     "deleteSite": {
       "title": "Delete Site",
-      "messagePrefix": "Are you sure you want to delete",
-      "messageSuffix": " This action cannot be undone."
+      "message": "Delete {{name}}? This removes the site permanently and cannot be undone.",
+      "blockedMessage_one": "{{name}} still has {{count}} device. Move it to another site before deleting this one.",
+      "blockedMessage_other": "{{name}} still has {{count}} devices. Move them to another site before deleting this one."
     },
     "merge": {
-      "openButton": "Merge into another organization",
       "title": "Merge organization",
       "description": "Move {{name}}'s data into a surviving organization. {{name}} is retired permanently afterward and cannot be recovered.",
       "survivorLabel": "Merge into",
@@ -4668,36 +4644,6 @@
       "errors": {
         "archive": "Failed to archive the organization",
         "mfaRequired": "Archiving organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Archived",
-      "loading": "Loading archived organizations...",
-      "empty": "No archived organizations.",
-      "noMatches": "No archived organizations match your search.",
-      "badge": "Archived",
-      "archivingBadge": "Archiving…",
-      "keptIndefinitely": "Kept indefinitely",
-      "purgeToday": "Purges today",
-      "purgeCountdown_one": "Purges in {{count}} day",
-      "purgeCountdown_other": "Purges in {{count}} days",
-      "truncatedNote": "Showing the first {{count}} archived organizations. Search to narrow the list.",
-      "readOnlyNotice": "This organization is archived and read-only. Restore it to resume normal access.",
-      "drainNotice": "This organization is being archived — its agents are being removed, and it stays read-only until the drain finishes. Restore it to cancel and bring it back.",
-      "errors": {
-        "fetch": "Failed to load archived organizations"
-      }
-    },
-    "restore": {
-      "action": "Restore",
-      "restoring": "Restoring...",
-      "success": "{{name}} restored — status: {{status}}.",
-      "recreateRequiredNote": "Before it's fully usable again: {{items}}",
-      "suspendedNote": "It was suspended before being archived, so it has been restored as suspended — resolve that before it resumes normal access.",
-      "errors": {
-        "restore": "Failed to restore the organization",
-        "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
-        "purging": "This organization is already being permanently deleted and can no longer be restored."
       }
     }
   },
@@ -4796,7 +4742,9 @@
     "count": "{{filtered}} of {{total}} sites",
     "searchPlaceholder": "Search sites",
     "actions": {
-      "add": "Add site"
+      "add": "Add site",
+      "editSite": "Edit {{name}}",
+      "deleteSite": "Delete {{name}}"
     },
     "columns": {
       "timezone": "Timezone",
@@ -5389,6 +5337,7 @@
       "openTitle": "Unattended lane is paused",
       "openBody": "{{reason}} Unattended runs are refused until an approver resets the lane. Approvals still work normally.",
       "reset": "Reset the lane",
+      "resetStepUpBody": "Resetting the unattended lane needs a fresh security check.",
       "resetSuccess": "The unattended lane is running again.",
       "resetFailed": "The lane could not be reset."
     },

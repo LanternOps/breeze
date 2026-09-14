@@ -123,6 +123,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'aiArtifactSweeper',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/aiArtifactSweeper');
+      return { init: m.initializeAiArtifactSweeper, shutdown: m.shutdownAiArtifactSweeper };
+    },
+  },
+  {
     name: 'fleetFindingsWorker',
     placement: 'global',
     load: async () => {
@@ -411,6 +419,15 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/deviceMetricsRetention');
       return { init: m.initializeDeviceMetricsRetention, shutdown: m.shutdownDeviceMetricsRetention };
+    },
+  },
+  {
+    // #5329 (M365 tenant sync W02) — daily stale-snapshot + score-detail prune.
+    name: 'm365SyncRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/m365SyncRetentionWorker');
+      return { init: m.initializeM365SyncRetention, shutdown: m.shutdownM365SyncRetention };
     },
   },
   {
@@ -750,6 +767,21 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    // socket-owner, not global: its runtime import closure reaches
+    // routes/agentWs.ts — jobs/m365SyncWorker.ts -> services/m365Sync/run.ts
+    // -> services/m365ControlPlane/readActionService.ts ->
+    // services/aiTools.ts -> services/aiToolsAgentLogs.ts ->
+    // services/commandQueue.ts -> routes/agentWs.ts. Found by
+    // workerEntrypointClosure.contract.test.ts (#4086 Task 5) — flipped from
+    // the plan's initial-pass 'global' guess (M365 tenant sync W04, #5331).
+    name: 'm365SyncWorker',
+    placement: 'socket-owner',
+    load: async () => {
+      const m = await import('../jobs/m365SyncWorker');
+      return { init: m.initializeM365SyncWorker, shutdown: m.shutdownM365SyncWorker };
+    },
+  },
+  {
     name: 'pax8SyncWorker',
     placement: 'global',
     load: async () => {
@@ -943,6 +975,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     load: async () => {
       const m = await import('../jobs/approvalExpiryReaper');
       return { init: m.initializeApprovalExpiryReaper, shutdown: m.shutdownApprovalExpiryReaper };
+    },
+  },
+  {
+    name: 'workspaceReaper',
+    // 'global', like approvalExpiryReaper: it touches Postgres and the sandbox
+    // vendor only — no agent WS, no socket-local dispatch — so any role may
+    // host it, and exactly one instance claims each row (FOR UPDATE SKIP
+    // LOCKED). Not flag-gated on purpose; see the job's header.
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/workspaceReaper');
+      return { init: m.initializeWorkspaceReaper, shutdown: m.shutdownWorkspaceReaper };
     },
   },
   {
@@ -1313,6 +1357,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       return {
         init: m.initializeAiBudgetReservationSweep,
         shutdown: m.shutdownAiBudgetReservationSweep,
+      };
+    },
+  },
+  {
+    // #5306 — daily email nudge for the MFA enrolment grace window. `global`:
+    // its closure is db + email/i18n/recipientLocale + services/mfaPolicy.ts
+    // (role/settings reads only), never routes/agentWs.ts.
+    name: 'mfaEnrollmentNoticeWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/mfaEnrollmentNotice');
+      return {
+        init: m.initializeMfaEnrollmentNoticeWorker,
+        shutdown: m.shutdownMfaEnrollmentNoticeWorker,
       };
     },
   },

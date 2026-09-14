@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { isIP } from 'node:net';
-import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema } from '@breeze/shared';
+import { ACTOR_TYPES, AI_AGENT_KINDS, INVOICE_STATUSES, currencyCodeSchema, monitorKindSchema } from '@breeze/shared';
 import { backupProfileSelectionsSchema, proposeScriptInputSchema, ringAutoApproveSchema } from '@breeze/shared/validators';
 import { aiRunContextInputShape } from './scriptRunRequest';
 import { fleetToolInputSchemas } from './aiToolSchemasFleet';
@@ -1352,6 +1352,32 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     featureType: z.enum(CONFIG_FEATURE_TYPES).optional(),
     featurePolicyId: uuid.optional().nullable(),
     inlineSettings: z.record(z.string(), z.unknown()).optional().nullable(),
+  }),
+
+  // Monitor definition tools (#5289 Task 8). `definition` is deep-validated by
+  // createMonitorDefinitionSchema/updateMonitorDefinitionSchema inside the
+  // handler itself (aiToolsMonitors.ts) — this entry is defense-in-depth only.
+  list_monitors: z.object({
+    kind: monitorKindSchema.optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+
+  get_monitor: z.object({
+    monitorId: uuid,
+  }),
+
+  // NOTE: named manage_monitor_definitions, NOT manage_monitors — that name is
+  // already taken by the unrelated network-monitor CRUD tool below
+  // (query_monitors / manage_monitors, aiToolsMonitoring.ts).
+  manage_monitor_definitions: z.object({
+    action: z.enum(['create', 'update', 'delete', 'enable', 'disable', 'attach', 'detach']),
+    monitorId: uuid.optional(),
+    definition: z.record(z.string(), z.unknown()).optional(),
+    configPolicyId: uuid.optional(),
+    attachmentId: uuid.optional(),
+    enabled: z.boolean().optional(),
+    overrides: z.record(z.string(), z.unknown()).optional().nullable(),
   }),
 
   manage_backup_profiles: z.object({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron } from './aiAgentSchedules';
+import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron, isMonthlyOrRarerLiteralCron } from './aiAgentSchedules';
 
 const uuid = '11111111-1111-4111-8111-111111111111';
 describe('createAiAgentScheduleSchema', () => {
@@ -214,5 +214,22 @@ describe('isWeeklyLiteralCron (phase 2 P2-3)', () => {
     ]) {
       expect(isWeeklyLiteralCron(cron)).toBe(false);
     }
+  });
+});
+
+describe('design schedule kind', () => {
+  it('accepts a quarterly literal cron and rejects weekly/daily ones', () => {
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 1,4,7,10 *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 * *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 6 1 */3 *')).toBe(true);
+    expect(isMonthlyOrRarerLiteralCron('0 7 * * 1')).toBe(false);
+    expect(isMonthlyOrRarerLiteralCron('0 6 29 * *')).toBe(false);
+    expect(isMonthlyOrRarerLiteralCron('*/5 6 1 * *')).toBe(false);
+  });
+  it('a design baseline sweeps nothing and must be monthly or rarer', () => {
+    const base = { ownerScope: 'partner', kind: 'design', agentId: '11111111-1111-4111-8111-111111111111', timezone: 'UTC', enabled: true };
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 1,4,7,10 *' }).success).toBe(true);
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 7 * * 1' }).success).toBe(false);
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 6 1 * *', sweepKinds: ['disk_pressure'] }).success).toBe(false);
   });
 });

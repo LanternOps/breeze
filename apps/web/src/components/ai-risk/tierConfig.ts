@@ -131,6 +131,12 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'manage_monitors (get)', description: 'Monitor details and history', category: 'Monitoring & Analytics' },
       { name: 'query_analytics', description: 'SLA compliance and capacity predictions', category: 'Monitoring & Analytics' },
       { name: 'get_executive_summary', description: 'Executive summary metrics', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8) — distinct from the network-monitor
+      // `query_monitors` / `manage_monitors` above: a monitor definition is the
+      // authored condition+severity+delivery object that compiles into a
+      // managed alert rule/automation.
+      { name: 'list_monitors', description: 'List monitor definitions visible to the caller', category: 'Monitoring & Analytics' },
+      { name: 'get_monitor', description: 'Get a monitor definition with its policy attachments', category: 'Monitoring & Analytics' },
       // Remote Access & Control
       { name: 'list_remote_sessions', description: 'List remote sessions', category: 'Remote Access & Control' },
       // Integrations
@@ -240,6 +246,10 @@ export const TIER_DEFINITIONS: TierDefinition[] = [
       { name: 'restore_snapshot', description: 'Restore a backup snapshot', category: 'Backup & Recovery' },
       // Monitoring & Analytics
       { name: 'manage_monitors (create/update/delete)', description: 'Create, update, or delete monitors', category: 'Monitoring & Analytics' },
+      // Monitor definitions (#5289 Task 8): ordinary config-object CRUD
+      // (create/update/delete/enable/disable/attach/detach) — supervised, same
+      // class as the software/browser/peripheral policy tools.
+      { name: 'manage_monitor_definitions', description: 'Create, update, delete, or attach/detach a monitor definition', category: 'Monitoring & Analytics' },
       // Integrations
       { name: 'trigger_agent_upgrade', description: 'Queue agent upgrade', category: 'Integrations' },
       { name: 'trigger_agent_restart', description: 'Restart a wedged/silent agent via the watchdog', category: 'Integrations' },

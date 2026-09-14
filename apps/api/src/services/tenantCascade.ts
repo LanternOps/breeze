@@ -48,6 +48,7 @@ import { createAuditLog } from './auditService';
 import * as self from './tenantCascade';
 import { pgErrorCode } from '../utils/pgErrors';
 import { deleteObjectKeys } from './ticketAttachmentStorage';
+import { getBlobStorage } from './artifacts/blobStorage';
 import { deleteObjects } from './s3Storage';
 
 type StorageKeyRow = { storageKey: string | null };
@@ -305,6 +306,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_operator_operations',
   'ai_operator_task_outbox',
   'ai_operator_tasks',
+  // Execution plane W01 (spec §6.1): artifact rows. Child of ai_agent_runs via
+  // the composite (run_id, org_id) FK, ON DELETE CASCADE — topologicalCascadeOrder()
+  // reads that edge from pg_constraint and deletes these before the runs. Blob
+  // bytes are pre-cleared in cascadeDeleteOrg step 1a-bis BEFORE any row goes,
+  // because the row is the only index to the key.
+  'ai_run_artifacts',
+  // Execution plane W02 (#5713): one row per sandbox instance, Shape 1 with a
+  // NOT NULL org_id, so an entry here is mandatory. Its only outbound FK is
+  // the composite (run_id, org_id) -> ai_agent_runs ON DELETE CASCADE, and
+  // ai_agent_runs sorts EARLIER in this alphabetical list — harmless, because
+  // the FK carries an explicit ON DELETE and topologicalCascadeOrder()'s
+  // runtime pg_constraint read, not this array, decides the real DELETE order.
+  'ai_run_workspaces',
   'ai_screenshots',
   // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
   // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER
@@ -428,6 +442,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'device_filesystem_cleanup_runs',
   'device_filesystem_scan_state',
   'device_filesystem_snapshots',
+  // Leaf table (Fleet Designer W02, #5652): composite FK to devices ON DELETE
+  // CASCADE, run FK ON DELETE SET NULL (run_id); no children of its own.
+  'device_function_assessments',
   'device_group_memberships',
   'device_groups',
   'device_hardware',
@@ -472,6 +489,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
+  // CASCADE (report_runs is pre-cleared above), org_id reached here too —
+  // either order is a no-op for the other. Leaf table, no children.
+  'fleet_design_applied_items',
   'fleet_finding_devices',
   'fleet_findings',
   'fleet_remediation_run_targets',
@@ -502,8 +523,22 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'log_correlation_rules',
   'log_correlations',
   'log_search_queries',
+  // M365 tenant sync snapshots (spec §3). Alphabetical placement is the whole
+  // contract for this array: tenantCascade.integration.test.ts asserts
+  // localeCompare order, while FK-children-before-parents is asserted against
+  // topologicalCascadeOrder()'s RUNTIME pg_constraint read — so
+  // m365_sync_state sorting after m365_connections here is harmless even
+  // though it FK-references it. None of these is append-only and none carries
+  // an immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
+  'm365_ca_policies',
   'm365_connections',
   'm365_consent_sessions',
+  'm365_intune_devices',
+  'm365_license_skus',
+  'm365_posture_rollups',
+  'm365_secure_score_snapshots',
+  'm365_sync_state',
+  'm365_users',
   'maintenance_windows',
   // #4622 — org-scoped hand-entered inventory. Not append-only and carrying no
   // immutability trigger, so no AUDIT_ADMIN_REQUIRED_TABLES entry.
@@ -514,6 +549,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'metric_rollups',
   'metric_rollups_default',
   'ml_feedback_events',
+  // #5289. Deleting a definition cascades to its compiled alert template /
+  // rule / automation rows and to every config_policy_monitors attachment, all
+  // of which are listed earlier or reached by FK, so alphabetical order is also
+  // a safe delete order here (asserted by tenantCascade.integration.test.ts).
+  'monitor_definitions',
   'network_baselines',
   'network_change_events',
   'network_monitors',
@@ -1237,6 +1277,50 @@ export async function cascadeDeleteOrg(
         }`,
       );
     }
+  }
+
+  // 1a-bis. Clear AI ARTIFACT blobs, same rule and same reasoning as 1a
+  //     (execution-plane spec §8: "erasure deletes blobs via the helper before
+  //     the rows cascade"). `ai_run_artifacts.blob_key` is the only index to the
+  //     object — the key deliberately carries no tenant id, so a bucket listing
+  //     cannot reconstruct which objects belonged to this org once the rows are
+  //     gone. A storage fault therefore ABORTS the erasure before anything is
+  //     removed; the same keys are re-read on the re-run.
+  //
+  //     A separate block from 1a because the keys live in a different store
+  //     (region-keyed artifact buckets, not the platform attachment bucket) and
+  //     the helper deletes one key per request.
+  try {
+    const artifactKeys = await dbModule.withSystemDbAccessContext(async () => {
+      const result = await dbModule.db.execute(sql`
+        SELECT blob_key
+        FROM ai_run_artifacts
+        WHERE org_id = ${orgId}::uuid
+      `);
+      const rows = (result as unknown as { rows?: Array<{ blob_key: string }> }).rows
+        ?? (result as unknown as Array<{ blob_key: string }>);
+      return Array.isArray(rows) ? rows.map((r) => r.blob_key).filter(Boolean) : [];
+    });
+    if (artifactKeys.length > 0) {
+      const blobs = getBlobStorage();
+      for (const key of artifactKeys) {
+        await blobs.delete(key);
+      }
+    }
+  } catch (err) {
+    if (!isUndefinedTable(err)) {
+      await writeErasureFailedAudit(
+        orgId, performedBy, performedByEmail, 'ai_run_artifacts_blobs', stats, err,
+      );
+      throw new Error(
+        `[tenantCascade] artifact blob pre-clear failed for org=${orgId}; erasure aborted before any row was deleted and is rerunnable: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    console.warn(
+      `[tenantCascade] artifact blob pre-clear skipped for missing table ai_run_artifacts (org=${orgId})`,
+    );
   }
 
   // 1b. Clear system-scoped associated tables (e.g. device_commands, the

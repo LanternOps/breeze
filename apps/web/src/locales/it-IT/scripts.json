@@ -106,7 +106,8 @@
       "sendNotification": "Invia notifica",
       "createAlert": "Crea avviso",
       "executeCommand": "Esegui comando",
-      "deploySoftware": "Distribuisci software"
+      "deploySoftware": "Distribuisci software",
+      "aiTriage": "Triage IA"
     },
     "severity": {
       "critical": "Critica",
@@ -133,7 +134,8 @@
       "saveAutomation": "Salva automazione",
       "copyUrl": "Copia URL",
       "addCondition": "Aggiungi condizione",
-      "addAction": "Aggiungi azione"
+      "addAction": "Aggiungi azione",
+      "removeAction": "Rimuovi azione"
     },
     "scope": {
       "title": "Ambito",
@@ -1378,6 +1380,8 @@
     "modeSkip": "Salta",
     "modeRename": "Importa con un nuovo nome",
     "modeNewVersion": "Aggiungi come nuova versione dello script esistente",
+    "tagLegacy": "Contrassegna come importazione legacy",
+    "tagLegacyHint": "Aggiunge il tag legacy-import così un Fleet Design può inventariare a cosa servivano questi script.",
     "partnerWide": "Rendi disponibile per tutte le organizzazioni (a livello di partner)",
     "importCommit": "Importa {{count}} script",
     "resultSummary": "{{imported}} importati, {{renamed}} rinominati, {{versioned}} versionati, {{skipped}} saltati, {{failed}} non riusciti",
@@ -1429,6 +1433,8 @@
     "originSystem": "Integrato",
     "reviewed": "Revisionato",
     "editedSinceReview": "Modificato dopo la revisione",
+    "notReviewed": "Non revisionato",
+    "notReviewedDetail": "Creato dall'IA e approvato da una persona, ma su questa versione non è stata eseguita alcuna revisione del modello.",
     "provenanceTitle": "Provenienza",
     "reviewSummary": "Riepilogo della revisione",
     "approvedBy": "Approvato da",

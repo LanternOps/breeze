@@ -773,9 +773,15 @@ describe('remote routes', () => {
       } as any);
 
       // update stale sessions
+      // The sweep writes through the terminal-intent contract (SEC-038 W03),
+      // whose RETURNING row must carry the terminal generation.
+      const terminalRow = (id: string) => ({
+        id, type: 'desktop', deviceId: 'device-1', orgId: 'org-1', userId: 'user-1',
+        status: 'disconnected', promptMode: null, terminalGeneration: 1n, terminationPhase: 'pending',
+      });
       vi.mocked(db.update).mockReturnValueOnce(mockUpdateReturning([
-        { id: 'session-a' },
-        { id: 'session-b' }
+        terminalRow('session-a'),
+        terminalRow('session-b'),
       ]));
 
       const res = await app.request('/remote/sessions/stale', {

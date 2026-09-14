@@ -835,6 +835,17 @@
         "openAlertsFeature": "Apri Avvisi",
         "legacyAlertRulesMovedToAlerts": "{{count}} regola/e di avviso legacy salvate in questa scheda sono state spostate nella funzione Avvisi di questo criterio. Il monitoraggio non le memorizza più."
       },
+      "monitorsTab": {
+        "attachMonitor": "Collega un monitor",
+        "loadingMonitors": "Caricamento dei monitor…",
+        "noMoreMonitorsToAttach": "Nessun altro monitor disponibile da collegare",
+        "selectAMonitorToAttach": "Seleziona un monitor da collegare…",
+        "noMonitorsAttached": "Nessun monitor ancora collegato a questa policy.",
+        "inherited": "Ereditato",
+        "overrideValue": "Valore di override",
+        "overridesLabel": "Override:",
+        "failedToLoadMonitors": "Impossibile caricare i monitor"
+      },
       "pamTab": {
         "captureWindowsUACElevationPrompts": "Acquisisci prompt di elevazione UAC di Windows",
         "theAgentObservesUACConsentPromptsAnd": "L'agent osserva i prompt di consenso UAC e li registra come richieste di elevazione per la revisione PAM. L'acquisizione è disattivata per impostazione predefinita: abilitala qui per includere l'ambito di un dispositivo in PAM.",
@@ -1175,7 +1186,22 @@
         "generateACriticalAlertWhenWarrantyExpires": "Genera un avviso critico quando la garanzia scade entro questo numero di giorni.",
         "enabled": "enabled",
         "warnDays": "warnDays",
-        "criticalDays": "criticalDays"
+        "criticalDays": "criticalDays",
+        "collectHpWarrantyFromTheDevice": "Raccogli la garanzia HP dal dispositivo",
+        "hpCmslConsentExplainer": "I dati di garanzia HP vengono letti sul dispositivo tramite la Client Management Script Library di HP. Selezionando questa casella si accetta la licenza HP per conto di questo cliente e HP può raccogliere informazioni tecniche dal dispositivo, incluso il suo indirizzo IP. Se resta deselezionata, i dispositivi HP mantengono lo stato di garanzia che hanno già.",
+        "hpCmslNoAcceptanceRecordedYet": "Nessuna accettazione registrata finora. Salvando con questa casella selezionata vengono registrati il tuo utente e l'ora del server.",
+        "hpCmslAcceptedByOn": "Accettato da {{user}} il {{date}}",
+        "hpCmslTermsChangedSaveAgain": "HP ha modificato le condizioni di licenza dopo questa accettazione. Salva di nuovo per accettare nuovamente.",
+        "hpCmslInheritanceReplacesTheWholeLink": "Questo criterio sostituisce per intero le impostazioni di garanzia ereditate, senza alcuna unione campo per campo. Salvandolo con la raccolta sul dispositivo disattivata si interrompe la raccolta della garanzia HP su ogni dispositivo che raggiunge."
+      },
+      "rationale": {
+        "label": "Motivazione",
+        "edit": "Modifica motivazione",
+        "placeholder": "Perché esiste questo elemento…",
+        "save": "Salva",
+        "cancel": "Annulla",
+        "none": "Nessuna motivazione registrata."
+
       }
     }
   },

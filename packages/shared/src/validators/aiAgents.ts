@@ -5,6 +5,7 @@ import {
   AI_AGENT_LIMIT_DEFAULTS,
   AI_AGENT_MODES,
   AI_ALERT_VERDICT_CLASSIFICATIONS,
+  allowedModesForKind,
   type AlertVerdictOutcome,
 } from '../types/aiAgents';
 
@@ -72,6 +73,14 @@ const limitsFields = z.object({
   // Promotion threshold (phase 2 P2-5) — see
   // AiAgentLimits.promoteThreshold's docstring.
   promoteThreshold: z.number().int().min(5).max(200),
+  // Design-profile admission caps (Fleet Designer W01) — see
+  // AiAgentLimits.maxConcurrentDesignRuns's docstring. A design run is a
+  // long read-only turn budget over a whole org; the per-day cap (enforced
+  // over a 24h window, not per-hour) is the cost ceiling a partner sets.
+  maxConcurrentDesignRuns: z.number().int().min(1).max(4),
+  maxDesignRunsPerDay: z.number().int().min(1).max(24),
+  designBudgetCentsPerRun: z.number().int().min(25).max(2000),
+  designMaxTurns: z.number().int().min(8).max(120),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
@@ -204,12 +213,29 @@ export const aiAgentPolicyFieldsSchema = z.object({
   cooldownSeconds: z.number().int().min(0).max(86400).default(900),
 });
 
-export const createAiAgentSchema = aiAgentPolicyFieldsSchema.extend({
+// Fleet Designer (W01) — `shadow` is meaningless for a read-only kind that
+// never produces intents; `allowedModesForKind` is the single source of
+// truth so the create route and the web create flow agree with this. Shared
+// between `createAiAgentSchema` and `previewAiAgentSchema` (both need it,
+// and applying `.superRefine()` to the base object schema below would make
+// it a `ZodObject` with refinements, on which Zod 4 refuses `.omit()` at
+// runtime — see `previewAiAgentSchema`'s docstring).
+function assertModeAllowedForKind(v: { kind: AiAgentKindLike; mode: AiAgentModeLike }, ctx: z.RefinementCtx): void {
+  if (!allowedModesForKind(v.kind).includes(v.mode)) {
+    ctx.addIssue({ code: 'custom', path: ['mode'], message: `mode ${v.mode} is not available for a ${v.kind} agent` });
+  }
+}
+type AiAgentKindLike = (typeof AI_AGENT_KINDS)[number];
+type AiAgentModeLike = (typeof AI_AGENT_MODES)[number];
+
+const createAiAgentObjectSchema = aiAgentPolicyFieldsSchema.extend({
   ownerScope: z.enum(['organization', 'partner']).optional(),
   orgId: z.string().guid().optional(),
   kind: z.enum(AI_AGENT_KINDS),
   name: z.string().trim().min(1).max(120),
 });
+
+export const createAiAgentSchema = createAiAgentObjectSchema.superRefine(assertModeAllowedForKind);
 
 // Every field optional with NO default at any depth: an absent key means "leave
 // the stored value alone", and must never round-trip as a shipped default.
@@ -238,14 +264,16 @@ export const updateAiAgentSchema = z.object({
  * `protectedResources`/`limits`/`triggers`/`recipients`/`actAssets`), so
  * `buildAgentPreview` never has to special-case a partially-defaulted draft.
  *
- * `createAiAgentSchema` is `aiAgentPolicyFieldsSchema.extend({...})` — a
- * plain `ZodObject` (the object itself is never `.transform()`ed, only
- * individual field schemas are), so `.omit()`/`.extend()` chain on it
- * directly rather than needing to be rebuilt from the fields schema.
+ * Built from `createAiAgentObjectSchema` (the plain, unrefined `ZodObject`
+ * `createAiAgentSchema` extends with its `.superRefine()`), not from
+ * `createAiAgentSchema` itself: Zod 4 refuses `.omit()` at runtime on an
+ * object schema that already carries a refinement, so `.omit()`/`.extend()`
+ * chain on the plain object and the mode-vs-kind check
+ * (`assertModeAllowedForKind`) is re-applied here.
  */
-export const previewAiAgentSchema = createAiAgentSchema.omit({ name: true }).extend({
+export const previewAiAgentSchema = createAiAgentObjectSchema.omit({ name: true }).extend({
   name: z.string().trim().min(1).max(120).optional(),
-});
+}).superRefine(assertModeAllowedForKind);
 
 /**
  * Manual "run now" trigger body. `.strict()` so a caller cannot smuggle an

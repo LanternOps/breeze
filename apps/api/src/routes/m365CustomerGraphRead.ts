@@ -6,6 +6,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
+import { isM365TenantSyncEnabled } from '../config/env';
 import { zValidator } from '../lib/validation';
 import {
   authMiddleware,
@@ -36,6 +37,9 @@ import {
   recordM365CustomerGraphReadEvent,
   type M365CustomerGraphReadOutcome,
 } from '../services/m365ControlPlane/metrics';
+import { ON_DEMAND_SYNC_DOMAINS, requestOnDemandSync } from '../services/m365Sync/lifecycle';
+import { consumeOnDemandSyncSlot, releaseOnDemandSyncSlot } from '../services/m365Sync/onDemandLimiter';
+import { loadSyncSummary, type M365SyncSummary } from '../services/m365Sync/summary';
 
 const PROFILE_ID = 'customer-graph-read' as const;
 const PROFILE_DISPLAY_NAME = 'Customer Graph Read';
@@ -102,6 +106,10 @@ export interface CustomerGraphReadEnvelope {
   };
   onboardingEnabled: boolean;
   connection: CustomerGraphReadConnectionDto | null;
+  /** W05: tenant sync is available in this deployment. Gates the Sync now button. */
+  syncEnabled: boolean;
+  /** W05: per-domain freshness plus entity counts. Null when the flag is off or nothing is seeded. */
+  sync: M365SyncSummary | null;
 }
 
 type ConnectionWithHealth = CustomerGraphReadConnectionSnapshot & { grantHealth?: GrantHealth };
@@ -132,10 +140,11 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphReadConnecti
   };
 }
 
-function envelope(
+async function envelope(
   orgId: string,
   connection: ConnectionWithHealth | null,
-): CustomerGraphReadEnvelope {
+): Promise<CustomerGraphReadEnvelope> {
+  const syncEnabled = isM365TenantSyncEnabled();
   return {
     profile: {
       id: PROFILE_ID,
@@ -145,6 +154,11 @@ function envelope(
     },
     onboardingEnabled: isM365CustomerGraphReadOnboardingEnabledForOrg(orgId),
     connection: connection ? toConnectionDto(connection) : null,
+    syncEnabled,
+    // Envelope-level, not on the connection DTO (W01 owns that shape). Read on
+    // the request's own DB context; rollup counts are filtered to the CURRENT
+    // connection's tenant because history rows outlive a rebind.
+    sync: syncEnabled ? await loadSyncSummary(orgId, connection?.tenantId ?? null) : null,
   };
 }
 
@@ -223,7 +237,7 @@ m365CustomerGraphReadRoutes.get('/connections', requireOrgsRead, async (c) => {
   const resolved = resolveConcreteOrg(c.get('auth'), parsed.orgId);
   if (!('orgId' in resolved)) return c.json({ error: resolved.error }, resolved.status);
   const connections = await listCustomerGraphReadConnections(resolved.orgId);
-  return c.json(envelope(resolved.orgId, connections[0] ?? null));
+  return c.json(await envelope(resolved.orgId, connections[0] ?? null));
 });
 
 m365CustomerGraphReadRoutes.post(
@@ -366,6 +380,74 @@ m365CustomerGraphReadRoutes.post(
     } catch (error) {
       return lifecycleFailure(c, error);
     }
+  },
+);
+
+/**
+ * On-demand tenant sync (spec §5.2). Same middleware chain as retest
+ * (organizations:write + MFA + concrete-org resolution incl. the partner-wide
+ * write gate), then — in this order, each deliberate:
+ *  1. the flag: a disabled feature 404s like disabled onboarding and never
+ *     consumes a rate-limit slot;
+ *  2. the connection: resolved before the limiter, so probing a wrong or
+ *     non-executable id cannot lock a technician out for 15 minutes;
+ *  3. the per-org Redis slot (fail-closed): 429 with a Retry-After header;
+ *  4. the claim, which is given back to the limiter if it never reached the
+ *     queue.
+ * Sign-in activity is not requested: its Graph limit is app-wide, so one
+ * "Sync now" must not spend the region's budget.
+ */
+m365CustomerGraphReadRoutes.post(
+  '/connections/:id/sync',
+  requireOrgsWrite,
+  requireMfa(),
+  zValidator('param', idParam),
+  async (c) => {
+    const resolved = mutationOrg(c);
+    if (resolved instanceof Response) return resolved;
+    if (!('orgId' in resolved)) return c.json({ error: 'Connection not found' }, 404);
+    if (!isM365TenantSyncEnabled()) {
+      return c.json({ error: 'Microsoft 365 tenant sync is not enabled' }, 404);
+    }
+    const { id } = c.req.valid('param');
+
+    const connections = await listCustomerGraphReadConnections(resolved.orgId);
+    const connection = connections.find((value) => value.id === id) ?? null;
+    if (!connection || !(connection.status === 'active' || connection.status === 'degraded')) {
+      return c.json({ error: 'Connection not found' }, 404);
+    }
+
+    const slot = await consumeOnDemandSyncSlot(resolved.orgId);
+    if (!slot.allowed) {
+      c.header('Retry-After', String(slot.retryAfterSeconds));
+      return c.json({
+        error: 'A tenant sync was requested recently. Try again shortly.',
+        retryAfter: slot.retryAfterSeconds,
+      }, 429);
+    }
+
+    try {
+      await requestOnDemandSync({ orgId: resolved.orgId, connectionId: connection.id });
+    } catch (error) {
+      await releaseOnDemandSyncSlot(resolved.orgId);
+      console.error(`[m365CustomerGraphRead] on-demand sync request failed for org=${resolved.orgId}:`, error);
+      return lifecycleFailure(c, error);
+    }
+
+    const auth = c.get('auth');
+    recordM365CustomerGraphReadEvent(c, {
+      event: 'm365.customer_graph_read.sync_requested',
+      orgId: resolved.orgId,
+      connectionId: connection.id,
+      profile: PROFILE_ID,
+      consentAttemptId: connection.consentAttemptId,
+      manifestVersion: connection.permissionManifestVersion,
+      outcome: 'initiated',
+      correlationId: randomUUID(),
+      actorId: auth.user.id,
+      actorEmail: auth.user.email,
+    });
+    return c.json({ requested: true, domains: [...ON_DEMAND_SYNC_DOMAINS] });
   },
 );
 

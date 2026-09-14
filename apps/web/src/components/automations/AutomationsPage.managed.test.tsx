@@ -66,3 +66,29 @@ describe('AutomationsPage managed automation mapping', () => {
     expect(newLink).toHaveAttribute('href', '/jobs/new');
   });
 });
+
+describe('AutomationsPage monitor-managed filtering (#5287)', () => {
+  it('hides a row compiled from a monitor from the Jobs list', async () => {
+    fetchMock.mockResolvedValue(
+      json({
+        data: [
+          { ...automation, id: 'automation-2', name: 'Compiled from monitor', managedByMonitorId: 'monitor-1' },
+          automation,
+        ],
+      }),
+    );
+
+    render(<AutomationsPage />);
+
+    await screen.findByText('Triage critical alerts');
+    expect(screen.queryByText('Compiled from monitor')).toBeNull();
+  });
+
+  it('still shows a row that omits managedByMonitorId', async () => {
+    fetchMock.mockResolvedValue(json({ data: [automation] }));
+
+    render(<AutomationsPage />);
+
+    expect(await screen.findByText('Triage critical alerts')).toBeInTheDocument();
+  });
+});

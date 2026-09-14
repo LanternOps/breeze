@@ -134,11 +134,21 @@ export const JOB_SCHEDULES = {
   // only minute 8 before this. Runs well after the day it summarises closed.
   'ai-agent-impact-rollup': '33 18 * * *',
   'ai-agent-op-evidence-retention': '48 18 * * *',
+  // #5306 — daily sweep of the MFA enrolment grace window: sends the "window
+  // opened" notice and the T-3 reminder to role-forced users who have never
+  // held a factor. Hour 19 was unused; minute 3 keeps the daily (mod 5) lane.
+  'mfa-enrollment-notice-sweep': '3 19 * * *',
   // #2787 item 4 — daily purge of removed devices past their org's
   // device_lifecycle retention window. Hour 8 in the daily (≡3 mod 5) lane
   // held 3/23/43; :13 was free. NOT minute 17: that lane is ≡2 (mod 5) and
   // `audit-drift-evaluator` already fires hourly at :17.
   'removed-device-purge': '13 8 * * *',
+  // #5329 (M365 tenant sync, spec §3.7) — daily prune of stale M365 snapshot
+  // rows (30 days past stale_since) and of Secure Score control_scores past
+  // 90 days, both via partial indexes so the sweep never rescans pruned
+  // history. Hour 19 was free in the daily tier; :03 keeps it in the
+  // daily = 3 (mod 5) lane.
+  'm365-sync-retention': '8 19 * * *',
 
   // ------------------------------------------------------------ sub-daily tier
   // Minutes ≡ 2 (mod 5), plus three legacy slots on :00 / :15 / :35. Minute 0
@@ -161,6 +171,9 @@ export const JOB_SCHEDULES = {
   // :32 is one of the two remaining free minutes in the ≡2 (mod 5) lane.
   'ticket-attachment-pending-reaper': '32 * * * *',
   'user-risk-scan': '57 4,10,16,22 * * *',
+  // Execution plane W01 (spec §6.1) — hourly expiry sweep of ai_run_artifacts,
+  // blob then row. :2 is the last free minute in the ≡2 (mod 5) lane.
+  'ai-artifact-expiry-sweeper': '2 * * * *',
 } as const;
 
 export type JobScheduleKey = keyof typeof JOB_SCHEDULES;

@@ -22,13 +22,14 @@ import {
 // `ticketOutboxRetention` / `intentOutboxRetention` /
 // `metricAnomalyIncidentRetention`, #4210; `deviceGroupJobs`, dynamic device
 // group re-evaluation, #4630; `aiOperatorTaskOutboxPublisher`, #5205 W05
-// #5210; `aiOperatorTaskWorker`, #5205 W06 #5211).
+// #5210; `aiOperatorTaskWorker`, #5205 W06 #5211; `m365SyncRetention`, M365
+// tenant sync W02, #5329; `m365SyncWorker`, M365 tenant sync W04, #5331).
 // This list is duplicated here deliberately — the whole point of the test is
 // to catch drift between the plan's documented contract and the actual
 // registry, so it must not import the list from the module under test.
-const EXPECTED_132_NAMES = [
+const EXPECTED_WORKER_NAMES = [
   'alertWorkers', 'alertCorrelationWorker', 'metricRollupsWorker', 'metricRollupMaintenance',
-  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
+  'metricAnomaliesWorker', 'aiBudgetAlertDeliveryWorker', 'aiArtifactSweeper', 'fleetFindingsWorker', 'fleetRemediationDispatchWorker', 'mlOutputRetention',
   'offlineDetector', 'notificationDispatcher', 'webhookDelivery', 'webhookDeliveryRecovery',
   'policyEvaluationWorker', 'softwareComplianceWorker', 'softwareRemediationWorker', 'aiAgentRunner',
   'agentNotifyRetry', 'fixWatchWorker',
@@ -37,6 +38,7 @@ const EXPECTED_132_NAMES = [
   'backupVerificationJobs', 'eventLogRetention', 'logCorrelationWorker', 'agentLogRetention',
   'ticketOutboxRetention', 'intentOutboxRetention', 'metricAnomalyIncidentRetention',
   'ipHistoryRetention', 'reliabilityRetention', 'processSampleRetention', 'deviceMetricsRetention',
+  'm365SyncRetention',
   'serviceProcessCheckRetention', 'changeLogRetention', 'oauthCleanup', 'authBrowserTransitionCleanup', 'stripeAccountCacheRefresh',
   'exchangeRateSync', 'oauthRevocationRetryWorker', 'mtlsCertificateRevocationWorker', 'authEmailWorker',
   'quoteSendWorker', 'enrollmentKeyCleanup', 'quickSupportReaper', 'softwareUploadSessionCleanup',
@@ -45,14 +47,14 @@ const EXPECTED_132_NAMES = [
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
-  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'pax8SyncWorker',
+  'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
   'tdSynnexSftpSyncWorker', 'logForwardingWorker', 'patchJobWorker', 'patchSchedulerWorker',
   'maintenanceRebootWorker', 'backupWorker', 'sensitiveDataWorker', 'peripheralJobs',
   'deviceGroupJobs',
   'browserSecurityWorker', 'c2cBackupWorker', 'backupSlaWorker', 'drExecutionWorker',
   'recoveryMediaWorker', 'warrantyWorker', 'ssoDomainRecheckWorker',
   'incidentCorrelationWorker', 'incidentTimelineEnricher', 'incidentSlaMonitor', 'staleCommandReaper',
-  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'offboardingDrainReaper',
+  'softwareDeploymentScheduler', 'pamJobs', 'approvalExpiryReaper', 'workspaceReaper', 'offboardingDrainReaper',
   'intentOutboxPublisher', 'aiOperatorTaskOutboxPublisher', 'aiOperatorTaskWorker',
   'pamActuationWorker', 'intentExpiryReaper', 'intentReleaseWorker', 'stripeReconcileSweep', 'stripeSessionRevocationSweep',
   'ticketAttachmentReaper', 'quoteExpiryReaper', 'suppressionExpiryReaper', 'ticketNotifyWorker', 'ticketOutboxPublisher',
@@ -64,15 +66,39 @@ const EXPECTED_132_NAMES = [
   'scriptReviewWorker',
   'scriptVerifyWorker',
   'aiBudgetReservationSweep',
+  // #5306 — MFA enrolment grace window email nudge (daily sweep).
+  'mfaEnrollmentNoticeWorker',
 ];
 
 describe('workerRegistry: losslessness', () => {
-  it('contains exactly the 132 known names, in order', () => {
-    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_132_NAMES);
+  it('contains exactly the known names, in order', () => {
+    expect(WORKER_REGISTRY.map((e) => e.name)).toEqual(EXPECTED_WORKER_NAMES);
   });
 
-  it('has exactly 132 entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(132);
+  it('has exactly the expected number of entries', () => {
+    expect(WORKER_REGISTRY.length).toBe(137);
+  });
+
+  it('registers the m365 sync retention worker as global placement', async () => {
+    const entry = WORKER_REGISTRY.find((w) => w.name === 'm365SyncRetention');
+    expect(entry, 'm365SyncRetention is not in the worker registry').toBeDefined();
+    expect(entry!.placement).toBe('global');
+    const loaded = await entry!.load();
+    expect(typeof loaded.init).toBe('function');
+    expect(typeof loaded.shutdown).toBe('function');
+  });
+
+  it('registers the m365 sync worker as a socket-owner-placement entry', () => {
+    // NOTE (deviation from plan text): the plan's Step 1 pins 'global', but
+    // workerEntrypointClosure.contract.test.ts's static import-closure walk
+    // shows jobs/m365SyncWorker.ts -> services/m365Sync/run.ts ->
+    // services/m365ControlPlane/readActionService.ts -> services/aiTools.ts
+    // -> ... -> routes/agentWs.ts — reaching socket-local dispatch, same as
+    // policyEvaluationWorker's flip above. Verified by running the closure
+    // contract, per the plan's own instruction to flip and say so if it fails.
+    const entry = WORKER_REGISTRY.find((e) => e.name === 'm365SyncWorker');
+    expect(entry).toBeDefined();
+    expect(entry!.placement).toBe('socket-owner');
   });
 
   it('every entry has a well-formed shape', () => {
@@ -92,14 +118,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(132);
+    expect(selectWorkers('all').length).toBe(137);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(132);
+    expect(api.length + worker.length).toBe(137);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -107,7 +133,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(132);
+    expect(union.size).toBe(137);
   });
 
   it("'api' selects only socket-owner placements", () => {

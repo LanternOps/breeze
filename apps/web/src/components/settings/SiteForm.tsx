@@ -32,6 +32,10 @@ type SiteFormProps = {
   defaultValues?: Partial<SiteFormValues>;
   submitLabel?: string;
   loading?: boolean;
+  /** Classes on the `<form>`. Defaults to a standalone card; a host that is
+   *  already a card (the site dialogs) passes flat padding instead so the
+   *  form never renders as a card inside a card. */
+  className?: string;
 };
 
 export default function SiteForm({
@@ -39,7 +43,8 @@ export default function SiteForm({
   onCancel,
   defaultValues,
   submitLabel,
-  loading
+  loading,
+  className = 'space-y-6 rounded-lg border bg-card p-6 shadow-xs'
 }: SiteFormProps) {
   const { t } = useTranslation('settings');
   const siteSchema = useMemo(() => createSiteSchema(t), [t]);
@@ -76,7 +81,7 @@ export default function SiteForm({
       onSubmit={handleSubmit(async values => {
         await onSubmit?.(values);
       })}
-      className="space-y-6 rounded-lg border bg-card p-6 shadow-xs"
+      className={className}
     >
       <p className="text-sm text-muted-foreground">
         {t('siteForm.description')}

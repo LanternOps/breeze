@@ -1,0 +1,230 @@
+/**
+ * Execution-plane W01 (spec §5.2, §8, §9, §12). Proves the properties that are
+ * NOT visible from the route or the capture hook:
+ *   - blob is written BEFORE the row, and a row-insert failure compensates by
+ *     deleting the blob (the key would otherwise be unreachable forever),
+ *   - delete removes the blob BEFORE the row (the row is the only key index),
+ *   - previews are RAW head/tail bytes, redacted, NUL-stripped, ≤ 2048 chars,
+ *   - resolveArtifact returns null for the wrong org — never a distinguishable
+ *     "forbidden",
+ *   - toArtifactDto never leaks blobKey.
+ */
+import { Readable } from 'node:stream';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  insertValues: [] as Record<string, unknown>[],
+  insertRows: [] as unknown[],
+  insertError: null as unknown,
+  selectRows: [] as unknown[][],
+  deleteWheres: [] as unknown[],
+  calls: [] as string[],
+}));
+
+vi.mock('../../db', () => ({
+  db: {
+    insert: vi.fn(() => ({
+      values: vi.fn((v: Record<string, unknown>) => {
+        mocks.insertValues.push(v);
+        mocks.calls.push('row:insert');
+        return {
+          returning: vi.fn(async () => {
+            if (mocks.insertError) throw mocks.insertError;
+            return mocks.insertRows.shift() ?? [];
+          }),
+        };
+      }),
+    })),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => mocks.selectRows.shift() ?? []),
+          orderBy: vi.fn(async () => mocks.selectRows.shift() ?? []),
+        })),
+      })),
+    })),
+    delete: vi.fn(() => ({
+      where: vi.fn(async (w: unknown) => {
+        mocks.deleteWheres.push(w);
+        mocks.calls.push('row:delete');
+        return undefined;
+      }),
+    })),
+  },
+}));
+
+import {
+  ARTIFACT_PREVIEW_BYTES,
+  buildPreviews,
+  createArtifact,
+  deleteArtifact,
+  listArtifactsForAuth,
+  resolveArtifact,
+  sanitizeArtifactName,
+  toArtifactDto,
+  type ArtifactRecord,
+} from './artifactService';
+import { createMemoryBlobStorage, setBlobStorageForTests } from './blobStorage';
+
+const ORG = '00000000-0000-4000-8000-0000000000a1';
+const OTHER_ORG = '00000000-0000-4000-8000-0000000000a2';
+const RUN = '00000000-0000-4000-8000-0000000000a3';
+const ART = '00000000-0000-4000-8000-0000000000a4';
+
+let blobs: ReturnType<typeof createMemoryBlobStorage>;
+
+beforeEach(() => {
+  mocks.insertValues.length = 0;
+  mocks.insertRows.length = 0;
+  mocks.selectRows.length = 0;
+  mocks.deleteWheres.length = 0;
+  mocks.calls.length = 0;
+  mocks.insertError = null;
+  blobs = createMemoryBlobStorage();
+  // Trace blob ops into the SAME ordered list as the row ops, so
+  // "blob before row" is provable rather than assumed.
+  const realPut = blobs.put.bind(blobs);
+  const realDelete = blobs.delete.bind(blobs);
+  blobs.put = async (input) => { mocks.calls.push('blob:put'); return realPut(input); };
+  blobs.delete = async (key) => { mocks.calls.push('blob:delete'); return realDelete(key); };
+  setBlobStorageForTests(blobs);
+});
+afterEach(() => { setBlobStorageForTests(null); vi.clearAllMocks(); });
+
+function row(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: ART, orgId: ORG, runId: RUN, sessionId: null, kind: 'input_capture',
+    name: 'search_logs.json', contentType: 'application/json', bytes: 20, sha256: 'a'.repeat(64),
+    blobKey: 'us/2026/10/abc', headPreview: '{"rows"', tailPreview: ']}',
+    sourceDeviceId: null, createdByTool: 'search_logs',
+    expiresAt: new Date('2026-11-15T00:00:00Z'), createdAt: new Date('2026-10-16T00:00:00Z'),
+    ...over,
+  };
+}
+
+describe('sanitizeArtifactName', () => {
+  it('keeps a basename, strips separators, control chars and quotes, caps at 200', () => {
+    expect(sanitizeArtifactName('../../etc/passwd')).toBe('passwd');
+    expect(sanitizeArtifactName('a"b\\c\u0000d')).toBe('abcd');
+    expect(sanitizeArtifactName('x'.repeat(500))).toHaveLength(200);
+  });
+
+  it('falls back to a constant when nothing survives', () => {
+    expect(sanitizeArtifactName('   ')).toBe('artifact');
+    expect(sanitizeArtifactName('/')).toBe('artifact');
+  });
+});
+
+describe('buildPreviews (spec §5.2 — RAW bytes, never a rendered form)', () => {
+  it('returns the whole content in head and tail when it is short', () => {
+    const { headPreview, tailPreview } = buildPreviews('{"a":1}');
+    expect(headPreview).toBe('{"a":1}');
+    expect(tailPreview).toBe('{"a":1}');
+  });
+
+  it('caps each side at ARTIFACT_PREVIEW_BYTES and takes head from the start, tail from the end', () => {
+    const raw = `HEAD${'x'.repeat(10_000)}TAIL`;
+    const { headPreview, tailPreview } = buildPreviews(raw);
+    expect(headPreview.startsWith('HEAD')).toBe(true);
+    expect(tailPreview.endsWith('TAIL')).toBe(true);
+    expect(headPreview.length).toBeLessThanOrEqual(ARTIFACT_PREVIEW_BYTES);
+    expect(tailPreview.length).toBeLessThanOrEqual(ARTIFACT_PREVIEW_BYTES);
+  });
+
+  it('strips NUL (Postgres text rejects it) and redacts bare secrets', () => {
+    const { headPreview } = buildPreviews('tok=sk-ant-abcdefghijklmnopqrstuv\u0000end');
+    expect(headPreview).not.toContain('\u0000');
+    expect(headPreview).not.toContain('sk-ant-abcdefghijklmnopqrstuv');
+    expect(headPreview).toContain('[REDACTED]');
+  });
+});
+
+describe('createArtifact', () => {
+  it('writes the blob BEFORE the row and returns the stored bytes/sha256', async () => {
+    mocks.insertRows.push([row()]);
+    const record = await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'input_capture', name: 'search_logs.json',
+      contentType: 'application/json', body: Buffer.from('{"rows":[1,2,3,4,5]}'),
+      maxBytes: 1024, createdByTool: 'search_logs', region: 'us',
+    });
+    expect(mocks.calls).toEqual(['blob:put', 'row:insert']);
+    expect(record.id).toBe(ART);
+    const written = mocks.insertValues[0]!;
+    expect(written.bytes).toBe(20);
+    expect(String(written.sha256)).toMatch(/^[0-9a-f]{64}$/);
+    expect(String(written.blobKey)).toMatch(/^us\/\d{4}\/\d{2}\//);
+  });
+
+  it('compensates by deleting the blob when the row insert fails, and rethrows', async () => {
+    mocks.insertError = Object.assign(new Error('insert boom'), { code: '23503' });
+    await expect(createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'out.txt', contentType: 'text/plain',
+      body: Buffer.from('hello'), maxBytes: 1024, createdByTool: 'workspace_collect', region: 'eu',
+    })).rejects.toThrow('insert boom');
+    expect(mocks.calls).toEqual(['blob:put', 'row:insert', 'blob:delete']);
+    expect(blobs.objects.size).toBe(0);
+  });
+
+  it('accepts a stream body and defaults expiry to 30 days', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: null, kind: 'step_stdout', name: 'step-1.out',
+      contentType: 'text/plain; charset=utf-8',
+      body: Readable.from([Buffer.from('abc'), Buffer.from('def')]),
+      maxBytes: 1024, createdByTool: 'workspace_run', region: 'us',
+    });
+    const written = mocks.insertValues[0]!;
+    expect(written.bytes).toBe(6);
+    const days = ((written.expiresAt as Date).getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThan(30.1);
+  });
+});
+
+describe('resolveArtifact (spec §5.2 — null covers both not-found and forbidden)', () => {
+  it('returns the record for the owning org', async () => {
+    mocks.selectRows.push([row()]);
+    expect((await resolveArtifact(ART, { orgId: ORG }))?.id).toBe(ART);
+  });
+
+  it('returns null — not a distinguishable error — when the row belongs to another org', async () => {
+    mocks.selectRows.push([]); // the org predicate excluded it
+    expect(await resolveArtifact(ART, { orgId: OTHER_ORG })).toBeNull();
+  });
+
+  it('returns null for a handle that is not a uuid, without querying', async () => {
+    expect(await resolveArtifact('not-a-uuid', { orgId: ORG })).toBeNull();
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it('returns null when a runId scope is supplied and the row belongs to another run', async () => {
+    mocks.selectRows.push([]);
+    expect(await resolveArtifact(ART, { orgId: ORG, runId: '00000000-0000-4000-8000-0000000000ff' })).toBeNull();
+  });
+});
+
+describe('deleteArtifact — blob first, then row (the row is the only key index)', () => {
+  it('deletes in that order', async () => {
+    const record = { ...row(), blobKey: 'us/2026/10/k1' } as unknown as ArtifactRecord;
+    await deleteArtifact(record);
+    expect(mocks.calls).toEqual(['blob:delete', 'row:delete']);
+  });
+
+  it('leaves the row in place when the blob delete throws, so the erasure is rerunnable', async () => {
+    blobs.delete = async () => { mocks.calls.push('blob:delete'); throw new Error('bucket down'); };
+    await expect(deleteArtifact(row() as unknown as ArtifactRecord)).rejects.toThrow('bucket down');
+    expect(mocks.calls).toEqual(['blob:delete']);
+  });
+});
+
+describe('listArtifactsForAuth / toArtifactDto', () => {
+  it('never exposes blobKey and renders the download path', async () => {
+    mocks.selectRows.push([row()]);
+    const auth = { orgCondition: () => undefined } as never;
+    const [dto] = (await listArtifactsForAuth(RUN, auth)).map(toArtifactDto);
+    expect(dto).toBeDefined();
+    expect(Object.keys(dto!)).not.toContain('blobKey');
+    expect(dto!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART}`);
+    expect(dto!.expiresAt).toBe('2026-11-15T00:00:00.000Z');
+  });
+});

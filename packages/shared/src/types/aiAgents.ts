@@ -1,8 +1,19 @@
-export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk'] as const;
+export const AI_AGENT_KINDS = ['triage', 'patch', 'helpdesk', 'designer'] as const;
 export type AiAgentKind = (typeof AI_AGENT_KINDS)[number];
 
 export const AI_AGENT_MODES = ['off', 'shadow', 'act'] as const;
 export type AiAgentMode = (typeof AI_AGENT_MODES)[number];
+
+/**
+ * Fleet Designer (W01) — the designer kind is read-only and produces no
+ * intents, so `shadow` (which exists to preview what `act` would have done)
+ * has nothing to shadow. The create flow and `createAiAgentSchema` both
+ * enforce this through `allowedModesForKind`.
+ */
+export const DESIGNER_ALLOWED_MODES: readonly AiAgentMode[] = ['off', 'act'] as const;
+export function allowedModesForKind(kind: AiAgentKind): readonly AiAgentMode[] {
+  return kind === 'designer' ? DESIGNER_ALLOWED_MODES : AI_AGENT_MODES;
+}
 
 /** Ladder used by the tighten-only merge: lower rank = stricter. */
 export const AI_AGENT_MODE_RANK: Readonly<Record<AiAgentMode, number>> = Object.freeze({ off: 0, shadow: 1, act: 2 });
@@ -117,6 +128,20 @@ export interface AiAgentLimits {
    * raising the bar must not be undercut by an org lowering it.
    */
   promoteThreshold: number;
+  /**
+   * Fleet Designer (W01) — design-profile admission caps, counted on their
+   * own like every other profile. `maxDesignRunsPerDay` is enforced at
+   * admission rule 6b over a rolling 24-hour window (`profileCaps` gains
+   * `windowMs` for this), not the per-hour counters every earlier profile
+   * uses. `designMaxTurns` (60) is generous relative to `narrativeMaxTurns`
+   * (3) because a design run reads a whole org's fleet before its one
+   * `submit_fleet_design` call and has a small read-only drill-down floor to
+   * verify guesses against — see `designProfile.ts`. Snapshot v10.
+   */
+  maxConcurrentDesignRuns: number;
+  maxDesignRunsPerDay: number;
+  designBudgetCentsPerRun: number;
+  designMaxTurns: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -160,6 +185,12 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   // Promotion threshold (phase 2 P2-5) — see AiAgentLimits.promoteThreshold's
   // docstring. Merged with max, not min (effectivePolicy.ts).
   promoteThreshold: 20,
+  // Design-profile admission caps (Fleet Designer W01) — see
+  // AiAgentLimits.maxConcurrentDesignRuns's docstring.
+  maxConcurrentDesignRuns: 1,
+  maxDesignRunsPerDay: 4,
+  designBudgetCentsPerRun: 300,
+  designMaxTurns: 60,
 });
 
 export interface AiAgentTriggers {
@@ -424,17 +455,25 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * through 8. (`triggers.ticketAutonomousWrites`, added the same wave, does
  * NOT bump this version — see that field's own docstring.)
  *
- * v9 (this bump, P2-5): `promoteThreshold` — see `AiAgentLimits.promoteThreshold`'s
+ * v9 (P2-5): `promoteThreshold` — see `AiAgentLimits.promoteThreshold`'s
  * docstring. Same rule as every prior bump: a v1-v8 in-flight run's snapshot
  * lacks this field and MUST still execute; read sites fall back to
  * `AI_AGENT_LIMIT_DEFAULTS.promoteThreshold` for a pre-v9 snapshot. Every
  * site that switches on `schemaVersion` must tolerate 1 through 9.
+ *
+ * v10 (this bump, Fleet Designer W01): `maxConcurrentDesignRuns`,
+ * `maxDesignRunsPerDay`, `designBudgetCentsPerRun`, `designMaxTurns` — see
+ * `AiAgentLimits.maxConcurrentDesignRuns`'s docstring. Same rule as every
+ * prior bump: a v1-v9 in-flight run's snapshot lacks these fields and MUST
+ * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
+ * pre-v10 snapshot. Every site that switches on `schemaVersion` must
+ * tolerate 1 through 10.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 9 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 10 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), or 9 (current). Read sites must tolerate all nine. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), or 10 (current). Read sites must tolerate all ten. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -798,7 +837,7 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * Admission is counted against
  * `AiAgentLimits.maxConcurrentTriageRuns`/`maxTriageRunsPerHour`.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage'] as const;
+export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design'] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**

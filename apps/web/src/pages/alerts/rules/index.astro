@@ -1,3 +1,7 @@
 ---
-return Astro.redirect('/configuration-policies', 301);
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import LegacyRulesPage from '../../../components/monitoring/LegacyRulesPage';
 ---
+<DashboardLayout titleKey="titles.alertsRules">
+  <LegacyRulesPage client:load />
+</DashboardLayout>

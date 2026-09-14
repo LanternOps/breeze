@@ -1797,8 +1797,16 @@ describe('POST /vnc-viewer/upgrade-to-webrtc', () => {
       agentId: 'agent-abc',
       userEmail: 'test@example.com',
     }]) as any);
+    // The straggler sweep now runs through the terminal-intent contract
+    // (SEC-038 W03): db.update(...).set(...).where(...).returning(...) —
+    // .returning() must resolve (no live stragglers here, so []) or the
+    // update throws before createRemoteSession/evaluateCapability ever run,
+    // silently stranding this test's queued mockResolvedValueOnce for a
+    // later, unrelated test to consume.
     vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
     } as any);
 
     const res = await app.request('/vnc-viewer/upgrade-to-webrtc', {
@@ -2762,9 +2770,14 @@ describe('Audit logging — credential-minting tunnel endpoints', () => {
         }),
       }),
     } as any);
-    // db.update (terminate stragglers) then db.insert (new desktop session)
+    // db.update (terminate stragglers, through the SEC-038 W03 terminal-intent
+    // contract) then db.insert (new desktop session). No live stragglers, so
+    // .returning() resolves to [] — teardownDisconnectedSessions runs after
+    // the system context above returns and is mocked separately below.
     vi.mocked(db.update).mockReturnValue({
-      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([]) }),
+      }),
     } as any);
     const insertMock = vi.fn().mockReturnValue(makeAuditAwareInsertChain([{ id: NEW_SESSION_ID }]));
     vi.mocked(db.insert).mockImplementation(insertMock as any);

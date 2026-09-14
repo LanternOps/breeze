@@ -6,6 +6,12 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { PostureBackupRequiredField } from './PostureReportOptionsForm';
+import {
+  DEFAULT_HARDWARE_LIFECYCLE_OPTIONS,
+  HardwareLifecycleOptionsFields,
+  hardwareLifecycleOptionsFromConfig,
+  type HardwareLifecycleOptions,
+} from './HardwareLifecycleOptionsForm';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -22,6 +28,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [backupRequired, setBackupRequired] = useState(true);
+  const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -35,6 +42,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       setReport(data);
       const config = data.config as Record<string, unknown>;
       setBackupRequired(config.backupRequired !== false);
+      setLifecycleOptions(hardwareLifecycleOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
     } finally {
@@ -95,6 +103,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   // Convert report config to form values
   const config = report.config as Record<string, unknown>;
   const isPosture = report.type === 'security_compliance_posture';
+  const isLifecycle = report.type === 'hardware_lifecycle';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -136,11 +145,23 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       )}
 
+      {isLifecycle && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <HardwareLifecycleOptionsFields value={lifecycleOptions} onChange={setLifecycleOptions} />
+        </div>
+      )}
+
       <ReportBuilder
         mode="edit"
         reportId={reportId}
         defaultValues={defaultValues}
-        baseConfig={isPosture ? { ...config, backupRequired } : config}
+        baseConfig={
+          isPosture
+            ? { ...config, backupRequired }
+            : isLifecycle
+              ? { ...config, ...lifecycleOptions }
+              : config
+        }
         onSubmit={handleSubmit}
         onCancel={handleCancel}
       />

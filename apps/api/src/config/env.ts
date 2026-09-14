@@ -113,6 +113,20 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+export type BreezeRegion = 'eu' | 'us';
+
+// Deployment region. Hosted regions are single-region deployments (one API +
+// worker per region), so the process knows its own region from env and every
+// org it serves lives in it. Used to pick the artifact blob bucket and, later,
+// the sandbox region (spec §8 "Residency"). Previously read inline by
+// routes/mcpServer.ts for partner-trust bootstrap; that reader now calls this.
+// Unrecognised values resolve to 'us' here; config/validate.ts refuses them at
+// boot so a typo cannot reach production.
+export function breezeRegion(): BreezeRegion {
+  const raw = (process.env.BREEZE_REGION ?? '').trim().toLowerCase();
+  return raw === 'eu' ? 'eu' : 'us';
+}
+
 /**
  * AI script authoring, review, and reviewer-gated execution (spec
  * 2026-09-11-ai-script-authoring-and-review-design.md §8).
@@ -163,6 +177,28 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
   return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
 }
 
+/**
+ * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
+ *
+ * THREE conditions, all read at CALL time so a test can flip one without
+ * vi.resetModules(): the deployment is hosted, the AI agents platform switch is
+ * on, and this sub-flag is on. Default OFF.
+ *
+ * Hosted-only is not squeamishness: the sandbox runs on a third-party vendor
+ * under LanternOps' own account and billing, so a self-hosted deployment
+ * enabling it would be spending our money in our tenant. config/validate.ts
+ * refuses the flag in production without IS_HOSTED=true, a `vercel` backend and
+ * all three Vercel credentials, so a misconfigured deploy fails at boot rather
+ * than at the first analysis run.
+ */
+export function aiWorkspaceEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.
@@ -181,6 +217,43 @@ export function m365CustomerGraphReadOnboardingEnabled(): boolean {
 // connection flows.
 export function m365CustomerGraphActionsOnboardingEnabled(): boolean {
   return envFlag('M365_CUSTOMER_GRAPH_ACTIONS_ONBOARDING_ENABLED', false);
+}
+
+// Microsoft 365 tenant sync (spec §10). Dark by default and boot-validated.
+// Read at CALL time, never as a module-scope const: the ticker registration in
+// jobs/m365SyncWorker.ts removes its repeat entry when this is off, so an
+// operator flipping the flag and restarting must actually stop the scheduler.
+export function isM365TenantSyncEnabled(): boolean {
+  return envFlag('M365_TENANT_SYNC_ENABLED', false);
+}
+
+/**
+ * Positive-integer env knob with a hard clamp. A knob is a capacity dial an
+ * operator turns under load; an unparseable or out-of-range value must land on
+ * a safe number rather than NaN (which would make `depth > NaN` false and
+ * disable backpressure entirely).
+ */
+function positiveIntEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw || !/^\d+$/.test(raw.trim())) return fallback;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/** Per-API-instance `sync-domain` concurrency (spec §5.3). */
+export function m365SyncConcurrency(): number {
+  return positiveIntEnv('M365_SYNC_CONCURRENCY', 4, 1, 64);
+}
+
+/** Ticker backpressure ceiling on waiting+prioritized+delayed+active (spec §5.2 step 1). */
+export function m365SyncMaxBacklog(): number {
+  return positiveIntEnv('M365_SYNC_MAX_BACKLOG', 500, 1, 100_000);
+}
+
+/** Rows claimed per tick (spec §5.2 step 3, §5.9 — this is the capacity dial). */
+export function m365SyncTickBatch(): number {
+  return positiveIntEnv('M365_SYNC_TICK_BATCH', 200, 1, 5_000);
 }
 
 // Breeze AI for Office (Excel add-in / client AI). The Entra application

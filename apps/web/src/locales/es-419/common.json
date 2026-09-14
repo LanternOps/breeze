@@ -53,6 +53,7 @@
     "aiAgents": "Agentes de IA",
     "aiAgentRuns": "Ejecuciones de agentes de IA",
     "aiImpact": "Impacto de IA",
+    "fleetDesign": "Diseño de flota",
     "customFields": "Campos personalizados",
     "savedFilters": "Filtros guardados",
     "users": "Usuarios",
@@ -84,11 +85,6 @@
     "deviceBackup": "Respaldo de dispositivos",
     "sectionServiceDesk": "Mesa de servicio",
     "serviceManagement": "Gestión de servicios"
-  },
-  "monitoringTabs": {
-    "ariaLabel": "Secciones de monitoreo",
-    "network": "Red",
-    "delivery": "Entrega"
   },
   "documentTitles": {
     "dashboard": "Panel",
@@ -2480,5 +2476,10 @@
     "approximateUnavailableStale": "≈ total no disponible — el tipo de cambio a {{target}} para {{codes}} es demasiado antiguo",
     "approximateUnavailableMixed": "≈ total no disponible — {{codes}} no se pudo convertir a {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} y {{more}} más"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Tu rol requerirá autenticación de dos factores. Configúrala antes del {{date}}.",
+    "cta": "Configurar 2FA",
+    "dismiss": "Descartar el recordatorio de autenticación de dos factores"
   }
 }

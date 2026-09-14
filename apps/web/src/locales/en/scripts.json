@@ -106,7 +106,8 @@
       "sendNotification": "Send Notification",
       "createAlert": "Create Alert",
       "executeCommand": "Execute Command",
-      "deploySoftware": "Deploy Software"
+      "deploySoftware": "Deploy Software",
+      "aiTriage": "AI triage"
     },
     "severity": {
       "critical": "Critical",
@@ -133,7 +134,8 @@
       "saveAutomation": "Save automation",
       "copyUrl": "Copy URL",
       "addCondition": "Add Condition",
-      "addAction": "Add Action"
+      "addAction": "Add Action",
+      "removeAction": "Remove action"
     },
     "scope": {
       "title": "Scope",
@@ -1378,6 +1380,8 @@
     "modeSkip": "Skip it",
     "modeRename": "Import with a new name",
     "modeNewVersion": "Add as a new version of the existing script",
+    "tagLegacy": "Tag as legacy import",
+    "tagLegacyHint": "Adds the legacy-import tag so a Fleet Design can inventory what these scripts were for.",
     "partnerWide": "Make available to all organizations (partner-wide)",
     "importCommit": "Import {{count}} scripts",
     "resultSummary": "{{imported}} imported, {{renamed}} renamed, {{versioned}} versioned, {{skipped}} skipped, {{failed}} failed",
@@ -1429,6 +1433,8 @@
     "originSystem": "Built-in",
     "reviewed": "Reviewed",
     "editedSinceReview": "Edited since review",
+    "notReviewed": "Not reviewed",
+    "notReviewedDetail": "AI-authored and approved by a person, but no model review was performed on this version.",
     "provenanceTitle": "Provenance",
     "reviewSummary": "Review summary",
     "approvedBy": "Approved by",

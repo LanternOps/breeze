@@ -15,6 +15,7 @@ export type AiAgentImpactWindow = (typeof AI_AGENT_IMPACT_WINDOWS)[number];
 export const AI_AGENT_IMPACT_COUNTER_KEYS = [
   'alertsJudged', 'noiseFlagged', 'suppressionsApplied', 'ticketsTriaged', 'draftsSent',
   'fixesProposed', 'fixesExecuted', 'fixWatchesHeld', 'fixWatchesRecurred', 'narrativesDelivered',
+  'fleetDesignsDelivered',
 ] as const;
 export type AiAgentImpactCounterKey = (typeof AI_AGENT_IMPACT_COUNTER_KEYS)[number];
 export type AiAgentImpactCounters = Record<AiAgentImpactCounterKey, number>;

@@ -59,7 +59,8 @@ import {
 import {
   createAgent, disableAgent, getAgent, listAgents, recordAgentMutation, updateAgent, withAgentRowLocked,
   ActPrerequisitesNotMetError, AgentInvariantError, AgentKindConflictError,
-  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, UnsupportedAgentModeError,
+  InvalidSupervisedActionKeysError, SupervisedKeysGrantOnlyError, ModeNotAllowedForKindError,
+  UnsupportedAgentModeError,
 } from '../services/aiAgents/agentService';
 import { InvalidScriptIdsError } from '../services/aiAgents/scriptAuthorization';
 import { buildAgentToolCatalog } from '../services/aiAgents/agentToolCatalog';
@@ -84,10 +85,12 @@ import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
+import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
+import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -214,6 +217,13 @@ export function mapError(c: Context, err: unknown) {
     // err.code, not a repeated literal — the class types it as a literal, so
     // this cannot drift from the value the client branches on.
     return c.json({ error: err.message, code: err.code, supportedModes: SUPPORTED_AGENT_MODES }, 422);
+  }
+  // Fleet Designer (W01): the mode IS generally supported (`shadow` passes
+  // isSupportedAgentMode), it just is not available for THIS agent's kind
+  // (`allowedModesForKind`) — a 400 `mode_not_allowed_for_kind`, distinct
+  // from the 422 above, matching the create route's zod issue shape.
+  if (err instanceof ModeNotAllowedForKindError) {
+    return c.json({ error: err.code }, 400);
   }
   // Task 6 (#3826): the write is mode-legal ('act' is now a supported mode)
   // but would leave the row unable to actually act — no one to notify, or no
@@ -1249,6 +1259,27 @@ aiAgentsRoutes.get(
 );
 
 /**
+ * The run's artifacts (execution-plane spec §5.2/§8, W01). Registered HERE, in
+ * the router that already owns `/runs/:runId`, rather than in its own app
+ * mounted at the same `/ai/agents` prefix: two routers behind one prefix put
+ * their precedence in index.ts's mount order, invisible from either file, which
+ * is the shape of #4189. Keep this ABOVE `/runs/:runId`.
+ *
+ * An empty list rather than a 404 for another org's run: the run-detail route
+ * below already owns the exists/not-exists answer, and duplicating it here
+ * would add a second, independently-driftable disclosure surface. `blobKey`
+ * never leaves the API — `toArtifactDto` projects fields explicitly.
+ */
+aiAgentsRoutes.get('/runs/:runId/artifacts', scopes, requireAiRead, async (c) => {
+  const runId = uuidParam(c, 'runId');
+  if (!runId) return c.json({ error: 'Invalid run id', code: 'INVALID_RUN_ID' }, 400);
+
+  const auth = c.get('auth');
+  const records = await listArtifactsForAuth(runId, auth);
+  return c.json({ data: records.map(toArtifactDto) });
+});
+
+/**
  * The stitched execution-trace detail (Wave 6 PR 1, #3828): the run row's
  * display-safe fields plus the SAFE outcome projection, execution ledger,
  * and linked-intent summary — see `buildRunTrace` (services/aiAgents/runTrace.ts)
@@ -1288,6 +1319,10 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // the only representation that goes back to null when the artifact is
       // deleted.
       reportRunId: aiAgentRuns.reportRunId,
+      // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
+      // read below; `undefined`/absent for a row read back through an older
+      // mock/fixture simply never matches `'design'`.
+      profile: aiAgentRuns.profile,
       outcome: aiAgentRuns.outcome,
       intentIds: aiAgentRuns.intentIds,
       turnCount: aiAgentRuns.turnCount,
@@ -1417,6 +1452,40 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     }
     : null;
 
+  // Fleet Designer W01 (#5651), Task 9 — the linked fleet design artifact's
+  // provenance scalars, projected out of `report_runs.result` BY POSTGRES
+  // for the same reason the narrative read above is: that jsonb carries the
+  // full rendered markdown and every legacy-script/automation section,
+  // which the run-detail DTO deliberately does not ship. Gated on
+  // `run.profile === 'design'` (unlike the narrative read above, which fires
+  // on `reportRunId` alone) because a design run's linked artifact carries
+  // `summary.fleetDesign`, not `summary.narrative` — querying the wrong
+  // projection would just read back nulls, so the profile gate is what
+  // keeps this from being a wasted round trip on every other profile.
+  //
+  // Same tenancy shape as the narrative read: the join to `reports` carries
+  // the org pin (`report_runs` has no `org_id` of its own), and
+  // `auth.orgCondition` stays as defence-in-depth beside RLS.
+  const [fleetDesignArtifactRow] = run.profile === 'design' && run.reportRunId
+    ? await db
+      .select(fleetDesignArtifactProjection)
+      .from(reportRuns)
+      .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+      .where(and(
+        eq(reportRuns.id, run.reportRunId),
+        eq(reports.orgId, run.orgId),
+        auth.orgCondition(reports.orgId),
+      ))
+      .limit(1)
+    : [];
+  const fleetDesignArtifact = fleetDesignArtifactRow
+    ? {
+      reportId: fleetDesignArtifactRow.reportId ?? null,
+      generatedAt: fleetDesignArtifactRow.generatedAt ?? null,
+      evidenceTruncated: fleetDesignArtifactRow.evidenceTruncated === true,
+    }
+    : null;
+
   // Phase 2 wave P2-4 (#4191), Task A10 — the ticket_drafts rows THIS RUN
   // produced, for ticketProposal.draftsWritten. A LIVE query, not something
   // read off the persisted outcome jsonb: a draft intent left
@@ -1479,6 +1548,7 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     deviceHostnames,
     narrativeArtifact,
     draftRows,
+    fleetDesignArtifact,
   );
   return c.json({ data: detail });
 });
@@ -1796,6 +1866,18 @@ aiAgentsRoutes.post(
         result,
       });
     };
+
+    // Fleet Designer (W01): this route is the DEVICE lane. A designer run is
+    // device-less and belongs on POST /ai/fleet-design/runs; admitted here it
+    // would carry a deviceId and — because this call omits `profile`, which
+    // defaults to 'full' — would run without the design profile's read-only
+    // tool floor and zero action budget. Admission refuses the pairing too
+    // (ownership_mismatch); this is the honest 400 that says why, and it is
+    // checked before the run is attempted so nothing is queued.
+    if (agent.kind === 'designer') {
+      auditTrigger('failure', { deviceId, reason: 'kind_not_device_triggerable' });
+      return c.json({ error: 'kind_not_device_triggerable' }, 400);
+    }
 
     // The loaded row is an authorization/visibility handle and supplies the
     // requested kind. Admission deliberately re-resolves the effective agent,

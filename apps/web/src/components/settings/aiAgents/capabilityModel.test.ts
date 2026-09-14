@@ -17,7 +17,7 @@ const catalog: AgentToolCatalogDto = {
       { key: 'query_devices', action: null, tier: 1, readOnly: true, policyDecidable: false, actEligible: false, actRequiresAuthorizedScripts: false },
     ] },
   ],
-  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+  presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
   // Task 7 (#5049): a registered-but-unreachable tool name (human-only/blocked/
   // secret-bearing/not-in-TOOL_TIERS) — never a `tools` entry, only ever seen
   // as a stale allowlist string.
@@ -73,7 +73,7 @@ describe('capabilityModel', () => {
           { key: 'manage_services:start', action: 'start', tier: 3, readOnly: false, policyDecidable: true, actEligible: false, actRequiresAuthorizedScripts: false },
         ],
       }],
-      presets: { triage: [], patch: [], helpdesk: [] },
+      presets: { triage: [], patch: [], helpdesk: [], designer: [] },
       unreachableTools: [],
     };
     // Ceiling admits 2 of the 3 mutating operations.

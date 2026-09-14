@@ -43,14 +43,11 @@ const TARGET_GLOBS = [
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
-  // Adopted in #3989: every mutation here (org create/delete, site save/delete,
-  // and the drag-reorder PATCH that was fully silent) now goes through
-  // runAction. Note what this guard does and does not enforce: it checks that
-  // each mutating fetch is lexically INSIDE a runAction call, so it catches a
-  // new mutation added outside one. It does NOT inspect catch blocks, so it
-  // cannot by itself stop a handler routing an error back to setError, whose
-  // banner renders behind this page's modals.
-  'src/components/settings/OrganizationsPage.tsx',
+  // Account board (W02): org create and restore go through runAction in the
+  // page; the drag/arrow-key reorder PATCH lives in its own hook. Both are
+  // listed because TARGET_GLOBS is a literal file list, not directory-wide.
+  'src/components/organizations/board/OrganizationsBoardPage.tsx',
+  'src/components/organizations/board/useManualOrder.ts',
   // Org merge (org-lifecycle Wave 3): both the preview and the actual merge
   // POST are advisory-then-destructive mutations against a partner's tenant
   // tree, so a silent failure here is exactly the class this guard exists for.
@@ -90,6 +87,8 @@ const TARGET_GLOBS = [
   // drawer needs its own entry or its mutations are invisible to it.
   'src/components/aiAgents/ImpactWeightsDrawer.tsx',
   'src/components/devices/DeviceInfoTab.tsx',
+  // Fleet Designer W02 (#5652): the Function field's PUT is its own file.
+  'src/components/devices/DeviceFunctionField.tsx',
   'src/components/devices/DevicePatchStatusTab.tsx',
   'src/components/dnsSecurity/DnsSecurityIntegrationsTab.tsx',
   'src/components/dnsSecurity/AddDnsIntegrationModal.tsx',
@@ -287,6 +286,11 @@ const TARGET_GLOBS = [
   // against customer machines unattended — a silent failure here would leave
   // an operator believing the lane is off (or on) when it is not.
   'src/components/settings/ScriptAuthoringPage.tsx',
+  // Fleet Designer W03 (#5653): starting a design run and the apply/rollback
+  // flow write configuration policies and device groups against a customer's
+  // fleet — a silent failure here reads as "applied" while nothing landed.
+  'src/components/fleetDesign/FleetDesignPage.tsx',
+  'src/components/fleetDesign/ApplyDrawer.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -610,8 +614,13 @@ describe('no silent mutations in targeted set', () => {
     // AddNetworkAssetModal.tsx, so the count is now 125. #5612 W03 adds
     // lib/api/scriptProposals.ts (request-changes + promote), so the count is
     // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
-    // count is now 127.
-    expect(absoluteFiles.length).toBe(127);
+    // count is now 127. Fleet Designer W02 (#5652) adds
+    // devices/DeviceFunctionField.tsx, so the count is now 128. Fleet
+    // Designer W03 (#5653) adds fleetDesign/FleetDesignPage.tsx and
+    // fleetDesign/ApplyDrawer.tsx, so the count was 130. Account board (W02,
+    // #5723) replaces the deleted OrganizationsPage.tsx entry with two files
+    // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
+    expect(absoluteFiles.length).toBe(131);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

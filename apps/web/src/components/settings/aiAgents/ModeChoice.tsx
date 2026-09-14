@@ -1,7 +1,7 @@
 import { useId, useRef, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle } from 'lucide-react';
-import type { AiAgentMode } from '@breeze/shared';
+import { allowedModesForKind, type AiAgentKind, type AiAgentMode } from '@breeze/shared';
 
 /**
  * Task 13 (#5051): extracted verbatim from `AiAgentForm.tsx` (a pure move —
@@ -19,6 +19,12 @@ const MODE_ORDER: readonly AiAgentMode[] = ['off', 'shadow', 'act'];
 export interface ModeChoiceProps {
   mode: AiAgentMode;
   onChange: (mode: AiAgentMode) => void;
+  /** Fleet Designer (W01) — the designer kind is read-only and produces no
+   *  intents, so `allowedModesForKind` excludes `shadow` for it (there is
+   *  nothing to shadow). Required so both callers (the edit drawer, the
+   *  guided create flow's Purpose step) can never render a mode the kind
+   *  itself disallows, matching the server's `createAiAgentSchema` rule. */
+  kind: AiAgentKind;
   /** Whether this owner/agent may use act mode at all — the CREATE path has
    *  no `agent` DTO to read `supportedModes` off of, so the caller falls back
    *  to the shared `SUPPORTED_AGENT_MODES` constant, never `[]`. */
@@ -41,6 +47,7 @@ export interface ModeChoiceProps {
 export default function ModeChoice({
   mode,
   onChange,
+  kind,
   actSupported,
   enteringActMode,
   actAck,
@@ -50,7 +57,19 @@ export default function ModeChoice({
   const { t } = useTranslation('settings');
   const modeHeadingId = useId();
   const modeRefs = useRef<Partial<Record<AiAgentMode, HTMLButtonElement | null>>>({});
-  const modeUnavailable = (candidate: AiAgentMode) => candidate === 'act' && !actSupported;
+  const kindDisallowsMode = (candidate: AiAgentMode) => !allowedModesForKind(kind).includes(candidate);
+  const modeUnavailable = (candidate: AiAgentMode) =>
+    (candidate === 'act' && !actSupported) || kindDisallowsMode(candidate);
+  /** Why a disabled card is disabled — a kind-level exclusion (designer has
+   *  no shadow to offer) takes precedence over the tenant-level act
+   *  eligibility check, since the two can never both apply to the same
+   *  candidate (kind-disallowed modes are never `act`: `DESIGNER_ALLOWED_MODES`
+   *  keeps `act` itself). */
+  const unavailableReason = (candidate: AiAgentMode): string | null => {
+    if (kindDisallowsMode(candidate)) return t('aiAgentsPage.modeChoice.shadowUnavailableForKind');
+    if (candidate === 'act' && !actSupported) return t('aiAgentsPage.modeChoice.actUnavailable');
+    return null;
+  };
 
   // Literal keys rather than a dynamic `t()` on the token: the closed
   // three-member union is worth spelling out so the keyUsage guard verifies
@@ -218,9 +237,9 @@ export default function ModeChoice({
               {unavailable && (
                 <span
                   className="mt-1.5 block text-xs text-muted-foreground"
-                  data-testid="ai-agent-mode-act-unavailable"
+                  data-testid={`ai-agent-mode-${candidate}-unavailable`}
                 >
-                  {t('aiAgentsPage.modeChoice.actUnavailable')}
+                  {unavailableReason(candidate)}
                 </span>
               )}
             </button>

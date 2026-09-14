@@ -35,6 +35,10 @@ const idFor = (table: any): string => {
   return `${t}-id`;
 };
 
+vi.mock('./monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => {
   const makeTx = () => {
     // Chainable insert mock that records the values and returns a

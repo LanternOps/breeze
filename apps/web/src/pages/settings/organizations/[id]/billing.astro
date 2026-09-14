@@ -4,7 +4,7 @@ import OrgBillingSettings from '../../../../components/billing/OrgBillingSetting
 import { tServer } from '../../../../lib/i18n/server';
 
 const { id } = Astro.params;
-if (!id) return Astro.redirect('/settings/organizations');
+if (!id) return Astro.redirect('/organizations');
 const locale = Astro.locals.locale;
 ---
 

@@ -33,7 +33,16 @@ export type ReportType =
   // reporting "Invalid report type" for a type that is perfectly valid
   // everywhere except here. `reportGenerationService.test.ts` pins the union
   // against `reportTypeEnum` so the two can never drift.
-  | 'ai_org_narrative';
+  | 'ai_org_narrative'
+  // Fleet Designer W01 (#5651). Same "stored, never generated" shape as
+  // `ai_org_narrative` above: the Fleet Design's `report_runs` row is written
+  // once inside the design run's own transaction
+  // (`persistFleetDesignReport`, services/aiAgents/fleetDesignReport.ts) from
+  // a model-authored design no query could reproduce.
+  | 'ai_fleet_design'
+  // Hardware Lifecycle: generated on demand from devices/manual assets +
+  // warranty; see services/hardwareLifecycleReport.ts.
+  | 'hardware_lifecycle';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -241,6 +250,7 @@ export function assertReportExecutionPreflight(
     && authority.principalKind === 'portal_user'
     && reportType !== 'executive_summary'
     && reportType !== 'security_compliance_posture'
+    && reportType !== 'hardware_lifecycle'
   ) {
     throw new UnexecutableReportScopeError(
       `Portal-user authority cannot generate report type ${reportType}`,
@@ -751,6 +761,7 @@ export async function generateReport(
     authority.principalKind === 'portal_user'
     && type !== 'executive_summary'
     && type !== 'security_compliance_posture'
+    && type !== 'hardware_lifecycle'
   ) {
     throw new UnexecutableReportScopeError(
       `Portal-user authority cannot generate report type ${type}`,
@@ -780,6 +791,13 @@ export async function generateReport(
     // P2-3 (#4190) — stored, never generated. See `StoredArtifactOnlyReportError`.
     case 'ai_org_narrative':
       throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — stored, never generated, same as above.
+    case 'ai_fleet_design':
+      throw new StoredArtifactOnlyReportError(type);
+    case 'hardware_lifecycle': {
+      const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
+      return generateHardwareLifecycleReport(orgId, config, authority);
+    }
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);
@@ -817,12 +835,16 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'software_inventory':
     case 'performance':
     case 'security_compliance_posture':
+    case 'hardware_lifecycle':
       return emptyRowsReport();
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before
     // dispatch ever runs, and an empty zero-safe shape would read as "the
     // narrative is empty" for a document that exists and is downloadable.
     case 'ai_org_narrative':
+      throw new StoredArtifactOnlyReportError(type);
+    // Fleet Designer W01 (#5651) — refused HERE too, same reason as above.
+    case 'ai_fleet_design':
       throw new StoredArtifactOnlyReportError(type);
     default: {
       const exhaustive: never = type;

@@ -6,7 +6,19 @@ vi.mock('../../db', () => ({
 }));
 import { assertProposalRunnable } from './runnable';
 
-const auth = { orgId: 'org-1' } as never;
+/** Org-scope token: reach is exactly its own org. */
+const auth = {
+  orgId: 'org-1', scope: 'organization', accessibleOrgIds: ['org-1'],
+  canAccessOrg: (id: string) => id === 'org-1',
+} as never;
+/**
+ * Partner-scope token (#5682): `orgId` is null — runnability must be decided
+ * by the actor's org ACCESS against the proposal's org, never by token equality.
+ */
+const partnerAuth = {
+  orgId: null, scope: 'partner', accessibleOrgIds: ['org-1', 'org-9'],
+  canAccessOrg: (id: string) => ['org-1', 'org-9'].includes(id),
+} as never;
 const device = '11111111-1111-4111-8111-111111111111';
 const base = {
   id: 'p1', orgId: 'org-1', status: 'reviewed', intentId: null,
@@ -43,6 +55,20 @@ describe('assertProposalRunnable', () => {
     await expect(call({ releasingIntentId: 'i1' })).resolves.toEqual({ ok: true, proposal: stored });
     await expect(call({ releasingIntentId: 'i2' })).resolves.toEqual({ ok: false, reason: 'consumed' });
     await expect(call()).resolves.toEqual({ ok: false, reason: 'consumed' });
+  });
+
+  it('lets a partner-scope actor run an approved proposal in an org they can reach (#5682)', async () => {
+    stored = { ...base };
+    await expect(
+      assertProposalRunnable(partnerAuth, { proposalId: 'p1', deviceIds: [device] }),
+    ).resolves.toEqual({ ok: true, proposal: stored });
+  });
+
+  it('still refuses a partner-scope actor for an org outside their reach', async () => {
+    stored = { ...base, orgId: 'org-nope' };
+    await expect(
+      assertProposalRunnable(partnerAuth, { proposalId: 'p1', deviceIds: [device] }),
+    ).resolves.toEqual({ ok: false, reason: 'wrong_org' });
   });
 
   it('never silently degrades to a library run — every refusal is explicit', async () => {

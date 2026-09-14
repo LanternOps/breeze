@@ -375,8 +375,100 @@ const fenceAiOperatorTasks: CustomMergeExecutor = async (loser) => {
  */
 const moveAiOperatorTasks: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
+/**
+ * ai_run_artifacts (execution-plane W01) — a SPLIT disposition, because the two
+ * anchors a row can have move in opposite directions.
+ *
+ *   RUN-anchored (`run_id IS NOT NULL`): stays with the loser shell and is
+ *     erased with it. `ai_agent_runs` is `leave-for-erasure` and its `org_id`
+ *     is trigger-immutable, and this table's composite
+ *     `(run_id, org_id) -> ai_agent_runs(id, org_id)` FK binds while `run_id`
+ *     is set — so re-pointing one of these rows would 23503 at COMMIT even
+ *     under SET CONSTRAINTS ALL DEFERRED. Run history does not follow a merge
+ *     (2026-08-23 owner decision), and neither does its evidence.
+ *
+ *   SESSION-anchored (`run_id IS NULL`): REPOINTED to the survivor, because
+ *     `ai_sessions` is itself in REPOINT_TABLES. Leaving these behind was the
+ *     original W01 classification and it was wrong in both directions: the
+ *     chat session moves to the survivor while its captured artifacts stay
+ *     pinned to the loser's `org_id`, so RLS (which reads
+ *     `ai_run_artifacts.org_id`, never the session's) hides them from the
+ *     surviving org, and the loser shell's later erasure deletes the rows and
+ *     their blobs out from under a session that is still live. The composite
+ *     run FK is MATCH SIMPLE — unchecked while `run_id` is NULL — so these
+ *     rows re-point with nothing to violate, and the table carries no unique
+ *     constraint, so there is no collision to dedupe.
+ */
+const moveAiRunArtifacts: CustomMergeExecutor = async (loser, survivor) => {
+  const moved = await run(sql`
+    UPDATE ai_run_artifacts
+       SET org_id = ${uuid(survivor)}
+     WHERE org_id = ${uuid(loser)}
+       AND run_id IS NULL`);
+
+  return {
+    moved,
+    dropped: 0,
+    notes: [
+      `ai_run_artifacts: re-tenanted ${moved} chat-session artifact(s) to the surviving organization, `
+      + 'following their ai_sessions rows. Run-anchored artifacts are NOT re-tenanted — agent-run '
+      + 'evidence stays with the source org and is erased with its shell, same rule as the runs '
+      + 'themselves. Download anything still needed before erasing the loser shell.',
+    ],
+  };
+};
+
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
+// ---------------------------------------------------------------------------
+// m365 tenant sync snapshots (spec §3.5) — resolve-phase DELETE of every
+// loser-org row.
+//
+// Two of these tables MUST be emptied in `resolve`, not `move`:
+//   - m365_sync_state's (connection_id, org_id) FK targets m365_connections,
+//     which is `repoint-dedupe` — the loser's connection MOVES to the survivor
+//     org, and a state row left behind under the dead loser org violates the
+//     deferred FK at COMMIT. Exactly the ticket_drafts/tickets shape above.
+//   - m365_intune_devices's (breeze_device_id, org_id) FK targets `devices`,
+//     which is a plain `repoint`. Same failure.
+// The other three carry no composite FK, but share the disposition so the whole
+// feature behaves as one unit and the preview reports it as one loss.
+//
+// Deleting is right, not merely convenient: every row is a re-derivable
+// snapshot of a Microsoft tenant, keyed to a connection that may not survive
+// the merge. The tick's reconciliation (spec §10) re-seeds sync state for
+// whichever connection the survivor org ends up with and the next run
+// repopulates. History (m365_secure_score_snapshots, m365_posture_rollups) is
+// NOT here — it cannot be regenerated and is repoint-deduped instead.
+const M365_SYNC_SNAPSHOT_TABLES = [
+  'm365_sync_state',
+  'm365_users',
+  'm365_intune_devices',
+  'm365_ca_policies',
+  'm365_license_skus',
+] as const;
+
+const resolveM365SnapshotTable =
+  (table: (typeof M365_SYNC_SNAPSHOT_TABLES)[number]): CustomMergeExecutor =>
+  async (loser) => {
+    const dropped = await run(sql`DELETE FROM ${sql.identifier(table)} WHERE org_id = ${uuid(loser)}`);
+    return {
+      moved: 0,
+      dropped,
+      notes: dropped > 0
+        ? [
+            `${table}: dropped ${dropped} M365 tenant-snapshot row(s) from the merged-away org — `
+            + 'these are re-derivable Graph snapshots keyed to a connection that may not survive '
+            + 'the merge, and cannot be re-tenanted (their composite FK would disagree with the '
+            + "connection's or device's new org_id the instant it repoints); the sync ticker "
+            + 're-seeds state for the surviving connection and the next run repopulates them',
+          ]
+        : [],
+    };
+  };
+
+/** Move half: resolve already emptied the table, so there is nothing to move. */
+const moveM365SnapshotTable: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 
 // ---------------------------------------------------------------------------
 // script_proposals — FENCE, then leave for erasure (AI script authoring W01b).
@@ -1091,13 +1183,16 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 };
 
 // ---------------------------------------------------------------------------
-// reports — two partial unique indexes can collide during an org merge:
+// reports — three partial unique indexes can collide during an org merge:
 // `reports_source_ai_agent_schedule_uniq (org_id,
-// source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`
-// and `reports_portal_self_service_org_type_uniq (org_id, type) WHERE
-// portal_self_service = true`. The first is a partner-wide narrative definition;
-// the second is the canonical customer-portal definition for each report type.
-// A plain repoint collides on 23505 and aborts the merge.
+// source_ai_agent_schedule_id) WHERE source_ai_agent_schedule_id IS NOT NULL`,
+// `reports_portal_self_service_org_type_uniq (org_id, type) WHERE
+// portal_self_service = true`, and `reports_ai_fleet_design_org_uniq (org_id)
+// WHERE type = 'ai_fleet_design'` (Fleet Designer W01, #5651). The first is a
+// partner-wide narrative definition; the second is the canonical
+// customer-portal definition for each report type; the third is the one
+// Fleet Design definition per org. A plain repoint collides on 23505 and
+// aborts the merge.
 //
 // `report_runs.report_id` is NOT NULL with a NO ACTION FK (verified against
 // pg_constraint), so a dedupe DELETE would raise 23503 instead — and even if it
@@ -1110,14 +1205,19 @@ const mergeOrganizationUsers: CustomMergeExecutor = async (loser, survivor) => {
 // The narrative key deliberately carries no keyWhere: `keyMatch` compares with a plain
 // `=`, which is NULL-blind, so ordinary reports (NULL
 // source_ai_agent_schedule_id) never match each other — exactly the semantics
-// of the partial index it mirrors. The portal pass needs an explicit predicate
-// on both aliases because its key (`type`) is always non-NULL.
+// of the partial index it mirrors. The portal and fleet-design passes need an
+// explicit predicate on both aliases because their keys (`type`) are always
+// non-NULL.
 // ---------------------------------------------------------------------------
 const REPORTS_KEY = ['source_ai_agent_schedule_id'] as const;
 // Mirrors reports_portal_self_service_org_type_uniq (org_id, type)
 // WHERE portal_self_service = true.
 const PORTAL_REPORT_KEY = ['type'] as const;
 const PORTAL_REPORT_WHERE_BOTH = sql`s.portal_self_service = true AND t.portal_self_service = true`;
+// Mirrors reports_ai_fleet_design_org_uniq (org_id) WHERE type = 'ai_fleet_design'
+// (Fleet Designer W01): one design definition per org, keyed on the type.
+const FLEET_DESIGN_REPORT_KEY = ['type'] as const;
+const FLEET_DESIGN_REPORT_WHERE_BOTH = sql`s.type = 'ai_fleet_design' AND t.type = 'ai_fleet_design'`;
 
 async function rehomeReportChildrenThenDelete(
   loser: string,
@@ -1195,6 +1295,12 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
     PORTAL_REPORT_KEY,
     PORTAL_REPORT_WHERE_BOTH,
   );
+  const fleetDesign = await rehomeReportChildrenThenDelete(
+    loser,
+    survivor,
+    FLEET_DESIGN_REPORT_KEY,
+    FLEET_DESIGN_REPORT_WHERE_BOTH,
+  );
   const moved = await run(buildRepoint('reports', loser, survivor));
   const notes: string[] = [];
   if (narrative.dropped > 0) {
@@ -1208,9 +1314,14 @@ const mergeReports: CustomMergeExecutor = async (loser, survivor) => {
       `reports: dropped ${portal.dropped} duplicate portal self-service report definition from the merged-away org and re-homed its children onto the survivor's canonical definition (report_runs: ${portal.reportRunsRehomed}; report_schedule_recipients: ${portal.recipientsDeduplicated} deduplicated, ${portal.recipientsRehomed} re-homed)`,
     );
   }
+  if (fleetDesign.dropped > 0) {
+    notes.push(
+      `reports: dropped ${fleetDesign.dropped} duplicate Fleet Design report definition from the merged-away org and re-homed its children onto the survivor's definition (report_runs: ${fleetDesign.reportRunsRehomed}; report_schedule_recipients: ${fleetDesign.recipientsDeduplicated} deduplicated, ${fleetDesign.recipientsRehomed} re-homed)`,
+    );
+  }
   return {
     moved,
-    dropped: narrative.dropped + portal.dropped,
+    dropped: narrative.dropped + portal.dropped + fleetDesign.dropped,
     notes,
   };
 };
@@ -1262,7 +1373,13 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   reports: mergeReports,
   ticket_drafts: moveTicketDrafts,
   ai_operator_tasks: moveAiOperatorTasks,
+  ai_run_artifacts: moveAiRunArtifacts,
   script_proposals: moveScriptProposals,
+  m365_sync_state: moveM365SnapshotTable,
+  m365_users: moveM365SnapshotTable,
+  m365_intune_devices: moveM365SnapshotTable,
+  m365_ca_policies: moveM365SnapshotTable,
+  m365_license_skus: moveM365SnapshotTable,
 };
 
 /**
@@ -1288,6 +1405,14 @@ export const CUSTOM_RESOLVE_EXECUTORS: Readonly<Record<string, CustomMergeExecut
   // Must run in resolve, not move: `devices` repoints in the move phase and a
   // live proposal targeting one of them would still be consumable.
   script_proposals: fenceScriptProposals,
+  // Must run in resolve: m365_sync_state's composite FK targets
+  // m365_connections (repoint-dedupe) and m365_intune_devices's targets
+  // devices (plain repoint) — both parents move in the `move` phase.
+  m365_sync_state: resolveM365SnapshotTable('m365_sync_state'),
+  m365_users: resolveM365SnapshotTable('m365_users'),
+  m365_intune_devices: resolveM365SnapshotTable('m365_intune_devices'),
+  m365_ca_policies: resolveM365SnapshotTable('m365_ca_policies'),
+  m365_license_skus: resolveM365SnapshotTable('m365_license_skus'),
 };
 
 /**
@@ -1337,6 +1462,13 @@ export const CUSTOM_WOULD_REVOKE_COUNTS: Readonly<Record<string, (loser: string)
  */
 export const CUSTOM_WOULD_DROP_COUNTS: Readonly<Record<string, (loser: string, survivor: string) => SQL>> = {
   ticket_drafts: (loser) => sql`SELECT count(*)::int AS n FROM ticket_drafts WHERE org_id = ${uuid(loser)}`,
+  // m365 tenant-sync snapshots: resolveM365SnapshotTable deletes EVERY
+  // loser-org row unconditionally, so the mirror is plain loserRows.
+  m365_sync_state: (loser) => sql`SELECT count(*)::int AS n FROM m365_sync_state WHERE org_id = ${uuid(loser)}`,
+  m365_users: (loser) => sql`SELECT count(*)::int AS n FROM m365_users WHERE org_id = ${uuid(loser)}`,
+  m365_intune_devices: (loser) => sql`SELECT count(*)::int AS n FROM m365_intune_devices WHERE org_id = ${uuid(loser)}`,
+  m365_ca_policies: (loser) => sql`SELECT count(*)::int AS n FROM m365_ca_policies WHERE org_id = ${uuid(loser)}`,
+  m365_license_skus: (loser) => sql`SELECT count(*)::int AS n FROM m365_license_skus WHERE org_id = ${uuid(loser)}`,
   discovered_assets: collidingRowCount('discovered_assets', DISCOVERED_ASSET_KEY),
   plugin_installations: collidingRowCount('plugin_installations', ['catalog_id']),
   playbook_definitions: collidingRowCount('playbook_definitions', ['lower({name})']),

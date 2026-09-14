@@ -3,9 +3,12 @@ import type { Hono } from 'hono';
 import { createExecutorApp } from './app';
 import { loadExecutorConfig } from './config';
 import { AzureKeyVaultCertificateProvider } from './credentials/azureKeyVaultProvider';
+import { createInFlightGate } from './inFlight';
 import { createEdDsaInternalRequestAuthenticator } from './internalAuth';
 import { createMicrosoftGraphClient } from './microsoft/graphClient';
 import { createExecutorOperations } from './operations';
+import { createSigninLimiter } from './signinLimiter';
+import { createSyncContinuationCodec } from './syncContinuation';
 
 type Serve = (options: {
   fetch: Hono['fetch'];
@@ -38,8 +41,20 @@ export async function startConfiguredExecutor(): Promise<{ close(): void }> {
     callbackUrl: config.callbackUrl,
     certificateProvider,
     graphClient,
+    sync: {
+      limits: config.sync,
+      continuations: createSyncContinuationCodec({ key: config.sync.continuationKey }),
+      signinLimiter: createSigninLimiter({ requestsPerMinute: config.sync.signinActivityRpm }),
+    },
   });
-  const app = createExecutorApp({ authenticator, ...operations });
+  const app = createExecutorApp({
+    authenticator,
+    ...operations,
+    gate: createInFlightGate({
+      syncMaxInFlight: config.sync.syncMaxInFlight,
+      maxInFlight: config.sync.maxInFlight,
+    }),
+  });
   return startExecutorServer(app, config);
 }
 

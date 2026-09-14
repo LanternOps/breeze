@@ -379,6 +379,48 @@ describe('classifyTerminal with run profile (P2-4 triage)', () => {
   });
 });
 
+// Fleet Designer (W01) — same ruling as `narrative`/`triage`, and for the
+// same-shaped reason: a design run's whole input is a bounded,
+// system-assembled evidence bundle (never live tool output beyond its own
+// small read-only drill-down floor), and its output is a fleet DESIGN, not a
+// remediation attempt, so a clean completion says nothing about whether the
+// org's remediation is working. These rows ARE the guard — `classifyTerminal`
+// has no exhaustive `never` check that would fail to compile without them.
+describe('classifyTerminal with run profile (design)', () => {
+  it('a design completion never resets the streak, clean or needs_attention', () => {
+    expect(classifyTerminal('completed', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'no_action', 'design')).toBe('neutral');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'design')).toBe('neutral');
+  });
+
+  it('awaiting_approval on a design run is neutral, not reset', () => {
+    expect(classifyTerminal('awaiting_approval', null, null, 'design')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a design run', () => {
+    expect(classifyTerminal('failed', 'sdk_error', null, 'design')).toBe('increment');
+    expect(classifyTerminal('failed', 'budget_exceeded', null, 'design')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'design')).toBe('increment');
+  });
+
+  it('an off-allowlist failure is still neutral on a design run', () => {
+    expect(classifyTerminal('failed', 'stalled', null, 'design')).toBe('neutral');
+    expect(classifyTerminal('failed', null, null, 'design')).toBe('neutral');
+  });
+
+  it('cancelled/expired/skipped stay neutral on a design run', () => {
+    expect(classifyTerminal('cancelled', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('expired', null, null, 'design')).toBe('neutral');
+    expect(classifyTerminal('skipped', null, null, 'design')).toBe('neutral');
+  });
+
+  it('does not disturb the full profile it shares the string compare with', () => {
+    expect(classifyTerminal('completed', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('awaiting_approval', null, null, 'full')).toBe('reset');
+    expect(classifyTerminal('completed', null, 'needs_attention', 'full')).toBe('increment');
+  });
+});
+
 describe('isTerminalRunStatus', () => {
   it('is false for queued/running only', () => {
     expect(isTerminalRunStatus('queued')).toBe(false);

@@ -13,6 +13,10 @@ You manage automations from the **Jobs** page in the Breeze dashboard. From ther
 
 An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("All orgs") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
 
+<Aside>
+  Building an `event` automation on `alert.triggered` specifically to respond to a condition you also watch with an Alert Rule? Consider a [Monitor](/features/monitors/) instead -- it bundles the condition, severity, and response actions into one object, deployed through Configuration Policies instead of hand-wiring a rule to a separate automation. Automations you already have under **Jobs** aren't affected -- they keep running exactly as before, as plain event-, schedule-, webhook-, or manually-triggered automations; only a monitor's own generated automation shows up read-only (see [What's read-only, and why](/features/monitors/#whats-read-only-and-why)).
+</Aside>
+
 ---
 
 ## Creating an Automation

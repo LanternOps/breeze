@@ -43,6 +43,10 @@ The four **assurance levels** describe increasingly strong proof, performed on t
 
 An AI-authored script proposal's risk tier comes from its independent reviewer and feeds into this same floor table like any other approvable action. A proposal that matched a strict security pattern additionally requires the approver to hold the Scripts permission and complete a fresh MFA check before they can approve it, regardless of the proposal's risk tier — see [AI Script Authoring & Review](/features/ai-script-authoring/#the-approval-card).
 
+<Aside type="note" title="One ceremony for a run of supervised approvals">
+  From v0.113.0, approving several supervised Tier-3 AI tool calls in a row no longer prompts a passkey or authenticator ceremony for each one. The first ceremony issues a short-lived grant — **120 seconds**, bound to your identity, session and current factors, and separately audited — which the decisions that follow reuse. **Four-eyes approvals are unaffected** and still take a fresh ceremony every time; a grant presented on a four-eyes decision is refused and the normal ceremony runs instead.
+</Aside>
+
 ## Configuring approval assurance
 
 <Steps>

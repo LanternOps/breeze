@@ -32,6 +32,7 @@ import {
   buildPamConfigUpdate,
   buildOnedriveHelperConfigUpdate,
   buildPatchSourceConfigUpdate,
+  buildWarrantyConfigUpdate,
   getOrgAgentUpdateConfig,
   resolvePinnedUpgradeTarget,
   agentAcceptsServedEdition,
@@ -1977,7 +1978,8 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   // derived from the device the agent already authenticated as, so this cannot
   // pivot tenants.
   //
-  // All four share ONE context on purpose. They previously shared the org
+  // All of them (plus #5511's warranty reader) share ONE context on
+  // purpose. The first four previously shared the org
   // transaction, so a DB error already poisoned the others; giving each its own
   // system transaction would cost four connection acquisitions per heartbeat
   // against the 25-connection production ceiling for no isolation gain. The
@@ -1996,12 +1998,14 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     monitoringSettings: Record<string, unknown> | null;
     pamSettings: { uacInterceptionEnabled: boolean } | null;
     patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null;
+    warrantySettings: { hpCmslEnabled: boolean } | null;
   };
   let policyConfigs: PolicyConfigUpdates = {
     eventLogSettings: null,
     monitoringSettings: null,
     pamSettings: null,
     patchSourceSettings: null,
+    warrantySettings: null,
   };
   try {
     policyConfigs = await withSystemDbAccessContext(async (): Promise<PolicyConfigUpdates> => {
@@ -2009,6 +2013,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
       let monitoringSettings: Record<string, unknown> | null = null;
       let pamSettings: { uacInterceptionEnabled: boolean } | null = null;
       let patchSourceSettings: { exclusiveWindowsUpdate: boolean } | null = null;
+      let warrantySettings: { hpCmslEnabled: boolean } | null = null;
 
       // Sentry on all four, not just pam/patch_source. Losing an event_log or
       // monitoring policy is precisely the invisible failure #2930 is about:
@@ -2054,7 +2059,22 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
         captureException(err);
       }
 
-      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings };
+      // #5511 W02: device-side HP CMSL warranty collection. Same shape and same
+      // reason as patch_source above — omit the block on a resolver error so a
+      // transient failure never stops collection on a consented fleet; a
+      // successful resolve with no warranty policy (or a nearer policy that
+      // replaced the link without an hpCmsl block, contract D5) returns false
+      // → the agent stops. Last in the shared context on purpose: an earlier
+      // resolver's SQL error aborts the transaction, which makes this one throw
+      // too — and throwing here only ever omits the block, never revokes.
+      try {
+        warrantySettings = await buildWarrantyConfigUpdate(scoped.deviceId);
+      } catch (err) {
+        console.error(`[agents] failed to build warranty config update for ${agentId}:`, err);
+        captureException(err);
+      }
+
+      return { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings };
     });
   } catch (err) {
     // Transaction setup/commit failure — see the note above. Every resolver's
@@ -2063,7 +2083,7 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     console.error(`[agents] policy config context failed for ${agentId} — omitting config updates this heartbeat:`, err);
     captureException(err);
   }
-  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings } = policyConfigs;
+  const { eventLogSettings, monitoringSettings, pamSettings, patchSourceSettings, warrantySettings } = policyConfigs;
 
   const policyConfigUpdate: Record<string, unknown> = {};
   if (eventLogSettings) {
@@ -2074,6 +2094,12 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
   }
   if (patchSourceSettings) {
     policyConfigUpdate.patch_source_settings = patchSourceSettings;
+  }
+  // Snake_case inside the block as well as outside (contract D6): this
+  // assembly is where camelCase resolver output becomes wire keys, and the
+  // agent's inner parse accepts either spelling.
+  if (warrantySettings) {
+    policyConfigUpdate.warranty_settings = { hp_cmsl_enabled: warrantySettings.hpCmslEnabled };
   }
   const hasPolicyConfigUpdate = Object.keys(policyConfigUpdate).length > 0;
 

@@ -10,6 +10,9 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
     type: z.literal('device'),
     id: z.string().guid(),
     hostname: z.string(),
+    // Client-side tenant hint only (#5684) — see AiPageContext. Never used for
+    // authorization: createSession resolves the org from the device row.
+    orgId: z.string().guid().optional(),
     os: z.string().optional(),
     status: z.string().optional(),
     ip: z.string().optional()

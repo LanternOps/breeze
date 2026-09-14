@@ -33,6 +33,7 @@ import {
   HardDrive,
   BarChart3,
   BrainCircuit,
+  DraftingCompass,
   Bot,
   History,
   Activity,
@@ -196,7 +197,7 @@ export const topLevelNav: NavItem[] = [
   // #5075 W04 — the customer record is the MSP's primary object, so it is
   // top-level rather than buried under Settings (where it used to live, and no
   // longer does: exactly one Organizations entry exists in the nav).
-  { name: 'Organizations', labelKey: 'nav.organizations', href: '/settings/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
+  { name: 'Organizations', labelKey: 'nav.organizations', href: '/organizations', icon: Building2, partnerScopeOnly: true, requiredPermission: { resource: 'organizations', action: 'read' } },
   // Unified list: agent devices + manual assets + network assets (#4622, #5228),
   // hence the label. Recently opened devices render under this row — see
   // `renderNavItem` and Sidebar.recents.test.tsx.
@@ -245,6 +246,9 @@ export const navSections: NavSection[] = [
       // Fleet value accounting (Phase 2 wave P2-6, #4193) — the estimated
       // time-saved report over the same runs, so it sits beside them.
       { name: 'AI Impact', labelKey: 'nav.aiImpact', href: '/ai-agents/impact', icon: TrendingUp, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      // Fleet Designer W03 (#5653) — apply/rollback surface for a Fleet
+      // Design report, so it sits beside the other AI-report reads.
+      { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
@@ -263,7 +267,7 @@ export const navSections: NavSection[] = [
       // /software-policies are aliases (see pathAliases).
       { name: 'Software', labelKey: 'nav.software', href: '/software', icon: Package, requiredPermission: { resource: 'devices', action: 'read' } },
       // #5288 — the Monitoring hub: Network today, Monitors (W02) and Delivery tabs.
-      { name: 'Monitoring', labelKey: 'nav.monitoring', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
+      { name: 'Network Monitor', labelKey: 'nav.networkMonitor', href: '/monitoring', icon: Activity, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'Network Discovery', labelKey: 'nav.networkDiscovery', href: '/discovery', icon: Network, requiredPermission: { resource: 'devices', action: 'read' } },
       { name: 'OneDrive', labelKey: 'nav.oneDrive', href: '/onedrive', icon: Cloud, requiredPermission: { resource: 'devices', action: 'read' } },
     ],
@@ -455,7 +459,6 @@ const allNavItems: NavItem[] = [
 const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
-  '/monitoring/delivery': '/monitoring',
 };
 
 // Determine which section a given href belongs to (for auto-expand)

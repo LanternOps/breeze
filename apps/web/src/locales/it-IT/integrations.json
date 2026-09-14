@@ -58,7 +58,30 @@
       "disconnectFailed": "Impossibile disconnettere la connessione.",
       "disconnectSucceeded": "Connessione Breeze disconnessa.",
       "approveNewPermissions": "Approva le nuove autorizzazioni",
-      "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni."
+      "upgradeFailed": "Non è stato possibile avviare l'approvazione delle nuove autorizzazioni.",
+      "syncNow": "Sincronizza ora",
+      "syncFailed": "Non è stato possibile richiedere la sincronizzazione del tenant.",
+      "syncSucceeded": "Sincronizzazione del tenant richiesta."
+    },
+    "sync": {
+      "lastSynced": "Ultima sincronizzazione {{relative}}",
+      "counts": "{{users}} utenti · {{devices}} dispositivi",
+      "never": "Non ancora sincronizzato",
+      "chips": {
+        "partial": "{{domain}}: parziale",
+        "needsConsent": "{{domain}}: consenso richiesto",
+        "throttled": "{{domain}}: limitato",
+        "error": "{{domain}}: errore",
+        "unlicensed": "L'attività di accesso richiede Entra ID P1"
+      },
+      "domains": {
+        "users": "Utenti",
+        "signin_activity": "Attività di accesso",
+        "intune_devices": "Dispositivi Intune",
+        "ca_policies": "Accesso condizionale",
+        "skus": "Licenze",
+        "secure_score": "Punteggio sicuro"
+      }
     },
     "errors": {
       "consent_expired": "La sessione di consenso è scaduta. Avvia di nuovo il consenso.",

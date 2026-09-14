@@ -16,6 +16,19 @@ Record tenant/org/user identifiers as redacted aliases plus a one-way digest. Ne
 
 ## Authoritative permission manifest
 
+> **Stale — predates manifest v3.** The manifest moved from version 2 (nine
+> roles) to version 3 (thirteen roles — see
+> [Customer Graph Read manifest v3](../release-notes/m365-customer-graph-read-manifest-v3.md))
+> in an earlier wave. Every "exact nine roles" reference below and in
+> scenarios 1–9 — including the snapshot/restore baseline scenarios 6–8 reset
+> to between runs — still describes v2 and has not been updated for v3. The
+> **Tenant-sync acceptance** section appended below this one already assumes
+> v3 (its prerequisites list all four new roles). Re-validate and update this
+> whole section against the thirteen-role manifest before relying on it —
+> this wave did not have the context to safely rewrite the scenario-by-
+> scenario restore procedure without risking silently changing what a
+> "clean" tenant-local baseline means mid-checklist.
+
 The expected profile is `customer-graph-read`, manifest version `2`, Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`, with exactly these nine application roles:
 
 | Permission | App role ID |
@@ -330,3 +343,209 @@ Use this section only after scenario 1 (successful consent and tenant binding) i
 3. Confirm `breeze_m365_graph_read_actions_total{action,outcome}` counter deltas for the acceptance window match the audit row counts exactly, action-by-action and outcome-by-outcome.
 
 Any read action returning a field outside its projection allowlist, any audit/metric row carrying Graph payload content, or any budget/permission/licensing outcome that does not match the table above is a failed run. Treat it the same as a failed scenario 1–13 run: disable the tools flag and preserve only sanitized evidence while the issue is investigated.
+
+---
+
+## Tenant-sync acceptance
+
+Run after the read-action acceptance passes, on a real customer tenant with an
+administrator available. Sync is gated by `M365_TENANT_SYNC_ENABLED`; turn it
+on for the acceptance window and record the flag state in the evidence record.
+
+### Prerequisites
+
+- `M365_TENANT_SYNC_ENABLED=true` on the API under test.
+- The read app registration carries all four manifest-v3 roles
+  (`Policy.Read.All`, `RoleManagement.Read.Directory`,
+  `SecurityEvents.Read.All`, `AuditLogsQuery.Read.All`).
+- Two tenants: one with Entra ID P1 or higher, one **without** (scenario S5).
+- One directory role assigned through a **role-assignable group** rather than
+  directly to a user (scenario S6). Create it as: a role-assignable security
+  group → add one member → assign the group a directory role.
+- `psql` access to the API's database as an administrator for the row
+  assertions, and the Prometheus scrape URL for the metric assertions.
+- Scenario **S7** needs none of the above — it measures the executor's memory
+  ceiling against a fake Graph and can be run before any tenant is available.
+
+### Acceptance matrix
+
+| # | Scenario | Must be true |
+|---|---|---|
+| S1 | v3 consent on a fresh tenant | Six sync-state rows seeded, all six domains complete within one cadence window |
+| S2 | Upgrade-consent on an existing v2 connection | Reads and sync never stop; manifest promotes in place; `consent_generation` increments |
+| S3 | First sync populates every domain | Rows in all seven tables; rollup row for today with `domains_fresh` complete for all six |
+| S4 | On-demand sync | Five non-sign-in domains re-run at priority 1; a second call within 15 minutes is refused |
+| S5 | Non-P1 tenant | `sources.signInActivity = "unlicensed"`, domain status `success`, interval at its maximum, UI says sign-in needs Entra ID P1 |
+| S6 | Role via a role-assignable group | The member's `admin_roles` entry carries `viaGroupId`; `is_admin` is true |
+| S7 | Executor memory ceiling | Peak RSS under four concurrent 25 000-user snapshots is measured, and the deploy doc's memory-table cell is filled with it |
+
+### S1. v3 consent on a fresh tenant
+
+1. Connect a tenant that has never consented, approving the v3 manifest.
+2. Assert six state rows exist and are due immediately:
+
+```sql
+SELECT domain, next_sync_at, interval_seconds, last_status
+FROM m365_sync_state WHERE org_id = '<org>' ORDER BY domain;
+```
+
+3. Wait one ticker interval. Every row reaches `last_status = 'success'` (or
+   `'partial'` with a recorded `sources` entry explaining which secondary
+   source failed) and a non-null `last_complete_snapshot_at`.
+4. Assert the first Secure Score run backfilled history:
+
+```sql
+SELECT count(*), min(score_date), max(score_date)
+FROM m365_secure_score_snapshots WHERE org_id = '<org>';
+```
+
+   Expect up to 90 rows, dated by Graph's `createdDateTime` — the oldest row's
+   date must be roughly 90 days before today, **not** today.
+
+### S2. Upgrade-consent on an existing v2 connection
+
+1. Start from a connection at `permission_manifest_version = 2`, status
+   `active`. The card shows the amber "New Microsoft 365 permissions are
+   required" banner.
+2. Before approving, run an AI read tool and confirm it still answers, and
+   confirm a `skus` sync run still completes. **Reads and sync must not stop
+   while the upgrade is pending.**
+3. Click **Approve new permissions** and complete the Microsoft flow.
+4. Assert in-place promotion — the connection id does not change:
+
+```sql
+SELECT id, status, permission_manifest_version, consent_generation
+FROM m365_connections WHERE org_id = '<org>' AND profile = 'customer-graph-read';
+```
+
+   `permission_manifest_version` is 3, `consent_generation` incremented by
+   one, `status` still `active`, `id` unchanged from step 1.
+5. Repeat with an **abandoned** flow: start the upgrade, close the Microsoft
+   tab without approving, wait five minutes. The connection stays `active` at
+   version 2 with `last_error_code` null, and reads keep working.
+
+### S3. First sync populates every domain
+
+```sql
+SELECT 'users' AS t, count(*) FROM m365_users WHERE org_id = '<org>'
+UNION ALL SELECT 'devices', count(*) FROM m365_intune_devices WHERE org_id = '<org>'
+UNION ALL SELECT 'ca', count(*) FROM m365_ca_policies WHERE org_id = '<org>'
+UNION ALL SELECT 'skus', count(*) FROM m365_license_skus WHERE org_id = '<org>'
+UNION ALL SELECT 'scores', count(*) FROM m365_secure_score_snapshots WHERE org_id = '<org>'
+UNION ALL SELECT 'rollups', count(*) FROM m365_posture_rollups WHERE org_id = '<org>';
+
+SELECT domains_fresh FROM m365_posture_rollups
+WHERE org_id = '<org>' AND rollup_date = current_date;
+```
+
+Every domain key in `domains_fresh` carries `"complete": true` and an `asOf`
+within the cadence window. Cross-check counts against the Microsoft 365 admin
+centre: user count, licensed seat count, and Intune device count must match
+within the enrolment lag. Confirm the card's "Last synced" line agrees.
+
+Then re-run the same domain and confirm the change-only contract holds. Note
+`last_counts` carries the snake_case **rollup** column names
+(`users_total`, `users_enabled`, …), not a per-run inserted/updated/unchanged
+tally — that tally is internal to the run and isn't persisted, so the durable
+check is that no row actually changed:
+
+```sql
+-- Snapshot before the re-run.
+SELECT graph_id, last_changed_at FROM m365_users WHERE org_id = '<org>' ORDER BY graph_id;
+-- … trigger the domain's next sync, wait for it to complete …
+-- Re-run the same query. On an unchanged tenant every last_changed_at is
+-- identical to the snapshot; a domain that touches unchanged rows anyway
+-- is the §5.4 "change-only writes" contract regressing.
+SELECT last_status, last_counts FROM m365_sync_state WHERE org_id = '<org>' AND domain = 'users';
+```
+
+`last_status` is `success` and `last_counts.users_total` matches the tenant's
+current user count either way — that alone does not prove nothing was
+written; the `last_changed_at` comparison above is what does.
+
+### S4. On-demand sync
+
+1. Press the on-demand sync control (MFA-gated, like Retest).
+2. Assert the five non-sign-in domains got `next_sync_at = now()` and were
+   claimed at priority 1; `signin_activity` is untouched (it is app-wide
+   budgeted and deliberately excluded).
+3. Press it again immediately: it is refused by the per-org 15-minute Redis
+   limit, with a message saying when it can be retried.
+
+### S5. Non-P1 tenant: sign-in activity is unlicensed, not broken
+
+```sql
+SELECT last_status, sources, interval_seconds
+FROM m365_sync_state WHERE org_id = '<non-p1-org>' AND domain = 'signin_activity';
+```
+
+`sources ->> 'signInActivity'` is `unlicensed`, `last_status` is `success`
+(not `error`), and `interval_seconds` has been stretched to its maximum
+(604800). No other domain is affected. The UI shows "Sign-in activity needs
+Entra ID P1", never a blank or a zero.
+
+### S6. Role assigned through a role-assignable group
+
+```sql
+SELECT user_principal_name, is_admin, admin_roles
+FROM m365_users WHERE org_id = '<org>' AND is_admin;
+```
+
+The group member appears with `is_admin = true` and an `admin_roles` entry
+carrying `viaGroupId` set to the group's object id. Nested groups are **not**
+followed by design; a member of a group nested inside the role-assignable
+group must not appear. Record both observations.
+
+### S7. Executor memory ceiling under four concurrent maximum-size snapshots
+
+The one scenario here that needs **no customer tenant**: it measures the
+executor, not Microsoft. Run it before the first canary, because the memory
+table in `docs/deploy/m365-customer-graph-read-executor.md` has a cell that
+must hold a measured number rather than a guess, and a 25 000-seat tenant is
+not something an acceptance window can conjure on demand. The ceiling is a
+function of the item cap and the in-flight cap, not of who the users are.
+
+1. Build and start the executor on its own, with the sync cap at its
+   default, autostart on (the process otherwise stays up without listening),
+   and a container limit high enough that the limit is not what you are
+   measuring:
+
+```bash
+pnpm --filter @breeze/m365-graph-read-executor build
+M365_GRAPH_READ_EXECUTOR_AUTOSTART=1 M365_SYNC_MAX_IN_FLIGHT=4 M365_SYNC_MAX_ITEMS_USERS=25000 \
+  node apps/m365-graph-read-executor/dist/index.cjs &
+EXECUTOR_PID=$!
+```
+
+2. Point its Graph base URL at a local server that serves 25 000
+   **Microsoft-Graph-shaped** `/users` page responses per pull — the raw
+   `{"value": [{"id": …, "userPrincipalName": …, …}], "@odata.nextLink": …}`
+   shape the executor's own Graph client consumes, not the executor's
+   projected `M365SyncActionResult` output (`syncUsersResult` in
+   `apps/api/src/__tests__/integration/m365SyncFakeExecutor.ts` builds THAT
+   shape — the wrong layer for this scenario, which stubs Microsoft, not the
+   executor). Generate the 25 000-user page once and serve the same body to
+   every call.
+3. Issue four `m365.sync.users` calls concurrently (against the EXECUTOR's
+   `/v1/sync-action`, signed the same way `m365SyncFakeExecutor.ts` signs its
+   test requests) and sample RSS throughout:
+
+```bash
+( while kill -0 "$EXECUTOR_PID" 2>/dev/null; do ps -o rss= -p "$EXECUTOR_PID"; sleep 0.25; done ) \
+  | sort -n | tail -1     # peak RSS in kilobytes
+```
+
+4. Convert the peak to MiB and write it into the "4 × 25 000 users" row of the
+   memory table in `docs/deploy/m365-customer-graph-read-executor.md`, then set
+   the container limit to at least 1.5× that figure.
+5. Repeat once with `M365_SYNC_MAX_IN_FLIGHT=1`. The peak should scale roughly
+   linearly with the in-flight cap. If it does not, a snapshot is being
+   retained after its response is written — that is a leak to fix, not a sizing
+   number to record.
+
+### Evidence to record
+
+For each scenario: date, tenant display name (never the tenant id), operator,
+the SQL output, the card screenshot where the scenario has a UI assertion, and
+the values of `m365_sync_ticker_utilisation` and `m365_sync_due_backlog` at the
+end of the window. Add the block to the evidence record template above.

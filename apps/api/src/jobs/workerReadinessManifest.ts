@@ -50,6 +50,9 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('mlOutputRetention'),
   consumers('offlineDetector'),
   consumers('notificationDispatcher'),
+  // #5306 — daily MFA enrolment grace notices. Plain Redis-required consumer:
+  // it constructs and attaches unconditionally wherever it is placed.
+  consumers('mfaEnrollmentNoticeWorker'),
   consumers('webhookDelivery', ['webhookDeliveryWorker']),
   consumers('policyEvaluationWorker'),
   consumers('softwareComplianceWorker'),
@@ -75,6 +78,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('reliabilityRetention'),
   consumers('processSampleRetention'),
   consumers('deviceMetricsRetention'),
+  consumers('m365SyncRetention'),
   consumers('serviceProcessCheckRetention'),
   consumers('changeLogRetention'),
   consumers('oauthCleanup'),
@@ -110,6 +114,12 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('dnsSyncWorker'),
   consumers('s1SyncWorker'),
   consumers('huntressSyncWorker'),
+  // The Worker is constructed unconditionally and attached unconditionally;
+  // M365_TENANT_SYNC_ENABLED gates the TICK registration and the processor
+  // body, not the construction. A flag-gated construction would need its own
+  // ConsumerRequirementRule and would leave every api/all process not-ready on
+  // the default configuration.
+  consumers('m365SyncWorker'),
   consumers('pax8SyncWorker'),
   consumers('tdSynnexSftpSyncWorker'),
   consumers('logForwardingWorker'),
@@ -133,6 +143,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('softwareDeploymentScheduler'),
   consumers('pamJobs', ['pamExpiryEnforcerWorker', 'pamStaleRequestWorker']),
   consumers('approvalExpiryReaper'),
+  consumers('workspaceReaper'),
   consumers('offboardingDrainReaper'),
   consumers('intentOutboxPublisher'),
   consumers('aiOperatorTaskOutboxPublisher'),
@@ -169,6 +180,7 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('orgMerge'),
   consumers('pamActuationWorker'),
   consumers('ticketAttachmentReaper'),
+  consumers('aiArtifactSweeper'),
   consumers('ticketOutboxPublisher'),
   consumers('metricAnomalyIncidentPublisher'),
   consumers('aiUnattendedExposureRetention'),

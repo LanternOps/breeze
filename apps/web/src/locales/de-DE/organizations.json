@@ -72,7 +72,8 @@
         "invoicesNothingDue": "Nichts fällig",
         "contacts": "Kontakte",
         "portalUsers": "Portalnutzer",
-        "sites": "Standorte"
+        "sites": "Standorte",
+        "lastActivity": "Letzte Aktivität"
       },
       "activity": {
         "title": "Letzte Aktivität",
@@ -197,6 +198,148 @@
         "updated": "Dokument aktualisiert",
         "deleted": "Dokument gelöscht"
       }
+    }
+  },
+  "orgBoard": {
+    "title": "Organisationen",
+    "description": "Jeder Kunde, was ihm noch fehlt und was offen ist.",
+    "loading": "Organisationen werden geladen…",
+    "actions": {
+      "addOrganization": "Organisation hinzufügen",
+      "tryAgain": "Erneut versuchen",
+      "clearFilters": "Filter zurücksetzen",
+      "openRecord": "Datensatz öffnen",
+      "contact": "{{name}} kontaktieren",
+      "newTicket": "Neues Ticket",
+      "workHere": "In dieser Organisation arbeiten",
+      "settings": "Einstellungen",
+      "archive": "Organisation archivieren",
+      "merge": "In eine andere Organisation zusammenführen",
+      "restore": "Wiederherstellen",
+      "restoring": "Wird wiederhergestellt…"
+    },
+    "rowMenu": { "label": "Aktionen für {{name}}" },
+    "search": { "label": "Organisationen, Kontakte und E-Mail-Adressen durchsuchen" },
+    "lens": { "label": "Ansicht", "setup": "Einrichtung", "account": "Konto", "both": "Beide" },
+    "filters": {
+      "label": "Filtern",
+      "all": "Alle",
+      "setupIncomplete": "Einrichtung unvollständig",
+      "accountMissing": "Kontodaten fehlen",
+      "openTickets": "Offene Tickets",
+      "trial": "Testphase",
+      "archived": "Archiviert"
+    },
+    "sort": { "label": "Sortieren", "manual": "Manuelle Reihenfolge", "name": "A bis Z", "tickets": "Offene Tickets" },
+    "columns": { "organization": "Organisation", "setup": "Einrichtung", "account": "Kontodaten", "tickets": "Offene Tickets", "actions": "Zeilenaktionen" },
+    "band": {
+      "label": "Kontobereitschaft",
+      "all": "Konten",
+      "allSub": "{{trial}} in Testphase · {{suspended}} gesperrt",
+      "setupIncomplete": "Einrichtung unvollständig",
+      "accountMissing": "Kontodaten fehlen",
+      "openTickets": "Offene Tickets",
+      "openTicketsSub": "{{count}} SLA verletzt",
+      "pending": "Organisationen werden geprüft…",
+      "partial": "Einige Organisationen konnten nicht geprüft werden."
+    },
+    "chips": {
+      "noSite": "Kein Standort",
+      "noDevices": "Keine Geräte registriert",
+      "noCheckIn": "Kein Agent hat sich gemeldet",
+      "staleCheckIn_one": "Seit {{count}} Tag keine Agent-Meldung",
+      "staleCheckIn_other": "Seit {{count}} Tagen keine Agent-Meldung",
+      "noPolicy": "Keine Richtlinie zugewiesen",
+      "primaryContact": "Hauptansprechpartner",
+      "contactEmail": "Kontakt-E-Mail",
+      "contactPhone": "Kontakttelefon",
+      "billingContact": "Rechnungskontakt",
+      "billingAddress": "Rechnungsadresse",
+      "overdueInvoices_one": "{{count}} überfällige Rechnung",
+      "overdueInvoices_other": "{{count}} überfällige Rechnungen",
+      "invitation_one": "{{count}} Einladung nicht angenommen",
+      "invitation_other": "{{count}} Einladungen nicht angenommen",
+      "complete": "Vollständig",
+      "notApplicable": "Nicht zutreffend",
+      "unavailable": "Nicht verfügbar",
+      "stillNeeded": "Noch offen",
+      "link": "{{chip}} für {{orgName}}"
+    },
+    "repair": {
+      "sites": "Registerkarte „Standorte“ für {{orgName}} öffnen",
+      "devices": "Registerkarte „Geräte“ für {{orgName}} öffnen",
+      "policies": "Konfigurationsrichtlinien öffnen",
+      "contacts": "Registerkarte „Kontakte“ für {{orgName}} öffnen",
+      "settings": "Einstellungen für {{orgName}} öffnen",
+      "billing": "Registerkarte „Abrechnung“ für {{orgName}} öffnen"
+    },
+    "tickets": { "open": "{{count}} offen", "awaiting": "{{count}} warten auf Kunde", "sla": "{{count}} SLA verletzt" },
+    "meta": {
+      "workspace": "Arbeitsbereich",
+      "devices_one": "{{count}} Gerät",
+      "devices_other": "{{count}} Geräte",
+      "sites_one": "{{count}} Standort",
+      "sites_other": "{{count}} Standorte",
+      "archivedBadge": "Archiviert",
+      "archivingBadge": "Wird archiviert…",
+      "keptIndefinitely": "Wird unbegrenzt aufbewahrt",
+      "purgeToday": "Wird heute endgültig gelöscht",
+      "purgeCountdown_one": "Wird in {{count}} Tag endgültig gelöscht",
+      "purgeCountdown_other": "Wird in {{count}} Tagen endgültig gelöscht"
+    },
+    "reorder": {
+      "handle": "{{name}} neu anordnen",
+      "hint": "Verschieben Sie diese Organisation mit den Pfeiltasten nach oben und unten.",
+      "dragToReorder": "Zum Neuanordnen ziehen",
+      "moved": "{{name}} wurde an Position {{position}} von {{total}} verschoben"
+    },
+    "footer": {
+      "summary": "{{accounts}} aktive Konten · {{devices}} Geräte",
+      "summaryWithTickets": "{{accounts}} aktive Konten · {{devices}} Geräte · {{tickets}} offene Tickets",
+      "manualHint": "Manuelle Reihenfolge: Zeile ziehen oder die Pfeiltasten auf dem Griff verwenden."
+    },
+    "empty": {
+      "title": "Noch keine Organisationen",
+      "description": "Fügen Sie Ihren ersten Kunden hinzu, um Einrichtung und Kontodaten im Blick zu behalten.",
+      "noMatches": "Keine Organisationen entsprechen Ihrer Suche oder Ihrem Filter."
+    },
+    "archived": {
+      "loading": "Archivierte Organisationen werden geladen…",
+      "empty": "Keine archivierten Organisationen.",
+      "noMatches": "Keine archivierten Organisationen entsprechen Ihrer Suche.",
+      "truncatedNote": "Zeigt die ersten {{count}} archivierten Organisationen. Suchen Sie, um die Liste einzugrenzen.",
+      "fetchError": "Archivierte Organisationen konnten nicht geladen werden"
+    },
+    "restore": {
+      "success": "{{name}} wiederhergestellt — Status: {{status}}.",
+      "recreateRequiredNote": "Bevor sie wieder vollständig nutzbar ist: {{items}}",
+      "suspendedNote": "Sie war vor der Archivierung gesperrt, daher wurde sie als gesperrt wiederhergestellt — beheben Sie dies, bevor sie den normalen Zugriff wieder aufnimmt.",
+      "errors": {
+        "restore": "Die Organisation konnte nicht wiederhergestellt werden",
+        "mfaRequired": "Das Wiederherstellen von Organisationen erfordert Multi-Faktor-Authentifizierung. Aktivieren Sie MFA in Ihren Profil-Sicherheitseinstellungen und versuchen Sie es erneut.",
+        "purging": "Diese Organisation wird bereits endgültig gelöscht und kann nicht mehr wiederhergestellt werden."
+      }
+    },
+    "add": {
+      "title": "Organisation hinzufügen",
+      "description": "Erstellen Sie eine neue Organisation mit den unten aufgeführten Details.",
+      "submit": "Organisation erstellen",
+      "created": "{{name}} hinzugefügt. Die Zeile zeigt, was als Nächstes einzurichten ist."
+    },
+    "errors": {
+      "fetchOrganizations": "Organisationen konnten nicht abgerufen werden",
+      "generic": "Es ist ein Fehler aufgetreten",
+      "saveOrder": "Organisationsreihenfolge konnte nicht gespeichert werden",
+      "saveOrganization": "Die Organisation konnte nicht gespeichert werden",
+      "readiness": "Die Kontobereitschaft einiger Organisationen konnte nicht geprüft werden."
+    }
+  },
+  "shared": {
+    "sortableTh": {
+      "ascending": "Aufsteigend",
+      "descending": "Absteigend",
+      "sortBy": "Sortieren nach {{label}}",
+      "sortByWithDirection": "Sortieren nach {{label}}, {{direction}}"
     }
   }
 }

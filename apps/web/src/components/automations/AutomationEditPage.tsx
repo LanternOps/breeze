@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Bot } from 'lucide-react';
+import { ArrowLeft, Bot, Link2 } from 'lucide-react';
 import AutomationForm, { type ActionFormValues, type AutomationFormValues } from './AutomationForm';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -167,6 +167,11 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
   // #3824: a seeded, agent-owned automation is read-only — render a notice
   // instead of the editor. The API 409s on save anyway.
   const [managedByAgentId, setManagedByAgentId] = useState<string | null>(null);
+  // #5287: an automation compiled from a monitor is likewise read-only here —
+  // the API 409s (`automation_managed_by_monitor`) on save. Takes priority
+  // over the agent-managed notice below since a monitor-compiled automation
+  // is never also agent-owned in practice.
+  const [managedByMonitorId, setManagedByMonitorId] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [scripts, setScripts] = useState<Script[]>([]);
@@ -191,6 +196,7 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
       const data = await response.json();
       const automation = data.automation ?? data;
       setManagedByAgentId(asString(automation.managedByAgentId) ?? null);
+      setManagedByMonitorId(asString(automation.managedByMonitorId) ?? null);
 
       const trigger = isPlainRecord(automation.trigger)
         ? automation.trigger
@@ -445,7 +451,29 @@ export default function AutomationEditPage({ automationId, isNew = false }: Auto
         </div>
       )}
 
-      {managedByAgentId ? (
+      {managedByMonitorId ? (
+        <div
+          className="rounded-lg border border-blue-500/40 bg-blue-500/10 p-6"
+          data-testid="automation-managed-notice"
+        >
+          <div className="flex items-center gap-2 text-blue-700 dark:text-blue-200">
+            <Link2 className="h-5 w-5" />
+            <h2 className="text-sm font-semibold">{t('monitoring:managed.readOnly')}</h2>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {t('monitoring:managed.description')}
+          </p>
+          {/* Monitor detail page lands in a later wave — the route is reserved
+              now so this link lights up without another edit here (#5287). */}
+          <a
+            href={`/alerts/monitors/${managedByMonitorId}`}
+            className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            data-testid="automation-managed-monitor-link"
+          >
+            {t('monitoring:managed.open')}
+          </a>
+        </div>
+      ) : managedByAgentId ? (
         <div
           className="rounded-lg border border-purple-500/40 bg-purple-500/10 p-6"
           data-testid="automation-managed-notice"

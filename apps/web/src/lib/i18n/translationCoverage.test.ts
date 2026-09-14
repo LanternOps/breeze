@@ -73,9 +73,18 @@ const namespaceDuplicateBaselines = {
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
     // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
     'deliverables.json': 2,
-    'devices.json': 174,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
+    'devices.json': 175,
     'discovery.json': 17,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
+    'fleetDesign.json': 2,
     'integrations.json': 23,
+    // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
+    // "Name", "Monitor" (list/policy-tab column + label), "Hardware",
+    // "System" (event-log categories), "CPU" (resource select) are identical
+    // cognates/loanwords in pt-BR.
+    'monitoring.json': 5,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
     'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
@@ -184,9 +193,18 @@ const namespaceDuplicateBaselines = {
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
     'deliverables.json': 1,
-    'devices.json': 125,
+    // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
+    'devices.json': 126,
     'discovery.json': 17,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
+    'fleetDesign.json': 2,
     'integrations.json': 31,
+    // #5289 (monitors W02 web): +5 on top of the pre-existing +1 —
+    // "Monitor" (label), "Hardware" (event-log category), "Error" (event-log
+    // level), "CPU" (resource select), "Total" (direction select) are
+    // identical cognates/loanwords in es-419.
+    'monitoring.json': 6,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
     'organizations.json': 1, // W01 #5075: cognate — "Tickets"
@@ -299,8 +317,18 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-FR.
+    'fleetDesign.json': 3,
     'integrations.json': 38,
-    'organizations.json': 8, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR
+    // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
+    // (event-log count field), "Direction" (bandwidth/disk-I/O field),
+    // "Application" (event-log category), "CPU" (resource select), "Total"
+    // (direction select), "Source" (policy-tab column) are identical
+    // cognates in fr-FR.
+    'monitoring.json': 7,
+    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
@@ -423,8 +451,18 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
+    // "Notes" — both spell identically in fr-CA.
+    'fleetDesign.json': 3,
     'integrations.json': 40,
-    'organizations.json': 7, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA
+    // #5289 (monitors W02 web): "Description" (field label), "Occurrences"
+    // (event-log count field), "Direction" (bandwidth/disk-I/O field),
+    // "Application" (event-log category), "CPU" (resource select), "Total"
+    // (direction select), "Source" (policy-tab column) are identical
+    // cognates in fr-CA.
+    'monitoring.json': 7,
+    'organizations.json': 9, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
@@ -560,7 +598,14 @@ const namespaceDuplicateBaselines = {
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 43,
+    // #5289 (monitors W02 web): +7 on top of the pre-existing +1 —
+    // "Name" (list/legacy column + field label), "Monitor" (policy-tab
+    // column), "Hardware"/"System" (event-log categories), "CPU" (resource
+    // select) are identical cognates/loanwords in de-DE.
+    'monitoring.json': 8,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
     'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
@@ -652,7 +697,15 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
+    'fleetDesign.json': 2,
     'integrations.json': 81,
+    // #5289 (monitors W02 web): +4 on top of the pre-existing +1 —
+    // "Monitor" (policy-tab column), "Info" (severity), "Hardware"
+    // (event-log category), "CPU" (resource select) are identical
+    // cognates/loanwords in it-IT.
+    'monitoring.json': 5,
     'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
     'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
@@ -727,8 +780,13 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
+    // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
+    'fleetDesign.json': 1,
     'integrations.json': 22,
-    'organizations.json': 1, // W01 #5075: cognate — "{{count}} site"
+    // #5289 (monitors W02 web): "CPU" (resource select) is the identical
+    // acronym in tr-TR.
+    'monitoring.json': 1,
+    'organizations.json': 2, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
     'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,

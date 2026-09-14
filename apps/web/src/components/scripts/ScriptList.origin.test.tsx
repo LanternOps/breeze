@@ -47,7 +47,11 @@ describe('ScriptList origin column (Task 22)', () => {
   });
 
   it('badges a reviewed AI script and an edited-since-review one differently', () => {
-    render(<ScriptList scripts={[aiScript, { ...aiScript, id: 's3', reviewedAtHead: false }]} />);
+    render(
+      <ScriptList
+        scripts={[aiScript, { ...aiScript, id: 's3', reviewedAtHead: false, originProposalId: 'proposal-1' }]}
+      />
+    );
     expect(screen.getByTestId(`script-badge-reviewed-${aiScript.id}`)).toBeInTheDocument();
     expect(screen.getByTestId('script-badge-edited-since-review-s3')).toBeInTheDocument();
   });
@@ -55,5 +59,29 @@ describe('ScriptList origin column (Task 22)', () => {
   it('keeps the empty-state row spanning every column', () => {
     render(<ScriptList scripts={[]} />);
     expect(screen.getByTestId('script-empty-row').querySelector('td')).toHaveAttribute('colspan', '8');
+  });
+
+  it('shows a neutral "Not reviewed" badge for an AI-proposal script with no originProposalId', () => {
+    const neverProposed: Script = {
+      ...aiScript,
+      id: 's-never-proposed',
+      reviewedAtHead: false,
+      originProposalId: null
+    };
+    render(<ScriptList scripts={[neverProposed]} />);
+    expect(screen.getByTestId(`script-badge-not-reviewed-${neverProposed.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`script-badge-edited-since-review-${neverProposed.id}`)).not.toBeInTheDocument();
+  });
+
+  it('still shows "Edited since review" for an AI-proposal script that HAS an originProposalId', () => {
+    const editedProposed: Script = {
+      ...aiScript,
+      id: 's3',
+      reviewedAtHead: false,
+      originProposalId: 'proposal-1'
+    };
+    render(<ScriptList scripts={[editedProposed]} />);
+    expect(screen.getByTestId(`script-badge-edited-since-review-${editedProposed.id}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`script-badge-not-reviewed-${editedProposed.id}`)).not.toBeInTheDocument();
   });
 });

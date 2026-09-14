@@ -118,6 +118,7 @@ export default defineConfig({
               label: 'Monitoring & Alerting',
               items: [
                 { slug: 'features/alerts' },
+                { slug: 'features/monitors' },
                 { slug: 'features/alert-templates' },
                 { slug: 'features/network-monitors' },
                 { slug: 'features/service-monitoring' },

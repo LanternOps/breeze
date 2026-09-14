@@ -135,7 +135,7 @@ async function seedReviewedStrictProposal(s: Scenario): Promise<{ proposalId: st
     createScriptProposal(auth, {
       language: 'powershell', content: STRICT_CONTENT, goal: 'Enable Contoso', expectedEffect: 'Registry value set',
       verification: { kind: 'exit_code', equals: 0 }, deviceIds: [s.deviceId], runAs: 'system', timeoutSeconds: 60,
-    }, { kind: 'chat_session', sessionId: null }));
+    }, { kind: 'chat_session', sessionId: null }, s.orgId));
   expect(scan.strictHits.length, 'seed content must match at least one STRICT pattern').toBeGreaterThan(0);
   expect(proposal.status).toBe('proposed');
   await withSystemDbAccessContext(async () => {

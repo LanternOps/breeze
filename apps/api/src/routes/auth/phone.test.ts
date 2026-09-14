@@ -222,7 +222,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const sendVerificationCode = vi.fn().mockResolvedValue({ success: true });
       vi.mocked(getTwilioService).mockReturnValue({
@@ -252,7 +253,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: true,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: true, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
       });
       const sendVerificationCode = vi.fn();
       vi.mocked(getTwilioService).mockReturnValue({ sendVerificationCode } as any);
@@ -289,7 +291,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -315,7 +318,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -337,7 +341,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
       vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(
         new Response(JSON.stringify({ error: 'existing_factor_step_up_required', stepUpUrl: '/auth/mfa/step-up' }), {
@@ -360,7 +365,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
       vi.mocked(enforceExistingFactorStepUp).mockResolvedValueOnce(null);
 
@@ -421,7 +427,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: true, graceWindow: 'none' as const },
       });
 
       const res = await app.request('/auth/mfa/sms/enable', {
@@ -484,7 +491,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: true, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
       });
       vi.mocked(db.select).mockReturnValue(selectChain([liveUser]) as any);
       vi.mocked(getTwilioService).mockReturnValue({
@@ -549,7 +557,8 @@ describe('phone routes', () => {
       vi.mocked(getEffectiveMfaPolicy).mockResolvedValue({
         required: false,
         allowedMethods: { totp: true, sms: false, passkey: true },
-        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false },
+        pendingEnrollment: null,
+        source: { roleForceMfa: false, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
       });
 
       const res = await send();

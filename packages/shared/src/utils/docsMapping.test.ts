@@ -102,6 +102,28 @@ describe('getDocsForPath', () => {
       expect(result.url).toContain('/features/ticketing/');
     });
 
+    it('/jobs maps to automations docs (v0.113.0 nav rename)', () => {
+      const result = getDocsForPath('/jobs');
+      expect(result.label).toBe('Jobs');
+      expect(result.url).toContain('/features/automations/');
+    });
+
+    it('/monitoring maps to the Monitors hub, not the observability stack', () => {
+      const result = getDocsForPath('/monitoring');
+      expect(result.label).toBe('Monitoring');
+      expect(result.url).toContain('/features/monitors/');
+    });
+
+    it('/monitoring/network maps to network monitors docs', () => {
+      const result = getDocsForPath('/monitoring/network');
+      expect(result.url).toContain('/features/network-monitors/');
+    });
+
+    it('/settings/deliverable-templates maps to service deliverables docs', () => {
+      const result = getDocsForPath('/settings/deliverable-templates');
+      expect(result.url).toContain('/features/contracts/#service-deliverables');
+    });
+
     it('/contracts maps to recurring contracts docs', () => {
       const result = getDocsForPath('/contracts');
       expect(result.label).toBe('Recurring Contracts');

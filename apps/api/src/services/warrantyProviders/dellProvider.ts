@@ -1,5 +1,13 @@
 import type { WarrantyProvider, WarrantyLookupResult, WarrantyEntitlement } from './types';
 
+/** Coerce a vendor date to YYYY-MM-DD for the `date` columns, or null. */
+function toDateOnly(value: string | undefined | null): string | null {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) return value.slice(0, 10);
+  const parsed = new Date(value);
+  return isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
 // Module-level OAuth token cache with promise coalescing to prevent concurrent token fetches
 let tokenPromise: Promise<string> | null = null;
 let cachedToken: { token: string; expiresAt: number } | null = null;
@@ -145,6 +153,7 @@ export const dellProvider: WarrantyProvider = {
             entitlements,
             warrantyStartDate: startDates[0] ?? null,
             warrantyEndDate: endDates[0] ?? null,
+            shipDate: toDateOnly(asset.shipDate),
           });
         }
       } catch (err) {

@@ -68,6 +68,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_alerts: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
   manage_monitors: 'alerts_monitoring',
+  // #5289 — monitor DEFINITIONS (the authored condition+response object), not
+  // the network monitors `manage_monitors` above covers.
+  list_monitors: 'alerts_monitoring',
+  get_monitor: 'alerts_monitoring',
+  manage_monitor_definitions: 'alerts_monitoring',
   manage_service_monitors: 'alerts_monitoring',
   manage_notification_channels: 'alerts_monitoring',
   manage_maintenance_windows: 'alerts_monitoring', // scheduled alert suppression, not a config policy
@@ -319,6 +324,11 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
     'manage_services:restart',
   ],
   helpdesk: ['manage_services:restart', 'disk_cleanup:execute', 'run_script'],
+  // Fleet Designer (W01): reads by the guardrail rule (`designToolAllowlist`
+  // is a FLOOR, not an intersection with this preset), one outcome tool —
+  // never a mutating operation. A designer agent's toolAllowlist form still
+  // exists (shared UI component) but a design run never consults it.
+  designer: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -435,6 +445,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       triage: [...AGENT_KIND_PRESETS.triage],
       patch: [...AGENT_KIND_PRESETS.patch],
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
+      designer: [...AGENT_KIND_PRESETS.designer],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

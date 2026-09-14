@@ -20,6 +20,7 @@ import { isSecretBearingTool } from './actionIntents/secretBearingTools';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
+import { warrantyHpCmslRequested } from '@breeze/shared/validators';
 import { getCachedAiKillStateSnapshot } from './aiKillState';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -499,6 +500,11 @@ export const TIER3_SUPERVISED_TOOLS = new Set<string>([
   'take_screenshot', 'analyze_screen',
   'apply_cis_remediation', 'manage_hyperv_vm', 'manage_peripheral_policy',
   'manage_software_policy', 'manage_browser_policy',
+  // Monitor definitions (#5289 Task 8): ordinary config-object CRUD (create/
+  // update/delete/enable/disable/attach/detach), same class as the software/
+  // browser/peripheral policy tools above — no identity, tenant-destruction,
+  // or restore/rewind action in its surface.
+  'manage_monitor_definitions',
   'network_discovery', 'remediate_sensitive_data',
   'remediate_software_violation', 'remediate_vulnerability',
   'execute_playbook', 'execute_containment',
@@ -522,6 +528,8 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // monitoring-suppression source, so authoring one is a different class of
   // act from authoring any other link — but only the INPUT says which it is,
   // so it cannot be classified by (tool, action) in the static tables.
+  // #5511 W02: same reasoning for a warranty link that switches on device-side
+  // HP CMSL collection — the pair is unchanged, the predicate gained an arm.
   'manage_policy_feature_link:add',
   'manage_policy_feature_link:update',
 ]);
@@ -532,25 +540,39 @@ export const TIER3_INPUT_AWARE_ACTIONS: ReadonlySet<string> = new Set<string>([
  * ask the SAME question — a second copy of this predicate is how a tier and
  * its scope drift apart.
  *
- * Strict `=== 'maintenance'`: a non-string featureType stays at the base tier,
- * which is safe here because the handler writes exactly the featureType it was
- * given, so a value that is not the literal 'maintenance' cannot create a
- * maintenance link either. The handler's own principal check (D9.3) is the
- * belt to this brace for `update`, where featureType is not a required input.
+ * Two arms, both on manage_policy_feature_link's add/update:
+ *
+ *  - `featureType === 'maintenance'` (RMM-QA-176 D9). Strict `===`: a
+ *    non-string featureType stays at the base tier, which is safe here because
+ *    the handler writes exactly the featureType it was given, so a value that
+ *    is not the literal 'maintenance' cannot create a maintenance link either.
+ *    The handler's own principal check (D9.3) is the belt to this brace for
+ *    `update`, where featureType is not a required input.
+ *
+ *  - an inlineSettings payload that would leave HP CMSL warranty collection
+ *    ON (#5511 W02, contract D4). Enabling it installs HP's CMSL module on
+ *    every HP endpoint the policy reaches, which is a software deployment —
+ *    gated behind devices.execute + MFA on the HTTP routes, and this tool
+ *    reaches addFeatureLink without passing through any of them. Keyed on the
+ *    SETTINGS CONTENT rather than on featureType precisely because featureType
+ *    is not a required input on `update`, which is the call that turns
+ *    collection on for an existing link. A warranty link carrying only alert
+ *    thresholds installs nothing and deliberately stays at the base tier.
  *
  * The action guard is not decoration: without it a read (`list`) carrying a
- * stray featureType argument would be escalated into an approval that the MCP
- * transport then denies outright.
+ * stray featureType or inlineSettings argument would be escalated into an
+ * approval that the MCP transport then denies outright.
  */
 export function isInputAwareTier3(
   toolName: string,
   action: string | undefined,
   input: Record<string, unknown>,
 ): boolean {
+  if (toolName !== 'manage_policy_feature_link') return false;
+  if (action !== 'add' && action !== 'update') return false;
   return (
-    toolName === 'manage_policy_feature_link' &&
-    (action === 'add' || action === 'update') &&
     input.featureType === 'maintenance'
+    || warrantyHpCmslRequested(input.inlineSettings)
   );
 }
 
@@ -617,7 +639,8 @@ export function resolveApprovalScope(
     // the way to the per-TOOL `four_eyes` fail-safe at the bottom of this
     // function. `supervised` matches the #3552/835f7eb3d policy-prerequisite
     // escalations and manage_configuration_policy's own create/update/delete —
-    // authoring policy configuration, not an externally binding act.
+    // authoring policy configuration, not an externally binding act. The
+    // #5511 hpCmsl arm resolves here too, for the same reason.
     return 'supervised';
   }
   if (toolName === 's1_isolate_device') {
@@ -963,6 +986,22 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
     update: { resource: 'policies', action: 'write' },
     remove: { resource: 'policies', action: 'write' },
   },
+  // Monitor definition tools (#5289 Task 8) — same permission the HTTP routes
+  // require (PERMISSIONS.ALERTS_READ / ALERTS_WRITE, routes/monitorDefinitions.ts).
+  // NOTE: the write tool is manage_monitor_definitions, NOT manage_monitors —
+  // that name is already taken by the unrelated network-monitor CRUD tool
+  // (see the "Monitoring tools" RBAC mappings below).
+  list_monitors: { resource: 'alerts', action: 'read' },
+  get_monitor: { resource: 'alerts', action: 'read' },
+  manage_monitor_definitions: {
+    create: { resource: 'alerts', action: 'write' },
+    update: { resource: 'alerts', action: 'write' },
+    delete: { resource: 'alerts', action: 'write' },
+    enable: { resource: 'alerts', action: 'write' },
+    disable: { resource: 'alerts', action: 'write' },
+    attach: { resource: 'alerts', action: 'write' },
+    detach: { resource: 'alerts', action: 'write' },
+  },
   manage_backup_profiles: {
     list: { resource: 'policies', action: 'read' },
     get: { resource: 'policies', action: 'read' },
@@ -1103,9 +1142,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_user_risk_scores: { resource: 'users', action: 'read' },
   get_user_risk_detail: { resource: 'users', action: 'read' },
   assign_security_training: { resource: 'users', action: 'write' },
-  get_backup_health: { resource: 'devices', action: 'read' },
-  run_backup_verification: { resource: 'devices', action: 'execute' },
-  get_recovery_readiness: { resource: 'devices', action: 'read' },
   // M365 helpdesk tools (Delegant-backed)
   m365_lookup_user: { resource: 'm365', action: 'read' },
   m365_recent_signins: { resource: 'm365', action: 'read' },
@@ -1280,7 +1316,6 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
-  run_backup_verification: { limit: 10, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -2453,6 +2488,12 @@ function buildApprovalDescription(
     case 'manage_policy_feature_link':
       parts.push(`${action?.toUpperCase()} ${String(input.featureType ?? 'feature')} link`);
       parts.push(`on config policy ${(input.configPolicyId as string)?.slice(0, 8) ?? 'unknown'}...`);
+      // #5511 W02: an `update` need not carry featureType, so without this an
+      // approver sees "UPDATE feature link" for a change that installs HP
+      // software on every HP endpoint the policy reaches. Say what it does.
+      if (warrantyHpCmslRequested(input.inlineSettings)) {
+        parts.push('— enables HP CMSL warranty collection (installs HP software on HP devices)');
+      }
       break;
 
     case 'remove_configuration_policy_assignment':
@@ -2541,13 +2582,6 @@ function buildApprovalDescription(
       else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
       else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
-    case 'run_backup_verification': {
-      const verificationType = typeof input.verificationType === 'string' ? input.verificationType : 'integrity';
-      parts.push(`Run ${verificationType} backup verification`);
-      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
-      if (input.backupJobId) parts.push(`job ${String(input.backupJobId).slice(0, 8)}...`);
-      break;
-    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

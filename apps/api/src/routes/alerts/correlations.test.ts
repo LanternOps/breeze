@@ -173,6 +173,16 @@ vi.mock('drizzle-orm', () => ({
   or: (...args: unknown[]) => ({ op: 'or', args }),
   inArray: (col: unknown, vals: unknown[]) => ({ op: 'inArray', col, vals }),
   desc: (col: unknown) => ({ op: 'desc', col }),
+  // #5289: the module graph now reaches schema files that evaluate sql`` at
+  // import time (alertService -> monitorResolver -> db/schema/*), so the mock
+  // has to provide it or the suite fails to load.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => ({ op: 'sql', strings, values }),
+    { join: (...args: unknown[]) => ({ op: 'sqlJoin', args }), raw: (s: string) => ({ op: 'raw', s }) },
+  ),
+  asc: (col: unknown) => ({ op: 'asc', col }),
+  isNull: (col: unknown) => ({ op: 'isNull', col }),
+  isNotNull: (col: unknown) => ({ op: 'isNotNull', col }),
 }));
 
 vi.mock('../../middleware/auth', () => ({
