@@ -177,7 +177,11 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // above: the AI schedule owns `ai_fleet_design` end to end, the builder
   // never offers it, and the entry exists only to keep this Record
   // exhaustive and `reportTypeSurvivesBuilder('ai_fleet_design')` false.
-  ai_fleet_design: 'activity'
+  ai_fleet_design: 'activity',
+  // Hardware Lifecycle is delivered via a curated template with its own
+  // options form; the builder never offers it. Mapping to the devices source
+  // keeps the Record exhaustive and `reportTypeSurvivesBuilder` false.
+  hardware_lifecycle: 'devices'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

@@ -78,6 +78,12 @@ export const devices = pgTable('devices', {
   isVirtual: boolean('is_virtual').notNull().default(false),
   virtualizationPlatform: varchar('virtualization_platform', { length: 30 }),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
+  // Hardware Lifecycle report: when the device was bought. Source is 'manual'
+  // (operator-entered, never overwritten by sync) or 'vendor' (derived from the
+  // warranty provider's ship date). Both NULL or both set —
+  // devices_purchase_date_source_chk.
+  purchaseDate: date('purchase_date'),
+  purchaseDateSource: varchar('purchase_date_source', { length: 20 }).$type<'manual' | 'vendor'>(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
   agentVersion: varchar('agent_version', { length: 50 }).notNull(),

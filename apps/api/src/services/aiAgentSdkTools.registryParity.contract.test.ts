@@ -142,10 +142,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
  * registered or the dead entry gets removed.
  */
 const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'get_backup_health',
-  'get_recovery_readiness',
   'propose_action_plan',
-  'run_backup_verification',
 ]);
 
 describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {

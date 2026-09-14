@@ -949,6 +949,8 @@ coreRoutes.get(
         deviceRoleSource: devices.deviceRoleSource,
         deviceFunction: devices.deviceFunction,
         deviceFunctionSource: devices.deviceFunctionSource,
+        purchaseDate: devices.purchaseDate,
+        purchaseDateSource: devices.purchaseDateSource,
         osVersion: devices.osVersion,
         osBuild: devices.osBuild,
         architecture: devices.architecture,
@@ -1722,6 +1724,11 @@ coreRoutes.patch(
     if (data.deviceRole !== undefined) {
       updates.deviceRole = data.deviceRole;
       updates.deviceRoleSource = 'manual';
+    }
+    if (data.purchaseDate !== undefined) {
+      // Both NULL or both set — devices_purchase_date_source_chk.
+      updates.purchaseDate = data.purchaseDate;
+      updates.purchaseDateSource = data.purchaseDate === null ? null : 'manual';
     }
     // NOTE: no `updates.customFields` branch. Custom-field values were written
     // to `device_custom_field_values` above; the merge-with-existing semantics

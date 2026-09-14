@@ -13,7 +13,8 @@ import { dbAccessContextFromAuth } from '../middleware/auth';
 import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
-import { executeTool, aiTools } from './aiTools';
+import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
@@ -202,9 +203,6 @@ export const TOOL_TIERS = {
   analyze_fleet_metrics: 1,
   get_invite_funnel: 1,
   delete_tenant: 3,
-  get_backup_health: 1,
-  run_backup_verification: 2,
-  get_recovery_readiness: 1,
   file_operations: 1, // Base tier; write/delete/mkdir/rename escalated to 3 in guardrails
   analyze_disk_usage: 1,
   disk_cleanup: 1, // Base tier; execute escalated to 3 in guardrails
@@ -448,9 +446,10 @@ function registryDescription(toolName: string): string {
   return description;
 }
 
-function makeHandler(
+function makeToolHandler(
   toolName: string,
   getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
@@ -533,13 +532,25 @@ function makeHandler(
       // and `jobs/intentReleaseWorker.ts` use, so the re-entered context is
       // identical to the one authMiddleware opened — not wider.
       const dbContext: DbAccessContext = dbAccessContextFromAuth(auth);
+      // W01: attribute an oversized result to this session's org and session.
+      // `session.orgId` is the canonical org — `auth.orgId` is null for a
+      // partner-scope login — and `session.breezeSessionId` IS the
+      // ai_sessions.id the artifact row's session_id FK points at.
+      const captureSession = getActiveSession?.();
+      const capture: CaptureScope | undefined = captureSession
+        ? { orgId: captureSession.orgId, sessionId: captureSession.breezeSessionId }
+        : undefined;
+      // An absent member means no KEY at all, and an empty bag means no FOURTH
+      // ARGUMENT at all — both are behaviour changes for an ordinary chat tool
+      // call, and `aiAgentSdkTools.verifiedContext.test.ts` pins the arity.
+      const execOptions: ExecuteToolOptions = {
+        ...(verifiedContext ? { context: verifiedContext } : {}),
+        ...(capture ? { capture } : {}),
+      };
       const result = await withToolTimeout(
         withDbAccessContext(dbContext, () =>
-          // Three arguments unless something was actually verified — an
-          // options bag carrying `context: undefined` would be a behaviour
-          // change for every ordinary chat tool call.
-          verifiedContext
-            ? executeTool(toolName, args, auth, { context: verifiedContext })
+          Object.keys(execOptions).length > 0
+            ? executeTool(toolName, args, auth, execOptions)
             : executeTool(toolName, args, auth),
         ),
         toolTimeout,
@@ -807,6 +818,22 @@ function makeSessionAwareHandler(
 
 // Exported for unit tests that lock in the enforcement ordering, and (for
 // makeHandler) the preToolUse -> executeTool context hand-off (#3409 PR4c-1).
+/**
+ * Backwards-compatible four-argument shape of `makeToolHandler`, with NO active
+ * session — W01 artifact capture is therefore inert for a handler built through
+ * it. Every real declaration site shadows this with a local alias that closes
+ * over its own `getActiveSession` (see createBreezeMcpServer and
+ * scriptProposalToolDefinitions); this module-level binding exists only for
+ * `__test__` consumers that predate the session parameter. Do NOT build a new
+ * declaration site on it.
+ */
+const makeHandler = (
+  toolName: string,
+  getAuth: () => AuthContext,
+  onPreToolUse?: PreToolUseCallback,
+  onPostToolUse?: PostToolUseCallback,
+) => makeToolHandler(toolName, getAuth, undefined, onPreToolUse, onPostToolUse);
+
 export const __test__ = { makeSessionAwareHandler, makeHandler };
 
 // ============================================
@@ -831,6 +858,7 @@ export const __test__ = { makeSessionAwareHandler, makeHandler };
  */
 export function scriptProposalToolDefinitions(
   getAuth: () => AuthContext,
+  getActiveSession: (() => ActiveSession | undefined) | undefined,
   onPreToolUse?: PreToolUseCallback,
   onPostToolUse?: PostToolUseCallback,
 ) {
@@ -838,6 +866,14 @@ export function scriptProposalToolDefinitions(
   // SdkMcpToolDefinition generic is invariant in its shape, so an explicit
   // SdkTool[] annotation does not accept the concrete tool() results.
   if (!aiScriptAuthoringEnabled()) return [];
+  // One alias so the tool() declarations below keep their four-argument shape
+  // while the underlying handler also receives the session (W01 capture).
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
   const uuid = z.string().guid();
   return [
     tool(
@@ -1275,8 +1311,19 @@ export function createBreezeMcpServer(
   extraTools: SdkTool[] = [],
   options?: { onlyTools?: ReadonlySet<string> },
 ) {
+  // One alias so the tool() declarations below keep their four-argument shape
+  // while the underlying handler also receives the session. W01 capture needs
+  // the session's org (auth.orgId is null for a partner-scope login) and its
+  // ai_sessions id. getActiveSession is undefined for the headless/agent
+  // server, where the ai_agent principal already carries the run and org.
+  const makeHandler = (
+    toolName: string,
+    auth: () => AuthContext,
+    pre?: PreToolUseCallback,
+    post?: PostToolUseCallback,
+  ) => makeToolHandler(toolName, auth, getActiveSession, pre, post);
+
   const uuid = z.string().guid();
-  const backupEntityId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
   const tools = [
     tool(
@@ -1653,49 +1700,6 @@ export function createBreezeMcpServer(
         confirmation_phrase: z.string().min(1).max(500),
       },
       makeHandler('delete_tenant', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    // SEC-2026-09-05-021: get_backup_health / run_backup_verification /
-    // get_recovery_readiness are declared here but have NO executeTool
-    // registration yet (asserted by helperToolFilter.test.ts and the registry
-    // parity contract). When a handler IS wired, it MUST pass the caller's
-    // `auth.allowedSiteIds` through to getBackupHealthSummary /
-    // listRecoveryReadiness / listBackupVerifications the way
-    // routes/backup/verification.ts does — those services apply the site
-    // ceiling only when it is supplied, so an omitted argument silently
-    // returns org-wide rows to a site-restricted caller.
-    tool(
-      'get_backup_health',
-      'Get backup and verification health summary for an organization, with optional device focus.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId.optional(),
-      },
-      makeHandler('get_backup_health', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'run_backup_verification',
-      'Run integrity or restore verification for a device and return updated readiness data.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId,
-        backupJobId: backupEntityId.optional(),
-        snapshotId: backupEntityId.optional(),
-        verificationType: z.enum(['integrity', 'test_restore']).optional(),
-      },
-      makeHandler('run_backup_verification', getAuth, onPreToolUse, onPostToolUse)
-    ),
-
-    tool(
-      'get_recovery_readiness',
-      'Get per-device recovery readiness with estimated RTO/RPO and risk factors.',
-      {
-        orgId: uuid.optional(),
-        deviceId: backupEntityId.optional(),
-        includeRiskFactors: z.boolean().optional(),
-      },
-      makeHandler('get_recovery_readiness', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2968,7 +2972,7 @@ export function createBreezeMcpServer(
     ...m365ToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // AI script authoring — behind BREEZE_AI_SCRIPT_AUTHORING_ENABLED (see the
     // factory for why registration stays unconditional but exposure does not).
-    ...scriptProposalToolDefinitions(getAuth, onPreToolUse, onPostToolUse),
+    ...scriptProposalToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),

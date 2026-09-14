@@ -56,6 +56,8 @@ const {
   loadPartnerBaselineKindsMock,
   loadPartnerBaselineCeilingMock,
   buildAgentToolCatalogMock,
+  listArtifactsForAuthMock,
+  toArtifactDtoMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -114,6 +116,13 @@ const {
   // service-layer dependency in this file) so these route tests exercise only
   // routing/auth/the cache header, never the real registry closure.
   buildAgentToolCatalogMock: vi.fn(),
+  // Task 10 (execution-plane W01, reconciliation R6) — GET
+  // /runs/:runId/artifacts. Both functions have their own full unit coverage
+  // in artifactService.test.ts (Task 5); mocked here (like every other
+  // service-layer dependency in this file) so these route tests exercise only
+  // routing/auth/validation/precedence, never the real DTO projection.
+  listArtifactsForAuthMock: vi.fn(),
+  toArtifactDtoMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -229,6 +238,14 @@ vi.mock('../services/aiAgents/alertVerdicts', async (importOriginal) => {
 
 vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
+}));
+
+// Task 10 (execution-plane W01, reconciliation R6) — GET /runs/:runId/artifacts
+// reuses this module verbatim; own full unit coverage is artifactService.test.ts
+// (Task 5), so this file exercises only routing/auth/precedence.
+vi.mock('../services/artifacts/artifactService', () => ({
+  listArtifactsForAuth: listArtifactsForAuthMock,
+  toArtifactDto: toArtifactDtoMock,
 }));
 
 // Task 8 (#4193 A8): '../jobs/aiAgentImpactRollup' is mocked (the manual
@@ -371,6 +388,7 @@ const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const INTENT_ID = '88888888-8888-4888-8888-888888888888';
 const SITE_ID = '99999999-9999-4999-8999-999999999999';
+const ART_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -4152,5 +4170,102 @@ describe('mapError — org-row supervised keys are grant-only (spec §4.4, #5049
       }),
       422,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 10 (execution-plane W01, spec §5.2/§8, reconciliation R6): the per-run
+// artifact list is registered INSIDE aiAgentsRoutes, immediately above
+// GET /runs/:runId, rather than as a second router mounted at the same
+// '/ai/agents' prefix in index.ts — see aiArtifacts.ts's header comment and
+// the plan's R6 note for why (the #4189 shape: precedence hidden in mount
+// order rather than local to the file that owns both paths).
+// ---------------------------------------------------------------------------
+
+function artifactDto(overrides: Record<string, unknown> = {}) {
+  return {
+    id: ART_ID,
+    runId: RUN_ID,
+    sessionId: null,
+    kind: 'input_capture',
+    name: 'search_logs.json',
+    contentType: 'application/json',
+    bytes: 7,
+    sha256: 'a'.repeat(64),
+    headPreview: '{"a":1}',
+    tailPreview: '{"a":1}',
+    sourceDeviceId: null,
+    createdByTool: 'search_logs',
+    expiresAt: '2026-11-15T00:00:00.000Z',
+    createdAt: '2026-10-16T00:00:00.000Z',
+    downloadPath: `/api/v1/ai/artifacts/${ART_ID}`,
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/runs/:runId/artifacts (execution-plane W01, reconciliation R6)', () => {
+  it('returns DTOs with no blobKey and a download path each', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([{ id: ART_ID }]);
+    toArtifactDtoMock.mockReturnValue(artifactDto());
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toHaveLength(1);
+    expect(Object.keys(body.data[0]!)).not.toContain('blobKey');
+    expect(body.data[0]!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART_ID}`);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledWith(RUN_ID, expect.anything());
+  });
+
+  it("returns an empty list — not a 404 — for a run with no artifacts or another org's run", async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+  });
+
+  it('400s a non-uuid runId without querying', async () => {
+    const res = await buildApp().request('/ai-agents/runs/not-a-uuid/artifacts');
+    expect(res.status).toBe(400);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(403);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  // THE PRECEDENCE ASSERTION. Both paths live in one router, so registration
+  // order inside this file is the only thing that separates them — and that
+  // order is what #4189 got wrong when a sibling path was owned by a
+  // different app.
+  //
+  // Deviation from the plan's draft (genuine bug, fixed minimally, property
+  // kept): the plan's version asserted the run-DETAIL body lacks a `data`
+  // key. It doesn't — `GET /runs/:runId` also wraps its payload as
+  // `{ data: <trace> }` (aiAgents.ts, the `buildRunTrace` return). The
+  // discriminating property is the SHAPE of `data` (array of artifact DTOs
+  // vs. a single run-trace object with no `downloadPath`), not the mere
+  // presence of the envelope key — so that is what this asserts instead.
+  it('routes /runs/<uuid>/artifacts to the LIST and /runs/<uuid> to the run DETAIL', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const app = buildApp();
+
+    const list = await app.request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as { data: unknown };
+    expect(Array.isArray(listBody.data)).toBe(true);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);
+
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    const detail = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { data: Record<string, unknown> };
+    expect(Array.isArray(detailBody.data)).toBe(false);
+    expect(detailBody.data).not.toHaveProperty('downloadPath');
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);   // detail did not hit the list
   });
 });

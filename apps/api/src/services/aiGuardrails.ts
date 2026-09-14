@@ -1146,9 +1146,6 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   get_user_risk_scores: { resource: 'users', action: 'read' },
   get_user_risk_detail: { resource: 'users', action: 'read' },
   assign_security_training: { resource: 'users', action: 'write' },
-  get_backup_health: { resource: 'devices', action: 'read' },
-  run_backup_verification: { resource: 'devices', action: 'execute' },
-  get_recovery_readiness: { resource: 'devices', action: 'read' },
   // M365 helpdesk tools (Delegant-backed)
   m365_lookup_user: { resource: 'm365', action: 'read' },
   m365_recent_signins: { resource: 'm365', action: 'read' },
@@ -1323,7 +1320,6 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   take_screenshot: { limit: 10, windowSeconds: 300 },
   analyze_screen: { limit: 10, windowSeconds: 300 },
   computer_control: { limit: 20, windowSeconds: 300 },
-  run_backup_verification: { limit: 10, windowSeconds: 300 },
   // Fleet tools — per-tool rate limits
   manage_deployments: { limit: 10, windowSeconds: 600 },
   manage_patches: { limit: 15, windowSeconds: 300 },
@@ -2590,13 +2586,6 @@ function buildApprovalDescription(
       else if (action === 'delete') parts.push(`Delete monitor ${(input.monitorId as string)?.slice(0, 8)}...`);
       else parts.push(`Monitor ${action}: ${(input.monitorId as string)?.slice(0, 8) ?? input.name ?? ''}...`);
       break;
-    case 'run_backup_verification': {
-      const verificationType = typeof input.verificationType === 'string' ? input.verificationType : 'integrity';
-      parts.push(`Run ${verificationType} backup verification`);
-      if (input.deviceId) parts.push(`on device ${String(input.deviceId).slice(0, 8)}...`);
-      if (input.backupJobId) parts.push(`job ${String(input.backupJobId).slice(0, 8)}...`);
-      break;
-    }
 
     default:
       parts.push(`${toolName}${action ? `: ${action}` : ''}`);

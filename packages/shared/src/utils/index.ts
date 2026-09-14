@@ -35,3 +35,4 @@ export {
   type ExclusionPatternVerdict,
   type ExclusionPatternProblem,
 } from './backupExclusionGlob';
+export * from './hardwareLifecycle';

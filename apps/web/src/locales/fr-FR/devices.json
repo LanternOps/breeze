@@ -1694,7 +1694,10 @@
     "saveChanges": "Enregistrer les modifications",
     "site": "Site",
     "tags": "Étiquettes",
-    "title": "Paramètres de l’appareil"
+    "title": "Paramètres de l’appareil",
+    "purchaseDate": "Date d’achat",
+    "purchaseDateHelp": "Utilisée par le rapport de cycle de vie du matériel pour planifier le remplacement.",
+    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2790,8 @@
       "assignedContactPlaceholder": "Rechercher des contacts…",
       "tags": "Étiquettes",
       "tagsPlaceholder": "Séparées par des virgules",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Date d’achat"
     }
   },
   "addNetworkAssetModal": {
