@@ -1049,6 +1049,73 @@ describe('TicketWorkbench AI drafts (#4191, Task 11)', () => {
   });
 });
 
+describe('TicketWorkbench AI proposal card (#4211)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Same idiom as mockDraftsApi above: ticket GET, triage-suggestion GET
+   *  (disabled), ai-drafts GET (empty), and a stubbed ai-proposal GET. */
+  function mockProposalApi(
+    proposalData: unknown,
+    extra?: (url: string, init?: RequestInit) => Response | null,
+  ) {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (extra) {
+        const res = extra(url, init);
+        if (res) return res;
+      }
+      if (url === '/tickets/tk-1' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: makeTicket({ id: 'tk-1' }) });
+      }
+      if (url === '/tickets/tk-1/triage-suggestion' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ enabled: false, flagSource: 'default', suggestion: null });
+      }
+      if (url === '/tickets/tk-1/ai-drafts' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: [] });
+      }
+      if (url === '/tickets/tk-1/ai-proposal' && (!init?.method || init.method === 'GET')) {
+        return makeJsonResponse({ data: proposalData });
+      }
+      return makeJsonResponse({ success: true });
+    });
+  }
+
+  it('renders the proposal fetched for the ticket', async () => {
+    mockProposalApi({ runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    expect(await screen.findByTestId('ai-agent-run-triage-summary')).toHaveTextContent('Spooler wedged.');
+  });
+
+  it('posts the summary as a private note through runAction and refetches', async () => {
+    mockProposalApi({ runId: 'run-1', finishedAt: null, proposal: { version: 1, summary: 'Spooler wedged.' } });
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ai-agent-run-triage-post-note');
+    fireEvent.click(screen.getByTestId('ai-agent-run-triage-post-note'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/tickets/tk-1/ai-proposal/post-note',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ runId: 'run-1', content: 'Spooler wedged.' }),
+        }),
+      );
+    });
+  });
+
+  it('renders no card when the endpoint returns null data', async () => {
+    mockProposalApi(null);
+    render(<TicketWorkbench ticketId="tk-1" assignees={[]} />);
+
+    await screen.findByTestId('ticket-workbench');
+    expect(screen.queryByTestId('ai-agent-run-triage')).toBeNull();
+  });
+});
+
 describe('TicketWorkbench pending/on_hold prompt', () => {
   beforeEach(() => {
     vi.clearAllMocks();
