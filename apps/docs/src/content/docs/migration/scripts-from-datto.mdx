@@ -19,9 +19,9 @@ For the rest of the migration — tenancy tree, UDF values, agent deployment, de
 | Component | Script |
 | Component input variable (prompted when the job is created) | Script [parameter](/features/scripts/#script-parameters) with source **Asked at run time**. Read it as `{{name}}` in the body, or as the environment variable `BREEZE_PARAM_<NAME>`. |
 | Site / account variable (`$env:VarName`) | [Variable](/features/scripts/#variables) under **Settings → Variables**, referenced as `{{var.key}}`. An organization's value overrides the partner-wide one with the same key. |
-| Secret site variable | [Secret variable](/features/scripts/#secret-variables-in-scripts), bound through a parameter with source **From a secret variable**. Delivered only as `BREEZE_VAR_<NAME>`, never substituted into the body. |
+| Secret site variable | [Secret variable](/features/scripts/#secret-variables-in-scripts), bound through a parameter with source **From a secret variable (environment variable)**. Delivered only as `BREEZE_VAR_<NAME>`, never substituted into the body. |
 | Read a UDF (`$env:UDF_7`) | Parameter with source **From a device custom field**, bound to the field key. |
-| Write a UDF (`<-Start Result->key=value<-End Result->`, or the `CentraStage\Custom` registry value) | Print `::breeze:custom-fields:: {"key":"value"}` to stdout. The field must have **Allow scripts to write this field** on. See [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script). |
+| Write a UDF (`<-Start Result->key=value<-End Result->`, or the `HKLM:\SOFTWARE\CentraStage` `Custom1`…`Custom300` registry values) | Print `::breeze:custom-fields:: {"key":"value"}` to stdout. The field must have **Allow scripts to write this field** on. See [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script). |
 | Component exit-code alerting | [`exitCodeSeverityMapping`](/features/scripts/#severity-by-exit-code) on the script: `0` never alerts, map `1`…`n` to `low`, `medium`, `high` or `critical`. |
 | Monitor → response component | [Automation](/features/automations/) with trigger **Event → `alert.triggered`** and action **Run script**. See the caution below. |
 | ComStore component | Check the Breeze [system script library](/features/scripts/#importing-from-the-system-library) first. |
@@ -96,7 +96,7 @@ Datto site variables are plaintext to the component. Breeze never pastes a secre
 
 1. Create the variable under **Settings → Variables** with **Secret** ticked. The value is write-once.
 
-2. In the script, add a parameter with source **From a secret variable** and bind it to that key. Name it in lowercase with underscores.
+2. In the script, add a parameter with source **From a secret variable (environment variable)** and bind it to that key. Name it in lowercase with underscores.
 
 3. Read it as `$env:BREEZE_VAR_<NAME>` (PowerShell) or `$BREEZE_VAR_<NAME>` (bash), where `<NAME>` is the parameter name in uppercase.
 
