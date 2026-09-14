@@ -520,6 +520,12 @@ describe('deliverRunFinishedNotifications — narrative (P2-3)', () => {
 
     expect(createNotification).not.toHaveBeenCalled();
     expect(deliverNarrativeEmails).toHaveBeenCalledWith(REPORT_RUN_ID, { orgId: ORG_ID });
+    // Same invariant as the sibling test above, asserted on THIS branch too:
+    // the early return must not call the email pass from inside a still-open
+    // DB context. `deliverNarrativeEmails` is module-mocked here, so without
+    // this line a regression on this branch alone would only surface at
+    // runtime, via the real function's own guard.
+    expect(contextAtEmailPass).toEqual([undefined]);
   });
 
   it('does not run the email pass for a narrative run without an artifact', async () => {

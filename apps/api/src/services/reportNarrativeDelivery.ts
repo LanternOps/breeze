@@ -8,9 +8,14 @@
  * must return `ok` with `scope.kind === 'unrestricted'`. `restricted` AND
  * `legacy_unscoped` both fail — an email attaches full-org data, and an
  * unprovable scope is not an unrestricted one. A transient
- * `unverifiable_scope` (the resolver threw) leaves the row `pending` with
- * `last_error` recorded so the reconciler retries it; every other refusal is
- * permanent (`failed`).
+ * `unverifiable_scope` leaves the row `pending` with `last_error` recorded so
+ * the reconciler retries it; every other refusal is permanent (`failed`).
+ * Note that `unverifiable_scope` covers TWO different things (`siteScope.ts`):
+ * the resolver genuinely threw (transient, self-healing), **or** the user has
+ * more than one active membership row for the org — a data-integrity anomaly
+ * that will NOT self-heal on retry. Both are "do not permanently refuse", but
+ * a row stuck `pending` forever means the second one; don't chase a network
+ * blip.
  *
  * Ordering rules that make this sound (per row):
  *   1. resolve authority + email BEFORE claiming — a refusal must not burn an
@@ -131,6 +136,13 @@ export function classifySendError(error: unknown): 'failed' | 'unknown' {
   if (/timed out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|ECONNABORTED|network/i.test(message)) return 'unknown';
   if (/transport is not initialized|config is not initialized/i.test(message)) return 'failed';
   if (/^Resend error:/i.test(message)) return /internal|unavailable|rate.?limit/i.test(message) ? 'unknown' : 'failed';
+  // `services/email.ts` throws `Mailgun API error (<status>)` for ANY non-OK
+  // response, so a bare 4xx match would swallow 429 — a rate limit is the
+  // provider asking us to slow down, not refusing the message, and `failed`
+  // is terminal (the reconciler only sweeps pending/claimed). 408 is the same
+  // shape. Both stay `unknown` so a human can decide, exactly as the Resend
+  // branch above already carves out.
+  if (/^Mailgun API error \((?:408|429)\)/i.test(message)) return 'unknown';
   if (/^Mailgun API error \(4\d\d\)/i.test(message)) return 'failed';
   return 'unknown';
 }
@@ -228,8 +240,10 @@ async function deliverOne(
   const live = await resolveLiveReportAuthority(userId, orgId, 'export');
   if (!live.ok) {
     if (live.reason === 'unverifiable_scope') {
-      // The resolver threw. Denied-for-now, not denied-forever: leave the row
-      // retryable so a transient DB blip does not silently kill a weekly report.
+      // Denied-for-NOW, not denied-forever: leave the row retryable so a
+      // transient DB blip does not silently kill a weekly report. See the
+      // module docstring — this reason also covers a duplicate-membership
+      // anomaly, which stays pending until someone fixes the data.
       await recordTransientGateFailure(delivery.id, `authority:${live.reason}`);
       return 'transient';
     }

@@ -1895,10 +1895,13 @@
         "downloadFailed": "Could not download the PDF.",
         "delivery": {
           "sent": "Emailed to {{sent}} of {{total}} recipients",
-          "skipped_one": "{{count}} recipient skipped (insufficient report authority)",
-          "skipped_other": "{{count}} recipients skipped (insufficient report authority)",
+          "refused_one": "{{count}} recipient was not emailed — report authority, a missing address, or the provider refused.",
+          "refused_other": "{{count}} recipients were not emailed — report authority, a missing address, or the provider refused.",
+          "pending_one": "{{count}} delivery has not been sent yet — it will be retried.",
+          "pending_other": "{{count}} deliveries have not been sent yet — they will be retried.",
           "unknown_one": "{{count}} delivery could not be confirmed — the email provider gave no definite answer.",
-          "unknown_other": "{{count}} deliveries could not be confirmed — the email provider gave no definite answer."
+          "unknown_other": "{{count}} deliveries could not be confirmed — the email provider gave no definite answer.",
+          "recipientsUnresolved": "The recipient lookup failed, so nobody was emailed this narrative. The report itself was saved."
         }
       },
       "fleetDesign": {

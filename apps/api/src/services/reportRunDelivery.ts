@@ -140,10 +140,14 @@ export async function settleDelivery(deliveryId: string, outcome: DeliverySettle
 }
 
 /**
- * The authority resolver threw (`unverifiable_scope`): denied-for-now, not
+ * The authority gate answered `unverifiable_scope`: denied-for-NOW, not
  * denied-forever. Records the reason and leaves the row `pending` so the
  * reconciler retries it — a transient DB blip must not silently kill a
  * weekly report.
+ *
+ * "Transient" here means "do not permanently refuse", not "guaranteed to
+ * self-heal": `siteScope.ts` also returns this reason for a user with more
+ * than one active membership row, which retrying alone will never fix.
  */
 export async function recordTransientGateFailure(deliveryId: string, error: string): Promise<void> {
   await inOwnSystemContext(() =>

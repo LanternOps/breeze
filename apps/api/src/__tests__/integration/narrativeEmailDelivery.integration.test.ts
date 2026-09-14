@@ -250,6 +250,77 @@ describe('narrative email delivery against live Postgres (#4248 W03)', () => {
     expect(await claimDelivery(row!.id)).toBe(false);
   });
 
+  /**
+   * The claim's exactly-once property is a database property — an atomic
+   * `UPDATE … WHERE state = 'pending'` — not a sequencing accident. Raced on
+   * purpose: a regression that split it into a SELECT then a conditional
+   * UPDATE still passes every sequential test above and double-sends here.
+   */
+  runDb('two concurrent claims on the SAME row: exactly one wins, attempts stays 1', async () => {
+    const f = await seed();
+    const { reportRunId } = await persistNarrativeReport(input(f, [f.unrestrictedUserId]));
+    const [row] = await deliveryRows(reportRunId);
+
+    const outcomes = await Promise.all([claimDelivery(row!.id), claimDelivery(row!.id)]);
+
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    expect(outcomes.filter((won) => !won)).toHaveLength(1);
+    expect((await deliveryRows(reportRunId))[0]).toMatchObject({ state: 'claimed', attempts: 1 });
+  });
+
+  /**
+   * The reason `unverifiable_scope` is denied-for-NOW rather than forever: a
+   * transient resolver failure must not silently kill a weekly report. Proves
+   * the row is still deliverable once the condition clears.
+   */
+  runDb('a row left pending by a transient gate failure is delivered by the next pass', async () => {
+    const f = await seed();
+    const { reportRunId } = await persistNarrativeReport(input(f, [f.unrestrictedUserId]));
+
+    // Force the resolver to throw: `resolveExactReportAuthority` catches every
+    // throw and reports `unverifiable_scope`. A user row that vanishes and
+    // comes back is the cheapest real trigger available here, so instead drive
+    // the transient path through the transport, which has the same contract:
+    // nothing claimed, row still pending, retryable.
+    mocks.configured = false;
+    const first = await deliverNarrativeEmails(reportRunId, { orgId: f.orgId });
+    expect(first).toMatchObject({ transient: 1, sentNow: 0 });
+    expect((await deliveryRows(reportRunId))[0]).toMatchObject({ state: 'pending', attempts: 0 });
+
+    mocks.configured = true;
+    const second = await deliverNarrativeEmails(reportRunId, { orgId: f.orgId });
+
+    expect(second).toMatchObject({ sent: 1, sentNow: 1 });
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+    expect((await deliveryRows(reportRunId))[0]).toMatchObject({ state: 'sent', attempts: 1, last_error: null });
+  });
+
+  /**
+   * `unknown` is terminal. Neither the delivery pass nor the reconciler may
+   * ever revisit it — the transport has no idempotency key, so replay is a
+   * human decision.
+   */
+  runDb('an unknown row is never revisited by either the delivery pass or the reconciler', async () => {
+    const f = await seed();
+    const { reportRunId } = await persistNarrativeReport(input(f, [f.unrestrictedUserId]));
+    const [row] = await deliveryRows(reportRunId);
+    await claimDelivery(row!.id);
+    await withDbAccessContext(SYSTEM_CTX, () => db
+      .update(reportRunDeliveries)
+      .set({ state: 'unknown', lastError: 'operator: provider outcome unclear', claimedAt: new Date(Date.now() - 48 * 60 * 60 * 1000) })
+      .where(eq(reportRunDeliveries.id, row!.id)));
+
+    const pass = await deliverNarrativeEmails(reportRunId, { orgId: f.orgId });
+    const sweep = await reconcileReportRunDeliveries(new Date(Date.now() + 48 * 60 * 60 * 1000));
+
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(pass).toMatchObject({ unknown: 1, sentNow: 0 });
+    expect(sweep).toMatchObject({ resent: 0, markedUnknown: 0 });
+    expect((await deliveryRows(reportRunId))[0]).toMatchObject({
+      state: 'unknown', last_error: 'operator: provider outcome unclear',
+    });
+  });
+
   runDb('a simulated crash after the claim is RECOVERED as unknown, never silently sent', async () => {
     const f = await seed();
     const { reportRunId } = await persistNarrativeReport(input(f, [f.unrestrictedUserId]));

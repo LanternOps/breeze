@@ -248,6 +248,18 @@ export interface AgentRunOutcome {
    */
   narrativeReport?: { reportId: string; reportRunId: string };
   /**
+   * #4248 W03 — TRUE when `resolveRecipientUserIds` threw while the narrative
+   * finalizer was working out who should receive the email, so the artifact
+   * was persisted with ZERO delivery rows.
+   *
+   * Load-bearing for honesty, not for behaviour: without it, "the recipient
+   * lookup failed and nobody was emailed" and "this org deliberately has no
+   * recipients" are the same observable state (no delivery rows, so no
+   * delivery summary), and the weekly report silently reaches nobody. The
+   * run-detail surface reads this to say which one happened.
+   */
+  narrativeRecipientsUnresolved?: boolean;
+  /**
    * Fleet Designer W01 (#5651) — the validated, server-built design,
    * captured by the post-tool-use hook on a `design`-profile run. Set at
    * most once (the outcome tool's description and the design task turn both

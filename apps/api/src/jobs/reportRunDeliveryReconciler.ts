@@ -66,9 +66,12 @@ export async function reconcileReportRunDeliveries(
   let resent = 0;
   let markedUnknown = 0;
 
-  // One cadence tick for pending rows, STALE_CLAIM_MS for claimed ones; the
-  // list query uses the looser (pending) cutoff and the claimed rows are
-  // re-filtered below against their own, stricter window.
+  // One cadence tick for pending rows, STALE_CLAIM_MS for claimed ones. The
+  // list query uses the pending cutoff and the claimed rows are re-checked
+  // below against their own window. The two constants are EQUAL today
+  // (15 min each — asserted by this job's test), so that re-check currently
+  // never rejects a row the query returned; it exists so raising
+  // STALE_CLAIM_MS above the cadence keeps working without a second edit.
   const pendingCutoff = new Date(now.getTime() - RECONCILE_INTERVAL_MS);
   const staleClaimCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
   const unsettled = await listUnsettledDeliveries(pendingCutoff, MAX_ROWS_PER_PASS);
@@ -90,7 +93,13 @@ export async function reconcileReportRunDeliveries(
     for (const reportRunId of pendingRuns) {
       const orgId = runOrgs.get(reportRunId);
       if (!orgId) {
-        // The run (and, by cascade, its rows) went away between the two reads.
+        // Normally benign: the run (and, by cascade, its rows) went away
+        // between the two reads. Logged anyway — if the join ever diverges
+        // for any OTHER reason, these rows are dropped from every future
+        // pass, and without this line that happens with no trace at all.
+        console.warn('[ReportRunDeliveryReconciler] run vanished between reads; skipping its pending deliveries', {
+          reportRunId,
+        });
         continue;
       }
       try {
@@ -105,7 +114,15 @@ export async function reconcileReportRunDeliveries(
   }
 
   if (unsettled.length === MAX_ROWS_PER_PASS) {
-    console.warn(`[ReportRunDeliveryReconciler] Hit ${MAX_ROWS_PER_PASS}-row cap — backlog may be growing`);
+    // Sentry, not just a log line: a sustained cap hit means narratives are
+    // piling up undelivered across orgs, and every other failure path in this
+    // file already reports. A warning nobody is paged for is how a backlog
+    // becomes a quarter of missing weekly reports.
+    const capped = new Error(
+      `[ReportRunDeliveryReconciler] hit the ${MAX_ROWS_PER_PASS}-row cap; unsettled delivery backlog may be growing`,
+    );
+    console.warn(capped.message);
+    captureException(capped);
   }
   if (resent > 0 || markedUnknown > 0) {
     console.info('[ReportRunDeliveryReconciler] pass finished', { resent, markedUnknown, examined: unsettled.length });

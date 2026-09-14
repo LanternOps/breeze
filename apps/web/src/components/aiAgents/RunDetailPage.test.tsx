@@ -590,12 +590,12 @@ describe('RunDetailPage narrative', () => {
 
   // #4248 W03 (Task 10, OD-7 B) — the email delivery summary. Counts and the
   // reason CLASS only; never a recipient's name or address.
-  it('shows the skipped line with the reason class, not the recipients', async () => {
+  it('shows the undelivered line with the reason CLASS, naming no single cause and no recipient', async () => {
     mockEndpoints({
       detail: {
         ...RUN_DETAIL,
         narrative: NARRATIVE,
-        narrativeDelivery: { total: 4, sent: 2, skipped: 2, unknown: 0 },
+        narrativeDelivery: { total: 4, sent: 2, refused: 2, pending: 0, unknown: 0, recipientsUnresolved: false },
       },
     });
     render(<RunDetailPage runId="run-1" />);
@@ -603,29 +603,71 @@ describe('RunDetailPage narrative', () => {
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
     const el = screen.getByTestId('narrative-delivery-summary');
     expect(el).toHaveTextContent('Emailed to 2 of 4 recipients');
-    expect(el).toHaveTextContent('2 recipients skipped (insufficient report authority)');
+    const refused = screen.getByTestId('narrative-delivery-refused');
+    expect(refused).toHaveTextContent('2 recipients were not emailed');
+    // Three different causes land in `refused`; the copy must not assert one.
+    expect(refused.textContent).toMatch(/report authority/);
+    expect(refused.textContent).toMatch(/missing address/);
+    expect(refused.textContent).toMatch(/provider refused/);
     expect(el.textContent).not.toMatch(/@/); // never name or email a recipient
     expect(screen.queryByTestId('narrative-delivery-unknown')).not.toBeInTheDocument();
   });
 
-  it('surfaces ambiguous (unknown) deliveries as their own line and omits the skipped line when zero', async () => {
+  it('keeps not-yet-delivered separate from permanently refused', async () => {
     mockEndpoints({
       detail: {
         ...RUN_DETAIL,
         narrative: NARRATIVE,
-        narrativeDelivery: { total: 3, sent: 2, skipped: 0, unknown: 1 },
+        narrativeDelivery: { total: 3, sent: 1, refused: 0, pending: 2, unknown: 0, recipientsUnresolved: false },
       },
     });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
-    expect(screen.queryByTestId('narrative-delivery-skipped')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('narrative-delivery-refused')).not.toBeInTheDocument();
+    expect(screen.getByTestId('narrative-delivery-pending')).toHaveTextContent('will be retried');
+  });
+
+  it('surfaces ambiguous (unknown) deliveries as their own line', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: NARRATIVE,
+        narrativeDelivery: { total: 3, sent: 2, refused: 0, pending: 0, unknown: 1, recipientsUnresolved: false },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
     expect(screen.getByTestId('narrative-delivery-unknown')).toHaveTextContent('1 delivery could not be confirmed');
   });
 
-  it('renders no delivery summary when the run has no delivery rows at all', async () => {
+  // The failure this whole surface exists to make visible: the lookup threw,
+  // so there are ZERO delivery rows and nobody was emailed.
+  it('says so when the recipient lookup failed, even with zero delivery rows', async () => {
     mockEndpoints({
-      detail: { ...RUN_DETAIL, narrative: NARRATIVE, narrativeDelivery: { total: 0, sent: 0, skipped: 0, unknown: 0 } },
+      detail: {
+        ...RUN_DETAIL,
+        narrative: NARRATIVE,
+        narrativeDelivery: { total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: true },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('narrative-delivery-unresolved'))
+      .toHaveTextContent('The recipient lookup failed, so nobody was emailed');
+    // Never claims "0 of 0 sent" — that would read like a successful no-op.
+    expect(screen.queryByTestId('narrative-delivery-sent')).not.toBeInTheDocument();
+  });
+
+  it('renders no delivery summary for an org that simply has no recipients', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: NARRATIVE,
+        narrativeDelivery: { total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: false },
+      },
     });
     render(<RunDetailPage runId="run-1" />);
 

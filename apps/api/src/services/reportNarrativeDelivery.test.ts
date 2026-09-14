@@ -281,6 +281,33 @@ describe('narrative email authority gate (#4248 W03)', () => {
     expect(s).toMatchObject({ unknown: 1, sent: 0 });
   });
 
+  // A rate limit is the provider asking us to slow down, not refusing the
+  // message — and `failed` is terminal (the reconciler sweeps only
+  // pending/claimed), so misclassifying it silently drops the week's email.
+  it.each([
+    ['Mailgun API error (429): too many requests'],
+    ['Mailgun API error (408): request timeout'],
+    ['Resend error: rate limit exceeded'],
+  ])('treats a throttling/timeout provider answer as unknown, not failed: %s', async (message) => {
+    seed(U1);
+    fake.authority.set(U1, unrestricted());
+    emailReportRunMock.mockRejectedValueOnce(new Error(message));
+
+    await deliverNarrativeEmails(RUN, ctx);
+
+    expect(row(U1).state).toBe('unknown');
+  });
+
+  it('still treats a definite Mailgun 4xx refusal as failed', async () => {
+    seed(U1);
+    fake.authority.set(U1, unrestricted());
+    emailReportRunMock.mockRejectedValueOnce(new Error('Mailgun API error (400): invalid recipient'));
+
+    await deliverNarrativeEmails(RUN, ctx);
+
+    expect(row(U1).state).toBe('failed');
+  });
+
   it('records a definite provider refusal as failed', async () => {
     seed(U1);
     fake.authority.set(U1, unrestricted());

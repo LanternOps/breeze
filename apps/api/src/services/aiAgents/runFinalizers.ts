@@ -278,6 +278,7 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
   // the run is still announced; only the email is missing, visibly, on the
   // run detail's delivery summary (Task 10).
   let emailRecipientUserIds: string[] = [];
+  let recipientsUnresolved = false;
   try {
     emailRecipientUserIds = await resolveRecipientUserIds(
       {
@@ -288,6 +289,11 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
       ctx.run.orgId,
     );
   } catch (error) {
+    // Recorded on the OUTCOME, not just in the log: with zero delivery rows
+    // this is otherwise indistinguishable from "this org configured no
+    // recipients", and the weekly report reaches nobody in silence — the
+    // exact failure class this wave exists to remove.
+    recipientsUnresolved = true;
     console.error('[aiAgentRunLoop] could not resolve narrative email recipients — persisting with no deliveries', {
       runId: ctx.run.id, orgId: ctx.run.orgId, error,
     });
@@ -312,6 +318,7 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
     });
     // TWO ids, never the narrative or the context — see the field's docstring.
     outcome.narrativeReport = { reportId, reportRunId };
+    if (recipientsUnresolved) outcome.narrativeRecipientsUnresolved = true;
     return null;
   } catch (error) {
     if (error instanceof NarrativePersistConflictError) {

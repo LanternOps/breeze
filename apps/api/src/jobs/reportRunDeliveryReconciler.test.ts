@@ -104,6 +104,36 @@ describe('reconcileReportRunDeliveries (#4248 W03)', () => {
     expect(RECONCILE_INTERVAL_MS).toBe(15 * 60 * 1000);
   });
 
+  // The sweep can only mark a claim stale if it SEES it: the list query uses
+  // the cadence cutoff, so a STALE_CLAIM_MS shorter than one tick would burn
+  // claims the pass never looked at, and a longer one is handled by the
+  // re-check in the job. Pinned because nothing else couples the two.
+  it('never lets the stale-claim window fall below one cadence tick', () => {
+    expect(STALE_CLAIM_MS).toBeGreaterThanOrEqual(RECONCILE_INTERVAL_MS);
+  });
+
+  it('reports a sustained backlog to Sentry, not only to the log', async () => {
+    for (let i = 0; i < 500; i += 1) seedDelivery({ state: 'pending', reportRunId: RUN_A });
+    const { captureException } = await import('../services/sentry');
+
+    await reconcileReportRunDeliveries();
+
+    expect(vi.mocked(captureException)).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/row cap|backlog/i) }),
+    );
+  });
+
+  it('logs — never silently drops — pending rows whose run vanished between the two reads', async () => {
+    seedDelivery({ state: 'pending', reportRunId: RUN_A });
+    fake.runOrgs = new Map(); // the join finds nothing
+
+    const out = await reconcileReportRunDeliveries();
+
+    expect(out).toMatchObject({ resent: 0, markedUnknown: 0 });
+    expect(deliverNarrativeEmails).not.toHaveBeenCalled();
+    expect(vi.mocked(console.warn).mock.calls.flat().join(' ')).toMatch(/vanished/i);
+  });
+
   it('sends a pending row the finalizer never got to, through the full gated path', async () => {
     seedDelivery({ state: 'pending', createdAt: hoursAgo(2) });
 

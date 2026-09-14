@@ -1895,10 +1895,13 @@
         "downloadFailed": "No se pudo descargar el PDF.",
         "delivery": {
           "sent": "Enviado por correo a {{sent}} de {{total}} destinatarios",
-          "skipped_one": "{{count}} destinatario omitido (autoridad de informe insuficiente)",
-          "skipped_other": "{{count}} destinatarios omitidos (autoridad de informe insuficiente)",
+          "refused_one": "{{count}} destinatario no recibió el correo: autoridad de informe, falta de dirección o el proveedor lo rechazó.",
+          "refused_other": "{{count}} destinatarios no recibieron el correo: autoridad de informe, falta de dirección o el proveedor lo rechazó.",
+          "pending_one": "{{count}} entrega aún no se envió: se reintentará.",
+          "pending_other": "{{count}} entregas aún no se enviaron: se reintentarán.",
           "unknown_one": "{{count}} entrega no pudo confirmarse: el proveedor de correo no dio una respuesta definitiva.",
-          "unknown_other": "{{count}} entregas no pudieron confirmarse: el proveedor de correo no dio una respuesta definitiva."
+          "unknown_other": "{{count}} entregas no pudieron confirmarse: el proveedor de correo no dio una respuesta definitiva.",
+          "recipientsUnresolved": "La búsqueda de destinatarios falló, así que nadie recibió esta narrativa por correo. El informe sí se guardó."
         }
       },
       "fleetDesign": {

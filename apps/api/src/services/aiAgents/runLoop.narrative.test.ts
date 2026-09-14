@@ -952,6 +952,21 @@ describe('finalizeNarrative (P2-3, task A7)', () => {
     expect(input.emailRecipientUserIds).toEqual([]);
     expect(error.mock.calls.flat().join(' ')).toMatch(/email recipients/i);
     expect(finalTransition()!.patch.errorCode).toBeUndefined();
+    // The failure is recorded on the OUTCOME, not just in the log: with zero
+    // delivery rows this is otherwise indistinguishable from "this org has no
+    // recipients", and the run detail would show nothing at all.
+    expect((finalTransition()!.patch.outcome as AgentRunOutcome).narrativeRecipientsUnresolved).toBe(true);
+  });
+
+  it('does NOT flag recipientsUnresolved when the lookup legitimately returns nobody', async () => {
+    seedRows();
+    submittedRun();
+    resolveRecipientUserIds.mockResolvedValue([]);
+
+    await executeAgentRun(RUN_ID);
+
+    const outcome = finalTransition()!.patch.outcome as AgentRunOutcome;
+    expect(outcome.narrativeRecipientsUnresolved).toBeUndefined();
   });
 
   it('reports narrative_missing when the run reached a normal finish with no narrative', async () => {
