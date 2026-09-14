@@ -1420,6 +1420,9 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // doing its job, not a data-integrity bug.
   max_concurrent_design_runs: false,
   design_rate: false,
+  // AI patch agent (W01) — the patch-profile equivalents, same classification.
+  max_concurrent_patch_runs: false,
+  patch_rate: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation
