@@ -117,7 +117,7 @@ describe('fireEscalationLatch', () => {
   it('titles the alert with the monitor, the count, the window and the device', async () => {
     await fireEscalationLatch({ monitor: monitor(), ...input });
 
-    const { title } = createSourcedAlertMock.mock.calls[0][0];
+    const { title } = createSourcedAlertMock.mock.calls[0]![0];
     expect(title).toBe('Disk over 80% recurred 3 times in 3 days on WS-1');
   });
 
@@ -128,7 +128,7 @@ describe('fireEscalationLatch', () => {
       episodesInWindow: 2,
     });
 
-    const { title } = createSourcedAlertMock.mock.calls[0][0];
+    const { title } = createSourcedAlertMock.mock.calls[0]![0];
     expect(title).toBe('Disk over 80% recurred 2 times in 6 hours on WS-1');
   });
 
@@ -163,7 +163,7 @@ describe('fireEscalationLatch', () => {
       ...input,
     });
 
-    const { context } = createSourcedAlertMock.mock.calls[0][0];
+    const { context } = createSourcedAlertMock.mock.calls[0]![0];
     expect(context).toMatchObject({
       source: 'monitor_recurrence',
       monitorId: MONITOR,
@@ -176,7 +176,7 @@ describe('fireEscalationLatch', () => {
   it('reports zero pending actions when none are authored', async () => {
     await fireEscalationLatch({ monitor: monitor(), ...input });
 
-    const { context } = createSourcedAlertMock.mock.calls[0][0];
+    const { context } = createSourcedAlertMock.mock.calls[0]![0];
     expect(context.recurrenceActionsPending).toBe(0);
   });
 });

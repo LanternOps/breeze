@@ -384,7 +384,7 @@ describe('recordMonitorEvaluation', () => {
       observation: 'ok',
     });
 
-    const values = state.inserts[0].find((c) => c.method === 'values')?.args[0] as Record<
+    const values = state.inserts[0]!.find((c) => c.method === 'values')?.args[0] as Record<
       string,
       unknown
     >;
