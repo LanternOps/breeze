@@ -18,6 +18,31 @@ export type PasskeyPurpose = 'registration' | 'authentication';
 export type PasskeyTransport = 'ble' | 'cable' | 'hybrid' | 'internal' | 'nfc' | 'smart-card' | 'usb';
 export type PasskeyDeviceType = 'singleDevice' | 'multiDevice';
 
+const PASSKEY_TRANSPORTS: ReadonlySet<PasskeyTransport> = new Set([
+  'ble',
+  'cable',
+  'hybrid',
+  'internal',
+  'nfc',
+  'smart-card',
+  'usb'
+]);
+
+/**
+ * @simplewebauthn/server 14 widened `AuthenticatorAttestationResponseJSON.transports`
+ * (and the authentication equivalent) from a literal union to `string[]` — the
+ * runtime values are unchanged, but the type no longer guarantees they are one
+ * of our known transport strings. Narrow explicitly rather than casting the
+ * whole array: an unrecognized value is dropped, not silently trusted.
+ */
+function toPasskeyTransports(transports: string[] | undefined): PasskeyTransport[] | null {
+  if (!transports || transports.length === 0) return null;
+  const known = transports.filter((t): t is PasskeyTransport =>
+    PASSKEY_TRANSPORTS.has(t as PasskeyTransport)
+  );
+  return known.length > 0 ? known : null;
+}
+
 export type WebAuthnConfig = {
   rpID: string;
   rpName: string;
@@ -149,7 +174,7 @@ export function registrationInfoToPasskeyFields(
     counter: info.credential.counter,
     deviceType: info.credentialDeviceType,
     backedUp: info.credentialBackedUp,
-    transports: response?.response.transports ?? null,
+    transports: toPasskeyTransports(response?.response.transports),
     aaguid: info.aaguid || null
   };
 }
