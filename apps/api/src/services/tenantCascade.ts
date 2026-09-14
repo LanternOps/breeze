@@ -549,6 +549,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'monitor_definitions',
   'network_baselines',
   'network_change_events',
+  // #5291 W04 - gained a denormalized org_id so a partner-wide parent's
+  // results still reach a tenant. Sorts before 'network_monitors' under
+  // localeCompare AND is its FK child, so child-before-parent holds.
+  'network_monitor_results',
   'network_monitors',
   'network_topology',
   'notification_channels',

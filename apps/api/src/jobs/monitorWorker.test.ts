@@ -55,8 +55,16 @@ vi.mock('../db/schema', () => ({
   networkMonitors: {
     id: 'networkMonitors.id',
     orgId: 'networkMonitors.orgId',
+    partnerId: 'networkMonitors.partnerId',
+    isActive: 'networkMonitors.isActive',
+    lastChecked: 'networkMonitors.lastChecked',
+    pollingInterval: 'networkMonitors.pollingInterval',
     assetId: 'networkMonitors.assetId',
     consecutiveFailures: 'networkMonitors.consecutiveFailures'
+  },
+  organizations: {
+    id: 'organizations.id',
+    partnerId: 'organizations.partnerId'
   },
   networkMonitorResults: {
     monitorId: 'networkMonitorResults.monitorId'
@@ -600,5 +608,115 @@ describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => 
     expect(result).toEqual({ dispatched: false, agentId: 'agent-1' });
     expect(error).toHaveBeenCalledWith(expect.stringContaining('indeterminate'));
     error.mockRestore();
+  });
+});
+
+/**
+ * #5291 W04 - partner-wide network checks.
+ *
+ * `network_monitors.org_id` is nullable now (org XOR partner). Before this
+ * wave every read in this worker went through `monitor.orgId`, so a
+ * partner-wide row enqueued `orgId: null` and every probe-device, dedupe and
+ * alert query silently matched nothing - the check just stopped running, with
+ * no error at all. These tests pin the two halves of the fix: the scheduler
+ * fans a partner-wide row out one job per org, and the checker reads the
+ * RUNNING org off the job, never off the monitor.
+ */
+describe('partner-wide network monitors (#5291 W04)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ctxState.depth = 0;
+    ctxState.events = [];
+    queueMock.getJob.mockResolvedValue(null);
+    queueMock.add.mockResolvedValue({ id: 'job-1' } as never);
+  });
+
+  it('fans a partner-wide monitor out to ONE JOB PER ORG under its partner', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectWhereResolved([
+        { id: 'm-partner', orgId: null, partnerId: 'p1', pollingInterval: 60, lastChecked: null },
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResolved([
+        { id: 'org-a', partnerId: 'p1' },
+        { id: 'org-b', partnerId: 'p1' },
+        { id: 'org-c', partnerId: 'p1' },
+      ]) as any);
+
+    const result = await processScheduler();
+
+    expect(result).toEqual({ enqueued: 3 });
+    const enqueuedOrgIds = queueMock.add.mock.calls.map((call: any) => call[1].orgId);
+    expect([...enqueuedOrgIds].sort()).toEqual(['org-a', 'org-b', 'org-c']);
+    for (const call of queueMock.add.mock.calls as any[]) {
+      expect(call[1].monitorId).toBe('m-partner');
+    }
+  });
+
+  it('still enqueues exactly one job for an org-owned monitor', async () => {
+    vi.mocked(db.select).mockReturnValueOnce(selectWhereResolved([
+      { id: 'm-org', orgId: 'org-a', partnerId: null, pollingInterval: 60, lastChecked: null },
+    ]) as any);
+
+    const result = await processScheduler();
+
+    expect(result).toEqual({ enqueued: 1 });
+    expect(queueMock.add).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(db.select)).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a job whose org is neither the monitor org nor an org under its partner', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([
+        { id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, isActive: true, name: 'GW', target: '10.0.0.1', monitorType: 'icmp_ping' },
+      ]) as any)
+      .mockReturnValueOnce(selectLimitResolved([]) as any);
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'm-partner', orgId: 'org-foreign' });
+
+    expect(result).toEqual({ dispatched: false, agentId: null });
+    expect(vi.mocked(dispatchCommandToAgent)).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('org-foreign'));
+    warn.mockRestore();
+  });
+
+  it('selects the probe device from the JOB org, not the monitor org, for a partner-wide check', async () => {
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([
+        { id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, isActive: true, name: 'GW', target: '10.0.0.1', monitorType: 'icmp_ping' },
+      ]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ id: 'org-a' }]) as any)
+      .mockReturnValueOnce(selectLimitResolved([{ agentId: 'agent-a' }]) as any);
+    vi.mocked(isAgentConnectedAnywhere).mockResolvedValue(true);
+    vi.mocked(dispatchCommandToAgent).mockResolvedValue({ status: 'sent', via: 'local' } as never);
+
+    const result = await processCheckMonitor({ type: 'check-monitor', monitorId: 'm-partner', orgId: 'org-a' });
+
+    expect(result).toEqual({ dispatched: true, agentId: 'agent-a' });
+  });
+
+  it('stamps every result row with the running org and the probe device', async () => {
+    const values = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.transaction).mockImplementation((async (callback: any) => callback({
+      insert: vi.fn().mockReturnValue({ values }),
+      update: vi.fn().mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) }),
+    })) as any);
+    vi.mocked(db.select)
+      .mockReturnValueOnce(selectLimitResolved([
+        { id: 'm-partner', orgId: null, partnerId: 'p1', assetId: null, name: 'GW', target: '10.0.0.1', monitorType: 'icmp_ping', consecutiveFailures: 0 },
+      ]) as any)
+      .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+    await recordMonitorCheckResult(
+      'm-partner',
+      { monitorId: 'm-partner', status: 'online', responseMs: 12 },
+      { orgId: 'org-a', deviceId: 'device-a' },
+    );
+
+    expect(values).toHaveBeenCalledWith(expect.objectContaining({
+      monitorId: 'm-partner',
+      orgId: 'org-a',
+      deviceId: 'device-a',
+    }));
   });
 });

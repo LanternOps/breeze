@@ -322,6 +322,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
+  // 2026-10-16-181300-monitor-coverage-kinds, so one MSP-authored "is the
+  // gateway up" check runs for every org under the partner. CHECK
+  // network_monitors_one_owner_chk enforces exactly one axis; the partner-wide
+  // SELECT branch (network_monitors_partner_wide_select) ships in the same
+  // migration and is load-bearing on the agent path. Functional cross-partner
+  // forge proof: networkMonitorPartnerRls.integration.test.ts.
+  'network_monitors',
   // monitor_definitions (#5287 W02): a monitor is org-scoped (org_id set) or
   // partner-wide (partner_id set, org_id NULL — one MSP-authored monitor
   // deployed across every customer). Created dual-axis from day one in
@@ -752,7 +760,9 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access and joins through `roles`, so this assertion holds.
   ['webhook_deliveries', ['webhooks']],
   ['network_monitor_alert_rules', ['network_monitors']],
-  ['network_monitor_results', ['network_monitors']],
+  // network_monitor_results was HERE until #5287 W04: it now carries its own
+  // denormalized org_id (the parent can be partner-wide, which made the join
+  // blind), so it is auto-discovered as an ordinary Shape 1 org-tenant table.
   ['role_permissions', ['roles']],
   ['plugin_logs', ['plugin_installations']],
   ['report_runs', ['reports']],

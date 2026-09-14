@@ -1709,6 +1709,13 @@ describe('agent websocket command results', () => {
       payload: { monitorId: 'monitor-1' },
     } as any);
 
+    // #5291 W04 — the monitor branch looks the probing device up so the result
+    // row can be tenant-scoped (a partner-wide network check's definition owns
+    // no org, so the device is the only tenant evidence there is).
+    vi.mocked(db.select).mockReturnValue(
+      selectAgentDevice([{ id: 'device-123', orgId: 'org-123' }]) as any,
+    );
+
     vi.mocked(isRedisAvailable).mockReturnValue(true);
     let outsideDepth = 0;
     vi.mocked(runOutsideDbContext).mockImplementation((fn: any) => {
@@ -1744,7 +1751,9 @@ describe('agent websocket command results', () => {
     expect(enqueueMonitorCheckResult).toHaveBeenCalledWith(
       'monitor-1',
       expect.objectContaining({ monitorId: 'monitor-1', status: 'online', responseMs: 12 }),
-      expect.objectContaining({ source: 'route:agentWs:monitor-result' })
+      expect.objectContaining({ source: 'route:agentWs:monitor-result' }),
+      // #5291 W04 — the reporting device and ITS org travel with the result.
+      { orgId: 'org-123', deviceId: 'device-123' },
     );
     expect(enqueuedOutsideContext).toBe(true);
     expect(ws.send).toHaveBeenCalledWith(expect.stringContaining('"ack"'));

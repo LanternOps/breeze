@@ -49,8 +49,13 @@ type AuthContext = {
   canAccessOrg: (orgId: string) => boolean;
 };
 
-async function getMonitorSiteId(monitor: { orgId: string; assetId: string | null }): Promise<string | null> {
-  if (!monitor.assetId) return null;
+/**
+ * #5291 W04 — `network_monitors.org_id` is nullable now (org XOR partner). A
+ * partner-wide row owns no org, so it can carry no org-scoped discovered asset
+ * and therefore no site; site gating for it is vacuously "no site".
+ */
+async function getMonitorSiteId(monitor: { orgId: string | null; assetId: string | null }): Promise<string | null> {
+  if (!monitor.orgId || !monitor.assetId) return null;
   const [asset] = await db
     .select({ siteId: discoveredAssets.siteId })
     .from(discoveredAssets)
@@ -60,7 +65,7 @@ async function getMonitorSiteId(monitor: { orgId: string; assetId: string | null
 }
 
 async function hasMonitorSiteAccess(
-  monitor: { orgId: string; assetId: string | null },
+  monitor: { orgId: string | null; assetId: string | null },
   permissions: UserPermissions | undefined,
 ): Promise<boolean> {
   if (!permissions?.allowedSiteIds) return true;
@@ -68,14 +73,29 @@ async function hasMonitorSiteAccess(
   return typeof siteId === 'string' && canAccessSite(permissions, siteId);
 }
 
+/**
+ * #5291 W04 — this legacy CRUD surface is ORG-AXIS ONLY. A partner-wide
+ * `network_monitors` row (org_id NULL) is always a compiled artefact of a
+ * `network_check` monitor definition, owned by the compiler and edited through
+ * the monitor editor; exposing it here would let a partner-wide check be
+ * mutated outside `canManagePartnerWidePolicies` and outside the managed-row
+ * guard. Every caller below therefore gets a monitor narrowed to `orgId: string`.
+ */
+type OrgOwnedMonitor = typeof networkMonitors.$inferSelect & { orgId: string };
+
+function asOrgOwned(monitor: typeof networkMonitors.$inferSelect): OrgOwnedMonitor | null {
+  return monitor.orgId === null ? null : (monitor as OrgOwnedMonitor);
+}
+
 async function requireMonitorAccess(auth: AuthContext, monitorId: string, permissions?: UserPermissions) {
   if (auth.scope === 'organization') {
     if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
-    const [monitor] = await db
+    const [orgRow] = await db
       .select()
       .from(networkMonitors)
       .where(and(eq(networkMonitors.id, monitorId), eq(networkMonitors.orgId, auth.orgId)))
       .limit(1);
+    const monitor = orgRow ? asOrgOwned(orgRow) : null;
     if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
     if (!(await hasMonitorSiteAccess(monitor, permissions))) {
       return { error: 'Access to this site denied', status: 403 } as const;
@@ -83,11 +103,13 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string, permis
     return { monitor } as const;
   }
 
-  const [monitor] = await db
+  const [row] = await db
     .select()
     .from(networkMonitors)
     .where(eq(networkMonitors.id, monitorId))
     .limit(1);
+  if (!row) return { error: 'Monitor not found.', status: 404 } as const;
+  const monitor = asOrgOwned(row);
   if (!monitor) return { error: 'Monitor not found.', status: 404 } as const;
   if (!auth.canAccessOrg(monitor.orgId)) return { error: 'Access denied', status: 403 } as const;
   if (!(await hasMonitorSiteAccess(monitor, permissions))) {
@@ -109,12 +131,16 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
     .limit(1);
 
   if (!row) return { error: 'Alert rule not found.', status: 404 } as const;
+  // #5291 W04 — a rule hanging off a partner-wide monitor has no org axis to
+  // authorize on. This org-axis surface refuses it rather than guessing.
+  const monitorOrgId = row.monitorOrgId;
+  if (monitorOrgId === null) return { error: 'Alert rule not found.', status: 404 } as const;
 
   if (auth.scope === 'organization') {
     if (!auth.orgId) return { error: 'Organization context required', status: 403 } as const;
-    if (row.monitorOrgId !== auth.orgId) return { error: 'Alert rule not found.', status: 404 } as const;
+    if (monitorOrgId !== auth.orgId) return { error: 'Alert rule not found.', status: 404 } as const;
   } else {
-    if (!auth.canAccessOrg(row.monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
+    if (!auth.canAccessOrg(monitorOrgId)) return { error: 'Access denied', status: 403 } as const;
   }
 
   // Site-axis re-check: RLS only defends the org axis. A site-restricted user
@@ -122,7 +148,7 @@ async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permiss
   // their allowlist (same org). Mirror requireMonitorAccess's site gate — the
   // create path (POST /alerts) already goes through it. Empty/unset allowlist
   // (partner/system scope) = full access.
-  if (!(await hasMonitorSiteAccess({ orgId: row.monitorOrgId, assetId: row.monitorAssetId }, permissions))) {
+  if (!(await hasMonitorSiteAccess({ orgId: monitorOrgId, assetId: row.monitorAssetId }, permissions))) {
     return { error: 'Access to this site denied', status: 403 } as const;
   }
 

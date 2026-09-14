@@ -181,8 +181,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
        * Unrestricted callers (canAccessSite undefined) always pass.
        */
       async function assertMonitorSiteAccess(
-        monitor: { id: string; assetId: string | null; orgId: string },
+        monitor: { id: string; assetId: string | null; orgId: string | null },
       ): Promise<boolean> {
+        // #5291 W04 — `network_monitors.org_id` is nullable now (org XOR
+        // partner). A partner-wide row is always a compiled artefact of a
+        // `network_check` monitor definition: it has no org axis to authorize
+        // on and is owned by the compiler, so this org-axis AI surface refuses
+        // it outright rather than falling through to the unrestricted-caller
+        // short-circuit below. Read and edit it through the monitor editor.
+        if (monitor.orgId === null) return false;
         if (!auth.canAccessSite) return true; // unrestricted caller
         if (!monitor.assetId) return false;   // no asset → fail-closed
         const [asset] = await db
