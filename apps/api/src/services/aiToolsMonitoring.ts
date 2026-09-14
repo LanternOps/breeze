@@ -306,6 +306,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
         }
 
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.target === 'string') updates.target = input.target;
@@ -331,6 +340,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Site-axis gate — deny same as "not found" (no oracle).
         if (!(await assertMonitorSiteAccess(existing))) {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
+
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
         }
 
         // Cascade delete handles results and alert rules via FK onDelete: 'cascade'

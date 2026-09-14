@@ -44,6 +44,14 @@ export const monitorKindEnum = pgEnum('monitor_kind', [
   'bandwidth',
   'disk_io',
   'network_errors',
+  // W04 coverage (#5287 / #5291) — added by
+  // 2026-10-16-181300-monitor-coverage-kinds.sql. Order matches MONITOR_KINDS
+  // in packages/shared so the two enums stay readable side by side.
+  'antivirus',
+  'software_presence',
+  'backup_continuity',
+  'script',
+  'network_check',
 ]);
 
 export const monitorDefinitions = pgTable(

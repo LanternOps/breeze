@@ -38,18 +38,18 @@ describe('monitor kind registry (#5289)', () => {
       const spec = MONITOR_KIND_SPECS[kind];
       expect(spec, kind).toBeDefined();
       const condition = spec.conditionSchema.parse(SAMPLES[kind]);
-      const compiled = spec.toAlertCondition(condition);
+      const compiled = spec.toAlertCondition(condition, { monitorId: 'm0000000-0000-4000-8000-000000000001' });
       expect(validateConditions(compiled), `${kind}: ${JSON.stringify(compiled)}`).toEqual([]);
     }
   });
 
   it('cpu compiles to a threshold on cpuPercent', () => {
-    expect(MONITOR_KIND_SPECS.cpu.toAlertCondition({ operator: 'gt', value: 90, durationMinutes: 10 }))
+    expect(MONITOR_KIND_SPECS.cpu.toAlertCondition({ operator: 'gt', value: 90, durationMinutes: 10 }, { monitorId: 'm1' }))
       .toEqual({ type: 'threshold', metric: 'cpuPercent', operator: 'gt', value: 90, durationMinutes: 10 });
   });
 
   it('process_resource picks the handler type from resource', () => {
-    expect(MONITOR_KIND_SPECS.process_resource.toAlertCondition({ resource: 'memory', processName: 'x', operator: 'gt', value: 1 }).type)
+    expect(MONITOR_KIND_SPECS.process_resource.toAlertCondition({ resource: 'memory', processName: 'x', operator: 'gt', value: 1 }, { monitorId: 'm1' }).type)
       .toBe('process_memory_high');
   });
 

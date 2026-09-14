@@ -11,6 +11,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { enqueueMonitorCheck } from '../jobs/monitorWorker';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { buildMonitorCommand } from '../services/monitorCommands';
+import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
 
 // --- Helpers ---
 
@@ -602,6 +603,9 @@ monitorRoutes.patch(
     const payload = c.req.valid('json');
     const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    if (monitorResult.monitor.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'network_monitors', monitorResult.monitor.managedByMonitorId);
+    }
 
     if (payload.config) {
       const validation = validateMonitorConfigForType(
@@ -651,6 +655,9 @@ monitorRoutes.delete(
     const { id: monitorId } = c.req.valid('param');
     const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
+    if (monitorResult.monitor.managedByMonitorId) {
+      return managedByMonitorResponse(c, 'network_monitors', monitorResult.monitor.managedByMonitorId);
+    }
 
     const [removed] = await db.delete(networkMonitors)
       .where(eq(networkMonitors.id, monitorId)).returning();
