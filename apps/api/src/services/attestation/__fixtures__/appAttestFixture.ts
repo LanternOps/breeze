@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import crypto from 'node:crypto';
 import * as x509 from '@peculiar/x509';
 import { encodeCBOR, type CBORType } from '@levischuck/tiny-cbor';
