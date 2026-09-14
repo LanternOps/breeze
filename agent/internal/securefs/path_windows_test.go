@@ -257,11 +257,13 @@ func TestInstallFileInterruptionLeavesDestinationIntact(t *testing.T) {
 // transientMissRecheck and transientMissBudget bound how the concurrent
 // replacement test treats a "does not exist" answer on Windows (#5705).
 //
-// installFile publishes with ONE NtSetInformationFile(FileRenameInformationEx,
-// REPLACE_IF_EXISTS|POSIX_SEMANTICS) call and has no delete-then-publish step.
-// Even so, the hosted windows-latest runner intermittently answered the
-// reader's os.Stat (GetFileAttributesEx) with ERROR_FILE_NOT_FOUND mid-run
-// (Actions run 34766789429). A by-name open racing a POSIX-semantics replace
+// installFile publishes only by renaming its temporary over the destination
+// (NtSetInformationFile, FileRenameInformationEx with REPLACE_IF_EXISTS|
+// POSIX_SEMANTICS, falling back to the legacy class; renameRelative may retry
+// that rename) and never deletes the destination first. Even so, the hosted
+// windows-latest runner intermittently answered the reader's os.Stat
+// (GetFileAttributesEx) with ERROR_FILE_NOT_FOUND mid-run (Actions run
+// 34766789429). A by-name open racing a POSIX-semantics replace
 // of a target another installer still holds open is evidently not
 // linearizable there; whether NTFS or a filter driver on the runner opens the
 // window is not isolated, but neither is something this package can remove.
