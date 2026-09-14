@@ -33,7 +33,10 @@ export const reportTypeEnum = pgEnum('report_type', [
   // Fleet Designer W01 (#5651): one system-managed definition per org, keyed
   // by type (see reportsAiFleetDesignOrgUniq below) rather than by schedule —
   // manual design runs have no schedule to key on.
-  'ai_fleet_design'
+  'ai_fleet_design',
+  // Hardware Lifecycle report: device replacement plan from purchase +
+  // warranty dates (ported from the LanternOps portal PDF).
+  'hardware_lifecycle'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

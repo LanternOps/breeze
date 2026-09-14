@@ -112,7 +112,8 @@ brandingRoutes.get('/branding', async (c) => {
       enableReports: portalBranding.enableReports,
       enableSupportUsage: portalBranding.enableSupportUsage,
       enableService: portalBranding.enableService,
-      enableDocuments: portalBranding.enableDocuments
+      enableDocuments: portalBranding.enableDocuments,
+      enableLifecycle: portalBranding.enableLifecycle
     })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, auth.user.orgId))

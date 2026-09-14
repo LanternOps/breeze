@@ -45,6 +45,8 @@ const EXPECTED_WORKER_NAMES = [
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
+  // #5291 W04 — dispatches `script` monitors' diagnostic probes.
+  'monitorScriptWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
@@ -68,6 +70,9 @@ const EXPECTED_WORKER_NAMES = [
   'aiBudgetReservationSweep',
   // #5306 — MFA enrolment grace window email nudge (daily sweep).
   'mfaEnrollmentNoticeWorker',
+  // #5290 (Monitoring & automation unification, W03) — daily prune of closed
+  // monitor_episodes rows past the 400-day retention window.
+  'monitorEpisodeRetention',
 ];
 
 describe('workerRegistry: losslessness', () => {
@@ -76,7 +81,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(137);
+    expect(WORKER_REGISTRY.length).toBe(139);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -118,14 +123,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(137);
+    expect(selectWorkers('all').length).toBe(139);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(137);
+    expect(api.length + worker.length).toBe(139);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -133,7 +138,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(137);
+    expect(union.size).toBe(139);
   });
 
   it("'api' selects only socket-owner placements", () => {

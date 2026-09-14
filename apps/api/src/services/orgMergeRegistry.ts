@@ -132,6 +132,21 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // bindings have a NULL expected_resource_org_id and remain unchanged.
   automation_resource_bindings: { kind: 'custom', note: 'repoint org_id and an org-owned expected_resource_org_id together so the durable authorization binding remains valid after the parent automation moves' },
 
+  // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
+  // execution must not keep pointing at an `ai_agent_runs` row: runs are
+  // `leave-for-erasure` (org_id is trigger-immutable,
+  // 2026-09-06-a-agent-runs-org-immutable.sql), so the run stays with the
+  // loser shell and dies with it while the execution moves to the survivor.
+  //
+  // `ai_session_id` is NOT actually at risk here — `ai_sessions` is itself in
+  // REPOINT_TABLES and follows — but it is nulled together with the run id so
+  // merge and device-move behave identically and "the fact survives, the
+  // pointer does not" is ONE rule, not two. Do not "simplify" it back.
+  //
+  // The executor DOES write org_id, so it must NOT appear in
+  // CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID.
+  script_executions: { kind: 'custom', note: 'repoint org_id AND null ai_agent_run_id/ai_session_id — agent runs stay with the loser shell, so a repointed execution would otherwise hold a cross-tenant pointer' },
+
   // Append-only (BEFORE UPDATE triggers RAISE unconditionally; per-org hash chain):
   audit_logs: { kind: 'leave-for-erasure', note: 'append-only + per-org hash chain; rows die with the loser shell' },
   audit_log_chain: { kind: 'leave-for-erasure', note: 'genesis-row unique per org' },
@@ -757,8 +772,17 @@ const REPOINT_TABLES: readonly string[] = [
   // other config row; its compiled alert_rules/alert_templates/automations rows
   // are already in this list and repoint alongside it.
   "monitor_definitions",
+  // #5290 — device-org denormalised; a merge restamps org_id with the device.
+  "monitor_device_state",
+  "monitor_episodes",
   "network_baselines",
   "network_change_events",
+  // #5291 W04 - results carry the DEVICE org they ran for, so they repoint
+  // with the losing org like any other org_id row.
+  "network_monitor_results",
+  // A partner-wide network_monitors row has org_id NULL and belongs to the
+  // partner, not the losing org; the repoint is `WHERE org_id = <loser>`, so
+  // it never matches and the partner-wide row is correctly left alone.
   "network_monitors",
   "network_topology",
   "notification_channels",
@@ -821,7 +845,8 @@ const REPOINT_TABLES: readonly string[] = [
   "saved_queries",
   "script_categories",
   "script_execution_batches",
-  "script_executions",
+  // "script_executions" moved to SPECIAL (kind: 'custom') in #5022 W01 —
+  // see its note there.
   "script_tags",
   "scripts",
   "security_policies",

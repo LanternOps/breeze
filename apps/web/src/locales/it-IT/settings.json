@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Documenti",
           "description": "Consente ai clienti di scaricare i documenti condivisi."
+        },
+        "enableLifecycle": {
+          "label": "Ciclo di vita dell'hardware",
+          "description": "Mostra il piano di sostituzione aggiornato dei dispositivi del cliente."
         }
       }
     },
@@ -1592,7 +1596,14 @@
     "stateDisabled": "Disattivato",
     "runningBadge": {
       "running": "In esecuzione",
-      "notRunning": "Non in esecuzione"
+      "notRunning": "Non in esecuzione",
+      "inactive": "Attivato (inattivo)"
+    },
+    "subsystemDisabled": {
+      "title": "Gli agenti IA sono disattivati su questo server",
+      "envFlag": "Imposta {{flag}} per consentire l'esecuzione degli agenti. Fino ad allora ogni attivazione viene ignorata.",
+      "killSwitch": "L'arresto di emergenza della piattaforma è inserito. Gli agenti non verranno eseguiti finché un amministratore non lo rilascia.",
+      "skips": "{{total}} attivazione/i ignorata/e di recente — {{reasons}}"
     },
     "reenableNote": "Ripristinato, ma spento. Rivedi la sua policy prima di attivarlo.",
     "chipLabels": {

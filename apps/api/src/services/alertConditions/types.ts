@@ -100,6 +100,56 @@ export interface CertExpiryCondition {
   withinDays: number;
 }
 
+// --- W04 coverage kinds (#5287 / #5291) ----------------------------------
+
+// Antivirus posture condition. `realTimeProtection` and `definitionsDate` are
+// three-valued in `security_status`; the handler treats NULL as "no data",
+// never as the bad state.
+export interface AntivirusCondition {
+  type: 'antivirus';
+  check: 'not_protected' | 'definitions_stale' | 'realtime_disabled' | 'threats_present';
+  staleAfterDays?: number;
+  minThreatCount?: number;
+}
+
+// Installed-software presence condition. `presence: 'installed'` BREACHES when
+// the software IS installed ("alert me that this is present").
+export interface SoftwarePresenceCondition {
+  type: 'software_presence';
+  name: string;
+  vendor?: string;
+  presence: 'installed' | 'not_installed' | 'version_below';
+  version?: string;
+}
+
+// Backup continuity condition, evaluated over `backup_jobs` (never over the
+// SLA worker's own state, which runs on its own cadence).
+export interface BackupContinuityCondition {
+  type: 'backup_continuity';
+  check: 'no_successful_backup' | 'consecutive_failures';
+  maxAgeHours?: number;
+  failureCount?: number;
+}
+
+// Script monitor condition. `monitorId` is the MONITOR DEFINITION's id: the
+// handler's evidence is a `script_executions` row stamped with it, which is
+// what separates a monitor's own probe from any other run of the same script.
+export interface ScriptMonitorCondition {
+  type: 'script_monitor';
+  monitorId: string;
+  intervalMinutes: number;
+  breachOnNonZeroExit: boolean;
+}
+
+// Network check condition. `monitorId` is the MONITOR DEFINITION's id, not the
+// managed network_monitors row's — the managed row is found through
+// `managed_by_monitor_id`, so the condition survives a re-provision.
+export interface NetworkCheckCondition {
+  type: 'network_check';
+  monitorId: string;
+  consecutiveFailures?: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -112,7 +162,12 @@ export type AlertCondition =
   | DiskIoHighCondition
   | NetworkErrorsCondition
   | PatchComplianceCondition
-  | CertExpiryCondition;
+  | CertExpiryCondition
+  | AntivirusCondition
+  | SoftwarePresenceCondition
+  | BackupContinuityCondition
+  | ScriptMonitorCondition
+  | NetworkCheckCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {
@@ -128,6 +183,8 @@ export interface EvaluationResult {
   triggered: boolean;
   conditionsMet: string[];
   conditionsNotMet: string[];
+  /** #5290 — 'unknown' when ANY evaluated leaf reported dataAvailable === false. */
+  dataState: 'ok' | 'unknown';
   context: {
     metric?: string;
     actualValue?: number;
@@ -144,4 +201,11 @@ export interface ConditionResult {
   passed: boolean;
   description: string;
   actualValue?: number;
+  /**
+   * #5290 — false when the handler could not observe the device at all (no
+   * samples in the window, no inventory row, agent never reported). ABSENT
+   * MEANS TRUE: a handler that does not opt in keeps today's semantics.
+   * Never conflate this with `passed: false`, which means "observed, healthy".
+   */
+  dataAvailable?: boolean;
 }

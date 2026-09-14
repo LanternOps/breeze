@@ -1287,6 +1287,9 @@
     "tenantId": "ID del inquilino:",
     "mdmEnrollment": "MDM Inscripción:",
     "detectionSource": "Fuente de detección:",
+    "identityDetectionUnsupported": "Detección de unión no compatible",
+    "identityDetectionUnsupportedHint": "Breeze aún no verifica el directorio ni la inscripción en Intune/Entra en el sistema operativo de este dispositivo, por lo que su estado de unión es desconocido: no se ha confirmado que no esté unido.",
+    "flagUnknown": "{{label}}: Desconocido",
     "detectedManagementTools": "Herramientas de gestión detectadas",
     "tool": "herramienta",
     "s": "s",
@@ -1694,7 +1697,10 @@
     "saveChanges": "Guardar cambios",
     "site": "Sitio",
     "tags": "Etiquetas",
-    "title": "Configuración del dispositivo"
+    "title": "Configuración del dispositivo",
+    "purchaseDate": "Fecha de compra",
+    "purchaseDateHelp": "La usa el informe de ciclo de vida del hardware para planificar el reemplazo.",
+    "purchaseDateVendorHint": "Tomada de la fecha de envío del fabricante. Ingresa una fecha para reemplazarla."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2793,8 @@
       "assignedContactPlaceholder": "Buscar contactos…",
       "tags": "Etiquetas",
       "tagsPlaceholder": "Separadas por comas",
-      "notes": "Notas"
+      "notes": "Notas",
+      "purchaseDate": "Fecha de compra"
     }
   },
   "addNetworkAssetModal": {

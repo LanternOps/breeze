@@ -14,7 +14,8 @@ import {
 import { eq, and, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { deviceSiteDenied, deviceIdSiteDenied } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 
@@ -150,7 +151,9 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: restoreJobs.id, status: restoreJobs.status, createdAt: restoreJobs.createdAt });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_as_vm',
         targetDeviceId,
         CommandTypes.VM_RESTORE_FROM_BACKUP,
         {
@@ -276,7 +279,9 @@ export function registerBackupVmTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: restoreJobs.id, status: restoreJobs.status, createdAt: restoreJobs.createdAt });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'instant_boot_vm',
         targetDeviceId,
         CommandTypes.VM_INSTANT_BOOT,
         {

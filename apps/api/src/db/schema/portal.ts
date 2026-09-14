@@ -44,6 +44,10 @@ export const portalBranding = pgTable('portal_branding', {
   // org document library. Same fail-closed shape as the five flags above.
   enableService: boolean('enable_service').notNull().default(false),
   enableDocuments: boolean('enable_documents').notNull().default(false),
+  // Portal Hardware Lifecycle (#5719): required alongside enableReports so an
+  // MSP can turn on generic report self-service before exposing the
+  // replacement plan, which names specific machines.
+  enableLifecycle: boolean('enable_lifecycle').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -229,7 +233,23 @@ export const ticketComments = pgTable('ticket_comments', {
   // origin_principal_kind = 'ai_agent' — at most one AI-authored comment per
   // run. Not modeled in Drizzle for the same "partial index" reason as
   // ticketDrafts.ts's ticket_drafts_active_uq.
-  agentRunId: uuid('agent_run_id')
+  agentRunId: uuid('agent_run_id'),
+  // #4211 (W01): the agent run whose ticketProposal.summary a TECHNICIAN chose
+  // to post under their own identity. Distinct from agentRunId above, which
+  // means "an agent run wrote this row". A row with proposedByRunId set is
+  // human-authored (origin_principal_kind='user', user_id=<tech>) and MUST NOT
+  // trip the helpdesk loop guard — see the migration header. FK
+  // (ON DELETE SET NULL) is SQL-only, same circular-import reason as agentRunId.
+  //
+  // #4211 review: also carries a partial unique index,
+  // ticket_comments_one_proposal_note_per_run_uq ON ticket_comments
+  // (proposed_by_run_id) WHERE proposed_by_run_id IS NOT NULL AND
+  // origin_principal_kind = 'user' — at most one technician-posted proposal
+  // note per run, same idempotency shape as agent_run_id's own
+  // ticket_comments_one_ai_note_per_run_uq. Not modeled in Drizzle for the
+  // same "partial index" reason as that index and ticketDrafts.ts's
+  // ticket_drafts_active_uq.
+  proposedByRunId: uuid('proposed_by_run_id')
 });
 
 export const assetCheckouts = pgTable('asset_checkouts', {

@@ -104,7 +104,19 @@ export async function evaluateVerificationClaim(
     }
 
     case 'process_absent': {
-      const { verification, detail } = await verifyProcessAbsentByNameForTask({ processName: c.name }, device, actorUserId);
+      // #5789: this worker has no agent run behind it (a proposal
+      // verification, not an act-lane run), so there is no `agentRunId` to
+      // point at — but the read is still AI-decided (a proposal-verification
+      // job), so a kind-only origin is threaded rather than leaving the
+      // dispatched `list_processes` command unattributed. Mirrors
+      // `actVerify.ts`'s own `runAiOrigin` pattern (omit ids it doesn't have,
+      // never fabricate one).
+      const { verification, detail } = await verifyProcessAbsentByNameForTask(
+        { processName: c.name },
+        device,
+        actorUserId,
+        { kind: 'ai_agent' },
+      );
       return {
         outcome: verification === 'passed' ? 'verified' : verification === 'failed' ? 'verification_failed' : 'unknown',
         evidence: { independentRead: 'list_processes', process: c.name, verification, detail: detail ?? null },

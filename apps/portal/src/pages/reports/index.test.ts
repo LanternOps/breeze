@@ -29,6 +29,26 @@ describe('reports page structure', () => {
   });
 });
 
+describe('reports page hardware lifecycle card (W02)', () => {
+  it('loads branding and gates the card on enableLifecycle', () => {
+    expect(pageSource).toContain('loadPortalBranding(Astro.request)');
+    expect(pageSource).toMatch(/branding\.enableLifecycle/);
+  });
+
+  it('links to the lifecycle page through withBase, with a stable testid', () => {
+    expect(pageSource).toContain('data-testid="reports-lifecycle-card"');
+    expect(pageSource).toContain("withBase('/reports/lifecycle')");
+  });
+
+  it('positions the card above ReportRunList', () => {
+    const cardIndex = pageSource.indexOf('data-testid="reports-lifecycle-card"');
+    const listIndex = pageSource.indexOf('<ReportRunList');
+    expect(cardIndex).toBeGreaterThan(-1);
+    expect(listIndex).toBeGreaterThan(-1);
+    expect(cardIndex).toBeLessThan(listIndex);
+  });
+});
+
 describe('reports page visibility gate', () => {
   it('bounces through the shared helper', () => {
     expect(pageSource).toContain('isPortalPageDisabled(response)');

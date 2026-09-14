@@ -35,6 +35,7 @@ import { __testOnly } from './aiToolsScripts';
 const auth = {
   orgId: 'org-1', user: { id: 'u1' }, scope: 'organization',
   orgCondition: () => undefined, canAccessOrg: () => true, accessibleOrgIds: ['org-1'],
+  aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
 } as never;
 
 beforeEach(() => { runnableMock.mockClear(); dispatchMock.mockClear(); transitionMock.mockClear(); flagMock.mockReturnValue(true); });

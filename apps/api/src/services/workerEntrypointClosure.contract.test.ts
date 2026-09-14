@@ -287,6 +287,8 @@ const EXPECTED_NAMES = [
   'softwareRemediationRequestCleanup', 'auditRetention', 'auditChainVerify', 'auditChainAnchor',
   'tenantErasure', 'orgMerge', 'deviceBulkPurge', 'removedDevicePurge', 'desktopSessionFinalization', 'desktopSessionOrphanRecovery', 'playbookRetention',
   'discoveryWorker', 'networkBaselineWorker', 'snmpWorker', 'monitorWorker',
+  // #5291 W04 — dispatches `script` monitors' diagnostic probes.
+  'monitorScriptWorker',
   'unifiWorker', 'unifiTelemetryWorker', 'snmpRetention', 'patchComplianceReportWorker',
   'reportScheduleWorker', 'cveEnrichmentWorker', 'wingetIndexSyncWorker', 'vulnerabilityJobs',
   'dnsSyncWorker', 's1SyncWorker', 'huntressSyncWorker', 'm365SyncWorker', 'pax8SyncWorker',
@@ -309,6 +311,7 @@ const EXPECTED_NAMES = [
   'scriptVerifyWorker',
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
+  'monitorEpisodeRetention',
 ];
 
 // ---------------------------------------------------------------------------

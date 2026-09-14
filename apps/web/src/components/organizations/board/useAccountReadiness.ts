@@ -4,6 +4,7 @@ import type { ServiceManagementMode } from '@/stores/orgStore';
 import type {
   AccountReadinessResponse,
   ReadinessCapabilities,
+  ReadinessConnector,
   ReadinessOrg,
   ReadinessRowState,
 } from '@/lib/orgReadiness';
@@ -22,6 +23,8 @@ export interface AccountReadinessState {
   byOrg: ReadonlyMap<string, ReadinessOrg>;
   rowState: ReadonlyMap<string, ReadinessRowState>;
   status: ReadinessStatus;
+  /** Partner-level connectors, identical across batches — the first successful batch wins. null until then, or when withheld. */
+  connectors: ReadinessConnector[] | null;
   /** Re-requests only the batches that failed; rows that already landed are kept. */
   retry: () => void;
 }
@@ -60,6 +63,7 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
   const [mode, setMode] = useState<ServiceManagementMode | null>(null);
   const [byOrg, setByOrg] = useState<Map<string, ReadinessOrg>>(() => new Map());
   const [rowState, setRowState] = useState<Map<string, ReadinessRowState>>(() => new Map());
+  const [connectors, setConnectors] = useState<ReadinessConnector[] | null>(null);
   const [inFlight, setInFlight] = useState(0);
   const [failedChunks, setFailedChunks] = useState<string[][]>([]);
   const generation = useRef(0);
@@ -99,6 +103,7 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
           const { response } = result;
           setCapabilities(response.capabilities);
           setMode(response.serviceManagementMode);
+          setConnectors((current) => current ?? (response.capabilities.integrations ? (response.connectors ?? []) : null));
           setByOrg((prev) => {
             const next = new Map(prev);
             for (const org of response.orgs) next.set(org.orgId, org);
@@ -124,6 +129,7 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
     const gen = ++generation.current;
     const ids = key ? key.split(',') : [];
     setByOrg(new Map());
+    setConnectors(null);
     setFailedChunks([]);
     setRowState(new Map<string, ReadinessRowState>(ids.map((id) => [id, 'pending'])));
     setInFlight(0);
@@ -145,5 +151,5 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
 
   const status: ReadinessStatus = key === '' ? 'idle' : inFlight > 0 ? 'loading' : failedChunks.length > 0 ? 'partial' : 'ready';
 
-  return { capabilities, mode, byOrg, rowState, status, retry };
+  return { capabilities, mode, byOrg, rowState, status, connectors, retry };
 }

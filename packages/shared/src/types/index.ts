@@ -809,6 +809,7 @@ export * from './aiAgentGraduation';
 export * from './aiAgentRuns';
 export * from './aiAgentSchedules';
 export * from './aiOperator';
+export * from './aiOrigin';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
@@ -841,6 +842,7 @@ export * from './vulnerability';
 
 export * from './postureReport';
 export * from './executiveSummaryReport';
+export * from './hardwareLifecycleReport';
 
 // ============================================
 // Portal Visibility DTOs (Wave 1 - #4562)

@@ -11,6 +11,22 @@ import type { AlertCondition } from '../../alertConditions/types';
  * `C` is the parsed authoring shape for this kind (e.g. `{ operator, value,
  * durationMinutes? }` for `cpu`) — every kind file supplies its own concrete `C`.
  */
+/**
+ * What a kind needs about the DEFINITION (not the authored condition) to
+ * compile. Added in W04 (#5291): the `script` and `network_check` handlers both
+ * read their evidence back through a row stamped with the monitor's own id, so
+ * the compiled condition has to carry it. Passing it explicitly beats
+ * back-filling the id in the compiler, which would silently do nothing for a
+ * kind whose handler expected it.
+ *
+ * Every pre-W04 kind ignores the parameter — a JS function may declare fewer
+ * parameters than it is called with, so none of them needed a change.
+ */
+export interface MonitorCompileContext {
+  /** `monitor_definitions.id`. */
+  monitorId: string;
+}
+
 export interface MonitorKindSpec<C = Record<string, unknown>> {
   kind: MonitorKind;
   /** Authoring schema from `@breeze/shared` — the shape the editor collects. */
@@ -26,7 +42,7 @@ export interface MonitorKindSpec<C = Record<string, unknown>> {
    * this package included) read `.type` off the result, which `ConditionGroup`
    * does not have.
    */
-  toAlertCondition(condition: C): AlertCondition;
+  toAlertCondition(condition: C, ctx: MonitorCompileContext): AlertCondition;
   titleTemplate: string;
   messageTemplate: string;
   /**

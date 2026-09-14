@@ -277,13 +277,16 @@ describe('persistAlertVerdict', () => {
 
   // Also covers "bare `manage_alerts` in allowlist → created" (review round
   // 2, IMPORTANT 1a): `runInput.toolAllowlist` is the bare tool name.
-  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it via a separate UPDATE after the verdict row is written, and uses the run\'s own deviceId without an extra query', async () => {
+  it('creates a Tier-2 supervised manage_alerts intent for a pending-approval suggestion, links it via a separate UPDATE after the verdict row is written, and reads the target alert once for its device and requires_human gate', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
-    // No `state.selectQueue` entries pushed: `suggestion.alertId ===
-    // run.alertId` short-circuits BOTH the correlation-membership check and
-    // the alerts.deviceId lookup (review round 1 minor fix) — an
-    // unexpected select would throw "no queued select rows" and fail this
-    // test, so the absence of a queued row IS the assertion.
+    // Exactly ONE queued select: `suggestion.alertId === run.alertId` still
+    // short-circuits the correlation-membership check, but #5290 made the
+    // alerts read unconditional (it now also carries `requires_human`, a
+    // safety gate that must not be skippable). A second unexpected select
+    // would throw "no queued select rows" and fail this test.
 
     const verdict: AlertVerdictOutcome = {
       ...baseVerdict,
@@ -319,6 +322,9 @@ describe('persistAlertVerdict', () => {
   // Review round 2 (IMPORTANT 1a): the specific `manage_alerts:<action>`
   // entry admits it too, not just the bare tool name.
   it('creates the intent when the allowlist carries the specific manage_alerts:suppress entry', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
 
     const scopedRun = { ...runInput, toolAllowlist: ['manage_alerts:suppress'] };
@@ -341,6 +347,9 @@ describe('persistAlertVerdict', () => {
   // `manage_alerts:<action>`, mirroring what the release-time re-check
   // (`agentReleaseAuthority.ts`) would deny anyway.
   it('refuses a suggestion when manage_alerts is not in the run\'s effective allowlist (not_allowlisted)', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const unallowlistedRun = { ...runInput, toolAllowlist: ['query_devices'] };
@@ -360,6 +369,47 @@ describe('persistAlertVerdict', () => {
     expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: null });
     // No link update either — there was never an intent id to link.
     expect(state.updateSets).toHaveLength(1);
+  });
+
+  // #5290 — a recurrence escalation is closed by a person. The verdict itself
+  // is still persisted (advisory analysis is wanted), only the suggested
+  // mutation is refused.
+  it('refuses a suggestion targeting a requires_human alert, but still records the verdict (requires_human)', async () => {
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: true }]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    const result = await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(result.suggestionReason).toBe('requires_human');
+    expect(result.suggestionDisposition).toBe('not_created');
+    expect(result.intentId).toBeNull();
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    // The verdict row IS written — advisory analysis is not suppressed.
+    expect(state.insertValues[0]).toMatchObject({ suggestedIntentId: null });
+    expect(state.insertValues).toHaveLength(1);
+  });
+
+  it('leaves an ordinary alert unaffected by the requires_human gate', async () => {
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'pending_approval' });
+
+    const verdict: AlertVerdictOutcome = {
+      ...baseVerdict,
+      classification: 'actionable',
+      suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: ALERT_ID },
+    };
+
+    const result = await persistAlertVerdict(runInput, verdict, agentAuth);
+
+    expect(result.suggestionReason).toBeUndefined();
+    expect(createActionIntent).toHaveBeenCalledTimes(1);
   });
 
   // Review round 2 (IMPORTANT 1b): the device-binding gate — a suggestion
@@ -396,6 +446,9 @@ describe('persistAlertVerdict', () => {
   // alert (the common single-alert-run shortcut path) — matching
   // `checkAgentGuardrails`'s own device-less-mutation deny at release time.
   it('refuses a suggestion when the run has no deviceId at all (target_mismatch)', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     const deviceLessRun = { ...runInput, deviceId: null };
@@ -420,6 +473,9 @@ describe('persistAlertVerdict', () => {
   // advertise a dead intent and break the "intent_ids are pending-only"
   // invariant. Mocked with a resolved cancelled snapshot, NOT a rejection.
   it('does not link a cancelled (no_eligible_approvers) intent', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     createActionIntent.mockResolvedValue({ id: INTENT_ID, status: 'cancelled', errorCode: 'no_eligible_approvers' });
 
@@ -439,6 +495,9 @@ describe('persistAlertVerdict', () => {
   });
 
   it('treats a genuine createActionIntent throw as intent_error (not a propagated exception)', async () => {
+    // #5290 — the alerts row is now read for EVERY suggestion target so the
+    // `requires_human` gate cannot be skipped by the run's-own-alert fast path.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     createActionIntent.mockRejectedValue(new Error('org_resolution_failed'));
 
@@ -540,7 +599,9 @@ describe('persistAlertVerdict', () => {
       constraint_name: 'ai_alert_verdicts_live_alert_uq',
       message: 'duplicate key value violates unique constraint "ai_alert_verdicts_live_alert_uq"',
     };
-    // The re-read after the 23505, looking up the now-live winner row.
+    // #5290 — the suggestion gate reads the target alert first (device +
+    // requires_human), THEN the 23505 re-read looks up the now-live winner row.
+    state.selectQueue.push([{ deviceId: DEVICE_ID, requiresHuman: false }]);
     state.selectQueue.push([{ id: WINNER_VERDICT_ID }]);
 
     const verdict: AlertVerdictOutcome = {

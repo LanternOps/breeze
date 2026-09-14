@@ -64,6 +64,7 @@ describe('createPortalFeatureGateStrict', () => {
     ['enableSupportUsage', 'PORTAL_SUPPORT_USAGE_DISABLED'],
     ['enableService', 'PORTAL_SERVICE_DISABLED'],
     ['enableDocuments', 'PORTAL_DOCUMENTS_DISABLED'],
+    ['enableLifecycle', 'PORTAL_LIFECYCLE_DISABLED'],
   ] as const)(
     'fails closed for %s',
     async (flag, code) => {

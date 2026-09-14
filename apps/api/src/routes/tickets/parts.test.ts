@@ -44,6 +44,16 @@ vi.mock('../../middleware/auth', async () => ({
   siteAccessCheck: (await vi.importActual<typeof import('../../middleware/auth')>('../../middleware/auth')).siteAccessCheck,
 }));
 
+// #4211 (W01) — aiDrafts.ts (mounted under ticketsRoutes) now imports
+// getLatestTicketProposal, which pulls in runTrace.ts's real dependency
+// chain (alertVerdicts/sweepFindings -> actionIntents/intentService ->
+// aiTools.ts) — heavier than this file's own minimal `../../db/schema`
+// mock below supports. This suite never exercises the ai-proposal routes
+// (that's aiDrafts.test.ts), so stub the module out entirely.
+vi.mock('../../services/aiTicketProposal', () => ({
+  getLatestTicketProposal: vi.fn(),
+}));
+
 vi.mock('../../db', () => ({
   runOutsideDbContext: (fn: () => unknown) => fn(),
   withSystemDbAccessContext: (fn: () => unknown) => fn(),

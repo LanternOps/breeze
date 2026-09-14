@@ -65,6 +65,9 @@ import { redactSecretsDeep, redactOptionalSecretText } from '../../services/secr
 import { CloudflareMtlsService } from '../../services/cloudflareMtls';
 import { normalizeCertificateSerial } from '../../services/agentCertificateBinding';
 import { isAllowedPolicyConfigProbe } from './policyProbeSafety';
+import { resolveMonitorsForDevice } from '../../services/monitors/monitorResolver';
+import { MONITOR_KIND_SPECS, applyOverrides } from '../../services/monitors/kinds';
+import { monitorDefinitions } from '../../db/schema/monitorDefinitions';
 import { PAM_DEFAULTS, parsePamSettings, type PamSettings } from './pamSettings';
 import {
   normalizeAgentUpdatePolicy,
@@ -2035,7 +2038,161 @@ export interface MonitoringConfigUpdate {
   watches: MonitoringWatchConfig[];
 }
 
+/**
+ * The defaults `config_policy_monitoring_watches` itself carries, so a
+ * monitor-derived watch and a policy-tab watch for the same service are
+ * indistinguishable on the wire (configurationPolicies.ts:425-427).
+ */
+const MONITOR_WATCH_DEFAULTS = {
+  maxRestartAttempts: 3,
+  restartCooldownSeconds: 300,
+  alertAfterConsecutiveFailures: 2,
+} as const;
+
+/** `check_interval_seconds` when monitors deliver watches but no policy resolved. */
+const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
+
+/**
+ * Service/process watches derived from the device's EFFECTIVE MONITOR SET
+ * (#5287 W04). W02 made `service` and `process` monitors first-class authoring
+ * objects but nothing delivered them; this is that delivery.
+ *
+ * Runs in the CALLER'S OWN DB CONTEXT. `monitor_definitions_partner_wide_select`
+ * (W02) is what lets a partner-wide monitor's definition be read on the agent
+ * path, because middleware/agentAuth sets `breeze.current_partner_id`. Wrapping
+ * this in a system context would be the forbidden request-path escalation
+ * (#2417) and would double-hold a pooled connection (#1105).
+ */
+async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitoringWatchConfig[]> {
+  const effective = await resolveMonitorsForDevice(deviceId);
+  const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
+  if (enabledIds.length === 0) return [];
+
+  const definitions = await db
+    .select({
+      id: monitorDefinitions.id,
+      kind: monitorDefinitions.kind,
+      condition: monitorDefinitions.condition,
+      responses: monitorDefinitions.responses,
+    })
+    .from(monitorDefinitions)
+    .where(and(
+      inArray(monitorDefinitions.id, enabledIds),
+      eq(monitorDefinitions.enabled, true),
+      inArray(monitorDefinitions.kind, ['service', 'process']),
+    ));
+
+  const overridesById = new Map(effective.map((m) => [m.monitorId, m.overrides]));
+  const watches: MonitoringWatchConfig[] = [];
+
+  for (const def of definitions) {
+    const spec = MONITOR_KIND_SPECS[def.kind];
+    if (!spec) continue;
+    let condition: Record<string, unknown>;
+    try {
+      condition = applyOverrides(spec, def.condition, overridesById.get(def.id) ?? null);
+    } catch (err) {
+      // An out-of-range override is an authoring bug on ONE monitor. Dropping
+      // that monitor is right; failing the whole heartbeat block would strand
+      // every other watch on the device. But it is NOT transient — it recurs on
+      // every heartbeat forever — so it must be visible: without this log the
+      // watch simply vanishes from the device's config with nothing anywhere
+      // to explain it. Mirrors monitorScriptWorker's handling of the same throw.
+      console.error('[monitoring] dropping monitor with an invalid override', {
+        monitorId: def.id,
+        deviceId,
+        error: err,
+      });
+      captureException(err);
+      continue;
+    }
+
+    const name = def.kind === 'service'
+      ? (condition.serviceName as string | undefined)
+      : (condition.processName as string | undefined);
+    if (!name) continue;
+
+    watches.push({
+      watch_type: def.kind === 'service' ? 'service' : 'process',
+      name,
+      alert_on_stop: true,
+      alert_after_consecutive_failures:
+        (condition.consecutiveFailures as number | undefined) ?? MONITOR_WATCH_DEFAULTS.alertAfterConsecutiveFailures,
+      // Spec §Responses: an execute_command response of kind 'restart_service'
+      // supersedes the agent-side flag, so the restart still happens locally
+      // and offline. A free-text `command` is NOT sniffed for intent — the
+      // explicit discriminator is the contract.
+      auto_restart: (def.responses ?? []).some(
+        (a) => a?.type === 'execute_command' && a?.kind === 'restart_service',
+      ),
+      max_restart_attempts: MONITOR_WATCH_DEFAULTS.maxRestartAttempts,
+      restart_cooldown_seconds: MONITOR_WATCH_DEFAULTS.restartCooldownSeconds,
+    });
+  }
+
+  return watches;
+}
+
+/**
+ * Union monitor-derived watches with the policy tab's, keyed on
+ * (watch_type, lower(name)). The MONITOR wins every field except:
+ *  - `auto_restart`, which is OR'd — never lowered, because it drives the
+ *    agent's own offline-capable restart; and
+ *  - the process thresholds, which fall back to the policy row, because a
+ *    `service`/`process` monitor authors none (that is `process_resource`).
+ */
+function unionMonitoringWatches(
+  monitorWatches: MonitoringWatchConfig[],
+  policyWatches: MonitoringWatchConfig[],
+): MonitoringWatchConfig[] {
+  const key = (w: MonitoringWatchConfig) => `${w.watch_type}:${w.name.toLowerCase()}`;
+  const merged = new Map<string, MonitoringWatchConfig>();
+
+  for (const w of monitorWatches) merged.set(key(w), { ...w });
+
+  for (const p of policyWatches) {
+    const k = key(p);
+    const existing = merged.get(k);
+    if (!existing) {
+      merged.set(k, { ...p });
+      continue;
+    }
+    existing.auto_restart = existing.auto_restart || p.auto_restart;
+    if (existing.cpu_threshold_percent == null && p.cpu_threshold_percent != null) {
+      existing.cpu_threshold_percent = p.cpu_threshold_percent;
+    }
+    if (existing.memory_threshold_mb == null && p.memory_threshold_mb != null) {
+      existing.memory_threshold_mb = p.memory_threshold_mb;
+    }
+    if (existing.threshold_duration_seconds == null && p.threshold_duration_seconds != null) {
+      existing.threshold_duration_seconds = p.threshold_duration_seconds;
+    }
+  }
+
+  return [...merged.values()];
+}
+
 async function resolveDeviceMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
+  // Monitors are the primary source and win the union (#5287 W04); the policy
+  // tab is read FIRST only so its query sequence is untouched by this change —
+  // helpers.partnerWidePolicies.test.ts pins that sequence and must stay green
+  // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
+  // shape; the union below is order-independent.
+  const policy = await resolvePolicyMonitoringSettings(deviceId);
+  const monitorWatches = await resolveMonitorDerivedWatches(deviceId);
+
+  // Null ONLY when both sources are empty AND no policy resolved. A policy that
+  // resolved with zero enabled watches still returns `watches: []` below — that
+  // is the #2949 "stop watching" signal.
+  if (!policy && monitorWatches.length === 0) return null;
+
+  return {
+    check_interval_seconds: policy?.check_interval_seconds ?? MONITOR_ONLY_CHECK_INTERVAL_SECONDS,
+    watches: unionMonitoringWatches(monitorWatches, policy?.watches ?? []),
+  };
+}
+
+async function resolvePolicyMonitoringSettings(deviceId: string): Promise<MonitoringConfigUpdate | null> {
   // 1. Load device
   const [device] = await db
     .select({ orgId: devices.orgId, siteId: devices.siteId })

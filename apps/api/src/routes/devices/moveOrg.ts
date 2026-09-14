@@ -476,6 +476,32 @@ moveOrgRoutes.post(
               WHERE device_id = ${deviceId}::uuid`,
         );
 
+        // #5022 W01: script_executions IS re-stamped to the target org (it is
+        // in CORE_DEVICE_ORG_DENORMALIZED_TABLES, core.ts), but ai_agent_runs
+        // deliberately is NOT (the statement directly above), and ai_sessions
+        // is re-stamped only when it is device-bound — a device-less chat
+        // session stays behind. Either way a moved execution can end up
+        // pointing at a session or run in a DIFFERENT tenant, and
+        // /devices/:id/scripts would then serve a foreign id to the target
+        // org. Sever both pointers; RETAIN ai_initiator_kind, so the fact that
+        // an AI did the work survives the move while the cross-tenant pointer
+        // does not.
+        //
+        // Like the ai_agent_runs statement above, this normally matches
+        // NOTHING: the devices row was already flipped earlier in this same
+        // transaction, firing breeze_cascade_device_org_id(), whose body
+        // carries an identical statement (2026-10-16-182100-ai-origin-
+        // attribution.sql). Kept as a route-local mirror so the detach is
+        // visible where the move is read, and so the route still detaches if
+        // the trigger is dropped. Both copies are convergent — whichever runs
+        // first wins and the other matches nothing.
+        await tx.execute(
+          sql`UPDATE script_executions
+                 SET ai_session_id = NULL, ai_agent_run_id = NULL
+               WHERE device_id = ${deviceId}::uuid
+                 AND (ai_session_id IS NOT NULL OR ai_agent_run_id IS NOT NULL)`,
+        );
+
         // AI Operator task history stays with the SOURCE org too (#5205 W03,
         // #5208), for the same reason agent runs do — and with one addition
         // the runs statement above does not need: a task is LIVE work, not a

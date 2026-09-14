@@ -16,6 +16,7 @@ import {
   type AiAgentGraduationDto,
   type AiAgentRunListItemDto,
   type AiAgentRunStatus,
+  type AiAgentsSystemStatusDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
   impactQuerySchema,
@@ -43,6 +44,9 @@ import {
 } from '../services/partnerWideAccess';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from '../services/aiAgents/access';
 import { getCircuitState, resetCircuit } from '../services/aiAgents/agentCircuit';
+import { readAiKillState } from '../services/aiKillState';
+import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
+import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
 import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
 import { loadImpactSummary } from '../services/aiAgents/impactQuery';
 import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
@@ -362,6 +366,42 @@ type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
   orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
 };
 
+/**
+ * #5380 — what the settings page needs to stop calling a kill-switched agent
+ * "Running".
+ *
+ * `enabled` is the AND of BOTH kill switches, because that is what admission
+ * actually requires: the env flag is checked first in
+ * `runService.createAndEnqueueAgentRun` and the DB row gates every tool
+ * dispatch in `checkAgentGuardrails`. They are reported separately as well,
+ * since the remedy differs — one is an operator env var (named here so a
+ * self-hoster is not left guessing), the other an admin kill-switch flip.
+ *
+ * `skips` is deliberately nullable: `null` means "unknown" (no Redis, no orgs
+ * in scope), never "nothing was dropped".
+ */
+async function loadAiAgentsSystemStatus(
+  auth: Pick<AuthContext, 'orgId' | 'accessibleOrgIds'>,
+): Promise<AiAgentsSystemStatusDto> {
+  const envFlagEnabled = aiAgentsEnvFlagEnabled();
+  // An org-scoped caller sees exactly its own org; a partner-scoped one its
+  // accessible set. A system-scoped caller (accessibleOrgIds === null) has no
+  // bounded set to aggregate, so the summary stays unknown rather than
+  // fanning out across every tenant on the platform.
+  const orgIds = auth.orgId ? [auth.orgId] : (auth.accessibleOrgIds ?? []);
+  const [killState, skips] = await Promise.all([
+    readAiKillState(),
+    readAgentRunSkipSummary(orgIds),
+  ]);
+  return {
+    enabled: envFlagEnabled && !killState.killed,
+    envFlagEnabled,
+    envFlagName: AI_AGENTS_ENV_FLAG_NAME,
+    killSwitchEngaged: killState.killed,
+    skips,
+  };
+}
+
 aiAgentsRoutes.get(
   '/',
   scopes,
@@ -385,6 +425,11 @@ aiAgentsRoutes.get(
     // warn before a kind's org row exists at all to read the per-row flag
     // off of).
     const partnerBaselineKinds = await loadPartnerBaselineKinds(auth.partnerId);
+    // #5380 — the page's ONLY read, so the subsystem's own state rides along
+    // with it rather than costing a second request. Without this the badge
+    // below reported `agent.enabled` as "Running" on a server where the
+    // platform kill switch made every trigger a no-op.
+    const system = await loadAiAgentsSystemStatus(auth);
     return c.json({
       data: rows.map((row) => {
         const last = lastRuns.get(row.id);
@@ -399,6 +444,7 @@ aiAgentsRoutes.get(
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),
+      system,
     });
   },
 );

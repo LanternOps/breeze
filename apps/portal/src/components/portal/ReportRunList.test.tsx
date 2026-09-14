@@ -133,14 +133,50 @@ describe('ReportRunList', () => {
     });
   });
 
-  it('offers the two generate actions as peers, with no false primary', () => {
+  it('offers the three generate actions as peers, with no false primary', () => {
     render(<ReportRunList initialRuns={[run]} timezone="UTC" />);
 
     const posture = screen.getByTestId('portal-reports-generate-posture');
     const executive = screen.getByTestId('portal-reports-generate-executive');
+    const lifecycle = screen.getByTestId('portal-reports-generate-lifecycle');
     expect(posture.className).toBe(executive.className);
+    expect(lifecycle.className).toBe(executive.className);
     // BTN_PRIMARY's service-green fill is the tell.
     expect(posture.className).not.toContain('bg-primary');
+  });
+
+  it('generates a hardware lifecycle plan from the third action', async () => {
+    generateMock.mockResolvedValue({ data: { ...run, type: 'hardware_lifecycle' } });
+    listMock.mockResolvedValue({ data: [{ ...run, type: 'hardware_lifecycle' }] });
+
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+
+    fireEvent.click(screen.getByTestId('portal-reports-generate-lifecycle'));
+
+    await waitFor(() => {
+      expect(generateMock).toHaveBeenCalledWith('hardware_lifecycle');
+    });
+  });
+
+  it('labels the lifecycle action and its progress line in plain words', async () => {
+    let release: (value: unknown) => void = () => {};
+    generateMock.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    listMock.mockResolvedValue({ data: [] });
+
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+
+    const button = screen.getByTestId('portal-reports-generate-lifecycle');
+    expect(button.textContent).toBe('Generate hardware lifecycle plan');
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('portal-reports-status').textContent,
+      ).toBe('Generating your hardware lifecycle plan…');
+    });
+
+    release({ data: run });
   });
 
   it('speaks of the machines rather than an "environment", and labels the summary plainly', () => {

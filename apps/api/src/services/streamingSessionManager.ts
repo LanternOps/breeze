@@ -619,6 +619,21 @@ export interface ActiveSession {
  * in practice (`getSession` pre-filters by `auth.orgCondition`), but if auth
  * ever regresses we must fail loudly rather than run tools cross-org.
  */
+/**
+ * Stamp the interactive-chat AI origin onto a request AuthContext (#5022 W01).
+ *
+ * `breezeSessionId` is the persisted `ai_sessions.id` — not an MCP transport
+ * session id — so the resulting pointer is resolvable by the device-page chip.
+ * Returns the same reference when the origin is already correct, so a caller
+ * that identity-compares is not surprised.
+ */
+export function withChatAiOrigin(auth: AuthContext, breezeSessionId: string): AuthContext {
+  if (auth.aiOrigin?.kind === 'ai_assistant' && auth.aiOrigin.sessionId === breezeSessionId) {
+    return auth;
+  }
+  return { ...auth, aiOrigin: { kind: 'ai_assistant', sessionId: breezeSessionId } };
+}
+
 export function buildDeviceBoundSessionAuth(auth: AuthContext, sessionOrgId: string): AuthContext {
   if (!auth.canAccessOrg(sessionOrgId)) {
     throw new Error('Device-bound AI session org is not accessible to the caller');
@@ -785,10 +800,14 @@ export class StreamingSessionManager {
         // `existing.orgId` snapshot captured at session creation — this is the
         // current DB value, so it survives the device being moved to a
         // different org mid-session.
-        reusable.auth = auth;
+        // #5022 W01: re-mint the chat origin on the REFRESHED auth. Stamping
+        // only at creation loses the origin on every follow-up message, since
+        // the request auth handed in here is built fresh per request.
+        const refreshedAuthWithOrigin = withChatAiOrigin(auth, breezeSessionId);
+        reusable.auth = refreshedAuthWithOrigin;
         reusable.toolAuth = reusable.deviceId
-          ? buildDeviceBoundSessionAuth(auth, dbSession.orgId)
-          : auth;
+          ? buildDeviceBoundSessionAuth(refreshedAuthWithOrigin, dbSession.orgId)
+          : refreshedAuthWithOrigin;
         reusable.auditSnapshot = snapshot;
         reusable.allowedTools = allowedTools;
         // Re-resolve the approval mode so a settings change applies to the NEXT
@@ -832,7 +851,15 @@ export class StreamingSessionManager {
     // is narrowed to the session org; `auth` stays raw so RBAC, rate limits,
     // and audit attribution keep resolving the login identity/role.
     const deviceId = dbSession.deviceId ?? null;
-    const toolAuth = deviceId ? buildDeviceBoundSessionAuth(auth, dbSession.orgId) : auth;
+    // #5022 W01: the AI-surface mint site for interactive chat. `breezeSessionId`
+    // IS the persisted `ai_sessions.id`, so it is the id a device-page chip can
+    // resolve back to a conversation. Applied to BOTH `auth` and `toolAuth`:
+    // the act/verify bypass lanes read the carrier off `auth`, while every
+    // MCP tool handler reads `toolAuth`.
+    const authWithOrigin = withChatAiOrigin(auth, breezeSessionId);
+    const toolAuth = deviceId
+      ? buildDeviceBoundSessionAuth(authWithOrigin, dbSession.orgId)
+      : authWithOrigin;
 
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
@@ -864,7 +891,7 @@ export class StreamingSessionManager {
       state: 'initializing',
       lastActivityAt: now,
       createdAt: now,
-      auth,
+      auth: authWithOrigin,
       toolAuth,
       auditSnapshot: snapshot,
       mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below

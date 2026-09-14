@@ -118,7 +118,9 @@ vi.mock('../db/schema', () => ({
   // ensureTagIds/linkTags helpers, which key off these two column refs.
   scriptTags: { id: 'stg.id', name: 'stg.name', orgId: 'stg.orgId', partnerId: 'stg.partnerId' },
   scriptToTags: { scriptId: 'stt.scriptId', tagId: 'stt.tagId' },
-  scriptExecutions: {},
+  // Column sentinels the #5040 projection assertions key off; the rest of this
+  // file only needs the object to exist.
+  scriptExecutions: { cancelState: 'se.cancelState' },
   scriptExecutionBatches: {},
   devices: {},
   deviceCommands: {},
@@ -1776,6 +1778,102 @@ describe('scripts routes', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe('Access to this site denied');
+  });
+
+  // ==========================================================================
+  // cancelState on the execution READ endpoints (#5040)
+  //
+  // The web UI qualifies a terminal status with the cancel outcome
+  // (resolveExecutionStatusLabel(status, cancelState)); if these two SELECTs
+  // omit the column, that copy is unreachable against real data. The db mock
+  // returns whatever it is handed, so asserting on the response body alone
+  // would be vacuous — these assert the PROJECTION the route passes to
+  // db.select(), which is the thing that was missing.
+  // ==========================================================================
+  describe('cancelState is returned by the execution read endpoints (#5040)', () => {
+    it('GET /scripts/:id/executions selects cancelState', async () => {
+      vi.mocked(db.select)
+        // getScriptWithOrgCheck
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: SCRIPT_ID_1, name: 'Script One', isSystem: false, orgId: ORG_ID }])
+            })
+          })
+        } as any)
+        // count
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          })
+        } as any)
+        // the execution page itself
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockReturnValue({
+                    offset: vi.fn().mockResolvedValue([{
+                      id: EXECUTION_ID,
+                      scriptId: SCRIPT_ID_1,
+                      deviceId: 'device-1',
+                      status: 'completed',
+                      cancelState: 'unconfirmed'
+                    }])
+                  })
+                })
+              })
+            })
+          })
+        } as any);
+
+      const res = await app.request(`/scripts/${SCRIPT_ID_1}/executions`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[2]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      const body = await res.json();
+      expect(body.data[0].cancelState).toBe('unconfirmed');
+    });
+
+    it('GET /scripts/executions/:id selects cancelState', async () => {
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([{
+                  id: EXECUTION_ID,
+                  scriptId: SCRIPT_ID_1,
+                  deviceId: 'device-1',
+                  status: 'cancelled',
+                  cancelState: 'confirmed',
+                  deviceOrgId: ORG_ID,
+                  deviceSiteId: 'site-allowed'
+                }])
+              })
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request(`/scripts/executions/${EXECUTION_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer valid-token' }
+      });
+
+      expect(res.status).toBe(200);
+      const projection = vi.mocked(db.select).mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(projection).toHaveProperty('cancelState', 'se.cancelState');
+      const body = await res.json();
+      expect(body.cancelState).toBe('confirmed');
+    });
   });
 
   // ==========================================================================

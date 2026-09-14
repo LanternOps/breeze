@@ -25,7 +25,7 @@ export const serviceHandler: ConditionHandler = {
       .limit(1);
 
     if (!latest) {
-      return { passed: false, description: `No check results for service ${cond.serviceName}` };
+      return { passed: false, description: `No check results for service ${cond.serviceName}`, dataAvailable: false };
     }
 
     if (latest.status === 'running') {

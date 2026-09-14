@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Documentos",
           "description": "Permite a los clientes descargar los documentos que compartiste."
+        },
+        "enableLifecycle": {
+          "label": "Ciclo de vida del hardware",
+          "description": "Muestra el plan de reemplazo actualizado de los equipos de tu cliente."
         }
       }
     },
@@ -1592,7 +1596,14 @@
     "stateDisabled": "Deshabilitado",
     "runningBadge": {
       "running": "En ejecución",
-      "notRunning": "No se está ejecutando"
+      "notRunning": "No se está ejecutando",
+      "inactive": "Habilitado (inactivo)"
+    },
+    "subsystemDisabled": {
+      "title": "Los agentes de IA están deshabilitados en este servidor",
+      "envFlag": "Configure {{flag}} para permitir que los agentes se ejecuten. Hasta entonces, se omite cada activación.",
+      "killSwitch": "El interruptor de emergencia de la plataforma está activado. Los agentes no se ejecutarán hasta que un administrador lo libere.",
+      "skips": "{{total}} activación(es) omitida(s) recientemente: {{reasons}}"
     },
     "reenableNote": "Restaurado, pero apagado. Revise su política antes de activarlo.",
     "chipLabels": {

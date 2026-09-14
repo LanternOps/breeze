@@ -43,8 +43,23 @@ vi.mock('../services/orgAccountReadiness', () => ({
   loadAccountReadiness: vi.fn(),
 }));
 
+// W03's extras composer runs for real (services/orgAccountReadinessExtras is
+// not mocked); a WILDCARD_GRANTS caller now genuinely holds connected_apps:read
+// / contracts:read / backup:read, so these loaders get invoked. Defaulted to
+// empty so unrelated W01 assertions don't need to know about W03 payloads.
+vi.mock('../services/orgAccountReadinessIntegrations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/orgAccountReadinessIntegrations')>();
+  return { ...actual, loadIntegrationReadiness: vi.fn() };
+});
+vi.mock('../services/orgAccountReadinessCommercial', () => ({
+  loadActiveContractCounts: vi.fn(),
+  loadBackupReadiness: vi.fn(),
+}));
+
 import { getServiceManagementMode } from '../services/serviceManagement';
 import { loadAccountReadiness, resolveAcceptedOrgs } from '../services/orgAccountReadiness';
+import { loadIntegrationReadiness } from '../services/orgAccountReadinessIntegrations';
+import { loadActiveContractCounts, loadBackupReadiness } from '../services/orgAccountReadinessCommercial';
 import { MAX_ACCOUNT_READINESS_ORG_IDS, orgAccountReadinessRoutes, parseOrgIdsParam } from './orgAccountReadiness';
 
 const PARTNER_ID = '22222222-2222-4222-8222-222222222222';
@@ -144,6 +159,9 @@ describe('GET /orgs/account-readiness', () => {
     vi.mocked(getServiceManagementMode).mockResolvedValue('native');
     vi.mocked(resolveAcceptedOrgs).mockResolvedValue([acceptedOrg(ORG_A)]);
     vi.mocked(loadAccountReadiness).mockResolvedValue(new Map([[ORG_A, fullSignals()]]));
+    vi.mocked(loadIntegrationReadiness).mockResolvedValue({ connectors: [], byOrg: new Map() });
+    vi.mocked(loadActiveContractCounts).mockResolvedValue(new Map());
+    vi.mocked(loadBackupReadiness).mockResolvedValue({ applicable: false, configuredOrgIds: new Set() });
   });
 
   it('400s without orgIds and never touches the services', async () => {
@@ -262,22 +280,34 @@ describe('GET /orgs/account-readiness', () => {
         portalUsers: true,
         invoices: true,
         tickets: true,
-        integrations: false,
+        integrations: true,
+        contracts: true,
+        backup: true,
       },
       serviceManagementMode: 'native',
+      connectors: [],
       orgs: [
         {
           orgId: ORG_A,
           type: 'customer',
           status: 'active',
-          setup: { sites: 2, devices: 5, lastSeenAt: '2026-09-01T00:00:00.000Z', policyAssigned: true },
+          setup: {
+            sites: 2,
+            devices: 5,
+            lastSeenAt: '2026-09-01T00:00:00.000Z',
+            policyAssigned: true,
+            backupApplicable: false,
+            backupConfigured: false,
+          },
           account: {
             primaryContact: { name: 'Jane Doe', email: 'jane@x.example', phone: '555-0100', mobile: null },
             billingRoleContact: true,
             billingAddress: true,
             pendingInvitations: 1,
             overdueInvoices: 2,
+            activeContracts: 0,
           },
+          integrations: [],
           tickets: { open: 4, awaitingCustomer: 1, slaBreached: 1 },
         },
       ],
@@ -296,7 +326,7 @@ describe('GET /orgs/account-readiness', () => {
     expect(body.orgs[0]).toMatchObject({ type: 'internal', status: 'trial', account: { billingAddress: false } });
   });
 
-  const ALL_FALSE = { sites: false, devices: false, policies: true, contacts: true, portalUsers: false, invoices: false, tickets: false, integrations: false };
+  const ALL_FALSE = { sites: false, devices: false, policies: true, contacts: true, portalUsers: false, invoices: false, tickets: false, integrations: false, contracts: false, backup: false };
   const gateCases: Array<{
     name: string;
     grants: Array<{ resource: string; action: string }>;
@@ -310,9 +340,9 @@ describe('GET /orgs/account-readiness', () => {
     { name: '+ invoices:read (native)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ], mode: 'native', capabilities: { ...ALL_FALSE, invoices: true } },
     { name: '+ tickets:read (native)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.TICKETS_READ], mode: 'native', capabilities: { ...ALL_FALSE, tickets: true } },
     { name: '+ invoices:read + tickets:read but external mode', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.INVOICES_READ, PERMISSIONS.TICKETS_READ], mode: 'external', capabilities: ALL_FALSE },
-    { name: 'wildcard but mode off', grants: WILDCARD_GRANTS, mode: 'off', capabilities: { ...ALL_FALSE, sites: true, devices: true, portalUsers: true } },
-    // connected_apps:read / accounting:read are W03 inputs — never a W01 capability.
-    { name: '+ connected_apps:read + accounting:read (W03 only)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.CONNECTED_APPS_READ, PERMISSIONS.ACCOUNTING_READ], mode: 'native', capabilities: ALL_FALSE },
+    { name: 'wildcard but mode off', grants: WILDCARD_GRANTS, mode: 'off', capabilities: { ...ALL_FALSE, sites: true, devices: true, portalUsers: true, integrations: true, backup: true } },
+    // accounting:read is a W03 sub-grant (forwarded to the integrations loader) — it does not itself gate `capabilities.integrations`, only connected_apps:read does.
+    { name: '+ connected_apps:read + accounting:read (W03 only)', grants: [PERMISSIONS.ORGS_READ, PERMISSIONS.CONNECTED_APPS_READ, PERMISSIONS.ACCOUNTING_READ], mode: 'native', capabilities: { ...ALL_FALSE, integrations: true } },
   ];
 
   it.each(gateCases)('gates sections by grant and mode: $name', async ({ grants, mode, capabilities }) => {
@@ -343,8 +373,10 @@ describe('GET /orgs/account-readiness', () => {
     expect('pendingInvitations' in org.account).toBe(capabilities.portalUsers);
     expect('overdueInvoices' in org.account).toBe(capabilities.invoices);
     expect('tickets' in org).toBe(capabilities.tickets);
-    expect(org).not.toHaveProperty('integrations');
-    expect(body).not.toHaveProperty('connectors');
+    expect('integrations' in org).toBe(capabilities.integrations);
+    expect('connectors' in body).toBe(capabilities.integrations);
+    expect('activeContracts' in org.account).toBe(capabilities.contracts);
+    expect('backupApplicable' in org.setup).toBe(capabilities.backup);
   });
 
   it('403s an organization-scoped token before any lookup', async () => {

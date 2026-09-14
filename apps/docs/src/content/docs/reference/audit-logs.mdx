@@ -87,6 +87,7 @@ The following actions are flagged as security events and appear in the security 
 - `policy.create`
 - `policy.evaluate`
 - `automation.policy.evaluate`
+- `agent.source.ip.changed` — emitted when an agent's source IP changes between heartbeats; can indicate NAT changes, mobility, or stolen tokens.
 
 ### Tamper Evidence
 
@@ -155,8 +156,8 @@ From v0.110.0, **an organization created on this version or later gets a policy 
 
 **An organization created before that has no row**, and the daily retention worker skips any organization without one — so its audit logs accumulate indefinitely until someone sets a policy. This is the case for every organization on an upgraded install: nothing has been pruned and nothing will be until you save a policy, which also means nothing was quietly deleted by the upgrade. Configure one from **Settings > Security & Access > Audit Retention**, or directly via the API:
 
-<Aside type="caution">
-  Both the read and write endpoints require a **partner- or system-scoped** session in addition to the `audit:manage`/`audit:read` permission — an Org Admin user token is org-scoped and gets a 403 even though Org Admin holds those permissions by default. In practice, only a partner-level user (or a platform admin) can currently set an organization's audit retention policy.
+<Aside type="note">
+  Both endpoints are gated on the `audit:read` (read) / `audit:manage` (write) permission. An **organization-scoped** session — an Org Admin, for example — can read and set the policy for **its own organization only**; a request naming any other organization returns `404 Organization not found`. Partner- and system-scoped sessions can configure any organization they can access.
 </Aside>
 
 ```

@@ -286,23 +286,27 @@ export async function persistAlertVerdict(
       // doubles as the existence gate (minor fix: a suggestion naming a
       // real-but-deleted-since alert id must not reach `createActionIntent`
       // with an unresolved device).
-      let targetFound = true;
-      if (suggestion.alertId === run.alertId) {
-        targetDeviceId = run.deviceId;
-      } else {
-        const [target] = await inSystemDbContext(() => db
-          .select({ deviceId: alerts.deviceId })
-          .from(alerts)
-          .where(and(eq(alerts.id, suggestion.alertId), eq(alerts.orgId, run.orgId)))
-          .limit(1));
-        targetFound = Boolean(target);
-        targetDeviceId = target?.deviceId;
-      }
+      // #5290 — `requires_human` is read for EVERY suggestion target, including
+      // the run's own alert, so the fast path below cannot skip the check. A
+      // recurrence escalation is closed by a person; the verdict is still
+      // persisted (advisory analysis is wanted), only the mutation is refused.
+      const [target] = await inSystemDbContext(() => db
+        .select({ deviceId: alerts.deviceId, requiresHuman: alerts.requiresHuman })
+        .from(alerts)
+        .where(and(eq(alerts.id, suggestion.alertId), eq(alerts.orgId, run.orgId)))
+        .limit(1));
+      const targetFound = Boolean(target);
+      targetDeviceId = target?.deviceId;
 
       if (!targetFound) {
         suggestionReason = 'alert_not_found';
         console.warn('[alertVerdicts] suggestion refused — target alert not found in org', {
           runId: run.id, alertId: suggestion.alertId,
+        });
+      } else if (target?.requiresHuman) {
+        suggestionReason = 'requires_human';
+        console.warn('[alertVerdicts] suggestion refused — target alert requires a human', {
+          runId: run.id, alertId: suggestion.alertId, action: suggestion.action,
         });
       } else if (!isToolAllowlisted(run.toolAllowlist, 'manage_alerts', suggestion.action)) {
         // Review round 2 (IMPORTANT 1a) — same matching rule as

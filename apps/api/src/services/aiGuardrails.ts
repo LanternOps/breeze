@@ -995,6 +995,10 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // (see the "Monitoring tools" RBAC mappings below).
   list_monitors: { resource: 'alerts', action: 'read' },
   get_monitor: { resource: 'alerts', action: 'read' },
+  // #5290 (W03): get_monitor_activity is read-only (episode/state history);
+  // reset_monitor_escalation mutates the escalation latch, so it needs write.
+  get_monitor_activity: { resource: 'alerts', action: 'read' },
+  reset_monitor_escalation: { resource: 'alerts', action: 'write' },
   manage_monitor_definitions: {
     create: { resource: 'alerts', action: 'write' },
     update: { resource: 'alerts', action: 'write' },

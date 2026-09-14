@@ -268,6 +268,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
+  // get_monitor / manage_monitor_definitions remain in the frozen
+  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
+  // — these two are new and wired directly instead of widening that list.
+  get_monitor_activity: 2,
+  reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
@@ -2447,6 +2453,28 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('manage_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // Monitor definition episode activity / escalation reset (#5290 W03).
+    tool(
+      'get_monitor_activity',
+      'Get per-device breach state and recent breach episodes for a monitor definition: last evaluated state, open episode, episodes inside the recurrence window, whether the recurrence escalation has latched, and whether automatic responses are paused.',
+      {
+        monitorId: uuid,
+        deviceId: uuid.optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+      makeHandler('get_monitor_activity', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'reset_monitor_escalation',
+      'Clear a monitor recurrence escalation for one device: resumes automatic responses and restarts the recurrence window. Does NOT close the open breach episode and does NOT resolve the requires-human alert.',
+      {
+        monitorId: uuid,
+        deviceId: uuid,
+      },
+      makeHandler('reset_monitor_escalation', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

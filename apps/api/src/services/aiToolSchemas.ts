@@ -1376,6 +1376,20 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     monitorId: uuid,
   }),
 
+  // #5290 (W03) monitor activity/escalation tools — defense-in-depth only,
+  // same as the other monitor entries above (deep validation lives in the
+  // handler in aiToolsMonitors.ts).
+  get_monitor_activity: z.object({
+    monitorId: uuid,
+    deviceId: uuid.optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }),
+
+  reset_monitor_escalation: z.object({
+    monitorId: uuid,
+    deviceId: uuid,
+  }),
+
   // NOTE: named manage_monitor_definitions, NOT manage_monitors — that name is
   // already taken by the unrelated network-monitor CRUD tool below
   // (query_monitors / manage_monitors, aiToolsMonitoring.ts).

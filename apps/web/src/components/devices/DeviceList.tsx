@@ -160,6 +160,10 @@ export type Device = {
    */
   serialNumber?: string | null;
   assetTag?: string | null;
+  /** Hardware Lifecycle: YYYY-MM-DD, with who set it ('manual' operator entry
+   *  or 'vendor' ship date from a warranty lookup). */
+  purchaseDate?: string | null;
+  purchaseDateSource?: 'manual' | 'vendor' | null;
   location?: string | null;
   /** An org `contacts` row id — the person holding this manual asset. */
   assignedContactId?: string | null;

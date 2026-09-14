@@ -16,6 +16,7 @@ import type { AiTool } from './aiTools';
 import { redactAgentLogRow } from './logRedaction';
 import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
+import { aiExecuteCommand, aiQueueCommandForExecution } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -238,9 +239,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
-        const { queueCommandForExecution } = await import('./commandQueue');
-
-        const result = await queueCommandForExecution(deviceId, 'set_log_level', {
+        const result = await aiQueueCommandForExecution(auth, 'set_agent_log_level', deviceId, 'set_log_level', {
           level,
           durationMinutes,
         }, {
@@ -325,9 +324,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
-        const { executeCommand } = await import('./commandQueue');
-
-        const result = await executeCommand(deviceId, 'capture_pprof', { profile }, {
+        const result = await aiExecuteCommand(auth, 'capture_agent_pprof', deviceId, 'capture_pprof', { profile }, {
           userId: auth.user.id,
           timeoutMs: 30000,
         });

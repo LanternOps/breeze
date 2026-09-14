@@ -39,7 +39,13 @@ vi.mock('../commandQueue', () => ({ executeCommandWithSystemPrecheck }));
 
 import { ACT_MANIFEST } from './actManifest';
 import type { ActOperation } from './actManifest';
-import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
+import {
+  actTargetSummary,
+  recordActVerifyFailureAlert,
+  verifyActExecution,
+  verifyProcessAbsentByNameForTask,
+  verifyServiceRunningForTask,
+} from './actVerify';
 import type { ActAssetPin } from './actRevalidation';
 
 const RUN = { id: 'run-1', orgId: 'org-1', agentId: 'agent-1', deviceId: 'device-1' };
@@ -96,6 +102,9 @@ describe('verifyActExecution — manage_services.restart (service_running)', () 
       // #5264: the run's org travels with the dispatch so a device that has
       // moved tenants since the run started is refused by the precheck.
       userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
+      // #5022 W01: the verify lane never enters executeTool, so the origin is
+      // derived from the run id at the call site.
+      aiOrigin: { kind: 'ai_agent', agentRunId: RUN.id },
     });
   });
 
@@ -178,6 +187,9 @@ describe('verifyActExecution — process_absent (manage_processes.kill is deferr
       // #5264: the run's org travels with the dispatch so a device that has
       // moved tenants since the run started is refused by the precheck.
       userId: AGENT_USER_ID, timeoutMs: 8_000, expectedOrgId: RUN.orgId,
+      // #5022 W01: the verify lane never enters executeTool, so the origin is
+      // derived from the run id at the call site.
+      aiOrigin: { kind: 'ai_agent', agentRunId: RUN.id },
     });
   });
 
@@ -359,5 +371,53 @@ describe('recordActVerifyFailureAlert', () => {
       op: { key: 'manage_services.restart' },
       target: { kind: 'service', serviceName: 'Spooler' },
     })).resolves.toBeUndefined();
+  });
+});
+
+// #5789 — the *ForTask shims are reached by proposal/task verification, which
+// has no agent run behind it. `runAiOrigin`'s `run.id === ''` branch (used by
+// verifyServiceRunningForTask's synthesized run) must omit `aiOrigin`
+// entirely rather than fabricate a pointer to a nonexistent run;
+// verifyProcessAbsentByNameForTask instead takes an explicit optional
+// `aiOrigin` param (its caller, services/scriptProposals/verify.ts, has no
+// run id either but can still supply a kind-only origin) and must pass it
+// through unmodified.
+describe('*ForTask shims — aiOrigin (#5022 W01 / #5789)', () => {
+  const device = { deviceId: 'device-1', orgId: 'org-1' };
+
+  it('verifyServiceRunningForTask omits aiOrigin entirely (runAiOrigin\'s empty-run-id branch)', async () => {
+    executeCommandWithSystemPrecheck.mockResolvedValue({
+      status: 'completed',
+      stdout: JSON.stringify({ services: [{ name: 'Spooler', status: 'Running' }] }),
+    });
+    await verifyServiceRunningForTask({ serviceName: 'Spooler' }, device, AGENT_USER_ID);
+
+    const call = executeCommandWithSystemPrecheck.mock.calls[0]!;
+    expect(call[3]).not.toHaveProperty('aiOrigin');
+  });
+
+  it('verifyProcessAbsentByNameForTask passes a supplied aiOrigin straight through', async () => {
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ processes: [] }) });
+    await verifyProcessAbsentByNameForTask(
+      { processName: 'evil.exe' },
+      device,
+      AGENT_USER_ID,
+      { kind: 'ai_agent' },
+    );
+
+    expect(executeCommandWithSystemPrecheck).toHaveBeenCalledWith(
+      'device-1',
+      'list_processes',
+      { search: 'evil.exe', limit: 200 },
+      expect.objectContaining({ aiOrigin: { kind: 'ai_agent' } }),
+    );
+  });
+
+  it('verifyProcessAbsentByNameForTask omits aiOrigin when the caller supplies none', async () => {
+    executeCommandWithSystemPrecheck.mockResolvedValue({ status: 'completed', stdout: JSON.stringify({ processes: [] }) });
+    await verifyProcessAbsentByNameForTask({ processName: 'evil.exe' }, device, AGENT_USER_ID);
+
+    const call = executeCommandWithSystemPrecheck.mock.calls[0]!;
+    expect(call[3]).not.toHaveProperty('aiOrigin');
   });
 });

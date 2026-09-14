@@ -4,6 +4,8 @@ import type { ScriptApprovalMethod, ScriptParameterDefinition } from '@breeze/sh
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { aiSessions } from './ai';
+import { aiInitiatorKindEnum } from './aiInitiator';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
@@ -20,7 +22,10 @@ export const executionStatusEnum = pgEnum('execution_status', ['pending', 'queue
 // #3525: the cancel REQUEST's lifecycle, orthogonal to the execution outcome
 // (spec OD8-C). NULL means no cancel was ever requested.
 export const scriptCancelStateEnum = pgEnum('script_cancel_state', ['requested', 'confirmed', 'unconfirmed', 'failed']);
-export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation']);
+// 'monitor' (#5291 W04): a diagnostic run dispatched by a `script` monitor's
+// own probe. Deliberately distinct from 'policy' so the verdict handler can
+// tell a monitor's probe from any other policy-driven run on the same script.
+export const triggerTypeEnum = pgEnum('trigger_type', ['manual', 'scheduled', 'alert', 'policy', 'automation', 'monitor']);
 
 // Feature #3: severity-by-exit-code mapping. Keys are non-negative integer
 // strings (e.g. "0", "1"), values are AlertSeverity literals or null.
@@ -226,6 +231,11 @@ export const scriptExecutions = pgTable('script_executions', {
   // a bare uuid. Readers filter on it (`WHERE automation_run_id = $run`), so a
   // stale id left behind by a purged run simply matches nothing.
   automationRunId: uuid('automation_run_id'),
+  // The `script` monitor whose probe this execution is (#5291 W04). NULL for
+  // every other execution. Bare uuid for the same reason as automation_run_id:
+  // schema/monitors definitions live in another module. FK in SQL is
+  // ON DELETE SET NULL — deleting a monitor must not delete run history.
+  monitorId: uuid('monitor_id'),
   // Run-time VALUES supplied by the caller, NOT definitions — do not annotate
   // this with ScriptParameterDefinition[]. Shape: `scriptParametersSchema`.
   parameters: jsonb('parameters'),
@@ -286,6 +296,18 @@ export const scriptExecutions = pgTable('script_executions', {
   // and its review are erased.
   reviewRiskTier: text('review_risk_tier').$type<'low' | 'medium' | 'high' | 'critical'>(),
   reviewSummary: varchar('review_summary', { length: 600 }),
+  // --- AI origin attribution (#5022 W01) ---------------------------------
+  // WHO DECIDED this run. Orthogonal to trigger_type (what scheduled it) and
+  // to triggered_by (the authenticated principal). NULL = "AI initiation not
+  // recorded", never "a human did this".
+  aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
+  // Real FK: both tables are org-scoped, so erasing a session should null this
+  // cleanly rather than block.
+  aiSessionId: uuid('ai_session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
+  // Bare uuid, like automation_run_id above: ai_agent_runs is deliberately
+  // excluded from the device-move re-stamp path, so a real FK would outlive
+  // its own tenant.
+  aiAgentRunId: uuid('ai_agent_run_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   proposalIdx: index('script_executions_proposal_idx')

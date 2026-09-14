@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { matchContactByEmail } from './contacts/crud';
@@ -1672,6 +1672,120 @@ export async function addAiTriageNote(
   }
 }
 
+/**
+ * #4211 (W01) — post an AI proposal's text as an INTERNAL note under the
+ * CALLING technician's own identity. Posting is a human act, so this is
+ * `originPrincipalKind: 'user'` + `userId: actor.userId` (contrast
+ * `addAiTriageNote` directly above, which is the agent writing as itself).
+ *
+ * `agentRunId` stays NULL on purpose: that column means "an agent run wrote
+ * this row", and the helpdesk loop guard ORs on it. The run is recorded in
+ * `proposedByRunId` instead (#4211 migration header).
+ *
+ * `isPublic` is hardcoded false and takes no input — a proposal summary is a
+ * private note by definition (`TicketTriageProposal.summary`'s own docstring:
+ * "Private-note body"). There is deliberately no public variant here; a
+ * customer-facing reply goes through the `reply` DRAFT path (`sendTicketDraft`).
+ *
+ * Audits the TECHNICIAN as the actor and the run in `details.fromAgentRunId`
+ * — audit_logs has one actor column, so dual attribution is actor + details
+ * (never a synthetic second actor row).
+ */
+export async function postProposalNote(
+  ticketId: string,
+  runId: string,
+  content: string,
+  actor: TicketActor
+): Promise<{ comment: { id: string } }> {
+  const ticket = await getTicketOrThrow(ticketId);
+
+  const [run] = await db
+    .select({ id: aiAgentRuns.id })
+    .from(aiAgentRuns)
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.ticketId, ticketId)))
+    .limit(1);
+  if (!run) throw new TicketServiceError('Proposal run not found for this ticket', 404);
+
+  // #4211 review: idempotent per run via ticket_comments_one_proposal_note_per_run_uq
+  // (partial unique on proposed_by_run_id WHERE ... AND origin_principal_kind='user')
+  // — a retry after a partial failure (the caller observed an error from
+  // emitTicketEvent/writeTicketOutbox/createAuditLogAsync below, but the
+  // ticket_comments insert had already committed) returns the EXISTING row
+  // rather than creating a second, duplicate technician-attributed note.
+  //
+  // The insert is wrapped in its own `db.transaction()` — a SAVEPOINT, since
+  // this function always runs inside the caller's own request/system
+  // transaction (withDbAccessContext/withSystemDbAccessContext) — for the
+  // SAME reason as clientAiExchange.ts's contact-link insert: postgres.js
+  // marks the WHOLE surrounding transaction aborted after any failed
+  // statement ("current transaction is aborted, commands ignored until end
+  // of transaction block", 25P02). Catching the unique-violation below and
+  // then running the recovery SELECT on that same poisoned transaction would
+  // itself throw 25P02 — confirmed by a live-Postgres test before this
+  // savepoint was added, an unguarded version of this catch block does NOT
+  // actually recover. `addAiTriageNote` above predates this discovery and
+  // shares the same unguarded shape; out of scope to fix here.
+  let comment: { id: string };
+  let recoveredFromDuplicate = false;
+  try {
+    const inserted = await db.transaction((tx) =>
+      tx.insert(ticketComments).values({
+        ticketId,
+        userId: actor.userId,
+        authorName: actor.name ?? null,
+        authorType: 'internal',
+        commentType: 'internal',
+        content,
+        isPublic: false,
+        originPrincipalKind: 'user',
+        agentRunId: null,
+        proposedByRunId: runId
+      }).returning({ id: ticketComments.id })
+    );
+    const row = inserted[0];
+    if (!row) throw new TicketServiceError('Failed to post proposal note', 500);
+    comment = row;
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    const existing = await db
+      .select({ id: ticketComments.id })
+      .from(ticketComments)
+      .where(and(eq(ticketComments.proposedByRunId, runId), eq(ticketComments.originPrincipalKind, 'user')))
+      .limit(1);
+    const row = existing[0];
+    if (!row) throw err;
+    comment = row;
+    recoveredFromDuplicate = true;
+  }
+
+  // The side effects below (event/outbox/audit) already fired for the
+  // ORIGINAL successful insert — a recovered duplicate must not re-fire them.
+  if (!recoveredFromDuplicate) {
+    await emitTicketEvent({
+      type: 'ticket.commented',
+      ticketId,
+      orgId: ticket.orgId,
+      partnerId: ticket.partnerId ?? null,
+      actorUserId: actor.userId,
+      payload: { commentId: comment.id, isPublic: false }
+    });
+    await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: actor.userId,
+      actorType: 'user',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { commentId: comment.id, isInternal: true, fromAgentRunId: runId },
+      result: 'success',
+      initiatedBy: 'ai'
+    });
+  }
+
+  return { comment };
+}
+
 export interface AiFieldUpdateSpec<T> {
   value: T;
   /** The value the caller last observed — the CAS predicate's comparison target. */
@@ -2634,10 +2748,16 @@ export async function moveTicketOrg(
     // today: nothing writes agent_run_id yet (the autonomous-note lane is
     // deferred; see the column comment in db/schema/portal.ts). Tracked in #4644
     // so the contract is in place before that lane ships.
+    // #4211 (W01): proposedByRunId is the same class of reverse pointer as
+    // agentRunId above (a link back to a source-org ai_agent_runs row), so it
+    // is cleared in the SAME statement rather than a second UPDATE.
     await tx
       .update(ticketComments)
-      .set({ agentRunId: null })
-      .where(and(eq(ticketComments.ticketId, ticketId), isNotNull(ticketComments.agentRunId)));
+      .set({ agentRunId: null, proposedByRunId: null })
+      .where(and(
+        eq(ticketComments.ticketId, ticketId),
+        or(isNotNull(ticketComments.agentRunId), isNotNull(ticketComments.proposedByRunId)),
+      ));
     guard = await assertTicketMoveCurrencyCompatible(tx, {
       ticketIds: [ticketId],
       sourceCurrency: sourceOrg.currencyCode,
@@ -2662,6 +2782,7 @@ export async function moveTicketOrg(
       // Runs remain in the source org; never link this destination comment
       // back to a source-org run after the detach above.
       agentRunId: null,
+      proposedByRunId: null,
       commentType: 'system',
       content: `Moved to ${targetOrg.name}` + (strandedCount > 0
         ? ` — ${strandedCount} unbilled items stay in ${sourceOrg.currencyCode}`

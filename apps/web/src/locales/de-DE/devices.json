@@ -1287,6 +1287,9 @@
     "tenantId": "Mieter-ID:",
     "mdmEnrollment": "MDM-Registrierung:",
     "detectionSource": "Erkennungsquelle:",
+    "identityDetectionUnsupported": "Beitrittserkennung nicht unterstützt",
+    "identityDetectionUnsupportedHint": "Breeze prüft den Verzeichnis- bzw. Intune/Entra-Registrierungsstatus auf dem Betriebssystem dieses Geräts noch nicht. Der Beitrittsstatus ist daher unbekannt und nicht als „nicht beigetreten“ bestätigt.",
+    "flagUnknown": "{{label}}: Unbekannt",
     "detectedManagementTools": "Erkannte Verwaltungstools",
     "tool": "Werkzeug",
     "s": "s",
@@ -1694,7 +1697,10 @@
     "saveChanges": "Änderungen speichern",
     "site": "Standort",
     "tags": "Schlagworte",
-    "title": "Geräteeinstellungen"
+    "title": "Geräteeinstellungen",
+    "purchaseDate": "Kaufdatum",
+    "purchaseDateHelp": "Wird vom Hardware-Lebenszyklusbericht zur Austauschplanung verwendet.",
+    "purchaseDateVendorHint": "Aus dem Versanddatum des Herstellers übernommen. Geben Sie ein Datum ein, um es zu überschreiben."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2793,8 @@
       "assignedContactPlaceholder": "Kontakte durchsuchen…",
       "tags": "Tags",
       "tagsPlaceholder": "Durch Kommas getrennt",
-      "notes": "Notizen"
+      "notes": "Notizen",
+      "purchaseDate": "Kaufdatum"
     }
   },
   "addNetworkAssetModal": {

@@ -1287,6 +1287,9 @@
     "tenantId": "ID tenant:",
     "mdmEnrollment": "Registrazione MDM:",
     "detectionSource": "Fonte di rilevamento:",
+    "identityDetectionUnsupported": "Rilevamento aggiunta non supportato",
+    "identityDetectionUnsupportedHint": "Breeze non verifica ancora la directory né la registrazione Intune/Entra sul sistema operativo di questo dispositivo, quindi lo stato di aggiunta è sconosciuto: non è stato confermato come non aggiunto.",
+    "flagUnknown": "{{label}}: Sconosciuto",
     "detectedManagementTools": "Strumenti di gestione rilevati",
     "tool": "strumenti",
     "s": "",
@@ -1694,7 +1697,10 @@
     "saveChanges": "Salva modifiche",
     "site": "Sito",
     "tags": "Tag",
-    "title": "Impostazioni del dispositivo"
+    "title": "Impostazioni del dispositivo",
+    "purchaseDate": "Data di acquisto",
+    "purchaseDateHelp": "Usata dal report ciclo di vita dell’hardware per pianificare la sostituzione.",
+    "purchaseDateVendorHint": "Ricavata dalla data di spedizione del produttore. Inserisci una data per sovrascriverla."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2793,8 @@
       "assignedContactPlaceholder": "Cerca contatti…",
       "tags": "Tag",
       "tagsPlaceholder": "Separati da virgole",
-      "notes": "Note"
+      "notes": "Note",
+      "purchaseDate": "Data di acquisto"
     }
   },
   "addNetworkAssetModal": {

@@ -32,6 +32,15 @@ import {
   type TicketCounts,
 } from '../services/orgAccountReadiness';
 import { PG_UUID_REGEX } from '../utils/uuid';
+import {
+  computeAccountReadinessExtras,
+  extrasForOrg,
+  type AccountReadinessExtras,
+} from '../services/orgAccountReadinessExtras';
+import type {
+  Connector,
+  OrgIntegration,
+} from '../services/orgAccountReadinessIntegrations';
 
 /** The web batches by this many ids (spec "States": per 200-id batch). */
 export const MAX_ACCOUNT_READINESS_ORG_IDS = 200;
@@ -51,42 +60,28 @@ export interface AccountReadinessCapabilities {
   invoices: boolean;
   /** tickets:read AND service_management_mode = 'native' */
   tickets: boolean;
-  /** W03: connected_apps:read. Always false in W01. */
+  /** W03: connected_apps:read. */
   integrations: boolean;
+  /** W03: contracts:read AND service_management_mode = 'native'. */
+  contracts: boolean;
+  /** W03: backup:read. */
+  backup: boolean;
 }
 
-// W03 shapes, declared now so W02's client types and W03's fill-in share one
-// definition. Nothing in W01 produces them.
-export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone';
-export type ConnectorState = 'connected' | 'reauth_required' | 'disconnected' | 'error' | 'disabled';
-export interface AccountReadinessConnector {
-  system: ConnectorSystem;
-  state: ConnectorState;
-  /** PSA provider name */
-  provider?: string;
-}
-export type IntegrationSystem = ConnectorSystem | 'm365' | 'dns_filter' | 'external';
-export type IntegrationState = 'linked' | 'pending' | 'error' | 'identity';
-export type IntegrationReason =
-  | 'suggested_match'
-  | 'sync_error'
-  | 'consent_pending'
-  | 'expired'
-  | 'degraded'
-  | 'suspended'
-  | 'error'
-  | 'never_synced'
-  | 'sync_failed'
-  | 'disabled'
-  | 'connector_error';
-export interface AccountReadinessIntegration {
-  system: IntegrationSystem;
-  state: IntegrationState;
-  /** A code — the web translates it. No English sentence crosses the API. */
-  reason?: IntegrationReason;
-  /** For 'external' rows: the system name from organization_external_links. */
-  label?: string;
-}
+export type {
+  ConnectorSystem,
+  ConnectorState,
+  IntegrationSystem,
+  IntegrationState,
+  IntegrationReason,
+  Connector as AccountReadinessConnector,
+  OrgIntegration as AccountReadinessIntegration,
+} from '../services/orgAccountReadinessIntegrations';
+// (imported above, under the service's own names, to avoid a self-import —
+// a self-referential `import type { X } from './orgAccountReadiness'` inside
+// this same file sent tsc's type resolution into unbounded recursion / OOM.)
+type AccountReadinessConnector = Connector;
+type AccountReadinessIntegration = OrgIntegration;
 
 export interface AccountReadinessOrg {
   orgId: string;
@@ -101,6 +96,10 @@ export interface AccountReadinessOrg {
     lastSeenAt?: string | null;
     /** org- or partner-level assignment of an active policy */
     policyAssigned: boolean;
+    /** W03, capabilities.backup: at least one active backup_configs row for this org. */
+    backupConfigured?: boolean;
+    /** W03, capabilities.backup: the partner has any active backup_configs row (plan §1); same value on every org. */
+    backupApplicable?: boolean;
   };
   account: {
     primaryContact: PrimaryContact | null;
@@ -111,6 +110,8 @@ export interface AccountReadinessOrg {
     pendingInvitations?: number;
     /** capabilities.invoices */
     overdueInvoices?: number;
+    /** W03, capabilities.contracts: contracts with status 'active' and no end date or an end date ≥ today. */
+    activeContracts?: number;
   };
   /** W03. Present only with capabilities.integrations. */
   integrations?: AccountReadinessIntegration[];
@@ -162,6 +163,7 @@ function shapeOrg(
   org: AcceptedOrg,
   signals: OrgReadinessSignals | undefined,
   capabilities: AccountReadinessCapabilities,
+  extras: AccountReadinessExtras,
 ): AccountReadinessOrg {
   const setup: AccountReadinessOrg['setup'] = { policyAssigned: signals?.policyAssigned ?? false };
   if (capabilities.sites) setup.sites = signals?.sites ?? 0;
@@ -180,6 +182,14 @@ function shapeOrg(
 
   const shaped: AccountReadinessOrg = { orgId: org.id, type: org.type, status: org.status, setup, account };
   if (capabilities.tickets) shaped.tickets = signals?.tickets ?? EMPTY_TICKETS;
+
+  const fields = extrasForOrg(org.id, extras);
+  if (fields.integrations) shaped.integrations = fields.integrations;
+  if (fields.activeContracts !== undefined) shaped.account.activeContracts = fields.activeContracts;
+  if (fields.backupApplicable !== undefined) {
+    shaped.setup.backupApplicable = fields.backupApplicable;
+    shaped.setup.backupConfigured = fields.backupConfigured;
+  }
   return shaped;
 }
 
@@ -225,7 +235,9 @@ orgAccountReadinessRoutes.get(
       portalUsers: can(PERMISSIONS.USERS_READ),
       invoices: can(PERMISSIONS.INVOICES_READ) && native,
       tickets: can(PERMISSIONS.TICKETS_READ) && native,
-      integrations: false,
+      integrations: can(PERMISSIONS.CONNECTED_APPS_READ),
+      contracts: can(PERMISSIONS.CONTRACTS_READ) && native,
+      backup: can(PERMISSIONS.BACKUP_READ),
     };
 
     const accepted = await resolveAcceptedOrgs({
@@ -247,11 +259,20 @@ orgAccountReadinessRoutes.get(
         ? await loadAccountReadiness({ orgIds: accepted.map((org) => org.id), partnerId, sections })
         : new Map<string, OrgReadinessSignals>();
 
+    const extras = await computeAccountReadinessExtras({
+      partnerId,
+      orgIds: accepted.map((org) => org.id),
+      capabilities,
+      grants: { accounting: can(PERMISSIONS.ACCOUNTING_READ), pax8: can(PERMISSIONS.BILLING_MANAGE) },
+      now: new Date(),
+    });
+
     const response: AccountReadinessResponse = {
       partnerId,
       capabilities,
       serviceManagementMode,
-      orgs: accepted.map((org) => shapeOrg(org, signals.get(org.id), capabilities)),
+      ...(extras.connectors ? { connectors: extras.connectors } : {}),
+      orgs: accepted.map((org) => shapeOrg(org, signals.get(org.id), capabilities, extras)),
     };
     return c.json(response);
   },

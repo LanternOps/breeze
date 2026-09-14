@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Documents",
           "description": "Permet aux clients de télécharger les documents partagés."
+        },
+        "enableLifecycle": {
+          "label": "Cycle de vie du matériel",
+          "description": "Affiche le plan de remplacement à jour des appareils de votre client."
         }
       }
     },
@@ -1592,7 +1596,14 @@
     "stateDisabled": "Désactivé",
     "runningBadge": {
       "running": "En cours d’exécution",
-      "notRunning": "Ne s’exécute pas"
+      "notRunning": "Ne s’exécute pas",
+      "inactive": "Activé (inactif)"
+    },
+    "subsystemDisabled": {
+      "title": "Les agents IA sont désactivés sur ce serveur",
+      "envFlag": "Définissez {{flag}} pour autoriser l'exécution des agents. D'ici là, chaque déclenchement est ignoré.",
+      "killSwitch": "L'arrêt d'urgence de la plateforme est activé. Les agents ne s'exécuteront pas tant qu'un administrateur ne l'aura pas levé.",
+      "skips": "{{total}} déclenchement(s) ignoré(s) récemment — {{reasons}}"
     },
     "reenableNote": "Restauré, mais désactivé. Consultez sa politique avant de l’activer.",
     "chipLabels": {

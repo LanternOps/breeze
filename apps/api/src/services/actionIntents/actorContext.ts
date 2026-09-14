@@ -7,6 +7,7 @@ import { organizations } from '../../db/schema/orgs';
 import { devices } from '../../db/schema/devices';
 import { tickets } from '../../db/schema/portal';
 import type { ActionIntent } from '../../db/schema/actionIntents';
+import { deserializeAiOrigin } from '@breeze/shared';
 import {
   AgentRunOwnershipError,
   buildAgentAuthContext,
@@ -306,6 +307,12 @@ async function buildUserOwnedAuthContext(
       // it. It is NOT a valid AuthContext principal, so it maps to the
       // closest fail-closed kind and is refused by any interactive gate.
       principal: originPrincipalFor(intent),
+      // #5022 W01: read the AI origin back off the intent's own columns. This
+      // context is synthesised from the `users` row, so a chat-minted origin
+      // would otherwise be lost across the durable approval boundary — the
+      // approved action would dispatch unattributed. `deserializeAiOrigin`
+      // refuses to reconstruct anything from ids without a kind.
+      ...(deserializeAiOrigin(intent) ? { aiOrigin: deserializeAiOrigin(intent) } : {}),
       user: {
         id: user.id,
         email: user.email,
@@ -526,11 +533,18 @@ async function buildAgentOwnedAuthContext(
           { id: run.id, orgId: run.orgId, deviceId: target.deviceId, deviceSiteId },
           { id: run.orgId, partnerId: org.partnerId },
         );
+        // #5022 W01: prefer the PERSISTED origin over the freshly-minted one.
+        // Both branches then read from the same durable fact, and a run whose
+        // intent was created from a chat session keeps the session pointer.
+        const persistedOrigin = deserializeAiOrigin(intent);
+        const withOrigin = persistedOrigin
+          ? { ...agentContext, aiOrigin: persistedOrigin }
+          : agentContext;
         if (releaseAccessibleOrgIds.length === 1) {
-          return agentContext;
+          return withOrigin;
         }
         const { orgCondition, canAccessOrg } = buildOrgAccessClosures(releaseAccessibleOrgIds);
-        return { ...agentContext, accessibleOrgIds: releaseAccessibleOrgIds, orgCondition, canAccessOrg };
+        return { ...withOrigin, accessibleOrgIds: releaseAccessibleOrgIds, orgCondition, canAccessOrg };
       } catch (error) {
         if (error instanceof AgentRunOwnershipError) {
           console.error(
