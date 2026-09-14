@@ -21,6 +21,7 @@ import type {
   AiSweepKind,
   AlertVerdictOutcome,
   FleetDesignOutcome,
+  PatchPlanOutcome,
   NarrativeOutcome,
   SweepFindingsOutcome,
   TicketTriageProposal,
@@ -32,6 +33,7 @@ import type { AlertVerdictIntentInfo } from './alertVerdicts';
 import type { AnomalyRunContext } from './anomalyContext';
 import type { DesignEvidence } from './designEvidence';
 import type { NarrativeContext } from './narrativeContext';
+import type { PatchEvidence } from './patchEvidence';
 import type { SweepEvidence } from './sweepEvidence';
 import type { SweepProposalRecord } from './sweepFindings';
 import type { TicketRunContext } from './ticketContext';
@@ -275,6 +277,14 @@ export interface AgentRunOutcome {
    * `narrativeReport` above.
    */
   fleetDesignReport?: { reportId: string; reportRunId: string };
+  /**
+   * AI patch agent W01 (#5747) — the validated, SERVER-BUILT patch plan
+   * captured by the post-tool-use hook on a `patch`-profile run (never the
+   * raw tool input). `finalizePatchPlan` re-validates every item against the
+   * run's evidence and fills `dispositions`. NOTHING here executes and no
+   * action intent is minted in W01.
+   */
+  patchPlan?: PatchPlanOutcome;
 }
 
 export interface RunRow {
@@ -402,6 +412,18 @@ export interface RunContext {
     occurrenceKey: string | null;
     siteId: string | null;
     evidence: DesignEvidence;
+  } | null;
+  /**
+   * AI patch agent W01 (#5747) — the schedule occurrence (or manual trigger)
+   * and the bounded, org-pinned patch evidence a `patch`-profile run plans
+   * from. Set only for `profile: 'patch'`. Optional (absent ≡ null) so every
+   * pre-existing RunContext literal stays valid. `scheduleId` is null for a
+   * manual "Run now".
+   */
+  patch?: {
+    scheduleId: string | null;
+    occurrenceKey: string | null;
+    evidence: PatchEvidence;
   } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,
