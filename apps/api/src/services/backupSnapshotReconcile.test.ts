@@ -1145,6 +1145,40 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
     expect(result.snapshot?.files?.[0]?.originalPath).toBe('C:\\assure\\src\\x');
   });
 
+  it('derives referencedBytes/referencedFiles from backupPath ownership so an adopted incremental does not over-report transfer (#5410)', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const own = 'snapshots/snap-1/files/';
+    const result = manifestToCommandResult({
+      snapshotId: 'snap-1',
+      manifestText: JSON.stringify({
+        id: 'snap-1',
+        baseSnapshotId: 'snap-0',
+        files: [
+          { sourcePath: '/a', backupPath: `${own}a.gz`, size: 100 },            // uploaded this run
+          { sourcePath: '/b', backupPath: 'snapshots/snap-0/files/b.gz', size: 1_000 }, // referenced from the base
+          { sourcePath: '/c', backupPath: 'snapshots/snap-0/files/c.gz', size: 10_000 },
+          { sourcePath: '/d', backupPath: `${own}d.gz` },                       // uploaded, size unknown
+        ],
+      }),
+      matchedBy: 'job-snapshot-id',
+    });
+    expect(result.referencedFiles).toBe(2);
+    expect(result.referencedBytes).toBe(11_000);
+  });
+
+  it('omits the dedup fields, like the agent, for a manifest whose every object lives under its own snapshot prefix', async () => {
+    const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
+    const result = manifestToCommandResult({
+      snapshotId: 'snap-1',
+      manifestText: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: 'snapshots/snap-1/files/a.gz', size: 5 }] }),
+      matchedBy: 'time-window',
+    });
+    // A reconciled full backup must persist NULL, not 0, so the UI's dedup
+    // breakdown is hidden exactly as it is for an agent-reported full backup.
+    expect(result.referencedFiles).toBeUndefined();
+    expect(result.referencedBytes).toBeUndefined();
+  });
+
   it('forwards baseSnapshotId and formatVersion (D18 W01)', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
     const result = manifestToCommandResult({

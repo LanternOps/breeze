@@ -88,6 +88,8 @@ Bundle format (v1):
 }
 ```
 
+Moving a component library from Datto RMM? [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) maps input variables, site variables and UDF reads/writes onto parameters, variables and custom fields before you import.
+
 Categories and tags travel by name and are created in the importing tenant when missing. An unknown `bundleVersion` is rejected. Bundles are capped at 200 scripts and 20&nbsp;MB, script content at 256&nbsp;KB, `parameters` at 64&nbsp;KB (with a nesting depth of 8), and 20 tags per script.
 
 ### Creating a script
