@@ -1892,7 +1892,14 @@
         "truncatedNote": "El contexto del agente se recortó: esta narrativa no vio la semana completa.",
         "openReport": "Abrir informe",
         "download": "Descargar PDF",
-        "downloadFailed": "No se pudo descargar el PDF."
+        "downloadFailed": "No se pudo descargar el PDF.",
+        "delivery": {
+          "sent": "Enviado por correo a {{sent}} de {{total}} destinatarios",
+          "skipped_one": "{{count}} destinatario omitido (autoridad de informe insuficiente)",
+          "skipped_other": "{{count}} destinatarios omitidos (autoridad de informe insuficiente)",
+          "unknown_one": "{{count}} entrega no pudo confirmarse: el proveedor de correo no dio una respuesta definitiva.",
+          "unknown_other": "{{count}} entregas no pudieron confirmarse: el proveedor de correo no dio una respuesta definitiva."
+        }
       },
       "fleetDesign": {
         "title": "Diseño de flota",

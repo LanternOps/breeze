@@ -595,6 +595,25 @@ export interface AiAgentRunDetailDto {
    * (same rule as `alertVerdict`/`sweep`/`narrative` above).
    */
   fleetDesign: AiAgentRunFleetDesignDto | null;
+  /**
+   * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
+   * went, for a `narrative`-profile run that materialised an artifact. Null
+   * for every other run. COUNTS ONLY: a skipped count is a small authority
+   * oracle, acceptable to someone who already holds `ai_agents:read` on the
+   * run; the recipients themselves are never named. `skipped` = permanently
+   * refused (authority / no address / provider refusal) + still pending.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+}
+
+/** See `AiAgentRunDetailDto.narrativeDelivery`. */
+export interface AiAgentRunNarrativeDeliveryDto {
+  total: number;
+  sent: number;
+  skipped: number;
+  /** Provider outcome ambiguous — never auto-replayed; a human decision. */
+  unknown: number;
 }
 
 /**

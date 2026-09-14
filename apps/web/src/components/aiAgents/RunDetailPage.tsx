@@ -1654,6 +1654,33 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               {narrativeDownloadError}
             </p>
           )}
+
+          {/* #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the
+              reason class only; the recipients are never named here (the
+              skipped count is already a small authority oracle, acceptable
+              only because the reader holds ai_agents:read on this run). A
+              run with no delivery rows at all renders nothing — there was
+              nobody to email, which is not a failure. */}
+          {run.narrativeDelivery && run.narrativeDelivery.total > 0 && (
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
+              <p data-testid="narrative-delivery-sent">
+                {t('aiAgentsPage.runs.narrative.delivery.sent', {
+                  sent: run.narrativeDelivery.sent,
+                  total: run.narrativeDelivery.total,
+                })}
+              </p>
+              {run.narrativeDelivery.skipped > 0 && (
+                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-skipped">
+                  {t('aiAgentsPage.runs.narrative.delivery.skipped', { count: run.narrativeDelivery.skipped })}
+                </p>
+              )}
+              {run.narrativeDelivery.unknown > 0 && (
+                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
+                  {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: run.narrativeDelivery.unknown })}
+                </p>
+              )}
+            </div>
+          )}
         </section>
       )}
 

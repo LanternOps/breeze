@@ -588,6 +588,51 @@ describe('RunDetailPage narrative', () => {
     expect(download).not.toHaveAttribute('href');
   });
 
+  // #4248 W03 (Task 10, OD-7 B) — the email delivery summary. Counts and the
+  // reason CLASS only; never a recipient's name or address.
+  it('shows the skipped line with the reason class, not the recipients', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: NARRATIVE,
+        narrativeDelivery: { total: 4, sent: 2, skipped: 2, unknown: 0 },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    const el = screen.getByTestId('narrative-delivery-summary');
+    expect(el).toHaveTextContent('Emailed to 2 of 4 recipients');
+    expect(el).toHaveTextContent('2 recipients skipped (insufficient report authority)');
+    expect(el.textContent).not.toMatch(/@/); // never name or email a recipient
+    expect(screen.queryByTestId('narrative-delivery-unknown')).not.toBeInTheDocument();
+  });
+
+  it('surfaces ambiguous (unknown) deliveries as their own line and omits the skipped line when zero', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: NARRATIVE,
+        narrativeDelivery: { total: 3, sent: 2, skipped: 0, unknown: 1 },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.queryByTestId('narrative-delivery-skipped')).not.toBeInTheDocument();
+    expect(screen.getByTestId('narrative-delivery-unknown')).toHaveTextContent('1 delivery could not be confirmed');
+  });
+
+  it('renders no delivery summary when the run has no delivery rows at all', async () => {
+    mockEndpoints({
+      detail: { ...RUN_DETAIL, narrative: NARRATIVE, narrativeDelivery: { total: 0, sent: 0, skipped: 0, unknown: 0 } },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-narrative')).toBeInTheDocument());
+    expect(screen.queryByTestId('narrative-delivery-summary')).not.toBeInTheDocument();
+  });
+
   it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
     const snapshot = {

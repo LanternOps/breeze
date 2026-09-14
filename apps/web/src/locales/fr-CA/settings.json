@@ -1892,7 +1892,14 @@
         "truncatedNote": "Le contexte de l'agent a été tronqué : cette synthèse n'a pas vu la semaine entière.",
         "openReport": "Ouvrir le rapport",
         "download": "Télécharger le PDF",
-        "downloadFailed": "Impossible de télécharger le PDF."
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "delivery": {
+          "sent": "Envoyé par courriel à {{sent}} destinataires sur {{total}}",
+          "skipped_one": "{{count}} destinataire ignoré (autorité insuffisante sur le rapport)",
+          "skipped_other": "{{count}} destinataires ignorés (autorité insuffisante sur le rapport)",
+          "unknown_one": "{{count}} envoi n’a pas pu être confirmé : le fournisseur de courriel n’a pas donné de réponse définitive.",
+          "unknown_other": "{{count}} envois n’ont pas pu être confirmés : le fournisseur de courriel n’a pas donné de réponse définitive."
+        }
       },
       "fleetDesign": {
         "title": "Conception du parc",

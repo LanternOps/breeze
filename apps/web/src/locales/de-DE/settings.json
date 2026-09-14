@@ -1892,7 +1892,14 @@
         "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
         "openReport": "Bericht öffnen",
         "download": "PDF herunterladen",
-        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "delivery": {
+          "sent": "Per E-Mail an {{sent}} von {{total}} Empfängern gesendet",
+          "skipped_one": "{{count}} Empfänger übersprungen (unzureichende Berichtsberechtigung)",
+          "skipped_other": "{{count}} Empfänger übersprungen (unzureichende Berichtsberechtigung)",
+          "unknown_one": "{{count}} Zustellung konnte nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort.",
+          "unknown_other": "{{count}} Zustellungen konnten nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort."
+        }
       },
       "fleetDesign": {
         "title": "Flottendesign",
