@@ -15,6 +15,8 @@ import {
 import { TOOL_TIERS } from '../aiAgentSdkTools';
 import { TIER2_READONLY_TOOLS, checkGuardrails, isReadOnlyResolution } from '../aiGuardrails';
 import { PATCH_OUTCOME_TOOL_NAME, PATCH_TOOL_ALLOWLIST, patchToolAllowlist } from './patchProfile';
+import { AI_AGENT_RUN_PROFILES, AI_AGENT_SCHEDULE_KINDS } from '@breeze/shared';
+import { outcomeToolsForProfile } from './outcomeTools';
 
 const FORBIDDEN = [
   'services/aiGuardrails.ts',
@@ -152,5 +154,48 @@ describe('verdict profile has no safety bypass (spec §7)', () => {
     // executable tool — it must not appear in the execution tier table at all.
     const tiers = TOOL_TIERS as Record<string, number | undefined>;
     expect(tiers[TRIAGE_OUTCOME_TOOL_NAME]).toBeUndefined();
+  });
+});
+
+/**
+ * AI patch agent W01 (#5747), Task 13 — the per-profile and per-schedule-kind
+ * switches stay exhaustive.
+ *
+ * `profileCaps` (runService.ts) and `buildAdmission` (aiAgentSweepScheduler.ts)
+ * are both module-private — `profileCaps` is a helper of one caller and
+ * `buildAdmission` is an inline closure over the sweeper's loop state — and
+ * neither is worth exporting purely to be driven here. Each already ends in a
+ * `const exhaustive: never` default, so TypeScript refuses to compile a missing
+ * arm; these assertions are the second line: they fail the moment a NEW profile
+ * or schedule kind is added to the shared union without a matching `case` in
+ * the switch, which is what tsc reports as a type error somewhere else
+ * entirely.
+ */
+describe('every run profile and schedule kind has an arm in its switch', () => {
+  it('outcomeToolsForProfile answers for every profile, and only patch gets submit_patch_plan', () => {
+    for (const profile of AI_AGENT_RUN_PROFILES) {
+      const tools = outcomeToolsForProfile(profile);
+      expect(Array.isArray(tools), profile).toBe(true);
+      expect(tools.includes(PATCH_OUTCOME_TOOL_NAME as never), profile)
+        .toBe(profile === 'patch');
+    }
+  });
+
+  it('profileCaps carries a case for every run profile', () => {
+    const src = readFileSync(join(__dirname, 'runService.ts'), 'utf8');
+    const body = src.slice(src.indexOf('function profileCaps('));
+    for (const profile of AI_AGENT_RUN_PROFILES) {
+      expect(body, profile).toContain(`case '${profile}'`);
+    }
+    expect(body).toContain('const exhaustive: never');
+  });
+
+  it('the sweeper admission switch carries a case for every schedule kind', () => {
+    const src = readFileSync(join(__dirname, '../../jobs/aiAgentSweepScheduler.ts'), 'utf8');
+    const body = src.slice(src.indexOf('const buildAdmission'));
+    for (const kind of AI_AGENT_SCHEDULE_KINDS) {
+      expect(body, kind).toContain(`case '${kind}'`);
+    }
+    expect(body).toContain('const exhaustive: never');
   });
 });
