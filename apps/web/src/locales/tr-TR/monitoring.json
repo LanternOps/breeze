@@ -105,6 +105,8 @@
       "test": "Test başarısız oldu",
       "generic": "Bir şeyler ters gitti"
     },
+    "saved": "Monitör kaydedildi",
+    "deleted": "Monitör silindi",
     "loading": "Monitör yükleniyor…",
     "noAttachments": "Henüz herhangi bir politikaya dağıtılmadı.",
     "testResult": {

@@ -4,10 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MonitorEditor from './MonitorEditor';
 import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/orgStore', () => ({
+  useOrgStore: (selector: (s: { currentOrgId: string | null }) => unknown) => selector({ currentOrgId: 'org-1' }),
+}));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+
+const toastMock = vi.mocked(showToast);
 vi.mock('@/hooks/useDefaultOwnerScope', () => ({
   useDefaultOwnerScope: () => ({ isPartnerScope: true, defaultOwnerScope: 'organization' }),
 }));
@@ -331,6 +337,8 @@ describe('MonitorEditor (#5289)', () => {
     expect(navMock).not.toHaveBeenCalled();
     // Edit-mode save re-fetches the monitor rather than navigating away.
     expect(fetchMock.mock.calls.filter(([url]) => url === '/monitor-definitions/m1').length).toBeGreaterThanOrEqual(2);
+    // Regression: a save that succeeded at the API gave zero feedback in the UI.
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('edit mode: deletes the monitor via the confirm dialog and navigates to the list', async () => {
@@ -350,6 +358,8 @@ describe('MonitorEditor (#5289)', () => {
       expect(fetchMock).toHaveBeenCalledWith('/monitor-definitions/m1', expect.objectContaining({ method: 'DELETE' })),
     );
     await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors'));
+    // Regression: a delete that succeeded at the API gave zero feedback before navigating away.
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
   it('reaches the delivery-mode radio choice in the submitted payload, and reveals the channel picker only for "channels"', async () => {

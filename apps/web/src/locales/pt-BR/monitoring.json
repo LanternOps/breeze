@@ -105,6 +105,8 @@
       "test": "Teste falhou",
       "generic": "Algo deu errado"
     },
+    "saved": "Monitor salvo",
+    "deleted": "Monitor excluído",
     "loading": "Carregando monitor…",
     "noAttachments": "Ainda não implantado em nenhuma política.",
     "testResult": {

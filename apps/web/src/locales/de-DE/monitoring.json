@@ -105,6 +105,8 @@
       "test": "Test fehlgeschlagen",
       "generic": "Ein Fehler ist aufgetreten"
     },
+    "saved": "Monitor gespeichert",
+    "deleted": "Monitor gelöscht",
     "loading": "Monitor wird geladen…",
     "noAttachments": "Noch nicht für eine Richtlinie bereitgestellt.",
     "testResult": {

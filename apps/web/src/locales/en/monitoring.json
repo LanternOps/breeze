@@ -105,6 +105,8 @@
       "test": "Test failed",
       "generic": "Something went wrong"
     },
+    "saved": "Monitor saved",
+    "deleted": "Monitor deleted",
     "loading": "Loading monitor…",
     "noAttachments": "Not deployed to any policy yet.",
     "testResult": {

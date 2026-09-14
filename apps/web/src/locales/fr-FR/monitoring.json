@@ -105,6 +105,8 @@
       "test": "Test échoué",
       "generic": "Quelque chose a mal tourné"
     },
+    "saved": "Moniteur enregistré",
+    "deleted": "Moniteur supprimé",
     "loading": "Chargement du moniteur…",
     "noAttachments": "Pas encore déployé dans une politique.",
     "testResult": {
