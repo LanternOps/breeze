@@ -137,12 +137,14 @@ Datto Components are ordinary scripts with a variable wrapper, so the bodies por
 | Component **variables** (`$env:VarName`) | Script [parameters](/features/scripts/) |
 | **stdout** → job output | Script output, captured per execution |
 | Exit code `0` = success | Same, plus `exitCodeSeverityMapping` to raise alerts by exit code |
-| `Write-Host '<-Start Result->…'` UDF writes | Breeze [custom fields](/features/custom-fields/) |
+| `Write-Host '<-Start Result->…'` UDF writes | Print `::breeze:custom-fields:: {"key":"value"}` to stdout — see [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script) |
+| `$env:UDF_n` reads | Script parameter with source **From a device custom field** |
+| Site variables, secret site variables | [Variables](/features/scripts/#variables) (`{{var.key}}`); secrets arrive only as `BREEZE_VAR_<NAME>` |
 | ComStore components | Check the Breeze [system script library](/features/scripts/) first |
 
-The one genuine rewrite is Datto's **result-to-UDF** convention — components that emit `<-Start Result->key=value<-End Result->` to write back into a UDF. In Breeze, write to a custom field via the API from within the script instead.
+The one line that must change is Datto's **result-to-UDF** convention — components that emit `<-Start Result->key=value<-End Result->` to write back into a UDF. In Breeze the script prints a `::breeze:custom-fields::` marker instead; no API key is needed, and the target field must have **Allow scripts to write this field** on. [Migrating scripts from Datto RMM](/migration/scripts-from-datto/) walks one component through every edit and covers the bulk load.
 
-Import the converted bodies in bulk with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import). Set `availability: "partner"` so one copy serves every customer.
+Import the converted bodies in bulk with [Recipe 6](/migration/toolkit/#recipe-6--bulk-script-import) or **Scripts → Import bundle** with the loose files. Set `availability: "partner"` so one copy serves every customer.
 
 ---
 
