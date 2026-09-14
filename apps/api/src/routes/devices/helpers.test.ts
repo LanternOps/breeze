@@ -58,6 +58,21 @@ describe('public device projection', () => {
     customFields: { k: 'v' },
   };
 
+  // #5701 follow-up: purchaseDate/purchaseDateSource were added to the
+  // `devices` table but never added to the PUBLIC_DEVICE_FIELDS allowlist,
+  // so GET /devices/:id (and any other route that spreads through
+  // projectPublicDevice) silently dropped both fields even though core.ts
+  // selects them for the list endpoint and the PATCH writer sets them.
+  it('preserves purchaseDate and purchaseDateSource (#5701 dropped-field regression)', () => {
+    const out = projectPublicDevice({
+      ...safe,
+      purchaseDate: '2025-03-01',
+      purchaseDateSource: 'vendor',
+    }) as Record<string, unknown>;
+    expect(out).toHaveProperty('purchaseDate', '2025-03-01');
+    expect(out).toHaveProperty('purchaseDateSource', 'vendor');
+  });
+
   it('removes every credential verifier and mTLS field', () => {
     const out = projectPublicDevice({ ...safe, ...sensitive }) as Record<string, unknown>;
     for (const key of Object.keys(sensitive)) {
