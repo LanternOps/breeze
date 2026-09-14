@@ -30,3 +30,55 @@ export async function applyCommandAutomationTerminal(input: {
     completedAt: input.completedAt ?? new Date(),
   });
 }
+
+/**
+ * #5290 — map an `ai.agent.run.*` event type onto the terminal status of the
+ * automation action that enqueued that run. Returns null for any other event.
+ */
+export function mapAgentRunTerminalEvidence(
+  eventType: string,
+): 'succeeded' | 'failed' | 'skipped' | null {
+  if (eventType === 'ai.agent.run.completed') return 'succeeded';
+  if (eventType === 'ai.agent.run.failed') return 'failed';
+  if (eventType === 'ai.agent.run.skipped') return 'skipped';
+  return null;
+}
+
+export async function applyAgentRunAutomationTerminal(input: {
+  agentRunId: string;
+  terminalStatus: 'succeeded' | 'failed' | 'skipped';
+  error?: string | null;
+  completedAt?: Date;
+}): Promise<boolean> {
+  return applyAutomationActionTerminal({
+    source: 'agent_run',
+    agentRunId: input.agentRunId,
+    terminalStatus: input.terminalStatus,
+    output: null,
+    error: input.error ?? null,
+    completedAt: input.completedAt ?? new Date(),
+  });
+}
+
+/**
+ * Durable-subscriber entry point. A no-op for an agent run that no automation
+ * action is waiting on (the common case: manually triggered and scheduled runs
+ * far outnumber ai_triage ones), and for any event type that is not terminal.
+ */
+export async function handleAgentRunTerminalForAutomation(
+  event: { type: string; payload?: Record<string, unknown> | null },
+): Promise<void> {
+  const terminalStatus = mapAgentRunTerminalEvidence(event.type);
+  if (!terminalStatus) return;
+
+  const payload = event.payload ?? {};
+  const agentRunId = typeof payload.runId === 'string'
+    ? payload.runId
+    : typeof payload.agentRunId === 'string'
+      ? payload.agentRunId
+      : null;
+  if (!agentRunId) return;
+
+  const error = typeof payload.error === 'string' ? payload.error : null;
+  await applyAgentRunAutomationTerminal({ agentRunId, terminalStatus, error });
+}

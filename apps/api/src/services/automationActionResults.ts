@@ -22,7 +22,10 @@ export type AutomationActionResultStatus =
 
 export type AutomationActionTerminalSource =
   | 'command' | 'script_execution' | 'deployment_result'
-  | 'timeout' | 'cancellation' | 'reaper' | 'dispatch';
+  | 'timeout' | 'cancellation' | 'reaper' | 'dispatch'
+  // #5290 — a child ai_triage agent run reported terminal through
+  // ai.agent.run.completed / .failed / .skipped.
+  | 'agent_run';
 
 /**
  * One value of `automation_device_result_status` (#3525 W05 added `cancelled`).
@@ -45,6 +48,8 @@ type Correlations = {
   commandId?: string;
   scriptExecutionId?: string;
   deploymentResultId?: string;
+  /** #5290 — the child ai_triage agent run this action is waiting on. */
+  agentRunId?: string;
 };
 
 type ActionState = {
@@ -53,6 +58,7 @@ type ActionState = {
   commandId: string | null;
   scriptExecutionId: string | null;
   deploymentResultId: string | null;
+  agentRunId: string | null;
 };
 
 type ActionPatch = Partial<{
@@ -61,6 +67,7 @@ type ActionPatch = Partial<{
   commandId: string | null;
   scriptExecutionId: string | null;
   deploymentResultId: string | null;
+  agentRunId: string | null;
   message: string | null;
   output: string | null;
   error: string | null;
@@ -78,11 +85,14 @@ const TERMINAL = new Set<AutomationActionResultStatus>([
 ]);
 const REAL_TERMINAL_SOURCES = new Set<AutomationActionTerminalSource>([
   'command', 'script_execution', 'deployment_result',
+  // #5290 — the child run finishing IS the real evidence for an ai_triage
+  // action, so it may replace a provisional reaper timeout like the others.
+  'agent_run',
 ]);
 
 function correlationsPatch(state: ActionState, input: Correlations): ActionPatch | null {
   const patch: ActionPatch = {};
-  for (const key of ['commandId', 'scriptExecutionId', 'deploymentResultId'] as const) {
+  for (const key of ['commandId', 'scriptExecutionId', 'deploymentResultId', 'agentRunId'] as const) {
     const proposed = input[key];
     if (proposed === undefined) continue;
     const current = state[key];
@@ -592,6 +602,8 @@ export async function recordAutomationActionDispatch(input: {
   commandId?: string;
   scriptExecutionId?: string;
   deploymentResultId?: string;
+  /** #5290 — set by the ai_triage action so its child run can terminalise it. */
+  agentRunId?: string;
   message?: string;
 }): Promise<boolean> {
   const result = await inDeliberateSystemContext(async () => {
@@ -613,23 +625,27 @@ export async function recordAutomationActionDispatch(input: {
 }
 
 export async function applyAutomationActionTerminal(input: {
-  source: 'command' | 'script_execution' | 'deployment_result' | 'timeout' | 'cancellation' | 'reaper';
+  source: 'command' | 'script_execution' | 'deployment_result' | 'timeout' | 'cancellation' | 'reaper' | 'agent_run';
   commandId?: string;
   scriptExecutionId?: string;
   deploymentResultId?: string;
-  terminalStatus: 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
+  /** #5290 — correlation for an ai_triage action's child agent run. */
+  agentRunId?: string;
+  terminalStatus: 'succeeded' | 'failed' | 'skipped' | 'timed_out' | 'cancelled';
   output?: string | null;
   error?: string | null;
   completedAt: Date;
 }): Promise<boolean> {
-  const supplied = [input.commandId, input.scriptExecutionId, input.deploymentResultId]
+  const supplied = [input.commandId, input.scriptExecutionId, input.deploymentResultId, input.agentRunId]
     .filter((value): value is string => value !== undefined);
   if (supplied.length !== 1) throw new Error('Exactly one automation action correlation id is required');
   const identity = input.commandId
     ? eq(automationActionResults.commandId, input.commandId)
     : input.scriptExecutionId
       ? eq(automationActionResults.scriptExecutionId, input.scriptExecutionId)
-      : eq(automationActionResults.deploymentResultId, input.deploymentResultId!);
+      : input.deploymentResultId
+        ? eq(automationActionResults.deploymentResultId, input.deploymentResultId)
+        : eq(automationActionResults.agentRunId, input.agentRunId!);
 
   const result = await inDeliberateSystemContext(async () => {
     const [row] = await db.select().from(automationActionResults).where(identity).limit(1).for('update');
