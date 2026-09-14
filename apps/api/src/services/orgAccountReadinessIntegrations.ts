@@ -9,8 +9,14 @@
  * without a database; the loaders (further down) only fetch rows and feed them
  * through these functions.
  */
-import { and, eq, type SQL } from 'drizzle-orm';
-import { accountingConnections, accountingEntityMappings } from '../db/schema';
+import { and, eq, inArray, isNull, or, type SQL } from 'drizzle-orm';
+import { db } from '../db';
+import {
+  accountingConnections,
+  accountingEntityMappings,
+  organizationExternalLinks,
+  psaConnections,
+} from '../db/schema';
 
 export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone';
 export type ConnectorState = 'connected' | 'reauth_required' | 'disconnected' | 'error' | 'disabled';
@@ -214,4 +220,115 @@ export function aggregateIntegrations(
     out.set(orgId, collapsed);
   }
   return out;
+}
+
+export interface SourceResult {
+  connectors: Connector[];
+  rows: OrgIntegrationRow[];
+}
+
+const EMPTY: SourceResult = { connectors: [], rows: [] };
+
+function accountingSystem(provider: string): 'quickbooks' | 'xero' {
+  return provider === 'xero' ? 'xero' : 'quickbooks';
+}
+
+/**
+ * QuickBooks / Xero. Gated on accounting:read (spec: "accounting additionally
+ * accounting:read"): without it neither the connector nor any org badge exists.
+ */
+export async function loadAccounting(
+  partnerId: string,
+  orgIds: readonly string[],
+  grants: IntegrationGrants,
+): Promise<SourceResult> {
+  if (!grants.accounting) return EMPTY;
+  const connections = await db
+    .select({
+      id: accountingConnections.id,
+      provider: accountingConnections.provider,
+      status: accountingConnections.status,
+    })
+    .from(accountingConnections)
+    .where(eq(accountingConnections.partnerId, partnerId));
+  const connectors: Connector[] = connections.map((c) => ({
+    system: accountingSystem(c.provider),
+    state: accountingConnectorState(c.status),
+  }));
+  if (connections.length === 0 || orgIds.length === 0) return { connectors, rows: [] };
+
+  const mappings = await db
+    .select({
+      orgId: accountingEntityMappings.breezeEntityId,
+      provider: accountingConnections.provider,
+      linkStatus: accountingEntityMappings.linkStatus,
+      syncStatus: accountingEntityMappings.syncStatus,
+      lastError: accountingEntityMappings.lastError,
+    })
+    .from(accountingEntityMappings)
+    .innerJoin(accountingConnections, accountingConnectionJoin(partnerId))
+    .where(
+      and(
+        eq(accountingEntityMappings.breezeEntityType, 'org'),
+        inArray(accountingEntityMappings.breezeEntityId, [...orgIds]),
+      ),
+    );
+  const rows: OrgIntegrationRow[] = [];
+  for (const m of mappings) {
+    const state = accountingMappingState(m);
+    if (state) rows.push({ orgId: m.orgId, integration: { system: accountingSystem(m.provider), ...state } });
+  }
+  return { connectors, rows };
+}
+
+/**
+ * PSA (partner-level connections + org-level connections + provider-matching
+ * external links) and external identity (every other external link). One
+ * psa_connections query — partner axis OR accepted org ids — and one
+ * organization_external_links query; the split happens here.
+ */
+export async function loadPsaAndExternal(
+  partnerId: string,
+  orgIds: readonly string[],
+): Promise<SourceResult> {
+  const partnerLevel = and(eq(psaConnections.partnerId, partnerId), isNull(psaConnections.orgId)) as SQL;
+  const connections = await db
+    .select({ orgId: psaConnections.orgId, provider: psaConnections.provider, enabled: psaConnections.enabled })
+    .from(psaConnections)
+    .where(orgIds.length === 0 ? partnerLevel : (or(partnerLevel, inArray(psaConnections.orgId, [...orgIds])) as SQL));
+
+  const connectors: Connector[] = [];
+  const psaProviders = new Set<string>();
+  const enabledProviders = new Set<string>();
+  const rows: OrgIntegrationRow[] = [];
+  for (const c of connections) {
+    if (c.orgId === null) {
+      connectors.push({ system: 'psa', state: c.enabled ? 'connected' : 'disabled', provider: c.provider });
+      psaProviders.add(c.provider);
+      if (c.enabled) enabledProviders.add(c.provider);
+    } else {
+      rows.push({
+        orgId: c.orgId,
+        integration: c.enabled ? { system: 'psa', state: 'linked' } : { system: 'psa', state: 'error', reason: 'disabled' },
+      });
+    }
+  }
+  if (orgIds.length === 0) return { connectors, rows };
+
+  const links = await db
+    .select({ orgId: organizationExternalLinks.orgId, system: organizationExternalLinks.system })
+    .from(organizationExternalLinks)
+    .where(inArray(organizationExternalLinks.orgId, [...orgIds]));
+  const identity: OrgIntegrationRow[] = [];
+  for (const link of links) {
+    if (enabledProviders.has(link.system)) {
+      rows.push({ orgId: link.orgId, integration: { system: 'psa', state: 'linked' } });
+    } else if (!psaProviders.has(link.system)) {
+      identity.push({ orgId: link.orgId, integration: { system: 'external', state: 'identity', label: link.system } });
+    }
+    // A link for a partner-level provider that is DISABLED is consumed by the
+    // PSA check (its repair is the connector, reported once in the band) and
+    // is deliberately neither a PSA row nor an identity badge.
+  }
+  return { connectors, rows: [...rows, ...identity] };
 }
