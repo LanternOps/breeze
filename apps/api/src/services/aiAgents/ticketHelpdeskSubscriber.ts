@@ -145,7 +145,7 @@ async function humanCommentIsNewerThanAgentActivity(
     if (!newestAgent) return true;
     return humanCommentCreatedAt.getTime() > newestAgent.createdAt.getTime();
   } catch (err) {
-    console.error('[ticketHelpdesk] loop-guard read failed — denying admission:', err);
+    console.error('[ticketHelpdesk] loop-guard read failed — denying admission:', { ticketId, err });
     return false;
   }
 }
@@ -285,6 +285,19 @@ async function isEligibleForResolvedAdmission(ticketId: string, orgId: string): 
  * and `cooldownSeconds` are the tunable dials and already apply.
  *
  * Fail-closed on a read error, same discipline as the loop guard above.
+ *
+ * Known limitation (review follow-up, #4212, out of scope for this wave):
+ * this is check-then-act, not locked per-ticket — `createAndEnqueueAgentRun`'s
+ * own `pg_advisory_xact_lock` (runService.ts) is keyed on `(agentId, orgId)`,
+ * not `ticketId`, and is acquired only inside that call, after this read
+ * already ran. Two genuinely concurrent `ticket.commented` events for the
+ * SAME ticket (distinct comments, hence distinct dedupe keys) could both read
+ * "below ceiling" and both admit, letting the count exceed
+ * `MAX_TRIAGE_RUNS_PER_TICKET` by the concurrency width. This is a soft cap
+ * under concurrent delivery, not an absolute one; closing it needs a
+ * ticket-scoped lock/`SELECT ... FOR UPDATE` spanning this read and the
+ * enqueue, which is a real design decision the W02 plan did not specify —
+ * tracked as a fast-follow rather than expanded here.
  */
 export const MAX_TRIAGE_RUNS_PER_TICKET = 5;
 
@@ -298,7 +311,7 @@ async function triageRunCeilingReached(ticketId: string): Promise<boolean> {
       .limit(MAX_TRIAGE_RUNS_PER_TICKET);
     return rows.length >= MAX_TRIAGE_RUNS_PER_TICKET;
   } catch (err) {
-    console.error('[ticketHelpdesk] triage-run ceiling read failed — denying admission:', err);
+    console.error('[ticketHelpdesk] triage-run ceiling read failed — denying admission:', { ticketId, err });
     return true;
   }
 }

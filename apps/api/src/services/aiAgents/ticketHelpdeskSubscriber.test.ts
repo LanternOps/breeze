@@ -444,6 +444,41 @@ describe('recency-ordered loop guard (#4212)', () => {
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
+  // Review follow-up (pr-test-analyzer): the comparison is strict `>`, so a
+  // tie denies — pin that boundary explicitly rather than leaving it to be
+  // inferred from the newer/older cases above. Matters in practice because
+  // Postgres `now()` is constant within one transaction, so an agent note and
+  // a human comment written in the same transaction (bulk import, a test
+  // fixture) can share an identical timestamp.
+  it('a tie (equal timestamps) denies — the comparison is strict greater-than', async () => {
+    const sameInstant = new Date('2026-09-10T11:00:00Z');
+    mockCommentVerification([{ createdAt: sameInstant }]);
+    mockOriginProbe([{ createdAt: sameInstant }]);
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  // Review follow-up (pr-test-analyzer): proves the CHECK ORDER, not just the
+  // outcome — when the loop guard denies, the per-ticket ceiling read
+  // (Task 9) must never fire. The mirror case (ceiling still evaluated when
+  // the guard is explicitly 'skip'ped for the resolved lane) is already
+  // pinned by the "resolved lane skips the guard entirely" test below; this
+  // is the other half of that interaction.
+  it('the ceiling is never evaluated when the loop guard already denied (short-circuit, #4212)', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([{ createdAt: new Date('2026-09-10T12:00:00Z') }]); // agent spoke after — denies
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+    // verification (1) + loop guard (1) only — if the ceiling read fired
+    // too, this would be 3 (and the mock queue, empty past index 1, would
+    // either throw or resolve undefined instead of a real row shape).
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
   it('a brand-new ticket with no comments still admits (created lane passes epoch vacuously)', async () => {
     mockCleanTicket();
 

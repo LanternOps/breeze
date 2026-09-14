@@ -406,6 +406,69 @@ describe('W02 per-event helpdesk admissions — dedupe key, recency-ordered loop
     expect(runs[0].id).toBe(run.id);
   });
 
+  // Review follow-up (pr-test-analyzer): the mirror of the test above — an
+  // agent note followed by a GENUINELY LATER human comment must re-admit.
+  // Proves the "admit" side of the recency-ordered guard against real
+  // Postgres `ORDER BY created_at DESC LIMIT 1` and timestamp comparison,
+  // not just mocks — this is the actual value proposition of #4212 over the
+  // old permanent latch.
+  it('an agent note followed by a genuinely newer human comment re-admits', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    await seedTicketComment(ticket.id, {
+      content: 'AI triage note.',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+      createdAt: new Date('2026-09-14T11:00:00Z'),
+    });
+    // Genuinely newer than the agent's note — the customer replied again.
+    const newerHuman = await seedTicketComment(ticket.id, {
+      createdAt: new Date('2026-09-14T12:00:00Z'),
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, newerHuman.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // The original seeded run PLUS a new one admitted for the newer comment.
+    expect(runs).toHaveLength(2);
+    const dedupeKeys = runs.map((r: { dedupeKey: string }) => r.dedupeKey);
+    expect(dedupeKeys).toContain(`ticket-commented:${newerHuman.id}`);
+  });
+
+  // Review follow-up (pr-test-analyzer): proves the per-comment dedupe key's
+  // idempotency against the REAL `ai_agent_runs_org_dedupe_key_uq` unique
+  // constraint, not just that two DIFFERENT comments get two different keys
+  // (already covered above) — a redelivered outbox event for the SAME
+  // comment must collapse to a no-op, exactly like the pre-existing
+  // `ticket.created` redelivery test at the top of this file.
+  it('redelivering the same comment id twice admits only one run', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const comment = await seedTicketComment(ticket.id);
+
+    const event = ticketCommentedEventFor(scenario, ticket.id, comment.id);
+    await handleTicketCommentedEvent(event);
+    // Redelivery of the identical event — the exact scenario the dedupe key
+    // exists for.
+    await handleTicketCommentedEvent(event);
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.dedupeKey, `ticket-commented:${comment.id}`)));
+
+    expect(runs).toHaveLength(1);
+  });
+
   it('the sixth human comment on one ticket admits nothing (per-ticket triage-run ceiling)', async () => {
     const scenario = await seedTriageScenario(true);
     const ticket = await seedTicket(scenario);
