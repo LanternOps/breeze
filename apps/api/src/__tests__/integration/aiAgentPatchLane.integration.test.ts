@@ -138,7 +138,7 @@ async function insertOutstandingPatch(orgId: string, deviceId: string) {
   const [patch] = await withSystemDbAccessContext(() => db
     .insert(patches)
     .values({
-      source: 'windows_update',
+      source: 'microsoft',
       externalId: `KB-${unique}`,
       vendor: 'Microsoft',
       title: `Security update ${unique}`,
