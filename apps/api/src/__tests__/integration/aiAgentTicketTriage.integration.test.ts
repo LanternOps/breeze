@@ -52,7 +52,11 @@ import {
 import { assignUserToOrganization, createOrganization, createPartner, createRole, createUser, grantRolePermissions } from './db-utils';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { resolveEffectiveAgentSystem } from '../../services/aiAgents/effectivePolicy';
-import { handleTicketCreatedEvent } from '../../services/aiAgents/ticketHelpdeskSubscriber';
+import {
+  handleTicketCreatedEvent,
+  handleTicketCommentedEvent,
+  MAX_TRIAGE_RUNS_PER_TICKET,
+} from '../../services/aiAgents/ticketHelpdeskSubscriber';
 import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { persistTicketTriage } from '../../services/aiAgents/ticketTriageFindings';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
@@ -309,6 +313,118 @@ describe('ticket-triage admission — outbox event -> subscriber -> dedupe (Task
 
     expect(run).toBeDefined();
     expect(run.modeAtStart).toBe('shadow');
+  });
+});
+
+/** Inserts a real, live ticket_comments row. Defaults to a genuinely
+ *  human-authored, public comment — exactly what `loadVerifiedHumanComment`
+ *  DB-verifies. Pass `originPrincipalKind: 'ai_agent'` + `agentRunId` to seed
+ *  an AI-authored note instead (real FK — `agentRunId` must reference a row
+ *  that actually exists in `ai_agent_runs`). */
+async function seedTicketComment(
+  ticketId: string,
+  overrides: Partial<typeof ticketComments.$inferInsert> = {},
+): Promise<typeof ticketComments.$inferSelect> {
+  const adminDb = getTestDb() as any;
+  const [comment] = await adminDb.insert(ticketComments).values({
+    ticketId,
+    content: 'Still seeing the issue, any update?',
+    isPublic: true,
+    originPrincipalKind: 'user',
+    ...overrides,
+  }).returning();
+  return comment;
+}
+
+function ticketCommentedEventFor(scenario: TriageScenario, ticketId: string, commentId: string): BreezeEvent {
+  return {
+    id: randomUUID(),
+    type: 'ticket.commented',
+    orgId: scenario.org.id,
+    source: 'ticket-triage-integration-test',
+    priority: 'normal',
+    payload: { ticketId, commentId },
+    metadata: { timestamp: new Date().toISOString() },
+  };
+}
+
+describe('W02 per-event helpdesk admissions — dedupe key, recency-ordered loop guard, triage ceiling (#4212)', () => {
+  it('two human comments admit two runs with distinct dedupe keys', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+
+    const c1 = await seedTicketComment(ticket.id, { createdAt: new Date('2026-09-14T10:00:00Z') });
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, c1.id));
+
+    const c2 = await seedTicketComment(ticket.id, { createdAt: new Date('2026-09-14T11:00:00Z') });
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, c2.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    expect(runs).toHaveLength(2);
+    const dedupeKeys = runs.map((r: { dedupeKey: string }) => r.dedupeKey).sort();
+    expect(dedupeKeys).toEqual([`ticket-commented:${c1.id}`, `ticket-commented:${c2.id}`].sort());
+  });
+
+  it('an agent note followed by a redelivered older human comment admits nothing', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    // A real, already-admitted run — its id is the FK target for the AI
+    // note's agent_run_id below.
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    // The agent's own note, posted AFTER the human comment that triggered it
+    // (real chronology: human speaks, then the agent replies).
+    await seedTicketComment(ticket.id, {
+      content: 'AI triage note.',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+      createdAt: new Date('2026-09-14T12:00:00Z'),
+    });
+    // A human comment that is OLDER than the agent's note — simulating a
+    // redelivered/delayed `ticket.commented` event for a comment the agent
+    // already responded to. Must not re-admit.
+    const staleHuman = await seedTicketComment(ticket.id, {
+      createdAt: new Date('2026-09-14T11:00:00Z'),
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, staleHuman.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // Only the ORIGINAL seeded run — no new run admitted for the stale comment.
+    expect(runs).toHaveLength(1);
+    expect(runs[0].id).toBe(run.id);
+  });
+
+  it('the sixth human comment on one ticket admits nothing (per-ticket triage-run ceiling)', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+
+    for (let i = 0; i < MAX_TRIAGE_RUNS_PER_TICKET; i++) {
+      await seedTicketTriageRun(scenario, ticket.id);
+    }
+
+    const sixthComment = await seedTicketComment(ticket.id);
+    await handleTicketCommentedEvent(ticketCommentedEventFor(scenario, ticket.id, sixthComment.id));
+
+    const adminDb = getTestDb() as any;
+    const runs = await adminDb
+      .select()
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticket.id), eq(aiAgentRuns.profile, 'triage')));
+
+    // Ceiling reached — no 6th run admitted.
+    expect(runs).toHaveLength(MAX_TRIAGE_RUNS_PER_TICKET);
   });
 });
 
