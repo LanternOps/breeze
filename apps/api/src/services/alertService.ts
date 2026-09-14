@@ -431,6 +431,12 @@ export async function checkAutoResolve(alertId: string): Promise<boolean> {
     return false;
   }
 
+  // #5290 — a recurrence escalation is closed by a human, never by the machine.
+  // Checked BEFORE any condition evaluation so the machine never even asks.
+  if (alert.requiresHuman) {
+    return false;
+  }
+
   // Config policy alerts don't have a legacy ruleId — skip legacy auto-resolve path
   if (!alert.ruleId) {
     return false;
@@ -1369,7 +1375,9 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
       and(
         eq(alerts.deviceId, deviceId),
         eq(alerts.status, 'active'),
-        isNotNull(alerts.configPolicyId)
+        isNotNull(alerts.configPolicyId),
+        // #5290 — a requires-human alert is never auto-resolved.
+        eq(alerts.requiresHuman, false)
       )
     );
 
@@ -1445,7 +1453,9 @@ export async function checkAutoResolveFromConfigPolicy(deviceId: string): Promis
  */
 export async function checkAllAutoResolve(orgId?: string): Promise<number> {
   // Get active alerts (optionally filtered by org)
-  const conditions = [eq(alerts.status, 'active')];
+  // #5290 — a requires-human alert is never auto-resolved, so it is excluded in
+  // the SELECT rather than skipped per-row: the sweep must not even load it.
+  const conditions = [eq(alerts.status, 'active'), eq(alerts.requiresHuman, false)];
   if (orgId) {
     conditions.push(eq(alerts.orgId, orgId));
   }
