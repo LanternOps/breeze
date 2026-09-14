@@ -32,6 +32,13 @@ vi.mock('./serviceDeliverableService', async (importOriginal) => {
   };
 });
 
+// #5784 W01: apply-time resolution of a template item's evidence TYPE to the
+// target org's managed definition. Mocked here (the chain mock cannot feed a
+// real insert-then-reread); the real path is proven on Postgres in
+// managedEvidenceFoundations.integration.test.ts.
+const resolveMock = vi.hoisted(() => vi.fn());
+vi.mock('./managedEvidenceDefinitions', () => ({ resolveManagedEvidenceDefinition: resolveMock }));
+
 import {
   applyTemplateSet,
   createTemplateSet,
@@ -198,6 +205,88 @@ describe('applyTemplateSet', () => {
     dbMocks.rows.push([set], items, []);                        // set, items, contract lookup empty
     await expect(applyTemplateSet('org1', 's1', { contractId: '11111111-1111-4111-8111-111111111111' }, partnerAdmin))
       .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+  });
+
+  describe('auto-evidence type resolution at apply time (#5784 OD-6 = A)', () => {
+    beforeEach(() => { resolveMock.mockReset(); });
+    const typed = [{ ...items[0]!, autoEvidenceReportType: 'threat_detection_review' }, { ...items[1]!, autoEvidenceReportType: null }];
+
+    it('resolves the item type to that org’s managed definition on the SAME tx handle', async () => {
+      resolveMock.mockResolvedValue({ id: 'r1', type: 'threat_detection_review', config: {}, adopted: false });
+      dbMocks.rows.push([set], typed, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01', ownerUserId: 'owner-1' }, partnerAdmin);
+      const { db } = await import('../db');
+      // The executor the service passed must be the transaction handle (the
+      // chain mock passes itself as tx), not the module-level db proxy: the
+      // ambient proxy resolves to the request transaction and would escape
+      // the all-or-nothing rollback.
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(resolveMock).toHaveBeenCalledWith('org1', 'threat_detection_review', 'owner-1', db);
+      expect(createdCalls[0]!.input).toMatchObject({ name: 'Sign-in log review', autoEvidenceReportId: 'r1' });
+      expect(createdCalls[1]!.input.autoEvidenceReportId).toBeUndefined();
+    });
+
+    it('falls back to the acting user as the definition owner when no ownerUserId is given', async () => {
+      resolveMock.mockResolvedValue({ id: 'r1', type: 'threat_detection_review', config: {}, adopted: true });
+      dbMocks.rows.push([set], typed, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+      expect(resolveMock).toHaveBeenCalledWith('org1', 'threat_detection_review', partnerAdmin.userId, expect.anything());
+    });
+
+    it('400s EVIDENCE_OWNER_REQUIRED when neither ownerUserId nor an acting user exists', async () => {
+      dbMocks.rows.push([set], typed, []);
+      await expect(applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, { ...partnerAdmin, userId: null }))
+        .rejects.toMatchObject({ status: 400, code: 'EVIDENCE_OWNER_REQUIRED' });
+      expect(resolveMock).not.toHaveBeenCalled();
+      expect(createdCalls).toEqual([]);
+    });
+
+    it('fails the whole apply when provisioning fails — nothing half-written', async () => {
+      resolveMock.mockRejectedValue(new Error('boom'));
+      dbMocks.rows.push([set], typed, []);
+      await expect(applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin)).rejects.toThrow();
+      expect(createdCalls).toEqual([]);
+    });
+
+    it('leaves autoEvidenceReportId unset and never resolves for a set with no typed item', async () => {
+      dbMocks.rows.push([set], items, []);
+      await applyTemplateSet('org1', 's1', { effectiveFrom: '2026-10-01' }, partnerAdmin);
+      expect(resolveMock).not.toHaveBeenCalled();
+      expect(createdCalls.every((c) => c.input.autoEvidenceReportId === undefined)).toBe(true);
+    });
+  });
+});
+
+describe('autoEvidenceReportType is carried by every item write (#5784)', () => {
+  beforeEach(() => { dbMocks.rows.length = 0; });
+  const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Org plan' };
+  const item = { name: 'x', cadence: 'monthly' as const, leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
+
+  it('createTemplateSet copies the type onto the item row', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    dbMocks.rows.push([{ ...orgSet }], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
+    await createTemplateSet({ ownerScope: 'organization', orgId: 'org1', name: 'Org plan', items: [{ ...item, autoEvidenceReportType: 'threat_detection_review' as never }] }, partnerAdmin);
+    expect(values.mock.calls.some(([v]) => (v as { autoEvidenceReportType?: string }).autoEvidenceReportType === 'threat_detection_review')).toBe(true);
+    values.mockRestore();
+  });
+
+  it('addTemplateItem copies the type; updateTemplateItem patches it, including back to null', async () => {
+    const { db } = await import('../db');
+    const values = vi.spyOn(db as any, 'values');
+    const setSpy = vi.spyOn(db as any, 'set');
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: 'threat_detection_review' }]);
+    await addTemplateItem('s1', { ...item, autoEvidenceReportType: 'threat_detection_review' as never }, partnerAdmin);
+    expect(values.mock.calls.at(-1)![0]).toMatchObject({ autoEvidenceReportType: 'threat_detection_review' });
+
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item, autoEvidenceReportType: null }]);
+    await updateTemplateItem('s1', 'i1', { autoEvidenceReportType: null }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).toMatchObject({ autoEvidenceReportType: null });
+
+    dbMocks.rows.push([orgSet], [{ id: 'i1', setId: 's1', ...item }]);
+    await updateTemplateItem('s1', 'i1', { graceDays: 21 }, partnerAdmin);
+    expect(setSpy.mock.calls.at(-1)![0]).not.toHaveProperty('autoEvidenceReportType');
+    values.mockRestore(); setSpy.mockRestore();
   });
 });
 
