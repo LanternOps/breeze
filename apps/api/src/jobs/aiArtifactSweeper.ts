@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { eq, lt } from 'drizzle-orm';
+import { asc, eq, lt } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { aiRunArtifacts } from '../db/schema';
 import { getBullMQConnection } from '../services/redis';
@@ -56,6 +56,7 @@ export async function sweepExpiredArtifacts(): Promise<{ blobsDeleted: number; r
         .select({ id: aiRunArtifacts.id, blobKey: aiRunArtifacts.blobKey })
         .from(aiRunArtifacts)
         .where(lt(aiRunArtifacts.expiresAt, new Date()))
+        .orderBy(asc(aiRunArtifacts.expiresAt))
         .limit(AI_ARTIFACT_SWEEP_BATCH + skip.size),
       'aiArtifactSweeper.scan',
     ));

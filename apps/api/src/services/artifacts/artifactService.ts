@@ -5,6 +5,7 @@ import { db } from '../../db';
 import { aiRunArtifacts } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { redactAiToolOutputText } from '../aiToolOutput';
+import { captureException } from '../sentry';
 import { getBlobStorage, type BlobRegion } from './blobStorage';
 
 /**
@@ -45,7 +46,14 @@ export interface ArtifactRecord {
   contentType: string;
   bytes: number;
   sha256: string;
-  /** Opaque `<region>/<yyyy>/<mm>/<uuid>`. NEVER leaves the API — see toArtifactDto. */
+  /**
+   * Opaque `<region>/<yyyy>/<mm>/<uuid>`. Never serialised into any API
+   * response or DTO — `toArtifactDto` omits it, so no wire path ever echoes it
+   * back to a client. It IS included in the platform-admin tenant export
+   * (`tenantExportPolicyRegistry.ts`), which is an authenticated export of the
+   * customer's own data, not an API response — see the rationale comment on
+   * the `ai_run_artifacts` entry there.
+   */
   blobKey: string;
   headPreview: string;
   tailPreview: string;
@@ -171,6 +179,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
     try {
       await blobs.delete(put.key);
     } catch (cleanupErr) {
+      captureException(cleanupErr);
       console.error('[artifacts] compensating blob delete failed after a failed row insert', cleanupErr);
     }
     throw err;

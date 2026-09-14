@@ -23,7 +23,7 @@ vi.mock('bullmq', () => ({
 }));
 vi.mock('../db', () => ({
   db: {
-    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ limit: vi.fn(async () => mocks.rows.shift() ?? []) })) })) })),
+    select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(() => ({ orderBy: vi.fn(() => ({ limit: vi.fn(async () => mocks.rows.shift() ?? []) })) })) })) })),
     delete: vi.fn(() => ({ where: vi.fn(async (w: unknown) => { mocks.calls.push('row:delete'); mocks.deleted.push(w); }) })),
   },
   withSystemDbAccessContext: mocks.withSystem,

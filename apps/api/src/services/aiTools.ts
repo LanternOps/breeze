@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import { validateToolInput } from './aiToolSchemas';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { captureContextFrom, captureLargeToolResult } from './artifacts/toolResultCapture';
+import { captureException } from './sentry';
 import {
   extensionContributionRegistry,
   type ExtensionContributionRegistry,
@@ -607,6 +608,7 @@ export async function executeTool(
   try {
     return await captureLargeToolResult(rawResult, captureCtx);
   } catch (err) {
+    captureException(err);
     console.error(`[aiTools] artifact capture failed for ${toolName}; returning the raw result`, err);
     return rawResult;
   }

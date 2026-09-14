@@ -1,6 +1,7 @@
 import { aiWorkspaceEnabled, breezeRegion } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
+import { captureException } from '../sentry';
 import { ARTIFACT_PREVIEW_BYTES, buildPreviews, createArtifact } from './artifactService';
 import type { BlobRegion } from './blobStorage';
 
@@ -157,6 +158,7 @@ export async function captureLargeToolResult(
   } catch (err) {
     // §9: typed tool error, raw result NOT returned inline. The message tells
     // the model what to do differently — it cannot retry its way out of this.
+    captureException(err);
     console.error('[artifacts] capture failed; returning artifact_store_unavailable', err);
     return JSON.stringify({
       error: 'artifact_store_unavailable',
