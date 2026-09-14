@@ -1,33 +1,50 @@
-import { useTranslation } from 'react-i18next';
 import type {
   AiAgentRunIntentSummaryDto,
   AiAgentRunTicketProposalDto,
   TicketTriageSkip,
 } from '@breeze/shared';
 
-/** Local copy of RunDetailPage.tsx's `intentStatusLabel` — that function has
- *  a second call site there (the run's own "Linked approvals" section) so it
- *  stays defined there too; duplicating this small literal-switch label
- *  lookup here avoids a circular import (RunDetailPage -> this card -> back
- *  into RunDetailPage) for a few lines of code. */
+/**
+ * This component is rendered from two callers whose `t` is bound to
+ * DIFFERENT default namespaces — RunDetailPage.tsx via
+ * `useTranslation('settings')` (where every `aiAgentsPage.*`/`aiAgentsRuns.*`
+ * key below actually lives), TicketWorkbench.tsx via `useTranslation('tickets')`
+ * (where `ticketWorkbench.aiProposal.*` lives). A bare `t('aiAgentsPage...')`
+ * call would resolve fine from RunDetailPage but silently render the raw key
+ * string from TicketWorkbench, since i18next has no `fallbackNS` configured
+ * (`lib/i18n/index.ts`) — caught in review, not by any test, because
+ * `TicketProposalCard.test.tsx`'s identity-`t` mock can't distinguish
+ * "resolved key" from "raw key" and neither web test suite asserts real
+ * translated text here.
+ *
+ * Every key below is therefore namespace-PREFIXED (`ns:key`), which
+ * overrides whichever namespace the caller's `t` is bound to. This works
+ * regardless of caller: every namespace for the active locale is loaded
+ * into the shared i18next resource store up front (`loadLocale` in
+ * `lib/i18n/index.ts` iterates every `<locale>/*.json` file, not just the
+ * ones some `useTranslation(ns)` call happened to request), so an explicit
+ * `settings:` or `tickets:` prefix always has data available to resolve
+ * against — see keyUsage.test.ts's own explicit-namespace handling for the
+ * scanner-side half of this contract.
+ */
 function intentStatusLabel(t: (key: string) => string, value: string): string {
   switch (value) {
     case 'pending_approval':
-      return t('aiAgentsPage.runs.statuses.awaiting_approval');
+      return t('settings:aiAgentsPage.runs.statuses.awaiting_approval');
     case 'approved':
-      return t('aiAgentsRuns.detail.ledger.statuses.approved');
+      return t('settings:aiAgentsRuns.detail.ledger.statuses.approved');
     case 'executing':
-      return t('aiAgentsRuns.detail.ledger.statuses.executing');
+      return t('settings:aiAgentsRuns.detail.ledger.statuses.executing');
     case 'completed':
-      return t('aiAgentsRuns.detail.ledger.statuses.completed');
+      return t('settings:aiAgentsRuns.detail.ledger.statuses.completed');
     case 'failed':
-      return t('aiAgentsRuns.detail.ledger.statuses.failed');
+      return t('settings:aiAgentsRuns.detail.ledger.statuses.failed');
     case 'rejected':
-      return t('aiAgentsRuns.detail.ledger.statuses.rejected');
+      return t('settings:aiAgentsRuns.detail.ledger.statuses.rejected');
     case 'expired':
-      return t('aiAgentsPage.runs.statuses.expired');
+      return t('settings:aiAgentsPage.runs.statuses.expired');
     case 'cancelled':
-      return t('aiAgentsPage.runs.statuses.cancelled');
+      return t('settings:aiAgentsPage.runs.statuses.cancelled');
     default:
       return value;
   }
@@ -37,18 +54,18 @@ function intentStatusLabel(t: (key: string) => string, value: string): string {
  *  scanner can see every key. */
 function draftKindLabel(t: (key: string) => string, kind: 'reply' | 'resolution_note'): string {
   return kind === 'reply'
-    ? t('aiAgentsPage.runs.triage.draftKinds.reply')
-    : t('aiAgentsPage.runs.triage.draftKinds.resolutionNote');
+    ? t('settings:aiAgentsPage.runs.triage.draftKinds.reply')
+    : t('settings:aiAgentsPage.runs.triage.draftKinds.resolutionNote');
 }
 
 /** Same literal-switch convention as `draftKindLabel` above. */
 function skipItemLabel(t: (key: string) => string, item: TicketTriageSkip['item']): string {
   switch (item) {
-    case 'fields': return t('aiAgentsPage.runs.triage.skipped.item.fields');
-    case 'link': return t('aiAgentsPage.runs.triage.skipped.item.link');
-    case 'note': return t('aiAgentsPage.runs.triage.skipped.item.note');
-    case 'draft-reply': return t('aiAgentsPage.runs.triage.skipped.item.draftReply');
-    case 'draft-resolution': return t('aiAgentsPage.runs.triage.skipped.item.draftResolution');
+    case 'fields': return t('settings:aiAgentsPage.runs.triage.skipped.item.fields');
+    case 'link': return t('settings:aiAgentsPage.runs.triage.skipped.item.link');
+    case 'note': return t('settings:aiAgentsPage.runs.triage.skipped.item.note');
+    case 'draft-reply': return t('settings:aiAgentsPage.runs.triage.skipped.item.draftReply');
+    case 'draft-resolution': return t('settings:aiAgentsPage.runs.triage.skipped.item.draftResolution');
     default: return item;
   }
 }
@@ -56,17 +73,17 @@ function skipItemLabel(t: (key: string) => string, item: TicketTriageSkip['item'
 /** Same literal-switch convention as `skipItemLabel` just above. */
 function skipReasonLabel(t: (key: string) => string, reason: TicketTriageSkip['reason']): string {
   switch (reason) {
-    case 'no_fields_proposed': return t('aiAgentsPage.runs.triage.skipped.reason.noFieldsProposed');
-    case 'below_confidence_floor': return t('aiAgentsPage.runs.triage.skipped.reason.belowConfidenceFloor');
-    case 'human_set': return t('aiAgentsPage.runs.triage.skipped.reason.humanSet');
-    case 'no_device_proposed': return t('aiAgentsPage.runs.triage.skipped.reason.noDeviceProposed');
-    case 'device_already_linked': return t('aiAgentsPage.runs.triage.skipped.reason.deviceAlreadyLinked');
-    case 'no_draft_reply': return t('aiAgentsPage.runs.triage.skipped.reason.noDraftReply');
-    case 'no_draft_resolution': return t('aiAgentsPage.runs.triage.skipped.reason.noDraftResolution');
-    case 'resolution_note_exists': return t('aiAgentsPage.runs.triage.skipped.reason.resolutionNoteExists');
-    case 'max_actions_per_run': return t('aiAgentsPage.runs.triage.skipped.reason.maxActionsPerRun');
-    case 'intent_error': return t('aiAgentsPage.runs.triage.skipped.reason.intentError');
-    case 'ticket_not_found': return t('aiAgentsPage.runs.triage.skipped.reason.ticketNotFound');
+    case 'no_fields_proposed': return t('settings:aiAgentsPage.runs.triage.skipped.reason.noFieldsProposed');
+    case 'below_confidence_floor': return t('settings:aiAgentsPage.runs.triage.skipped.reason.belowConfidenceFloor');
+    case 'human_set': return t('settings:aiAgentsPage.runs.triage.skipped.reason.humanSet');
+    case 'no_device_proposed': return t('settings:aiAgentsPage.runs.triage.skipped.reason.noDeviceProposed');
+    case 'device_already_linked': return t('settings:aiAgentsPage.runs.triage.skipped.reason.deviceAlreadyLinked');
+    case 'no_draft_reply': return t('settings:aiAgentsPage.runs.triage.skipped.reason.noDraftReply');
+    case 'no_draft_resolution': return t('settings:aiAgentsPage.runs.triage.skipped.reason.noDraftResolution');
+    case 'resolution_note_exists': return t('settings:aiAgentsPage.runs.triage.skipped.reason.resolutionNoteExists');
+    case 'max_actions_per_run': return t('settings:aiAgentsPage.runs.triage.skipped.reason.maxActionsPerRun');
+    case 'intent_error': return t('settings:aiAgentsPage.runs.triage.skipped.reason.intentError');
+    case 'ticket_not_found': return t('settings:aiAgentsPage.runs.triage.skipped.reason.ticketNotFound');
     default: return reason;
   }
 }
@@ -113,23 +130,13 @@ export function TicketProposalCard({
   onPostNote?: (content: string) => void | Promise<void>;
   posting?: boolean;
 }) {
-  // `t` above is always the CALLER's bound instance (RunDetailPage.tsx via
-  // useTranslation('settings'), TicketWorkbench.tsx via the default 'tickets'
-  // namespace) — this component never uses its own. The call exists solely so
-  // the keyUsage i18n scanner (src/lib/i18n/keyUsage.test.ts), which infers a
-  // file's default namespace list from any useTranslation() call anywhere in
-  // it regardless of which local binding it targets, resolves the keys below
-  // against BOTH namespaces they actually ship in: 'settings' for the
-  // aiAgentsPage.*/aiAgentsRuns.* triage keys, 'tickets' for
-  // ticketWorkbench.aiProposal.*.
-  useTranslation(['settings', 'tickets']);
   const intentsById = new Map(intents.map((intent) => [intent.id, intent]));
   const hasFields = proposal.fields && (proposal.fields.categoryId || proposal.fields.priority);
   const hasDevice = proposal.device && (proposal.device.hostname || proposal.device.serial);
 
   return (
     <section data-testid="ai-agent-run-triage" className="rounded-lg border bg-card p-4">
-      <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.triage.title')}</h2>
+      <h2 className="text-sm font-semibold">{t('settings:aiAgentsPage.runs.triage.title')}</h2>
 
       <p className="mt-2 text-sm" data-testid="ai-agent-run-triage-summary">
         {proposal.summary}
@@ -143,23 +150,23 @@ export function TicketProposalCard({
           disabled={posting}
           onClick={() => { void onPostNote(proposal.summary); }}
         >
-          {t('ticketWorkbench.aiProposal.postAsNote')}
+          {t('tickets:ticketWorkbench.aiProposal.postAsNote')}
         </button>
       )}
 
       {hasFields && (
         <div className="mt-3 space-y-1" data-testid="ai-agent-run-triage-fields">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.fieldsTitle')}
+            {t('settings:aiAgentsPage.runs.triage.fieldsTitle')}
           </h3>
           <ul className="space-y-1 text-sm">
             {proposal.fields?.categoryId && (
               <li data-testid="ai-agent-run-triage-field-categoryId">
-                <span className="font-medium">{t('aiAgentsRuns.detail.triage.categoryLabel')}</span>
+                <span className="font-medium">{t('settings:aiAgentsRuns.detail.triage.categoryLabel')}</span>
                 {': '}
-                <span className="text-muted-foreground">{t('aiAgentsRuns.detail.triage.categoryUnresolved')}</span>{' '}
+                <span className="text-muted-foreground">{t('settings:aiAgentsRuns.detail.triage.categoryUnresolved')}</span>{' '}
                 <span className="text-xs text-muted-foreground">
-                  {t('aiAgentsPage.runs.triage.confidence', {
+                  {t('settings:aiAgentsPage.runs.triage.confidence', {
                     value: Math.round(proposal.fields.categoryId.confidence * 100),
                   })}
                 </span>
@@ -167,11 +174,11 @@ export function TicketProposalCard({
             )}
             {proposal.fields?.priority && (
               <li data-testid="ai-agent-run-triage-field-priority">
-                <span className="font-medium">{t('aiAgentsPage.runs.triage.fields.priority')}</span>
+                <span className="font-medium">{t('settings:aiAgentsPage.runs.triage.fields.priority')}</span>
                 {': '}
                 <span>{proposal.fields.priority.value}</span>{' '}
                 <span className="text-xs text-muted-foreground">
-                  {t('aiAgentsPage.runs.triage.confidence', {
+                  {t('settings:aiAgentsPage.runs.triage.confidence', {
                     value: Math.round(proposal.fields.priority.confidence * 100),
                   })}
                 </span>
@@ -183,7 +190,7 @@ export function TicketProposalCard({
 
       {hasDevice && (
         <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-triage-device">
-          {t('aiAgentsPage.runs.triage.device', {
+          {t('settings:aiAgentsPage.runs.triage.device', {
             value: [proposal.device?.hostname, proposal.device?.serial].filter(Boolean).join(' / '),
           })}
         </p>
@@ -192,7 +199,7 @@ export function TicketProposalCard({
       {proposal.draftReply && (
         <div className="mt-3" data-testid="ai-agent-run-triage-draft-reply">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.draftReplyTitle')}
+            {t('settings:aiAgentsPage.runs.triage.draftReplyTitle')}
           </h3>
           <p className="mt-1 whitespace-pre-wrap text-sm">{proposal.draftReply}</p>
         </div>
@@ -201,7 +208,7 @@ export function TicketProposalCard({
       {proposal.draftResolutionNote && (
         <div className="mt-3" data-testid="ai-agent-run-triage-draft-resolution">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.draftResolutionTitle')}
+            {t('settings:aiAgentsPage.runs.triage.draftResolutionTitle')}
           </h3>
           <p className="mt-1 whitespace-pre-wrap text-sm">{proposal.draftResolutionNote}</p>
         </div>
@@ -210,7 +217,7 @@ export function TicketProposalCard({
       {proposal.notes && proposal.notes.length > 0 && (
         <div className="mt-3" data-testid="ai-agent-run-triage-notes">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.notesTitle')}
+            {t('settings:aiAgentsPage.runs.triage.notesTitle')}
           </h3>
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
             {proposal.notes.map((note, index) => (
@@ -223,7 +230,7 @@ export function TicketProposalCard({
       {proposal.intentIds && proposal.intentIds.length > 0 && (
         <div className="mt-3" data-testid="ai-agent-run-triage-intents">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.intentsTitle')}
+            {t('settings:aiAgentsPage.runs.triage.intentsTitle')}
           </h3>
           <ul className="mt-1 space-y-1 text-sm">
             {proposal.intentIds.map((intentId) => {
@@ -236,7 +243,7 @@ export function TicketProposalCard({
                 >
                   <span className="font-medium">{intent?.actionName ?? intentId}</span>
                   <span className="text-xs text-muted-foreground">
-                    {intent ? intentStatusLabel(t, intent.status) : t('aiAgentsPage.runs.triage.intentUnknown')}
+                    {intent ? intentStatusLabel(t, intent.status) : t('settings:aiAgentsPage.runs.triage.intentUnknown')}
                   </span>
                 </li>
               );
@@ -251,7 +258,7 @@ export function TicketProposalCard({
             data-testid="ai-agent-run-triage-intents-approvals-link"
             className="mt-1 inline-block text-primary hover:underline"
           >
-            {t('aiAgentsPage.runs.detail.intents.viewAll')}
+            {t('settings:aiAgentsPage.runs.detail.intents.viewAll')}
           </a>
         </div>
       )}
@@ -259,7 +266,7 @@ export function TicketProposalCard({
       {proposal.draftsWritten && proposal.draftsWritten.length > 0 && (
         <div className="mt-3" data-testid="ai-agent-run-triage-drafts-written">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.draftsWrittenTitle')}
+            {t('settings:aiAgentsPage.runs.triage.draftsWrittenTitle')}
           </h3>
           <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
             {proposal.draftsWritten.map((draft) => (
@@ -274,7 +281,7 @@ export function TicketProposalCard({
       {proposal.skipped && proposal.skipped.length > 0 && (
         <div className="mt-3" data-testid="ai-agent-run-triage-skipped">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            {t('aiAgentsPage.runs.triage.skippedTitle')}
+            {t('settings:aiAgentsPage.runs.triage.skippedTitle')}
           </h3>
           <ul className="mt-1 space-y-0.5 text-sm text-muted-foreground">
             {proposal.skipped.map((skip, index) => (
