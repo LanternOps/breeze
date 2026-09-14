@@ -9,7 +9,7 @@ import { config } from 'dotenv';
 // and must never carry the truncate hazard.
 //
 // Run with: pnpm -F @breeze/api test:rls-coverage
-config({ path: '../../.env.test' });
+config({ path: '../../.env.test', quiet: true });
 
 export default defineConfig({
   test: {

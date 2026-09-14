@@ -90,7 +90,8 @@
  *      then the phases run (drain → workers → queues → eventbus → redis → db →
  *      sentry), mirroring index.ts's Part A semantics.
  */
-import 'dotenv/config';
+import { config as loadDotenv } from 'dotenv';
+loadDotenv({ quiet: true });
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { sql } from 'drizzle-orm';
 import { AI_AGENTS_ENABLED, abuseSignalsEnabled, breezeRole, eventDispatchMode } from './config/env';
