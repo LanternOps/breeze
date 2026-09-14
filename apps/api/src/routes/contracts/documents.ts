@@ -19,8 +19,9 @@ import { auditSensitiveRead } from '../../services/sensitiveReadAudit';
 export const contractDocumentRoutes = new Hono();
 
 const scopes = requireScope('partner', 'organization', 'system');
-const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
-const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
+// Signed agreements gate on agreements:* (W02, spec §4) — see templates.ts.
+const readPerm = requirePermission(PERMISSIONS.AGREEMENTS_READ.resource, PERMISSIONS.AGREEMENTS_READ.action);
+const writePerm = requirePermission(PERMISSIONS.AGREEMENTS_WRITE.resource, PERMISSIONS.AGREEMENTS_WRITE.action);
 
 const idParam = z.object({ id: z.string().guid() });
 const listQuery = z.object({
