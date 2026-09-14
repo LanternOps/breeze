@@ -12,7 +12,7 @@ import type { Organization } from '@/components/settings/organizationTypes';
 import type { AccountReadinessResponse, ReadinessCapabilities, ReadinessOrg } from '@/lib/orgReadiness';
 
 export const ALL_CAPS: ReadinessCapabilities = {
-  sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: false,
+  sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: false, contracts: false, backup: false,
 };
 
 export const ALPHA: Organization = { id: 'aaaaaaaa-1111-4111-8111-111111111111', name: 'Alpha Ltd', status: 'active', type: 'customer', deviceCount: 3, createdAt: '2026-01-01T00:00:00Z' };

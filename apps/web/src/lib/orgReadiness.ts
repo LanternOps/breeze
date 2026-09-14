@@ -18,6 +18,10 @@ export interface ReadinessCapabilities {
   tickets: boolean;
   /** W03: connected_apps:read. Nothing in W02 reads it. */
   integrations: boolean;
+  /** W03: contracts:read AND native mode. */
+  contracts: boolean;
+  /** W03: backup:read. */
+  backup: boolean;
 }
 
 export interface ReadinessPrimaryContact {
@@ -33,6 +37,29 @@ export interface ReadinessTickets {
   slaBreached: number;
 }
 
+/* ---- W03 wire shapes (mirror apps/api/src/services/orgAccountReadinessIntegrations.ts) ---- */
+export type ConnectorSystem = 'quickbooks' | 'xero' | 'psa' | 'pax8' | 'huntress' | 'sentinelone';
+export type ConnectorState = 'connected' | 'reauth_required' | 'disconnected' | 'error' | 'disabled';
+export interface ReadinessConnector {
+  system: ConnectorSystem;
+  state: ConnectorState;
+  /** PSA provider id — PSA only. */
+  provider?: string;
+}
+export type IntegrationSystem = ConnectorSystem | 'm365' | 'dns_filter' | 'external';
+export type IntegrationState = 'linked' | 'pending' | 'error' | 'identity';
+export type IntegrationReason =
+  | 'suggested_match' | 'sync_error' | 'consent_pending' | 'expired' | 'degraded' | 'suspended'
+  | 'error' | 'never_synced' | 'sync_failed' | 'disabled' | 'connector_error';
+export interface ReadinessIntegration {
+  system: IntegrationSystem;
+  state: IntegrationState;
+  /** A code; translated under orgBoard.integrations.reason.* */
+  reason?: IntegrationReason;
+  /** 'external' rows: the raw organization_external_links.system value. */
+  label?: string;
+}
+
 export interface ReadinessOrg {
   orgId: string;
   type: 'customer' | 'internal' | 'quick_support';
@@ -43,6 +70,8 @@ export interface ReadinessOrg {
     /** max(last_seen_at) over non-decommissioned devices; null = never; absent = not evaluated. */
     lastSeenAt?: string | null;
     policyAssigned: boolean;
+    backupConfigured?: boolean;
+    backupApplicable?: boolean;
   };
   account: {
     primaryContact: ReadinessPrimaryContact | null;
@@ -50,9 +79,10 @@ export interface ReadinessOrg {
     billingAddress: boolean;
     pendingInvitations?: number;
     overdueInvoices?: number;
+    activeContracts?: number;
   };
-  /** W03: per-system mapping state. Typed loosely until the Integrations column lands. */
-  integrations?: unknown[];
+  /** W03: per-system mapping state. */
+  integrations?: ReadinessIntegration[];
   tickets?: ReadinessTickets;
 }
 
@@ -61,6 +91,7 @@ export interface AccountReadinessResponse {
   capabilities: ReadinessCapabilities;
   serviceManagementMode: ServiceManagementMode;
   orgs: ReadinessOrg[];
+  connectors?: ReadinessConnector[];
 }
 
 /** Per-row fetch state kept by `useAccountReadiness`; declared here so this
@@ -72,17 +103,18 @@ export type ReadinessRowState = 'pending' | 'ready' | 'failed';
 export const STALE_CHECK_IN_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type SetupChipKey = 'noSite' | 'noDevices' | 'noCheckIn' | 'staleCheckIn' | 'noPolicy';
+export type SetupChipKey = 'noSite' | 'noDevices' | 'noCheckIn' | 'staleCheckIn' | 'noPolicy' | 'noBackup';
 export type AccountChipKey =
   | 'primaryContact'
   | 'contactEmail'
   | 'contactPhone'
   | 'billingContact'
   | 'billingAddress'
+  | 'noActiveContract'
   | 'overdueInvoices'
   | 'invitation';
 export type ChipKey = SetupChipKey | AccountChipKey;
-export type RepairTarget = 'sites' | 'devices' | 'policies' | 'contacts' | 'settings' | 'billing';
+export type RepairTarget = 'sites' | 'devices' | 'policies' | 'contacts' | 'settings' | 'billing' | 'backup';
 
 export interface ReadinessChip {
   key: ChipKey;
@@ -113,8 +145,10 @@ export const REPAIR_TARGETS: Record<ChipKey, RepairTarget> = {
   contactPhone: 'contacts',
   billingContact: 'contacts',
   billingAddress: 'settings',
+  noActiveContract: 'billing',
   overdueInvoices: 'billing',
   invitation: 'contacts',
+  noBackup: 'backup',
 };
 
 export function repairHref(target: RepairTarget, orgId: string): string {
@@ -131,6 +165,8 @@ export function repairHref(target: RepairTarget, orgId: string): string {
       return `/settings/organizations/${orgId}`;
     case 'policies':
       return '/configuration-policies';
+    case 'backup':
+      return '/backup';
   }
 }
 
@@ -188,6 +224,10 @@ export function deriveReadinessChips(
     }
   }
   if (capabilities.policies && !readiness.setup.policyAssigned) setup.push(chip('noPolicy', org.id, 'warning'));
+  // W03: applicable only when the partner uses backup at all (plan §1); a setup chip, so internal orgs count.
+  if (capabilities.backup && readiness.setup.backupApplicable === true && readiness.setup.backupConfigured === false) {
+    setup.push(chip('noBackup', org.id, 'warning'));
+  }
 
   // ---- Account data: customer orgs only ----
   const accountApplicable = type === 'customer';
@@ -208,6 +248,10 @@ export function deriveReadinessChips(
       account.push(chip('billingContact', org.id, 'warning'));
     }
     if (billingApplies && !readiness.account.billingAddress) account.push(chip('billingAddress', org.id, 'warning'));
+    // W03: the contracts table is the source of truth; evergreen terms count as active (plan §8).
+    if (billingApplies && capabilities.contracts && mode === 'native' && readiness.account.activeContracts === 0) {
+      account.push(chip('noActiveContract', org.id, 'warning'));
+    }
     if (billingApplies && capabilities.invoices && mode === 'native' && (readiness.account.overdueInvoices ?? 0) > 0) {
       account.push(chip('overdueInvoices', org.id, 'destructive', readiness.account.overdueInvoices));
     }
@@ -253,7 +297,7 @@ export type BoardLens = (typeof BOARD_LENSES)[number];
 export const DEFAULT_LENS: BoardLens = 'both';
 
 /** Chip order = band order. W03 inserts 'unlinked' between accountMissing and openTickets. */
-export const BOARD_FILTERS = ['all', 'setupIncomplete', 'accountMissing', 'openTickets', 'trial', 'archived'] as const;
+export const BOARD_FILTERS = ['all', 'setupIncomplete', 'accountMissing', 'unlinked', 'openTickets', 'trial', 'archived'] as const;
 export type BoardFilter = (typeof BOARD_FILTERS)[number];
 export const DEFAULT_FILTER: BoardFilter = 'all';
 
@@ -263,14 +307,14 @@ export type BoardSort = (typeof BOARD_SORTS)[number];
 /** Readiness columns in render order. 'integrations' is the W03 slot. */
 export const BOARD_COLUMNS = ['setup', 'account', 'integrations', 'tickets'] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
-/** W03 replaces this constant with `capabilities.integrations`; until the column has a renderer it stays off. */
-const INTEGRATIONS_COLUMN_ENABLED = false;
 
 export interface BoardRow {
   org: Organization;
   readiness: ReadinessOrg | undefined;
   state: ReadinessRowState;
   chips: DerivedChips | null;
+  /** null = integrations withheld, or the row's batch not landed. */
+  badges: IntegrationBadge[] | null;
 }
 
 export const isBoardLens = (value: string): value is BoardLens => (BOARD_LENSES as readonly string[]).includes(value);
@@ -282,13 +326,14 @@ const LENS_HIDES: Record<BoardLens, BoardColumn | null> = { setup: 'account', ac
 const FILTER_EVIDENCE: Partial<Record<BoardFilter, BoardColumn>> = {
   setupIncomplete: 'setup',
   accountMissing: 'account',
+  unlinked: 'integrations',
   openTickets: 'tickets',
 };
 
 export function visibleColumns(lens: BoardLens, capabilities: ReadinessCapabilities | null): BoardColumn[] {
   return BOARD_COLUMNS.filter((column) => {
     if (LENS_HIDES[lens] === column) return false;
-    if (column === 'integrations') return INTEGRATIONS_COLUMN_ENABLED && capabilities?.integrations === true;
+    if (column === 'integrations') return capabilities?.integrations === true;
     if (column === 'tickets') return capabilities?.tickets === true;
     return true; // setup / account: policies + contacts are always-true capabilities
   });
@@ -296,7 +341,11 @@ export function visibleColumns(lens: BoardLens, capabilities: ReadinessCapabilit
 
 /** A capability-trimmed section takes its filter with it; Archived is always discoverable. */
 export function visibleFilters(capabilities: ReadinessCapabilities | null): BoardFilter[] {
-  return BOARD_FILTERS.filter((filter) => (filter === 'openTickets' ? capabilities?.tickets === true : true));
+  return BOARD_FILTERS.filter((filter) => {
+    if (filter === 'openTickets') return capabilities?.tickets === true;
+    if (filter === 'unlinked') return capabilities?.integrations === true;
+    return true;
+  });
 }
 
 export function lensForFilter(filter: BoardFilter, lens: BoardLens): BoardLens {
@@ -312,6 +361,8 @@ export function matchesFilter(filter: BoardFilter, row: BoardRow): boolean {
       return (row.chips?.setup.length ?? 0) > 0;
     case 'accountMissing':
       return (row.chips?.account.length ?? 0) > 0;
+    case 'unlinked':
+      return hasUnlinked(row.badges);
     case 'openTickets':
       return (row.readiness?.tickets?.open ?? 0) > 0;
     case 'trial':
@@ -343,6 +394,101 @@ export function searchMatches(query: string, org: Pick<Organization, 'name'>, re
   const primary = readiness?.account.primaryContact;
   if (!primary) return false;
   return (primary.name?.toLowerCase().includes(q) ?? false) || (primary.email?.toLowerCase().includes(q) ?? false);
+}
+
+/* ------------------------------ W03 integrations ------------------------------ */
+// Spec "Integrations cell"; plan "Spec ambiguities resolved" §2, §7, §9, §10.
+
+export interface IntegrationBadge {
+  system: IntegrationSystem;
+  state: IntegrationState | 'not_linked';
+  reason?: IntegrationReason;
+  label?: string;
+  /** The system's partner connector is not connected: render quietly, never as a problem. */
+  muted: boolean;
+}
+
+export interface ConnectorRepair {
+  system: ConnectorSystem;
+  state: Exclude<ConnectorState, 'connected'>;
+  provider?: string;
+  href: string;
+}
+
+/** Brand names are locale-invariant product names, so they live here rather than in eight catalogs. */
+export const SYSTEM_DISPLAY_NAMES: Record<Exclude<IntegrationSystem, 'psa' | 'dns_filter' | 'external'>, string> = {
+  quickbooks: 'QuickBooks',
+  xero: 'Xero',
+  pax8: 'Pax8',
+  m365: 'Microsoft 365',
+  huntress: 'Huntress',
+  sentinelone: 'SentinelOne',
+};
+
+/** PSA provider ids from PSA_PROVIDERS (@breeze/shared validators/psa.ts) → product names. */
+export const PSA_PROVIDER_NAMES: Record<string, string> = {
+  connectwise: 'ConnectWise',
+  autotask: 'Autotask',
+  jira: 'Jira',
+  servicenow: 'ServiceNow',
+  freshservice: 'Freshservice',
+  zendesk: 'Zendesk',
+};
+
+/** Where a connector is repaired — the /integrations hub tab hashes (IntegrationsPage.tsx) and the PSA page. */
+export const CONNECTOR_SETTINGS_HREF: Record<ConnectorSystem, string> = {
+  quickbooks: '/integrations#quickbooks',
+  xero: '/integrations#accounting',
+  psa: '/integrations/psa',
+  pax8: '/integrations#pax8',
+  huntress: '/integrations#huntress',
+  sentinelone: '/integrations#sentinelone',
+};
+
+/** Connectors that imply a per-org mapping (a dashed "not linked" is meaningful). M365 / DNS / external have no partner connector. */
+export const NOT_LINKED_CONNECTOR_SYSTEMS: readonly ConnectorSystem[] = ['quickbooks', 'xero', 'psa', 'pax8', 'huntress', 'sentinelone'];
+
+export function deriveIntegrationBadges(
+  readiness: ReadinessOrg | undefined,
+  connectors: ReadinessConnector[] | null | undefined,
+  capabilities: ReadinessCapabilities | null,
+): IntegrationBadge[] | null {
+  if (!capabilities?.integrations || !readiness?.integrations) return null;
+  const connected = new Set<ConnectorSystem>();
+  const notConnected = new Set<ConnectorSystem>();
+  for (const connector of connectors ?? []) {
+    if (connector.state === 'connected') connected.add(connector.system);
+    else notConnected.add(connector.system);
+  }
+  const badges: IntegrationBadge[] = readiness.integrations.map((row) => ({
+    ...row,
+    muted: notConnected.has(row.system as ConnectorSystem) && !connected.has(row.system as ConnectorSystem),
+  }));
+  if (readiness.type !== 'customer') return badges;
+  const present = new Set(readiness.integrations.map((row) => row.system));
+  for (const system of NOT_LINKED_CONNECTOR_SYSTEMS) {
+    if (connected.has(system) && !present.has(system)) badges.push({ system, state: 'not_linked', muted: false });
+  }
+  return badges;
+}
+
+export function hasUnlinked(badges: IntegrationBadge[] | null): boolean {
+  return badges !== null && badges.some((badge) => badge.state === 'not_linked');
+}
+
+/** One repair line per connector that is not connected — never N per-org problems. */
+export function connectorRepairs(connectors: ReadinessConnector[] | null | undefined): ConnectorRepair[] {
+  const repairs: ConnectorRepair[] = [];
+  for (const connector of connectors ?? []) {
+    if (connector.state === 'connected') continue;
+    repairs.push({
+      system: connector.system,
+      state: connector.state,
+      ...(connector.provider ? { provider: connector.provider } : {}),
+      href: CONNECTOR_SETTINGS_HREF[connector.system],
+    });
+  }
+  return repairs;
 }
 
 /* ---------------------------------- Hash ---------------------------------- */

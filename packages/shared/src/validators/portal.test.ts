@@ -124,6 +124,7 @@ describe('bulkInvitePortalUsersSchema', () => {
 describe('updatePortalSettingsSchema W04 flags', () => {
   it('accepts the W04 service and documents flags', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableService: true, enableDocuments: false }).success).toBe(true);
+    expect(updatePortalSettingsSchema.safeParse({ enableLifecycle: true }).success).toBe(true);
   });
   it('still rejects an unknown flag', () => {
     expect(updatePortalSettingsSchema.safeParse({ enableProjects: true }).success).toBe(false);

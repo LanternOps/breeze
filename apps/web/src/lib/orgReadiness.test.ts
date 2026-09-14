@@ -28,7 +28,7 @@ import {
 const NOW = new Date('2026-09-13T12:00:00.000Z');
 const ORG_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
 const ALL_CAPS: ReadinessCapabilities = {
-  sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: false,
+  sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: false, contracts: false, backup: false,
 };
 
 type Overrides = Partial<Omit<ReadinessOrg, 'setup' | 'account'>> & {
@@ -280,12 +280,12 @@ function row(overrides: {
     },
     tickets: { open: overrides.open ?? 0, awaitingCustomer: 0, slaBreached: 0 },
   };
-  return { org, readiness, state: 'ready', chips: { setup: setupChips, account: accountChips, accountApplicable: true } };
+  return { org, readiness, state: 'ready', chips: { setup: setupChips, account: accountChips, accountApplicable: true }, badges: null };
 }
 
 describe('filters', () => {
-  it('has the spec order and leaves W03 room', () => {
-    expect([...BOARD_FILTERS]).toEqual(['all', 'setupIncomplete', 'accountMissing', 'openTickets', 'trial', 'archived']);
+  it('has the spec order', () => {
+    expect([...BOARD_FILTERS]).toEqual(['all', 'setupIncomplete', 'accountMissing', 'unlinked', 'openTickets', 'trial', 'archived']);
     expect([...BOARD_COLUMNS]).toEqual(['setup', 'account', 'integrations', 'tickets']);
   });
 
@@ -312,9 +312,9 @@ describe('filters', () => {
   });
 
   it('visibleFilters drops Open tickets without the tickets capability and always keeps Archived', () => {
-    const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: false, integrations: false };
+    const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: false, integrations: false, contracts: false, backup: false };
     expect(visibleFilters(caps)).toEqual(['all', 'setupIncomplete', 'accountMissing', 'trial', 'archived']);
-    expect(visibleFilters({ ...caps, tickets: true })).toEqual([...BOARD_FILTERS]);
+    expect(visibleFilters({ ...caps, tickets: true, integrations: true })).toEqual([...BOARD_FILTERS]);
     expect(visibleFilters(null)).toEqual(['all', 'setupIncomplete', 'accountMissing', 'trial', 'archived']);
   });
 
@@ -330,13 +330,13 @@ describe('filters', () => {
 });
 
 describe('columns', () => {
-  const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: true };
+  const caps = { sites: true, devices: true, policies: true, contacts: true, portalUsers: true, invoices: true, tickets: true, integrations: true, contracts: true, backup: true };
 
-  it('follows the lens and the tickets capability; Integrations stays off until W03', () => {
-    expect(visibleColumns('both', caps)).toEqual(['setup', 'account', 'tickets']);
-    expect(visibleColumns('setup', caps)).toEqual(['setup', 'tickets']);
-    expect(visibleColumns('account', caps)).toEqual(['account', 'tickets']);
-    expect(visibleColumns('both', { ...caps, tickets: false })).toEqual(['setup', 'account']);
+  it('follows the lens, the tickets capability and the integrations capability', () => {
+    expect(visibleColumns('both', caps)).toEqual(['setup', 'account', 'integrations', 'tickets']);
+    expect(visibleColumns('setup', caps)).toEqual(['setup', 'integrations', 'tickets']);
+    expect(visibleColumns('account', caps)).toEqual(['account', 'integrations', 'tickets']);
+    expect(visibleColumns('both', { ...caps, tickets: false })).toEqual(['setup', 'account', 'integrations']);
   });
 
   it('renders Setup and Account (always-true capabilities) before the first batch lands, never Tickets', () => {
@@ -402,8 +402,8 @@ describe('hash', () => {
   it('ignores unknown values and falls back to undefined for an empty or foreign hash', () => {
     expect(parseBoardHash('')).toBeUndefined();
     expect(parseBoardHash('#')).toBeUndefined();
-    expect(parseBoardHash('lens=nope&filter=unlinked')).toBeUndefined();
-    expect(parseBoardHash('lens=setup&filter=unlinked')).toEqual({ lens: 'setup' });
+    expect(parseBoardHash('lens=nope&filter=bogus')).toBeUndefined();
+    expect(parseBoardHash('lens=setup&filter=bogus')).toEqual({ lens: 'setup' });
     expect(parseBoardHash('tickets')).toBeUndefined();
   });
 

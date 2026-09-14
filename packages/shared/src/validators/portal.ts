@@ -17,6 +17,8 @@ export const updatePortalSettingsSchema = z.object({
   // Service deliverables W04 (spec §4.7): both fail closed, default false.
   enableService: z.boolean().optional(),
   enableDocuments: z.boolean().optional(),
+  // Portal Hardware Lifecycle (#5719): fail closed, required alongside enableReports.
+  enableLifecycle: z.boolean().optional(),
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportPhone: z.string().max(50).nullable().optional(),
   welcomeMessage: z.string().max(2000).nullable().optional(),

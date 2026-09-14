@@ -31,6 +31,7 @@ const SETTINGS = {
   enableSupportUsage: false,
   enableService: false,
   enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome!',
@@ -122,6 +123,7 @@ describe('OrgPortalSettingsEditor', () => {
       'enableSupportUsage',
       'enableService',
       'enableDocuments',
+      'enableLifecycle',
     ]) {
       expect((screen.getByTestId(
         `org-portal-toggle-${key}`,
@@ -159,6 +161,7 @@ describe('OrgPortalSettingsEditor', () => {
       enableSupportUsage: true,
       enableService: true,
       enableDocuments: true,
+      enableLifecycle: true,
     });
   });
 

@@ -83,6 +83,10 @@ const STRICT_PORTAL_FEATURES: Record<PortalVisibilityFlag, { error: string; code
     error: 'Documents are not enabled for this portal',
     code: 'PORTAL_DOCUMENTS_DISABLED',
   },
+  enableLifecycle: {
+    error: 'Hardware lifecycle is not enabled for this portal',
+    code: 'PORTAL_LIFECYCLE_DISABLED',
+  },
 };
 
 export function createPortalFeatureGateStrict(flag: PortalVisibilityFlag): MiddlewareHandler {

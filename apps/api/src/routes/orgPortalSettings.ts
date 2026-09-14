@@ -32,6 +32,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableSupportUsage: false,
   enableService: false,
   enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: null,
   supportPhone: null,
   welcomeMessage: null,
@@ -50,6 +51,7 @@ type PortalSettingsRow = {
   enableSupportUsage: boolean;
   enableService: boolean;
   enableDocuments: boolean;
+  enableLifecycle: boolean;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -75,6 +77,7 @@ const portalSettingsColumns = () => ({
   enableSupportUsage: portalBranding.enableSupportUsage,
   enableService: portalBranding.enableService,
   enableDocuments: portalBranding.enableDocuments,
+  enableLifecycle: portalBranding.enableLifecycle,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
@@ -96,6 +99,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableSupportUsage: row.enableSupportUsage,
     enableService: row.enableService,
     enableDocuments: row.enableDocuments,
+    enableLifecycle: row.enableLifecycle,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
@@ -198,7 +202,8 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
             enableReports: row.enableReports,
             enableSupportUsage: row.enableSupportUsage,
             enableService: row.enableService,
-            enableDocuments: row.enableDocuments
+            enableDocuments: row.enableDocuments,
+            enableLifecycle: row.enableLifecycle
           }
         });
       }

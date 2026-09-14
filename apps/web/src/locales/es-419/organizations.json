@@ -228,10 +228,11 @@
       "accountMissing": "Faltan datos de la cuenta",
       "openTickets": "Tickets abiertos",
       "trial": "Prueba",
-      "archived": "Archivadas"
+      "archived": "Archivadas",
+      "unlinked": "Sin vincular"
     },
     "sort": { "label": "Ordenar", "manual": "Orden manual", "name": "De la A a la Z", "tickets": "Tickets abiertos" },
-    "columns": { "organization": "Organización", "setup": "Configuración", "account": "Datos de la cuenta", "tickets": "Tickets abiertos", "actions": "Acciones de fila" },
+    "columns": { "organization": "Organización", "setup": "Configuración", "account": "Datos de la cuenta", "tickets": "Tickets abiertos", "actions": "Acciones de fila", "integrations": "Integraciones" },
     "band": {
       "label": "Preparación de cuentas",
       "all": "Cuentas",
@@ -241,7 +242,8 @@
       "openTickets": "Tickets abiertos",
       "openTicketsSub": "{{count}} SLA incumplidos",
       "pending": "Verificando organizaciones…",
-      "partial": "No se pudieron verificar algunas organizaciones."
+      "partial": "No se pudieron verificar algunas organizaciones.",
+      "unlinked": "Sin vincular"
     },
     "chips": {
       "noSite": "Sin sitio",
@@ -263,7 +265,9 @@
       "notApplicable": "No aplica",
       "unavailable": "No disponible",
       "stillNeeded": "Pendiente",
-      "link": "{{chip}} de {{orgName}}"
+      "link": "{{chip}} de {{orgName}}",
+      "noActiveContract": "Sin contrato activo",
+      "noBackup": "Sin respaldo configurado"
     },
     "repair": {
       "sites": "Abrir la pestaña Sitios de {{orgName}}",
@@ -271,7 +275,39 @@
       "policies": "Abrir las políticas de configuración",
       "contacts": "Abrir la pestaña Contactos de {{orgName}}",
       "settings": "Abrir la configuración de {{orgName}}",
-      "billing": "Abrir la pestaña Facturación de {{orgName}}"
+      "billing": "Abrir la pestaña Facturación de {{orgName}}",
+      "backup": "Abrir el respaldo de {{orgName}}"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "Filtro DNS" },
+      "state": { "linked": "Vinculado", "pending": "Pendiente", "error": "Requiere atención", "identity": "Solo identidad", "not_linked": "Sin vincular" },
+      "reason": {
+        "suggested_match": "Coincidencia sugerida, aún sin confirmar",
+        "sync_error": "La última sincronización falló",
+        "consent_pending": "Esperando el consentimiento de Microsoft",
+        "expired": "Conexión vencida",
+        "degraded": "Conexión degradada",
+        "suspended": "Conexión suspendida",
+        "error": "La conexión informó un error",
+        "never_synced": "Nunca sincronizado",
+        "sync_failed": "La sincronización del conector falló",
+        "disabled": "Conexión deshabilitada",
+        "connector_error": "Conector inactivo o con fallas"
+      },
+      "notLinked": "{{system}} sin vincular",
+      "nothingLinked": "Nada vinculado",
+      "connectorMuted": "El conector de {{system}} no está conectado",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} necesita reconectarse",
+          "disconnected": "{{system}} está desconectado",
+          "error": "El conector de {{system}} tiene un error",
+          "disabled": "El conector de {{system}} está deshabilitado"
+        },
+        "openSettings": "Abrir la configuración de {{system}}"
+      }
     },
     "tickets": { "open": "{{count}} abiertos", "awaiting": "{{count}} en espera del cliente", "sla": "{{count}} SLA incumplidos" },
     "meta": {

@@ -228,10 +228,11 @@
       "accountMissing": "Kontodaten fehlen",
       "openTickets": "Offene Tickets",
       "trial": "Testphase",
-      "archived": "Archiviert"
+      "archived": "Archiviert",
+      "unlinked": "Nicht verknüpft"
     },
     "sort": { "label": "Sortieren", "manual": "Manuelle Reihenfolge", "name": "A bis Z", "tickets": "Offene Tickets" },
-    "columns": { "organization": "Organisation", "setup": "Einrichtung", "account": "Kontodaten", "tickets": "Offene Tickets", "actions": "Zeilenaktionen" },
+    "columns": { "organization": "Organisation", "setup": "Einrichtung", "account": "Kontodaten", "tickets": "Offene Tickets", "actions": "Zeilenaktionen", "integrations": "Integrationen" },
     "band": {
       "label": "Kontobereitschaft",
       "all": "Konten",
@@ -241,7 +242,8 @@
       "openTickets": "Offene Tickets",
       "openTicketsSub": "{{count}} SLA verletzt",
       "pending": "Organisationen werden geprüft…",
-      "partial": "Einige Organisationen konnten nicht geprüft werden."
+      "partial": "Einige Organisationen konnten nicht geprüft werden.",
+      "unlinked": "Nicht verknüpft"
     },
     "chips": {
       "noSite": "Kein Standort",
@@ -263,7 +265,9 @@
       "notApplicable": "Nicht zutreffend",
       "unavailable": "Nicht verfügbar",
       "stillNeeded": "Noch offen",
-      "link": "{{chip}} für {{orgName}}"
+      "link": "{{chip}} für {{orgName}}",
+      "noActiveContract": "Kein aktiver Vertrag",
+      "noBackup": "Kein Backup konfiguriert"
     },
     "repair": {
       "sites": "Registerkarte „Standorte“ für {{orgName}} öffnen",
@@ -271,7 +275,39 @@
       "policies": "Konfigurationsrichtlinien öffnen",
       "contacts": "Registerkarte „Kontakte“ für {{orgName}} öffnen",
       "settings": "Einstellungen für {{orgName}} öffnen",
-      "billing": "Registerkarte „Abrechnung“ für {{orgName}} öffnen"
+      "billing": "Registerkarte „Abrechnung“ für {{orgName}} öffnen",
+      "backup": "Backup für {{orgName}} öffnen"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS-Filter" },
+      "state": { "linked": "Verknüpft", "pending": "Ausstehend", "error": "Erfordert Aufmerksamkeit", "identity": "Nur Identität", "not_linked": "Nicht verknüpft" },
+      "reason": {
+        "suggested_match": "Vorgeschlagene Zuordnung, noch nicht bestätigt",
+        "sync_error": "Letzte Synchronisierung fehlgeschlagen",
+        "consent_pending": "Wartet auf Microsoft-Einwilligung",
+        "expired": "Verbindung abgelaufen",
+        "degraded": "Verbindung eingeschränkt",
+        "suspended": "Verbindung ausgesetzt",
+        "error": "Verbindung hat einen Fehler gemeldet",
+        "never_synced": "Noch nie synchronisiert",
+        "sync_failed": "Connector-Synchronisierung fehlgeschlagen",
+        "disabled": "Verbindung deaktiviert",
+        "connector_error": "Connector inaktiv oder fehlerhaft"
+      },
+      "notLinked": "{{system}} nicht verknüpft",
+      "nothingLinked": "Nichts verknüpft",
+      "connectorMuted": "{{system}}-Connector ist nicht verbunden",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} muss neu verbunden werden",
+          "disconnected": "{{system}} ist getrennt",
+          "error": "{{system}}-Connector hat einen Fehler",
+          "disabled": "{{system}}-Connector ist deaktiviert"
+        },
+        "openSettings": "{{system}}-Einstellungen öffnen"
+      }
     },
     "tickets": { "open": "{{count}} offen", "awaiting": "{{count}} warten auf Kunde", "sla": "{{count}} SLA verletzt" },
     "meta": {

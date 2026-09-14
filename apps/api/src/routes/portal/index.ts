@@ -57,6 +57,10 @@ portalRoutes.use('/backups/*', portalAuthMiddleware);
 portalRoutes.use('/backups/*', createPortalFeatureGateStrict('enableBackups'));
 portalRoutes.use('/reports/*', portalAuthMiddleware);
 portalRoutes.use('/reports/*', createPortalFeatureGateStrict('enableReports'));
+// A second, narrower gate. Hono stacks middleware by matched prefix, so a
+// request to /reports/lifecycle/* needs both enableReports and
+// enableLifecycle; every other /reports/* path is untouched.
+portalRoutes.use('/reports/lifecycle/*', createPortalFeatureGateStrict('enableLifecycle'));
 // Service deliverables W04 — both new surfaces fail closed the same way.
 portalRoutes.use('/service/*', portalAuthMiddleware);
 portalRoutes.use('/service/*', createPortalFeatureGateStrict('enableService'));

@@ -26,6 +26,7 @@ import {
   BOARD_SORTS,
   DEFAULT_FILTER,
   DEFAULT_LENS,
+  deriveIntegrationBadges,
   deriveReadinessChips,
   isBoardLens,
   isBoardSort,
@@ -209,12 +210,19 @@ export default function OrganizationsBoardPage() {
     const now = new Date();
     return organizations.map((org) => {
       const r = readiness.byOrg.get(org.id);
-      return { org, readiness: r, state: readiness.rowState.get(org.id) ?? 'pending', chips: deriveReadinessChips(org, r, capabilities, mode, now) };
+      const state = readiness.rowState.get(org.id) ?? 'pending';
+      return {
+        org,
+        readiness: r,
+        state,
+        chips: deriveReadinessChips(org, r, capabilities, mode, now),
+        badges: state === 'ready' ? deriveIntegrationBadges(r, readiness.connectors, capabilities) : null,
+      };
     });
-  }, [organizations, readiness.byOrg, readiness.rowState, capabilities, mode]);
+  }, [organizations, readiness.byOrg, readiness.rowState, readiness.connectors, capabilities, mode]);
 
   const archivedRows: BoardRow[] = useMemo(
-    () => archived.archivedOrgs.map((org) => ({ org, readiness: undefined, state: 'ready' as const, chips: null })),
+    () => archived.archivedOrgs.map((org) => ({ org, readiness: undefined, state: 'ready' as const, chips: null, badges: null })),
     [archived.archivedOrgs],
   );
 
@@ -291,6 +299,7 @@ export default function OrganizationsBoardPage() {
       suspended: rows.filter((r) => r.org.status === 'suspended').length,
       setupIncomplete: readinessKnown ? count('setupIncomplete') : null,
       accountMissing: readinessKnown ? count('accountMissing') : null,
+      unlinked: readinessKnown ? count('unlinked') : null,
       openTickets: readinessKnown ? count('openTickets') : null,
       slaBreached: rows.reduce((sum, r) => sum + (r.readiness?.tickets?.slaBreached ?? 0), 0),
       openTicketTotal: rows.reduce((sum, r) => sum + (r.readiness?.tickets?.open ?? 0), 0),
@@ -305,6 +314,8 @@ export default function OrganizationsBoardPage() {
         return counts.setupIncomplete;
       case 'accountMissing':
         return counts.accountMissing;
+      case 'unlinked':
+        return counts.unlinked;
       case 'openTickets':
         return counts.openTickets;
       case 'trial':
@@ -336,6 +347,7 @@ export default function OrganizationsBoardPage() {
               onPress,
             };
           }
+          if (key === 'unlinked') return { key, count: counts.unlinked, pressed, onPress };
           return { key, count: key === 'setupIncomplete' ? counts.setupIncomplete : counts.accountMissing, pressed, onPress };
         }),
     [filters, filter, rows.length, counts, readinessKnown, changeFilter, t],
@@ -569,6 +581,7 @@ export default function OrganizationsBoardPage() {
             menuItemsFor={menuItemsFor}
             archivedView
             now={new Date()}
+            connectors={readiness.connectors}
           />
           {filteredRows.length === 0 && (
             // Keyed on whether a search is active: once a term is present the loaded
@@ -619,6 +632,7 @@ export default function OrganizationsBoardPage() {
         menuItemsFor={menuItemsFor}
         archivedView={false}
         now={new Date()}
+        connectors={readiness.connectors}
       />
     );
   };
@@ -649,7 +663,7 @@ export default function OrganizationsBoardPage() {
 
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
-      <RollupBand cells={bandCells} status={readiness.status} onRetry={readiness.retry} />
+      <RollupBand cells={bandCells} status={readiness.status} onRetry={readiness.retry} connectors={readiness.connectors} />
 
       {/* Toolbar: search · filter chips · lens · sort */}
       <div className="flex flex-col gap-3 rounded-lg border bg-card p-3 shadow-xs lg:flex-row lg:items-center lg:justify-between">
