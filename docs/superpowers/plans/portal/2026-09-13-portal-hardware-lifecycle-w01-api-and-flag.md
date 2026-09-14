@@ -22,7 +22,7 @@ tracking_issue: LanternOps/breeze#5728
 - **Tenancy:** every read runs inside the ambient portal org transaction set by `portalAuthMiddleware`. No `runOutsideDbContext`, no `withSystemDbAccessContext`, anywhere in this wave except the script in Task 9. `portal_branding` and `reports`/`report_runs` are shape 1 (direct `org_id`); `breeze_has_org_access(org_id)` is the only policy exercised.
 - **Org id is server-derived** from `auth.user.orgId` on every function; no route accepts an org id as input.
 - **Fail closed:** `enableLifecycle` defaults `false` for every org. `createPortalFeatureGateStrict` already 403s on a missing row or a non-`true` value; no change needed there.
-- **Migration slot:** `apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql`. Newest committed migration at plan-writing time is `2026-10-16-170800-fleet-design-apply.sql`, so `180300` sorts last. Confirm with `ls apps/api/migrations | sort | tail -3` right before committing Task 1, and again against `origin/main` before pushing.
+- **Migration slot:** `apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql`. Newest committed migration at plan-writing time is `2026-10-16-170800-fleet-design-apply.sql`, so `180500` sorts last (moved off 180300, claimed by #5736). Confirm with `ls apps/api/migrations | sort | tail -3` right before committing Task 1, and again against `origin/main` before pushing.
 - **Export-policy column rule:** `portal_branding` is in `CORE_ORG_CASCADE_DELETE_ORDER`; the new column needs an `included` entry in `tenantExportPolicyRegistry.ts` in the same PR.
 - **Portal contract tests the spec does not mention (found by reading the actual test files, not the spec):**
   - `apps/portal/src/lib/visibilityGate.test.ts` greps `apps/api/src/routes/portal/featureFlags.ts` for every `PORTAL_*_DISABLED` string and asserts `PORTAL_DISABLED_CODES` covers it. Adding the new code to `featureFlags.ts` without updating this list reds the test.
@@ -40,7 +40,7 @@ tracking_issue: LanternOps/breeze#5728
 
 | Path | Responsibility |
 |---|---|
-| `apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql` | `enable_lifecycle` column |
+| `apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql` | `enable_lifecycle` column |
 | `apps/api/src/db/schema/portal.ts` | `enableLifecycle` Drizzle column |
 | `apps/api/src/services/portal/portalFlags.ts` (+ `.test.ts`) | `PORTAL_VISIBILITY_FLAG_KEYS` (8th entry) |
 | `apps/api/src/routes/portal/featureFlags.ts` (+ `.test.ts`) | `STRICT_PORTAL_FEATURES` entry |
@@ -66,7 +66,7 @@ Note: `apps/portal/src/lib/navItems.ts` gets **no change** in this wave (spec se
 
 ### Task 1: Migration, schema column, export-policy classification
 
-**Files:** create `apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql`; modify `apps/api/src/db/schema/portal.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`.
+**Files:** create `apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql`; modify `apps/api/src/db/schema/portal.ts`, `apps/api/src/services/tenantExportPolicyRegistry.ts`.
 
 - [ ] **Step 1:** Confirm the slot: `ls apps/api/migrations | sort | tail -3`. Expect nothing after `2026-10-16-170800-fleet-design-apply.sql`; bump if something has landed since.
 - [ ] **Step 2:** Write the migration:
@@ -97,7 +97,7 @@ ALTER TABLE portal_branding
 - [ ] **Step 6:** Commit:
 
 ```bash
-git add apps/api/migrations/2026-10-16-180300-portal-lifecycle-flag.sql \
+git add apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql \
   apps/api/src/db/schema/portal.ts apps/api/src/services/tenantExportPolicyRegistry.ts
 git commit -m "feat(portal): enable_lifecycle column on portal_branding (W01)"
 ```
