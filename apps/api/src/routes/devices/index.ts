@@ -30,6 +30,7 @@ import { manualRoutes } from './manual';
 import { customFieldValuesRoutes } from './customFieldValues';
 import { customFieldImportRoutes } from './customFieldImport';
 import { linksRoutes } from './links';
+import { functionRoutes } from './function';
 import { statsRoutes } from './stats';
 import { postureRoutes } from './posture';
 import { optionsRoutes } from './options';
@@ -96,6 +97,10 @@ deviceRoutes.route('/', manualRoutes);
 // Mount linked-device-profile routes (#2138) BEFORE core — the static
 // `/link-groups` paths must not be eaten by the `/:id` matcher in coreRoutes.
 deviceRoutes.route('/', linksRoutes);
+
+// Device function (Fleet Designer W02, #5652): GET/PUT /:id/function. Session
+// auth via its own `.use('*', authMiddleware)`, like linksRoutes.
+deviceRoutes.route('/', functionRoutes);
 
 // Mount fleet stats BEFORE core routes — `GET /stats` is a static path that
 // must not be eaten by the `/:id` matcher in coreRoutes.

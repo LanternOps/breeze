@@ -12,16 +12,11 @@ vi.mock('./recoverySigning', () => ({
   isRecoverySigningConfigured: vi.fn(),
   signRecoveryArtifact: vi.fn(),
 }));
-vi.mock('./recoveryBootMediaTemplateManifest', () => ({ verifyTemplateDirectory: vi.fn() }));
 
 import {
   authorizeAndClaimRecoveryMediaArtifact,
   type RecoveryMediaAuthorizationDependencies,
 } from './recoveryMediaService';
-import {
-  authorizeAndClaimRecoveryBootMediaArtifact,
-  type RecoveryBootMediaAuthorizationDependencies,
-} from './recoveryBootMediaService';
 import { RecoveryAuthorizationDeniedError } from './recoveryAuthorizationSubject';
 
 const artifact = {
@@ -47,14 +42,13 @@ function dependencies() {
 
 describe.each([
   ['media', authorizeAndClaimRecoveryMediaArtifact],
-  ['boot media', authorizeAndClaimRecoveryBootMediaArtifact],
 ] as const)('%s durable build authorization', (_label, authorizeAndClaim) => {
   beforeEach(() => vi.clearAllMocks());
 
   it('authorizes live source/target lineage immediately before the atomic building claim', async () => {
     const deps = dependencies();
 
-    await expect(authorizeAndClaim(artifact.id, deps as RecoveryMediaAuthorizationDependencies & RecoveryBootMediaAuthorizationDependencies))
+    await expect(authorizeAndClaim(artifact.id, deps as RecoveryMediaAuthorizationDependencies))
       .resolves.toBe(true);
 
     expect(deps.authorize).toHaveBeenCalledWith(artifact);

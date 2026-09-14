@@ -28,13 +28,17 @@ import { ACT_MANIFEST, SCRIPT_GATED_ACT_TOOLS } from './actManifest';
 export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
   | 'patching_software' | 'security_response' | 'backup_recovery' | 'config_policies' | 'network'
-  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy';
+  | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy'
+  | 'author_scripts';
 
 export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standard' | 'high' }[] = [
   { id: 'alerts_monitoring', tone: 'standard' },
   { id: 'services_startup', tone: 'standard' },
   { id: 'files_disk', tone: 'standard' },
   { id: 'scripts_commands', tone: 'standard' },
+  // 'high' tone: authoring novel code is a qualitatively different grant from
+  // running a reviewed library script, and the picker must say so.
+  { id: 'author_scripts', tone: 'high' },
   { id: 'tickets', tone: 'standard' },
   { id: 'patching_software', tone: 'standard' },
   { id: 'security_response', tone: 'high' },
@@ -64,6 +68,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   manage_alerts: 'alerts_monitoring',
   manage_alert_rules: 'alerts_monitoring',
   manage_monitors: 'alerts_monitoring',
+  // #5289 — monitor DEFINITIONS (the authored condition+response object), not
+  // the network monitors `manage_monitors` above covers.
+  list_monitors: 'alerts_monitoring',
+  get_monitor: 'alerts_monitoring',
+  manage_monitor_definitions: 'alerts_monitoring',
   manage_service_monitors: 'alerts_monitoring',
   manage_notification_channels: 'alerts_monitoring',
   manage_maintenance_windows: 'alerts_monitoring', // scheduled alert suppression, not a config policy
@@ -83,6 +92,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   disk_cleanup: 'files_disk',
   analyze_disk_usage: 'files_disk',
 
+  // ---- author_scripts ----
+  propose_script: 'author_scripts',
+  get_script_proposal: 'author_scripts',
   // ---- scripts_commands ----
   run_script: 'scripts_commands',
   execute_command: 'scripts_commands',
@@ -259,11 +271,16 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   get_invoice: 'business',
   manage_contracts: 'business',
   list_contracts: 'business',
+  manage_org_documents: 'business',
+  list_org_documents: 'business',
   get_contract: 'business',
   // Service deliverables W02 (#5573): the recurring service obligations a
   // contract promises, and the org key dates beside them — same commercial
   // capability as the contracts they hang off.
   list_deliverables: 'business',
+  // Deliverable template sets W05 (#5573): the reusable service tier behind
+  // those deliverables - same commercial capability.
+  list_deliverable_templates: 'business',
   manage_deliverables: 'business',
   manage_key_dates: 'business',
   manage_catalog: 'business',
@@ -307,6 +324,11 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
     'manage_services:restart',
   ],
   helpdesk: ['manage_services:restart', 'disk_cleanup:execute', 'run_script'],
+  // Fleet Designer (W01): reads by the guardrail rule (`designToolAllowlist`
+  // is a FLOOR, not an intersection with this preset), one outcome tool —
+  // never a mutating operation. A designer agent's toolAllowlist form still
+  // exists (shared UI component) but a design run never consults it.
+  designer: [],
 };
 
 function isSessionOnly(name: string): boolean {
@@ -423,6 +445,7 @@ export function buildAgentToolCatalog(): AgentToolCatalogDto {
       triage: [...AGENT_KIND_PRESETS.triage],
       patch: [...AGENT_KIND_PRESETS.patch],
       helpdesk: [...AGENT_KIND_PRESETS.helpdesk],
+      designer: [...AGENT_KIND_PRESETS.designer],
     },
     unreachableTools: listUnreachableRegisteredTools(),
   };

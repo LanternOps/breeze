@@ -1,0 +1,352 @@
+<title>Organizations Accounts Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --bg: hsl(220 20% 98%); --card: hsl(220 20% 99%); --fg: hsl(224 28% 14%);
+    --muted: hsl(220 16% 94%); --muted-fg: hsl(220 10% 46%); --border: hsl(220 16% 90%);
+    --primary: hsl(225 62% 48%); --primary-fg: hsl(0 0% 100%); --primary-soft: hsl(225 62% 48% / 0.08);
+    --success: hsl(152 56% 37%); --success-soft: hsl(152 56% 37% / 0.1);
+    --warning: hsl(30 85% 38%); --warning-soft: hsl(36 88% 50% / 0.12);
+    --destructive: hsl(4 76% 56%); --destructive-soft: hsl(4 76% 56% / 0.1);
+    --shadow: 0 1px 2px hsl(224 28% 14% / 0.06); --sidebar: hsl(220 20% 99%);
+    --font: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: hsl(224 28% 7%); --card: hsl(224 24% 9%); --fg: hsl(220 20% 95%);
+      --muted: hsl(224 18% 16%); --muted-fg: hsl(220 12% 58%); --border: hsl(224 18% 18%);
+      --primary: hsl(225 70% 62%); --primary-fg: hsl(224 28% 7%); --primary-soft: hsl(225 70% 62% / 0.14);
+      --success: hsl(152 52% 44%); --success-soft: hsl(152 52% 44% / 0.14);
+      --warning: hsl(40 90% 52%); --warning-soft: hsl(40 90% 52% / 0.14);
+      --destructive: hsl(4 72% 50%); --destructive-soft: hsl(4 72% 50% / 0.16);
+      --shadow: 0 1px 2px hsl(0 0% 0% / 0.4); --sidebar: hsl(224 24% 9%);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: hsl(224 28% 7%); --card: hsl(224 24% 9%); --fg: hsl(220 20% 95%);
+    --muted: hsl(224 18% 16%); --muted-fg: hsl(220 12% 58%); --border: hsl(224 18% 18%);
+    --primary: hsl(225 70% 62%); --primary-fg: hsl(224 28% 7%); --primary-soft: hsl(225 70% 62% / 0.14);
+    --success: hsl(152 52% 44%); --success-soft: hsl(152 52% 44% / 0.14);
+    --warning: hsl(40 90% 52%); --warning-soft: hsl(40 90% 52% / 0.14);
+    --destructive: hsl(4 72% 50%); --destructive-soft: hsl(4 72% 50% / 0.16);
+    --shadow: 0 1px 2px hsl(0 0% 0% / 0.4); --sidebar: hsl(224 24% 9%);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  a { color: inherit; }
+  svg { flex: none; }
+  :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+  .note { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 12px; color: var(--muted-fg); }
+  .note strong { color: var(--fg); font-weight: 600; }
+  .shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+  .sidebar { background: var(--sidebar); border-right: 1px solid var(--border); padding: 14px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 6px 8px 14px; font-weight: 700; font-size: 15px; }
+  .brand i { width: 22px; height: 22px; border-radius: 6px; background: var(--primary-soft); display: inline-block; border: 1px solid var(--primary); }
+  .nav { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; color: var(--fg); text-decoration: none; }
+  .nav svg { width: 16px; height: 16px; color: var(--muted-fg); }
+  .nav.active { background: var(--primary); color: var(--primary-fg); font-weight: 600; }
+  .nav.active svg { color: currentColor; }
+  .nav.group { color: var(--muted-fg); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 10px; border-top: 1px solid var(--border); border-radius: 0; padding-top: 12px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 24px; border-bottom: 1px solid var(--border); background: var(--card); }
+  .switcher { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+  .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: var(--primary-fg); display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+
+  .page { padding: 20px 24px 40px; display: flex; flex-direction: column; gap: 16px; }
+  .header { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; text-wrap: balance; }
+  .header p { margin: 2px 0 0; color: var(--muted-fg); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); font-weight: 500; white-space: nowrap; }
+  .btn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+
+  /* Roll-up band: the owner's read of the whole book of business. */
+  .band { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; border: 1px solid var(--border); border-radius: 10px; background: var(--border); overflow: hidden; }
+  .band > div { background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+  .band .k { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-fg); }
+  .band .v { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .band .v small { font-size: 12px; font-weight: 500; color: var(--muted-fg); margin-left: 6px; letter-spacing: 0; }
+  .band .v.warn { color: var(--warning); }
+  .band .v.bad { color: var(--destructive); }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+  .search { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; min-width: 240px; flex: 1 1 240px; max-width: 320px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--muted-fg); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--muted-fg); font-size: 12px; font-weight: 500; }
+  .chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .chip .n { margin-left: 6px; opacity: 0.7; font-variant-numeric: tabular-nums; }
+  .toolbar .right { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--muted-fg); font-size: 12px; }
+  .select { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--fg); font-size: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { height: 32px; padding: 0 12px; border: 0; background: var(--card); color: var(--muted-fg); font-size: 12px; font-weight: 500; }
+  .seg button[aria-pressed="true"] { background: var(--muted); color: var(--fg); }
+
+  .tablewrap { border: 1px solid var(--border); border-radius: 10px; background: var(--card); box-shadow: var(--shadow); overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; min-width: 1040px; font-variant-numeric: tabular-nums; }
+  thead th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-fg); padding: 10px 14px; background: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  thead th.num, td.num { text-align: right; }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: 0; }
+  tbody tr:hover { background: var(--primary-soft); }
+  td { padding: 10px 14px; vertical-align: top; }
+  td:nth-child(2) { min-width: 230px; }
+  td.grip { width: 28px; padding-right: 0; color: var(--muted-fg); opacity: 0.45; padding-top: 14px; }
+  .org { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .org a { font-weight: 600; text-decoration: none; }
+  .org a:hover { text-decoration: underline; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted-fg); }
+  .pill { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--muted); font-size: 11px; font-weight: 500; color: var(--fg); line-height: 1; }
+  .pill.suspended { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
+  .pill.active { background: var(--success-soft); color: var(--success); border-color: transparent; }
+  .pill.workspace { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
+
+  /* Missing-step chips: only what is missing is shown; complete rows get one quiet check. */
+  .todo { display: flex; flex-wrap: wrap; gap: 4px; }
+  .todo span { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--warning-soft); color: var(--warning); font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .todo span.bad { background: var(--destructive-soft); color: var(--destructive); }
+  .ok { display: inline-flex; align-items: center; gap: 6px; color: var(--success); font-size: 12px; font-weight: 500; }
+  .ok svg { width: 14px; height: 14px; }
+
+  /* Integration badges: dot colour is state, label is the system. */
+  .links { display: flex; flex-wrap: wrap; gap: 4px; }
+  .link { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); font-size: 12px; white-space: nowrap; }
+  .link i { width: 7px; height: 7px; border-radius: 50%; background: var(--success); display: inline-block; }
+  .link.pending i { background: var(--warning); }
+  .link.error i { background: var(--destructive); }
+  .link.none { color: var(--muted-fg); border-style: dashed; }
+  .link.none i { background: transparent; border: 1px solid var(--muted-fg); }
+
+  .tickets { font-weight: 600; }
+  .tickets small { display: block; font-weight: 400; color: var(--muted-fg); font-size: 12px; }
+  .tickets small.bad { color: var(--destructive); }
+  .tickets.zero { color: var(--muted-fg); font-weight: 400; }
+
+  .rowmenu { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid transparent; color: var(--muted-fg); background: transparent; }
+  tbody tr:hover .rowmenu, .rowmenu:focus-visible { border-color: var(--border); background: var(--card); color: var(--fg); }
+  .menu { position: relative; }
+  .menu ul { position: absolute; right: 0; top: 34px; z-index: 5; list-style: none; margin: 0; padding: 4px; min-width: 210px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); box-shadow: 0 8px 24px hsl(224 28% 14% / 0.12); }
+  .menu li { padding: 7px 10px; border-radius: 6px; font-size: 13px; }
+  .menu li small { display: block; color: var(--muted-fg); font-size: 11px; }
+  .menu li.danger { color: var(--destructive); }
+  .menu li.sep { height: 1px; padding: 0; margin: 4px 0; background: var(--border); }
+  .menu li:hover { background: var(--muted); }
+  .foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-fg); }
+
+  .cards { display: none; }
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: minmax(0, 1fr); }
+    .sidebar { display: none; }
+    .topbar { padding: 10px 16px; }
+    .page { padding: 16px 16px 32px; }
+    .tablewrap { display: none; }
+    .cards { display: flex; flex-direction: column; gap: 10px; }
+    .card { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .card .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .card .k { font-size: 11px; color: var(--muted-fg); margin-bottom: 4px; }
+    .band > div:last-child { grid-column: 1 / -1; }
+    .search { max-width: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="note">
+  <strong>Mock, example figures.</strong>
+  <span>Organizations as an account board: what each customer still needs to be set up, linked and complete, plus its open work. Manual order stays the default sort. Table above 900px, cards below.</span>
+</div>
+
+<div class="shell">
+  <aside class="sidebar" aria-label="Sidebar (abbreviated)">
+    <div class="brand"><i></i>OliveTech</div>
+    <a class="nav" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+    <a class="nav active" href="#" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/></svg>Organizations</a>
+    <a class="nav" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Devices</a>
+    <a class="nav" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>Alerts</a>
+    <a class="nav" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>Approvals</a>
+    <a class="nav" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Remote Access</a>
+    <span class="nav group">AI</span>
+    <span class="nav group">Fleet management</span>
+    <span class="nav group">Security</span>
+    <span class="nav group">Billing</span>
+  </aside>
+
+  <div>
+    <div class="topbar">
+      <span class="switcher">Liggett &amp; Goodman P.C. <span class="pill active">Active</span> <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+      <span class="avatar" aria-hidden="true">TH</span>
+    </div>
+
+    <main class="page">
+      <div class="header">
+        <div>
+          <h1>Organizations</h1>
+          <p>Every customer account: what is still missing, what it is linked to, and what is open.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button">Bulk import</button>
+          <button class="btn primary" type="button">Add organization</button>
+        </div>
+      </div>
+
+      <div class="band" aria-label="Accounts at a glance">
+        <div><span class="k">Accounts</span><span class="v">9 <small>2 trial &middot; 1 suspended</small></span></div>
+        <div><span class="k">Setup incomplete</span><span class="v warn">5 <small>of 9</small></span></div>
+        <div><span class="k">Account data missing</span><span class="v warn">5 <small>contacts, billing</small></span></div>
+        <div><span class="k">Unlinked</span><span class="v warn">4 <small>QuickBooks 3 &middot; PSA 1</small></span></div>
+        <div><span class="k">Open tickets</span><span class="v">7 <small class="bad" style="color:var(--destructive)">1 SLA breached</small></span></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="search" role="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>Search organizations, contacts</div>
+        <div class="chips" role="group" aria-label="Show">
+          <button class="chip" type="button" aria-pressed="true">All <span class="n">9</span></button>
+          <button class="chip" type="button" aria-pressed="false">Setup incomplete <span class="n">5</span></button>
+          <button class="chip" type="button" aria-pressed="false">Account data missing <span class="n">5</span></button>
+          <button class="chip" type="button" aria-pressed="false">Unlinked <span class="n">4</span></button>
+          <button class="chip" type="button" aria-pressed="false">Open tickets <span class="n">4</span></button>
+          <button class="chip" type="button" aria-pressed="false">Trial <span class="n">2</span></button>
+          <button class="chip" type="button" aria-pressed="false">Archived <span class="n">2</span></button>
+        </div>
+        <div class="right">
+          <span class="seg" role="group" aria-label="Lens"><button type="button" aria-pressed="false">Setup</button><button type="button" aria-pressed="false">Account</button><button type="button" aria-pressed="true">Both</button></span>
+          <span class="select">Sort: Manual order <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span>
+        </div>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col"></th>
+              <th scope="col">Organization</th>
+              <th scope="col">Setup</th>
+              <th scope="col">Account data</th>
+              <th scope="col">Integrations</th>
+              <th scope="col" class="num">Open tickets</th>
+              <th scope="col"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Toothzone</a><div class="meta">34 devices &middot; 3 sites</div></div></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><div class="todo"><span>Billing contact</span></div></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link"><i></i>ConnectWise</span><span class="link"><i></i>Microsoft 365</span></div></td>
+              <td class="num"><span class="tickets">3<small>1 awaiting customer</small></span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Toothzone"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">OliveTech</a><div class="meta">7 devices &middot; 1 site</div></div></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link pending"><i></i>Microsoft 365 &middot; consent pending</span><span class="link"><i></i>DNS filter</span></div></td>
+              <td class="num"><span class="tickets">1</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for OliveTech"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Liggett &amp; Goodman P.C.</a><div class="meta"><span class="pill workspace">Workspace</span>6 devices &middot; 2 sites</div></div></td>
+              <td><div class="todo"><span>No policy assigned</span></div></td>
+              <td><div class="todo"><span>Billing address</span></div></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link none"><i></i>ConnectWise not linked</span></div></td>
+              <td class="num"><span class="tickets">2<small class="bad">1 SLA breached</small></span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Liggett &amp; Goodman P.C." aria-expanded="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>
+                <ul role="menu" aria-label="Row actions">
+                  <li role="menuitem">Open record</li>
+                  <li role="menuitem">Contact Dana Reyes<small>dana@example.com &middot; (303) 555-0142</small></li>
+                  <li role="menuitem">New ticket</li>
+                  <li class="sep" role="separator"></li>
+                  <li role="menuitem">Work in this org</li>
+                  <li role="menuitem">Settings</li>
+                  <li class="sep" role="separator"></li>
+                  <li role="menuitem">Archive organization</li>
+                  <li role="menuitem" class="danger">Merge into another organization</li>
+                </ul>
+              </td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Berthoud Vet Care</a><div class="meta"><span class="pill">Trial</span>2 devices &middot; 1 site</div></div></td>
+              <td><div class="todo"><span>No policy assigned</span></div></td>
+              <td><div class="todo"><span>Primary contact</span><span>Contact phone</span></div></td>
+              <td><div class="links"><span class="link none"><i></i>QuickBooks not linked</span></div></td>
+              <td class="num"><span class="tickets zero">0</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Berthoud Vet Care"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Mountain Capital Investments</a><div class="meta">2 devices &middot; 1 site</div></div></td>
+              <td><div class="todo"><span>No agent check-in for 12 days</span></div></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span></div></td>
+              <td class="num"><span class="tickets zero">0</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Mountain Capital Investments"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Morning Fresh Dairy</a><div class="meta">2 devices &middot; 1 site</div></div></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link"><i></i>Pax8</span></div></td>
+              <td class="num"><span class="tickets zero">0</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Morning Fresh Dairy"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Silberman Law P.C.</a><div class="meta"><span class="pill suspended">Suspended</span>0 devices &middot; 1 site</div></div></td>
+              <td><div class="todo"><span>No devices enrolled</span></div></td>
+              <td><div class="todo"><span class="bad">2 overdue invoices</span></div></td>
+              <td><div class="links"><span class="link error"><i></i>QuickBooks &middot; sync error</span></div></td>
+              <td class="num"><span class="tickets">1<small>1 awaiting customer</small></span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Silberman Law P.C."><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Animal Health at Home</a><div class="meta"><span class="pill">Trial</span>0 devices &middot; 0 sites</div></div></td>
+              <td><div class="todo"><span>No site</span><span>No devices enrolled</span><span>No enrollment key</span></div></td>
+              <td><div class="todo"><span>Primary contact</span><span>Billing contact</span><span>Billing address</span></div></td>
+              <td><div class="links"><span class="link none"><i></i>Nothing linked</span></div></td>
+              <td class="num"><span class="tickets zero">0</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Animal Health at Home"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+            <tr>
+              <td class="grip" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg></td>
+              <td><div class="org"><a href="#">Williams &amp; Associates</a><div class="meta">0 devices &middot; 1 site</div></div></td>
+              <td><div class="todo"><span>No devices enrolled</span></div></td>
+              <td><div class="todo"><span>Invitation not accepted</span></div></td>
+              <td><div class="links"><span class="link"><i></i>QuickBooks</span></div></td>
+              <td class="num"><span class="tickets zero">0</span></td>
+              <td class="menu"><button class="rowmenu" type="button" aria-label="More actions for Williams &amp; Associates"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="foot"><span>8 active accounts &middot; 53 devices &middot; 7 open tickets</span><span>Drag rows to set the manual order; it is the default sort.</span></div>
+      </div>
+
+      <div class="cards" aria-label="Organizations (phone layout)">
+        <div class="card">
+          <div class="top"><div class="org"><a href="#">Liggett &amp; Goodman P.C.</a><div class="meta"><span class="pill workspace">Workspace</span>6 devices</div></div><button class="rowmenu" type="button" aria-label="More actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></div>
+          <div><div class="k">Still needed</div><div class="todo"><span>No policy assigned</span><span>Billing address</span></div></div>
+          <div><div class="k">Integrations</div><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link none"><i></i>ConnectWise not linked</span></div></div>
+          <div><div class="k">Open tickets</div><span class="tickets">2<small class="bad">1 SLA breached</small></span></div>
+        </div>
+        <div class="card">
+          <div class="top"><div class="org"><a href="#">Animal Health at Home</a><div class="meta"><span class="pill">Trial</span>0 devices</div></div><button class="rowmenu" type="button" aria-label="More actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></div>
+          <div><div class="k">Still needed</div><div class="todo"><span>No site</span><span>No devices enrolled</span><span>No enrollment key</span><span>Primary contact</span><span>Billing contact</span><span>Billing address</span></div></div>
+          <div><div class="k">Integrations</div><div class="links"><span class="link none"><i></i>Nothing linked</span></div></div>
+          <div><div class="k">Open tickets</div><span class="tickets zero">0</span></div>
+        </div>
+        <div class="card">
+          <div class="top"><div class="org"><a href="#">OliveTech</a><div class="meta">7 devices</div></div><button class="rowmenu" type="button" aria-label="More actions"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button></div>
+          <div><div class="k">Still needed</div><span class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>Complete</span></div>
+          <div><div class="k">Integrations</div><div class="links"><span class="link"><i></i>QuickBooks</span><span class="link pending"><i></i>Microsoft 365 &middot; consent pending</span></div></div>
+          <div><div class="k">Open tickets</div><span class="tickets">1</span></div>
+        </div>
+        <div class="foot" style="border:0;padding:4px 2px">Plus 6 more rows in the desktop table above.</div>
+      </div>
+    </main>
+  </div>
+</div>

@@ -87,7 +87,16 @@ export const M365_PERMISSION_PROFILES = {
   },
   'customer-graph-read': {
     id: 'customer-graph-read',
-    version: 2,
+    // v3 (2026-09-08): tenant-sync foundation, spec §2.1. Four application
+    // permissions added in ONE bump so customers re-consent once for the whole
+    // posture program: Policy.Read.All (conditional access + named locations,
+    // chosen over Policy.Read.ConditionalAccess so CA templates need no second
+    // re-consent), RoleManagement.Read.Directory (admin role membership),
+    // SecurityEvents.Read.All (Secure Score), AuditLogsQuery.Read.All (the
+    // unified audit log tool, granted now rather than in a second wave).
+    // MFA registration state and role-assignable group expansion need no new
+    // scope — AuditLog.Read.All and Group.Read.All already cover them.
+    version: 3,
     ownerAxis: 'organization',
     authMode: 'application-certificate',
     credentialDomain: 'customer-graph-read',
@@ -96,11 +105,15 @@ export const M365_PERMISSION_PROFILES = {
     applicationPermissions: [
       'Application.Read.All',
       'AuditLog.Read.All',
+      'AuditLogsQuery.Read.All',
       'Device.Read.All',
       'DeviceManagementConfiguration.Read.All',
       'DeviceManagementManagedDevices.Read.All',
       'Group.Read.All',
       'Organization.Read.All',
+      'Policy.Read.All',
+      'RoleManagement.Read.Directory',
+      'SecurityEvents.Read.All',
       'Sites.Read.All',
       'User.Read.All',
     ],
@@ -114,6 +127,11 @@ export const M365_PERMISSION_PROFILES = {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
         appRoleId: 'b0afded3-3588-46d8-8b3d-9842eff778da',
         value: 'AuditLog.Read.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '5e1e9171-754d-478c-812c-f1755a9a4c2d',
+        value: 'AuditLogsQuery.Read.All',
       },
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
@@ -139,6 +157,21 @@ export const M365_PERMISSION_PROFILES = {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
         appRoleId: '498476ce-e0fe-48b0-b801-37ba7e2685c6',
         value: 'Organization.Read.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '246dd0d5-5bd0-4def-940b-0421030a5b68',
+        value: 'Policy.Read.All',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: '483bed4a-2ad3-4361-a73b-c83ccdbdc53c',
+        value: 'RoleManagement.Read.Directory',
+      },
+      {
+        resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,
+        appRoleId: 'bf394140-e372-4bf9-a898-299cfc7564e5',
+        value: 'SecurityEvents.Read.All',
       },
       {
         resourceApplicationId: MICROSOFT_GRAPH_RESOURCE_APPLICATION_ID,

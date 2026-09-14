@@ -24,7 +24,7 @@
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { findVariableTokens } from '@breeze/shared';
 import { db } from '../../db';
-import { scripts, scriptTags, scriptToTags, scriptVersions, tenantVariables } from '../../db/schema';
+import { scripts, scriptTags, scriptToTags, tenantVariables } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import {
   isScriptScopeError,
@@ -35,8 +35,10 @@ import {
   type ScriptWriteAuth
 } from '../scriptWrite';
 import { clearedScriptSecurityAcknowledgementColumns } from '../scriptSecurityAcknowledgement';
+import { cutScriptVersion, type ScriptVersionProvenance } from '../scriptVersions';
 import { loadTenantVariableScope, resolveForOrg } from '../tenantVariableResolution';
 import {
+  MAX_BUNDLE_TAGS_PER_SCRIPT,
   SCRIPT_BUNDLE_VERSION,
   bundleScriptEntrySchema,
   formatEntryIssues,
@@ -334,6 +336,27 @@ export type BundleTargetOptions = {
   availability: BundleAvailability;
   orgId?: string | null;
 };
+
+/**
+ * Merge import-wide tags (e.g. `legacy-import`, Fleet Designer W04 #5654) into
+ * an entry's own tags. Import-wide tags come FIRST so they survive the
+ * per-script cap — the caller asked for them on every entry, and a legacy
+ * script that silently lost its discovery tag would never reach the designer.
+ * Dedupe is case-insensitive (first spelling wins); the result never exceeds
+ * MAX_BUNDLE_TAGS_PER_SCRIPT, the same bound the entry schema enforces.
+ */
+export function mergeTags(entryTags: readonly string[] | undefined, importTags: readonly string[] | undefined): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of [...(importTags ?? []), ...(entryTags ?? [])]) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length === MAX_BUNDLE_TAGS_PER_SCRIPT) break;
+  }
+  return out;
+}
 
 type ScriptRow = typeof scripts.$inferSelect;
 
@@ -689,7 +712,20 @@ export type BundleImportResult = {
 export async function importBundle(
   auth: BundleAuth,
   bundle: ScriptBundleEnvelope,
-  options: BundleTargetOptions & { mode: BundleImportMode }
+  options: BundleTargetOptions & {
+    mode: BundleImportMode;
+    /** Tags linked on every imported / renamed / versioned entry (skipped entries are untouched). */
+    tags?: readonly string[];
+    /**
+     * Version provenance for each written entry, for INTERNAL callers that
+     * know where the content came from (Fleet Design apply, W04 #5654: AI-
+     * authored, human-approved). Never reachable from the bundle route — a
+     * file cannot assert its own provenance. Default `{ origin: 'imported' }`.
+     * `createdBy` is always the caller; nothing here can acknowledge a STRICT
+     * pattern (insertScriptRow clamps that from content, fail closed).
+     */
+    provenanceFor?: (entry: ScriptBundleEntry, index: number) => Omit<ScriptVersionProvenance, 'createdBy'>;
+  }
 ): Promise<BundleImportResult | ScriptScopeError> {
   const scope = resolveScriptCreateScope(auth, options.availability, options.orgId);
   if (isScriptScopeError(scope)) return scope;
@@ -775,16 +811,13 @@ export async function importBundle(
       }
 
       if (existing && options.mode === 'new-version') {
-        // Snapshot the current content into scriptVersions FIRST, so the
-        // import appends to history rather than replacing it.
-        await db.insert(scriptVersions).values({
-          scriptId: existing.id,
-          version: existing.version,
-          content: existing.content,
-          changelog: 'Superseded by bundle import',
-          createdBy: auth.user.id
-        });
-        await db
+        // AFTER-image, not before. A version row is the definition of an
+        // execution (spec §4.1), so the row that matters is the one holding
+        // the body that will actually run. The previous body already has its
+        // own row — cut at creation or by the 2026-10-16-100000 head backfill.
+        // cutScriptVersion owns scripts.version, so this SET must not carry it.
+        await db.transaction(async (tx) => {
+        await tx
           .update(scripts)
           .set({
             description: entry.description ?? existing.description,
@@ -805,12 +838,23 @@ export async function importBundle(
             // design exists to prevent, through a different door. Whoever
             // imported it must re-acknowledge in the script editor.
             ...clearedScriptSecurityAcknowledgementColumns(),
-            version: existing.version + 1,
             updatedAt: new Date()
           })
           .where(eq(scripts.id, existing.id));
 
-        const tagIds = await ensureTagIds(scope, entry.tags ?? []);
+          await cutScriptVersion(tx, {
+            scriptId: existing.id,
+            provenance: options.provenanceFor
+              ? { ...options.provenanceFor(entry, index), createdBy: auth.user.id }
+              : {
+                  origin: 'imported',
+                  changelog: `Imported from bundle "${entry.name}"`,
+                  createdBy: auth.user.id
+                }
+          });
+        });
+
+        const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
         await linkTags(existing.id, tagIds, true);
 
         result.versioned++;
@@ -848,13 +892,15 @@ export async function importBundle(
         timeoutSeconds: entry.timeoutSeconds,
         runAs: entry.runAs,
         exitCodeSeverityMapping: entry.exitCodeSeverityMapping ?? null
-      });
+      }, options.provenanceFor
+        ? { provenance: { ...options.provenanceFor(entry, index), createdBy: auth.user.id } }
+        : { origin: 'imported' });
       if (!created) {
         result.errors.push({ index, name: entry.name, error: 'Insert returned no row' });
         continue;
       }
 
-      const tagIds = await ensureTagIds(scope, entry.tags ?? []);
+      const tagIds = await ensureTagIds(scope, mergeTags(entry.tags, options.tags));
       await linkTags(created.id, tagIds, false);
 
       if (action === 'renamed') result.renamed++;

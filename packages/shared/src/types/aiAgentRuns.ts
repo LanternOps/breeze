@@ -1,4 +1,5 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
+import type { AiAgentRunFleetDesignDto } from './fleetDesign';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -582,6 +583,14 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump the DTO schema version.
    */
   reportRunId: string | null;
+  /**
+   * Fleet Designer (W01) — the report this run produced, for a
+   * `design`-profile run that reached a `submit_fleet_design` outcome. Null
+   * for every non-design run and for a design run that has not produced one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`
+   * (same rule as `alertVerdict`/`sweep`/`narrative` above).
+   */
+  fleetDesign: AiAgentRunFleetDesignDto | null;
 }
 
 /**

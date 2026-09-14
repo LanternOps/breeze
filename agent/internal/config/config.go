@@ -206,6 +206,17 @@ type Config struct {
 	// a manifest can be verified by a key other than the one it names.
 	RequireManifestSigningKeyID bool `mapstructure:"require_manifest_signing_key_id" yaml:"require_manifest_signing_key_id"`
 
+	// HPWarrantyCollectionEnabled is the control-plane switch for device-side
+	// HP warranty collection via HP's CMSL (#5511). Pushed on the heartbeat as
+	// warranty_settings.hp_cmsl_enabled and persisted so the setting survives a
+	// restart; the collector reads it through
+	// Heartbeat.hpWarrantyCollectionEnabled().
+	//
+	// Default false. Collection installs and runs HP software on the endpoint
+	// and is opt-in per configuration policy, so an agent that has never been
+	// told anything must do nothing.
+	HPWarrantyCollectionEnabled bool `mapstructure:"hp_warranty_collection_enabled" yaml:"hp_warranty_collection_enabled"`
+
 	// ManifestDelegationEpoch is the highest signed-key-delegation epoch this
 	// agent has ADOPTED (0 = none). It is the monotonic replay counter: a
 	// delegation is only accepted when its epoch is STRICTLY greater than this
@@ -724,6 +735,7 @@ func saveToLocked(cfg *Config, cfgFile string) error {
 	viper.Set("allow_dev_update", cfg.AllowDevUpdate)
 	viper.Set("pinned_manifest_pub_keys", cfg.PinnedManifestPubKeys)
 	viper.Set("require_manifest_signing_key_id", cfg.RequireManifestSigningKeyID)
+	viper.Set("hp_warranty_collection_enabled", cfg.HPWarrantyCollectionEnabled)
 	viper.Set("manifest_delegation_epoch", cfg.ManifestDelegationEpoch)
 	// Write only the helper-scoped token to agent.yaml. Full agent and watchdog
 	// bearer tokens are persisted below in root-only secrets.yaml.

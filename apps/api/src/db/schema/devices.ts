@@ -62,6 +62,12 @@ export const devices = pgTable('devices', {
   osType: osTypeEnum('os_type').notNull(),
   deviceRole: varchar('device_role', { length: 30 }).notNull().default('unknown'),
   deviceRoleSource: varchar('device_role_source', { length: 20 }).notNull().default('auto'),
+  // Fleet Designer W02 (#5652) — projection of the ACTIVE
+  // device_function_assessments row ("what is this device for"), written ONLY
+  // by services/deviceFunction.ts in the same transaction as the assessment.
+  // Both NULL, or both set, pinned by devices_device_function_source_chk.
+  deviceFunction: text('device_function'),
+  deviceFunctionSource: text('device_function_source').$type<'ai' | 'manual'>(),
   // Orthogonal virtualization attribute (issue #1387): is this box running on a
   // hypervisor, and which one. Set by the agent from SMBIOS hardware identity
   // strings. Distinct from device_role — a virtual workstation is still a
@@ -72,6 +78,12 @@ export const devices = pgTable('devices', {
   isVirtual: boolean('is_virtual').notNull().default(false),
   virtualizationPlatform: varchar('virtualization_platform', { length: 30 }),
   osVersion: varchar('os_version', { length: 100 }).notNull(),
+  // Hardware Lifecycle report: when the device was bought. Source is 'manual'
+  // (operator-entered, never overwritten by sync) or 'vendor' (derived from the
+  // warranty provider's ship date). Both NULL or both set —
+  // devices_purchase_date_source_chk.
+  purchaseDate: date('purchase_date'),
+  purchaseDateSource: varchar('purchase_date_source', { length: 20 }).$type<'manual' | 'vendor'>(),
   osBuild: varchar('os_build', { length: 100 }),
   architecture: varchar('architecture', { length: 20 }).notNull(),
   agentVersion: varchar('agent_version', { length: 50 }).notNull(),

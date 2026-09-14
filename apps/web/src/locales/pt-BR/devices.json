@@ -278,7 +278,8 @@
     "loadMore": "Carregar mais",
     "couldnTLoadMore": "Não foi possível carregar mais.",
     "viewAllActivity2": "Ver toda a atividade",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Ver proposta"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Falha ao buscar o histórico de alertas",
@@ -930,6 +931,23 @@
     "role": "Função",
     "changeRole": "Alterar função",
     "source": "Origem",
+    "function": "Finalidade",
+    "changeFunction": "Alterar finalidade",
+    "functionNone": "Não avaliada",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manual"
+    },
+    "functionConfidence": "{{pct}}% de confiança",
+    "functionEvidence": "Por que o projetista pensa isso",
+    "functionEvidenceUnavailable": "Não foi possível carregar os detalhes da avaliação.",
+    "functionCustom": "Personalizada…",
+    "functionCustomSlug": "chave personalizada (a-z, 0-9, -)",
+    "functionCustomLabel": "Rótulo",
+    "functionClear": "Limpar",
+    "functionSaved": "Finalidade do dispositivo salva",
+    "functionCleared": "Finalidade do dispositivo removida",
+    "functionSaveFailed": "Falha ao salvar a finalidade do dispositivo",
     "operatingSystem": "Sistema operacional",
     "osType": "Tipo de SO",
     "osVersion": "Versão do SO",
@@ -1676,7 +1694,10 @@
     "saveChanges": "Salvar alterações",
     "site": "Site",
     "tags": "Tags",
-    "title": "Configurações do dispositivo"
+    "title": "Configurações do dispositivo",
+    "purchaseDate": "Data de compra",
+    "purchaseDateHelp": "Usada pelo relatório de ciclo de vida do hardware para planejar a substituição.",
+    "purchaseDateVendorHint": "Obtida da data de envio do fabricante. Informe uma data para substituí-la."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1880,7 +1901,7 @@
     "refresh": "Atualizar",
     "selectedOrganization": "a organização selecionada",
     "subtitle": "Gerencie e monitore sua frota.",
-    "title": "Dispositivos",
+    "title": "Dispositivos e ativos",
     "toasts": {
       "actionFailed": "{{action}} falhou em {{hostname}}",
       "advancedFilterFailed": "Falha ao carregar o filtro avançado — nenhum dispositivo exibido. Edite ou limpe o filtro para tentar novamente.",
@@ -2769,7 +2790,8 @@
       "assignedContactPlaceholder": "Pesquisar contatos…",
       "tags": "Tags",
       "tagsPlaceholder": "Separadas por vírgula",
-      "notes": "Notas"
+      "notes": "Notas",
+      "purchaseDate": "Data de compra"
     }
   },
   "addNetworkAssetModal": {

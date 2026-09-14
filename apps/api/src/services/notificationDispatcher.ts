@@ -16,7 +16,8 @@ import {
   notificationRoutingRules,
   devices,
   organizations,
-  partners
+  partners,
+  configPolicyAlertRules
 } from '../db/schema';
 import { eq, and, ne, inArray, asc, isNull, or, type SQL, type Column } from 'drizzle-orm';
 import { getRedis, getBullMQConnection, isRedisAvailable } from './redis';
@@ -274,6 +275,32 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
       ruleOverrides = rule.overrideSettings as Record<string, unknown> | null;
       channelIds = (ruleOverrides?.notificationChannelIds as string[]) || [];
     }
+  } else if (alert.configPolicyId) {
+    // Delivery parity for config-policy alerts (#5289 Task 9, spec
+    // §Delivery): a config-policy-sourced alert has `ruleId: null` and
+    // `configPolicyId` set to the `config_policy_alert_rules` row id (the
+    // column name is historical). That row can carry its own
+    // escalation/channel overrides, same shape as `alertRules.overrideSettings`
+    // above, so the fallbacks below (routing rules, then org default
+    // channels) and the escalation scheduling at the bottom of this function
+    // work unchanged whether the alert came from a standalone rule or a
+    // config policy.
+    const [cpRule] = await db
+      .select({
+        escalationPolicyId: configPolicyAlertRules.escalationPolicyId,
+        notificationChannelIds: configPolicyAlertRules.notificationChannelIds
+      })
+      .from(configPolicyAlertRules)
+      .where(eq(configPolicyAlertRules.id, alert.configPolicyId))
+      .limit(1);
+
+    if (cpRule) {
+      ruleOverrides = {
+        escalationPolicyId: cpRule.escalationPolicyId ?? undefined,
+        notificationChannelIds: cpRule.notificationChannelIds ?? []
+      };
+      channelIds = cpRule.notificationChannelIds ?? [];
+    }
   }
 
   // Dual-axis rail resolution (#2130): resolve the alert org's partner once,
@@ -377,7 +404,8 @@ export async function processAlertNotifications(data: ProcessAlertJobData): Prom
     addedJobs.map((job) => retryIfFailedJob(job, `alert ${data.alertId} baseline send`))
   );
 
-  // Check for escalation policy (only applicable to rule-based alerts)
+  // Check for escalation policy — sourced from either the alert rule's or
+  // the config-policy alert rule's overrides (#5289 Task 9).
   const escalationPolicyId = ruleOverrides?.escalationPolicyId as string | undefined;
   if (escalationPolicyId) {
     await scheduleEscalation(data.alertId, escalationPolicyId, alert.orgId, orgPartnerId);

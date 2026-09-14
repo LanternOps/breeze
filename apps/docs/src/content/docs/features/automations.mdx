@@ -7,9 +7,15 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
 Automations let you define rules that execute automatically when something happens across your managed environment. A trigger — a scheduled time, a platform event, an inbound webhook from an external system, or an explicit manual request — causes the automation to run one or more actions against a set of target devices or platform services.
 
-You manage automations from the **Automations** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
+Automations appear in the left nav as **Jobs**. Older `/automations` links redirect.
+
+You manage automations from the **Jobs** page in the Breeze dashboard. From there you can create new automations, enable or disable existing ones, run them on demand, and review their execution history.
 
 An automation normally belongs to a single organization, but a partner-scoped user with access to every organization can instead create one **partner-wide** ("All orgs") -- see [Partner-wide Automations](#partner-wide-automations-all-organizations) below.
+
+<Aside>
+  Building an `event` automation on `alert.triggered` specifically to respond to a condition you also watch with an Alert Rule? Consider a [Monitor](/features/monitors/) instead -- it bundles the condition, severity, and response actions into one object, deployed through Configuration Policies instead of hand-wiring a rule to a separate automation. Automations you already have under **Jobs** aren't affected -- they keep running exactly as before, as plain event-, schedule-, webhook-, or manually-triggered automations; only a monitor's own generated automation shows up read-only (see [What's read-only, and why](/features/monitors/#whats-read-only-and-why)).
+</Aside>
 
 ---
 
@@ -17,7 +23,7 @@ An automation normally belongs to a single organization, but a partner-scoped us
 
 <Steps>
 
-1. **Open the Automations page.** Navigate to **Automations** in the sidebar. Click **New Automation** in the top-right corner.
+1. **Open the Jobs page.** Navigate to **Jobs** in the sidebar. Click **New Automation** in the top-right corner.
 
 2. **Enter a name and description.** Give the automation a descriptive name (e.g., "Daily maintenance check") and an optional description explaining its purpose.
 
@@ -163,7 +169,7 @@ The run's status becomes `cancelled` once the stop is processed.
 For organizations that manage automations as part of broader device policy, automations can also be defined as features on a [Configuration Policy](/features/configuration-policies/). Policy-managed automations inherit the policy's scope -- a single automation definition can apply across all devices in an organization, site, or device group without creating separate automations per target.
 
 <Aside>
-  Most technicians will create automations through the Automations page described above. Configuration Policies are useful when you need to bundle automation rules alongside other policy features (monitoring, patching, etc.) and deploy them as a unit.
+  Most technicians will create automations through the Jobs page described above. Configuration Policies are useful when you need to bundle automation rules alongside other policy features (monitoring, patching, etc.) and deploy them as a unit.
 </Aside>
 
 ### Adding an automation feature to a policy
@@ -223,7 +229,7 @@ You can define multiple automations per feature link by adding additional items 
 Automations created through Configuration Policies appear in `GET /automations` alongside legacy standalone automations. Policy-managed automations include a `configPolicyId` field in the response. Their runs include both `configPolicyId` and `configItemName`; the `automationId` field is `null` for policy-managed runs.
 
 <Aside type="tip">
-  Devices in an active maintenance window with automation suppression enabled are automatically excluded from a policy-managed automation's run, for both schedule and event triggers. This does not apply to standalone automations created directly on the Automations page. See [Automation and Patching Suppression](/features/maintenance-windows/#automation-and-patching-suppression) for the full behavior.
+  Devices in an active maintenance window with automation suppression enabled are automatically excluded from a policy-managed automation's run, for both schedule and event triggers. This does not apply to standalone automations created directly on the Jobs page. See [Automation and Patching Suppression](/features/maintenance-windows/#automation-and-patching-suppression) for the full behavior.
 </Aside>
 
 ---

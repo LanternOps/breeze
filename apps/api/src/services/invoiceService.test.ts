@@ -14,6 +14,22 @@ function queueResult(rows: unknown[]) { results.push(rows); }
 // KEY, not a missing call.
 const setCalls = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
 
+// SEC-150: the fail-closed Checkout-session revocation phases run BEFORE this
+// suite's transaction and issue their own queries. This file drives a
+// hand-rolled Drizzle mock whose result queue would be consumed by them, so the
+// revocation is stubbed out here and proved for real — against Postgres, with a
+// mocked Stripe SDK — in __tests__/integration/stripeSessionRevocation.integration.test.ts.
+vi.mock('./stripeSessionRevocation', () => ({
+  requestInvoiceSessionRevocation: vi.fn(async () => ({
+    requested: 0, revoked: 0, charged: 0, blocked: 0, stillPending: 0,
+  })),
+  assertInvoiceSessionsRevoked: vi.fn(async () => undefined),
+  assertNoPendingRevocation: vi.fn(async () => undefined),
+  markSiblingRevocationIntentInTx: vi.fn(async () => 0),
+  markSessionChargedRepair: vi.fn(async () => false),
+  REVOCATION_PENDING_CODE: 'STRIPE_REVOCATION_PENDING',
+}));
+
 vi.mock('../db', () => {
   const makeChain = () => {
     const chain: Record<string, unknown> = {};

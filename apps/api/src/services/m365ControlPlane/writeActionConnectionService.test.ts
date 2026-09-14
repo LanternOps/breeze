@@ -25,6 +25,10 @@ const { dbMocks, contextMocks, consentMocks, columns } = vi.hoisted(() => ({
       dbMocks.order.push('delete-session');
       consentMocks.validStates.clear();
     }),
+    deleteForConnection: vi.fn(async () => {
+      dbMocks.order.push('delete-session-by-connection');
+      consentMocks.validStates.clear();
+    }),
     createAdmin: vi.fn(async () => {
       dbMocks.order.push('insert-session');
       consentMocks.stateCounter += 1;
@@ -136,6 +140,7 @@ vi.mock('../../middleware/auth', () => ({
 
 vi.mock('./consentSessionService', () => ({
   deleteConsentSessionsForAttemptInTransaction: consentMocks.deleteAttempt,
+  deleteConsentSessionsForConnection: consentMocks.deleteForConnection,
   createAdminConsentSessionInTransaction: consentMocks.createAdmin,
   consumeConsentSessionInTransaction: consentMocks.consumeAdmin,
   insertPreparedIdentityVerificationSessionInTransaction: consentMocks.insertIdentity,

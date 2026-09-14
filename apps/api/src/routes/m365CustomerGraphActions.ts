@@ -15,6 +15,7 @@ import {
 } from '../middleware/auth';
 import {
   deriveGrantHealth,
+  type GrantHealthState,
   type GrantHealth,
   type M365ConnectionSnapshot,
 } from '../services/m365ControlPlane/connectionService';
@@ -75,7 +76,16 @@ export interface CustomerGraphActionsConnectionDto {
   clientId: string | null;
   displayName: string | null;
   status: CustomerGraphActionsConnectionSnapshot['status'];
+  /**
+   * Derived health, not stored status. `manifest-stale` is the state the
+   * upgrade-consent banner keys off: the connection is executing fine on the
+   * grants it has, but the code manifest has moved on (spec §2.2).
+   */
+  grantHealth: GrantHealthState;
+  /** Manifest version stored on the row. */
   manifestVersion: number;
+  /** Manifest version this build requires. */
+  currentManifestVersion: number;
   observedGrants: CanonicalAppRoleAssignment[];
   missingGrants: CanonicalAppRoleAssignment[];
   unexpectedGrants: CanonicalAppRoleAssignment[];
@@ -88,7 +98,9 @@ export interface CustomerGraphActionsEnvelope {
   profile: {
     id: typeof PROFILE_ID;
     displayName: string;
-    manifestVersion: 1;
+    // Was a hard-coded literal, which stops compiling the moment the manifest
+    // moves. The manifest is the single source; the DTO reports it.
+    manifestVersion: number;
     requiredGrants: M365ApplicationGrant[];
   };
   onboardingEnabled: boolean;
@@ -111,7 +123,9 @@ function toConnectionDto(value: ConnectionWithHealth): CustomerGraphActionsConne
     clientId: value.clientId === '' ? null : value.clientId,
     displayName: value.displayName,
     status: value.status,
+    grantHealth: health.state,
     manifestVersion: value.permissionManifestVersion,
+    currentManifestVersion: profileManifest.version,
     observedGrants: [...health.observedGrants],
     missingGrants: [...health.missingGrants],
     unexpectedGrants: [...health.unexpectedGrants],

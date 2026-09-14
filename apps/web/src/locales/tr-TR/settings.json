@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Destek kullanımı",
           "description": "Ayın bugüne kadarki faturalandırılabilir destek süresi toplamını gösterir."
+        },
+        "enableService": {
+          "label": "Hizmet",
+          "description": "Planlanan teslimatları, teslim edilenleri ve önemli tarihleri gösterir."
+        },
+        "enableDocuments": {
+          "label": "Belgeler",
+          "description": "Müşterilerin paylaşılan belgeleri indirmesine izin verir."
         }
       }
     },
@@ -1502,11 +1510,13 @@
       "timezone": "Saat dilimi",
       "kinds": {
         "sweep": "Tarama",
-        "narrative": "Haftalık rapor"
+        "narrative": "Haftalık rapor",
+        "design": "Filo tasarımı"
       },
       "kindsLabel": "Çalıştırılacak denetimler",
       "kind": "Zamanlama türü",
       "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
+      "monthlyOrRarerHint": "Filo tasarımı ayda en fazla bir kez çalışır: sabit dakika, saat ve ayın-günü (1-28), ay için * veya virgülle ayrılmış sabit aylar listesi, ve haftanın günü için *. Örneğin 0 6 1 1,4,7,10 * her çeyrekte 1'inde saat 06:00'da çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
       "override": "Bu kuruluş için geçersiz kıl",
@@ -1546,6 +1556,7 @@
         "baselineAgentMismatch": "O temel çizgi başka bir aracıya ait.",
         "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
         "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
+        "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
         "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
       }
@@ -1556,7 +1567,8 @@
     "kindHints": {
       "triage": "Yeni uyarıları inceler ve ne yapılacağını önerir.",
       "patch": "Eksik yamaları gözden geçirir ve nelerin kurulacağını önerir.",
-      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir."
+      "helpdesk": "Talepleri üstlenir; yanıt ve sonraki adım önerir.",
+      "designer": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar."
     },
     "emptyState": {
       "title": "Henüz aracı yok",
@@ -1571,7 +1583,8 @@
       "shadowConsequence": "İzler ve önerir; her şeyi bir kişi onaylar.",
       "act": "Eylem",
       "actConsequence": "İzin verilen işlemleri tıklama olmadan yürütür. Otomatik geri alma yoktur.",
-      "actUnavailable": "Bu aracı için henüz kullanılamıyor."
+      "actUnavailable": "Bu aracı için henüz kullanılamıyor.",
+      "shadowUnavailableForKind": "Bu aracı yalnızca rapor okur ve yazar — gölgede izlenecek hiçbir şey yok."
     },
     "allOrgs": "Tüm kuruluşlar",
     "allOrgsHint": "İş ortağı genelinde: bir kuruluş daraltmadığı sürece her kuruluş için geçerlidir.",
@@ -1685,7 +1698,8 @@
     "kinds": {
       "triage": "Uyarı önceliklendirme",
       "patch": "Yama yönetimi",
-      "helpdesk": "Yardım masası"
+      "helpdesk": "Yardım masası",
+      "designer": "Filo tasarımcısı"
     },
     "modes": {
       "off": "Kapalı",
@@ -1820,7 +1834,8 @@
       "profile": {
         "sweep": "Tarama",
         "narrative": "Haftalık rapor",
-        "triage": "Talep önceliklendirme"
+        "triage": "Talep önceliklendirme",
+        "design": "Filo tasarımı"
       },
       "sweep": {
         "title": "Tarama bulguları",
@@ -1867,6 +1882,14 @@
         "openReport": "Raporu aç",
         "download": "PDF'yi indir",
         "downloadFailed": "PDF indirilemedi."
+      },
+      "fleetDesign": {
+        "title": "Filo tasarımı",
+        "counts": "{{functions}} işlev · {{watches}} izleme · {{rules}} uyarı kuralı",
+        "openReport": "Raporu aç",
+        "download": "PDF'yi indir",
+        "downloadFailed": "PDF indirilemedi.",
+        "truncatedNote": "Kanıtlar kısaltıldı — bu tasarım tüm filoyu görmedi."
       },
       "noAgent": "Bilinmeyen aracı",
       "loading": "Çalıştırmalar yükleniyor…",
@@ -2129,6 +2152,7 @@
           "fixWatchesHeld": "Tutulan düzeltme izlemeleri",
           "fixWatchesRecurred": "Tekrarlanan düzeltme izlemeleri",
           "narrativesDelivered": "Teslim edilen haftalık raporlar",
+          "fleetDesignsDelivered": "Teslim edilen Fleet Design raporları",
           "estTimeSaved": "Tahmini kazanılan zaman",
           "llmSpend": "LLM harcaması",
           "window": "Rapor penceresi (gün)",
@@ -2235,6 +2259,10 @@
         "scripts_commands": {
           "label": "Betikler ve komutlar",
           "description": "Betikleri, playbook'ları ve sistem komutlarını çalıştırın; bunların etkilediği süreçleri, zamanlanmış görevleri ve kayıt defteri girişlerini yönetin."
+        },
+        "author_scripts": {
+          "label": "Betik yazma",
+          "description": "Bağımsız inceleme için öneri olarak yeni bir betik yazın. Bir aracının yazdığı hiçbir şey incelenip onaylanmadan çalıştırılmaz."
         },
         "tickets": {
           "label": "Yardım masası talepleri",
@@ -2685,7 +2713,8 @@
       "loggedProposalCount_other": "{{count}} kayıtlı öneri",
       "unattendedCount_one": "{{count}} gözetimsiz",
       "unattendedCount_other": "{{count}} gözetimsiz",
-      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır."
+      "scriptGateNote": "Bu aracı için bir betik yetkilendirilene kadar onay isteği olarak kalır.",
+      "designerReadOnly": "Filo tasarımcısı, salt okunur her araca ve bir rapor aracına erişir. Seçilecek herhangi bir değiştirme yeteneği yoktur."
     },
     "summary": {
       "edit": "Düzenle",
@@ -2786,6 +2815,11 @@
           "blurb": "Talepler oluşturuldukca, ilk yanıtı aldıkça veya çözüldükçe onlar üzerinde çalışır.",
           "runsWhen": "bir talep oluşturulduğunda, ilk yanıtını aldığında veya çözüldü olarak işaretlendiğinde",
           "recommended": "yaygın talepleri çözmek için hizmetleri yeniden başlatmak ve disk alanı boşaltmak"
+        },
+        "designer": {
+          "blurb": "Tüm filoyu okur ve bir teknisyenin onaylaması için gerekçeli bir izleme tasarımı yazar.",
+          "runsWhen": "bir kuruluş için Filo tasarımı başlattığınızda veya üç aylık bir zamanlamada",
+          "recommended": "sıfırdan bir geçiş veya üç aylık bir yapılandırma denetimi"
         }
       },
       "kindCard": {
@@ -2939,7 +2973,9 @@
     "loadingApproverDevices": "Onaylayıcı cihazlar yükleniyor…",
     "tryAgain": "Tekrar deneyin",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Henüz kayıtlı onaylayıcı cihaz yok. Telefonunuzdaki Breeze mobil uygulamasında oturum açın; uygulama burada otomatik olarak görünür veya biyometri ile onaylamak için bu tarayıcıyı aşağıdan kaydedin.",
-    "platformBound": "Platforma bağlı",
+    "hardwareAttested": "Donanım onaylı",
+    "notAttested": "Onaylanmadı",
+    "notAttestedTooltip": "Bu cihaz, onaylı bir uygulama sürümüyle yeniden kaydedilene kadar kritik onaylar için kullanılamaz.",
     "registered": "Kayıtlı",
     "lastUsed": "Son kullanılan",
     "cancel": "İptal",
@@ -4427,27 +4463,10 @@
       "suspended": "Askıya alındı",
       "churned": "Çalkalanmış",
       "offboarding": "Ayrılma"
+    },
+    "help": {
+      "slug": "Addan üretilir. Hesabınızda benzersizdir; API ve entegrasyonlar tarafından kullanılır."
     }
-  },
-  "organizationList": {
-    "title": "Kuruluşlar",
-    "count": "{{filtered}} / {{total}} kuruluş",
-    "searchPlaceholder": "Arama kuruluşları",
-    "allStatuses": "Tüm durumlar",
-    "status": {
-      "active": "Aktif",
-      "trial": "Deneme",
-      "suspended": "Askıya alındı",
-      "churned": "Çalkalanmış",
-      "offboarding": "Ayrılma",
-      "merging": "Birleştirme",
-      "archived": "Arşivlendi",
-      "purging": "Temizleme"
-    },
-    "columns": {
-      "devices": "Cihazlar"
-    },
-    "empty": "Hiçbir kuruluş bulunamadı. Aramanızı veya filtrelerinizi ayarlamayı deneyin."
   },
   "bulkOrgImport": {
     "title": "Toplu içe aktarma",
@@ -4511,23 +4530,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Organizasyonlar yükleniyor...",
-    "title": "Kuruluşlar ve Siteler",
-    "description": "Kuruluşları ve sitelerini yönetin.",
     "actions": {
-      "addOrganization": "Organizasyon ekle",
-      "tryAgain": "Tekrar deneyin",
-      "editOrganization": "Organizasyonu düzenle",
-      "archiveOrganization": "Kuruluşu arşivle",
-      "deleting": "Siliniyor...",
-      "openRecord": "Kaydı aç",
-      "openSettings": "Ayarlar"
+      "tryAgain": "Tekrar deneyin"
     },
     "errors": {
-      "fetchOrganizations": "Kuruluşlar getirilemedi",
       "generic": "Bir hata oluştu",
-      "saveOrder": "Organizasyon sırası kaydedilemedi",
-      "saveOrganization": "Kuruluş kaydedilemedi",
       "saveSite": "Site kaydedilemedi ({{status}})",
       "deleteSite": "Site silinemedi",
       "loadSites": "Bu kuruluşun siteleri yüklenemedi."
@@ -4542,25 +4549,8 @@
       "archived": "Arşivlendi",
       "purging": "Temizleme"
     },
-    "deviceCount": "{{count}} cihazlar",
-    "list": {
-      "title": "Kuruluşlar",
-      "searchPlaceholder": "Ara...",
-      "empty": "Hiçbir kuruluş bulunamadı.",
-      "noMatches": "Aramanızla eşleşen kuruluş yok.",
-      "dragToReorder": "Yeniden sıralamak için sürükleyin"
-    },
     "sites": {
       "loading": "Siteler yükleniyor..."
-    },
-    "emptySelection": {
-      "title": "Hiçbir kuruluş seçilmedi",
-      "description": "Sitelerini görüntülemek için listeden bir kuruluş seçin."
-    },
-    "add": {
-      "title": "Organizasyon Ekle",
-      "description": "Aşağıdaki ayrıntılarla yeni bir organizasyon oluşturun.",
-      "submit": "Organizasyon oluştur"
     },
     "siteModal": {
       "editTitle": "Siteyi Düzenle",
@@ -4576,11 +4566,11 @@
     },
     "deleteSite": {
       "title": "Siteyi Sil",
-      "messagePrefix": "Silmek istediğinizden emin misiniz?",
-      "messageSuffix": "Bu işlem geri alınamaz."
+      "message": "{{name}} silinsin mi? Site kalıcı olarak kaldırılır ve bu işlem geri alınamaz.",
+      "blockedMessage_one": "{{name}} sitesinde hâlâ {{count}} cihaz var. Bu siteyi silmeden önce cihazı başka bir siteye taşıyın.",
+      "blockedMessage_other": "{{name}} sitesinde hâlâ {{count}} cihaz var. Bu siteyi silmeden önce cihazları başka bir siteye taşıyın."
     },
     "merge": {
-      "openButton": "Başka bir kuruluşla birleştir",
       "title": "Kuruluşu birleştir",
       "description": "{{name}} kuruluşunun verilerini hayatta kalan bir kuruluşa taşıyın. {{name}} bundan sonra kalıcı olarak kapatılır ve geri alınamaz.",
       "survivorLabel": "Şununla birleştir",
@@ -4647,36 +4637,6 @@
       "errors": {
         "archive": "Kuruluş arşivlenemedi",
         "mfaRequired": "Kuruluşları arşivlemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Arşivlenenler",
-      "loading": "Arşivlenen kuruluşlar yükleniyor...",
-      "empty": "Arşivlenmiş kuruluş yok.",
-      "noMatches": "Aramanızla eşleşen arşivlenmiş kuruluş yok.",
-      "badge": "Arşivlendi",
-      "archivingBadge": "Arşivleniyor…",
-      "keptIndefinitely": "Süresiz olarak saklanıyor",
-      "purgeToday": "Bugün kalıcı olarak silinecek",
-      "purgeCountdown_one": "{{count}} gün içinde kalıcı olarak silinecek",
-      "purgeCountdown_other": "{{count}} gün içinde kalıcı olarak silinecek",
-      "truncatedNote": "İlk {{count}} arşivlenmiş kuruluş gösteriliyor. Listeyi daraltmak için arama yapın.",
-      "readOnlyNotice": "Bu kuruluş arşivlendi ve salt okunur durumda. Normal erişimi sürdürmek için geri yükleyin.",
-      "drainNotice": "Bu kuruluş arşivleniyor — temsilcileri kaldırılıyor ve işlem tamamlanana kadar salt okunur kalıyor. İptal edip geri getirmek için geri yükleyin.",
-      "errors": {
-        "fetch": "Arşivlenen kuruluşlar yüklenemedi"
-      }
-    },
-    "restore": {
-      "action": "Geri yükle",
-      "restoring": "Geri yükleniyor...",
-      "success": "{{name}} geri yüklendi — durum: {{status}}.",
-      "recreateRequiredNote": "Tekrar tam olarak kullanılabilir olmadan önce: {{items}}",
-      "suspendedNote": "Arşivlenmeden önce askıya alınmıştı, bu nedenle askıya alınmış olarak geri yüklendi — normal erişimi sürdürmeden önce bunu çözün.",
-      "errors": {
-        "restore": "Kuruluş geri yüklenemedi",
-        "mfaRequired": "Kuruluşları geri yüklemek çok faktörlü kimlik doğrulama gerektirir. Profil güvenlik ayarlarınızda MFA'yı etkinleştirin ve tekrar deneyin.",
-        "purging": "Bu kuruluş zaten kalıcı olarak siliniyor ve artık geri yüklenemez."
       }
     }
   },
@@ -4775,7 +4735,9 @@
     "count": "{{filtered}} / {{total}} site",
     "searchPlaceholder": "Sitelerde ara",
     "actions": {
-      "add": "Site ekle"
+      "add": "Site ekle",
+      "editSite": "{{name}} düzenle",
+      "deleteSite": "{{name}} sil"
     },
     "columns": {
       "timezone": "Saat Dilimi",
@@ -5305,5 +5267,82 @@
       "conflict": "Çakışma",
       "orgNotFound": "Kuruluş bulunamadı"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Betik yazımı",
+    "subtitle": "Asistanın ve aracılarınızın betik yazmasına, incelemesine ve — izin verdiğinizde — bir onay kartı olmadan çalıştırmasına izin verin.",
+    "partnerCard": {
+      "title": "İş ortağı üst sınırı",
+      "description": "Bu iş ortağına bağlı herhangi bir kuruluşun kullanabileceği en geniş ayar. Tek tek kuruluşlar bunu yalnızca daraltabilir.",
+      "readOnly": "Üst sınırı yalnızca tam kuruluş erişimine sahip bir iş ortağı yöneticisi değiştirebilir.",
+      "missing": "İş ortağınız henüz bir üst sınır belirlemedi, bu nedenle gözetimsiz kanal burada etkinleştirilemez."
+    },
+    "orgCard": {
+      "title": "Bu kuruluş",
+      "description": "Açık bir izin. Hem iş ortağı üst sınırı hem de bu anahtar izin verene kadar gözetimsiz kanal kapalı kalır.",
+      "noOrgSelected": "Betik yazımı ayarlarını yönetmek için bir kuruluş seçin."
+    },
+    "fields": {
+      "proposingEnabled": "Yapay zekânın betik önermesine izin ver",
+      "unattendedAllowed": "Kuruluşların gözetimsiz kanalı kullanmasına izin ver",
+      "unattendedEnabled": "Onaylanmış düşük riskli betikleri onay kartı olmadan çalıştır",
+      "maxRiskTier": "Gözetimsiz olarak izin verilen en yüksek risk seviyesi",
+      "allowedClasses": "Gözetimsiz bir betiğin dokunabileceği şeyler",
+      "perHour": "Saatte izin verilen maksimum gözetimsiz çalıştırma",
+      "reviewerModel": "İnceleme modeli",
+      "reviewerModelHint": "Platform varsayılanını kullanmak için boş bırakın.",
+      "protectedResources": "Bunlara asla dokunma",
+      "protectedServices": "Hizmetler",
+      "protectedPaths": "Yollar",
+      "protectedRegistryKeys": "Kayıt defteri anahtarları",
+      "protectedDeviceTags": "Cihaz etiketleri"
+    },
+    "tier": {
+      "low": "Düşük",
+      "medium": "Orta"
+    },
+    "class": {
+      "registry": "Kayıt defteri",
+      "services": "Hizmetler",
+      "processes": "İşlemler",
+      "files_system": "Sistem dosyaları",
+      "files_user": "Kullanıcı dosyaları",
+      "temp_files": "Geçici dosyalar",
+      "network_egress": "Giden ağ trafiği",
+      "firewall": "Güvenlik duvarı",
+      "credentials": "Kimlik bilgileri",
+      "users_groups": "Kullanıcılar ve gruplar",
+      "packages": "Paketler",
+      "scheduled_tasks": "Zamanlanmış görevler",
+      "disk": "Disk",
+      "boot": "Önyükleme yapılandırması",
+      "security_tooling": "Güvenlik araçları",
+      "dns_cache": "DNS önbelleği",
+      "printing": "Yazdırma",
+      "browser": "Tarayıcılar",
+      "shell_eval": "Dinamik kod"
+    },
+    "windowsOnly": "Yalnızca Windows",
+    "hardDenied": "Üst sınır ne derse desin, gözetimsiz olarak hiçbir zaman kullanılamaz.",
+    "aboveCeiling": "İş ortağınız buna izin vermiyor.",
+    "lane": {
+      "closedTitle": "Gözetimsiz kanal normal şekilde çalışıyor",
+      "openTitle": "Gözetimsiz kanal duraklatıldı",
+      "openBody": "{{reason}} Bir onaylayıcı kanalı sıfırlayana kadar gözetimsiz çalıştırmalar reddedilir. Onaylar normal şekilde çalışmaya devam eder.",
+      "reset": "Kanalı sıfırla",
+      "resetStepUpBody": "Gözetimsiz şeridi sıfırlamak için yeni bir güvenlik doğrulaması gerekir.",
+      "resetSuccess": "Gözetimsiz kanal yeniden çalışıyor.",
+      "resetFailed": "Kanal sıfırlanamadı."
+    },
+    "stepUp": {
+      "title": "Sizin olduğunuzu doğrulayın",
+      "body": "Gözetimsiz çalıştırmaları etkinleştirmek yeni bir güvenlik kontrolü gerektirir."
+    },
+    "save": "Kaydet",
+    "saving": "Kaydediliyor…",
+    "saved": "Betik yazımı ayarları kaydedildi.",
+    "saveFailed": "Bu ayarlar kaydedilemedi.",
+    "loading": "Yükleniyor…",
+    "loadFailed": "Betik yazımı ayarları yüklenemedi."
   }
 }

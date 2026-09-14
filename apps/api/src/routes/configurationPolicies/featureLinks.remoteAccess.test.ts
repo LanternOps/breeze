@@ -29,6 +29,9 @@ vi.mock('../../services/configurationPolicy', async (importOriginal) => {
 
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: vi.fn(),
+  // See featureLinks.siteScope.test.ts for why this export is required now
+  // that the route imports services/monitors/monitorService.
+  requestLikeFromSnapshot: vi.fn(() => ({ req: { header: () => undefined } })),
 }));
 
 vi.mock('../../middleware/auth', () => ({
@@ -212,7 +215,10 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
         POLICY_ID,
         'remote_access',
         undefined,
-        capabilitySettings
+        capabilitySettings,
+        // #5511 W02: the route hands every feature-link write its consent actor
+        // out of band; the service only reads it for warranty.
+        { userId: 'user-1' }
       );
     });
 
@@ -310,7 +316,8 @@ describe('featureLinks routes — remote_access inlineSettings validation', () =
             sessionPromptMode: 'consent',
           },
         }),
-        POLICY_ID
+        POLICY_ID,
+        { userId: 'user-1' }
       );
     });
 

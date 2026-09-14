@@ -1,9 +1,14 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { runAction, handleActionError } from '@/lib/runAction';
+import { Dialog } from '../shared/Dialog';
+
+const FORM_TITLE_ID = 'org-archive-dialog-title';
+const DONE_TITLE_ID = 'org-archive-done-title';
+const noop = () => {};
 
 /** The three fixed-day presets the retention picker offers alongside "Never"
  *  and "Custom". Exported for the test. */
@@ -114,15 +119,26 @@ export default function ArchiveOrgModal({ org, onClose, onArchived, onDoneClose 
     }
   };
 
+  // Escape / backdrop: dismiss on the form phase (never mid-request — a
+  // half-submitted archive cannot be walked away from), and on the done phase
+  // behave exactly like the explicit Close button, which also clears the
+  // page's now-archived selection.
+  const handleDialogClose = phase === 'done' ? onDoneClose : submitting ? noop : onClose;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-      <div
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border bg-card p-6 shadow-xs"
-        data-testid="org-archive-modal"
-      >
+    <Dialog
+      open
+      onClose={handleDialogClose}
+      title={t('organizationsPage.archive.title')}
+      labelledBy={phase === 'done' ? DONE_TITLE_ID : FORM_TITLE_ID}
+      maxWidth="lg"
+      alignTop
+      className="p-6"
+    >
+      <div data-testid="org-archive-modal">
         {phase === 'form' && (
           <>
-            <h2 className="text-lg font-semibold">{t('organizationsPage.archive.title')}</h2>
+            <h2 id={FORM_TITLE_ID} className="text-lg font-semibold">{t('organizationsPage.archive.title')}</h2>
             <p className="mt-2 text-sm text-muted-foreground">
               {t('organizationsPage.archive.description', { name: org.name })}
             </p>
@@ -238,7 +254,7 @@ export default function ArchiveOrgModal({ org, onClose, onArchived, onDoneClose 
 
         {phase === 'done' && result && (
           <div data-testid="org-archive-done" className="space-y-3">
-            <p className="font-medium">
+            <p id={DONE_TITLE_ID} className="font-medium">
               {result.status === 'offboarding'
                 ? t('organizationsPage.archive.doneOffboardingTitle')
                 : t('organizationsPage.archive.doneArchivedTitle')}
@@ -266,6 +282,6 @@ export default function ArchiveOrgModal({ org, onClose, onArchived, onDoneClose 
           </div>
         )}
       </div>
-    </div>
+    </Dialog>
   );
 }

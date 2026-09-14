@@ -98,3 +98,15 @@ describe('updateNetworkAssetSchema', () => {
     }
   });
 });
+
+describe('purchaseDateSchema (Hardware Lifecycle)', () => {
+  it('accepts a real calendar date and null, rejects impossible or malformed dates', async () => {
+    const { purchaseDateSchema } = await import('./schemas');
+    expect(purchaseDateSchema.parse('2024-02-29')).toBe('2024-02-29');
+    expect(purchaseDateSchema.parse(null)).toBeNull();
+    expect(purchaseDateSchema.safeParse('2026-02-30').success).toBe(false);
+    expect(purchaseDateSchema.safeParse('2023-02-29').success).toBe(false);
+    expect(purchaseDateSchema.safeParse('2026-13-01').success).toBe(false);
+    expect(purchaseDateSchema.safeParse('06/10/2026').success).toBe(false);
+  });
+});

@@ -735,6 +735,9 @@ loginRoutes.post('/login', cfAccessLoginMiddleware, zValidator('json', loginSche
     mfaRequired: false,
     requiresSetup,
     mfaEnrollmentRequired,
+    // #5306 — non-null while this user's role-forced enrolment is inside its
+    // grace window: they are let in, but the clock is running.
+    mfaGraceEndsAt: policy.pendingEnrollment?.deadline ?? null,
     enrollUrl: mfaEnrollmentRequired ? '/auth/mfa/setup' : undefined,
     ...(authenticatorRegisterGrantId ? { authenticatorRegisterGrantId } : {})
   });

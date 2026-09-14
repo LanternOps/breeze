@@ -25,7 +25,14 @@ describe('AlertsTabStrip', () => {
 
     expect(screen.getByRole('link', { name: 'Alertas' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Correlações' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Monitores' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Regras' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Canais' })).toBeInTheDocument();
+  });
+
+  it('points the rules tab at the Monitoring hub Legacy rules page (#5289)', () => {
+    render(<AlertsTabStrip />);
+    expect(screen.getByRole('link', { name: 'Monitors' })).toHaveAttribute('href', '/alerts/monitors');
+    expect(screen.getByRole('link', { name: 'Rules' })).toHaveAttribute('href', '/alerts/rules');
   });
 });

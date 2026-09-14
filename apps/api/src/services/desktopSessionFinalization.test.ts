@@ -6,7 +6,17 @@ const state = vi.hoisted(() => ({
     commandId: '22222222-2222-4222-8222-222222222222',
     outcome: 'stopped' as const,
   },
-  updatedRows: [{ id: '11111111-1111-4111-8111-111111111111' }],
+  // SEC-038 W03: `commitDesktopTerminalIntent` (real, unmocked) normalizes this
+  // RETURNING row via `toTerminalSessionRow`, which throws without a
+  // `terminalGeneration` — so every default row needs the full contract shape.
+  updatedRows: [{
+    id: '11111111-1111-4111-8111-111111111111',
+    type: 'desktop',
+    deviceId: '88888888-8888-4888-8888-888888888888',
+    status: 'disconnected',
+    terminalGeneration: 1n,
+    terminationPhase: 'confirmed',
+  }],
   auditFailure: null as Error | null,
   inSystemTransaction: false,
   updateValues: null as Record<string, unknown> | null,
@@ -45,7 +55,14 @@ vi.mock('../db/schema', () => ({
   remoteSessions: {
     _table: 'remote_sessions',
     id: 'remote_sessions.id',
+    type: 'remote_sessions.type',
+    deviceId: 'remote_sessions.device_id',
     status: 'remote_sessions.status',
+    // SEC-038 W03 terminal-intent contract columns, read by
+    // `terminalIntentSet`/`terminalSessionReturning` (real, unmocked here).
+    desktopStartGeneration: 'remote_sessions.desktop_start_generation',
+    terminalGeneration: 'remote_sessions.terminal_generation',
+    terminationPhase: 'remote_sessions.termination_phase',
   },
   deviceCommands: {
     _table: 'device_commands',
@@ -121,7 +138,14 @@ describe('finalizeDesktopSessionOnce', () => {
       commandId: input.finalizationId,
       outcome: 'stopped',
     };
-    state.updatedRows = [{ id: input.sessionId }];
+    state.updatedRows = [{
+      id: input.sessionId,
+      type: 'desktop',
+      deviceId: input.deviceId,
+      status: 'disconnected',
+      terminalGeneration: 1n,
+      terminationPhase: 'confirmed',
+    }];
     state.auditFailure = null;
     state.inSystemTransaction = false;
     state.updateValues = null;
@@ -148,6 +172,7 @@ describe('finalizeDesktopSessionOnce', () => {
     });
     observeDesktopFinalizationMock.mockResolvedValue({
       ownerPresent: false,
+      everOwned: true,
       finalizationId: input.finalizationId,
       canonicalPayload: JSON.stringify(input),
       consistent: true,

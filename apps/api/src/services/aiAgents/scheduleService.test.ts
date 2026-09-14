@@ -153,6 +153,7 @@ const CRON = '0 6 * * *';
 /** Monday 07:00 — literal minute/hour, `*` day-of-month and month, one
  *  day-of-week. The only shape `isWeeklyLiteralCron` accepts. */
 const NARRATIVE_CRON = '0 7 * * 1';
+const DESIGN_CRON = '0 6 1 * *';
 const RUN_ID = '00000000-0000-4000-8000-00000000000a';
 const AI_AGENT_PRINCIPAL = { kind: 'ai_agent', agentId: AGENT_ID, runId: RUN_ID } as const;
 
@@ -393,6 +394,27 @@ describe('createSchedule — partner baseline', () => {
     expect(dbState.inserted).toBeNull();
   });
 
+  // Fleet Designer (W01) — the mirror-image checks for assertPartnerWideScheduledAgent's
+  // kind branch: a `design` schedule requires a `designer` agent, and a `designer`
+  // agent cannot be targeted by a `sweep`/`narrative` schedule.
+  it('rejects a design create against a partner-wide triage agent with agent_kind_not_designer', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'triage' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...input, kind: 'design' as const, cron: DESIGN_CRON, sweepKinds: [] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'agent_kind_not_designer' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it('rejects a sweep create against a partner-wide designer agent with agent_kind_not_triage', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+
+    await expect(createSchedule(partnerAuth(), input)).rejects.toMatchObject({
+      code: 'agent_kind_not_triage',
+    });
+    expect(dbState.inserted).toBeNull();
+  });
+
   it('rejects a 6-field cron with invalid_cron — the sweeper evaluator is 5-field only', async () => {
     dbState.agentRows = [[agentRow()]];
 
@@ -486,6 +508,44 @@ describe('createSchedule — partner baseline', () => {
 
       await expect(
         createSchedule(partnerAuth(), { ...narrativeInput, cron }),
+      ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  const designInput = { ...input, kind: 'design' as const, cron: DESIGN_CRON, sweepKinds: [] as AiSweepKind[] };
+
+  it('inserts a design baseline with no sweep kinds on a monthly cron', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+    dbState.insertReturning = baselineRow({ kind: 'design', sweepKinds: [], cron: DESIGN_CRON });
+
+    await createSchedule(partnerAuth(), designInput);
+
+    expect(dbState.inserted).toMatchObject({
+      kind: 'design',
+      sweepKinds: [],
+      cron: DESIGN_CRON,
+      partnerId: PARTNER_ID,
+      orgId: null,
+    });
+  });
+
+  it('rejects a design baseline that carries sweep kinds (kinds_not_empty)', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...designInput, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it.each(['0 7 * * 1', '0 6 29 * *'])(
+    'rejects a design baseline on the non-monthly-or-rarer cron %s (invalid_cron_for_kind)',
+    async (cron) => {
+      dbState.agentRows = [[agentRow({ kind: 'designer' })]];
+
+      await expect(
+        createSchedule(partnerAuth(), { ...designInput, cron }),
       ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
       expect(dbState.inserted).toBeNull();
     },

@@ -524,6 +524,113 @@ describe('AiAgentSchedulesSection', () => {
     expect(screen.queryByTestId('ai-agent-schedule-add')).toBeNull();
     expect(fetchWithAuth).not.toHaveBeenCalled();
   });
+
+  // ── Fleet Designer (W01) — the `design` schedule kind ───────────────────
+  //
+  // Unlike sweep/narrative, a design schedule targets a partner-wide
+  // DESIGNER agent, not the triage agent — the API refuses every other kind
+  // with `agent_kind_not_designer`. The chooser is scoped by `agentKind` so a
+  // triage agent's create form never offers `design`, and a designer agent's
+  // never offers `sweep`/`narrative`.
+
+  const designerProps = { ...partnerProps, agentKind: 'designer' as const };
+
+  const DESIGN_BASELINE: AiAgentEffectiveScheduleDto = {
+    ...BASELINE,
+    id: 'd-1',
+    kind: 'design',
+    cron: '0 6 1 1,4,7,10 *',
+    sweepKinds: [],
+    effective: { enabled: true, sweepKinds: [] },
+  };
+
+  it('offers only design for a designer agent, defaulting to the quarterly cron', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...designerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    expect(screen.getByTestId('ai-agent-schedule-kind')).toHaveValue('design');
+    expect(within(screen.getByTestId('ai-agent-schedule-kind')).queryAllByRole('option')).toHaveLength(1);
+    expect(screen.getByTestId('ai-agent-schedule-cron')).toHaveValue('0 6 1 1,4,7,10 *');
+    // A design schedule evaluates no sweep kinds — the whole block is absent.
+    expect(screen.queryByTestId('ai-agent-schedule-kinds')).toBeNull();
+    expect(screen.getByTestId('ai-agent-schedule-monthly-hint')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('offers only sweep and narrative for a triage agent (never design)', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    const options = within(screen.getByTestId('ai-agent-schedule-kind'))
+      .getAllByRole('option')
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(options).toEqual(['sweep', 'narrative']);
+  });
+
+  it('refuses a design cron that fires more than once a month', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...designerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+
+    // Structurally valid, but DAILY — the exact body the server answers
+    // `invalid_cron_for_kind` for.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 6 * * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-schedule-cron-invalid')).toBeInTheDocument();
+
+    // A day-of-month outside 1-28 is never guaranteed to occur.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 6 30 1,4,7,10 *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 6 1 * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('posts a design baseline carrying kind and NO sweepKinds, targeting the designer agent', async () => {
+    mockList([], () => json({ data: DESIGN_BASELINE }, true, 201));
+    render(<AiAgentSchedulesSection {...designerProps} agentId="designer-agent-1" />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-timezone'), {
+      target: { value: 'Europe/Paris' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { url, method, body } = lastMutation();
+    expect(url).toBe('/ai/agents/schedules');
+    expect(method).toBe('POST');
+    expect(body).toEqual({
+      ownerScope: 'partner',
+      kind: 'design',
+      agentId: 'designer-agent-1',
+      cron: '0 6 1 1,4,7,10 *',
+      timezone: 'Europe/Paris',
+      enabled: true,
+    });
+    expect(body).not.toHaveProperty('sweepKinds');
+  });
+
+  it('badges a design row and translates agent_kind_not_designer instead of the raw token', async () => {
+    mockList([DESIGN_BASELINE], () =>
+      json({ error: 'agent_kind_not_designer', message: 'wrong kind' }, false, 422),
+    );
+    render(<AiAgentSchedulesSection {...designerProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-schedule-d-1')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-schedule-kind-badge-d-1')).toHaveTextContent('Fleet design');
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-add'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const toasted = showToast.mock.calls.map(([arg]) => (arg as { message: string }).message).join('\n');
+    expect(toasted).not.toContain('agent_kind_not_designer');
+    expect(toasted).toContain('Fleet designer agent');
+  });
 });
 
 // ---------------------------------------------------------------------------

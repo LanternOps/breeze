@@ -1,6 +1,6 @@
 import {
   M365_READ_ACTION_FIELDS,
-  type M365ReadAction,
+  type M365InteractiveReadAction,
   type ReadActionResult,
   readActionFailureCodeSchema,
 } from '@breeze/shared/m365';
@@ -31,7 +31,7 @@ const MS_PER_HOUR = 60 * 60 * 1000;
 // URLSearchParams (graphUrl's searchParams.set in graphClient.ts), which
 // percent-encodes them regardless of this being safe.
 
-function project(item: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+export function project(item: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of fields) if (field in item) out[field] = item[field];
   return out;
@@ -82,7 +82,7 @@ async function projectedResource(
 }
 
 export async function executeGraphReadAction(
-  action: M365ReadAction,
+  action: M365InteractiveReadAction,
   context: GraphReadActionContext,
 ): Promise<ReadActionResult> {
   const { accessToken, graphClient } = context;
@@ -90,6 +90,9 @@ export async function executeGraphReadAction(
   const fields = M365_READ_ACTION_FIELDS[action.type];
 
   try {
+    // Sync ids (m365.sync.*) are rejected before this ever runs — at the route
+    // (app.ts) and again in readActionOperation — so this switch's `never`
+    // exhaustiveness check genuinely cannot see one.
     switch (action.type) {
       case 'm365.user.list': {
         const pageSize = action.pageSize ?? DEFAULT_PAGE_SIZE;

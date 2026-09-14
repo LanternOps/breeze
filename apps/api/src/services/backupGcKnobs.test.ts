@@ -4,9 +4,11 @@ import {
   resolveBackupBaseLeaseMs,
   resolveBackupRestorePinLingerMs,
   resolveBackupPublishMarginMs,
+  resolveBackupOrphanManifestMaxAgeMs,
   BACKUP_BASE_LEASE_MS_DEFAULT,
   BACKUP_RESTORE_PIN_LINGER_MS_DEFAULT,
   BACKUP_PUBLISH_MARGIN_MS_DEFAULT,
+  BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT,
 } from './backupGcKnobs';
 
 const ENV_VAR = 'BACKUP_TEST_KNOB_MS';
@@ -51,5 +53,28 @@ describe('per-knob defaults', () => {
     expect(resolveBackupPublishMarginMs()).toBe(BACKUP_PUBLISH_MARGIN_MS_DEFAULT);
     expect(BACKUP_BASE_LEASE_MS_DEFAULT).toBe(7 * 24 * 60 * 60 * 1000);
     expect(BACKUP_PUBLISH_MARGIN_MS_DEFAULT).toBe(60 * 60 * 1000);
+  });
+});
+
+describe('resolveBackupOrphanManifestMaxAgeMs', () => {
+  const ENV = 'BACKUP_GC_ORPHAN_MANIFEST_MAX_AGE_MS';
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('defaults to 9 days (journalMaxAge + 48h)', () => {
+    expect(resolveBackupOrphanManifestMaxAgeMs()).toBe(BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT);
+    expect(BACKUP_ORPHAN_MANIFEST_MAX_AGE_MS_DEFAULT).toBe(9 * 24 * 60 * 60 * 1000);
+  });
+
+  it('honors a positive override outside production', () => {
+    process.env[ENV] = '1234';
+    expect(resolveBackupOrphanManifestMaxAgeMs()).toBe(1234);
+  });
+
+  it('floors an override at/below the agent journal max age in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env[ENV] = String(7 * 24 * 60 * 60 * 1000); // exactly journalMaxAge
+    expect(resolveBackupOrphanManifestMaxAgeMs()).toBeGreaterThan(7 * 24 * 60 * 60 * 1000);
   });
 });

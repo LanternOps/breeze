@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db';
 import { organizations, partners } from '../db/schema';
-import type { ReportBranding } from '@breeze/shared/reportPdf';
+import { parseHexColor, type ReportBranding } from '@breeze/shared/reportPdf';
 
 /** Parse intrinsic width/height from a PNG data URL (IHDR is always the first
  * chunk: width at byte 16, height at byte 20). Returns null for non-PNG data. */
@@ -33,8 +33,12 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     .where(eq(organizations.id, orgId))
     .limit(1);
   if (!row?.partnerName) return empty;
-  const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string } };
+  const settings = (row.partnerSettings ?? {}) as { branding?: { logoUrl?: string; primaryColor?: string; secondaryColor?: string }; contact?: { name?: string; email?: string } };
   const logoUrl = settings.branding?.logoUrl ?? null;
+  // Colours ride along only when they parse as hex; the renderer falls back
+  // to the Breeze palette for anything else.
+  const primaryColor = parseHexColor(settings.branding?.primaryColor) ? settings.branding!.primaryColor! : null;
+  const accentColor = parseHexColor(settings.branding?.secondaryColor) ? settings.branding!.secondaryColor! : null;
   const aspect = logoUrl ? pngAspectFromDataUrl(logoUrl) : null;
   if (logoUrl && aspect == null) {
     console.warn('[reportBranding] Partner logo is not an embeddable PNG data URL; sending name-only branding', { orgId });
@@ -43,6 +47,10 @@ export async function loadReportBrandingForOrg(orgId: string): Promise<ReportBra
     name: row.partnerName,
     logoDataUrl: aspect != null ? logoUrl : null,
     logoAspect: aspect,
+    primaryColor,
+    accentColor,
+    contactEmail: settings.contact?.email?.trim() || null,
+    contactName: settings.contact?.name?.trim() || null,
   };
 }
 

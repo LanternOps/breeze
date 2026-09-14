@@ -76,6 +76,19 @@ export const users = pgTable('users', {
   pendingEmail: varchar('pending_email', { length: 255 }),
   pendingEmailRequestedAt: timestamp('pending_email_requested_at', { withTimezone: true }),
   passwordResetEpoch: integer('password_reset_epoch').notNull().default(1),
+  // #5306 — MFA enrolment grace (services/mfaEnrollmentGrace.ts). A single,
+  // NONRENEWABLE grant: mfaEnrollmentDeadline is written exactly once (the
+  // grant statement matches only `IS NULL`), so nothing — re-login, a role
+  // change, an admin factor reset, the kill switch toggling — can reopen or
+  // extend a window. The effective deadline is
+  // min(deadline, grantedAt + partner security.mfaEnrollmentGraceDays), so a
+  // partner may shorten an in-flight window but never lengthen it.
+  mfaEnrollmentDeadline: timestamp('mfa_enrollment_deadline', { withTimezone: true }),
+  mfaEnrollmentGraceGrantedAt: timestamp('mfa_enrollment_grace_granted_at', { withTimezone: true }),
+  // Claim stamps for the two nudges, written only AFTER a successful send so a
+  // failed delivery retries on the next sweep instead of being suppressed.
+  mfaEnrollmentNoticeSentAt: timestamp('mfa_enrollment_notice_sent_at', { withTimezone: true }),
+  mfaEnrollmentRemindedAt: timestamp('mfa_enrollment_reminded_at', { withTimezone: true }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });

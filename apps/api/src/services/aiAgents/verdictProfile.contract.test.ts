@@ -50,6 +50,15 @@ describe('verdict profile has no safety bypass (spec §7)', () => {
     expect(src).not.toMatch(/['"]triage['"]/);
     expect(src).not.toMatch(/isTriageProfile\(/);
     expect(src).not.toMatch(/TRIAGE_/);
+    // Fleet Designer (W01) — same safety-bypass contract for the `design`
+    // profile. It matters as much as narrative's/triage's case: a design
+    // run's tool floor is ALSO a small fixed allowlist plus one outcome
+    // tool, so any of these files quietly relaxing a check "because design
+    // is read-only" would be granting an exemption that has nothing to do
+    // with whether the run can actually mutate anything.
+    expect(src).not.toMatch(/['"]design['"]/);
+    expect(src).not.toMatch(/isDesignProfile\(/);
+    expect(src).not.toMatch(/DESIGN_/);
   });
   it('outcome tools never import the db or execute a registered tool', () => {
     const src = readFileSync(join(__dirname, 'outcomeTools.ts'), 'utf8');

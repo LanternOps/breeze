@@ -5,7 +5,7 @@
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
-    "devices": "Devices",
+    "devices": "Devices & Assets",
     "alerts": "Alerts",
     "approvals": "Approvals",
     "pendingApprovals": "{{count}} pending approvals",
@@ -20,6 +20,8 @@
     "oneDrive": "OneDrive",
     "aiForOffice": "AI for Office",
     "networkMonitor": "Network Monitor",
+    "jobs": "Jobs",
+    "monitoring": "Monitoring",
     "networkDiscovery": "Network Discovery",
     "edr": "EDR",
     "dnsSecurity": "DNS Security",
@@ -47,9 +49,11 @@
     "billing": "Billing",
     "organizations": "Organizations",
     "aiUsageBudget": "AI Usage & Budget",
+    "scriptAuthoring": "Script authoring",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",
     "aiImpact": "AI Impact",
+    "fleetDesign": "Fleet Design",
     "customFields": "Custom Fields",
     "variables": "Variables",
     "savedFilters": "Saved Filters",
@@ -713,7 +717,19 @@
         "scripts": "Scripts",
         "alerts": "Alerts",
         "users": "Users",
-        "settings": "Settings"
+        "settings": "Settings",
+        "recent-devices": "Recent devices",
+        "recent-pages": "Recently visited"
+      },
+      "actions": {
+        "newDevice": "New device",
+        "newDeviceDescription": "Add a device to your fleet",
+        "runScript": "Run script",
+        "runScriptDescription": "Execute a script on devices",
+        "alertRules": "Alert rules",
+        "alertRulesDescription": "Manage alerting in Configuration Policies",
+        "keyboardShortcuts": "Keyboard shortcuts",
+        "keyboardShortcutsDescription": "Every key and chord, on one card"
       }
     },
     "notifications": {
@@ -753,7 +769,10 @@
       "collapse": "Collapse sidebar",
       "expand": "Expand sidebar",
       "collapseSections": "Collapse all sections",
-      "closeMenu": "Close menu"
+      "closeMenu": "Close menu",
+      "recentDevices": "Recent devices",
+      "hideRecentDevices": "Hide recent devices",
+      "showRecentDevices": "Show recent devices"
     },
     "orgRequired": {
       "title": "Select an organization",
@@ -764,6 +783,20 @@
       "title": "Couldn't load your organizations",
       "description": "Something went wrong loading your organization list. Check your connection and try again.",
       "retry": "Retry"
+    },
+    "shortcuts": {
+      "title": "Keyboard shortcuts",
+      "general": "General",
+      "goTo": "Go to",
+      "goToHint": "Press g, release, then the key.",
+      "then": "then",
+      "search": "Search Breeze",
+      "searchSlash": "Search (also opens with this key)",
+      "cycleSidebar": "Cycle the sidebar mode",
+      "help": "Open the help panel",
+      "showThis": "Show this card",
+      "close": "Close a dialog or menu",
+      "typingNote": "Single-key shortcuts pause while you are typing in a field."
     }
   },
   "migrationBanner": {
@@ -2443,5 +2476,10 @@
     "approximateUnavailableStale": "≈ total unavailable — {{target}} exchange rate too old for {{codes}}",
     "approximateUnavailableMixed": "≈ total unavailable — {{codes}} could not be converted to {{target}}",
     "approximateUnavailableCodesOverflow": "{{codes}} and {{more}} more"
+  },
+  "mfaEnrollmentGraceBanner": {
+    "message": "Your role will require two-factor authentication. Enrol by {{date}}.",
+    "cta": "Set up 2FA",
+    "dismiss": "Dismiss two-factor authentication reminder"
   }
 }

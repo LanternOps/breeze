@@ -24,7 +24,8 @@ import {
   type ScheduleCadence,
   type ScheduleConfig,
   type ExecutiveSummary,
-  type OrgNarrativeReportSummary
+  type OrgNarrativeReportSummary,
+  type FleetDesignReportSummary
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
@@ -36,7 +37,9 @@ export type ReportType =
   | 'performance'
   | 'executive_summary'
   | 'security_compliance_posture'
-  | 'ai_org_narrative';
+  | 'ai_org_narrative'
+  | 'ai_fleet_design'
+  | 'hardware_lifecycle';
 
 /**
  * Report types the API owns end to end: the AI schedule creates the definition,
@@ -47,7 +50,7 @@ export type ReportType =
  * action instead. Mirrors `isSystemManagedReportDefinition` in
  * `apps/api/src/routes/reports/helpers.ts` — keep the two in sync.
  */
-const SYSTEM_MANAGED_REPORT_TYPES = new Set<ReportType>(['ai_org_narrative']);
+const SYSTEM_MANAGED_REPORT_TYPES = new Set<ReportType>(['ai_org_narrative', 'ai_fleet_design']);
 
 export function isSystemManagedReportType(type: ReportType): boolean {
   return SYSTEM_MANAGED_REPORT_TYPES.has(type);
@@ -258,6 +261,7 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             | PostureSummary
             | ExecutiveSummary
             | OrgNarrativeReportSummary
+            | FleetDesignReportSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.

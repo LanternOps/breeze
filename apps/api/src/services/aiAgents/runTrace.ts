@@ -24,6 +24,7 @@ import type {
   TicketProposalOutcome,
 } from './runLoop';
 import { projectAlertVerdict } from './alertVerdicts';
+import { projectFleetDesign } from './fleetDesignReport';
 import { projectNarrative } from './narrativeReport';
 import { countFindingsToReview } from './runFindings';
 import { projectSweep } from './sweepFindings';
@@ -140,6 +141,20 @@ export interface RunTraceNarrativeArtifactInput {
   periodStart: string | null;
   periodEnd: string | null;
   contextTruncated: boolean;
+}
+
+/**
+ * Fleet Designer W01 (#5651), Task 9 — the scalars the design DTO needs off
+ * the linked `report_runs` artifact, projected out of its stored jsonb by
+ * Postgres (`fleetDesignArtifactProjection`, fleetDesignReport.ts) so the
+ * route never drags the whole result document — the full outcome, scripts
+ * included — across the wire to read them. `null` when the run links no
+ * artifact. Direct sibling of `RunTraceNarrativeArtifactInput` above.
+ */
+export interface RunTraceFleetDesignArtifactInput {
+  reportId: string | null;
+  generatedAt: string | null;
+  evidenceTruncated: boolean;
 }
 
 /**
@@ -388,6 +403,10 @@ export function buildRunTrace(
   // unchanged; see `RunTraceDraftRowInput`'s docstring for why this is a live
   // query rather than something read off the persisted outcome.
   draftRows: RunTraceDraftRowInput[] = [],
+  // Fleet Designer W01 (#5651), Task 9 — the linked design report artifact's
+  // scalars, or `null` for every run that has none. Defaults null so every
+  // existing caller is unchanged.
+  fleetDesignArtifact: RunTraceFleetDesignArtifactInput | null = null,
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -452,5 +471,12 @@ export function buildRunTrace(
     // know "is there a downloadable artifact" doesn't have to reach through a
     // nullable sub-object. Read from the typed COLUMN, not the outcome jsonb.
     reportRunId: run.reportRunId ?? null,
+    // Fleet Designer W01 (#5651), Task 9: null for every non-design run and
+    // for a design run that produced nothing — see `projectFleetDesign`'s
+    // own safe-projection contract. The bounded `DesignEvidence` bundle the
+    // run was built from is never carried here (nor persisted at all); the
+    // derived markdown is deliberately left out too, since the detail view
+    // renders the structured sections itself.
+    fleetDesign: projectFleetDesign(run, outcome, fleetDesignArtifact),
   };
 }

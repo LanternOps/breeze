@@ -14,6 +14,7 @@ import { CeremonyError, decideIntentApproval } from "@/lib/intentApprovals";
 import { ActionError } from "@/lib/runAction";
 import { navigateTo } from "@/lib/navigation";
 import { useRunContextLabel } from "../common/RunContext";
+import ScriptProposalApprovalCard from "./ScriptProposalApprovalCard";
 import type { AiApprovalScope, AiScriptRunContext } from "@breeze/shared";
 
 // Must be <= server-side waitForApproval timeout (300s). Plan approvals use 10-min timeout.
@@ -99,7 +100,7 @@ interface AiApprovalDialogProps {
  * runs as the user" is the sentence the whole feature exists to put in front
  * of a human.
  */
-function RunContextRow({ ctx }: { ctx: AiScriptRunContext }) {
+export function RunContextRow({ ctx }: { ctx: AiScriptRunContext }) {
   const { t } = useTranslation("ai");
   const runContextLabel = useRunContextLabel();
   const label = runContextLabel(ctx.effectiveRunAs, ctx.targetSessionId);
@@ -280,7 +281,10 @@ export default function AiApprovalDialog({
     decideStateRef.current = intentDecideState;
   }, [intentDecideState]);
 
-  const handleIntentDecision = async (decision: "approve" | "deny") => {
+  const handleIntentDecision = async (
+    decision: "approve" | "deny",
+    opts?: { acknowledgedPatterns?: string[] },
+  ) => {
     // Deny must stay reachable from `needs_device` (it needs no WebAuthn
     // proof — the helper skips the ceremony and the server's L3 gate only
     // guards `approved`). Only an in-flight or already-settled decision
@@ -302,6 +306,10 @@ export default function AiApprovalDialog({
         decision,
         undefined,
         approvalScope,
+        // Only ever passed for a proposal-backed run's Approve — omitted
+        // entirely (not even as `undefined`) so a plain intent decide keeps
+        // calling with its original 4 arguments.
+        ...(opts?.acknowledgedPatterns ? [opts] : []),
       );
       if (outcome === "needs_device") {
         setIntentDecideState("needs_device");
@@ -423,6 +431,18 @@ export default function AiApprovalDialog({
 
   const visibleInput = filterInput(input);
   const hasVisibleInput = Object.keys(visibleInput).length > 0;
+  // W03 (#5612): a proposal-backed run_script carries only a proposal id and
+  // a device list in `input` — spec §2.1 names that raw JSON dump as the
+  // defect being fixed, since the approver never sees the code or the
+  // reviewer's findings that way. The card REPLACES the dump, it never sits
+  // above it.
+  const proposalId = typeof input.proposalId === "string" ? input.proposalId : null;
+  // A four-eyes card whose viewer is NOT the fanned-out approver has no way to
+  // act on it here (handleIntentDecision no-ops without selfApprovalRequestId)
+  // — force the card read-only rather than trust the DTO's own `canDecide`,
+  // which reflects role/permission only, not "is this the approval row fanned
+  // out to you". Someone else decides it on the /approvals surface instead.
+  const proposalReadOnly = Boolean(intentBacked) && !canSelfDecide;
 
   const isUrgent = showCountdown && remainingMs < 30_000;
 
@@ -500,19 +520,35 @@ export default function AiApprovalDialog({
 
       {deviceContext && <DeviceBadge ctx={deviceContext} />}
 
-      {hasVisibleInput && (
-        <details className="mt-2 group">
-          <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
-            {t("aiApprovalDialog.showParameters")}
-          </summary>
-          <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
-            {JSON.stringify(visibleInput, null, 2)}
-          </pre>
-        </details>
+      {proposalId ? (
+        <ScriptProposalApprovalCard
+          proposalId={proposalId}
+          readOnly={proposalReadOnly}
+          onApprove={(acknowledgedPatterns) =>
+            intentBacked
+              ? void handleIntentDecision("approve", { acknowledgedPatterns })
+              : onApprove()
+          }
+          onReject={() => (intentBacked ? void handleIntentDecision("deny") : onReject())}
+          onChanged={onIntentDecided}
+        />
+      ) : (
+        hasVisibleInput && (
+          <details className="mt-2 group">
+            <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-400 select-none">
+              {t("aiApprovalDialog.showParameters")}
+            </summary>
+            <pre className="mt-1 max-h-24 overflow-auto rounded bg-gray-100 px-3 py-2 text-xs text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+              {JSON.stringify(visibleInput, null, 2)}
+            </pre>
+          </details>
+        )
       )}
 
-      {/* Legacy (non-intent) Tier-2 path — unchanged. */}
-      {!intentBacked && (
+      {/* Legacy (non-intent) Tier-2 path — unchanged, but suppressed for a
+          proposal-backed run: the card above already owns Approve/Reject via
+          its own onApprove/onReject callbacks. */}
+      {!intentBacked && !proposalId && (
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -548,8 +584,13 @@ export default function AiApprovalDialog({
           `needs_device` state only APPROVE is impossible (no registered
           authenticator ⇒ no L3 proof). Deny needs no proof at all, so it must
           survive — otherwise the user's only exits from `needs_device` are
-          registering an authenticator or waiting out the 5-minute expiry. */}
+          registering an authenticator or waiting out the 5-minute expiry.
+
+          Suppressed for a proposal-backed run: the card's own Approve/Deny
+          buttons call handleIntentDecision directly (see onApprove/onReject
+          above), so this row would otherwise duplicate them. */}
       {canSelfDecide &&
+        !proposalId &&
         intentDecideState !== "decided" &&
         intentDecideState !== "unavailable" && (
         <div className="mt-3 flex gap-2">

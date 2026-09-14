@@ -4,13 +4,13 @@ This runbook deploys the isolated `@breeze/m365-graph-read-executor` and enables
 
 ## Scope and trust boundary
 
-Customer Graph Read uses one dedicated multitenant Entra application, the fixed `customer-graph-read` profile, certificate client authentication, and manifest version 2. It is separate from:
+Customer Graph Read uses one dedicated multitenant Entra application, the fixed `customer-graph-read` profile, certificate client authentication, and permission manifest v3 (thirteen roles — see below; a connection that hasn't re-consented yet keeps working on the older v2 grants). It is separate from:
 
 - the legacy direct M365 connector, where each Breeze organization supplies a tenant ID, client ID, and encrypted client secret;
 - user-owned delegated mail and Teams communications;
 - future Graph mutation and Exchange PowerShell executors.
 
-Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/complete-consent`, `POST /v1/retest`, and `POST /v1/read-action`. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
+Only the executor deployment receives Key Vault data-plane access. The Breeze API owns authorization, organization mapping, consent sessions, lifecycle, and audit. It calls only the private executor operations `POST /v1/complete-consent`, `POST /v1/retest`, `POST /v1/read-action`, and `POST /v1/sync-action`. `GET /healthz` is the executor's process health endpoint; it does not prove Key Vault or Microsoft Graph access.
 
 `POST /v1/read-action` executes one typed Microsoft Graph read (the twelve actions behind the `m365_query_*` AI tools) and uses the same internal EdDSA request authentication as the other two operations — no separate trust boundary. It is additive, so deploy order is safe in either direction: an executor deployed before this operation exists returns a plain `404` for the route, and the API's executor client treats that the same as any other unreachable/unhealthy executor, surfacing the existing `executor_unavailable` outcome rather than failing insecurely or leaking a raw transport error.
 
@@ -40,15 +40,21 @@ Configure only these Microsoft Graph **application** permissions and grant custo
 |---|---|
 | `Application.Read.All` | `9a5d68dd-52b0-4cc2-bd40-abcf44ac3a30` |
 | `AuditLog.Read.All` | `b0afded3-3588-46d8-8b3d-9842eff778da` |
+| `AuditLogsQuery.Read.All` | `5e1e9171-754d-478c-812c-f1755a9a4c2d` |
 | `Device.Read.All` | `7438b122-aefc-4978-80ed-43db9fcc7715` |
 | `DeviceManagementConfiguration.Read.All` | `dc377aa6-52d8-4e23-b271-2a7ae04cedf3` |
 | `DeviceManagementManagedDevices.Read.All` | `2f51be20-0bb4-4fed-bf7b-db946066c75e` |
 | `Group.Read.All` | `5b567255-7703-4780-807c-7be8301ae99b` |
 | `Organization.Read.All` | `498476ce-e0fe-48b0-b801-37ba7e2685c6` |
+| `Policy.Read.All` | `246dd0d5-5bd0-4def-940b-0421030a5b68` |
+| `RoleManagement.Read.Directory` | `483bed4a-2ad3-4361-a73b-c83ccdbdc53c` |
+| `SecurityEvents.Read.All` | `bf394140-e372-4bf9-a898-299cfc7564e5` |
 | `Sites.Read.All` | `332a536c-c7ef-4017-ab91-336970924f0d` |
 | `User.Read.All` | `df021288-bdef-4463-88db-98f22de89214` |
 
-All nine roles belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. The shared code manifest is authoritative. `Application.Read.All` is required for authoritative app-role-assignment reconciliation; it is not exposed as a general application-directory query tool.
+All thirteen roles belong to the Microsoft Graph resource application `00000003-0000-0000-c000-000000000000`. The shared code manifest is authoritative. `Application.Read.All` is required for authoritative app-role-assignment reconciliation; it is not exposed as a general application-directory query tool.
+
+The last four arrived with permission manifest **v3** (2026-09-08) for the tenant-sync foundation: `Policy.Read.All` for Conditional Access policies and named locations, `RoleManagement.Read.Directory` for admin role membership, `SecurityEvents.Read.All` for Secure Score, and `AuditLogsQuery.Read.All` for the unified audit log. They were added in one bump so customer administrators re-consent once. Until you add them to your application registration, your customers' administrators cannot approve them, connections stay at manifest v2, and Breeze keeps serving reads on the v2 grants — the upgrade banner in **Settings → Integrations** simply cannot be completed.
 
 ## Key Vault and certificate ownership
 
@@ -101,6 +107,10 @@ Use deployment secret mounts or the platform secret store. Do not put private JW
 | `M365_GRAPH_READ_EXECUTOR_SIGNING_PRIVATE_JWK_FILE` | Absolute path to the API's Ed25519 private signing JWK. The regular file must deny group/other access (`0600` or stricter) and must not be a symlink. |
 | `M365_GRAPH_READ_TOOLS_ENABLED` | `false` for dark deployment. Independently gates the six `m365_query_*` AI tools (`POST /v1/read-action`); it is not coupled to `M365_CUSTOMER_GRAPH_READ_ONBOARDING_ENABLED` — enabling one does not enable the other. Enabling this flag also forces full validation of the executor configuration rows above at boot, even if onboarding itself stays disabled. |
 | `M365_GRAPH_READ_TOOLS_ORG_IDS` | Canonical lowercase Breeze organization UUIDs separated by commas, or literal `*`. Required when the tools flag is enabled — boot refuses to start otherwise. Expand gradually; use `*` only after the limited rollout is accepted, matching the onboarding allowlist's rollout discipline. |
+| `M365_TENANT_SYNC_ENABLED` | `false` for dark deployment. Master switch for the scheduled tenant snapshot — gates the ticker, post-consent sync-state seeding, the on-demand `POST /connections/:id/sync` route, and the disconnect hook's seeding side. See [Tenant sync](#tenant-sync) below. |
+| `M365_SYNC_CONCURRENCY` | Optional, default `4`. Sync jobs processed concurrently per API instance. The Graph fetch phase holds no database connection, so this bounds persist work, not fetch work. |
+| `M365_SYNC_MAX_BACKLOG` | Optional, default `500`. Queue depth above which the ticker skips a tick rather than piling on; due rows keep their past-due time and are picked up next tick. |
+| `M365_SYNC_TICK_BATCH` | Optional, default `200`. Rows claimed per 60-second tick — the primary capacity dial (see [Tenant sync § Capacity](#tenant-sync)). |
 
 The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_APP_URL`, then `PUBLIC_API_URL`. Production requires one of them. The API appends `/api/v1/m365/consent/callback`; configure the resulting exact URI in Entra and as the executor callback URI.
 
@@ -120,8 +130,19 @@ The callback origin is selected in this precedence order: `PUBLIC_URL`, `PUBLIC_
 | `M365_GRAPH_READ_EXECUTOR_AZURE_CREDENTIAL_MODE` | `managed-identity` or `workload-identity`; there is no default/CLI credential fallback. |
 | `M365_GRAPH_READ_EXECUTOR_BIND_HOST` | A private RFC1918 IPv4 or unique-local IPv6 interface, not a hostname or public/loopback address. |
 | `M365_GRAPH_READ_EXECUTOR_PORT` | Integer from 1 through 65535. |
+| `M365_SYNC_MAX_IN_FLIGHT` | Optional, default `4`. Concurrent whole-domain sync actions per replica. Must be ≤ `M365_MAX_IN_FLIGHT`; boot refuses otherwise. |
+| `M365_MAX_IN_FLIGHT` | Optional, default `32`. Total concurrent operations per replica across all four routes. The difference between the two caps is the headroom reserved for interactive AI-tool reads. |
+| `M365_SIGNIN_ACTIVITY_RPM` | Optional, default `4`. Token-bucket rate for `signInActivity` Graph requests. Microsoft throttles this **per app across all tenants** at 10/min, so this is a per-process budget, not a per-tenant one: with N replicas set each to `4 / N` (rounded down, minimum 1), and leave headroom if a second region shares the app registration. |
+| `M365_SIGNIN_PAGES_PER_CALL` | Optional, default `5`. Pages of 500 users per sign-in sync call before the executor returns a continuation. |
+| `M365_SYNC_MAX_ITEMS_USERS` | Optional, default `25000`. Hard item ceiling for the users and sign-in domains. |
+| `M365_SYNC_MAX_ITEMS_DEVICES` | Optional, default `25000`. Hard item ceiling for the Intune device domain. |
+| `M365_SYNC_MAX_ITEMS_CA` | Optional, default `500`. Hard item ceiling for Conditional Access policies. |
+| `M365_SYNC_MAX_ITEMS_SKUS` | Optional, default `200`. Hard item ceiling for subscribed SKUs. |
+| `M365_SYNC_CONTINUATION_KEY` | Optional. Exactly 32 bytes of standard base64 (44 characters, one `=`). Encrypts the resumable sign-in continuation. **Set it whenever more than one replica runs**, otherwise each replica mints an ephemeral key at boot and a continuation issued by one replica is rejected by another — correct, but it restarts the sign-in page walk every time. Rotating it invalidates outstanding continuations only. |
 
 Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. Workload identity requires `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_FEDERATED_TOKEN_FILE`.
+
+**Sizing.** Sync actions buffer a whole domain in memory before projecting it: at the default caps a maximum-size tenant is roughly 25 000 users plus 25 000 devices. Size each replica at **512 MB** when `M365_SYNC_MAX_IN_FLIGHT` is at its default of 4 and tenants approach those caps; 256 MB is enough for read-only deployments with `M365_TENANT_SYNC_ENABLED` off on the API. Raising `M365_SYNC_MAX_IN_FLIGHT` raises peak memory roughly linearly — raise the memory limit with it. If bulk pulls must be guaranteed never to contend with interactive AI-tool reads, lower `M365_SYNC_MAX_IN_FLIGHT` to reserve more headroom, or scale the replica count out. Splitting sync onto a separate executor deployment is **not** available: v1 has exactly one executor URL (`M365_GRAPH_READ_EXECUTOR_URL`) and no sync-specific override.
 
 ### Secret ownership matrix
 
@@ -132,6 +153,75 @@ Managed identity may use `AZURE_CLIENT_ID` to select a user-assigned identity. W
 | API-to-executor private Ed25519 JWK | API secret mount only | Executor, DB, browser, logs, image layers |
 | API-to-executor public Ed25519 JWK | Executor configuration | Browser/API responses and customer-visible data |
 | Version-pinned vault locator | API/executor configuration and connection metadata | Browser responses, audit payloads, logs |
+
+## Tenant sync
+
+The executor serves whole-domain snapshot pulls on `POST /v1/sync-action`, a
+fourth operation alongside `complete-consent`, `retest`, and `read-action`.
+It uses the same EdDSA internal-auth scheme, with the operation bound into the
+token, and it is only ever called by the Breeze API.
+
+- `/v1/read-action` rejects `m365.sync.*` action ids with
+  `400 { "code": "action_not_allowed" }`, and `/v1/sync-action` rejects every
+  non-sync id the same way. The split exists so a bulk pull can never sit in
+  front of, or starve, an interactive AI-tool call: the two routes have
+  independent caps, timeouts and metrics (see [Operational signals](#operational-signals)).
+- The sync Graph-client profile is 60 pages, 64 MiB cumulative, and a 110 s
+  per-call deadline enforced by an `AbortController`. The interactive profile
+  (20 pages / 1 000 items / 512 KiB) is unchanged.
+- The API side of the call has a 130 s timeout and a 32 MiB response cap.
+- On the API, an operator can also force an immediate sync via
+  `POST /m365/connections/:id/sync` (MFA-gated, `requireOrgsWrite`): it
+  reschedules the five non-sign-in domains at priority 1 and is refused if
+  called again for the same organization within 15 minutes. Sign-in activity
+  is excluded — its Graph limit is app-wide, so one "Sync now" click must not
+  spend the region's shared budget.
+
+### Capacity
+
+| Dial | Where | Default | Raise it when |
+|---|---|---|---|
+| `M365_SYNC_MAX_IN_FLIGHT` | executor | 4 | sustained `503 sync_capacity` with CPU and memory headroom to spare |
+| `M365_MAX_IN_FLIGHT` | executor | 32 | total in-flight saturation; sync may never consume more than the sync cap out of this total, so interactive calls always keep headroom |
+| `M365_SYNC_TICK_BATCH` | API | 200 | `m365_sync_ticker_utilisation` above 0.5 — this is the ticker dial, not the cadences |
+| `M365_SYNC_CONCURRENCY` | API | 4 | queue depth grows while DB latency is flat |
+
+Beyond the sync in-flight cap the route returns
+`503 { "code": "sync_capacity", "retryAfterSeconds": 30 }` with a `Retry-After`
+header and does **not** queue internally; the API retries with BullMQ backoff
+(30 s, 2 min, 8 min) and then lengthens that domain's interval by 1.5×.
+
+There is no separate sync-executor origin in v1. Sync and interactive calls
+share `M365_GRAPH_READ_EXECUTOR_URL`, and the isolation between them is the
+two routes' independent caps, timeouts and metrics — not deployment topology.
+Making that a hard guarantee instead would mean a new variable and a second
+executor deployment, which is a decision for a later wave, not a dial that
+already exists.
+
+Sign-in activity's app-wide (not per-tenant) Microsoft rate limit and how to
+split `M365_SIGNIN_ACTIVITY_RPM` across regions and replicas is covered in its
+env-var row above — see [Runtime configuration § Executor](#runtime-configuration).
+
+### Memory
+
+A sync worker holds one whole-domain snapshot in memory at a time — see the
+Sizing note under [Runtime configuration § Executor](#runtime-configuration)
+for the general rule. The number below is the measured ceiling under the
+worst case the sizing rule assumes:
+
+| Concurrent max-size snapshots | Measured RSS ceiling | Recommended container limit |
+|---|---|---|
+| 4 × 25 000 users | *(fill in from scenario **S7** — see below)* | ≥ 1.5× the measured ceiling |
+
+The number is measured before the first canary, not after it: scenario S7 in
+`docs/runbooks/m365-customer-graph-read-real-tenant.md` runs the real
+executor binary against a stubbed Microsoft Graph and drives four concurrent
+25 000-user snapshots through it, recording peak RSS. Fill this cell from
+that run and do not carry a guess into a container limit — it refines, not
+replaces, the 512 MB default-caps figure in the Sizing note above. The 64 MiB
+cumulative response cap and the 25 000-item cap bound a single snapshot, so
+the ceiling is a product of those two and the in-flight cap, not of tenant
+count.
 
 ## Network policy
 
@@ -195,5 +285,7 @@ The Prometheus counter is `breeze_m365_customer_graph_read_events_total` with bo
 - `m365.customer_graph_read.disconnected`
 
 A second, independent Prometheus counter, `breeze_m365_graph_read_actions_total{action,outcome}`, covers per-call typed Graph read outcomes (the `m365_query_*` AI tools going through `POST /v1/read-action`), not connection lifecycle events — it does not replace the counter above. Its matching audit action is `m365.customer_graph_read.action_executed`, with details limited to `actionType`, `outcome`, `itemCount`, and `truncated`; it never carries the read's Graph payload. Both counters are registered on the same `/metrics` route.
+
+The executor itself now exposes `GET /metrics` on the same private listener as `/healthz` (unauthenticated, RFC1918-bound, no path prefix): counters `m365_sync_actions_total{action,outcome}` and `m365_sync_capacity_rejected_total{kind}`, and gauges `m365_sync_in_flight`, `m365_in_flight_total`, `m365_signin_limiter_tokens`. These are a separate scrape target from the API's `/metrics` and carry no `breeze_` prefix. `m365_signin_limiter_tokens` sitting at 0 across a scrape interval means the app-wide sign-in budget is saturated and sign-in syncs are returning continuations rather than completing — raise the domain's interval or reduce replica count, do not raise `M365_SIGNIN_ACTIVITY_RPM` above what Microsoft's 10/min per-app limit allows.
 
 Use correlation IDs to join API and executor observations. Never add state, cookies, authorization codes, tokens, verifier/nonces, certificate data, raw provider bodies, or raw vault locators to metrics, audit, or logs.

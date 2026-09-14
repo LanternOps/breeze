@@ -31,6 +31,7 @@ const RESOURCE_LABELS: Record<string, string> = {
   quotes: 'Quotes',
   invoices: 'Invoices',
   contracts: 'Contracts',
+  documents: 'Organization Documents',
   sso: 'Single Sign-On',
   topology: 'Network Topology',
   vulnerabilities: 'Vulnerabilities',

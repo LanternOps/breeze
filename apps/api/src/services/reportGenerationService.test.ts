@@ -32,11 +32,13 @@ const REPORT_TYPES: readonly ReportType[] = [
   'performance',
   'executive_summary',
   'security_compliance_posture',
+  'hardware_lifecycle',
 ];
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
- *  only ever read back — there is no query that could reproduce it. */
-const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative'];
+ *  only ever read back — there is no query that could reproduce it. Fleet
+ *  Designer W01 (#5651) added the second, same shape. */
+const STORED_ARTIFACT_ONLY_TYPES: readonly ReportType[] = ['ai_org_narrative', 'ai_fleet_design'];
 
 const capturedWhere: SQL[] = [];
 
@@ -145,7 +147,7 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
-  it.each(['executive_summary', 'security_compliance_posture'] as const)(
+  it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority for %s',
     async (type) => {
       await expect(generateReport(type, ORG_ID, {}, portalAuthority()))
@@ -173,7 +175,7 @@ describe('generateReport mandatory execution authority', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it.each(['executive_summary', 'security_compliance_posture'] as const)(
+  it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority through the shared preflight for %s',
     (type) => {
       expect(() => assertReportExecutionPreflight(

@@ -456,6 +456,12 @@ type Heartbeat struct {
 	// Defaults to requestRevocationLeaseRenew; nil is a no-op.
 	leaseRenewRequester func(sessionID string)
 
+	// desktopStartFence linearizes desktop start decisions against terminal
+	// decisions (SEC-038): a per-session high-water generation plus an
+	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
+	// and its zero value is ready to use, so it is never nil.
+	desktopStartFence desktopFence
+
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
 	// route the banner-hide and end-of-session notify to the same user who saw
@@ -2941,6 +2947,22 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 	}
 	if hasOD {
 		h.applyOneDriveHelperConfig(odRaw)
+	}
+
+	// Apply warranty_settings if present (#5511 W02): permit or stop device-side
+	// HP CMSL warranty collection. The flag is stored on every OS; only the
+	// (Windows-only, W03) collector acts on it.
+	//
+	// THIS MUST STAY ABOVE THE POLICY-PROBE BLOCK BELOW. That block returns
+	// unconditionally when neither probe key is present, which is most
+	// heartbeats — a key dispatched after it is silently unreachable in
+	// production with nothing in the logs to show for it.
+	warRaw, hasWar := update["warranty_settings"]
+	if !hasWar {
+		warRaw, hasWar = update["warrantySettings"]
+	}
+	if hasWar {
+		h.applyWarrantyConfig(warRaw)
 	}
 
 	registryRaw, hasRegistry := update["policy_registry_state_probes"]

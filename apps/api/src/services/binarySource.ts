@@ -111,6 +111,16 @@ export function getGithubBackupUrl(os: string, arch: string, version?: string): 
   return githubAssetDownloadUrl(filename, version);
 }
 
+// breeze-recovery-linux-<arch>.iso — the bare-metal recovery media (W04b),
+// built by the build-recovery-media release job alongside breeze-backup and
+// listed in the release manifest like any other asset. Linux only in this
+// release (Windows media is W07); the recovery-iso component and
+// /download/recovery-iso/:os/:arch route reject any other os value.
+export function getGithubRecoveryIsoUrl(arch: string, version?: string): string {
+  const filename = `breeze-recovery-linux-${arch}.iso`;
+  return githubAssetDownloadUrl(filename, version);
+}
+
 export function getGithubAgentPkgUrl(os: string, arch: string, version?: string): string {
   const filename = `breeze-agent-${os}-${arch}.pkg`;
   return githubAssetDownloadUrl(filename, version);

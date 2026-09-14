@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ArchiveOrgModal from './ArchiveOrgModal';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 

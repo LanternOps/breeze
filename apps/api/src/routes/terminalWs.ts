@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { remoteSessions, devices, users } from '../db/schema';
 import { consumeWsTicket } from '../services/remoteSessionAuth';
+import { commitDesktopTerminalIntent } from '../services/remoteDesktopTerminalIntent';
 import { sendCommandToAgent, isAgentConnected } from './agentWs';
 import { checkRemoteAccess } from '../services/remoteAccessPolicy';
 import { getRedis } from '../services/redis';
@@ -392,11 +393,18 @@ async function closeExactTerminalConnection(
       (endedAt.getTime() - session.startedAt.getTime()) / 1000,
     );
     try {
+      // Through the terminal-intent contract (SEC-038 W03). This also adds the
+      // live-status guard the bare UPDATE never had: a row a teardown or
+      // revocation already made terminal keeps its recorded verdict and
+      // endedAt instead of being rewritten with the socket's close time.
       await withSystemDbAccessContext(async () => {
-        await db
-          .update(remoteSessions)
-          .set({ status: options.terminalStatus, endedAt, durationSeconds })
-          .where(eq(remoteSessions.id, sessionId));
+        await commitDesktopTerminalIntent({
+          sessionId,
+          write: { status: options.terminalStatus, endedAt, durationSeconds },
+          // A terminal (PTY) row has no endpoint acknowledgement flow; the
+          // set clause writes 'confirmed' for non-desktop types regardless.
+          phase: 'pending',
+        });
       });
     } catch (dbErr) {
       console.error(`[TerminalWs] Failed to update session ${sessionId} on close:`, dbErr);
@@ -976,10 +984,11 @@ function createTerminalWsHandlers(
           if (validated) {
             try {
               await withSystemDbAccessContext(async () => {
-                await db
-                  .update(remoteSessions)
-                  .set({ status: 'failed', endedAt: new Date() })
-                  .where(eq(remoteSessions.id, sessionId));
+                await commitDesktopTerminalIntent({
+                  sessionId,
+                  write: { status: 'failed', endedAt: new Date() },
+                  phase: 'pending',
+                });
               });
             } catch (dbError) {
               console.error(`[TerminalWs] Failed to update session ${sessionId} status to failed:`, dbError);
@@ -1309,6 +1318,7 @@ export function __createTerminalSharedLeasesForTest(): RemoteWsSharedLeaseManage
     releaseDesktopFinalizationIntent: async () => true,
     observeDesktopFinalization: async () => ({
       ownerPresent: false,
+      everOwned: false,
       finalizationId: null,
       canonicalPayload: null,
       consistent: true,

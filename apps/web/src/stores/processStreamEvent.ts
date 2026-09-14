@@ -273,6 +273,28 @@ export function processStreamEvent(
       return currentAssistantId;
     }
 
+    // W04 (#5612): the reviewer-gated unattended lane approved this run at
+    // creation — no card, an inline note instead (never dropped silently).
+    case 'unattended_release': {
+      const releaseMsg: AiMessage = {
+        id: `unattended-release-${event.intentId}`,
+        role: 'tool_result',
+        content: '',
+        toolName: 'unattended_release',
+        toolOutput: {
+          intentId: event.intentId,
+          executionId: event.executionId,
+          description: event.description,
+          deviceContext: event.deviceContext ?? null,
+          scriptRunContext: event.scriptRunContext ?? null,
+          scriptProposal: event.scriptProposal ?? null,
+        },
+        createdAt: new Date(),
+      };
+      set((s) => ({ messages: [...s.messages, releaseMsg], pendingApproval: null }));
+      return currentAssistantId;
+    }
+
     case 'approval_mode_changed': {
       set(() => ({ approvalMode: event.mode, isPaused: event.mode === 'per_step' }));
       return currentAssistantId;

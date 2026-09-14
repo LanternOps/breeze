@@ -308,3 +308,35 @@ describe('tool_result clears a pendingApproval decided elsewhere', () => {
     expect(patch.pendingApproval).toMatchObject({ executionId: 'e1' });
   });
 });
+
+/**
+ * #5612 W04 — an intent approved at creation by the unattended lane has no
+ * approval row. The event replaces the card with an inline note and must
+ * clear any pending card left over from an earlier tool call.
+ */
+describe('unattended_release (#5612 W04)', () => {
+  it('appends an inline tool_result note and clears pendingApproval', () => {
+    const state = {
+      ...makeState(),
+      pendingApproval: { executionId: 'stale', toolName: 'run_script', input: {}, description: 'x' } as never,
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'unattended_release', executionId: 'e9', intentId: 'int-9', toolName: 'run_script',
+        description: 'Run script on 1 device(s)',
+      },
+      (fn) => { patch = { ...patch, ...fn({ ...state, ...patch }) }; },
+      () => ({ ...state, ...patch }),
+      null,
+    );
+    expect(patch.pendingApproval).toBeNull();
+    expect(patch.messages).toHaveLength(1);
+    expect(patch.messages?.[0]).toMatchObject({
+      id: 'unattended-release-int-9',
+      role: 'tool_result',
+      toolName: 'unattended_release',
+      toolOutput: expect.objectContaining({ intentId: 'int-9', executionId: 'e9' }),
+    });
+  });
+});

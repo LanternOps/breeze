@@ -109,6 +109,18 @@ export function isPricedModel(model: string): boolean {
   return model in MODEL_PRICING;
 }
 
+// Sandbox COMPUTE pricing (spec §5.6) lives in its own pure module and is
+// re-exported here because that is the name the execution-plane wave contract
+// uses. Kept out of this file's body deliberately: aiCostTracker.ts is already
+// ~1,500 lines, and compute pricing has no dependency on anything in it.
+export {
+  AI_COMPUTE_PRICE_MULTIPLIER_ENV,
+  COMPUTE_PRICING,
+  type ComputePrice,
+  calculateComputeCents,
+  computePriceMultiplier,
+} from './aiComputePricing';
+
 // Models a partner may pin as their BYOK default. MODEL_PRICING keeps legacy
 // snapshot ids for cost attribution on old sessions; those must not be offered
 // (or accepted) as new defaults — a retired snapshot pinned partner-wide fails

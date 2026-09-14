@@ -26,6 +26,9 @@
     "alertsChannels": "Benachrichtigungskanäle",
     "alertsCorrelations": "Warnmeldungskorrelationen",
     "alertsDetail": "Warnmeldungsdetails",
+    "alertsMonitors": "Warnungen – Monitore",
+    "alertsMonitorDetail": "Warnungen – Monitor",
+    "alertsRules": "Warnungen – Alte Regeln",
     "alerts": "Warnmeldungen",
     "analytics": "Analysen",
     "approvals": "Genehmigungen",
@@ -36,9 +39,9 @@
     "authConnectSso": "Ihre Anmeldung verbinden",
     "authMfaSetup": "MFA einrichten",
     "authVerifyEmail": "E-Mail bestätigen",
-    "automationsDetail": "Automatisierung bearbeiten",
-    "automations": "Automatisierungen",
-    "automationsNew": "Neue Automatisierung",
+    "jobsDetail": "Auftrag bearbeiten",
+    "jobs": "Aufträge",
+    "jobsNew": "Neuer Auftrag",
     "backup": "Backup",
     "billingInvoices": "Rechnungen",
     "billingInvoicesDetail": "Rechnung",
@@ -56,7 +59,7 @@
     "devicesCompare": "Gerätevergleich",
     "devicesGroups": "Gerätegruppen",
     "devicesDetail": "Gerätedetails",
-    "devices": "Geräte",
+    "devices": "Geräte & Assets",
     "devicesNetworkDetail": "Netzwerkgerätedetails",
     "devicesPosture": "Flottenstatus",
     "discovery": "Netzwerkerkennung",
@@ -76,6 +79,7 @@
     "monitoring": "Überwachung",
     "oauthConsent": "Zugriff autorisieren",
     "onedrive": "OneDrive",
+    "organizations": "Organisationen",
     "organizationsDetail": "Organisation",
     "pam": "Privilegierter Zugriff",
     "partner": "Partnerportal",
@@ -123,6 +127,7 @@
     "settingsAccessReviews": "Zugriffsüberprüfungen",
     "settingsAiAgents": "KI-Agenten",
     "settingsAiUsage": "KI-Nutzung und Budget",
+    "settingsAiScriptAuthoring": "Skripterstellung",
     "settingsAlertTemplatesDetail": "Warnmeldungsvorlage",
     "settingsAlertTemplates": "Warnmeldungsvorlagen",
     "settingsApiKeys": "API-Schlüssel",
@@ -155,7 +160,8 @@
     "ticketsNew": "Ticket erstellen",
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
-    "workspace": "KI-Assistent"
+    "workspace": "KI-Assistent",
+    "aiAgentsFleetDesign": "Flottendesign"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -214,6 +220,10 @@
       "sites": {
         "title": "Standorte",
         "description": "Konfigurieren Sie Standorte, Zeitzonen und standortspezifische Einstellungen."
+      },
+      "deliverableTemplates": {
+        "title": "Leistungsvorlagen",
+        "description": "Definieren Sie eine Servicestufe einmal und wenden Sie ihre Leistungen auf jeden Kunden an."
       }
     }
   },

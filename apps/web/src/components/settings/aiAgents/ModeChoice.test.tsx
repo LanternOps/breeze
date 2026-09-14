@@ -8,6 +8,7 @@ function setup(overrides: Partial<Parameters<typeof ModeChoice>[0]> = {}) {
   const props = {
     mode: 'shadow' as const,
     onChange,
+    kind: 'triage' as const,
     actSupported: true,
     enteringActMode: false,
     actAck: false,
@@ -35,18 +36,18 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
 
   it('shows the act warning only in act mode, and the acknowledgement only when entering it', () => {
     const { rerender } = render(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.queryByTestId('ai-agent-act-warning')).toBeNull();
 
     rerender(
-      <ModeChoice mode="act" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-warning')).toBeInTheDocument();
     expect(screen.queryByTestId('ai-agent-act-ack')).toBeNull();
 
     rerender(
-      <ModeChoice mode="act" onChange={vi.fn()} actSupported enteringActMode actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="act" onChange={vi.fn()} kind="triage" actSupported enteringActMode actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-ack')).not.toBeChecked();
   });
@@ -66,12 +67,12 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
 
   it('mounts the act-keys status region unconditionally, gating only its text', () => {
     const { rerender } = render(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted={false} />,
     );
     expect(screen.getByTestId('ai-agent-act-keys-cleared')).toHaveTextContent('');
 
     rerender(
-      <ModeChoice mode="shadow" onChange={vi.fn()} actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted />,
+      <ModeChoice mode="shadow" onChange={vi.fn()} kind="triage" actSupported enteringActMode={false} actAck={false} onActAckChange={vi.fn()} actKeysWillBeOmitted />,
     );
     expect(screen.getByTestId('ai-agent-act-keys-cleared').textContent).not.toBe('');
   });
@@ -102,5 +103,19 @@ describe('ModeChoice (Task 13, #5051 — extracted from AiAgentForm)', () => {
       expect(card.className).toContain('flex-col');
       expect(card.className).toContain('items-start');
     }
+  });
+
+  // Fleet Designer (W01) — the designer kind is read-only and produces no
+  // intents, so `allowedModesForKind('designer')` excludes `shadow`: there is
+  // nothing to shadow.
+  it('disables shadow (not act) and explains why for a designer kind', () => {
+    setup({ kind: 'designer', mode: 'off', actSupported: true });
+    expect(screen.getByTestId('ai-agent-mode-shadow')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-mode-shadow-unavailable')).toHaveTextContent(
+      'This agent only reads and writes reports — there is nothing to shadow.',
+    );
+    // act stays available for a designer kind (its only real mode besides off).
+    expect(screen.getByTestId('ai-agent-mode-act')).not.toBeDisabled();
+    expect(screen.queryByTestId('ai-agent-mode-act-unavailable')).toBeNull();
   });
 });

@@ -665,6 +665,123 @@ describe('RunDetailPage narrative', () => {
   });
 });
 
+// Fleet Designer (W01) — the `fleetDesign` section: a `design`-profile run's
+// safe projection (`AiAgentRunFleetDesignDto`). Same "renders nothing when
+// absent" contract as the sweep/narrative sections above — `fleetDesign` is
+// null for every non-design run.
+const FLEET_DESIGN = {
+  reportRunId: 'frr-1',
+  reportId: 'frep-1',
+  downloadPath: '/api/reports/runs/frr-1/download',
+  generatedAt: '2026-09-01T00:00:00.000Z',
+  functionCount: 12,
+  watchCount: 34,
+  ruleCount: 9,
+  evidenceTruncated: false,
+};
+
+describe('RunDetailPage fleetDesign', () => {
+  it('renders nothing when the run produced no fleet design', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-fleet-design')).not.toBeInTheDocument();
+  });
+
+  it('renders the function/watch/rule counts and generated-at date', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+    const counts = screen.getByTestId('ai-agent-run-fleet-design-counts');
+    expect(counts).toHaveTextContent('12');
+    expect(counts).toHaveTextContent('34');
+    expect(counts).toHaveTextContent('9');
+    const generatedAt = screen.getByTestId('ai-agent-run-fleet-design-generated-at');
+    expect(generatedAt.textContent).not.toContain('2026-09-01T00:00:00.000Z');
+    expect(generatedAt.textContent).toContain('2026');
+  });
+
+  it('says so when the evidence was truncated, and stays quiet when it was not', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: { ...FLEET_DESIGN, evidenceTruncated: true } } });
+    const { unmount } = render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design-truncated')).toBeInTheDocument());
+    unmount();
+
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-fleet-design-truncated')).not.toBeInTheDocument();
+  });
+
+  it('links to the Fleet Design page (scoped to this report run) and offers the download as a button, never a raw API anchor', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-fleet-design-report-link')).toHaveAttribute(
+      'href',
+      '/ai-agents/fleet-design#frr-1',
+    );
+
+    const download = screen.getByTestId('ai-agent-run-fleet-design-download');
+    expect(download.tagName).toBe('BUTTON');
+    expect(download).not.toHaveAttribute('href');
+  });
+
+  it('fetches the stored snapshot and hands it to exportReport as ai_fleet_design', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
+    const snapshot = {
+      type: 'ai_fleet_design',
+      format: 'pdf',
+      data: { rows: [], summary: { functionCount: 12, watchCount: 34, ruleCount: 9 } },
+    };
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/') ? json(snapshot) : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-fleet-design-download'));
+
+    await waitFor(() => expect(exportReportMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith('/reports/runs/frr-1/download');
+    expect(exportReportMock).toHaveBeenCalledWith([], expect.objectContaining({
+      format: 'pdf',
+      reportType: 'ai_fleet_design',
+      summary: snapshot.data.summary,
+    }));
+    expect(screen.queryByTestId('ai-agent-run-fleet-design-download-error')).not.toBeInTheDocument();
+  });
+
+  it('surfaces an inline error when the snapshot fetch fails, and never calls exportReport', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
+    render(<RunDetailPage runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(url.startsWith('/reports/runs/')
+        ? json({ error: 'nope' }, false, 404)
+        : json({ data: [] })));
+    fireEvent.click(screen.getByTestId('ai-agent-run-fleet-design-download'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-agent-run-fleet-design-download-error')).toBeInTheDocument());
+    expect(exportReportMock).not.toHaveBeenCalled();
+  });
+
+  it('omits both links for a fleet design that never reached a report run', async () => {
+    const fleetDesign = { ...FLEET_DESIGN, reportRunId: null, reportId: null, downloadPath: null };
+    mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-fleet-design-report-link')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-fleet-design-download')).not.toBeInTheDocument();
+  });
+});
+
 // P2-4 (#4191, Task 12) — the ticket-triage proposal section: a
 // `triage`-profile run's outcome (`AiAgentRunTicketProposalDto`). Same
 // "renders nothing when absent" contract as the sweep/narrative sections

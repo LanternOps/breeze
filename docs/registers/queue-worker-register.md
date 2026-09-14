@@ -18,7 +18,6 @@ This register tracks the highest-risk queue and worker boundaries hardened in th
 | `monitors` | `monitor-scheduler` | medium | [`monitorWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/monitorWorker.ts) | worker/system | `type`, `meta` | Zod at enqueue + worker | system / RLS bypass | repeatable, `attempts=1`, malformed payloads unrecoverable | schedules monitor checks | hardened |
 | `dr-execution` | `reconcile-execution` | high | [`drExecutionWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/drExecutionWorker.ts) | route/service/system | `executionId`, `meta` | Zod at enqueue + worker | org-scoped service | `attempts=3`, exponential backoff, malformed payloads unrecoverable | reconciles DR execution state | hardened |
 | `recovery-media` | `build-media` | high | [`recoveryMediaWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/recoveryMediaWorker.ts) | route/service/system | `artifactId`, `meta` | Zod at enqueue + worker | org-scoped service | `attempts=3`, exponential backoff, malformed payloads unrecoverable | builds signed recovery bundle | hardened |
-| `recovery-boot-media` | `build-boot-media` | high | [`recoveryBootMediaWorker.ts`](/Users/toddhebebrand/breeze/apps/api/src/jobs/recoveryBootMediaWorker.ts) | route/service/system | `artifactId`, `meta` | Zod at enqueue + worker | org-scoped service | `attempts=3`, exponential backoff, malformed payloads unrecoverable | builds signed recovery ISO | hardened |
 
 ## Additional trust notes
 

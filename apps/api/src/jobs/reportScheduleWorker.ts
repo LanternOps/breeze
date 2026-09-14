@@ -143,8 +143,16 @@ function scheduleConfigOf(config: Record<string, unknown>): ScheduleConfig {
  * `completeExecutableScope` forever — and without this exclusion the operator
  * signal would climb by one per org, per narrative schedule, pointing at rows
  * nobody can or should reauthorize.
+ *
+ * Fleet Designer W01 (#5651) added `ai_fleet_design`. Its definition's own
+ * `schedule` column is `'one_time'`, so it is already excluded from the
+ * `pollable` predicate below by the `ne(reports.schedule, 'one_time')` clause
+ * alone — but it needs to be in THIS list too, for the same "requires scope
+ * reauthorization" warning-count exclusion the narrative needed, and for the
+ * defense-in-depth check at the execute-path call site below
+ * (`WORKER_EXCLUDED_REPORT_TYPES.includes(report.type)`).
  */
-const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative'] as const;
+const WORKER_EXCLUDED_REPORT_TYPES = ['ai_org_narrative', 'ai_fleet_design'] as const;
 
 export async function findDueReports(
   now: Date,

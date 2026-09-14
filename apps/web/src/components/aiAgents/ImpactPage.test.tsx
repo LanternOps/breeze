@@ -96,6 +96,7 @@ function dto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
       fixWatchesHeld: 6,
       fixWatchesRecurred: 1,
       narrativesDelivered: 8,
+      fleetDesignsDelivered: 0,
       estSecondsSaved: 18_000,
       llmCents: 4321,
     },
@@ -112,6 +113,7 @@ function dto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
         fixWatchesHeld: 6,
         fixWatchesRecurred: 1,
         narrativesDelivered: 8,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 12_000,
         llmCents: 1111,
       },
@@ -127,6 +129,7 @@ function dto(overrides: Partial<AiAgentImpactDto> = {}): AiAgentImpactDto {
         fixWatchesHeld: 27,
         fixWatchesRecurred: 28,
         narrativesDelivered: 29,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 6_000,
         llmCents: 3210,
       },
@@ -282,6 +285,7 @@ describe('ImpactPage', () => {
         fixWatchesHeld: 0,
         fixWatchesRecurred: 0,
         narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 0,
         llmCents: 0,
       },
@@ -298,6 +302,7 @@ describe('ImpactPage', () => {
           fixWatchesHeld: 0,
           fixWatchesRecurred: 0,
           narrativesDelivered: 0,
+          fleetDesignsDelivered: 0,
           estSecondsSaved: 0,
           llmCents: 0,
         },
@@ -339,6 +344,7 @@ describe('ImpactPage', () => {
         fixWatchesHeld: 0,
         fixWatchesRecurred: 0,
         narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 0,
         llmCents: 0,
       },
@@ -371,6 +377,7 @@ describe('ImpactPage', () => {
         fixWatchesHeld: 0,
         fixWatchesRecurred: 0,
         narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 0,
         llmCents: 0,
       },
@@ -411,6 +418,7 @@ describe('ImpactPage', () => {
         fixWatchesHeld: 0,
         fixWatchesRecurred: 0,
         narrativesDelivered: 0,
+        fleetDesignsDelivered: 0,
         estSecondsSaved: 2_700,
         llmCents: 150,
       },
@@ -427,6 +435,7 @@ describe('ImpactPage', () => {
           fixWatchesHeld: 0,
           fixWatchesRecurred: 0,
           narrativesDelivered: 0,
+          fleetDesignsDelivered: 0,
           estSecondsSaved: 2_700,
           llmCents: 150,
         },
@@ -484,6 +493,7 @@ describe('ImpactPage', () => {
             fixWatchesHeld: 18,
             fixWatchesRecurred: 19,
             narrativesDelivered: 20,
+            fleetDesignsDelivered: 0,
             estSecondsSaved: 7_200,
             llmCents: 500,
           },
@@ -923,8 +933,12 @@ describe('buildImpactPdfRows', () => {
     const { buildImpactPdfRows } = await import('./ImpactPage');
     const t = (key: string) => key;
     const rows = buildImpactPdfRows(dto(), t);
-    // 10 counters + estTimeSaved + llmSpend + window + through + rebuiltAt + 6 weights = 21
-    expect(rows).toHaveLength(21);
+    // 11 counters + estTimeSaved + llmSpend + window + through + rebuiltAt + 6 weights = 22
+    expect(rows).toHaveLength(22);
+    // W05 (#5655): the Fleet Design counter has its own label, never the raw key.
+    const designRow = rows.find((row) => row.metric === 'aiAgentsPage.impact.pdf.metrics.fleetDesignsDelivered');
+    expect(designRow).toBeDefined();
+    expect(rows.some((row) => row.metric === 'fleetDesignsDelivered')).toBe(false);
     for (const row of rows) {
       expect(Object.keys(row).sort()).toEqual(['metric', 'value']);
       expect(typeof row.metric).toBe('string');

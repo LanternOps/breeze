@@ -10,7 +10,7 @@ import {
 
 describe('AI_AGENT_POLICY_SNAPSHOT_VERSION (v9, phase 2 P2-5)', () => {
   it('is the literal 9', () => {
-    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(9);
+    expect(AI_AGENT_POLICY_SNAPSHOT_VERSION).toBe(10);
   });
 
   it('AiAgentPolicySnapshot.schemaVersion type-accepts every historical version 1-9', () => {
@@ -50,8 +50,8 @@ describe('AI_AGENT_LIMIT_DEFAULTS (triage-profile limits, phase 2 P2-4)', () => 
 });
 
 describe('AI_AGENT_RUN_PROFILES (triage profile, phase 2 P2-4)', () => {
-  it('equals full, verdict, sweep, narrative, triage', () => {
-    expect(AI_AGENT_RUN_PROFILES).toEqual(['full', 'verdict', 'sweep', 'narrative', 'triage']);
+  it('equals full, verdict, sweep, narrative, triage, design', () => {
+    expect(AI_AGENT_RUN_PROFILES).toEqual(['full', 'verdict', 'sweep', 'narrative', 'triage', 'design']);
   });
 });
 

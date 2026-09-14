@@ -139,13 +139,19 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   // above — the AI Risk page has no deliverables/key-dates copy yet, and
   // authoring a tier + description + category for them belongs with the
   // customer-facing deliverables UI, not this wave.
+  'list_deliverable_templates',
   'list_deliverables',
   'list_invoices',
+  // Org document library (service deliverables W03) — same family as the other
+  // business objects above: metadata-only tools whose tier-page entry is a
+  // content-authoring task, tracked with the rest of this gap.
+  'list_org_documents',
   'list_organizations',
   'list_quotes',
   'list_script_templates',
   'list_scripts',
   'lookup_distributor_product',
+  'manage_org_documents',
   'm365_query_groups',
   'm365_query_intune_devices',
   'm365_query_org',
@@ -226,7 +232,7 @@ const CATEGORY_CAPABILITY_PAIRS: Record<ToolCategory, AgentCapabilityId[]> = {
   'Files, Disk & Registry': ['files_disk', 'scripts_commands'],
   'Logs & Audit': ['alerts_monitoring', 'automations_reports', 'endpoint_agent'],
   'Services & Processes': ['services_startup', 'scripts_commands'],
-  'Scripts & Automation': ['scripts_commands'],
+  'Scripts & Automation': ['scripts_commands', 'author_scripts'],
   'Configuration Policies': ['config_policies'],
   'Fleet Operations': [
     'automations_reports',

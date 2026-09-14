@@ -4,6 +4,7 @@ import {
   AlertCircle,
   Building2,
   ClipboardCheck,
+  FileText,
   LayoutDashboard,
   MapPin,
   Monitor,
@@ -32,6 +33,7 @@ import OrgDevicesTab from './OrgDevicesTab';
 import OrgOverviewTab from './OrgOverviewTab';
 import OrgRecordHeader from './OrgRecordHeader';
 import OrgServiceTab from './OrgServiceTab';
+import OrgDocumentsTab from './OrgDocumentsTab';
 import OrgSitesTab from './OrgSitesTab';
 import OrgTicketsTab from './OrgTicketsTab';
 import { makeOrgFetch, useLatest, type OrgRecordOrg, type OrgSummary } from './orgRecordFetch';
@@ -51,6 +53,7 @@ const TAB_ICONS: Record<OrgRecordTab, React.ReactNode> = {
   tickets: <Ticket className="h-4 w-4" />,
   billing: <Receipt className="h-4 w-4" />,
   service: <ClipboardCheck className="h-4 w-4" />,
+  documents: <FileText className="h-4 w-4" />,
   activity: <ActivityIcon className="h-4 w-4" />,
 };
 
@@ -238,7 +241,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           })}
           detail={lifecycleOrg.createdAt ? t('orgRecord.header.created', { date: formatDate(lifecycleOrg.createdAt) }) : undefined}
           actionLabel={t('orgRecord.lifecycle.backToList')}
-          actionHref="/settings/organizations"
+          actionHref="/organizations"
         />
       );
     }
@@ -249,7 +252,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
         title={t('orgRecord.notFound.title')}
         description={t('orgRecord.notFound.description')}
         actionLabel={t('orgRecord.notFound.action')}
-        actionHref="/settings/organizations"
+        actionHref="/organizations"
       />
     );
   }
@@ -307,6 +310,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
       {effectiveTab === 'tickets' && <OrgTicketsTab orgId={orgId} orgFetch={orgFetch} />}
       {effectiveTab === 'billing' && <OrgBillingTab orgId={orgId} />}
       {effectiveTab === 'service' && <OrgServiceTab orgId={orgId} orgFetch={orgFetch} />}
+      {effectiveTab === 'documents' && <OrgDocumentsTab orgId={orgId} orgFetch={orgFetch} />}
 
       {modal === 'archive' && (
         <ArchiveOrgModal
@@ -324,7 +328,7 @@ export default function OrganizationRecordPage({ orgId }: { orgId: string }) {
           onMerged={() => undefined}
           onDoneClose={() => {
             setModal(null);
-            void navigateTo('/settings/organizations');
+            void navigateTo('/organizations');
           }}
         />
       )}

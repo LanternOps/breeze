@@ -71,7 +71,9 @@ const executionRow = {
 function mockExecutionRows(rows: unknown[], capturedWhere?: unknown[]) {
   (db.select as ReturnType<typeof vi.fn>).mockReturnValue({
     from: () => ({
-      innerJoin: () => ({
+      // Both joins are LEFT now: a proposal-backed execution has no scripts
+      // parent, so an inner join would drop it from the result entirely.
+      leftJoin: () => ({
         leftJoin: () => ({
           where: (cond: unknown) => {
             capturedWhere?.push(cond);
@@ -174,20 +176,24 @@ describe('get_script_execution', () => {
     expect(result.error).toBe('Execution not found');
   });
 
-  it('org condition admits org-less (partner-wide/system) scripts via IS NULL, not a bare org match', async () => {
+  it('anchors the org condition on the EXECUTION\'s own org_id, not the (possibly absent) script row', async () => {
+    // TENANCY MOVED (Task 19): the predicate used to ride scripts.orgId with
+    // an isNull carve-out for partner-wide/system scripts. A left join makes
+    // that predicate NULL — and therefore not true — for every proposal-backed
+    // row, so it is re-anchored on scriptExecutions.orgId, which is NOT NULL
+    // for every execution regardless of source. No isNull carve-out is needed
+    // any more: the execution always denormalises a real org.
     const captured: unknown[] = [];
     mockExecutionRows([executionRow], captured);
     const auth = makeAuth();
-    // Simulate an org-scoped session: orgCondition returns a real condition.
-    (auth as unknown as Record<string, unknown>).orgCondition =
-      (col: unknown) => eq(col as Parameters<typeof eq>[0], 'org-1');
+    const orgCondition = vi.fn((col: unknown) => eq(col as Parameters<typeof eq>[0], 'org-1'));
+    (auth as unknown as Record<string, unknown>).orgCondition = orgCondition;
     await getTool().handler({ executionId: EXECUTION_ID }, auth);
 
+    expect(orgCondition).toHaveBeenCalledWith(scriptExecutions.orgId);
+    expect(boundParamValues(captured[0])).toContain(EXECUTION_ID);
     const tokens = flattenSql(captured[0]).join(' ');
-    // The clause must OR the org match with IS NULL so partner-wide scripts
-    // (org_id NULL — the repo default ownership shape) stay readable.
-    expect(tokens).toContain('is null');
-    expect(tokens).toContain(' or ');
+    expect(tokens).toContain('org-1');
   });
 
   it('tolerates a deleted device (left join) — output still returned', async () => {

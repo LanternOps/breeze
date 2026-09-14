@@ -6,6 +6,7 @@ import type { Deliverable } from '../../lib/api/serviceDeliverables';
 import DeliverableForm from '../deliverables/DeliverableForm';
 import DeliverableTable from '../deliverables/DeliverableTable';
 import OccurrenceDrawer from '../deliverables/OccurrenceDrawer';
+import ApplyTemplateModal from '../deliverables/ApplyTemplateModal';
 import { Dialog } from '../shared/Dialog';
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
 export default function ContractDeliverablesSection({ contractId, orgId }: Props) {
   const { t } = useTranslation('deliverables');
   const [adding, setAdding] = useState(false);
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [selected, setSelected] = useState<Deliverable | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((n) => n + 1);
@@ -30,14 +32,24 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
     <div className="rounded-lg border bg-card shadow-xs" data-testid="contract-deliverables">
       <div className="flex items-center justify-between border-b px-3 py-2">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t('section.title')}</h3>
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
-          data-testid="contract-deliverables-add"
-        >
-          {t('actions.add')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setApplyingTemplate(true)}
+            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+            data-testid="contract-deliverables-apply-template"
+          >
+            {t('templates.actions.apply')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
+            data-testid="contract-deliverables-add"
+          >
+            {t('actions.add')}
+          </button>
+        </div>
       </div>
 
       <DeliverableTable
@@ -71,6 +83,19 @@ export default function ContractDeliverablesSection({ contractId, orgId }: Props
           deliverable={selected}
           onClose={() => setSelected(null)}
           onChanged={refresh}
+        />
+      )}
+
+      {applyingTemplate && (
+        <ApplyTemplateModal
+          fetcher={fetchWithAuth}
+          orgId={orgId}
+          contractId={contractId}
+          onApplied={() => {
+            setApplyingTemplate(false);
+            refresh();
+          }}
+          onClose={() => setApplyingTemplate(false)}
         />
       )}
     </div>

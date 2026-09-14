@@ -31,5 +31,9 @@ describe('reportTypeSurvivesBuilder', () => {
     // ai_org_narrative → activity. The AI schedule owns this type end to end;
     // the builder must never present itself as able to author it.
     expect(reportTypeSurvivesBuilder('ai_org_narrative')).toBe(false);
+    // ai_fleet_design → activity, same reasoning (Fleet Designer, W01).
+    expect(reportTypeSurvivesBuilder('ai_fleet_design')).toBe(false);
+    // hardware_lifecycle → devices: curated template with its own options form.
+    expect(reportTypeSurvivesBuilder('hardware_lifecycle')).toBe(false);
   });
 });

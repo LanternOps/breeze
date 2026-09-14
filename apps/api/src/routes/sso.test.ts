@@ -404,7 +404,8 @@ vi.mock('../services/mfaPolicy', () => ({
   getEffectiveMfaPolicy: vi.fn(async () => ({
     required: mfaPolicyState.required,
     allowedMethods: { totp: true, sms: true, passkey: true },
-    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false },
+    pendingEnrollment: null,
+    source: { roleForceMfa: mfaPolicyState.required, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
   })),
 }));
 

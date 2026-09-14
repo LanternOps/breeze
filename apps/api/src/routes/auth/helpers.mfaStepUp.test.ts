@@ -103,7 +103,8 @@ describe('requireFreshMfaStepUp', () => {
     getEffectiveMfaPolicy.mockResolvedValue({
       required: true,
       allowedMethods: { totp: true, sms: true, passkey: true },
-      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: true, settingsRequireMfa: false, killSwitchOff: false, graceWindow: 'none' as const },
     });
   });
 
@@ -146,7 +147,8 @@ describe('requireFreshMfaStepUp', () => {
     getEffectiveMfaPolicy.mockResolvedValue({
       required: true,
       allowedMethods: { totp: false, sms: true, passkey: true },
-      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false },
+      pendingEnrollment: null,
+      source: { roleForceMfa: false, settingsRequireMfa: true, killSwitchOff: false, graceWindow: 'none' as const },
     });
     const c = makeContext(auth);
 

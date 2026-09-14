@@ -11,6 +11,7 @@ import { writeAuditEvent, requestLikeFromSnapshot } from './auditEvents';
 import { requestPaymentPush, requestPaymentDelete, partialRefundDivergenceMessage } from './accounting/accountingPaymentPush';
 import { enqueueAccountingPaymentPush, enqueueAccountingPaymentDelete } from '../jobs/accountingSyncWorker';
 import { processPendingStripeFinancialEventsForPayment } from './stripeReversalState';
+import { markSiblingRevocationIntentInTx } from './stripeSessionRevocation';
 
 function toCents(v: string | number) { return Math.round(Number(v) * 100); }
 
@@ -132,6 +133,14 @@ export async function recordStripePayment(input: CaptureInput): Promise<{ invoic
     if (linked.length !== 1) {
       throw new Error(`Mapping for stripe object ${input.stripeObjectId} changed under the payment lock`);
     }
+
+    // SEC-150: the capture just cleared the balance every OTHER open Checkout
+    // session on this invoice was minted to collect, so each of them is now a
+    // second charge waiting to happen. Intent is stamped HERE, under the invoice
+    // lock this transaction already holds — see markSiblingRevocationIntentInTx
+    // for why escaping to a second connection would self-deadlock. The sweep
+    // does the provider call, so a Stripe outage can never fail a capture.
+    await markSiblingRevocationIntentInTx(inv.id, input.stripeObjectId, db);
 
     await recomputeInvoiceStatus(inv.id);
     // Gross amount is what settles the invoice, so gross is what QuickBooks gets

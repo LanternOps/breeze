@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, LayoutTemplate } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import DeliverableForm from '@/components/deliverables/DeliverableForm';
 import DeliverableTable from '@/components/deliverables/DeliverableTable';
 import OccurrenceDrawer from '@/components/deliverables/OccurrenceDrawer';
+import ApplyTemplateModal from '@/components/deliverables/ApplyTemplateModal';
 import { listDeliverables, unwrapData, type Deliverable } from '@/lib/api/serviceDeliverables';
 import { formatDate } from '@/components/billing/shared/format';
 import { ActionError } from '@/lib/runAction';
@@ -72,6 +73,7 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
   const [rows, setRows] = useState<Deliverable[] | LoadFailure | null>(null);
   const [contracts, setContracts] = useState<ContractsState>('loading');
   const [adding, setAdding] = useState(false);
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [selected, setSelected] = useState<Deliverable | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const latest = useLatest<Deliverable[] | LoadFailure>();
@@ -123,15 +125,26 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
     <div data-testid="org-service-tab" className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-semibold">{t('section.title')}</h2>
-        <button
-          type="button"
-          data-testid="org-service-add"
-          onClick={() => setAdding(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t('actions.add')}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            data-testid="org-service-apply-template"
+            onClick={() => setApplyingTemplate(true)}
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+          >
+            <LayoutTemplate className="h-4 w-4" aria-hidden="true" />
+            {t('templates.actions.apply')}
+          </button>
+          <button
+            type="button"
+            data-testid="org-service-add"
+            onClick={() => setAdding(true)}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            {t('actions.add')}
+          </button>
+        </div>
       </div>
 
       {adding && (
@@ -148,6 +161,18 @@ export default function OrgServiceTab({ orgId, orgFetch }: { orgId: string; orgF
             onCancel={() => setAdding(false)}
           />
         </div>
+      )}
+
+      {applyingTemplate && (
+        <ApplyTemplateModal
+          fetcher={orgFetch}
+          orgId={orgId}
+          onApplied={() => {
+            setApplyingTemplate(false);
+            bump();
+          }}
+          onClose={() => setApplyingTemplate(false)}
+        />
       )}
 
       <section data-testid="org-service-upcoming" className="rounded-lg border bg-card">

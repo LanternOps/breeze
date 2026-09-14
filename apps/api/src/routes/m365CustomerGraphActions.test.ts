@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { M365_PERMISSION_PROFILES } from '@breeze/shared/m365';
 
 const ORG_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ORG_ID = '22222222-2222-4222-8222-222222222222';
@@ -265,7 +266,9 @@ describe('GET /m365/customer-graph-actions/connections', () => {
       clientId: '88888888-8888-4888-8888-888888888888',
       displayName: 'Contoso',
       status: 'active',
+      grantHealth: 'active',
       manifestVersion: 1,
+      currentManifestVersion: 1,
       observedGrants: [requiredGrant],
       missingGrants: [],
       unexpectedGrants: [],
@@ -573,5 +576,39 @@ describe('cross-mount route ownership (mounted exactly as index.ts)', () => {
     expect(actionsDisconnect.status).toBe(200);
     expect(mocks.disconnect).toHaveBeenCalledWith(expect.objectContaining({ id: CONNECTION_ID, orgId: ORG_ID }));
     expect(mocks.readDisconnect).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('connection DTO grant health', () => {
+  it('exposes the derived health and both manifest versions', async () => {
+    mocks.list.mockResolvedValue([connection({
+      grantHealth: undefined,
+      observedGrants: [
+        ...(M365_PERMISSION_PROFILES['customer-graph-actions'].applicationPermissionAssignments ?? []),
+      ],
+    })]);
+
+    const body = await (await app().request(
+      `/m365/customer-graph-actions/connections?orgId=${ORG_ID}`,
+    )).json();
+
+    expect(body.connection.grantHealth).toBe('active');
+    expect(body.connection.manifestVersion).toBe(1);
+    expect(body.connection.currentManifestVersion).toBe(1);
+  });
+
+  it('reports manifest-stale for a row behind the code manifest', async () => {
+    mocks.list.mockResolvedValue([connection({
+      permissionManifestVersion: 0,
+      grantHealth: undefined,
+    })]);
+
+    const body = await (await app().request(
+      `/m365/customer-graph-actions/connections?orgId=${ORG_ID}`,
+    )).json();
+
+    expect(body.connection.grantHealth).toBe('manifest-stale');
+    expect(body.connection.manifestVersion).toBe(0);
+    expect(body.connection.currentManifestVersion).toBe(1);
   });
 });

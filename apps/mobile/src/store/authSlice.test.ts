@@ -383,18 +383,49 @@ describe('approver registration status', () => {
     expect(store.getState().auth.approverRegistrationReason).toBeNull();
   });
 
+  // #5162 (#1374 W07 Task 2): `ensureApproverDevice` can resolve `registered`
+  // with `attested: false` (server stored a non-L4-trusted basis) — RootNavigator
+  // must not collapse that into a bare 'registered' the UI reads as fully set
+  // up. Without this field the ApprovalGate banner has no way to tell a fully
+  // L4-capable device from one that is registered but capped below critical.
+  it('records attested=false on a registered-but-not-L4 outcome so the UI can warn', () => {
+    const store = makeStore();
+
+    store.dispatch(
+      setApproverRegistration({
+        status: 'registered',
+        attested: false,
+        reason: 'attestation_rejected_by_server',
+      })
+    );
+
+    expect(store.getState().auth.approverRegistration).toBe('registered');
+    expect(store.getState().auth.approverRegistrationAttested).toBe(false);
+  });
+
+  it('defaults attested to null when omitted (failed/deferred/unsupported outcomes)', () => {
+    const store = makeStore();
+
+    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+
+    expect(store.getState().auth.approverRegistrationAttested).toBeNull();
+  });
+
   it('starts idle so a fresh install shows no banner', () => {
     expect(makeStore().getState().auth.approverRegistration).toBe('idle');
   });
 
   it('clears on the synchronous logout reducer', () => {
     const store = makeStore();
-    store.dispatch(setApproverRegistration({ status: 'failed', reason: 'http_400' }));
+    store.dispatch(
+      setApproverRegistration({ status: 'registered', attested: false, reason: 'attestation_rejected_by_server' })
+    );
 
     store.dispatch(logout());
 
     expect(store.getState().auth.approverRegistration).toBe('idle');
     expect(store.getState().auth.approverRegistrationReason).toBeNull();
+    expect(store.getState().auth.approverRegistrationAttested).toBeNull();
   });
 
   // The Sign Out button and the device_blocked listener both dispatch

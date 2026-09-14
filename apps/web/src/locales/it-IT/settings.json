@@ -1149,6 +1149,14 @@
         "enableSupportUsage": {
           "label": "Utilizzo assistenza",
           "description": "Mostra il totale del tempo di assistenza fatturabile del mese in corso."
+        },
+        "enableService": {
+          "label": "Servizio",
+          "description": "Mostra i deliverable pianificati, quanto consegnato e le date chiave."
+        },
+        "enableDocuments": {
+          "label": "Documenti",
+          "description": "Consente ai clienti di scaricare i documenti condivisi."
         }
       }
     },
@@ -1502,11 +1510,13 @@
       "timezone": "Fuso orario",
       "kinds": {
         "sweep": "Scansione",
-        "narrative": "Report settimanale"
+        "narrative": "Report settimanale",
+        "design": "Progettazione della flotta"
       },
       "kindsLabel": "Controlli da eseguire",
       "kind": "Tipo di pianificazione",
       "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
+      "monthlyOrRarerHint": "Una progettazione della flotta viene attivata al massimo una volta al mese: minuto, ora e giorno-del-mese (1-28) letterali, mese come * o un elenco separato da virgole di mesi letterali, e * per il giorno della settimana. Ad esempio, 0 6 1 1,4,7,10 * viene eseguito trimestralmente il giorno 1 alle 06:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
       "override": "Personalizza per questa organizzazione",
@@ -1546,6 +1556,7 @@
         "baselineAgentMismatch": "Quella baseline appartiene a un altro agente.",
         "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
         "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
+        "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
         "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
       }
@@ -1556,7 +1567,8 @@
     "kindHints": {
       "triage": "Analizza i nuovi avvisi e propone cosa fare.",
       "patch": "Esamina le patch mancanti e propone cosa installare.",
-      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi."
+      "helpdesk": "Prende in carico i ticket e propone risposte e prossimi passi.",
+      "designer": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico."
     },
     "emptyState": {
       "title": "Nessun agente per ora",
@@ -1571,7 +1583,8 @@
       "shadowConsequence": "Osserva e propone; una persona approva tutto.",
       "act": "Azione",
       "actConsequence": "Esegue le operazioni consentite senza un clic. Nessun ripristino automatico.",
-      "actUnavailable": "Non ancora disponibile per questo agente."
+      "actUnavailable": "Non ancora disponibile per questo agente.",
+      "shadowUnavailableForKind": "Questo agente legge e scrive solo report — non c'è nulla da osservare in modalità ombra."
     },
     "allOrgs": "Tutte le organizzazioni",
     "allOrgsHint": "A livello di partner: vale per ogni organizzazione, salvo che un’organizzazione la restringa.",
@@ -1685,7 +1698,8 @@
     "kinds": {
       "triage": "Triage degli avvisi",
       "patch": "Gestione delle patch",
-      "helpdesk": "Assistenza"
+      "helpdesk": "Assistenza",
+      "designer": "Progettista della flotta"
     },
     "modes": {
       "off": "Disattivato",
@@ -1820,7 +1834,8 @@
       "profile": {
         "sweep": "Scansione",
         "narrative": "Report settimanale",
-        "triage": "Triage dei ticket"
+        "triage": "Triage dei ticket",
+        "design": "Progettazione della flotta"
       },
       "sweep": {
         "title": "Rilevazioni della scansione",
@@ -1867,6 +1882,14 @@
         "openReport": "Apri il report",
         "download": "Scarica il PDF",
         "downloadFailed": "Impossibile scaricare il PDF."
+      },
+      "fleetDesign": {
+        "title": "Progettazione della flotta",
+        "counts": "{{functions}} funzioni · {{watches}} monitoraggi · {{rules}} regole di avviso",
+        "openReport": "Apri il report",
+        "download": "Scarica il PDF",
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "truncatedNote": "Le evidenze sono state troncate — questa progettazione non ha visto l'intera flotta."
       },
       "noAgent": "Agente sconosciuto",
       "loading": "Caricamento delle esecuzioni…",
@@ -2129,6 +2152,7 @@
           "fixWatchesHeld": "Monitoraggi di correzione mantenuti",
           "fixWatchesRecurred": "Monitoraggi di correzione ricorrenti",
           "narrativesDelivered": "Report settimanali consegnati",
+          "fleetDesignsDelivered": "Fleet Design consegnati",
           "estTimeSaved": "Tempo risparmiato stimato",
           "llmSpend": "Spesa LLM",
           "window": "Finestra del report (giorni)",
@@ -2235,6 +2259,10 @@
         "scripts_commands": {
           "label": "Script e comandi",
           "description": "Eseguire script, playbook e comandi di sistema, e gestire i processi, le attività pianificate e le voci di registro coinvolte."
+        },
+        "author_scripts": {
+          "label": "Creare script",
+          "description": "Scrivere un nuovo script come proposta per una revisione indipendente. Nulla di ciò che un agente scrive viene eseguito finché non è stato revisionato e approvato."
         },
         "tickets": {
           "label": "Ticket di assistenza",
@@ -2685,7 +2713,8 @@
       "loggedProposalCount_other": "{{count}} proposte registrate",
       "unattendedCount_one": "{{count}} senza supervisione",
       "unattendedCount_other": "{{count}} senza supervisione",
-      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente."
+      "scriptGateNote": "Resta una richiesta di approvazione finché uno script non viene autorizzato per questo agente.",
+      "designerReadOnly": "Il Progettista della flotta ha accesso a ogni strumento di sola lettura e a uno strumento di report. Non ha capacità di modifica da scegliere."
     },
     "summary": {
       "edit": "Modifica",
@@ -2786,6 +2815,11 @@
           "blurb": "Gestisce i ticket non appena vengono creati, ricevono una risposta o vengono risolti.",
           "runsWhen": "un ticket viene creato, riceve la sua prima risposta o viene contrassegnato come risolto",
           "recommended": "riavviare i servizi e liberare spazio su disco per risolvere le richieste comuni"
+        },
+        "designer": {
+          "blurb": "Legge l'intera flotta e scrive una progettazione di monitoraggio motivata da approvare da parte di un tecnico.",
+          "runsWhen": "avvii una Progettazione della flotta per un'organizzazione, oppure in base a una pianificazione trimestrale",
+          "recommended": "una migrazione da zero, oppure un audit di configurazione trimestrale"
         }
       },
       "kindCard": {
@@ -2939,7 +2973,9 @@
     "loadingApproverDevices": "Caricamento dispositivi approvatori…",
     "tryAgain": "Riprova",
     "noApproverDevicesRegisteredYetSignInToTheBreezeMobileApp": "Nessun dispositivo approvatore ancora registrato. Accedi all'app mobile Breeze sul telefono e apparirà qui automaticamente, oppure registra questo browser qui sotto per approvare con una biometria.",
-    "platformBound": "Vincolato alla piattaforma",
+    "hardwareAttested": "Attestato via hardware",
+    "notAttested": "Non attestato",
+    "notAttestedTooltip": "Le approvazioni critiche non sono disponibili su questo dispositivo finché non viene ri-registrato con una versione attestata dell'app.",
     "registered": "Registrato",
     "lastUsed": "Ultimo utilizzo",
     "cancel": "Annulla",
@@ -4422,27 +4458,10 @@
       "suspended": "Sospesa",
       "churned": "Persa",
       "offboarding": "In dismissione"
+    },
+    "help": {
+      "slug": "Generato dal nome. Univoco nel tuo account; usato dall'API e dalle integrazioni."
     }
-  },
-  "organizationList": {
-    "title": "Organizzazioni",
-    "count": "{{filtered}} di {{total}} organizzazioni",
-    "searchPlaceholder": "Cerca organizzazioni",
-    "allStatuses": "Tutti gli stati",
-    "status": {
-      "active": "Attiva",
-      "trial": "Prova",
-      "suspended": "Sospesa",
-      "churned": "Persa",
-      "offboarding": "In dismissione",
-      "merging": "Fusione in corso",
-      "archived": "Archiviata",
-      "purging": "Eliminazione in corso"
-    },
-    "columns": {
-      "devices": "Dispositivi"
-    },
-    "empty": "Nessuna organizzazione trovata. Prova a modificare ricerca o filtri."
   },
   "bulkOrgImport": {
     "title": "Importazione in blocco",
@@ -4506,23 +4525,11 @@
     }
   },
   "organizationsPage": {
-    "loading": "Caricamento organizzazioni...",
-    "title": "Organizzazioni e siti",
-    "description": "Gestisci le organizzazioni e i relativi siti.",
     "actions": {
-      "addOrganization": "Aggiungi organizzazione",
-      "tryAgain": "Riprova",
-      "editOrganization": "Modifica organizzazione",
-      "archiveOrganization": "Archivia organizzazione",
-      "deleting": "Eliminazione...",
-      "openRecord": "Apri scheda",
-      "openSettings": "Impostazioni"
+      "tryAgain": "Riprova"
     },
     "errors": {
-      "fetchOrganizations": "Impossibile recuperare le organizzazioni",
       "generic": "Si è verificato un errore",
-      "saveOrder": "Impossibile salvare l'ordine delle organizzazioni",
-      "saveOrganization": "Impossibile salvare l'organizzazione",
       "saveSite": "Impossibile salvare il sito ({{status}})",
       "deleteSite": "Impossibile eliminare il sito",
       "loadSites": "Impossibile caricare i siti di questa organizzazione."
@@ -4537,25 +4544,8 @@
       "archived": "Archiviata",
       "purging": "Eliminazione in corso"
     },
-    "deviceCount": "{{count}} dispositivi",
-    "list": {
-      "title": "Organizzazioni",
-      "searchPlaceholder": "Cerca...",
-      "empty": "Nessuna organizzazione trovata.",
-      "noMatches": "Nessuna organizzazione corrisponde alla ricerca.",
-      "dragToReorder": "Trascina per riordinare"
-    },
     "sites": {
       "loading": "Caricamento siti..."
-    },
-    "emptySelection": {
-      "title": "Nessuna organizzazione selezionata",
-      "description": "Seleziona un'organizzazione dall'elenco per visualizzarne i siti."
-    },
-    "add": {
-      "title": "Aggiungi organizzazione",
-      "description": "Crea una nuova organizzazione con i dettagli qui sotto.",
-      "submit": "Crea organizzazione"
     },
     "siteModal": {
       "editTitle": "Modifica sito",
@@ -4571,11 +4561,11 @@
     },
     "deleteSite": {
       "title": "Elimina sito",
-      "messagePrefix": "Vuoi davvero eliminare",
-      "messageSuffix": " Questa azione non può essere annullata."
+      "message": "Eliminare {{name}}? Il sito verrà rimosso definitivamente e l'operazione non può essere annullata.",
+      "blockedMessage_one": "{{name}} ha ancora {{count}} dispositivo. Spostalo in un altro sito prima di eliminare questo.",
+      "blockedMessage_other": "{{name}} ha ancora {{count}} dispositivi. Spostali in un altro sito prima di eliminare questo."
     },
     "merge": {
-      "openButton": "Unisci a un'altra organizzazione",
       "title": "Unisci organizzazione",
       "description": "Sposta i dati di {{name}} in un'organizzazione superstite. {{name}} viene quindi ritirata permanentemente e non può essere recuperata.",
       "survivorLabel": "Unisci a",
@@ -4642,36 +4632,6 @@
       "errors": {
         "archive": "Impossibile archiviare l'organizzazione",
         "mfaRequired": "L'archiviazione delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova."
-      }
-    },
-    "archived": {
-      "sectionTitle": "Archiviate",
-      "loading": "Caricamento delle organizzazioni archiviate...",
-      "empty": "Nessuna organizzazione archiviata.",
-      "noMatches": "Nessuna organizzazione archiviata corrisponde alla ricerca.",
-      "badge": "Archiviata",
-      "archivingBadge": "Archiviazione in corso…",
-      "keptIndefinitely": "Conservata indefinitamente",
-      "purgeToday": "Eliminata definitivamente oggi",
-      "purgeCountdown_one": "Eliminata definitivamente tra {{count}} giorno",
-      "purgeCountdown_other": "Eliminata definitivamente tra {{count}} giorni",
-      "truncatedNote": "Vengono mostrate le prime {{count}} organizzazioni archiviate. Cerca per restringere l'elenco.",
-      "readOnlyNotice": "Questa organizzazione è archiviata ed è in sola lettura. Ripristinala per riprendere l'accesso normale.",
-      "drainNotice": "Questa organizzazione è in fase di archiviazione — i suoi agenti sono in corso di disinstallazione, e rimane in sola lettura finché il processo non sarà completato. Ripristinala per annullare l'operazione e farla tornare.",
-      "errors": {
-        "fetch": "Impossibile caricare le organizzazioni archiviate"
-      }
-    },
-    "restore": {
-      "action": "Ripristina",
-      "restoring": "Ripristino in corso...",
-      "success": "{{name}} ripristinata — stato: {{status}}.",
-      "recreateRequiredNote": "Prima che sia di nuovo pienamente utilizzabile: {{items}}",
-      "suspendedNote": "Era sospesa prima dell'archiviazione, quindi è stata ripristinata come sospesa — risolvi questo aspetto prima che riprenda l'accesso normale.",
-      "errors": {
-        "restore": "Impossibile ripristinare l'organizzazione",
-        "mfaRequired": "Il ripristino delle organizzazioni richiede l'autenticazione a più fattori. Abilita l'MFA nelle impostazioni di sicurezza del tuo profilo, quindi riprova.",
-        "purging": "Questa organizzazione è già in fase di eliminazione definitiva e non può più essere ripristinata."
       }
     }
   },
@@ -4770,7 +4730,9 @@
     "count": "{{filtered}} di {{total}} siti",
     "searchPlaceholder": "Cerca siti",
     "actions": {
-      "add": "Aggiungi sito"
+      "add": "Aggiungi sito",
+      "editSite": "Modifica {{name}}",
+      "deleteSite": "Elimina {{name}}"
     },
     "columns": {
       "timezone": "Fuso orario",
@@ -5305,5 +5267,82 @@
       "conflict": "Conflitto",
       "orgNotFound": "Organizzazione non trovata"
     }
+  },
+  "scriptAuthoringPage": {
+    "title": "Creazione di script",
+    "subtitle": "Consenti all'assistente e ai tuoi agenti di scrivere, revisionare e — quando lo autorizzi — eseguire script senza una scheda di approvazione.",
+    "partnerCard": {
+      "title": "Limite del partner",
+      "description": "L'impostazione più ampia che qualsiasi organizzazione di questo partner può utilizzare. Le singole organizzazioni possono solo restringerla.",
+      "readOnly": "Solo un amministratore partner con accesso completo alle organizzazioni può modificare il limite.",
+      "missing": "Il tuo partner non ha ancora concesso un limite, quindi la modalità non presidiata non può essere abilitata qui."
+    },
+    "orgCard": {
+      "title": "Questa organizzazione",
+      "description": "Un'autorizzazione esplicita. La modalità non presidiata resta disattivata finché sia il limite del partner sia questo interruttore non lo consentono.",
+      "noOrgSelected": "Seleziona un'organizzazione per gestirne le impostazioni di creazione script."
+    },
+    "fields": {
+      "proposingEnabled": "Consenti all'IA di proporre script",
+      "unattendedAllowed": "Consenti alle organizzazioni di usare la modalità non presidiata",
+      "unattendedEnabled": "Esegui gli script approvati a basso rischio senza una scheda di approvazione",
+      "maxRiskTier": "Livello di rischio massimo consentito in modalità non presidiata",
+      "allowedClasses": "Cosa può toccare uno script non presidiato",
+      "perHour": "Numero massimo di esecuzioni non presidiate all'ora",
+      "reviewerModel": "Modello di revisione",
+      "reviewerModelHint": "Lascia vuoto per usare il valore predefinito della piattaforma.",
+      "protectedResources": "Non toccare mai questi elementi",
+      "protectedServices": "Servizi",
+      "protectedPaths": "Percorsi",
+      "protectedRegistryKeys": "Chiavi di registro",
+      "protectedDeviceTags": "Tag dispositivo"
+    },
+    "tier": {
+      "low": "Basso",
+      "medium": "Medio"
+    },
+    "class": {
+      "registry": "Registro",
+      "services": "Servizi",
+      "processes": "Processi",
+      "files_system": "File di sistema",
+      "files_user": "File utente",
+      "temp_files": "File temporanei",
+      "network_egress": "Traffico di rete in uscita",
+      "firewall": "Firewall",
+      "credentials": "Credenziali",
+      "users_groups": "Utenti e gruppi",
+      "packages": "Pacchetti",
+      "scheduled_tasks": "Attività pianificate",
+      "disk": "Disco",
+      "boot": "Configurazione di avvio",
+      "security_tooling": "Strumenti di sicurezza",
+      "dns_cache": "Cache DNS",
+      "printing": "Stampa",
+      "browser": "Browser",
+      "shell_eval": "Codice dinamico"
+    },
+    "windowsOnly": "Solo Windows",
+    "hardDenied": "Mai disponibile in modalità non presidiata, qualunque cosa dica il limite.",
+    "aboveCeiling": "Il tuo partner non lo consente.",
+    "lane": {
+      "closedTitle": "La modalità non presidiata funziona normalmente",
+      "openTitle": "La modalità non presidiata è in pausa",
+      "openBody": "{{reason}} Le esecuzioni non presidiate vengono rifiutate finché un approvatore non ripristina la modalità. Le approvazioni continuano a funzionare normalmente.",
+      "reset": "Ripristina la modalità",
+      "resetStepUpBody": "Il ripristino della corsia non presidiata richiede un nuovo controllo di sicurezza.",
+      "resetSuccess": "La modalità non presidiata è di nuovo attiva.",
+      "resetFailed": "Impossibile ripristinare la modalità."
+    },
+    "stepUp": {
+      "title": "Conferma che sei tu",
+      "body": "Abilitare le esecuzioni non presidiate richiede un nuovo controllo di sicurezza."
+    },
+    "save": "Salva",
+    "saving": "Salvataggio…",
+    "saved": "Impostazioni di creazione script salvate.",
+    "saveFailed": "Non è stato possibile salvare queste impostazioni.",
+    "loading": "Caricamento…",
+    "loadFailed": "Non è stato possibile caricare le impostazioni di creazione script."
   }
 }

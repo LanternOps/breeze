@@ -625,6 +625,42 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // AI execution plane (spec §8). Sub-flag of BREEZE_AI_AGENTS_ENABLED, read
+    // at runtime by aiWorkspaceEnabled() in env.ts. Validated here for boolean
+    // format only — the production coupling rule is in the superRefine below.
+    BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
+    // 'vercel' | 'fake'. Resolved at runtime by resolveSandboxBackendName()
+    // (services/workspace/sandboxBackend.ts), which refuses an unset value in
+    // production; the superRefine below additionally refuses 'fake' there.
+    AI_WORKSPACE_BACKEND: z.string().optional(),
+    VERCEL_SANDBOX_TOKEN: z.string().optional(),
+    VERCEL_TEAM_ID: z.string().optional(),
+    VERCEL_PROJECT_ID: z.string().optional(),
+    VERCEL_SANDBOX_REGION_EU: z.string().optional(),
+    VERCEL_SANDBOX_REGION_US: z.string().optional(),
+    // Margin/regional-rate multiplier on COMPUTE_PRICING (services/
+    // aiComputePricing.ts). Default 1; a malformed value falls back to 1 there
+    // rather than zeroing billing.
+    AI_COMPUTE_PRICE_MULTIPLIER: z.string().optional(),
+
+    // AI script authoring (W01b). Read at runtime by aiScriptAuthoringEnabled()
+    // in env.ts. Validated here for boolean format only.
+    BREEZE_AI_SCRIPT_AUTHORING_ENABLED: z.string().optional(),
+
+    // Execution plane W01 (spec 2026-09-13 §8). Validated for SHAPE here so a
+    // typo boot-refuses instead of silently reading as off / 'us'.
+    BREEZE_REGION: z.string().optional(),
+    ARTIFACT_BLOB_BACKEND: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_EU: z.string().optional(),
+    ARTIFACT_S3_ENDPOINT_US: z.string().optional(),
+    ARTIFACT_S3_BUCKET_EU: z.string().optional(),
+    ARTIFACT_S3_BUCKET_US: z.string().optional(),
+    ARTIFACT_S3_REGION_EU: z.string().optional(),
+    ARTIFACT_S3_REGION_US: z.string().optional(),
+    ARTIFACT_S3_ACCESS_KEY: z.string().optional(),
+    ARTIFACT_S3_SECRET_KEY: z.string().optional(),
+    ARTIFACT_S3_SSE: z.string().optional(),
+
     // #1374 — L4 (critical-tier) platform-attestation gate. Defaults TRUE; read
     // at runtime by authenticatorAttestationEnforced() in env.ts. Validated here
     // for boolean format only, same class as AGENT_AUTO_PROMOTE above — and for
@@ -670,6 +706,18 @@ const envObjectSchema = z
     // silently disabling the tools an operator believed they had enabled) and so
     // the APP_ENCRYPTION_KEY_ID pairing rule below is schema-derived.
     M365_GRAPH_ACTIONS_TOOLS_ENABLED: z.string().optional(),
+
+    // M365 tenant sync (wave 04). Dark by default; read at runtime by
+    // isM365TenantSyncEnabled() in env.ts. Declared here so the format is
+    // guarded — a typo reads as OFF at the runtime flag parser, silently
+    // leaving the scheduler dark for an operator who believed they enabled it.
+    M365_TENANT_SYNC_ENABLED: z.string().optional(),
+    // Capacity dials for the sync worker/ticker. Format-guarded only: the
+    // runtime accessors clamp, so a valid-but-silly value is an operator
+    // choice, but a non-numeric value is a typo and must fail boot.
+    M365_SYNC_CONCURRENCY: z.string().optional(),
+    M365_SYNC_MAX_BACKLOG: z.string().optional(),
+    M365_SYNC_TICK_BATCH: z.string().optional(),
 
     // MFA feature flag. When false, ALL requireMfa() gates become no-ops.
     // Warning is emitted in collectWarnings; we do NOT refuse boot (a
@@ -1282,6 +1330,72 @@ const envSchema = envObjectSchema
         });
       }
 
+      // AI execution plane (spec §8, §2.2 D-I). Modelled on the manifest-key
+      // rule above: a feature whose misconfiguration is SILENT at boot and
+      // expensive at runtime gets a boot-time refusal, not a console.error.
+      //
+      // Three couplings, each a real failure mode:
+      //  - IS_HOSTED: the sandbox vendor account and its bill are LanternOps';
+      //    a self-hoster enabling this spends our money in our tenant.
+      //  - backend must be 'vercel': 'fake' runs model-authored code IN the API
+      //    process with the API process's filesystem and network — not a
+      //    sandbox at all — and an unset value would have
+      //    resolveSandboxBackendName() throw on the first analysis run instead
+      //    of here.
+      //  - all three Vercel credentials: readVercelCredentials() deliberately
+      //    never falls back to the SDK's ambient-env discovery, so a
+      //    half-configured deploy fails every run rather than quietly using
+      //    whatever token the host carries.
+      const workspaceFlag = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+      if (workspaceFlag === 'true' || workspaceFlag === '1' || workspaceFlag === 'yes') {
+        if ((data.IS_HOSTED ?? '').trim().toLowerCase() !== 'true') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['IS_HOSTED'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires IS_HOSTED=true — the AI execution plane runs on a third-party sandbox vendor under the LanternOps account and is hosted-only (execution-plane design §8).',
+          });
+        }
+        const backend = (data.AI_WORKSPACE_BACKEND ?? '').trim().toLowerCase();
+        if (backend !== 'vercel') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_WORKSPACE_BACKEND'],
+            message:
+              'BREEZE_AI_WORKSPACE_ENABLED=true requires AI_WORKSPACE_BACKEND=vercel in production. "fake" executes model-authored code inside the API process with the API process\'s filesystem and network — it is a test double, not an isolation boundary.',
+          });
+        }
+        for (const key of ['VERCEL_SANDBOX_TOKEN', 'VERCEL_TEAM_ID', 'VERCEL_PROJECT_ID'] as const) {
+          if (!data[key]?.trim()) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message:
+                `${key} must be set when BREEZE_AI_WORKSPACE_ENABLED=true — the Vercel SDK's ambient-credential fallback is deliberately not used, so a missing value fails every analysis run instead of booting cleanly.`,
+            });
+          }
+        }
+      }
+
+      // The multiplier is the only knob between vendor list price and what an
+      // org is charged. computePriceMultiplier() falls back to 1 for anything
+      // unparseable — the right instinct, since zeroing billing is worse — but
+      // that fallback is silent, so a typo (`1.5x`, a stray comma) would run at
+      // 1x forever and only surface as a margin discrepancy nobody traces back.
+      // Refuse at boot instead. Unset is fine and means 1.
+      const multiplierRaw = data.AI_COMPUTE_PRICE_MULTIPLIER?.trim();
+      if (multiplierRaw) {
+        const multiplier = Number(multiplierRaw);
+        if (!Number.isFinite(multiplier) || multiplier <= 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['AI_COMPUTE_PRICE_MULTIPLIER'],
+            message:
+              `AI_COMPUTE_PRICE_MULTIPLIER must be a finite positive number when set (got "${multiplierRaw}"). Leave it unset for 1x — an unparseable value would silently price every run at 1x.`,
+          });
+        }
+      }
+
       // BYO signing (spec 3a): pointing the deployment at a NON-official
       // release repository only makes sense with a manifest trust root that is
       // the OVERRIDING repository's release key — without one, github-mode
@@ -1821,6 +1935,65 @@ const envSchema = envObjectSchema
       });
     }
 
+    // Execution plane W01 (spec §8). Same class as the two flags above.
+    const regionRaw = (data.BREEZE_REGION ?? '').trim().toLowerCase();
+    if (regionRaw && regionRaw !== 'eu' && regionRaw !== 'us') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_REGION'],
+        message: 'BREEZE_REGION must be "eu" or "us" when set (hosted regions are single-region deployments). Defaults to "us".',
+      });
+    }
+    const workspaceRaw = (data.BREEZE_AI_WORKSPACE_ENABLED ?? '').trim().toLowerCase();
+    if (workspaceRaw && !boolValues.has(workspaceRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_WORKSPACE_ENABLED'],
+        message: 'BREEZE_AI_WORKSPACE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the workspace lane and artifact capture are dark).',
+      });
+    }
+    const blobBackendRaw = (data.ARTIFACT_BLOB_BACKEND ?? '').trim().toLowerCase();
+    if (blobBackendRaw && blobBackendRaw !== 's3') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ARTIFACT_BLOB_BACKEND'],
+        message: blobBackendRaw === 'db'
+          ? 'ARTIFACT_BLOB_BACKEND=db is not available in v1 — there is no generic blob table. Use "s3" (MinIO works locally through S3_ENDPOINT).'
+          : 'ARTIFACT_BLOB_BACKEND must be "s3" when set.',
+      });
+    }
+    // With the lane switched on for a hosted region, the blob store for THAT
+    // region must be reachable, or the first oversized tool result becomes an
+    // `artifact_store_unavailable` error for every technician (spec §9).
+    const workspaceOn = boolValues.has(workspaceRaw) && ['true', '1', 'yes', 'on'].includes(workspaceRaw);
+    const hostedOn = ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase());
+    if (workspaceOn && hostedOn) {
+      const region = regionRaw === 'eu' ? 'EU' : 'US';
+      const bucket = (data[`ARTIFACT_S3_BUCKET_${region}` as 'ARTIFACT_S3_BUCKET_EU' | 'ARTIFACT_S3_BUCKET_US'] ?? '').trim() || (data.S3_BUCKET ?? '').trim();
+      const accessKey = (data.ARTIFACT_S3_ACCESS_KEY ?? '').trim() || (data.S3_ACCESS_KEY ?? '').trim();
+      const secretKey = (data.ARTIFACT_S3_SECRET_KEY ?? '').trim() || (data.S3_SECRET_KEY ?? '').trim();
+      if (!bucket || !accessKey || !secretKey) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [`ARTIFACT_S3_BUCKET_${region}`],
+          message: `BREEZE_AI_WORKSPACE_ENABLED=true on a hosted deployment requires an artifact blob store for region ${region.toLowerCase()}: set ARTIFACT_S3_BUCKET_${region} (or S3_BUCKET) plus ARTIFACT_S3_ACCESS_KEY/ARTIFACT_S3_SECRET_KEY (or S3_ACCESS_KEY/S3_SECRET_KEY).`,
+        });
+      }
+    }
+
+    // BREEZE_AI_SCRIPT_AUTHORING_ENABLED (AI script authoring W01b). Same
+    // treatment: a typo must be caught at boot rather than silently reading as
+    // off. Mirrors aiScriptAuthoringEnabled() in env.ts.
+    const scriptAuthoringRaw = (data.BREEZE_AI_SCRIPT_AUTHORING_ENABLED ?? '').trim().toLowerCase();
+    if (scriptAuthoringRaw && !boolValues.has(scriptAuthoringRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BREEZE_AI_SCRIPT_AUTHORING_ENABLED'],
+        message:
+          'BREEZE_AI_SCRIPT_AUTHORING_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to true (W03 #5612); set false to keep AI script authoring dark.',
+      });
+    }
+
     // TRUST_CF_CONNECTING_IP. Same class as the two flags above: the runtime
     // reader (services/clientIp.ts) treats any unrecognized value as OFF, so a
     // typo on a Cloudflare-fronted deploy silently resolves every client IP from
@@ -1865,6 +2038,26 @@ const envSchema = envObjectSchema
         message:
           'APP_ENCRYPTION_KEY_ID is required when M365_GRAPH_ACTIONS_TOOLS_ENABLED=true (write-action reveal credentials are sealed with AAD-bound v3 ciphertext).',
       });
+    }
+
+    const tenantSyncRaw = (data.M365_TENANT_SYNC_ENABLED ?? '').trim().toLowerCase();
+    if (tenantSyncRaw && !boolValues.has(tenantSyncRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['M365_TENANT_SYNC_ENABLED'],
+        message:
+          'M365_TENANT_SYNC_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the M365 tenant sync ticker and worker are dark).',
+      });
+    }
+    for (const knob of ['M365_SYNC_CONCURRENCY', 'M365_SYNC_MAX_BACKLOG', 'M365_SYNC_TICK_BATCH'] as const) {
+      const raw = (data[knob] ?? '').trim();
+      if (raw && !/^\d+$/.test(raw)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [knob],
+          message: `${knob} must be a positive integer when set.`,
+        });
+      }
     }
 
     // BREEZE_ROLE ↔ APP_ENCRYPTION_KEY_ID pairing (wave 3.5b, #4084). Once a

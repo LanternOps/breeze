@@ -278,7 +278,8 @@
     "loadMore": "Daha fazlasını yükle",
     "couldnTLoadMore": "Daha fazlası yüklenemedi.",
     "viewAllActivity2": "Tüm etkinlikleri görüntüle",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Öneriyi görüntüle"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",
@@ -930,6 +931,23 @@
     "role": "Rol",
     "changeRole": "Rolü değiştir",
     "source": "Kaynak",
+    "function": "İşlev",
+    "changeFunction": "İşlevi değiştir",
+    "functionNone": "Değerlendirilmedi",
+    "functionSource": {
+      "ai": "Yapay Zeka",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}}% güven",
+    "functionEvidence": "Tasarımcı neden böyle düşünüyor",
+    "functionEvidenceUnavailable": "Değerlendirme ayrıntıları yüklenemedi.",
+    "functionCustom": "Özel…",
+    "functionCustomSlug": "özel anahtar (a-z, 0-9, -)",
+    "functionCustomLabel": "Etiket",
+    "functionClear": "Temizle",
+    "functionSaved": "Cihaz işlevi kaydedildi",
+    "functionCleared": "Cihaz işlevi temizlendi",
+    "functionSaveFailed": "Cihaz işlevi kaydedilemedi",
     "operatingSystem": "İşletim Sistemi",
     "osType": "İşletim Sistemi Türü",
     "osVersion": "İşletim Sistemi Sürümü",
@@ -1676,7 +1694,10 @@
     "saveChanges": "Değişiklikleri Kaydet",
     "site": "Sitesi",
     "tags": "Etiketler",
-    "title": "Cihaz Ayarları"
+    "title": "Cihaz Ayarları",
+    "purchaseDate": "Satın alma tarihi",
+    "purchaseDateHelp": "Donanım Yaşam Döngüsü raporu değiştirmeyi planlamak için kullanır.",
+    "purchaseDateVendorHint": "Üreticinin sevk tarihinden alındı. Üzerine yazmak için bir tarih girin."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1880,7 +1901,7 @@
     "refresh": "Yenile",
     "selectedOrganization": "seçilen kuruluş",
     "subtitle": "Filonuzu yönetin ve izleyin.",
-    "title": "Cihazlar",
+    "title": "Cihazlar ve Varlıklar",
     "toasts": {
       "actionFailed": "{{action}}, {{hostname}} üzerinde başarısız oldu",
       "advancedFilterFailed": "Gelişmiş filtre yüklenemedi — hiçbir cihaz gösterilmiyor. Yeniden denemek için filtreyi düzenleyin veya temizleyin.",
@@ -2769,7 +2790,8 @@
       "assignedContactPlaceholder": "Kişi ara…",
       "tags": "Etiketler",
       "tagsPlaceholder": "Virgülle ayrılmış",
-      "notes": "Notlar"
+      "notes": "Notlar",
+      "purchaseDate": "Satın alma tarihi"
     }
   },
   "addNetworkAssetModal": {

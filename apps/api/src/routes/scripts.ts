@@ -6,12 +6,14 @@ import {
   scriptParameterDefinitionsEqual,
   scriptParameterDefinitionsSchema,
 } from '@breeze/shared';
-import { and, eq, sql, desc, like, inArray, or, isNull } from 'drizzle-orm';
+import { and, eq, sql, desc, like, inArray, or, isNull, getTableColumns } from 'drizzle-orm';
 import { escapeLike } from '../utils/sql';
 import { executeScriptSchema } from '../services/scriptRunRequest';
-import { db } from '../db';
+import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   scripts,
+  scriptVersions,
+  scriptProposalReviews,
   scriptExecutions,
   devices,
   automationPolicies,
@@ -48,6 +50,7 @@ import {
 } from '../services/scriptBundle';
 import { scriptBundleRoutes } from './scriptBundle';
 import { cloneScript, isScriptCloneError } from '../services/scriptClone';
+import { cutScriptVersion } from '../services/scriptVersions';
 
 import {
   MAX_GRACE_SECONDS,
@@ -433,9 +436,24 @@ scriptRoutes.get(
       .where(whereCondition);
     const total = Number(countResult[0]?.count ?? 0);
 
-    // Get scripts
+    // Get scripts. `reviewedAtHead` is a lateral EXISTS — never fetched
+    // per-row from the client — so the list UI can badge "Reviewed" vs.
+    // "Edited since review" without an N+1 read of script_versions.
     const scriptList = await db
-      .select()
+      .select({
+        ...getTableColumns(scripts),
+        // The outer columns are spelled with the table name on purpose:
+        // inside a raw fragment Drizzle renders `${scripts.id}` as a bare
+        // "id", which the correlated subquery resolves against `sv` (its own
+        // id / version) — the EXISTS then compares a row to itself and is
+        // false for every script. Caught by the e2e badge assertion.
+        reviewedAtHead: sql<boolean>`EXISTS (
+          SELECT 1 FROM script_versions sv
+          WHERE sv.script_id = ${sql.identifier('scripts')}.${sql.identifier('id')}
+            AND sv.version = ${sql.identifier('scripts')}.${sql.identifier('version')}
+            AND sv.review_id IS NOT NULL
+        )`,
+      })
       .from(scripts)
       .where(whereCondition)
       // `id` is a mandatory tiebreaker, not a cosmetic nicety (#3462).
@@ -449,7 +467,14 @@ scriptRoutes.get(
       .offset(offset);
 
     return c.json({
-      data: scriptList,
+      // A row from a pre-existing test mock (or a stale read path) may lack
+      // these two fields entirely — default to a plain, unreviewed human
+      // script rather than surface `undefined` to the client.
+      data: scriptList.map((row: Record<string, unknown>) => ({
+        ...row,
+        origin: row.origin ?? 'human',
+        reviewedAtHead: row.reviewedAtHead ?? false,
+      })),
       pagination: { page, limit, total }
     });
   }
@@ -560,8 +585,11 @@ scriptRoutes.post(
       return c.json({ error: describeParameterSecretMismatch(mismatches) }, 400);
     }
 
-    // Clone into the org
-    const [cloned] = await db
+    // Clone into the org — row and v1 in one transaction, same reason as
+    // insertScriptRow: a clone with no version row would be headless, and
+    // script_versions is append-only so it could not be repaired later.
+    const cloned = await db.transaction(async (tx) => {
+      const [row] = await tx
       .insert(scripts)
       .values({
         orgId,
@@ -575,7 +603,7 @@ scriptRoutes.post(
         timeoutSeconds: source.timeoutSeconds,
         runAs: source.runAs,
         isSystem: false,
-        version: 1,
+        version: 0,
         // #5129 — `acknowledgedSecurityPatterns` is DELIBERATELY not copied.
         // The column defaults to '{}', so the imported copy starts
         // unacknowledged and its first Strict match is refused until someone
@@ -587,12 +615,33 @@ scriptRoutes.post(
       })
       .returning();
 
+      if (!row) return null;
+
+      // origin 'human', not 'imported': a technician copying a shipped script
+      // into their org is a person acting, not a bundle landing. 'imported' is
+      // reserved for services/scriptBundle (spec §4.1 writers row).
+      const cut = await cutScriptVersion(tx, {
+        scriptId: row.id,
+        provenance: {
+          origin: 'human',
+          changelog: 'Imported from the system library',
+          createdBy: auth.user.id,
+        },
+      });
+
+      return { ...row, version: cut.version };
+    });
+
+    if (!cloned) {
+      return c.json({ error: 'Script could not be imported' }, 404);
+    }
+
     writeRouteAudit(c, {
       orgId,
       action: 'script.import',
       resourceType: 'script',
-      resourceId: cloned?.id,
-      resourceName: cloned?.name,
+      resourceId: cloned.id,
+      resourceName: cloned.name,
       details: {
         sourceScriptId: sourceId,
         sourceScriptName: source.name
@@ -619,6 +668,71 @@ scriptRoutes.get(
     }
 
     return c.json(script);
+  }
+);
+
+// GET /scripts/:id/versions - Immutable version history with provenance.
+// Two path segments — cannot collide with the `/:id` registration above.
+// The version rows carry the full historical CONTENT, so this uses the same
+// org gate as the detail route: exactly as sensitive as the script itself.
+scriptRoutes.get(
+  '/:id/versions',
+  requireScope('organization', 'partner', 'system'),
+  requirePermission(PERMISSIONS.SCRIPTS_READ.resource, PERMISSIONS.SCRIPTS_READ.action),
+  zValidator('param', scriptIdParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { id: scriptId } = c.req.valid('param');
+
+    const script = await getScriptWithOrgCheck(scriptId, auth);
+    if (!script) {
+      return c.json({ error: 'Script not found' }, 404);
+    }
+
+    const rows = await db
+      .select()
+      .from(scriptVersions)
+      .where(eq(scriptVersions.scriptId, scriptId))
+      .orderBy(desc(scriptVersions.version));
+
+    // Resolve the cited reviews in ONE query. A missing row is not an error:
+    // the source org may have been erased after a partner-wide promotion
+    // (spec §4.8), which the UI renders as "review evidence erased" rather
+    // than following a broken link.
+    const reviewIds = [...new Set(rows.map((r) => r.reviewId).filter((v): v is string => !!v))];
+    const reviews = reviewIds.length
+      ? await runOutsideDbContext(() =>
+          withSystemDbAccessContext(() =>
+            db.select().from(scriptProposalReviews).where(inArray(scriptProposalReviews.id, reviewIds))
+          )
+        )
+      : [];
+    const byId = new Map(reviews.map((r) => [r.id, r]));
+
+    return c.json({
+      versions: rows.map((r) => {
+        const review = r.reviewId ? byId.get(r.reviewId) : undefined;
+        return {
+          id: r.id,
+          version: r.version,
+          contentDigest: r.contentDigest,
+          changelog: r.changelog,
+          createdAt: r.createdAt.toISOString(),
+          origin: r.origin,
+          proposalId: r.proposalId,
+          reviewId: r.reviewId,
+          reviewedAt: r.reviewedAt?.toISOString() ?? null,
+          approvedBy: r.approvedBy,
+          approverName: null,
+          approvedAt: r.approvedAt?.toISOString() ?? null,
+          approvalMethod: r.approvalMethod,
+          reviewSummary: review?.summary ?? null,
+          reviewRiskTier: review?.riskTier ?? null,
+          reviewModel: review?.model ?? null,
+          reviewEvidenceErased: !!r.reviewId && !review,
+        };
+      }),
+    });
   }
 );
 
@@ -858,21 +972,34 @@ scriptRoutes.put(
       effectiveScope = target;
     }
 
+    // The version bump covers EVERYTHING a run consumes: the content, the
+    // parameter contract (#3409 PR3), and — since
+    // 2026-10-16-100000-script-versions-immutable.sql — the language, timeout
+    // and run context. It used to track content alone, then content plus
+    // parameters, which left the three fields below able to change under a
+    // pinned version and a pinned effect digest. A version row is the
+    // definition of an execution (spec §4.1), so all five fields move it.
+    // Every branch feeds ONE bump, so a save that changes several still moves
+    // the version by exactly 1.
+    let versionChanged = false;
+
     if (data.name !== undefined) updates.name = data.name;
     if (data.description !== undefined) updates.description = data.description;
     if (data.category !== undefined) updates.category = data.category;
     if (data.osTypes !== undefined) updates.osTypes = data.osTypes;
-    if (data.language !== undefined) updates.language = data.language;
-    if (data.timeoutSeconds !== undefined) updates.timeoutSeconds = data.timeoutSeconds;
-    if (data.runAs !== undefined) updates.runAs = data.runAs;
+    if (data.language !== undefined) {
+      updates.language = data.language;
+      if (data.language !== script.language) versionChanged = true;
+    }
+    if (data.timeoutSeconds !== undefined) {
+      updates.timeoutSeconds = data.timeoutSeconds;
+      if (data.timeoutSeconds !== script.timeoutSeconds) versionChanged = true;
+    }
+    if (data.runAs !== undefined) {
+      updates.runAs = data.runAs;
+      if (data.runAs !== script.runAs) versionChanged = true;
+    }
     if (data.exitCodeSeverityMapping !== undefined) updates.exitCodeSeverityMapping = data.exitCodeSeverityMapping;
-
-    // The version bump covers BOTH halves of what a run consumes: the content
-    // and the parameter contract (#3409 PR3). It used to track content alone,
-    // so flipping a parameter to a bound source — or renaming one — left the
-    // version untouched, which PR4's effect digest pins. Both branches feed
-    // one bump so a save that changes both still moves the version by 1.
-    let versionChanged = false;
 
     if (data.parameters !== undefined) {
       updates.parameters = data.parameters;
@@ -910,10 +1037,6 @@ scriptRoutes.put(
       }
     }
 
-    if (versionChanged) {
-      updates.version = script.version + 1;
-    }
-
     // #5129 — resolve the acknowledgement against the content this save
     // LEAVES BEHIND, not the content that arrived. `data.content` is absent on
     // a metadata-only edit, and the stored set must then be judged against the
@@ -947,11 +1070,30 @@ scriptRoutes.put(
       Object.assign(updates, acknowledgementColumns);
     }
 
-    const [updated] = await db
-      .update(scripts)
-      .set(updates)
-      .where(eq(scripts.id, scriptId))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(scripts)
+        .set(updates)
+        .where(eq(scripts.id, scriptId))
+        .returning();
+
+      if (!row) return null;
+
+      // Cut AFTER the update so the version snapshots the after-image.
+      // cutScriptVersion owns scripts.version — `updates` must never carry it.
+      const cut = versionChanged
+        ? await cutScriptVersion(tx, {
+            scriptId,
+            provenance: {
+              origin: 'human',
+              changelog: null,
+              createdBy: auth.user.id
+            }
+          })
+        : null;
+
+      return { ...row, version: cut?.version ?? row.version };
+    });
 
     // The row was read+authorized above, but RLS (USING) or a concurrent
     // soft-delete can still leave the UPDATE matching 0 rows. Without this
@@ -1310,7 +1452,15 @@ scriptRoutes.get(
         runAs: scriptExecutions.runAs,
         targetSessionId: scriptExecutions.targetSessionId,
         scriptName: scripts.name,
-        scriptLanguage: scripts.language,
+        // Snapshot first, falling back to the joined script for rows written
+        // before the execution carried its own language (2026-10-16-100200).
+        // A proposal-backed execution has no scripts parent at all.
+        scriptLanguage: sql<string | null>`coalesce(${scriptExecutions.language}::text, ${scripts.language}::text)`,
+        sourceKind: scriptExecutions.sourceKind,
+        proposalId: scriptExecutions.proposalId,
+        reviewRiskTier: scriptExecutions.reviewRiskTier,
+        reviewSummary: scriptExecutions.reviewSummary,
+        approvalMethod: scriptExecutions.approvalMethod,
         deviceHostname: devices.hostname,
         deviceOsType: devices.osType,
         deviceOrgId: devices.orgId,

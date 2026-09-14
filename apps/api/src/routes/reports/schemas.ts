@@ -21,11 +21,17 @@ export const reportTypeSchema = z.enum([
   // P2-3 (#4190): system-managed. Created only by the AI narrative run's own
   // transaction (`persistNarrativeReport`), never by a human, and never
   // generated on demand (`StoredArtifactOnlyReportError`).
-  'ai_org_narrative'
+  'ai_org_narrative',
+  // Fleet Designer W01 (#5651): system-managed, same shape as
+  // `ai_org_narrative` — created only by `persistFleetDesignReport` inside
+  // the design run's own transaction.
+  'ai_fleet_design',
+  // Hardware Lifecycle: device replacement plan from purchase + warranty dates.
+  'hardware_lifecycle'
 ]);
 
 /** Report types a human may never create or generate on demand. */
-const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative']);
+export const INTERNAL_REPORT_TYPES = new Set(['ai_org_narrative', 'ai_fleet_design']);
 const INTERNAL_REPORT_TYPE_MESSAGE = 'internal report type';
 
 /** Applied to the CREATE and AD-HOC GENERATE schemas only — never to the read
@@ -74,6 +80,31 @@ export const securityCompliancePostureConfigFields = {
 };
 
 /**
+ * Config for the Hardware Lifecycle report. `replaceAgeYears` is the planning
+ * horizon after purchase (the warranty end wins when active coverage runs
+ * longer); the two include flags decide whether hand-entered assets and
+ * non-computer hardware appear at all.
+ */
+export const hardwareLifecycleConfigSchema = z.object({
+  sites: z.array(z.string().guid()).optional().default([]),
+  replaceAgeYears: z.number().int().min(1).max(15).optional().default(4),
+  serverReplaceAgeYears: z.number().int().min(1).max(15).optional().default(5),
+  includeManualAssets: z.boolean().optional().default(true),
+  includeOtherEquipment: z.boolean().optional().default(true),
+});
+
+/** Same keys as `hardwareLifecycleConfigSchema` without `.default()`s — see
+ *  `securityCompliancePostureConfigFields` for why the two lists are
+ *  hand-parallel and test-pinned. */
+export const hardwareLifecycleConfigFields = {
+  sites: z.array(z.string().guid()).optional(),
+  replaceAgeYears: z.number().int().min(1).max(15).optional(),
+  serverReplaceAgeYears: z.number().int().min(1).max(15).optional(),
+  includeManualAssets: z.boolean().optional(),
+  includeOtherEquipment: z.boolean().optional(),
+};
+
+/**
  * Cadence detail + delivery config persisted inside `config`. The builder
  * writes these and reportScheduleWorker reads them; they must be declared here
  * because zod strips unknown object keys — before this schema existed, creates
@@ -115,7 +146,8 @@ const reportConfigFields = {
   // is stricter than both, so persistence must never reject what the builder
   // already accepted as a chip.
   emailRecipients: z.array(z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).max(254)).max(50).optional(),
-  ...securityCompliancePostureConfigFields
+  ...securityCompliancePostureConfigFields,
+  ...hardwareLifecycleConfigFields
 };
 
 // Loose: the builder round-trips presentation metadata (builderType, dataSource,
@@ -162,7 +194,8 @@ export const generateReportSchema = z.object({
       status: z.array(z.string()).optional(),
       severity: z.array(z.string()).optional()
     }).optional(),
-    ...securityCompliancePostureConfigFields
+    ...securityCompliancePostureConfigFields,
+    ...hardwareLifecycleConfigFields
   }).optional().default({}),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv'),
   orgId: z.string().guid().optional()

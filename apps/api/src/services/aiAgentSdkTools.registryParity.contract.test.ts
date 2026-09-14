@@ -63,6 +63,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'get_hyperv_vm_details',
   'get_incident_timeline',
   'get_ip_history',
+  'get_monitor',
   'get_mssql_backup_status',
   'get_network_changes',
   'get_peripheral_activity',
@@ -75,6 +76,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'get_vault_status',
   'get_vm_restore_estimate',
   'instant_boot_vm',
+  'list_monitors',
   'list_remote_sessions',
   'manage_backup_profiles',
   'manage_browser_policy',
@@ -82,6 +84,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
   'manage_dr_plan',
   'manage_hyperv_checkpoints',
   'manage_hyperv_vm',
+  'manage_monitor_definitions',
   'manage_notification_channels',
   'manage_peripheral_policy',
   'manage_processes',
@@ -139,10 +142,7 @@ const KNOWN_MISSING_TOOL_TIERS: ReadonlySet<string> = new Set([
  * registered or the dead entry gets removed.
  */
 const KNOWN_UNREGISTERED_TOOL_TIERS: ReadonlySet<string> = new Set([
-  'get_backup_health',
-  'get_recovery_readiness',
   'propose_action_plan',
-  'run_backup_verification',
 ]);
 
 describe('aiTools registry ⊆ TOOL_TIERS — a registered tool must be reachable from chat (#3300)', () => {

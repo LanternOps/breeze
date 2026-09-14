@@ -5,6 +5,13 @@ import { revokeViewerSession } from './viewerTokenRevocation';
 import { sendCommandToAgent } from '../routes/agentWs';
 import { dispatchCommandToAgent } from './agentCommandRelay';
 import { captureException } from './sentry';
+import {
+  buildStopDesktopCommand,
+  terminalIntentSet,
+  terminalSessionReturning,
+  toTerminalSessionRow,
+  type TerminalSessionRow,
+} from './remoteDesktopTerminalIntent';
 
 // Live statuses a teardown may disconnect. Terminal rows (`disconnected`,
 // `failed`) are intentionally excluded: matching them (e.g. via
@@ -12,8 +19,17 @@ import { captureException } from './sentry';
 // overwrite their `endedAt`, corrupting session history for no benefit.
 export const ACTIVE_REMOTE_SESSION_STATUSES = ['pending', 'connecting', 'active'] as const;
 
-/** A session row a teardown has just marked `disconnected`. */
-type DisconnectedSession = { id: string; type: string; deviceId: string };
+/**
+ * A session row a teardown has just marked `disconnected`. Desktop rows must
+ * carry the terminal generation the contract wrote (SEC-038 W03) so the stop
+ * can name it; tunnel rows have no generation.
+ */
+export type DisconnectedSession = {
+  id: string;
+  type: string;
+  deviceId: string;
+  terminalGeneration?: bigint | null;
+};
 
 // Lazy import of the terminal WS module to break the import cycle
 // (terminalWs → agentWs → terminalWs already exists; routing this through a
@@ -155,11 +171,19 @@ export async function teardownDisconnectedSessions(
         // returns false there — leaving the live WebRTC stream running with the
         // session already marked disconnected. The relay reaches whichever
         // instance owns the socket, or reports `offline` honestly.
-        await dispatchCommandToAgent(agentId, {
-          id: `desk-stop-${row.id}`,
-          type: 'stop_desktop',
-          payload: { sessionId: row.id },
-        });
+        //
+        // The stop names the terminal generation (SEC-038 W03): the agent's
+        // fence tombstones against it and the API binds the stop result back
+        // to this exact decision. A row with no generation cannot be stopped
+        // through the contract, so it is a loud error, not a bare stop.
+        if (row.terminalGeneration == null) {
+          // Not a delivery failure: a contract violation in the mechanism
+          // that guarantees the stop, so it is escalated, not just logged.
+          const invariant = new Error(`session ${row.id} was marked terminal without a terminal generation`);
+          captureException(invariant);
+          throw invariant;
+        }
+        await dispatchCommandToAgent(agentId, buildStopDesktopCommand(row.id, row.terminalGeneration));
       } catch (err) {
         console.error(
           `[remoteSessionTeardown] Failed to send stop_desktop for session ${row.id}:`,
@@ -324,25 +348,22 @@ async function disconnectAndTeardown(
   scopePredicate: SQL,
   label: string
 ): Promise<number> {
-  let disconnected: DisconnectedSession[];
+  let disconnected: TerminalSessionRow[];
 
   try {
     disconnected = await runOutsideDbContext(() =>
       withSystemDbAccessContext(async () => {
-        return db
+        const rows = await db
           .update(remoteSessions)
-          .set({ status: 'disconnected', endedAt: new Date() })
+          .set(terminalIntentSet({ status: 'disconnected', endedAt: new Date() }, 'pending'))
           .where(
             and(
               scopePredicate,
               inArray(remoteSessions.status, [...ACTIVE_REMOTE_SESSION_STATUSES])
             )
           )
-          .returning({
-            id: remoteSessions.id,
-            type: remoteSessions.type,
-            deviceId: remoteSessions.deviceId,
-          });
+          .returning(terminalSessionReturning());
+        return rows.map(toTerminalSessionRow);
       })
     );
   } catch (err) {

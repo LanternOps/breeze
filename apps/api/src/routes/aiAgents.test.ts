@@ -27,6 +27,10 @@ import { buildOrgAccessClosures } from '../middleware/auth';
 // Real (unmocked): access.ts is the single source of truth for who may mutate
 // an agent row, and POST /:id/enable calls it directly.
 import { AgentAccessDeniedError } from '../services/aiAgents/access';
+// Resolves to the MOCKED class (vi.mock('../services/aiAgents/agentService')
+// below) — needed so a PATCH test can construct the exact instance
+// `updateAgentMock` rejects with.
+import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 
 const {
   selectMock,
@@ -52,6 +56,8 @@ const {
   loadPartnerBaselineKindsMock,
   loadPartnerBaselineCeilingMock,
   buildAgentToolCatalogMock,
+  listArtifactsForAuthMock,
+  toArtifactDtoMock,
 } = vi.hoisted(() => ({
   selectMock: vi.fn(),
   // Explicit generic: vitest infers a zero-arg tuple from a bare `() => true`
@@ -110,6 +116,13 @@ const {
   // service-layer dependency in this file) so these route tests exercise only
   // routing/auth/the cache header, never the real registry closure.
   buildAgentToolCatalogMock: vi.fn(),
+  // Task 10 (execution-plane W01, reconciliation R6) — GET
+  // /runs/:runId/artifacts. Both functions have their own full unit coverage
+  // in artifactService.test.ts (Task 5); mocked here (like every other
+  // service-layer dependency in this file) so these route tests exercise only
+  // routing/auth/validation/precedence, never the real DTO projection.
+  listArtifactsForAuthMock: vi.fn(),
+  toArtifactDtoMock: vi.fn(),
 }));
 
 vi.mock('../middleware/auth', async (importOriginal) => {
@@ -171,11 +184,21 @@ vi.mock('../services/aiAgents/agentService', () => ({
     }
   },
   UnsupportedAgentModeError: class UnsupportedAgentModeError extends Error {},
+  // Fleet Designer (W01) — faithful to the real class: `mapError` reads
+  // `.code` off it (see the `AgentKindConflictError` comment above for why
+  // that matters).
+  ModeNotAllowedForKindError: class ModeNotAllowedForKindError extends Error {
+    readonly code = 'mode_not_allowed_for_kind';
+    constructor(mode: string, kind: string) {
+      super(`mode ${mode} is not available for a ${kind} agent`);
+      this.name = 'ModeNotAllowedForKindError';
+    }
+  },
   ActPrerequisitesNotMetError,
   InvalidSupervisedActionKeysError,
   SupervisedKeysGrantOnlyError,
   createAgent: vi.fn(),
-  updateAgent: vi.fn(),
+  updateAgent: updateAgentMock,
   disableAgent: vi.fn(),
   listAgents: listAgentsMock,
   getAgent: getAgentMock,
@@ -215,6 +238,14 @@ vi.mock('../services/aiAgents/alertVerdicts', async (importOriginal) => {
 
 vi.mock('../services/aiTools', () => ({
   verifyDeviceAccess: verifyDeviceAccessMock,
+}));
+
+// Task 10 (execution-plane W01, reconciliation R6) — GET /runs/:runId/artifacts
+// reuses this module verbatim; own full unit coverage is artifactService.test.ts
+// (Task 5), so this file exercises only routing/auth/precedence.
+vi.mock('../services/artifacts/artifactService', () => ({
+  listArtifactsForAuth: listArtifactsForAuthMock,
+  toArtifactDto: toArtifactDtoMock,
 }));
 
 // Task 8 (#4193 A8): '../jobs/aiAgentImpactRollup' is mocked (the manual
@@ -287,7 +318,7 @@ const dbCtxMock = vi.hoisted(() => ({
 // GET / 's batched last-run probe and POST /:id/enable 's UPDATE. Kept OUT of
 // the shared `selectMock` so an enable test's UPDATE can never be satisfied by
 // a stray SELECT chain queued by another test.
-const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock } = vi.hoisted(() => ({
+const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMutationMock, updateAgentMock } = vi.hoisted(() => ({
   selectDistinctOnMock: vi.fn(),
   updateMock: vi.fn(),
   withAgentRowLockedMock: vi.fn(),
@@ -295,6 +326,10 @@ const { selectDistinctOnMock, updateMock, withAgentRowLockedMock, recordAgentMut
   // records. Its own coverage is agentService.test.ts; here it exists so
   // POST /:id/enable can be proven to record the SAME way disable does.
   recordAgentMutationMock: vi.fn(),
+  // Fleet Designer (W01): PATCH /:id's own route test needs to control what
+  // `updateAgent` throws — a bare inline `vi.fn()` in the factory below is
+  // not referenceable from a test body.
+  updateAgentMock: vi.fn(),
 }));
 vi.mock('../db', () => ({
   db: { select: selectMock, selectDistinctOn: selectDistinctOnMock, update: updateMock },
@@ -353,6 +388,7 @@ const RUN_ID = '66666666-6666-4666-8666-666666666666';
 const USER_ID = '77777777-7777-4777-8777-777777777777';
 const INTENT_ID = '88888888-8888-4888-8888-888888888888';
 const SITE_ID = '99999999-9999-4999-8999-999999999999';
+const ART_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 function agent(overrides: Record<string, unknown> = {}) {
   return {
@@ -367,7 +403,7 @@ function agent(overrides: Record<string, unknown> = {}) {
 
 const ZERO_COUNTERS = {
   alertsJudged: 0, noiseFlagged: 0, suppressionsApplied: 0, ticketsTriaged: 0, draftsSent: 0,
-  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0,
+  fixesProposed: 0, fixesExecuted: 0, fixWatchesHeld: 0, fixWatchesRecurred: 0, narrativesDelivered: 0, fleetDesignsDelivered: 0,
 };
 
 /** Task 8 (#4193 A8): a structurally-valid AiAgentImpactDto for route tests — the DTO's own field-by-field correctness is A7's unit coverage, not this file's. */
@@ -413,7 +449,7 @@ function minimalToolCatalogDto(overrides: Partial<AgentToolCatalogDto> = {}): Ag
         ],
       },
     ],
-    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [] },
+    presets: { triage: ['manage_services:restart'], patch: [], helpdesk: [], designer: [] },
     unreachableTools: [],
     ...overrides,
   };
@@ -487,6 +523,22 @@ beforeEach(() => {
 });
 
 describe('POST /ai-agents/:id/runs', () => {
+  it('refuses a designer agent outright — it has no device-bound lane (Fleet Designer W01)', async () => {
+    getAgentMock.mockResolvedValue({ ...agent(), kind: 'designer', name: 'Fleet Designer' });
+
+    const res = await trigger(buildApp());
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'kind_not_device_triggerable' });
+    // Never admitted: a designer admitted here would default to the FULL
+    // profile, where none of the read-only design machinery applies.
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+    expect(writeRouteAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ result: 'failure', action: 'ai_agent.run.manual_trigger' }),
+    );
+  });
+
   it('queues a manual run and audits the accountable human actor', async () => {
     const res = await trigger(buildApp());
 
@@ -1083,6 +1135,18 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
+    // Fleet Designer W01 (#5651), Task 9: `null` for every non-design run
+    // and for a design run that produced nothing.
+    fleetDesign: z.object({
+      reportRunId: z.string().nullable(),
+      reportId: z.string().nullable(),
+      downloadPath: z.string().nullable(),
+      generatedAt: z.string().nullable(),
+      functionCount: z.number(),
+      watchCount: z.number(),
+      ruleCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1488,6 +1552,108 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrative).toBeNull();
     expect(parsed.data.reportRunId).toBeNull();
+  });
+
+  /**
+   * Fleet Designer W01 (#5651), Task 9 — the design artifact read. Direct
+   * sibling of the narrative artifact test above: same org-pinned join
+   * shape, different projection (`fleetDesignArtifactProjection`), and
+   * gated on `run.profile === 'design'` rather than firing for every run
+   * that merely links a `report_runs` row (a design run's linked artifact
+   * carries `summary.fleetDesign`, not `summary.narrative`).
+   */
+  it('reads the linked fleet design artifact through an org-pinned join and projects downloadPath', async () => {
+    const DESIGN_SCHEDULE_ID = '88888888-8888-4888-8888-888888888888';
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let artifactWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'design',
+        scheduleId: DESIGN_SCHEDULE_ID,
+        triggerRef: { scheduleId: DESIGN_SCHEDULE_ID, occurrenceKey: '2026-09-12T07:00:00Z', kind: 'design' },
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          fleetDesign: {
+            schemaVersion: 1,
+            generatedAt: '2026-09-12T07:00:00.000Z',
+            markdown: '# Fleet Design',
+            thresholds: { confidence: 0.6, precursors: {} },
+            sections: {
+              found: { summary: [], findings: [] },
+              functions: [{ functionKey: 'file_server', deviceIds: ['dev-1'], confidence: 0.9, evidence: [] }],
+              monitoring: [],
+              retired: [],
+              automation: [],
+              legacy: [],
+              baseline: { notes: [], numbers: { alertsPer100EndpointsPerMonth: null, ticketsPerMonth: null, precursors: [] } },
+              unsure: { lowConfidenceFunctions: [], unreachableDevices: [], needsHuman: [], roleCorrections: [] },
+            },
+          },
+          fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      // The existing (narrative) artifact query still fires unconditionally
+      // on `reportRunId` alone (see the sibling "skips" test below) — it
+      // finds nothing for a design run's projection.
+      .mockReturnValueOnce(selectChain([]))
+      .mockReturnValueOnce(selectChain(
+        [{
+          reportRunId: REPORT_RUN_ID,
+          reportId: REPORT_ID,
+          generatedAt: '2026-09-12T07:00:00.000Z',
+          evidenceTruncated: false,
+        }],
+        (predicate) => { artifactWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Three selects: the run row, the (empty) narrative-projection query and
+    // the fleet design artifact. No session, no intent ids and no sweep
+    // findings, so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    const params = sqlParams(artifactWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(REPORT_RUN_ID);
+
+    expect(parsed.data.reportRunId).toBe(REPORT_RUN_ID);
+    expect(parsed.data.fleetDesign).toMatchObject({
+      reportRunId: REPORT_RUN_ID,
+      reportId: REPORT_ID,
+      downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      functionCount: 1,
+      evidenceTruncated: false,
+    });
+  });
+
+  it('skips the fleet design artifact read for a non-design run, even with a reportRunId set', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+        },
+      })]))
+      // The existing (narrative) artifact query still fires — reportRunId
+      // alone gates it — but it finds nothing for this row's projection.
+      .mockReturnValueOnce(selectChain([]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.fleetDesign).toBeNull();
   });
 
   it('resolves a finding\'s hostname from its proposal device when the finding omitted deviceId', async () => {
@@ -3526,6 +3692,31 @@ describe('GET /ai-agents — hasPartnerBaseline (#4170)', () => {
   });
 });
 
+// Fleet Designer (W01) — `kind` cannot be patched, so `updateAgent`
+// (agentService.ts) is the only place that can catch a mode not allowed for
+// the row's EXISTING kind; this route test proves the service's rejection
+// reaches the client as a 400 with the stable `mode_not_allowed_for_kind`
+// code, distinct from the 422 `UnsupportedAgentModeError` case.
+describe('PATCH /ai-agents/:id — mode vs kind (Fleet Designer W01)', () => {
+  function patchAgent(app: Hono, body: unknown, id = AGENT_ID) {
+    return app.request(`/ai-agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s mode_not_allowed_for_kind when the service rejects a shadow mode for a designer agent', async () => {
+    updateAgentMock.mockRejectedValueOnce(new ModeNotAllowedForKindError('shadow', 'designer'));
+
+    const res = await patchAgent(buildApp(), { mode: 'shadow' });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({ error: 'mode_not_allowed_for_kind' });
+  });
+});
+
 describe('POST /ai-agents/:id/enable', () => {
   const ENABLE = `/ai-agents/${AGENT_ID}/enable`;
 
@@ -3802,6 +3993,28 @@ function previewRequest(app: Hono, body: Record<string, unknown>) {
   });
 }
 
+// Fleet Designer (W01) — `createAiAgentSchema`'s `superRefine` runs
+// `assertModeAllowedForKind` (packages/shared/validators/aiAgents.ts) BEFORE
+// the route handler ever sees the body, so this is a pure zValidator 400 —
+// `createAgent` is never called.
+describe('POST /ai-agents (create)', () => {
+  function createAgentRequest(app: Hono, body: Record<string, unknown>) {
+    return app.request('/ai-agents', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('400s a designer agent created with mode shadow (mode not allowed for kind)', async () => {
+    const res = await createAgentRequest(buildApp(), { kind: 'designer', mode: 'shadow', name: 'Fleet Designer' });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { details: { fieldErrors: Record<string, string[]> } };
+    expect(body.details.fieldErrors.mode?.[0]).toMatch(/not available for a designer agent/);
+  });
+});
+
 describe('POST /ai-agents/preview', () => {
   it('evaluates a draft policy against the mocked catalog', async () => {
     loadPartnerBaselineCeilingMock.mockResolvedValueOnce(null);
@@ -3957,5 +4170,102 @@ describe('mapError — org-row supervised keys are grant-only (spec §4.4, #5049
       }),
       422,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 10 (execution-plane W01, spec §5.2/§8, reconciliation R6): the per-run
+// artifact list is registered INSIDE aiAgentsRoutes, immediately above
+// GET /runs/:runId, rather than as a second router mounted at the same
+// '/ai/agents' prefix in index.ts — see aiArtifacts.ts's header comment and
+// the plan's R6 note for why (the #4189 shape: precedence hidden in mount
+// order rather than local to the file that owns both paths).
+// ---------------------------------------------------------------------------
+
+function artifactDto(overrides: Record<string, unknown> = {}) {
+  return {
+    id: ART_ID,
+    runId: RUN_ID,
+    sessionId: null,
+    kind: 'input_capture',
+    name: 'search_logs.json',
+    contentType: 'application/json',
+    bytes: 7,
+    sha256: 'a'.repeat(64),
+    headPreview: '{"a":1}',
+    tailPreview: '{"a":1}',
+    sourceDeviceId: null,
+    createdByTool: 'search_logs',
+    expiresAt: '2026-11-15T00:00:00.000Z',
+    createdAt: '2026-10-16T00:00:00.000Z',
+    downloadPath: `/api/v1/ai/artifacts/${ART_ID}`,
+    ...overrides,
+  };
+}
+
+describe('GET /ai-agents/runs/:runId/artifacts (execution-plane W01, reconciliation R6)', () => {
+  it('returns DTOs with no blobKey and a download path each', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([{ id: ART_ID }]);
+    toArtifactDtoMock.mockReturnValue(artifactDto());
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toHaveLength(1);
+    expect(Object.keys(body.data[0]!)).not.toContain('blobKey');
+    expect(body.data[0]!.downloadPath).toBe(`/api/v1/ai/artifacts/${ART_ID}`);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledWith(RUN_ID, expect.anything());
+  });
+
+  it("returns an empty list — not a 404 — for a run with no artifacts or another org's run", async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: [] });
+  });
+
+  it('400s a non-uuid runId without querying', async () => {
+    const res = await buildApp().request('/ai-agents/runs/not-a-uuid/artifacts');
+    expect(res.status).toBe(400);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  it('is gated on ai_agents:read', async () => {
+    hasPermMock.mockReturnValue(false);
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(res.status).toBe(403);
+    expect(listArtifactsForAuthMock).not.toHaveBeenCalled();
+  });
+
+  // THE PRECEDENCE ASSERTION. Both paths live in one router, so registration
+  // order inside this file is the only thing that separates them — and that
+  // order is what #4189 got wrong when a sibling path was owned by a
+  // different app.
+  //
+  // Deviation from the plan's draft (genuine bug, fixed minimally, property
+  // kept): the plan's version asserted the run-DETAIL body lacks a `data`
+  // key. It doesn't — `GET /runs/:runId` also wraps its payload as
+  // `{ data: <trace> }` (aiAgents.ts, the `buildRunTrace` return). The
+  // discriminating property is the SHAPE of `data` (array of artifact DTOs
+  // vs. a single run-trace object with no `downloadPath`), not the mere
+  // presence of the envelope key — so that is what this asserts instead.
+  it('routes /runs/<uuid>/artifacts to the LIST and /runs/<uuid> to the run DETAIL', async () => {
+    listArtifactsForAuthMock.mockResolvedValue([]);
+    const app = buildApp();
+
+    const list = await app.request(`/ai-agents/runs/${RUN_ID}/artifacts`);
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as { data: unknown };
+    expect(Array.isArray(listBody.data)).toBe(true);
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);
+
+    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    const detail = await app.request(`/ai-agents/runs/${RUN_ID}`);
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as { data: Record<string, unknown> };
+    expect(Array.isArray(detailBody.data)).toBe(false);
+    expect(detailBody.data).not.toHaveProperty('downloadPath');
+    expect(listArtifactsForAuthMock).toHaveBeenCalledTimes(1);   // detail did not hit the list
   });
 });

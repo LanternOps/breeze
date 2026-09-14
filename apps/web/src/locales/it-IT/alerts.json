@@ -618,6 +618,7 @@
     "tabs": {
       "alerts": "Avvisi",
       "correlations": "Correlazioni",
+      "monitors": "Monitor",
       "rules": "Regole",
       "channels": "Canali"
     }

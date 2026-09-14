@@ -14,6 +14,9 @@ export const LLM_EGRESS_SURFACES = [
   'one_shot_catalog_enrichment',
   'one_shot_probe',
   'workspace_enrichment',
+  // W02 (#5612): the script-proposal reviewer's structured-verdict call.
+  // CHECK re-issued in 2026-10-16-120000-llm-egress-events-script-review-surface.sql.
+  'script_review_verdict',
 ] as const;
 
 export type LlmEgressSurface = (typeof LLM_EGRESS_SURFACES)[number];

@@ -26,6 +26,9 @@
     "alertsChannels": "Bildirim Kanalları",
     "alertsCorrelations": "Uyarı Korelasyonları",
     "alertsDetail": "Uyarı Ayrıntıları",
+    "alertsMonitors": "Uyarılar – Monitörler",
+    "alertsMonitorDetail": "Uyarılar – Monitör",
+    "alertsRules": "Uyarılar – Eski kurallar",
     "alerts": "Uyarılar",
     "analytics": "Analitik",
     "approvals": "Onaylar",
@@ -36,9 +39,9 @@
     "authConnectSso": "Girişinizi bağlayın",
     "authMfaSetup": "MFA'yı Ayarla",
     "authVerifyEmail": "E-postayı Doğrula",
-    "automationsDetail": "Otomasyonu Düzenle",
-    "automations": "Otomasyonlar",
-    "automationsNew": "Yeni Otomasyon",
+    "jobsDetail": "İşi Düzenle",
+    "jobs": "İşler",
+    "jobsNew": "Yeni İş",
     "backup": "Yedekleme",
     "billingInvoices": "Faturalar",
     "billingInvoicesDetail": "Fatura",
@@ -56,7 +59,7 @@
     "devicesCompare": "Cihaz Karşılaştırması",
     "devicesGroups": "Cihaz Grupları",
     "devicesDetail": "Cihaz Ayrıntıları",
-    "devices": "Cihazlar",
+    "devices": "Cihazlar ve Varlıklar",
     "devicesNetworkDetail": "Ağ Cihazı Ayrıntıları",
     "devicesPosture": "Filo Duruşu",
     "discovery": "Ağ Keşfi",
@@ -76,6 +79,7 @@
     "monitoring": "İzleme",
     "oauthConsent": "Erişimi yetkilendir",
     "onedrive": "OneDrive",
+    "organizations": "Organizasyonlar",
     "organizationsDetail": "Organizasyon",
     "pam": "Ayrıcalıklı Erişim",
     "partner": "Ortak Portalı",
@@ -123,6 +127,7 @@
     "settingsAccessReviews": "Erişim İncelemeleri",
     "settingsAiAgents": "Yapay Zeka Aracıları",
     "settingsAiUsage": "Yapay Zeka Kullanımı ve Bütçe",
+    "settingsAiScriptAuthoring": "Betik yazımı",
     "settingsAlertTemplatesDetail": "Uyarı Şablonu",
     "settingsAlertTemplates": "Uyarı Şablonları",
     "settingsApiKeys": "API Anahtarları",
@@ -155,7 +160,8 @@
     "ticketsNew": "Bilet Oluştur",
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
-    "workspace": "Yapay Zeka Asistanı"
+    "workspace": "Yapay Zeka Asistanı",
+    "aiAgentsFleetDesign": "Filo Tasarımı"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -214,6 +220,10 @@
       "sites": {
         "title": "Siteler",
         "description": "Konumları, saat dilimlerini ve siteye özel ayarları yapılandırın."
+      },
+      "deliverableTemplates": {
+        "title": "Teslimat şablonları",
+        "description": "Bir hizmet katmanını bir kez tanımlayın ve teslimatlarını istediğiniz müşteriye uygulayın."
       }
     }
   },

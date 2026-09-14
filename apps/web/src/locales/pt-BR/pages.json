@@ -26,6 +26,9 @@
     "alertsChannels": "Canais de notificação",
     "alertsCorrelations": "Correlações de alertas",
     "alertsDetail": "Detalhes do alerta",
+    "alertsMonitors": "Alertas – Monitores",
+    "alertsMonitorDetail": "Alertas – Monitor",
+    "alertsRules": "Alertas – Regras legadas",
     "alerts": "Alertas",
     "analytics": "Análises",
     "approvals": "Aprovações",
@@ -36,9 +39,9 @@
     "authConnectSso": "Conectar seu acesso",
     "authMfaSetup": "Configurar MFA",
     "authVerifyEmail": "Verificar e-mail",
-    "automationsDetail": "Editar automação",
-    "automations": "Automações",
-    "automationsNew": "Nova automação",
+    "jobsDetail": "Editar job",
+    "jobs": "Jobs",
+    "jobsNew": "Novo job",
     "backup": "Backup",
     "billingInvoices": "Faturas",
     "billingInvoicesDetail": "Fatura",
@@ -56,7 +59,7 @@
     "devicesCompare": "Comparação de dispositivos",
     "devicesGroups": "Grupos de dispositivos",
     "devicesDetail": "Detalhes do dispositivo",
-    "devices": "Dispositivos",
+    "devices": "Dispositivos e ativos",
     "devicesNetworkDetail": "Detalhes do dispositivo de rede",
     "devicesPosture": "Postura da frota",
     "discovery": "Descoberta de rede",
@@ -76,6 +79,7 @@
     "monitoring": "Monitoramento",
     "oauthConsent": "Autorizar acesso",
     "onedrive": "OneDrive",
+    "organizations": "Organizações",
     "organizationsDetail": "Organização",
     "pam": "Acesso privilegiado",
     "partner": "Portal do parceiro",
@@ -123,6 +127,7 @@
     "settingsAccessReviews": "Revisões de acesso",
     "settingsAiAgents": "Agentes de IA",
     "settingsAiUsage": "Uso e orçamento de IA",
+    "settingsAiScriptAuthoring": "Criação de scripts",
     "settingsAlertTemplatesDetail": "Modelo de alerta",
     "settingsAlertTemplates": "Modelos de alerta",
     "settingsApiKeys": "Chaves de API",
@@ -155,7 +160,8 @@
     "ticketsNew": "Criar chamado",
     "timesheet": "Folha de horas",
     "vulnerabilities": "Vulnerabilidades",
-    "workspace": "Assistente de IA"
+    "workspace": "Assistente de IA",
+    "aiAgentsFleetDesign": "Design de frota"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",
@@ -214,6 +220,10 @@
       "sites": {
         "title": "Sites",
         "description": "Configure locais, fusos horários e configurações específicas de cada site."
+      },
+      "deliverableTemplates": {
+        "title": "Modelos de entregáveis",
+        "description": "Defina um nível de serviço uma vez e aplique seus entregáveis a qualquer cliente."
       }
     }
   },

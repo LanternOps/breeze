@@ -89,7 +89,7 @@ describe('reconcileCustomerGraphRead', () => {
   it('returns verified-but-degraded proof with no partial set or grant timestamp when reconciliation is unavailable', () => {
     expect(reconcile(null)).toEqual({
       ...PROOF,
-      manifestVersion: 2,
+      manifestVersion: 3,
       verifiedAt: VERIFIED_AT.toISOString(),
       outcome: 'grant_reconciliation_unavailable',
       grantReconciliation: 'unavailable',

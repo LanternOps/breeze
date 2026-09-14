@@ -17,12 +17,26 @@ Agents are off by default and must be enabled by your operator before they appea
 
 Manage agents under **Settings → AI Agents**.
 
-An agent has a **kind**: `triage`, `patch`, or `helpdesk`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets.
+An agent has a **kind**: `triage`, `patch`, `helpdesk`, or (from v0.113.0) `designer`. The kind decides what the agent is for and what triggers it. Triage agents accept alerts and opted-in anomaly incidents. Helpdesk agents accept newly created tickets. A [Fleet designer](#fleet-designer) reads the fleet and writes a monitoring design for you to approve.
 
 Each agent carries its own limits — devices per run, concurrent runs, runs per hour, turns per run, spend per run and per day, wall-clock time, and a ceiling on the percentage of your fleet it may touch in a day. These are enforced per run, not advisory.
 
 <Aside>
   An organization can have one live agent of each kind. If you need to change an agent's configuration, edit it — you cannot create a second agent of the same kind alongside it.
+</Aside>
+
+## Fleet designer
+
+A **Fleet designer** agent (kind `designer`, v0.113.0+) reads the whole fleet and writes a justified monitoring design for a technician to approve — nothing more. It reaches every read-only tool plus one report tool, has no mutating capabilities to choose, and cannot run in shadow mode because there is nothing to shadow. For a designer, **Act** simply means "run and write reports".
+
+It runs when you start a Fleet Design for an organization, or on a schedule that targets a Fleet designer agent and fires at most once a month. Its evidence bundle is pinned to the organization and covers devices, software, network, posture, health, automation and the shape of the event log.
+
+Each run produces a **Fleet Design** report — the recommended device functions, monitoring watches and alert rules, with the reasoning behind them. Open the run to see the Fleet Design card (counts of functions, watches and alert rules) with **Open report** and **Download PDF**; the same report appears under Reports as the organization's single, system-managed **Fleet Design** definition. If the evidence had to be cut short, the card says so: *"The evidence was cut short — this design did not see the whole fleet."*
+
+The designer also assesses a **function** for each device — domain controller, file server, kiosk, finance workstation and so on — shown next to the billable Device Role on the device's Info tab; see [Device function](/features/devices/#device-function). A function set by hand is never overwritten by the designer.
+
+<Aside>
+  Like every other kind, a Fleet designer produces nothing until an administrator creates one for the organization, and in this release nothing in a design is applied to the fleet automatically — the report is for a technician to act on.
 </Aside>
 
 ## Runs
@@ -65,6 +79,8 @@ Act mode is bounded by more than the operation list:
 - **A per-run action cap.** A run stops taking unattended actions once it hits its configured limit, in addition to the run-level limits (concurrency, spend, wall-clock time) every agent already has.
 - **An organization-wide exposure ledger.** Every unattended action Act mode takes is recorded against the organization it ran in, alongside the equivalent record for the separate, not-yet-generally-available policy-decide capability. This ledger is the foundation for a shared, org-wide cap on unattended activity across all of an organization's agents.
 - **Verification, not certainty.** Act mode checks the result of what it did (a service is running again, disk usage improved) and reports if that check fails — but it does not roll anything back. If verification fails, a person resolves it, the same as they would resolve any other failed run.
+
+An agent in Act mode can also author a new script when nothing in your library fits, following the same independent review and approval flow as the chat assistant — or, if your partner and organization have both opted in, the [unattended lane](/features/ai-script-authoring/#the-unattended-lane) for narrow, low-risk cases. An agent never edits or approves its own proposal.
 
 ### Turning Act mode on
 

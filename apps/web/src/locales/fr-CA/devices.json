@@ -278,7 +278,8 @@
     "loadMore": "Chargez plus",
     "couldnTLoadMore": "Je ne pouvais pas charger plus.",
     "viewAllActivity2": "Voir toute l’activité",
-    "text": "→"
+    "text": "→",
+    "viewProposal": "Voir la proposition"
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossible de récupérer l’historique des alertes",
@@ -930,6 +931,23 @@
     "role": "Rôle",
     "changeRole": "Changement de rôle",
     "source": "Source",
+    "function": "Fonction",
+    "changeFunction": "Changement de fonction",
+    "functionNone": "Non évaluée",
+    "functionSource": {
+      "ai": "IA",
+      "manual": "Manuel"
+    },
+    "functionConfidence": "{{pct}} % confiance",
+    "functionEvidence": "Pourquoi le concepteur pense cela",
+    "functionEvidenceUnavailable": "Impossible de charger les détails de l’évaluation.",
+    "functionCustom": "Personnalisé…",
+    "functionCustomSlug": "clé personnalisée (a-z, 0-9, -)",
+    "functionCustomLabel": "Libellé",
+    "functionClear": "Effacer",
+    "functionSaved": "Fonction de l’appareil enregistrée",
+    "functionCleared": "Fonction de l’appareil effacée",
+    "functionSaveFailed": "Impossible d’enregistrer la fonction de l’appareil",
     "operatingSystem": "Système d’exploitation",
     "osType": "Type de système d’exploitation",
     "osVersion": "Version du système d’exploitation",
@@ -1676,7 +1694,10 @@
     "saveChanges": "Enregistrer les modifications",
     "site": "Site",
     "tags": "Étiquettes",
-    "title": "Paramètres de l’appareil"
+    "title": "Paramètres de l’appareil",
+    "purchaseDate": "Date d’achat",
+    "purchaseDateHelp": "Utilisée par le rapport de cycle de vie du matériel pour planifier le remplacement.",
+    "purchaseDateVendorHint": "Issue de la date d’expédition du fabricant. Saisissez une date pour la remplacer."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -1876,7 +1897,7 @@
     "refresh": "Actualiser",
     "selectedOrganization": "L’organisation sélectionnée",
     "subtitle": "Gérez et surveillez votre flotte.",
-    "title": "Dispositifs",
+    "title": "Dispositifs et actifs",
     "toasts": {
       "actionFailed": "{{action}} a échoué sur {{hostname}}",
       "advancedFilterFailed": "Échec du chargement du filtre avancé — aucun appareil affiché. Modifiez ou effacez le filtre pour réessayer.",
@@ -2769,7 +2790,8 @@
       "assignedContactPlaceholder": "Rechercher des contacts…",
       "tags": "Étiquettes",
       "tagsPlaceholder": "Séparées par des virgules",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Date d’achat"
     }
   },
   "addNetworkAssetModal": {

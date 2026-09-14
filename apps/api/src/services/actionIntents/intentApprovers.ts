@@ -53,15 +53,32 @@ import {
   getUserPermissions,
   hasPermission,
 } from '../permissions';
-import { resolveUsersWithPermissionForOrg } from '../usersWithPermission';
+import { resolveUsersWithPermissionForOrg, type PermissionPair } from '../usersWithPermission';
 
 /**
  * Resolve the distinct user ids eligible to decide an action intent for
  * `orgId`. Empty array when none qualify. Pure-read; opens its own system DB
  * context, so it may be called from any ambient context (or none).
  */
-export async function resolveIntentApprovers(orgId: string): Promise<string[]> {
-  return resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
+export async function resolveIntentApprovers(
+  orgId: string,
+  opts?: {
+    /**
+     * W03 (#5612, spec §4.5): when the intent carries a script proposal with
+     * STRICT hits, only an approver who ALSO holds `scripts:write` can complete
+     * the acknowledgement ceremony — everyone else gets a 422 from the decide
+     * core. Fan out to the intersection so the queue does not fill with rows
+     * nobody can action. Returning an EMPTY list is correct here:
+     * createActionIntent already fails with no_eligible_approvers, which is a
+     * truthful refusal, not a reason to widen.
+     */
+    alsoRequire?: PermissionPair;
+  },
+): Promise<string[]> {
+  const deciders = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
+  if (!opts?.alsoRequire || deciders.length === 0) return deciders;
+  const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));
+  return deciders.filter((userId) => also.has(userId));
 }
 
 // ============================================================

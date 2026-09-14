@@ -83,8 +83,16 @@ func TestRebuildCommand_DryRunWritesResultJSON(t *testing.T) {
 func TestRebuildCommand_RequiresFlags(t *testing.T) {
 	cmd := newRebuildCommand()
 	cmd.SetArgs([]string{})
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected an error for missing required flags")
+	}
+	// SilenceUsage must keep the failure readable on recovery media: a full
+	// cobra flag/usage dump after the real error buries it.
+	if strings.Contains(out.String(), "Usage:") {
+		t.Fatalf("expected no usage dump on failure (SilenceUsage), got:\n%s", out.String())
 	}
 }
 

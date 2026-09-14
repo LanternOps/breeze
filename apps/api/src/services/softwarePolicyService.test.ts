@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
   compareSoftwareVersions,
   evaluateSoftwareInventory,
   matchesSoftwareRule,
@@ -178,5 +179,125 @@ describe('compareSoftwareVersions edge cases', () => {
 
   it('handles empty string inputs', () => {
     expect(compareSoftwareVersions('', '')).toBe(0);
+  });
+});
+
+/**
+ * #5505 D6 — `software_policy_audit.action` is a bare varchar(50) with no enum
+ * and no pre-existing const set (softwarePolicies.ts:142), so this object IS
+ * the registry. An audit reader must never have to infer the verb, so install
+ * events never reuse an uninstall action value.
+ */
+describe('SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS', () => {
+  // Every action string already written to software_policy_audit.action,
+  // enumerated from the emitters as of #5506. The point is collision, not
+  // completeness: a new install action must not be any of these.
+  const EXISTING_ACTIONS = [
+    'policy_created',
+    'policy_updated',
+    'policy_deleted',
+    'compliance_check_requested',
+    'compliance_check_failed',
+    'violation_detected',
+    'remediation_requested',
+    'remediation_scheduled',
+    'remediation_denied',
+    'remediation_deferred',
+    'remediation_skipped_unarmed',
+    'remediation_manual_override',
+    'remediation_command_failed',
+    'software_uninstalled',
+    'inventory_approve',
+    'inventory_deny',
+    'inventory_clear',
+  ];
+
+  it('exposes exactly the four install actions the contract names', () => {
+    expect(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS).toEqual({
+      queued: 'install_queued',
+      succeeded: 'install_succeeded',
+      failed: 'install_failed',
+      gaveUp: 'install_gave_up',
+    });
+  });
+
+  it('never collides with an existing uninstall or lifecycle action', () => {
+    for (const action of Object.values(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)) {
+      expect(EXISTING_ACTIONS).not.toContain(action);
+    }
+  });
+
+  it('every value is install-prefixed and fits software_policy_audit.action varchar(50)', () => {
+    for (const action of Object.values(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS)) {
+      expect(action.startsWith('install_')).toBe(true);
+      expect(action.length).toBeLessThanOrEqual(50);
+    }
+  });
+});
+
+/**
+ * #5505 D9 — a `missing` violation is the ONLY place the install path can
+ * learn WHAT to install. Before this wave the emission dropped the rule's
+ * `catalogId`, and re-matching a violation to its rule by name is not an
+ * option: rule names are not unique within a policy and nothing enforces that
+ * they are.
+ */
+describe('missing violations carry the rule catalogId', () => {
+  const CATALOG_ID = '99999999-9999-4999-8999-999999999999';
+
+  it('emits catalogId and reason from the unmatched rule', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: '7-Zip', minVersion: '23.0', catalogId: CATALOG_ID, reason: 'Standard archive tool' }],
+      allowUnknown: true,
+    });
+
+    const violations = evaluateSoftwareInventory('allowlist', rules, []);
+    const missing = violations.find((v) => v.type === 'missing');
+
+    expect(missing).toBeDefined();
+    expect(missing?.rule).toEqual({
+      name: '7-Zip',
+      minVersion: '23.0',
+      maxVersion: undefined,
+      catalogId: CATALOG_ID,
+      reason: 'Standard archive tool',
+    });
+  });
+
+  it('leaves catalogId undefined for a rule that has none — never fabricates one', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: 'Firefox' }],
+      allowUnknown: true,
+    });
+
+    const missing = evaluateSoftwareInventory('allowlist', rules, []).find((v) => v.type === 'missing');
+    expect(missing?.rule?.name).toBe('Firefox');
+    expect(missing?.rule?.catalogId).toBeUndefined();
+  });
+
+  /**
+   * Contract D9 asks whether the new field changes violation matching.
+   * `violationFingerprint` keys a `missing` violation on
+   * `type:rule:name:minVersion:maxVersion` only (softwarePolicyService.ts:107-110),
+   * so it must NOT. Pinned here so W02 can rely on it: a previously-stored
+   * violation with no catalogId still stabilises the new one's detectedAt.
+   */
+  it('does not disturb detectedAt stabilisation against previously-stored violations', () => {
+    const rules = normalizeSoftwarePolicyRules({
+      software: [{ name: '7-Zip', catalogId: CATALOG_ID }],
+      allowUnknown: true,
+    });
+    const next = evaluateSoftwareInventory('allowlist', rules, []);
+
+    const previous = [{
+      type: 'missing',
+      rule: { name: '7-Zip' }, // stored before D9 shipped — no catalogId
+      severity: 'high',
+      detectedAt: '2026-01-01T00:00:00.000Z',
+    }];
+
+    const stabilised = withStableViolationTimestamps(next, previous);
+    expect(stabilised[0]?.detectedAt).toBe('2026-01-01T00:00:00.000Z');
+    expect(stabilised[0]?.rule?.catalogId).toBe(CATALOG_ID);
   });
 });
