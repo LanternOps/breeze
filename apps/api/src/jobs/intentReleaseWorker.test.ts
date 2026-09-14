@@ -60,7 +60,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
       selectActionIntentsNextError: null as Error | null,
     },
     intentServiceMock: { transitionIntent: vi.fn() },
-    actorContextMock: { buildAuthContextForIntent: vi.fn() },
+    actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
     aiGuardrailsMock: { checkToolPermission: vi.fn() },
@@ -340,6 +340,7 @@ vi.mock('../services/actionIntents/policyDecide', () => {
 });
 vi.mock('../services/actionIntents/actorContext', () => ({
   buildAuthContextForIntent: actorContextMock.buildAuthContextForIntent,
+  buildApproverAuthContextForIntent: actorContextMock.buildApproverAuthContextForIntent,
 }));
 vi.mock('../services/actionIntents/effectDigest', () => ({
   computeEffectDigestForRelease: effectDigestMock.computeEffectDigestForRelease,
@@ -1807,6 +1808,178 @@ describe('releaseApprovedIntent', () => {
       );
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #4177 (W04): a released `manage_tickets:log_time_entry` proposal is OWNED
+  // by the approving technician. `time_entries.user_id` is a users FK NOT
+  // NULL; an agent-originated intent's rebuilt auth carries
+  // `auth.user.id = aiAgents.id` — attribution only — so releasing under it
+  // is a guaranteed 23503 at approval time. The worker swaps in the approver's
+  // own AuthContext (decided_by_user_id) and names them in the context bag.
+  // -------------------------------------------------------------------------
+  describe('user-owned release actions (#4177, W04)', () => {
+    const TICKET_ID = '11111111-1111-4111-8111-111111111111';
+    const APPROVER_ID = 'approver-7';
+    const agentAuth = {
+      principal: { kind: 'ai_agent' as const, agentId: 'agent-1', runId: 'run-1' },
+      user: { id: 'agent-1', email: 'agent+agent-1@breeze.internal', name: 'Helpdesk agent', isPlatformAdmin: false },
+      token: null,
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+    const approverAuth = {
+      principal: { kind: 'user_session' as const },
+      user: { id: APPROVER_ID, email: 'tech@example.com', name: 'Tess Tech', isPlatformAdmin: false },
+      token: {},
+      partnerId: 'partner-1',
+      orgId: 'org-1',
+      scope: 'organization' as const,
+      accessibleOrgIds: ['org-1'],
+      orgCondition: () => undefined,
+      canAccessOrg: () => true,
+    };
+    const args = {
+      action: 'log_time_entry', ticketId: TICKET_ID,
+      startedAt: '2026-06-11T09:00:00.000Z', endedAt: '2026-06-11T09:15:00.000Z',
+      durationMinutes: 15, isBillable: false, description: 'AI-assisted reply sent',
+    };
+
+    function timeEntryIntent(overrides: Partial<ActionIntent> = {}): ActionIntent {
+      return baseIntent({
+        actionName: 'manage_tickets',
+        arguments: args,
+        argumentDigest: computeArgumentDigest(canonicalizeArguments(args)),
+        riskTier: 2,
+        approvalScope: 'supervised',
+        requestedByUserId: null,
+        requestingAgentRunId: 'run-1',
+        originPrincipalKind: 'ai_agent',
+        originPrincipalId: 'agent-1',
+        decidedByUserId: APPROVER_ID,
+        ...overrides,
+      } as Partial<ActionIntent>);
+    }
+
+    function primeAgentRelease(intent: ActionIntent) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      aiToolsMock.getToolTier.mockReturnValue(1);
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+      actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(agentAuth);
+      tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      killStateMock.readAiKillState.mockReset();
+      killStateMock.readAiKillState.mockResolvedValue({ killed: false, epoch: 0 });
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    it('releases a log_time_entry intent as the approving technician, never the agent', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce(null);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ timeEntry: { id: 'te-1' } }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(actorContextMock.buildApproverAuthContextForIntent).toHaveBeenCalledWith(
+        expect.objectContaining({ id: intent.id }), APPROVER_ID,
+      );
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        'manage_tickets',
+        expect.objectContaining({ action: 'log_time_entry', ticketId: TICKET_ID }),
+        approverAuth,
+        {
+          context: {
+            actionIntentId: intent.id,
+            releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia },
+            approverRelease: { approverUserId: APPROVER_ID },
+          },
+        },
+      );
+      // The DB context the tool ran under is the approver's, not the agent's.
+      expect(authMock.dbAccessContextFromAuth).toHaveBeenCalledWith(approverAuth);
+      expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_tickets', args, approverAuth);
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'completed', expect.anything(),
+      );
+    });
+
+    it('refuses to release a log_time_entry intent with no decided_by_user_id (fails closed, never executes)', async () => {
+      const intent = timeEntryIntent({ decidedByUserId: null });
+      primeAgentRelease(intent);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed',
+        expect.objectContaining({ errorCode: 'approver_required' }),
+      );
+      expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          result: 'failure',
+          details: expect.objectContaining({ errorCode: 'approver_required', reason: expect.stringContaining('decided_by_user_id') }),
+        }),
+      );
+    });
+
+    it('fails closed with actor_invalid when the approver can no longer stand behind the release', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(null);
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'actor_invalid' }),
+      );
+    });
+
+    it('fails closed with rbac_denied when the approver lacks the tool\'s own permission', async () => {
+      const intent = timeEntryIntent();
+      primeAgentRelease(intent);
+      actorContextMock.buildApproverAuthContextForIntent.mockResolvedValueOnce(approverAuth);
+      aiGuardrailsMock.checkToolPermission.mockResolvedValueOnce('Missing permission: time_entries:write');
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiGuardrailsMock.checkToolPermission).toHaveBeenCalledWith('manage_tickets', args, approverAuth);
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id, 'executing', 'failed', expect.objectContaining({ errorCode: 'rbac_denied' }),
+      );
+    });
+
+    it('leaves every other agent action on the rebuilt agent auth (no approver swap)', async () => {
+      const otherArgs = { action: 'comment', ticketId: TICKET_ID, content: 'hi' };
+      const intent = timeEntryIntent({ arguments: otherArgs, argumentDigest: computeArgumentDigest(canonicalizeArguments(otherArgs)) });
+      primeAgentRelease(intent);
+      aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(actorContextMock.buildApproverAuthContextForIntent).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).toHaveBeenCalledWith(
+        'manage_tickets', expect.anything(), agentAuth,
+        { context: { actionIntentId: intent.id, releaseDecision: { approvalScope: 'supervised', decidedVia: intent.decidedVia } } },
       );
     });
   });

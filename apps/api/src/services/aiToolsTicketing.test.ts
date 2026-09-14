@@ -530,7 +530,9 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
         isBillable: true,
         hourlyRate: 125
       }),
-      expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' })
+      expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' }),
+      // #4177: a human's own tool call keeps the column default provenance.
+      { source: 'manual' }
     );
     expect(JSON.parse(out)).toMatchObject({
       timeEntry: { id: 'te-1' },

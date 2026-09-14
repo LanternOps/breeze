@@ -169,6 +169,7 @@ vi.mock('./ticketConfigService', () => ({
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { createTimeEntry } from './timeEntryService';
 import { tickets, devices, deviceHardware, ticketDrafts } from '../db/schema';
 
 function getTool(): AiTool {
@@ -531,4 +532,54 @@ describe('manage_tickets refuses the three users-FK actions for an ai_agent prin
       expect(serviceMocks[humanMock]).toHaveBeenCalledTimes(1);
     });
   }
+});
+
+// -----------------------------------------------------------------------------
+// #4177 (W04): log_time_entry and the agent principal.
+//
+// A time entry is OWNED by a real technician (`time_entries.user_id` is a
+// users FK, NOT NULL). An agent may PROPOSE one (an action_intents row) but
+// never create one inline — `timeEntryActorFrom(auth).userId` would be the
+// agent's synthetic id, a guaranteed 23503. The release path swaps in the
+// APPROVER's auth and marks the call via `context.approverRelease`, which is
+// what stamps `source: 'ai_suggested'`.
+// -----------------------------------------------------------------------------
+describe('log_time_entry ownership (#4177, W04)', () => {
+  const block = { action: 'log_time_entry', ticketId: TICKET_ID, startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:15:00Z' };
+
+  it('an agent principal calling log_time_entry directly (not via release) is refused', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    const out = await getTool().handler(block, makeAgentAuth());
+    expect(JSON.parse(out)).toEqual({ error: 'agent_principal_requires_intent_release', action: 'log_time_entry' });
+    expect(createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('a released proposal runs as the approver with source ai_suggested', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    vi.mocked(createTimeEntry).mockResolvedValueOnce({ id: 'te-1', orgId: ORG_ID, currencyCode: 'USD', durationMinutes: 15 } as never);
+    const approver = makeHumanAuth();
+
+    const out = await getTool().handler(block, approver, { actionIntentId: 'intent-1', approverRelease: { approverUserId: 'user-1' } });
+
+    expect(JSON.parse(out)).toMatchObject({ timeEntry: { id: 'te-1' } });
+    expect(createTimeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: TICKET_ID }),
+      expect.objectContaining({ userId: 'user-1', manageAll: false }),
+      { source: 'ai_suggested' },
+    );
+  });
+
+  it('a released proposal whose auth is not the approver is refused (never writes under a mismatched owner)', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    const out = await getTool().handler(block, makeHumanAuth(), { actionIntentId: 'intent-1', approverRelease: { approverUserId: 'someone-else' } });
+    expect(JSON.parse(out)).toEqual({ error: 'approver_auth_mismatch', action: 'log_time_entry' });
+    expect(createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('a human calling log_time_entry directly keeps source manual', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    vi.mocked(createTimeEntry).mockResolvedValueOnce({ id: 'te-2', orgId: ORG_ID, currencyCode: 'USD', durationMinutes: 15 } as never);
+    await getTool().handler(block, makeHumanAuth());
+    expect(createTimeEntry).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: 'user-1' }), { source: 'manual' });
+  });
 });

@@ -16,7 +16,7 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
-import { proposeTimeEntryForAiAssistedWork, type AiTimeEntryProposalTrigger } from './aiTimeEntryProposal';
+import type { AiTimeEntryProposalTrigger } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -870,6 +870,11 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
  * missing proposal is an annoyance, a rolled-back send is a data-loss
  * incident. A draft with no run (a hand-written draft, or one predating the
  * run pointer) proposes nothing — there is no AI-assisted work to bill.
+ *
+ * Lazy import on purpose: aiTimeEntryProposal pulls the whole action-intent
+ * graph (intentService → aiDispatch → commandQueue …), and a static import
+ * here would drag it into every one of ticketService's ~30 consumers and
+ * their partial `../db` mocks. Same pattern as aiToolsScripts' commandQueue.
  */
 async function proposeTimeEntryAfterAiDraft(args: {
   ticketId: string;
@@ -881,6 +886,7 @@ async function proposeTimeEntryAfterAiDraft(args: {
   if (!args.agentRunId) return;
   const agentRunId = args.agentRunId;
   try {
+    const { proposeTimeEntryForAiAssistedWork } = await import('./aiTimeEntryProposal');
     await runOutsideDbContext(() =>
       proposeTimeEntryForAiAssistedWork({
         ticketId: args.ticketId,

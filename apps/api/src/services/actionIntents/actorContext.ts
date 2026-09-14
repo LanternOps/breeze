@@ -173,9 +173,34 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
   }
 }
 
+/**
+ * #4177 (W04): the APPROVER's own AuthContext for releasing an agent-originated
+ * intent whose action creates a row a real user must own (today
+ * `manage_tickets:log_time_entry` — `time_entries.user_id` is a users FK).
+ *
+ * Same revalidation as a user-owned intent (account active, current
+ * permissions still reach `intent.orgId`, same-partner target widening) —
+ * the approver read the proposal and accepted the work as theirs, so they
+ * must be able to stand behind it NOW, not just at decision time. `null` ⇒
+ * the worker fails the release closed (`actor_invalid`).
+ *
+ * The principal is `user_session`, NOT the intent's recorded `ai_agent`
+ * origin: this context executes AS the human who approved (the tool handler
+ * refuses the ai_agent principal on exactly this action), and the decision
+ * itself is what put the human present. The AI origin still travels on
+ * `aiOrigin` so dispatch attribution is not lost.
+ */
+export async function buildApproverAuthContextForIntent(
+  intent: ActionIntent,
+  approverUserId: string,
+): Promise<AuthContext | null> {
+  return buildUserOwnedAuthContext(intent, approverUserId, { principal: { kind: 'user_session' } });
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
+  overrides: { principal?: AuthContext['principal'] } = {},
 ): Promise<AuthContext | null> {
   return withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
     const [user] = await db
@@ -306,7 +331,10 @@ async function buildUserOwnedAuthContext(
       // being softened to user_session — a human-required gate must fail on
       // it. It is NOT a valid AuthContext principal, so it maps to the
       // closest fail-closed kind and is refused by any interactive gate.
-      principal: originPrincipalFor(intent),
+      //
+      // The ONE sanctioned override is `buildApproverAuthContextForIntent`
+      // (#4177), which executes as the approving human on purpose.
+      principal: overrides.principal ?? originPrincipalFor(intent),
       // #5022 W01: read the AI origin back off the intent's own columns. This
       // context is synthesised from the `users` row, so a chat-minted origin
       // would otherwise be lost across the durable approval boundary — the

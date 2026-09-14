@@ -103,4 +103,17 @@ export type ToolExecutionContext = {
    * it, and a tool-name gate would have to be edited by the next consumer.
    */
   releaseDecision?: ReleaseDecision;
+  /**
+   * #4177 (W04): set ONLY by jobs/intentReleaseWorker.ts, and only when it
+   * releases an agent-originated intent whose action creates a row OWNED by
+   * a real user (`USER_OWNED_RELEASE_ACTIONS` — today `manage_tickets:
+   * log_time_entry`, whose `time_entries.user_id` is a users FK). The worker
+   * swaps the rebuilt agent auth for the APPROVER's own AuthContext
+   * (`action_intents.decided_by_user_id`) and names them here, so the
+   * handler can (a) assert the auth it received really is that approver
+   * before writing and (b) stamp the row's provenance as `ai_suggested`.
+   * Absent for every other release and for every direct call, which is what
+   * lets the handler keep `source: 'manual'` for a human's own tool call.
+   */
+  approverRelease?: { approverUserId: string };
 };

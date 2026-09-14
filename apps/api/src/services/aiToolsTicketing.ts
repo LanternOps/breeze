@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   createTicket,
   changeTicketStatus,
@@ -454,7 +455,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       }
     },
 
-    handler: async (input, auth) => {
+    handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
       const actor = actorFrom(auth);
 
@@ -950,6 +951,22 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
+        // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
+        // row, see services/aiTimeEntryProposal.ts) but never create one
+        // inline — the row needs a real `users` owner, which only the release
+        // path (executing as `decided_by_user_id`) can supply. Distinct code
+        // from `agent_principal_unsupported_action` because the correct route
+        // EXISTS; the agent's loop should relay "propose it", not "can't".
+        if (agentRunIdFrom(auth)) {
+          return JSON.stringify({ error: 'agent_principal_requires_intent_release', action });
+        }
+        // A released proposal arrives with the APPROVER's auth and their id
+        // in the context bag (intentReleaseWorker.ts). Refuse rather than
+        // trust if the two ever disagree — the entry's owner is the one
+        // thing this branch must never get wrong.
+        if (context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.startedAt) return JSON.stringify({ error: 'startedAt is required for log_time_entry action' });
         if (!input.endedAt) return JSON.stringify({ error: 'endedAt is required for log_time_entry action' });
         // Site-scope parity: if a ticketId is given, pre-check the ticket is in scope
@@ -968,7 +985,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth)
+            timeEntryActorFrom(auth),
+            // Provenance: a released AI proposal is `ai_suggested` (#4177) so
+            // invoiceAssembly / time-saved reporting can tell it apart; a
+            // human's own tool call stays the column default.
+            { source: context?.approverRelease ? 'ai_suggested' : 'manual' }
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

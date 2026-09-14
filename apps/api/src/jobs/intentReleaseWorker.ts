@@ -35,6 +35,8 @@ import {
 import { enqueueFixWatchPhase1 } from './fixWatchWorker';
 import { attemptPolicyDecision, PolicyDecisionTransientError } from '../services/actionIntents/policyDecide';
 import { revalidateApprovedIntentForRelease } from '../services/actionIntents/revalidateRelease';
+import { buildApproverAuthContextForIntent } from '../services/actionIntents/actorContext';
+import { checkToolPermission } from '../services/aiGuardrails';
 import { ensureLaneCheckpointBeforeRelease } from '../services/actionIntents/laneCheckpoint';
 import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
@@ -706,6 +708,29 @@ export async function terminalizeIntent(
  * (digest/tier/actor/org) never touched execution, so they leave
  * `executedAt` null.
  */
+/**
+ * #4177 (W04): tool:action pairs whose released effect creates a row that a
+ * REAL user must own (a `users` FK), so an agent-originated intent cannot be
+ * executed under the rebuilt agent auth — `auth.user.id` there is an
+ * `aiAgents.id`, attribution only, never a users row, and the write is a
+ * guaranteed 23503 at approval time, in front of the technician.
+ *
+ * The approver IS the owner: they read the proposal and accepted the work as
+ * theirs. So the worker executes these as `decided_by_user_id` (see
+ * `resolveUserOwnedReleaseAuth`). An explicit allowlist, not a heuristic —
+ * do not generalise speculatively; add a pair only with its own release
+ * test and a handler that checks `context.approverRelease`.
+ */
+const USER_OWNED_RELEASE_ACTIONS: ReadonlySet<string> = new Set(['manage_tickets:log_time_entry']);
+
+function userOwnedReleaseKey(intent: ActionIntent): string | null {
+  if (!intent.requestingAgentRunId) return null;
+  const args = intent.arguments as Record<string, unknown> | null;
+  const action = typeof args?.action === 'string' ? args.action : null;
+  const key = `${intent.actionName}:${action ?? ''}`;
+  return USER_OWNED_RELEASE_ACTIONS.has(key) ? key : null;
+}
+
 async function failIntent(
   intent: ActionIntent,
   errorCode: string,
@@ -935,7 +960,51 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
     await failIntent(intent, revalidation.errorCode, { details: revalidation.details });
     return;
   }
-  const { auth } = revalidation;
+  let { auth } = revalidation;
+
+  // #4177 (W04): a user-owned release action executes as the APPROVER, never
+  // the agent (see USER_OWNED_RELEASE_ACTIONS). Fail loudly rather than
+  // substitute a sentinel — a time entry with no real owner is an invoice
+  // line no one can defend. Both stops are terminal (`failed`), like every
+  // other structural revalidation stop: a row with no approver is not going
+  // to grow one on retry.
+  let approverRelease: { approverUserId: string } | undefined;
+  const userOwnedKey = userOwnedReleaseKey(intent);
+  if (userOwnedKey) {
+    if (!intent.decidedByUserId) {
+      await failIntent(intent, 'approver_required', {
+        details: {
+          reason: `${userOwnedKey} requires decided_by_user_id to own the created row; the intent has none`,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    const approverAuth = await buildApproverAuthContextForIntent(intent, intent.decidedByUserId);
+    if (!approverAuth) {
+      await failIntent(intent, 'actor_invalid', {
+        details: {
+          reason: 'the approving user is no longer active or can no longer reach the intent org',
+          decidedByUserId: intent.decidedByUserId,
+          actionName: intent.actionName,
+        },
+      });
+      return;
+    }
+    // The approver must hold the tool's own RBAC (time_entries:write for
+    // log_time_entry) — the structural agent authority check above vouched
+    // for the AGENT, not for the human the row will be written under. Same
+    // check revalidateRelease applies to every user-owned intent.
+    const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, approverAuth);
+    if (permissionDenial) {
+      await failIntent(intent, 'rbac_denied', {
+        details: { reason: permissionDenial, decidedByUserId: intent.decidedByUserId, actionName: intent.actionName },
+      });
+      return;
+    }
+    auth = approverAuth;
+    approverRelease = { approverUserId: intent.decidedByUserId };
+  }
 
   // Effect-digest revalidation (tier3-supervised-four-eyes design §4.1,
   // services/actionIntents/effectDigest.ts) — the TOCTOU gap argumentDigest
@@ -1156,6 +1225,11 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
                 ...verifiedContext,
                 actionIntentId: intent.id,
                 releaseDecision: { approvalScope: intent.approvalScope, decidedVia: intent.decidedVia ?? null },
+                // #4177: present ONLY for a user-owned release (above); the
+                // handler asserts the auth it got is this approver and stamps
+                // `source: 'ai_suggested'`. Spread so the no-swap case keeps
+                // the exact bag shape the existing suite pins.
+                ...(approverRelease ? { approverRelease } : {}),
               },
             });
       rawResult = await withToolTimeout(
