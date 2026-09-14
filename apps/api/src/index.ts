@@ -262,6 +262,7 @@ import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
@@ -1616,6 +1617,15 @@ async function bootstrap(): Promise<void> {
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
   });
+  // Migrations may have changed role_permissions (W02 seeded agreements:* and
+  // back-filled it onto every role holding the equivalent contracts grant), and
+  // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
+  // (services/permissions.ts:36-37). A warm replica in a rolling deploy would
+  // otherwise serve pre-migration grants — a 403 on a surface the operator can
+  // see they have access to — until the TTL expired. Calling this with no
+  // userId bumps the shared Redis version key, so every replica invalidates at
+  // once rather than each aging out independently.
+  await clearPermissionCache();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
