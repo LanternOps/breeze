@@ -241,6 +241,9 @@ export const TOOL_TIERS = {
   search_logs: 1,
   get_log_trends: 1,
   detect_log_correlations: 2,
+  // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
+  // it just refuses to throw the result away. Tier 1 like its source tools.
+  export_dataset: 1,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_configuration_policy: 1,
@@ -2141,6 +2144,20 @@ export function createBreezeMcpServer(
         sortOrder: z.enum(['asc', 'desc']).optional(),
       },
       makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'export_dataset',
+      registryDescription('export_dataset'),
+      {
+        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        format: z.enum(['jsonl', 'csv']).optional(),
+        filters: z.record(z.unknown()).optional(),
+        deviceIds: z.array(z.string()).optional(),
+        siteId: z.string().optional(),
+        maxRows: z.number().optional(),
+      },
+      makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

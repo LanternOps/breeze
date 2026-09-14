@@ -29,7 +29,7 @@ export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
   | 'patching_software' | 'security_response' | 'backup_recovery' | 'config_policies' | 'network'
   | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy'
-  | 'author_scripts';
+  | 'author_scripts' | 'workspace';
 
 export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standard' | 'high' }[] = [
   { id: 'alerts_monitoring', tone: 'standard' },
@@ -50,6 +50,9 @@ export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standa
   { id: 'automations_reports', tone: 'standard' },
   { id: 'business', tone: 'standard' },
   { id: 'tenancy', tone: 'high' },
+  // W04 adds the `workspace_*` tools under this same capability — whichever
+  // wave lands first adds it, the second finds it already present.
+  { id: 'workspace', tone: 'standard' },
 ];
 
 /**
@@ -306,6 +309,9 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   m365_query_groups: 'tenancy',
   m365_query_org: 'tenancy',
   m365_query_sites: 'tenancy',
+
+  // ---- workspace ----
+  export_dataset: 'workspace',
 };
 
 export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>> = {

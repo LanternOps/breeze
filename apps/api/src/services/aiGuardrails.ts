@@ -964,6 +964,8 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   search_logs: { resource: 'devices', action: 'read' },
   get_log_trends: { resource: 'devices', action: 'read' },
   detect_log_correlations: { resource: 'devices', action: 'read' },
+  // Execution plane
+  export_dataset: { resource: 'devices', action: 'read' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_configuration_policy: { resource: 'policies', action: 'read' },
@@ -1332,6 +1334,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   search_logs: { limit: 30, windowSeconds: 300 },
   get_log_trends: { limit: 20, windowSeconds: 300 },
   detect_log_correlations: { limit: 10, windowSeconds: 300 },
+  // One export is a full table scan's worth of work — far below search_logs'
+  // 30/5min on purpose.
+  export_dataset: { limit: 5, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   capture_agent_pprof: { limit: 3, windowSeconds: 600 },

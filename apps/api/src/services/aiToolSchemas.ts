@@ -1267,6 +1267,15 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     sortOrder: z.enum(['asc', 'desc']).optional(),
   }),
 
+  export_dataset: z.object({
+    dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+    format: z.enum(['jsonl', 'csv']).optional(),
+    filters: z.record(z.unknown()).optional(),
+    deviceIds: z.array(uuid).max(200).optional(),
+    siteId: uuid.optional(),
+    maxRows: z.number().int().min(1).max(1_000_000).optional(),
+  }),
+
   get_log_trends: z.object({
     timeRange: z.object({
       start: z.string().datetime({ offset: true }),
