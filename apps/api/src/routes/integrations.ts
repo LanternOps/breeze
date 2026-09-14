@@ -1,14 +1,25 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { authMiddleware, requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
+import { selfHostAllowsPrivateNetwork } from '../config/env';
 import { writeRouteAudit } from '../services/auditEvents';
 import {
+  INTEGRATION_MASKED_SECRET,
   IntegrationSecretsUnavailableError,
   InvalidIntegrationSecretError,
+  integrationSettingsSecretAad,
+  isSecretFieldName,
   maskIntegrationSettings,
   sealIntegrationSettings,
 } from '../services/integrationSettingsSecrets';
+import {
+  MONITORING_TEST_PROVIDERS,
+  testMonitoringProvider,
+  type MonitoringTestProvider,
+} from '../services/monitoringIntegrationTest';
 import { PERMISSIONS } from '../services/permissions';
+import { decryptSecret, isEncryptedSecret } from '../services/secretCrypto';
+import { safeFetch } from '../services/urlSafety';
 
 export const integrationRoutes = new Hono();
 const requireIntegrationRead = requirePermission(PERMISSIONS.ORGS_READ.resource, PERMISSIONS.ORGS_READ.action);
@@ -221,8 +232,86 @@ integrationRoutes.put('/monitoring', requireScope('organization', 'partner', 'sy
   return c.json({ success: true, data: maskIntegrationSettings(protectedBody.value) });
 });
 
+const monitoringTestBodySchema = z.object({
+  provider: z.enum(MONITORING_TEST_PROVIDERS as [MonitoringTestProvider, ...MonitoringTestProvider[]]),
+  config: z.record(z.string().max(64), z.unknown()).default({}),
+  endpointId: z.string().max(128).optional(),
+  orgId: z.string().optional(),
+});
+
+/**
+ * The UI holds `********` for every credential it loaded from GET /monitoring,
+ * so a test request only carries plaintext for a key the operator just typed.
+ * Substitute the stored, sealed value for each masked credential-named leaf so
+ * the check exercises the credential that will actually be used. A masked
+ * field with nothing stored means the operator has not configured it yet.
+ */
+function resolveMaskedMonitoringSecrets(
+  config: Record<string, unknown>,
+  stored: unknown,
+  orgId: string,
+  provider: string,
+): { ok: true; config: Record<string, unknown> } | { ok: false; error: string } {
+  const storedRecord = stored && typeof stored === 'object' && !Array.isArray(stored)
+    ? stored as Record<string, unknown>
+    : {};
+  const resolved: Record<string, unknown> = { ...config };
+  for (const [field, value] of Object.entries(config)) {
+    if (value !== INTEGRATION_MASKED_SECRET || !isSecretFieldName(field)) continue;
+    const sealed = storedRecord[field];
+    if (typeof sealed !== 'string' || sealed.length === 0) {
+      return { ok: false, error: `Enter the ${provider} ${field} and save before testing` };
+    }
+    const plaintext = isEncryptedSecret(sealed)
+      ? decryptSecret(sealed, { aad: integrationSettingsSecretAad('monitoring', orgId, [provider, field]) })
+      : sealed;
+    if (!plaintext) {
+      return { ok: false, error: `Stored ${provider} ${field} could not be read; re-enter it and save` };
+    }
+    resolved[field] = plaintext;
+  }
+  return { ok: true, config: resolved };
+}
+
 integrationRoutes.post('/monitoring/test', requireScope('organization', 'partner', 'system'), requireIntegrationWrite, requireMfa(), async (c) => {
-  return c.json({ success: true, message: 'Connection successful.' });
+  const auth = c.get('auth');
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400);
+  }
+  const parsed = monitoringTestBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid payload' }, 400);
+  }
+  const { provider, config, endpointId } = parsed.data;
+  const orgResult = resolveOrgId(auth, parsed.data.orgId ?? requestedOrgId(c));
+  if ('error' in orgResult) {
+    return c.json({ error: orgResult.error }, orgResult.status);
+  }
+
+  const stored = monitoringSettings.get(orgResult.orgId)?.[provider];
+  const secrets = resolveMaskedMonitoringSecrets(config, stored, orgResult.orgId, provider);
+  if (!secrets.ok) return c.json({ error: secrets.error }, 400);
+
+  const result = await testMonitoringProvider(
+    { provider, config: secrets.config, endpointId, allowPrivateNetwork: selfHostAllowsPrivateNetwork() },
+    { fetch: safeFetch },
+  );
+
+  writeRouteAudit(c, {
+    orgId: orgResult.orgId,
+    action: 'integration.monitoring.test',
+    resourceType: 'integration',
+    resourceName: provider,
+    details: { outcome: result.ok ? 'ok' : result.kind },
+  });
+
+  if (!result.ok) {
+    return c.json({ success: false, error: result.message }, result.kind === 'invalid' ? 400 : 502);
+  }
+  return c.json({ success: true, message: result.message });
 });
 
 integrationRoutes.get('/ticketing', requireScope('organization', 'partner', 'system'), requireIntegrationRead, async (c) => {

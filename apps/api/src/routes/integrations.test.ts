@@ -22,6 +22,11 @@ vi.mock('../services/auditEvents', () => ({
   writeRouteAudit: vi.fn()
 }));
 
+const safeFetchMock = vi.fn();
+vi.mock('../services/urlSafety', () => ({
+  safeFetch: (...args: unknown[]) => safeFetchMock(...args),
+}));
+
 import { integrationRoutes } from './integrations';
 
 // These routes seal provider credentials with AAD-bound enc:v3 ciphertext and
@@ -125,12 +130,108 @@ describe('integration compatibility routes', () => {
     const loaded = await get.json();
     expect(loaded.data.metrics.enabled).toBe(true);
 
+    // A test with no Grafana URL configured is a config problem, not a success.
     const test = await app.request('/integrations/monitoring/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
-      body: JSON.stringify({ provider: 'grafana' })
+      body: JSON.stringify({ provider: 'grafana', config: {} })
     });
-    expect(test.status).toBe(200);
+    expect(test.status).toBe(400);
+    expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('POST /monitoring/test performs a real provider check (#5427)', () => {
+    const testCall = (body: Record<string, unknown>) => app.request('/integrations/monitoring/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+      body: JSON.stringify(body),
+    });
+
+    beforeEach(() => {
+      safeFetchMock.mockReset();
+    });
+
+    it('rejects an unknown provider with 400 and no outbound call', async () => {
+      const res = await testCall({ provider: 'nagios', config: {} });
+      expect(res.status).toBe(400);
+      expect(safeFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('reports a rejected Grafana API key as 502 with success:false', async () => {
+      safeFetchMock.mockResolvedValue(new Response(null, { status: 401 }));
+      const res = await testCall({
+        provider: 'grafana',
+        config: { url: 'https://grafana.example.test', apiKey: 'typed-plaintext-key' },
+      });
+      expect(res.status).toBe(502);
+      const payload = await res.json();
+      expect(payload.success).toBe(false);
+      expect(payload.error).toMatch(/rejected/i);
+      expect(JSON.stringify(payload)).not.toContain('typed-plaintext-key');
+      expect(safeFetchMock).toHaveBeenCalledWith(
+        'https://grafana.example.test/api/org',
+        expect.objectContaining({ headers: { Authorization: 'Bearer typed-plaintext-key' }, timeoutMs: 10_000 }),
+      );
+    });
+
+    it('reports an unreachable host as 502 without echoing the credential', async () => {
+      safeFetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
+      const res = await testCall({
+        provider: 'opsGenie',
+        config: { apiKey: 'ops-private-key' },
+      });
+      expect(res.status).toBe(502);
+      const text = await res.text();
+      expect(text).toContain('api.opsgenie.com');
+      expect(text).not.toContain('ops-private-key');
+    });
+
+    it('substitutes the stored sealed credential for a masked one and reports success', async () => {
+      const save = await app.request('/integrations/monitoring', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ grafana: { enabled: true, url: 'https://grafana.example.test', apiKey: 'stored-secret-key' } }),
+      });
+      expect(save.status).toBe(200);
+      safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
+
+      const res = await testCall({
+        provider: 'grafana',
+        config: { enabled: true, url: 'https://grafana.example.test', apiKey: '********' },
+      });
+      expect(res.status).toBe(200);
+      const payload = await res.json();
+      expect(payload.success).toBe(true);
+      expect(safeFetchMock).toHaveBeenCalledWith(
+        'https://grafana.example.test/api/org',
+        expect.objectContaining({ headers: { Authorization: 'Bearer stored-secret-key' } }),
+      );
+    });
+
+    it('refuses a masked credential with nothing stored instead of testing a placeholder', async () => {
+      const res = await testCall({
+        provider: 'opsGenie',
+        config: { apiKey: '********' },
+      });
+      expect(res.status).toBe(400);
+      expect(safeFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('posts a test event to the selected webhook endpoint', async () => {
+      safeFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+      const res = await testCall({
+        provider: 'webhooks',
+        endpointId: 'two',
+        config: { enabled: true, endpoints: [
+          { id: 'one', name: 'first', url: 'https://hooks.example.test/one', enabled: true },
+          { id: 'two', name: 'second', url: 'https://hooks.example.test/two', enabled: true },
+        ] },
+      });
+      expect(res.status).toBe(200);
+      expect(safeFetchMock).toHaveBeenCalledTimes(1);
+      expect(safeFetchMock.mock.calls[0][0]).toBe('https://hooks.example.test/two');
+      expect(safeFetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+    });
   });
 
   it('never echoes monitoring provider credentials and preserves non-secret settings', async () => {
