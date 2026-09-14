@@ -1,0 +1,33 @@
+---
+import PortalLayout from '../../layouts/PortalLayout.astro';
+import { LifecyclePage } from '../../components/lifecycle/LifecyclePage';
+import { portalApi } from '../../lib/api';
+import { buildServerApiConfig } from '../../lib/server';
+import { redirectToLoginAfter401 } from '../../lib/session';
+import { isPortalPageDisabled, redirectToPortalHomeAfterDisabled } from '../../lib/visibilityGate';
+
+const response = await portalApi.getHardwareLifecycleLatest(
+  buildServerApiConfig(Astro.request),
+);
+
+if (response.statusCode === 401) {
+  return redirectToLoginAfter401(Astro);
+}
+
+// enableReports off (PORTAL_REPORTS_DISABLED, from the shared /reports/* mount)
+// or enableLifecycle off (PORTAL_LIFECYCLE_DISABLED, from this route's own
+// narrower mount) both bounce home rather than render a dead page.
+if (isPortalPageDisabled(response)) {
+  return redirectToPortalHomeAfterDisabled(Astro);
+}
+
+// PORTAL_REPORT_NOT_GENERATED (no run yet) is data, not a crash: the page
+// renders its own empty state with a Refresh button, the same way
+// reports/index.astro already treats a generic report 403 as data.
+const run = response.data?.run ?? null;
+const summary = response.data?.summary ?? null;
+---
+
+<PortalLayout title="Hardware lifecycle">
+  <LifecyclePage client:load initialRun={run} initialSummary={summary} />
+</PortalLayout>
