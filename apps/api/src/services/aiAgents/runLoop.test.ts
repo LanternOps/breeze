@@ -669,7 +669,7 @@ describe('executeAgentRun', () => {
     await executeAgentRun(RUN_ID);
 
     expect(transitionRunStatus.mock.calls[0]!.slice(0, 3)).toEqual([RUN_ID, 'queued', 'running']);
-    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
 
     const final = finalTransition()!;
     expect(final.from).toBe('running');
@@ -818,7 +818,7 @@ describe('executeAgentRun', () => {
       // startToolExecution/allowedPending machinery a plain 'allow' uses.
       expect(startToolExecution).toHaveBeenCalledTimes(1);
       expect(createActionIntent).not.toHaveBeenCalled();
-      expect(preVerdicts[0]).toEqual({ allowed: true });
+      expect(preVerdicts[0]).toMatchObject({ allowed: true });
       expect(verifyActExecution).toHaveBeenCalledTimes(1);
 
       const final = finalTransition()!;
@@ -2110,7 +2110,7 @@ describe('executeAgentRun', () => {
 
     // The gate still allowed the call — the ledger write is observability
     // only, never authorization.
-    expect(preVerdicts[0]).toEqual({ allowed: true });
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
     expect(completeToolExecution).not.toHaveBeenCalled();
 
     const final = finalTransition()!;
@@ -2319,7 +2319,7 @@ describe('verdict profile in the run loop (P2-1)', () => {
 
   it('pre-hook allows submit_alert_verdict on a verdict run and denies it on a full run', async () => {
     const pre = createAgentRunPreToolUse(preArgs('verdict') as never);
-    expect(await pre('submit_alert_verdict', validVerdict)).toEqual({ allowed: true });
+    expect(await pre('submit_alert_verdict', validVerdict)).toMatchObject({ allowed: true });
 
     const preFull = createAgentRunPreToolUse(preArgs('full') as never);
     expect((await preFull('submit_alert_verdict', validVerdict)).allowed).toBe(false);

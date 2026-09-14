@@ -91,6 +91,23 @@ export type ToolExecutionContext = {
    */
   actionIntentId?: string;
   /**
+   * Device ids frozen at admission for this run (spec §8 data minimisation).
+   * A device-scoped tool that can span MANY devices — `export_dataset` today —
+   * must refuse any id outside this set. The central `enforceDeviceArgs` gate
+   * answers "may this CALLER reach this device"; this answers the different
+   * question "is this device in the set a human admitted THIS run for", and
+   * one does not imply the other: an agent principal can reach the whole org.
+   *
+   * ABSENT means "no run frame", not "no restriction" — a direct chat/MCP call
+   * has no frozen set, and is bounded by the caller gate alone.
+   *
+   * Only the CONSTRAINT lives here. The run id and org are read from the auth
+   * principal (`auth.principal.runId`, `auth.orgId`) — see reconciliation R4.
+   */
+  runTargets?: readonly string[];
+  /** Bytes this run may still stage into artifacts. */
+  stagedBytesRemaining?: number;
+  /**
    * The released intent's decision record — set by the SAME two release
    * paths that set `actionIntentId`, from the intent row they already hold,
    * and by nothing else (#5645). `run_script`'s proposal branch derives the

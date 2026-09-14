@@ -566,11 +566,26 @@ export function createAgentRunPreToolUse(args: {
    * non-design run, where the switch never reaches that case.
    */
   design?: FleetDesignOutcomeRefs;
+  /** Device ids frozen at admission for this run (W03/R4) — see
+   *  `ToolExecutionContext.runTargets`. */
+  runTargets: readonly string[];
+  /** Bytes this run may still stage into artifacts (W03/R4) — see
+   *  `ToolExecutionContext.stagedBytesRemaining`. */
+  stagedBytesRemaining: number;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
     sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design,
+    runTargets, stagedBytesRemaining,
   } = args;
+
+  /** Per-invocation run CONSTRAINTS handed to every ALLOWED tool call (W03).
+   *  Built once: identical for every call in the run. No run id or session id
+   *  here — a tool reads those from the auth principal (R4). */
+  const runFrame: ToolExecutionContext = {
+    runTargets,
+    stagedBytesRemaining,
+  };
 
   /**
    * #5205 W06 — the task fence read taken at the top of THIS tool call, kept
@@ -722,8 +737,8 @@ export function createAgentRunPreToolUse(args: {
     actPinPending.set(toolName, pinQueue);
 
     return actPin?.toolExecutionContext
-      ? { allowed: true, context: actPin.toolExecutionContext }
-      : { allowed: true };
+      ? { allowed: true, context: { ...runFrame, ...actPin.toolExecutionContext } }
+      : { allowed: true, context: runFrame };
   }
 
   return async (toolName, input) => {
@@ -807,7 +822,7 @@ export function createAgentRunPreToolUse(args: {
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
-      return { allowed: true };
+      return { allowed: true, context: runFrame };
     }
 
     const guardrailContext = await loadProposalGuardrailContext(input, run.orgId);
@@ -1627,6 +1642,15 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
     actReservation, deadlineMs, design: designRefs,
+    // W03 seeds the run frame from the single-device runs that exist today.
+    // W04's `analysis` profile replaces both values with the admission-frozen
+    // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
+    // array is "no frame" (see ToolExecutionContext.runTargets) — a full-profile
+    // run with no device keeps today's behaviour exactly.
+    runTargets: run.deviceId ? [run.deviceId] : [],
+    // Literal on purpose until Task 7 exists. Task 7 replaces this line with
+    // the real `EXPORT_DEFAULT_MAX_BYTES` import — do not import it now.
+    stagedBytesRemaining: 256 * 1024 * 1024, // EXPORT_DEFAULT_MAX_BYTES — replaced by the real import in Task 7
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
