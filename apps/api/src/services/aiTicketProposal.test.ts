@@ -36,4 +36,18 @@ describe('getLatestTicketProposal (#4211)', () => {
     rows.push({ id: 'run-2', finishedAt: new Date(), intentIds: [], outcome: {} });
     expect(await getLatestTicketProposal('11111111-1111-1111-1111-111111111111')).toBeNull();
   });
+
+  it('passes the run\'s own ticketTriageSkipped through, same as the run-detail page (#4211 review)', async () => {
+    rows.push({
+      id: 'run-3',
+      finishedAt: new Date('2026-09-13T00:00:00Z'),
+      intentIds: [],
+      outcome: {
+        ticketProposal: { version: 1, summary: 'Spooler wedged.' },
+        ticketTriageSkipped: [{ item: 'note', reason: 'human_set' }],
+      },
+    });
+    const got = await getLatestTicketProposal('11111111-1111-1111-1111-111111111111');
+    expect(got?.proposal.skipped).toEqual([{ item: 'note', reason: 'human_set' }]);
+  });
 });

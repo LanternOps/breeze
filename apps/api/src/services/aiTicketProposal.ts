@@ -1,9 +1,9 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { aiAgentRuns } from '../db/schema/aiAgents';
 import { mapTicketProposal } from './aiAgents/runTrace';
 import type { TicketProposalOutcome } from './aiAgents/runLoop';
-import type { AiAgentRunTicketProposalDto } from '@breeze/shared';
+import type { TicketTriageSkip, AiAgentRunTicketProposalDto } from '@breeze/shared';
 
 export interface LatestTicketProposal {
   runId: string;
@@ -40,15 +40,25 @@ export async function getLatestTicketProposal(ticketId: string): Promise<LatestT
       eq(aiAgentRuns.ticketId, ticketId),
       eq(aiAgentRuns.profile, 'triage'),
       eq(aiAgentRuns.status, 'completed'),
+      // Postgres sorts NULLs FIRST on a plain DESC ORDER BY, so a completed
+      // row with an unset finishedAt would otherwise outrank every real
+      // finished run. Every genuinely completed run stamps finishedAt
+      // (runFinalizers.ts), so this excludes only malformed/legacy rows.
+      isNotNull(aiAgentRuns.finishedAt),
     ))
     .orderBy(desc(aiAgentRuns.finishedAt))
     .limit(1);
 
   const run = rows[0];
   if (!run) return null;
-  const raw = (run.outcome as { ticketProposal?: TicketProposalOutcome } | null)?.ticketProposal;
+  const outcome = run.outcome as { ticketProposal?: TicketProposalOutcome; ticketTriageSkipped?: TicketTriageSkip[] } | null;
+  const raw = outcome?.ticketProposal;
   if (!raw) return null;
-  const proposal = mapTicketProposal(raw, run.intentIds ?? [], [], undefined);
-  if (!proposal) return null;
-  return { runId: run.id, finishedAt: run.finishedAt ?? null, proposal };
+  // #4211 review: pass the run's OWN ticketTriageSkipped through, same as
+  // runTrace.ts's buildRunTrace call site — omitting it (an earlier version
+  // of this function always passed `undefined`) silently dropped the
+  // "skipped" section from this surface only, contradicting this function's
+  // own "cannot drift from the run-detail page" claim.
+  const proposal = mapTicketProposal(raw, run.intentIds ?? [], [], outcome?.ticketTriageSkipped);
+  return { runId: run.id, finishedAt: run.finishedAt, proposal };
 }
