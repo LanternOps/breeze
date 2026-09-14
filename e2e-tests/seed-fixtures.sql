@@ -195,6 +195,29 @@ BEGIN
         NOW(),
         'user',
         true
+      ),
+      (
+        v_org_id,
+        'Customer portal — Hardware lifecycle',
+        'hardware_lifecycle',
+        '{}'::jsonb,
+        'one_time',
+        'pdf',
+        v_user_id,
+        1,
+        'unrestricted',
+        NULL,
+        v_user_id,
+        encode(
+          sha256(convert_to(
+            '{"version":1,"kind":"unrestricted","orgId":"' || v_org_id::text || '"}',
+            'UTF8'
+          )),
+          'hex'
+        ),
+        NOW(),
+        'user',
+        true
       )
     ON CONFLICT (org_id, type) WHERE portal_self_service = true
     DO UPDATE SET
