@@ -592,6 +592,24 @@ export function manifestToCommandResult(params: {
   const summedSize = files.reduce((total, file) => total + (file.size ?? 0), 0);
   const size = declaredSize ?? summedSize;
 
+  // #5410: the manifest is enough to recover the dedup split the agent would
+  // have reported. Same rule as the agent's isReferenceEntry
+  // (agent/internal/backup/incremental.go): an entry whose object lives
+  // outside this snapshot's own `snapshots/<id>/` prefix was satisfied by
+  // referencing an older snapshot, not uploaded this run. The reconcile
+  // schema already requires a non-empty backupPath, so the agent's
+  // content-less guard has nothing to exclude here. Without this, every
+  // adopted incremental would finalize as "uploaded the whole corpus".
+  const ownPrefix = `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}/`;
+  let referencedFiles = 0;
+  let referencedBytes = 0;
+  for (const file of files) {
+    if (!file.backupPath.startsWith(ownPrefix)) {
+      referencedFiles += 1;
+      referencedBytes += file.size ?? 0;
+    }
+  }
+
   const timestamp =
     parsed.timestamp && Number.isFinite(Date.parse(parsed.timestamp)) ? parsed.timestamp : undefined;
 
@@ -599,6 +617,8 @@ export function manifestToCommandResult(params: {
     snapshotId: params.snapshotId,
     filesBackedUp: files.length,
     bytesBackedUp: size,
+    referencedFiles,
+    referencedBytes,
     snapshot: {
       id: params.snapshotId,
       timestamp,

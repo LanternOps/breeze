@@ -252,7 +252,8 @@ export const backupJobs = pgTable(
     // In flight: bytes processed toward total_size (agent `current`, referenced
     // files included) so the progress bar advances. On completion: bytes
     // actually uploaded this run — total_size minus referenced_size — set
-    // from the terminal result (#5410).
+    // from the terminal result (#5410). A run that ends in failure keeps its
+    // last mid-run value; only a successful terminal result finalizes it.
     transferredSize: bigint('transferred_size', { mode: 'number' }),
     fileCount: integer('file_count'),
     errorCount: integer('error_count'),
