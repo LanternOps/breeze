@@ -292,8 +292,7 @@
       "ticket": "Chamado",
       "anomaly": "Anomalia",
       "api": "Chamada de API"
-    },
-    "triggerUnknown": "Acionamento desconhecido"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Falha ao buscar o histórico de alertas",

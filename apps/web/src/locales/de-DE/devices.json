@@ -292,8 +292,7 @@
       "ticket": "Supportanfrage",
       "anomaly": "Anomalie",
       "api": "API-Aufruf"
-    },
-    "triggerUnknown": "Unbekannter Auslöser"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Der Alarmverlauf konnte nicht abgerufen werden",

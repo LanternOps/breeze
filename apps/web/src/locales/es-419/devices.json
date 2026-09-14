@@ -292,8 +292,7 @@
       "ticket": "Solicitud de soporte",
       "anomaly": "Anomalía",
       "api": "Llamada a la API"
-    },
-    "triggerUnknown": "Origen desconocido"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "No se pudo recuperar el historial de alertas",

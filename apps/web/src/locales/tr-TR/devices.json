@@ -292,8 +292,7 @@
       "ticket": "Destek talebi",
       "anomaly": "Anormallik",
       "api": "API çağrısı"
-    },
-    "triggerUnknown": "Bilinmeyen tetikleyici"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",

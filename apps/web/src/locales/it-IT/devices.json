@@ -292,8 +292,7 @@
       "ticket": "Richiesta di assistenza",
       "anomaly": "Anomalia",
       "api": "Chiamata API"
-    },
-    "triggerUnknown": "Origine sconosciuta"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossibile recuperare la cronologia degli avvisi",

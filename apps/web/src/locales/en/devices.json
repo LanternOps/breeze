@@ -292,8 +292,7 @@
       "ticket": "Ticket",
       "anomaly": "Anomaly",
       "api": "API"
-    },
-    "triggerUnknown": "Unknown trigger"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",

@@ -292,8 +292,7 @@
       "ticket": "Demande d’assistance",
       "anomaly": "Anomalie",
       "api": "Appel API"
-    },
-    "triggerUnknown": "Déclencheur inconnu"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossible de récupérer l’historique des alertes",
