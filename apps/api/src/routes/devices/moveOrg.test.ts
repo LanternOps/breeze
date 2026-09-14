@@ -1256,7 +1256,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1309,7 +1309,7 @@ describe('POST /devices/:id/move-org', () => {
       });
     });
 
-    it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+    it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
       rigMove();
       const { statements } = rigTransactionSuccess();
 
@@ -1317,7 +1317,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

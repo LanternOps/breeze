@@ -2522,10 +2522,14 @@ export async function moveTicketOrg(
     // statements below exist precisely so those fail fast and loudly if a new
     // referencing row type is ever added without its own cleanup.
     //
+    // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third composite
+    // (ticket_id, org_id) -> tickets(id, org_id) child FK, same shape and same
+    // reason as the two above it. Still BY NAME, never `ALL`.
+    //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →
