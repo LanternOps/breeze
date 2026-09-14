@@ -1672,6 +1672,79 @@ export async function addAiTriageNote(
   }
 }
 
+/**
+ * #4211 (W01) — post an AI proposal's text as an INTERNAL note under the
+ * CALLING technician's own identity. Posting is a human act, so this is
+ * `originPrincipalKind: 'user'` + `userId: actor.userId` (contrast
+ * `addAiTriageNote` directly above, which is the agent writing as itself).
+ *
+ * `agentRunId` stays NULL on purpose: that column means "an agent run wrote
+ * this row", and the helpdesk loop guard ORs on it. The run is recorded in
+ * `proposedByRunId` instead (#4211 migration header).
+ *
+ * `isPublic` is hardcoded false and takes no input — a proposal summary is a
+ * private note by definition (`TicketTriageProposal.summary`'s own docstring:
+ * "Private-note body"). There is deliberately no public variant here; a
+ * customer-facing reply goes through the `reply` DRAFT path (`sendTicketDraft`).
+ *
+ * Audits the TECHNICIAN as the actor and the run in `details.fromAgentRunId`
+ * — audit_logs has one actor column, so dual attribution is actor + details
+ * (never a synthetic second actor row).
+ */
+export async function postProposalNote(
+  ticketId: string,
+  runId: string,
+  content: string,
+  actor: TicketActor
+): Promise<{ comment: { id: string } }> {
+  const ticket = await getTicketOrThrow(ticketId);
+
+  const [run] = await db
+    .select({ id: aiAgentRuns.id })
+    .from(aiAgentRuns)
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.ticketId, ticketId)))
+    .limit(1);
+  if (!run) throw new TicketServiceError('Proposal run not found for this ticket', 404);
+
+  const inserted = await db.insert(ticketComments).values({
+    ticketId,
+    userId: actor.userId,
+    authorName: actor.name ?? null,
+    authorType: 'internal',
+    commentType: 'internal',
+    content,
+    isPublic: false,
+    originPrincipalKind: 'user',
+    agentRunId: null,
+    proposedByRunId: runId
+  }).returning({ id: ticketComments.id });
+  const comment = inserted[0];
+  if (!comment) throw new TicketServiceError('Failed to post proposal note', 500);
+
+  await emitTicketEvent({
+    type: 'ticket.commented',
+    ticketId,
+    orgId: ticket.orgId,
+    partnerId: ticket.partnerId ?? null,
+    actorUserId: actor.userId,
+    payload: { commentId: comment.id, isPublic: false }
+  });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
+  await createAuditLogAsync({
+    orgId: ticket.orgId,
+    actorId: actor.userId,
+    actorType: 'user',
+    action: 'ticket.comment',
+    resourceType: 'ticket',
+    resourceId: ticketId,
+    details: { commentId: comment.id, isInternal: true, fromAgentRunId: runId },
+    result: 'success',
+    initiatedBy: 'ai'
+  });
+
+  return { comment };
+}
+
 export interface AiFieldUpdateSpec<T> {
   value: T;
   /** The value the caller last observed — the CAS predicate's comparison target. */

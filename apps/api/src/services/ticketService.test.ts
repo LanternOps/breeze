@@ -275,6 +275,7 @@ import {
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
   moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
   listActiveTicketDrafts, sendTicketDraft, discardTicketDraft,
+  postProposalNote,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
@@ -4185,5 +4186,63 @@ describe('listOrgTicketsForAddin', () => {
 
     expect(result.openTickets.map(t => t.id)).toEqual(['t-open-1']);
     expect(result.recentTickets.map(t => t.id)).toEqual(['t-recent-1']);
+  });
+});
+
+describe('postProposalNote (#4211)', () => {
+  const TICKET_ID = 't-proposal-1';
+  const RUN_ID = 'run-proposal-1';
+  const OTHER_RUN_ID = 'run-other';
+  const USER_ID = 'tech-1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    auditMock.mockClear();
+  });
+
+  it('posts under the technician identity, private, linked to the run', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
+
+    await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      userId: USER_ID,
+      originPrincipalKind: 'user',
+      agentRunId: null,
+      proposedByRunId: RUN_ID,
+      isPublic: false,
+      commentType: 'internal',
+      authorType: 'internal',
+    }));
+  });
+
+  it('audits the technician as actor and the run in details', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
+
+    await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: USER_ID,
+      actorType: 'user',
+      action: 'ticket.comment',
+      initiatedBy: 'ai',
+      details: expect.objectContaining({ isInternal: true, fromAgentRunId: RUN_ID }),
+    }));
+  });
+
+  it('404s when the run does not belong to this ticket', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(postProposalNote(TICKET_ID, OTHER_RUN_ID, 'x', { userId: USER_ID }))
+      .rejects.toMatchObject({ status: 404 });
   });
 });
