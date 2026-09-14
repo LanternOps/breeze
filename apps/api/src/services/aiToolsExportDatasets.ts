@@ -172,16 +172,23 @@ const agentLogsAdapter: DatasetAdapter = {
     if (conditions === null) return async () => ({ rows: [], nextCursor: null });
 
     return async (cursor) => {
-      // `search_agent_logs` orders by timestamp desc and has no cursor of its
-      // own (it is a single capped page). Paging needs a tiebreaker, so the
-      // keyset is (timestamp, id) desc — the same order, made total.
+      // `search_agent_logs` orders by (created_at, timestamp, id) desc —
+      // RECEIPT time dominates, not the agent-reported event `timestamp`,
+      // because ingest writes up to 100 rows in one INSERT sharing the same
+      // created_at, and the agent's own event time is unreliable across
+      // receipts (aiToolsAgentLogs.ts's own comment on this exact ordering).
+      // Paging on (timestamp, id) instead of (created_at, id) would both
+      // diverge from the tool this adapter claims to mirror AND miss the
+      // `agent_logs_org_created_at_idx` index (org_id, created_at desc, id
+      // desc) — an unindexed sort over a fleet's whole log history. The
+      // keyset here is (created_at, id) desc, matching both.
       const decoded = cursor
         ? JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { t: string; id: string }
         : null;
       const keyset = decoded
         ? or(
-            lt(agentLogs.timestamp, new Date(decoded.t)),
-            and(eq(agentLogs.timestamp, new Date(decoded.t)), lt(agentLogs.id, decoded.id)),
+            lt(agentLogs.createdAt, new Date(decoded.t)),
+            and(eq(agentLogs.createdAt, new Date(decoded.t)), lt(agentLogs.id, decoded.id)),
           )!
         : undefined;
 
@@ -189,7 +196,7 @@ const agentLogsAdapter: DatasetAdapter = {
         .select()
         .from(agentLogs)
         .where(keyset ? and(...conditions, keyset) : and(...conditions))
-        .orderBy(desc(agentLogs.timestamp), desc(agentLogs.id))
+        .orderBy(desc(agentLogs.createdAt), desc(agentLogs.id))
         .limit(req.pageSize);
 
       const last = rows[rows.length - 1];
@@ -200,6 +207,7 @@ const agentLogsAdapter: DatasetAdapter = {
             id: r.id,
             deviceId: r.deviceId,
             timestamp: r.timestamp.toISOString(),
+            receivedAt: r.createdAt.toISOString(),
             level: r.level,
             component: r.component,
             message: redacted.message,
@@ -208,7 +216,7 @@ const agentLogsAdapter: DatasetAdapter = {
           };
         }),
         nextCursor: rows.length === req.pageSize && last
-          ? Buffer.from(JSON.stringify({ t: last.timestamp.toISOString(), id: last.id })).toString('base64url')
+          ? Buffer.from(JSON.stringify({ t: last.createdAt.toISOString(), id: last.id })).toString('base64url')
           : null,
       };
     };
@@ -228,7 +236,10 @@ const agentLogsAdapter: DatasetAdapter = {
  *  return the whole org. The device adapter therefore post-filters what comes
  *  back. Its rows carry `hostname`, not a device id, so the restriction is
  *  resolved to hostnames through `verifyDeviceAccess` — the same gate the other
- *  adapters use. FOLLOW-UP (file an issue): give
+ *  adapters use. Hostnames are NOT guaranteed unique within an org (re-images,
+ *  manual assets, cross-site duplicates), so this is a real, narrow §8
+ *  data-minimisation gap, not just an inconvenience — tracked as
+ *  https://github.com/LanternOps/breeze/issues/5776. FOLLOW-UP: give
  *  `generateDeviceInventoryReport` a real `filters.deviceIds` branch and a
  *  `deviceId` column, then delete this post-filter. */
 async function restrictionHostnames(req: DatasetRequest): Promise<Set<string> | null> {
@@ -292,7 +303,15 @@ const softwareInventoryAdapter: DatasetAdapter = {
 /** `analyze_metrics` is single-device by construction (`deviceArgs:
  *  ['deviceId']`). The export fans out across the requested devices and PACES
  *  the fan-out at EXPORT_DEVICE_CONCURRENCY so one analysis cannot saturate
- *  the API (spec §5.4). One page per device. */
+ *  the API (spec §5.4). One page per device.
+ *
+ *  KNOWN GAP, tracked as https://github.com/LanternOps/breeze/issues/5775:
+ *  each device's page is capped at `req.pageSize` (500) samples with no
+ *  continuation WITHIN a device — a device with more samples in the window
+ *  than that (e.g. 24h at minute granularity ≈ 1440) silently loses the
+ *  rest, and nothing sets `truncated: true` for it (the writer's row/wall
+ *  caps can't see this — the truncation happens one layer below what they
+ *  observe). Needs real per-device pagination, not a hard per-device cap. */
 const metricsAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: true,
@@ -313,7 +332,7 @@ const metricsAdapter: DatasetAdapter = {
         // `enforceDeviceArgs` gate already ran over `deviceIds`; this is the
         // builder's own check and is kept so the two paths stay identical.
         const verifyDeviceAccess = await getVerifyDeviceAccess();
-    const access = await verifyDeviceAccess(deviceId, req.auth);
+        const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const samples = await db
           .select()
@@ -361,7 +380,7 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
         // not a reason for one of three device-scoped adapters to be the odd
         // one out; symmetry is what makes a missing gate visible in review.
         const verifyDeviceAccess = await getVerifyDeviceAccess();
-    const access = await verifyDeviceAccess(deviceId, req.auth);
+        const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const findings = await readDeviceFindings(req.orgId, { status, deviceId });
         const catalog = await readCatalog([...new Set(findings.map((f) => f.vulnerabilityId))]);
@@ -414,7 +433,7 @@ const customFieldsAdapter: DatasetAdapter = {
       const collected: Array<Record<string, unknown>> = [];
       await runWithConcurrency(batch, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
         const verifyDeviceAccess = await getVerifyDeviceAccess();
-    const access = await verifyDeviceAccess(deviceId, req.auth);
+        const access = await verifyDeviceAccess(deviceId, req.auth);
         if ('error' in access) return;
         const values = (access.device.customFields ?? {}) as Record<string, unknown>;
         for (const definition of definitions) {

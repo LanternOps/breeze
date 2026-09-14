@@ -15,6 +15,9 @@ vi.mock('../config/env', async (importOriginal) => {
 });
 vi.mock('./aiAgents/runProgress', () => ({ emitRunProgress: vi.fn(async () => undefined) }));
 
+const sanitizeThrownToolError = vi.fn((..._a: unknown[]) => 'sanitized');
+vi.mock('./aiToolErrors', () => ({ sanitizeThrownToolError: (...a: unknown[]) => sanitizeThrownToolError(...a) }));
+
 const createPager = vi.fn();
 vi.mock('./aiToolsExportDatasets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./aiToolsExportDatasets')>();
@@ -127,6 +130,23 @@ describe('export_dataset', () => {
     expect(parsed.error).toBe('artifact_bytes_exceeded');
   });
 
+  it('treats an exhausted stagedBytesRemaining (0) as zero budget, not "no override"', async () => {
+    // 0 is falsy in JS — a naive `context?.stagedBytesRemaining && ...` check
+    // would silently grant the full EXPORT_DEFAULT_MAX_BYTES default instead
+    // of refusing. W04 sets exactly 0 when a run's staged-byte budget is spent.
+    createPager.mockResolvedValue(pagesOf([{ rows: [{ id: 1 }], nextCursor: null }]));
+    createArtifact.mockImplementation(async (input: { body: NodeJS.ReadableStream }) => {
+      for await (const _ of input.body) { /* drain until the writer throws */ }
+      return { id: 'never', bytes: 0 };
+    });
+    const tool = getTool();
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs', format: 'jsonl' }, auth,
+      { runTargets: [], stagedBytesRemaining: 0 },
+    ));
+    expect(parsed.error).toBe('artifact_bytes_exceeded');
+  });
+
   it('refuses deviceIds outside the run targets', async () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler(
@@ -184,5 +204,20 @@ describe('export_dataset', () => {
     const tool = getTool();
     const parsed = JSON.parse(await tool.handler({ dataset: 'passwords' }, auth));
     expect(parsed.error).toBe('unknown_dataset');
+  });
+
+  it('logs orgId/runId/dataset context when an unexpected error escapes the handler', async () => {
+    sanitizeThrownToolError.mockClear();
+    createPager.mockRejectedValueOnce(new Error('boom'));
+    const tool = getTool();
+    const parsed = JSON.parse(await tool.handler(
+      { dataset: 'event_logs' }, auth,
+      { runTargets: [], stagedBytesRemaining: 1_000_000 },
+    ));
+    expect(parsed.error).toBe('export_failed');
+    expect(sanitizeThrownToolError).toHaveBeenCalledTimes(1);
+    expect(sanitizeThrownToolError.mock.calls[0]![2]).toMatchObject({
+      orgId: 'org-1', runId: 'run-1', dataset: 'event_logs',
+    });
   });
 });

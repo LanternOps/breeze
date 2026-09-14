@@ -505,7 +505,11 @@ function compiledParams(cond: SQL | undefined): unknown[] {
 }
 
 const yielded: unknown[] = [];
-const preVerdicts: Array<{ allowed: boolean; error?: string }> = [];
+const preVerdicts: Array<{
+  allowed: boolean;
+  error?: string;
+  context?: { runTargets?: readonly string[]; stagedBytesRemaining?: number };
+}> = [];
 const closeMock = vi.fn();
 let lastQueryOptions: Record<string, unknown> | undefined;
 
@@ -670,6 +674,17 @@ describe('executeAgentRun', () => {
 
     expect(transitionRunStatus.mock.calls[0]!.slice(0, 3)).toEqual([RUN_ID, 'queued', 'running']);
     expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    // The REAL wiring (runLoop.ts's `runTargets: run.deviceId ? [run.deviceId]
+    // : []` call-site expression, not just the type) — this run seeds
+    // deviceId: DEVICE_ID (seedRows' default), so export_dataset's
+    // device-outside-run-targets refusal has something real to refuse
+    // against. A regression here (e.g. the line reverted to always `[]`)
+    // would silently widen every device-scoped run's export to the whole
+    // org and nothing else in this suite would catch it.
+    expect(preVerdicts[0]!.context).toMatchObject({
+      runTargets: [DEVICE_ID],
+      stagedBytesRemaining: expect.any(Number),
+    });
 
     const final = finalTransition()!;
     expect(final.from).toBe('running');

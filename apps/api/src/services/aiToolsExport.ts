@@ -67,19 +67,25 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input: Record<string, unknown>, auth: AuthContext, context?: ToolExecutionContext) => {
+      // Hoisted above the try so the catch block can log them: a bare stack
+      // trace with no org/run/dataset is nearly unusable for correlating a
+      // background agent-run failure back to the run/org that hit it.
+      let orgId: string | null = null;
+      let runId: string | null = null;
+      let dataset: ExportDataset | undefined;
       try {
         if (!isExportDataset(input.dataset)) {
           return JSON.stringify({ error: 'unknown_dataset', dataset: input.dataset });
         }
-        const dataset = input.dataset;
-        const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
+        dataset = input.dataset;
+        orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
         if (!orgId) return JSON.stringify({ error: 'No organization context available' });
 
         // Run IDENTITY comes from the PRINCIPAL, not from ToolExecutionContext
         // (reconciliation R4): `buildAgentAuthContext` puts the run id on
         // `principal` (agentAuthContext.ts:78) and the run org on `auth.orgId`
         // (:89), so there is nothing to copy and nothing to drift.
-        const runId = auth.principal?.kind === 'ai_agent' ? auth.principal.runId : null;
+        runId = auth.principal?.kind === 'ai_agent' ? auth.principal.runId : null;
 
         // Every artifact is OWNED by a run: that ownership is what scopes it,
         // expires it and bills it. A direct chat/MCP call has no run to own one,
@@ -115,7 +121,11 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
           Math.max(1, Number(input.maxRows) || EXPORT_DEFAULT_MAX_ROWS),
           EXPORT_HARD_MAX_ROWS,
         );
-        const maxBytes = context?.stagedBytesRemaining && context.stagedBytesRemaining > 0
+        // `0` is a meaningful value here (budget fully spent) and must NOT be
+        // treated as "no override" — a `&&`/truthiness check would silently
+        // fall through to the full default the moment a run's staged-byte
+        // budget hits zero, defeating the whole point of the field.
+        const maxBytes = context?.stagedBytesRemaining !== undefined
           ? context.stagedBytesRemaining
           : EXPORT_DEFAULT_MAX_BYTES;
 
@@ -182,8 +192,10 @@ export function registerExportTools(aiTools: Map<string, AiTool>): void {
             message: 'The export exceeded this run\'s artifact byte budget. Narrow the filters or the device set and try again.',
           });
         }
-        const message = sanitizeThrownToolError('export-dataset', error);
-        console.error('[ai:export_dataset]', message, error);
+        // sanitizeThrownToolError already logs the raw message/stack plus this
+        // context (aiToolErrors.ts) — no need for a second, differently-
+        // prefixed console.error here.
+        const message = sanitizeThrownToolError('export-dataset', error, { orgId, runId, dataset });
         return JSON.stringify({ error: 'export_failed', message });
       }
     },

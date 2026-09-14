@@ -87,6 +87,16 @@ describe('buildExportStream', () => {
     expect(text).toContain('"plain","ok"');
   });
 
+  it('JSON-encodes non-scalar CSV cells instead of stringifying them as [object Object]', async () => {
+    const { pager } = pagerOf([
+      { rows: [{ deviceId: 'd1', fields: { code: 1, note: 'x' } }], nextCursor: null },
+    ]);
+    const out = buildExportStream(pager, { format: 'csv', maxRows: 100, maxBytes: 1e6, wallMs: 60_000 });
+    const text = await drain(out.body);
+    expect(text).not.toContain('[object Object]');
+    expect(text).toContain('"{""code"":1,""note"":""x""}"');
+  });
+
   it('emits head and tail previews of the RAW bytes, capped', async () => {
     const { pager } = pagerOf([{ rows: Array.from({ length: 500 }, (_, i) => ({ i })), nextCursor: null }]);
     const out = buildExportStream(pager, { format: 'jsonl', maxRows: 1000, maxBytes: 1e6, wallMs: 60_000 });

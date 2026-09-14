@@ -113,10 +113,26 @@ export function buildExportStream(
       .toString('utf8');
   }
 
+  /**
+   * `escapeCsvCell` (spreadsheetExport.ts) does `String(value ?? '')` — correct
+   * for scalars, but `String({})` is the literal text `[object Object]`. Several
+   * datasets carry a jsonb column verbatim (`agent_logs.fields`,
+   * `custom_fields.value`), so CSV cells that are objects/arrays are
+   * JSON-encoded here BEFORE reaching csvRow, same as jsonl already does by
+   * construction (JSON.stringify(row)). Dates pass through untouched: csvRow
+   * already special-cases them to ISO strings.
+   */
+  function csvCellValue(value: unknown): unknown {
+    if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
+      return JSON.stringify(value);
+    }
+    return value;
+  }
+
   function serialise(row: Record<string, unknown>): string {
     if (opts.format === 'jsonl') return `${JSON.stringify(row)}\n`;
     const keys = Object.keys(row);
-    const line = `${csvRow(keys.map((k) => row[k]))}\n`;
+    const line = `${csvRow(keys.map((k) => csvCellValue(row[k])))}\n`;
     if (headerWritten) return line;
     headerWritten = true;
     return `${csvRow(keys)}\n${line}`;
