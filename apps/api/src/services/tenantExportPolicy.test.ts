@@ -498,3 +498,21 @@ describe('m365 tenant sync export classifications', () => {
     }
   });
 });
+
+describe('AI origin columns are classified (#5022 W01)', () => {
+  it('classifies the three script_executions AI columns as included', () => {
+    const cols = CORE_TENANT_EXPORT_POLICY['script_executions']!.columns;
+    for (const name of ['ai_initiator_kind', 'ai_session_id', 'ai_agent_run_id']) {
+      expect(cols[name], `script_executions.${name} unclassified`).toBeDefined();
+      expect(cols[name]!.decision).toBe('include');
+    }
+  });
+
+  it('classifies the three action_intents AI origin columns as included', () => {
+    const cols = CORE_TENANT_EXPORT_POLICY['action_intents']!.columns;
+    for (const name of ['ai_origin_kind', 'ai_origin_session_id', 'ai_origin_agent_run_id']) {
+      expect(cols[name], `action_intents.${name} unclassified`).toBeDefined();
+      expect(cols[name]!.decision).toBe('include');
+    }
+  });
+});

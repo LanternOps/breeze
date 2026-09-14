@@ -4,6 +4,8 @@ import type { ScriptApprovalMethod, ScriptParameterDefinition } from '@breeze/sh
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
+import { aiSessions } from './ai';
+import { aiInitiatorKindEnum } from './aiInitiator';
 
 export const scriptLanguageEnum = pgEnum('script_language', ['powershell', 'bash', 'python', 'cmd']);
 export const scriptRunAsEnum = pgEnum('script_run_as', ['system', 'user', 'elevated']);
@@ -286,6 +288,18 @@ export const scriptExecutions = pgTable('script_executions', {
   // and its review are erased.
   reviewRiskTier: text('review_risk_tier').$type<'low' | 'medium' | 'high' | 'critical'>(),
   reviewSummary: varchar('review_summary', { length: 600 }),
+  // --- AI origin attribution (#5022 W01) ---------------------------------
+  // WHO DECIDED this run. Orthogonal to trigger_type (what scheduled it) and
+  // to triggered_by (the authenticated principal). NULL = "AI initiation not
+  // recorded", never "a human did this".
+  aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
+  // Real FK: both tables are org-scoped, so erasing a session should null this
+  // cleanly rather than block.
+  aiSessionId: uuid('ai_session_id').references(() => aiSessions.id, { onDelete: 'set null' }),
+  // Bare uuid, like automation_run_id above: ai_agent_runs is deliberately
+  // excluded from the device-move re-stamp path, so a real FK would outlive
+  // its own tenant.
+  aiAgentRunId: uuid('ai_agent_run_id'),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({
   proposalIdx: index('script_executions_proposal_idx')
