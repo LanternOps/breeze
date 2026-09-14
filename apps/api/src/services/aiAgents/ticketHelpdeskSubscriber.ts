@@ -66,7 +66,7 @@
  */
 import { and, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import * as dbModule from '../../db';
-import { ticketComments, ticketDrafts, tickets } from '../../db/schema';
+import { aiAgentRuns, ticketComments, ticketDrafts, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { createAndEnqueueAgentRun } from './runService';
 
@@ -271,6 +271,39 @@ async function isEligibleForResolvedAdmission(ticketId: string, orgId: string): 
 }
 
 /**
+ * #4212 — absolute per-ticket backstop on re-triage. Independent of the
+ * per-hour / concurrency / budget caps in runService.ts, which are per AGENT:
+ * a single pathological ticket that a customer replies to twenty times must
+ * not consume an org's whole triage budget on its own. Counted over every
+ * triage-profile run ever admitted for the ticket, not a rolling window, so
+ * the ceiling is a true ceiling.
+ *
+ * A constant, not a policy field: the existing `ai_agents.limits` jsonb is at
+ * schemaVersion 8 and every bump ripples through `validators/aiAgents.ts`,
+ * `effectivePolicy.ts`, `agentPreview.ts` and the settings UI. This ceiling is
+ * a safety backstop, not a knob techs tune — `limits.maxTriageRunsPerHour`
+ * and `cooldownSeconds` are the tunable dials and already apply.
+ *
+ * Fail-closed on a read error, same discipline as the loop guard above.
+ */
+export const MAX_TRIAGE_RUNS_PER_TICKET = 5;
+
+async function triageRunCeilingReached(ticketId: string): Promise<boolean> {
+  const { db } = dbModule;
+  try {
+    const rows = await db
+      .select({ id: aiAgentRuns.id })
+      .from(aiAgentRuns)
+      .where(and(eq(aiAgentRuns.ticketId, ticketId), eq(aiAgentRuns.profile, 'triage')))
+      .limit(MAX_TRIAGE_RUNS_PER_TICKET);
+    return rows.length >= MAX_TRIAGE_RUNS_PER_TICKET;
+  } catch (err) {
+    console.error('[ticketHelpdesk] triage-run ceiling read failed — denying admission:', err);
+    return true;
+  }
+}
+
+/**
  * The shared "admit a triage run for this ticket" body every event handler
  * below funnels into once its own event-specific gate has passed: the loop
  * guard, the ticket-filter-context read, and the `createAndEnqueueAgentRun`
@@ -300,9 +333,9 @@ async function admitTriageRun(
   dedupeKey: string,
   loopGuard: { humanCommentAt: Date } | 'skip',
 ): Promise<void> {
-  // Only the loop-guard probe and the ticket-filter-context read run under a
-  // system context — see `runWithSystemDbAccess`'s header comment (#1105
-  // pool-hold seam).
+  // Only the loop-guard probe, the ceiling read, and the ticket-filter-context
+  // read run under a system context — see `runWithSystemDbAccess`'s header
+  // comment (#1105 pool-hold seam).
   if (loopGuard !== 'skip') {
     const ok = await runWithSystemDbAccess(() =>
       humanCommentIsNewerThanAgentActivity(ticketId, loopGuard.humanCommentAt),
@@ -314,6 +347,17 @@ async function admitTriageRun(
       );
       return;
     }
+  }
+
+  // #4212 — absolute per-ticket backstop, independent of and unconditional
+  // on the loop guard above (applies even to the resolved lane's 'skip').
+  const atCeiling = await runWithSystemDbAccess(() => triageRunCeilingReached(ticketId));
+  if (atCeiling) {
+    console.info(
+      '[ticketHelpdeskSubscriber] skipping admission — ticket is at the per-ticket triage-run ceiling',
+      { ticketId, orgId, ceiling: MAX_TRIAGE_RUNS_PER_TICKET },
+    );
+    return;
   }
 
   // Load the ticket's category/priority for `runService.ts`'s trigger-filter

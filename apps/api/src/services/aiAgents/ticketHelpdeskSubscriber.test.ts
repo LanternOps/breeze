@@ -46,6 +46,11 @@ vi.mock('../../db/schema', () => ({
     kind: 'kind',
     state: 'state',
   },
+  aiAgentRuns: {
+    id: 'id',
+    ticketId: 'ticket_id',
+    profile: 'profile',
+  },
 }));
 
 const createAndEnqueueAgentRun = vi.hoisted(() => vi.fn());
@@ -57,6 +62,7 @@ import {
   handleTicketCreatedEvent,
   handleTicketCommentedEvent,
   handleTicketStatusChangedEvent,
+  MAX_TRIAGE_RUNS_PER_TICKET,
 } from './ticketHelpdeskSubscriber';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000c1';
@@ -119,10 +125,28 @@ function mockTicketFilterRead(rows: unknown[]) {
   } as never);
 }
 
-/** The common "admission proceeds" setup: no agent-originated activity, and
- *  the ticket exists in-org with the given category/categoryId/priority. */
+/** db.select().from().where().limit() -> rows (the per-ticket triage-run
+ *  ceiling check, #4212 — `triageRunCeilingReached`). Queued THIRD in the
+ *  admission path, right after the loop guard and before the
+ *  ticket-filter-context read. Pass an array of `rows.length` to simulate how
+ *  many prior triage runs exist for the ticket (the real query caps at
+ *  `MAX_TRIAGE_RUNS_PER_TICKET` via `.limit()`). */
+function mockTriageRunCeilingRead(rows: unknown[]) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(rows),
+      }),
+    }),
+  } as never);
+}
+
+/** The common "admission proceeds" setup: no agent-originated activity,
+ *  below the per-ticket triage-run ceiling, and the ticket exists in-org
+ *  with the given category/categoryId/priority. */
 function mockCleanTicket(overrides: Partial<{ category: string | null; categoryId: string | null; priority: string }> = {}) {
   mockOriginProbe([]);
+  mockTriageRunCeilingRead([]);
   mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal', ...overrides }]);
 }
 
@@ -253,6 +277,7 @@ describe('handleTicketCreatedEvent', () => {
 
   it('skips admission when the ticket is not found (or not in org) — no filter context to admit against', async () => {
     mockOriginProbe([]);
+    mockTriageRunCeilingRead([]);
     mockTicketFilterRead([]); // ticket vanished / moved org between event and processing
 
     await handleTicketCreatedEvent(ticketCreatedEvent());
@@ -349,6 +374,7 @@ describe('handleTicketCreatedEvent', () => {
 
   it('rethrows when the ticket-filter-context read itself fails (queue-mode retry contract)', async () => {
     mockOriginProbe([]);
+    mockTriageRunCeilingRead([]);
     vi.mocked(db.select).mockImplementationOnce(() => {
       throw new Error('ticket read boom');
     });
@@ -401,6 +427,7 @@ describe('recency-ordered loop guard (#4212)', () => {
   it('admits when the human comment is newer than the newest agent comment', async () => {
     mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
     mockOriginProbe([{ createdAt: new Date('2026-09-10T10:00:00Z') }]);
+    mockTriageRunCeilingRead([]);
     mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c2', isPublic: true } }));
@@ -439,14 +466,18 @@ describe('recency-ordered loop guard (#4212)', () => {
   it('the resolved lane skips the guard entirely — an ancient agent note does not block resolution admission', async () => {
     mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
     mockActiveResolutionDraftRead([]);
+    // The per-ticket triage-run ceiling (Task 9) is NOT skipped by 'skip' —
+    // it applies unconditionally as an absolute backstop, unlike the loop
+    // guard.
+    mockTriageRunCeilingRead([]);
     mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
 
     expect(createAndEnqueueAgentRun).toHaveBeenCalled();
-    // No origin-guard probe at all for this lane — 3 selects total (resolved
-    // read, active-draft read, ticket-filter-context read).
-    expect(db.select).toHaveBeenCalledTimes(3);
+    // No origin-guard probe at all for this lane — 4 selects total (resolved
+    // read, active-draft read, ceiling read, ticket-filter-context read).
+    expect(db.select).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -599,11 +630,14 @@ describe('handleTicketStatusChangedEvent', () => {
   it('admits a triage run when the ticket re-reads as resolved with no note and no active draft', async () => {
     mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
     mockActiveResolutionDraftRead([]);
-    // I1 (final review #4191): the resolved lane skips the origin-guard
-    // probe (applyLoopGuard=false) — only the ticket-filter-context read
-    // remains, NOT `mockCleanTicket()`'s two-call shape (that would queue an
-    // origin-probe mock the handler never consumes, starving the real next
-    // call and making this assertion pass for the wrong reason).
+    // I1 (final review #4191): the resolved lane skips the loop guard
+    // (loopGuard: 'skip') — no origin/recency probe. The per-ticket triage
+    // ceiling (Task 9, #4212) is NOT skipped, so it still queues here, right
+    // before the ticket-filter-context read — NOT `mockCleanTicket()`'s
+    // shape (that would queue an origin-probe mock the handler never
+    // consumes, starving the real next call and making this assertion pass
+    // for the wrong reason).
+    mockTriageRunCeilingRead([]);
     mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
@@ -618,16 +652,17 @@ describe('handleTicketStatusChangedEvent', () => {
         profile: 'triage',
       }),
     );
-    // Exactly 3 db.select calls total: the resolved-eligibility ticket
-    // read, the active-draft read, and the ticket-filter-context read — NO
-    // origin-guard probe. If the guard were mistakenly re-applied to this
-    // lane, the handler would issue a 4th db.select() (the origin probe)
-    // BEFORE consuming the `mockTicketFilterRead` mock — starving it and
-    // either throwing (queue exhausted) or reading the wrong shape, so this
-    // count is itself the I1 regression assertion: prior agent-originated
+    // Exactly 4 db.select calls total: the resolved-eligibility ticket
+    // read, the active-draft read, the triage-run-ceiling read, and the
+    // ticket-filter-context read — NO origin-guard probe. If the loop guard
+    // were mistakenly re-applied to this lane, the handler would issue an
+    // extra db.select() (the origin probe) BEFORE consuming the
+    // `mockTriageRunCeilingRead`/`mockTicketFilterRead` mocks — starving them
+    // and either throwing (queue exhausted) or reading the wrong shape, so
+    // this count is itself the I1 regression assertion: prior agent-originated
     // activity on the ticket (an earlier triage note) can no longer block
     // this lane, because nothing here even asks the question.
-    expect(db.select).toHaveBeenCalledTimes(3);
+    expect(db.select).toHaveBeenCalledTimes(4);
   });
 
   it('cheap prefilter: skips with NO db reads at all when the payload\'s `to` is not resolved', async () => {
@@ -692,9 +727,10 @@ describe('handleTicketStatusChangedEvent', () => {
   it('uses its OWN dedupe key (ticket-resolved:<id>), distinct from ticket-created/commented', async () => {
     mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
     mockActiveResolutionDraftRead([]);
-    // I1: single ticket-filter-context read only — see the earlier admission
-    // test's comment for why `mockCleanTicket()`'s origin-probe mock is not
-    // used here.
+    // I1: no origin/recency probe — see the earlier admission test's comment
+    // for why `mockCleanTicket()`'s shape is not used here. The triage-run
+    // ceiling (#4212) still applies unconditionally.
+    mockTriageRunCeilingRead([]);
     mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
 
     await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
@@ -702,5 +738,48 @@ describe('handleTicketStatusChangedEvent', () => {
     const [input] = createAndEnqueueAgentRun.mock.calls[0]!;
     expect((input as { dedupeKey: string }).dedupeKey).toBe(`ticket-resolved:${TICKET_ID}`);
     expect((input as { dedupeKey: string }).dedupeKey).not.toBe(`ticket-created:${TICKET_ID}`);
+  });
+});
+
+// -----------------------------------------------------------------------
+// Task 9 (#4212): hard per-ticket re-triage ceiling — an absolute backstop
+// independent of the loop guard and of runService.ts's per-AGENT caps.
+// -----------------------------------------------------------------------
+describe('per-ticket triage-run ceiling (#4212)', () => {
+  it('stops admitting after MAX_TRIAGE_RUNS_PER_TICKET runs on one ticket', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([]);
+    mockTriageRunCeilingRead(
+      Array.from({ length: MAX_TRIAGE_RUNS_PER_TICKET }, (_, i) => ({ id: `run-${i}` })),
+    );
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c9', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('still admits below the ceiling', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([]);
+    mockTriageRunCeilingRead(
+      Array.from({ length: MAX_TRIAGE_RUNS_PER_TICKET - 1 }, (_, i) => ({ id: `run-${i}` })),
+    );
+    mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c9', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+  });
+
+  it('counts denied rather than admitting when the ceiling read throws (fail-closed)', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([]);
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c9', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 });
