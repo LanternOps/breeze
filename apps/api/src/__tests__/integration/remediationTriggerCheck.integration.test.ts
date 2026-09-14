@@ -1,7 +1,7 @@
 /**
  * Live-Postgres behavioral coverage for the `trigger_kind`/`trigger_ref_id`/
  * `trigger_key` CHECK constraints the W01 migration
- * (`2026-10-16-181700-remediation-trigger-provenance.sql`) added on
+ * (`2026-10-16-182900-remediation-trigger-provenance.sql`) added on
  * `action_intents`, `script_executions`, and `automation_action_results`:
  *
  *   - `<table>_trigger_kind_chk`  — `trigger_kind` must be NULL or one of the

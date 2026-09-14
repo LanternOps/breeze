@@ -20,7 +20,7 @@ branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
 
 ## Global Constraints
 
-- Migration filename `apps/api/migrations/2026-10-16-181700-remediation-trigger-provenance.sql`. The `1815xx` block is reserved for this cluster (PR #5745). Before pushing, `ls apps/api/migrations | sort | tail -1` on `origin/main` must sort **before** it (newest at planning time: `2026-10-16-180200-monitor-definitions-builtin-key.sql`). Bump the `HHMMSS` upward if a later file has landed; never rename it for today's real date.
+- Migration filename `apps/api/migrations/2026-10-16-182900-remediation-trigger-provenance.sql`. The `1815xx` block is reserved for this cluster (PR #5745). Before pushing, `ls apps/api/migrations | sort | tail -1` on `origin/main` must sort **before** it (newest at planning time: `2026-10-16-180200-monitor-definitions-builtin-key.sql`). Bump the `HHMMSS` upward if a later file has landed; never rename it for today's real date.
 - **The migration is pure DDL — no `UPDATE`/`INSERT`/`DELETE`.** Backfilling historical rows is explicitly out of scope (spec §7): the columns are nullable and `NULL` reads as "unknown trigger". This keeps `apps/api/src/db/migrationRlsScope.test.ts` green with no `set_config` elevation needed; if you find yourself adding DML, stop — you have gone out of scope.
 - Idempotent: `ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` then re-add, `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`. No inner `BEGIN`/`COMMIT`.
 - **`text` + SQL `CHECK`, never `pgEnum`.** `action_intents` deliberately has no native enum type (`apps/api/src/db/schema/actionIntents.ts:40-48`) and this envelope follows it. On `script_executions` the new `trigger_kind` sits **beside** the existing `trigger_type` `pgEnum` (`schema/scripts.ts:23`: `manual|scheduled|alert|policy|automation`) — two different columns that may legitimately disagree. Both get a docstring saying so.
@@ -116,7 +116,7 @@ git commit -m "feat(shared): REMEDIATION_TRIGGER_KINDS envelope and key builders
 ### Task 2: Migration — three columns × three tables, CHECKs, index, immutability deny-list
 
 **Files:**
-- Create: `apps/api/migrations/2026-10-16-181700-remediation-trigger-provenance.sql`
+- Create: `apps/api/migrations/2026-10-16-182900-remediation-trigger-provenance.sql`
 - Test: `apps/api/src/db/autoMigrate.test.ts` (existing, auto-discovers), `apps/api/src/db/migrationRlsScope.test.ts` (existing; stays green because the file has no DML)
 
 **Interfaces produced:** `action_intents.trigger_kind|trigger_ref_id|trigger_key`, `script_executions.trigger_kind|trigger_ref_id|trigger_key`, `automation_action_results.trigger_kind|trigger_ref_id|trigger_key`; CHECK constraints `<table>_trigger_kind_chk` and `<table>_trigger_key_shape_chk`; index `action_intents_trigger_kind_idx`; replaced function `action_intents_block_content_update()`.
