@@ -221,8 +221,8 @@
       "includeOtherEquipmentHelp": "Impressoras, hardware de rede e IoT são listados sem cronograma de substituição.",
       "replaceAgeYears": "Planejar substituição após (anos)",
       "replaceAgeYearsHelp": "Um dispositivo deve ser substituído este número de anos após a compra, ou quando a garantia ativa terminar, se for depois.",
-      "serverReplaceAgeYears": "Plan server replacement after (years)",
-      "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
+      "serverReplaceAgeYears": "Planejar substituição de servidores após (anos)",
+      "serverReplaceAgeYearsHelp": "Os servidores seguem seu próprio cronograma e aparecem em uma seção separada do relatório."
     },
     "reportBuilderPage": {
       "configurationTitle": "Configuracao do Relatório",
@@ -725,7 +725,18 @@
         "templateName": "Pacote Trimestral de Conformidade",
         "value": "Valor"
       },
-      "recipients": { "contacts": "Contatos da organização", "legacy": "Endereços de e-mail legados", "convert": "Converter em contato", "added": "Destinatário do relatório adicionado", "removed": "Destinatário do relatório removido", "converted": "Endereço de e-mail convertido em contato", "updateFailed": "Não foi possível atualizar os destinatários do relatório", "convertFailed": "Não foi possível converter este endereço de e-mail", "mfaRequired": "A conversão de um destinatário exige autenticação multifator. Ative o MFA no seu perfil e tente novamente.", "loadFailed": "Não foi possível carregar os destinatários do relatório" },
+      "recipients": {
+        "contacts": "Contatos da organização",
+        "legacy": "Endereços de e-mail legados",
+        "convert": "Converter em contato",
+        "added": "Destinatário do relatório adicionado",
+        "removed": "Destinatário do relatório removido",
+        "converted": "Endereço de e-mail convertido em contato",
+        "updateFailed": "Não foi possível atualizar os destinatários do relatório",
+        "convertFailed": "Não foi possível converter este endereço de e-mail",
+        "mfaRequired": "A conversão de um destinatário exige autenticação multifator. Ative o MFA no seu perfil e tente novamente.",
+        "loadFailed": "Não foi possível carregar os destinatários do relatório"
+      },
       "previewTable": {
         "selectFields": "Selecione campos para preencher a tabela de pre-visualização."
       },

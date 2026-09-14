@@ -221,8 +221,8 @@
       "includeOtherEquipmentHelp": "Yazıcılar, ağ ve IoT donanımı değiştirme takvimi olmadan listelenir.",
       "replaceAgeYears": "Değiştirmeyi planla (yıl sonra)",
       "replaceAgeYearsHelp": "Bir cihaz satın alımdan bu kadar yıl sonra, veya daha geçse aktif garanti bittiğinde değiştirilmelidir.",
-      "serverReplaceAgeYears": "Plan server replacement after (years)",
-      "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
+      "serverReplaceAgeYears": "Sunucu değişimini planla (yıl sonra)",
+      "serverReplaceAgeYearsHelp": "Sunucular kendi zaman çizelgesini izler ve raporun ayrı bir bölümünde listelenir."
     },
     "reportBuilderPage": {
       "configurationTitle": "Rapor Yapılandırması",
@@ -725,7 +725,18 @@
         "templateName": "Üç Aylık Uyumluluk Paketi",
         "value": "Değer"
       },
-      "recipients": { "contacts": "Kuruluş kişileri", "legacy": "Eski e-posta adresleri", "convert": "Kişiye dönüştür", "added": "Rapor alıcısı eklendi", "removed": "Rapor alıcısı kaldırıldı", "converted": "E-posta adresi kişiye dönüştürüldü", "updateFailed": "Rapor alıcıları güncellenemedi", "convertFailed": "Bu e-posta adresi dönüştürülemedi", "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.", "loadFailed": "Rapor alıcıları yüklenemedi" },
+      "recipients": {
+        "contacts": "Kuruluş kişileri",
+        "legacy": "Eski e-posta adresleri",
+        "convert": "Kişiye dönüştür",
+        "added": "Rapor alıcısı eklendi",
+        "removed": "Rapor alıcısı kaldırıldı",
+        "converted": "E-posta adresi kişiye dönüştürüldü",
+        "updateFailed": "Rapor alıcıları güncellenemedi",
+        "convertFailed": "Bu e-posta adresi dönüştürülemedi",
+        "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.",
+        "loadFailed": "Rapor alıcıları yüklenemedi"
+      },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
       },
