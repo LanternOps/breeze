@@ -2585,6 +2585,11 @@ describe('validateConfig', () => {
       VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
       VERCEL_TEAM_ID: 'team_xxx',
       VERCEL_PROJECT_ID: 'prj_xxx',
+      // W01's artifact-store rule: a hosted workspace lane needs a blob bucket
+      // for its region (validate.ts, BREEZE_AI_WORKSPACE_ENABLED hosted branch).
+      ARTIFACT_S3_BUCKET_US: 'breeze-ai-artifacts-us',
+      ARTIFACT_S3_ACCESS_KEY: 'artifact-access-key',
+      ARTIFACT_S3_SECRET_KEY: 'artifact-secret-key',
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');

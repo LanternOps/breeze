@@ -650,7 +650,6 @@ const envObjectSchema = z
     // Execution plane W01 (spec 2026-09-13 §8). Validated for SHAPE here so a
     // typo boot-refuses instead of silently reading as off / 'us'.
     BREEZE_REGION: z.string().optional(),
-    BREEZE_AI_WORKSPACE_ENABLED: z.string().optional(),
     ARTIFACT_BLOB_BACKEND: z.string().optional(),
     ARTIFACT_S3_ENDPOINT_EU: z.string().optional(),
     ARTIFACT_S3_ENDPOINT_US: z.string().optional(),
