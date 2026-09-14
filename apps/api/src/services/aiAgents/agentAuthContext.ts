@@ -22,6 +22,12 @@ export interface AgentRunRef {
    * the agent to the whole org.
    */
   deviceSiteId?: string | null;
+  /**
+   * The persisted `ai_sessions.id` this run is bound to, when it has one
+   * (#5022 W01). Carried into `aiOrigin` so a run initiated from a chat
+   * session keeps the conversation pointer alongside the run pointer.
+   */
+  sessionId?: string | null;
 }
 
 export interface OrgRef {
@@ -76,6 +82,13 @@ export function buildAgentAuthContext(
   assertRunOwnership(agent, run, org);
   return {
     principal: { kind: 'ai_agent', agentId: agent.id, runId: run.id },
+    // #5022 W01: the AI-surface mint site for autonomous agent runs. Minted
+    // ONCE here, per run -- never per tool. `services/aiDispatch.ts` reads it.
+    aiOrigin: {
+      kind: 'ai_agent' as const,
+      agentRunId: run.id,
+      ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+    },
     // Attribution only. Never used for RBAC (checkPermissionRequirements denies
     // ai_agent first) and never copied into breeze.user_id (agentDbAccessContext).
     user: {

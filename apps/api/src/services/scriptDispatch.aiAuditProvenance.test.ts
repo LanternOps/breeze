@@ -117,6 +117,11 @@ describe('dispatchScriptToDevice — AI-authored audit provenance (#5022, W05)',
     );
   });
 
+  // #5022 W01: this used to pass with NO aiOrigin, because actorType was read
+  // off `source.proposal.authorKind` -- i.e. off AUTHORSHIP. That was the
+  // defect: it also stamped 'ai_agent' on a HUMAN-invoked run of the same
+  // proposal. actorType now derives from the authenticated PRINCIPAL, so an
+  // autonomous run has to say it is one.
   it('uses actorType ai_agent for an autonomous agent-run proposal', async () => {
     await dispatchScriptToDevice({
       device: device(),
@@ -125,6 +130,8 @@ describe('dispatchScriptToDevice — AI-authored audit provenance (#5022, W05)',
         proposal: proposal({ id: 'proposal-2', authorKind: 'agent_run', sessionId: null, agentRunId: 'run-1' }),
         snapshot: snapshotFor('proposal-2'),
       },
+      aiOrigin: { kind: 'ai_agent', agentRunId: 'run-1' },
+      principalActorId: 'agent-7',
       provenance: {
         approvalMethod: 'unattended_reviewer_gated',
         reviewRiskTier: 'low',
@@ -132,7 +139,9 @@ describe('dispatchScriptToDevice — AI-authored audit provenance (#5022, W05)',
       },
     } as never);
 
-    expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({ actorType: 'ai_agent' }));
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: 'ai_agent', actorId: 'agent-7' }),
+    );
   });
 
   it('writes null provenance fields when the caller supplied none', async () => {
@@ -167,5 +176,105 @@ describe('dispatchScriptToDevice — AI-authored audit provenance (#5022, W05)',
     } as never);
 
     expect(createAuditLogAsync).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// #5022 W01 Task 9 — the actor mismatch defect.
+//
+// The previous emission read `actorType` off `source.proposal.authorKind`
+// while `actorId` came from the INVOKER, so an AI-AUTHORED script hand-run by
+// a human wrote actor_type='ai_agent' against a HUMAN user id: an audit row
+// that misattributes a human action to an AI. Authorship, initiation and
+// authenticated principal are three different things.
+// ============================================================================
+const HUMAN_USER_ID = 'human-1';
+const AGENT_ID = 'agent-7';
+
+describe('ai.script.executed derives its actor from the PRINCIPAL, not authorship (#5022 W01)', () => {
+  beforeEach(() => {
+    // These cases pass a real `createdBy`, which runs the users-FK probe the
+    // other cases in this file never reach.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ id: HUMAN_USER_ID }]) }),
+      }),
+    } as never);
+  });
+
+  it('audits a human hand-running an AI-authored proposal as the human', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'proposal',
+        proposal: proposal({ authorKind: 'agent_run', agentRunId: 'run-1' }),
+        snapshot: snapshotFor('proposal-1'),
+      },
+      triggeredBy: HUMAN_USER_ID,
+      createdBy: HUMAN_USER_ID,
+    } as never);
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ai.script.executed',
+        actorType: 'user',
+        actorId: HUMAN_USER_ID,
+        details: expect.objectContaining({ authorKind: 'agent_run' }),
+      }),
+    );
+  });
+
+  it('audits an agent-initiated proposal run as the agent principal', async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'proposal',
+        proposal: proposal({ authorKind: 'agent_run', agentRunId: 'run-1' }),
+        snapshot: snapshotFor('proposal-1'),
+      },
+      triggeredBy: null,
+      createdBy: null,
+      aiOrigin: { kind: 'ai_agent', agentRunId: 'run-1' },
+      principalActorId: AGENT_ID,
+    } as never);
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ actorType: 'ai_agent', actorId: AGENT_ID }),
+    );
+  });
+
+  it("writes an ai.script.executed row for an AI-run LIBRARY script (Todd's Kit case)", async () => {
+    await dispatchScriptToDevice({
+      device: device(),
+      source: {
+        kind: 'saved',
+        script: {
+          id: 'script-1', orgId: 'org-a', partnerId: null, isSystem: false, osTypes: ['linux'],
+          language: 'bash', content: 'echo hi', timeoutSeconds: 60, runAs: 'system', deletedAt: null,
+          acknowledgedSecurityPatterns: [],
+        },
+      },
+      triggeredBy: HUMAN_USER_ID,
+      createdBy: HUMAN_USER_ID,
+      aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
+    } as never);
+
+    expect(createAuditLogAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'ai.script.executed',
+        actorType: 'user',
+        actorId: HUMAN_USER_ID,
+        resourceType: 'device',
+        resourceId: 'device-1',
+        initiatedBy: 'ai',
+        details: expect.objectContaining({
+          sourceKind: 'library',
+          deviceId: 'device-1',
+          aiInitiatorKind: 'ai_assistant',
+          aiSessionId: 'sess-1',
+          aiAgentRunId: null,
+        }),
+      }),
+    );
   });
 });

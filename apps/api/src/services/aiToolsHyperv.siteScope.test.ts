@@ -8,7 +8,9 @@ vi.mock('../db', () => ({
 }));
 vi.mock('./commandQueue', () => ({
   CommandTypes: { HYPERV_VM_STATE: 'a', HYPERV_BACKUP: 'b', HYPERV_RESTORE: 'c', HYPERV_CHECKPOINT: 'd' },
-  queueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
+}));
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(async () => ({ command: { id: 'c1', status: 'sent' } })),
 }));
 vi.mock('./featureConfigResolver', () => ({ resolveBackupConfigForDevice: vi.fn(async () => ({ configId: 'cfg', featureLinkId: 'fl' })) }));
 
@@ -30,6 +32,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     token: {} as any, partnerId: null, orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds, canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 // VM row first, then device { siteId } lookup.

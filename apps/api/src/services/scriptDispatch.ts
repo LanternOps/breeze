@@ -14,6 +14,8 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { CommandTypes, queueCommand } from './commandQueue';
+import { aiOriginColumns } from './aiOriginColumns';
+import type { AiOriginRef } from '@breeze/shared';
 import { defaultOfflinePolicy, deliverByFor, type OfflinePolicy } from './commandOfflinePolicy';
 import {
   decryptCommandForDelivery,
@@ -149,6 +151,21 @@ export type DispatchScriptInput = {
    * opt-in rather than a fourth path that quietly never checked.
    */
   bypassMaintenanceWindow?: boolean;
+  /**
+   * #5022 W01 — who DECIDED this run, when an AI surface did. Stamped onto
+   * BOTH the `script_executions` row and the `device_commands` row this
+   * dispatch queues. Do not hand-thread it: AI callers go through
+   * `services/aiDispatch.ts`, whose signatures make it mandatory.
+   */
+  aiOrigin?: AiOriginRef;
+  /**
+   * #5022 W01 — the AGENT principal's own id (an `ai_agents.id`), used as the
+   * audit row's `actor_id` when `aiOrigin.kind === 'ai_agent'`. Supplied by the
+   * AI dispatch adapter from `auth.user.id`; `audit_logs.actor_id` has no FK to
+   * `users`, so an agent id is a legal value there (unlike
+   * `device_commands.created_by`).
+   */
+  principalActorId?: string | null;
 };
 
 export type DispatchScriptResult =
@@ -542,6 +559,30 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // Attribution for a degraded id survives in the execution record's
   // `parameters` sidecar (below) — never on the users-FK column itself.
   const degradedActorId = actorIsRealUser ? null : actorCandidateId;
+  if (degradedActorId) {
+    // #5022 W01: the mirror of `resolveCommandCreatedBy`'s degrade warning.
+    // The probe is right to degrade (these columns are users FKs), but the
+    // drop used to be observable only in the `$actor` sidecar inside the
+    // execution's `parameters` jsonb. Log it once so a lane that loses the
+    // sidecar too is visible in Postgres/app logs rather than only in a row
+    // nobody reads.
+    const hasAiOrigin = Boolean(input.aiOrigin);
+    console.warn('[scriptDispatch] triggered_by/created_by degraded to NULL: actor is not a users row', {
+      degradedActorId,
+      deviceId: device.id,
+      hasAiOrigin,
+      aiInitiatorKind: input.aiOrigin?.kind ?? null,
+    });
+    // `hasAiOrigin: false` means this is NOT the expected ai_agent/synthetic-
+    // principal degrade — mirrors resolveCommandCreatedBy's own branch in
+    // commandQueue.ts. A plain user id that does not resolve to a users row
+    // is anomalous enough to want triage, not just a log line.
+    if (!hasAiOrigin) {
+      captureException(
+        new Error('[scriptDispatch] triggered_by/created_by degraded to NULL for a non-AI dispatch: candidate actor id does not resolve to a users row'),
+      );
+    }
+  }
 
   let executionId: string | null = null;
   if (source.kind === 'saved' || source.kind === 'proposal') {
@@ -565,6 +606,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         safeTriggeredBy,
         targetSessionId: input.targetSessionId ?? null,
         provenance: input.provenance,
+        aiOrigin: input.aiOrigin,
         monitorId: input.monitorId,
       }) as typeof scriptExecutions.$inferInsert)
       .returning({ id: scriptExecutions.id });
@@ -664,6 +706,20 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       // reconnects".
       deliverBy,
       submittedOrgId: device.orgId,
+      // #5022 W01: the script's own command row carries the origin too, so a
+      // reader of device_commands alone can still answer "who decided this" --
+      // but NOT a second audit row, ONLY when the `ai.script.executed` write
+      // below will actually fire. That write is gated on `executionId`
+      // (`source.kind === 'saved' || 'proposal'`); a `source.kind === 'raw'`
+      // dispatch never gets an execution row, so suppressing here
+      // unconditionally would leave it with ZERO `ai.` audit rows, breaking
+      // the one-`ai.`-row-per-mutation invariant W02's Overview count
+      // depends on. Fall back to commandQueue's own `ai.command.executed`
+      // write for that case by only suppressing when we know the other write
+      // will happen.
+      ...(input.aiOrigin
+        ? { aiOrigin: input.aiOrigin, suppressAiCommandAudit: Boolean(executionId) }
+        : {}),
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);
@@ -795,12 +851,27 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
   // erasure of the source proposal. Fire-and-forget like every other
   // createAuditLogAsync caller: a lost audit row must never fail the dispatch
   // that already succeeded.
-  if (source.kind === 'proposal' && executionId) {
+  // #5022 W01: the gate is widened from "proposal-backed" to "proposal-backed
+  // OR AI-initiated", so an AI-run LIBRARY script is audited too -- the case
+  // that made an assistant-run saved script indistinguishable from a human one
+  // on the device page.
+  if (executionId && (source.kind === 'proposal' || input.aiOrigin)) {
+    // Actor type and id BOTH derive from the AUTHENTICATED PRINCIPAL, never
+    // from authorship. (#5022 W01: the previous version read actorType off
+    // source.proposal.authorKind while actorId came from the invoker, so an
+    // AI-AUTHORED script hand-run by a human wrote actor_type='ai_agent'
+    // against a HUMAN user id.) Authorship is a separate fact and now lives in
+    // `details.authorKind`.
+    const principalIsAgent = input.aiOrigin?.kind === 'ai_agent';
+    const auditActorType = principalIsAgent ? ('ai_agent' as const) : ('user' as const);
+    const auditActorId = principalIsAgent
+      ? (input.principalActorId ?? SYSTEM_ACTOR_ID)
+      : (safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID);
     void createAuditLogAsync({
       trigger: input.trigger,
       orgId: device.orgId,
-      actorType: source.proposal.authorKind === 'agent_run' ? 'ai_agent' : 'user',
-      actorId: safeCreatedBy ?? safeTriggeredBy ?? SYSTEM_ACTOR_ID,
+      actorType: auditActorType,
+      actorId: auditActorId,
       action: 'ai.script.executed',
       resourceType: 'device',
       resourceId: device.id,
@@ -810,8 +881,16 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       details: {
         executionId,
         commandId: command.id,
-        proposalId: source.proposal.id,
-        sourceKind: 'proposal',
+        proposalId: source.kind === 'proposal' ? source.proposal.id : null,
+        sourceKind: source.kind === 'proposal' ? 'proposal' : 'library',
+        // Authorship — who WROTE the script — kept, but as its own field
+        // rather than laundered into actor_type.
+        authorKind: source.kind === 'proposal' ? source.proposal.authorKind : null,
+        // `resourceId` is already device.id (what the events feed's resource
+        // arm indexes); `deviceId` is set as well so the feed's details arm can
+        // also find it.
+        deviceId: device.id,
+        ...aiOriginColumns(input.aiOrigin),
         approvalMethod: input.provenance?.approvalMethod ?? null,
         reviewRiskTier: input.provenance?.reviewRiskTier ?? null,
         reviewSummary: input.provenance?.reviewSummary ?? null,
@@ -868,6 +947,7 @@ function buildExecutionValues(input: {
   safeTriggeredBy?: string | null;
   targetSessionId?: number | null;
   provenance?: ScriptDispatchProvenance;
+  aiOrigin?: AiOriginRef;
   monitorId?: string;
 }): Record<string, unknown> {
   const { device, source, provenance } = input;
@@ -919,6 +999,10 @@ function buildExecutionValues(input: {
     approvalMethod: provenance?.approvalMethod ?? null,
     reviewRiskTier: provenance?.reviewRiskTier ?? null,
     reviewSummary: provenance?.reviewSummary?.slice(0, 600) ?? null,
+    // --- AI origin attribution (#5022 W01) ---
+    // Always all three keys, explicitly NULL when absent: an omitted key would
+    // be dropped by Drizzle, which is "unattributed by omission".
+    ...aiOriginColumns(input.aiOrigin),
   };
 }
 

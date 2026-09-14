@@ -22,7 +22,8 @@ import {
 import { eq, and, desc, sql, gte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from './backupProviderConfig';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
@@ -683,7 +684,9 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       if (!restoreJob) return JSON.stringify({ error: 'Failed to create restore job' });
 
       try {
-        const { command, error } = await queueCommandForExecution(
+        const { command, error } = await aiQueueCommandForExecution(
+          auth,
+          'restore_snapshot',
           restoreJob.deviceId,
           CommandTypes.BACKUP_RESTORE,
           {

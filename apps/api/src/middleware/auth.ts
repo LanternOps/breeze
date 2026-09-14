@@ -8,6 +8,7 @@ import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext
 import { users, partnerUsers, organizations } from '../db/schema';
 import { and, eq, inArray, isNull, or, SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
+import type { AiOriginRef } from '@breeze/shared';
 import type { PartnerTrustState } from '../db/schema/orgs';
 import { ENABLE_2FA } from '../routes/auth/schemas';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
@@ -84,6 +85,19 @@ export interface AuthContext {
    * session, right now" needs this discriminator; user identity is not enough.
    */
   principal: PrincipalKind;
+
+  /**
+   * Set when this request originated from an AI surface (#5022 W01). Minted
+   * ONCE per surface -- autonomous agent run, chat session, MCP ledger session
+   * -- never per tool.
+   *
+   * This is the in-process CARRIER and the only route into the act/verify
+   * bypass lanes (`executeCommandWithSystemPrecheck`), which never enter
+   * `executeTool`. It is NOT the conduit: no insert chokepoint receives an
+   * AuthContext, so the origin is passed explicitly through each dispatch
+   * options bag as well. Use `services/aiDispatch.ts` -- do not hand-thread it.
+   */
+  aiOrigin?: AiOriginRef;
 
   user: {
     id: string;

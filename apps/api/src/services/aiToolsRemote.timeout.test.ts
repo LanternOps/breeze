@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // commandQueue's single-shot waitForCommandResult, so analyze_screen still died
 // at ~30s regardless of what getToolTimeout() returned. This suite asserts the
 // two never drift apart again: whatever toolTimeouts.ts says for a given tool is
-// exactly what reaches executeCommand's `timeoutMs` option.
+// exactly what reaches aiExecuteCommand's `timeoutMs` option.
 
 vi.mock('../db', () => ({
   runOutsideDbContext: vi.fn((fn: any) => fn()),
@@ -15,15 +15,15 @@ vi.mock('../db', () => ({
   db: { select: vi.fn() },
 }));
 
-vi.mock('./commandQueue', () => ({
-  executeCommand: vi.fn(async () => ({
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(async () => ({
     status: 'completed',
     stdout: JSON.stringify({ imageBase64: 'AA==' }),
   })),
 }));
 
 import { db } from '../db';
-import { executeCommand } from './commandQueue';
+import { aiExecuteCommand } from './aiDispatch';
 import { registerRemoteTools } from './aiToolsRemote';
 import { getToolTimeout } from './toolTimeouts';
 import type { AuthContext } from '../middleware/auth';
@@ -58,13 +58,14 @@ function makeAuth(): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds: undefined,
     canAccessSite: () => true,
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as AuthContext;
 }
 
 const mockDb = db as unknown as { select: ReturnType<typeof vi.fn> };
-const mockExecuteCommand = executeCommand as unknown as ReturnType<typeof vi.fn>;
+const mockExecuteCommand = aiExecuteCommand as unknown as ReturnType<typeof vi.fn>;
 
-describe('aiToolsRemote — timeoutMs threads through to executeCommand', () => {
+describe('aiToolsRemote — timeoutMs threads through to aiExecuteCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.select.mockImplementation(() =>
@@ -81,21 +82,21 @@ describe('aiToolsRemote — timeoutMs threads through to executeCommand', () => 
   it('take_screenshot passes getToolTimeout("take_screenshot"), not a hardcoded 30s', async () => {
     await handlerFor('take_screenshot')({ deviceId: DEVICE_ID }, makeAuth());
     expect(mockExecuteCommand).toHaveBeenCalledTimes(1);
-    const [, , , options] = mockExecuteCommand.mock.calls[0]!;
+    const [, , , , , options] = mockExecuteCommand.mock.calls[0]!;
     expect(options.timeoutMs).toBe(getToolTimeout('take_screenshot'));
   });
 
   it('analyze_screen passes getToolTimeout("analyze_screen"), not a hardcoded 30s', async () => {
     await handlerFor('analyze_screen')({ deviceId: DEVICE_ID }, makeAuth());
     expect(mockExecuteCommand).toHaveBeenCalledTimes(1);
-    const [, , , options] = mockExecuteCommand.mock.calls[0]!;
+    const [, , , , , options] = mockExecuteCommand.mock.calls[0]!;
     expect(options.timeoutMs).toBe(getToolTimeout('analyze_screen'));
   });
 
   it('computer_control passes getToolTimeout("computer_control"), not a hardcoded 30s', async () => {
     await handlerFor('computer_control')({ deviceId: DEVICE_ID, action: 'screenshot' }, makeAuth());
     expect(mockExecuteCommand).toHaveBeenCalledTimes(1);
-    const [, , , options] = mockExecuteCommand.mock.calls[0]!;
+    const [, , , , , options] = mockExecuteCommand.mock.calls[0]!;
     expect(options.timeoutMs).toBe(getToolTimeout('computer_control'));
   });
 
@@ -112,7 +113,7 @@ describe('aiToolsRemote — timeoutMs threads through to executeCommand', () => 
     ] as const) {
       mockExecuteCommand.mockClear();
       await handlerFor(tool)(input, makeAuth());
-      const [, , , options] = mockExecuteCommand.mock.calls[0]!;
+      const [, , , , , options] = mockExecuteCommand.mock.calls[0]!;
       expect(options.timeoutMs, `${tool} timeoutMs`).toBeGreaterThanOrEqual(agentRoundTrip);
     }
   });

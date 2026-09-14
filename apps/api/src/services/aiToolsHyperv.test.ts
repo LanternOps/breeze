@@ -19,7 +19,10 @@ vi.mock('./commandQueue', () => ({
     HYPERV_RESTORE: 'hyperv_restore',
     HYPERV_CHECKPOINT: 'hyperv_checkpoint',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 const resolveBackupConfigForDeviceMock = vi.fn();
@@ -32,7 +35,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerHypervTools } from './aiToolsHyperv';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -113,7 +116,7 @@ function setDefaultDbMocks() {
     configId: '44444444-4444-4444-8444-444444444444',
     featureLinkId: '55555555-5555-4555-8555-555555555555',
   });
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -134,6 +137,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -301,7 +305,9 @@ describe('aiToolsHyperv handlers', () => {
 
     await toolMap.get('manage_hyperv_vm')!.handler({ vmId: VM_ID, action: 'start' }, makeAuth());
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'manage_hyperv_vm',
       DEVICE_ID,
       'hyperv_vm_state',
       { vmName: 'Accounting VM', targetState: 'start' },
@@ -314,7 +320,9 @@ describe('aiToolsHyperv handlers', () => {
 
     await toolMap.get('trigger_hyperv_backup')!.handler({ vmId: VM_ID, consistencyType: 'crash' }, makeAuth());
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_hyperv_backup',
       DEVICE_ID,
       'hyperv_backup',
       {
@@ -355,7 +363,7 @@ describe('aiToolsHyperv handlers', () => {
     );
 
     expect(JSON.parse(result)).toEqual({ error: 'Backup destination configuration not found for this snapshot' });
-    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 
   it('queues Hyper-V restore commands using snapshotId', async () => {
@@ -366,7 +374,9 @@ describe('aiToolsHyperv handlers', () => {
       makeAuth()
     );
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'restore_hyperv_vm',
       DEVICE_ID,
       'hyperv_restore',
       {
@@ -403,6 +413,6 @@ describe('aiToolsHyperv handlers', () => {
     );
 
     expect(JSON.parse(result).error).toMatch(/predates backup destination tracking/);
-    expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
   });
 });

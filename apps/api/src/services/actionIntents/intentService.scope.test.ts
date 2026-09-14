@@ -654,3 +654,40 @@ describe('creation-time remediation trigger', () => {
     expect(authMock.dbAccessContextFromAuth).not.toHaveBeenCalled();
   });
 });
+
+// ============================================================================
+// #5022 W01 Task 12 — the AI origin is PERSISTED at intent creation.
+//
+// The reconstruct half (actorContext.test.ts) is only half the contract: if
+// the columns are never written, the release worker reconstructs nothing.
+// ============================================================================
+describe('createActionIntent — persists the creating context AI origin (#5022 W01)', () => {
+  it('writes the three ai_origin_* columns from auth.aiOrigin', async () => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    const auth = makeAgentAuth() as unknown as Record<string, unknown>;
+    auth.aiOrigin = { kind: 'ai_agent', agentRunId: RUN_ID };
+
+    await createActionIntent(auth as unknown as Parameters<typeof createActionIntent>[0], sweepInput());
+
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      aiOriginKind: 'ai_agent',
+      aiOriginAgentRunId: RUN_ID,
+      aiOriginSessionId: null,
+    });
+  });
+
+  it('writes three explicit NULLs when the creating context had no AI origin', async () => {
+    queueSweepContext();
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), sweepInput());
+
+    expect(dbState.insertedActionIntentValues[0]).toMatchObject({
+      aiOriginKind: null,
+      aiOriginSessionId: null,
+      aiOriginAgentRunId: null,
+    });
+  });
+});

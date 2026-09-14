@@ -1,6 +1,7 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, bigint, date, primaryKey, index, unique, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
 import { ipClassEnum, organizations, sites } from './orgs';
 import { users } from './users';
+import { aiInitiatorKindEnum } from './aiInitiator';
 import type { BatteryStatus, DesktopAccessState, InterfaceBandwidth, TCCPermissions, VpnPresence } from '@breeze/shared';
 
 export const osTypeEnum = pgEnum('os_type', ['windows', 'macos', 'linux']);
@@ -588,7 +589,15 @@ export const deviceCommands = pgTable('device_commands', {
   // claim time to cancel rows whose device has since moved org. Deliberately
   // NOT named org_id so the RLS/cascade auto-discovery keeps device_commands
   // system-scoped (agent WS path, no RLS -- see CLAUDE.md).
-  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' })
+  submittedOrgId: uuid('submitted_org_id').references(() => organizations.id, { onDelete: 'set null' }),
+  // --- AI origin attribution (#5022 W01) ---------------------------------
+  // Bare uuids, no FK: a system-scoped command row must never be blockable or
+  // mutable by the lifecycle of an ai_sessions / ai_agent_runs row. Neither
+  // name is `org_id`, so the RLS and cascade auto-discovery still treat this
+  // table as system-scoped (both key on the literal column name).
+  aiInitiatorKind: aiInitiatorKindEnum('ai_initiator_kind'),
+  aiSessionId: uuid('ai_session_id'),
+  aiAgentRunId: uuid('ai_agent_run_id')
 });
 
 export const connectionProtocolEnum = pgEnum('connection_protocol', ['tcp', 'tcp6', 'udp', 'udp6']);

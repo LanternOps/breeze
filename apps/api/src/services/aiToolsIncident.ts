@@ -16,7 +16,7 @@ import { eq, and, desc, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveWritableToolOrgId, verifyDeviceAccess } from './aiTools';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { publishEvent } from './eventBus';
 import type { IncidentTimelineEntry } from '../db/schema/incidentResponse';
 import { HIGH_RISK_CONTAINMENT_ACTIONS } from '../routes/incidents.validation';
@@ -234,7 +234,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         approvalRef: (input.approvalRef as string) ?? undefined,
       };
 
-      const result = await queueCommandForExecution(
+      const result = await aiQueueCommandForExecution(
+        auth,
+        'execute_containment',
         input.deviceId as string,
         'execute_containment',
         payload,
@@ -328,7 +330,9 @@ export function registerIncidentTools(aiTools: Map<string, AiTool>): void {
         evidenceTypes: input.evidenceTypes as string[],
       };
 
-      const result = await queueCommandForExecution(
+      const result = await aiQueueCommandForExecution(
+        auth,
+        'collect_evidence',
         input.deviceId as string,
         'collect_evidence',
         payload,

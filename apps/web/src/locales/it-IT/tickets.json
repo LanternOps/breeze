@@ -460,6 +460,11 @@
       "discardFailed": "Impossibile scartare la bozza dell’IA.",
       "discarded": "Bozza scartata"
     },
+    "aiProposal": {
+      "postAsNote": "Pubblica come nota privata",
+      "posted": "Pubblicato come nota privata",
+      "postFailed": "Impossibile pubblicare la nota"
+    },
     "resolve": {
       "noteLabel": "Nota di risoluzione (visibile al richiedente)",
       "submit": "Risolvi ticket"

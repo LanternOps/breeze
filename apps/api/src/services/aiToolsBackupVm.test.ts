@@ -17,14 +17,17 @@ vi.mock('./commandQueue', () => ({
     VM_RESTORE_FROM_BACKUP: 'vm_restore_from_backup',
     VM_INSTANT_BOOT: 'vm_instant_boot',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerBackupVmTools } from './aiToolsBackupVm';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -90,7 +93,7 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -116,6 +119,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 

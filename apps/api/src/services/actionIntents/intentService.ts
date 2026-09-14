@@ -44,7 +44,7 @@ import {
   loadProposalGuardrailContext,
 } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
-import { PERMISSION_GRANTS } from '@breeze/shared';
+import { PERMISSION_GRANTS, serializeAiOrigin } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
@@ -1731,6 +1731,13 @@ export async function createActionIntent(
                 : agentRow
                   ? agentRow.id
                   : null,
+          // #5022 W01: persist the AI origin at INSERT (these columns are
+          // never updated — `action_intents_immutable_trg` blocks it). The
+          // release worker rebuilds the AuthContext from scratch, so without
+          // this a chat-minted origin would not survive the approval boundary
+          // and the approved action would dispatch unattributed. Distinct from
+          // originPrincipal* above, which describes the REQUESTER.
+          ...serializeAiOrigin(auth.aiOrigin),
           connectionId: input.binding?.connectionId ?? null,
           tenantId: input.binding?.tenantId ?? null,
           // P2-2/P2-4 typed target scope. Immutable except for the non-null

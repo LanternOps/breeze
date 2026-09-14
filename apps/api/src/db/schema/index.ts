@@ -17,6 +17,7 @@ export * from './deviceExternalLinks';
 export * from './deviceCustomFieldValues';
 export * from './deviceFunctionAssessments';
 export * from './fleetDesignAppliedItems';
+export * from './aiInitiator';
 export * from './scripts';
 export * from './scriptProposals';
 export * from './alerts';

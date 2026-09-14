@@ -24,6 +24,7 @@ import {
 } from '@breeze/shared';
 import { organizations, partners } from './orgs';
 import { users } from './users';
+import { aiInitiatorKindEnum } from './aiInitiator';
 import { apiKeys } from './apiKeys';
 import { aiAgentRuns } from './aiAgents';
 import { devices } from './devices';
@@ -303,6 +304,15 @@ export const actionIntents = pgTable(
       .$type<ActionIntentOriginPrincipalKind>(),
     /** Key/grant id when the origin was an api_key or oauth_grant. Immutable. */
     originPrincipalId: text('origin_principal_id'),
+    // --- AI origin attribution (#5022 W01) -------------------------------
+    // The serializable AiOriginRef, so a chat-minted origin survives
+    // intentReleaseWorker's from-scratch AuthContext rebuild. Distinct from
+    // originPrincipal*, which describes the REQUESTER, not the AI surface.
+    // Bare uuids: the row is immutable evidence and must never be blocked by a
+    // deleted session. Written at INSERT only.
+    aiOriginKind: aiInitiatorKindEnum('ai_origin_kind'),
+    aiOriginSessionId: uuid('ai_origin_session_id'),
+    aiOriginAgentRunId: uuid('ai_origin_agent_run_id'),
     requestingClientLabel: varchar('requesting_client_label', { length: 255 }),
 
     // Immutable action content (UPDATE-blocked by action_intents_immutable_trg
