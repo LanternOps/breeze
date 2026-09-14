@@ -180,4 +180,37 @@ describe('AI device dispatch is attributable by construction (#5022 W01)', () =>
 
     expect(stale, 'drop the entry: this file no longer inserts directly').toEqual([]);
   });
+
+  // #5789 — `aiInsertQueuedCommandInTransaction` (services/aiDispatch.ts) is a
+  // required-origin wrapper around `insertQueuedCommandInTransaction`: it
+  // stamps the origin columns but writes NO `ai.command.executed` audit row
+  // (unlike `queueCommand`), by design. That design is only safe today because
+  // every caller that threads `aiOrigin` through the underlying transaction-
+  // scoped insert passes `undefined` (peripheralPolicyState.ts's BullMQ
+  // reconciliation lane is an INDIRECT AI lane, spec OD-3 B, that W01
+  // deliberately left unattributed). The day a caller supplies a REAL
+  // aiOrigin here, that becomes a live one-`ai.`-row-per-mutation violation.
+  // #5789 is the seam owner for designing that audit write before the guard
+  // below is allowed to go away.
+  it('every caller of insertQueuedCommandInTransaction that mentions aiOrigin passes it only through the guarded, always-undefined-today shape', () => {
+    const definerFiles = new Set([...INSERT_CHOKEPOINTS, 'apps/api/src/services/aiDispatch.ts']);
+    const callSite = /\binsertQueuedCommandInTransaction\s*\(/;
+    const guarded = /\.\.\.\(aiOrigin\s*\?\s*\{\s*aiOrigin\s*\}\s*:\s*\{\}\)/;
+    const callersWithOrigin = FILES.filter(
+      (f) => !definerFiles.has(f) && callSite.test(read(f)) && /\baiOrigin\b/.test(read(f)),
+    );
+
+    // Sanity: exactly one caller threads aiOrigin through this insert today.
+    // An empty list would make the guard assertion below vacuous; a grown
+    // list means a new caller needs the same review this one got.
+    expect(callersWithOrigin).toEqual(['apps/api/src/services/peripheralPolicyState.ts']);
+
+    const unguarded = callersWithOrigin.filter((f) => !guarded.test(read(f)));
+    expect(
+      unguarded,
+      'A caller now supplies aiOrigin to insertQueuedCommandInTransaction unconditionally, but '
+        + 'aiInsertQueuedCommandInTransaction (services/aiDispatch.ts) writes no ai.command.executed audit row '
+        + 'by design. Design that audit write (#5789) before removing this guard.',
+    ).toEqual([]);
+  });
 });
