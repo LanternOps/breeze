@@ -2387,11 +2387,14 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # ~1/4 of the suite (~6 min) + env/container setup + one autoMigrate
-    # pass. 25 leaves generous headroom for suite growth; before sharding
-    # this ceiling had to be raised twice (30→40→55) as the sequential
-    # runtime grew.
-    timeout-minutes: 25
+    # ~1/4 of the suite + env/container setup + one autoMigrate pass. Raised
+    # 25→40 on 2026-09-14: shard 3 hit exactly 25:00 on three consecutive
+    # merge-group runs (shards 1 and 4 at 23–24) after the day's integration
+    # suites landed, and a job timeout reports as `cancelled`, so every queue
+    # entry was silently dequeued with `failed_checks`. Before sharding this
+    # ceiling had been raised twice (30→40→55) as the sequential runtime grew;
+    # when a shard passes ~32 min, add a fifth shard instead of raising again.
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
