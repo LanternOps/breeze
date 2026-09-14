@@ -21,4 +21,20 @@ describe('audit trigger envelope', () => {
     await createAuditLog({ ...base, details: { deviceId: 'd1' } });
     expect(values).toHaveBeenCalledWith({ ...base, actorType: 'user', details: { deviceId: 'd1' } });
   });
+  // Review fix (PR #5780) — a bare `{ kind: 'automation' }` trigger (no
+  // `refId`/`key`) must write both as explicit `null`, not omit them: a
+  // reader distinguishing "no provenance recorded" (key absent) from "this
+  // trigger legitimately carries none" (key present, null) needs the
+  // column to always exist once `trigger` was passed at all.
+  it('writes triggerRefId/triggerKey as explicit null for a bare trigger', async () => {
+    await createAuditLog({ ...base, details: {}, trigger: { kind: 'automation' } });
+    expect(values).toHaveBeenCalledWith({
+      ...base,
+      actorType: 'user',
+      details: { triggerKind: 'automation', triggerRefId: null, triggerKey: null },
+    });
+    const written = values.mock.calls[0]![0] as { details: Record<string, unknown> };
+    expect(written.details).toHaveProperty('triggerRefId', null);
+    expect(written.details).toHaveProperty('triggerKey', null);
+  });
 });
