@@ -126,7 +126,12 @@
     "cert_expiry": "Zertifikatsablauf",
     "bandwidth": "Bandbreite",
     "disk_io": "Festplatten-E/A",
-    "network_errors": "Netzwerkfehler"
+    "network_errors": "Netzwerkfehler",
+    "antivirus": "Virenschutz",
+    "software_presence": "Softwarevorhandensein",
+    "backup_continuity": "Backup-Kontinuität",
+    "script": "Skriptprüfung",
+    "network_check": "Netzwerkprüfung"
   },
   "fields": {
     "operator": "Vergleich",
@@ -145,7 +150,28 @@
     "withinDays": "Läuft ab innerhalb (Tagen)",
     "direction": "Richtung",
     "errorType": "Fehlerrichtung",
-    "interfaceName": "Schnittstelle (optional)"
+    "interfaceName": "Schnittstelle (optional)",
+    "check": "Prüfung",
+    "staleAfterDays": "Veraltet nach (Tagen)",
+    "minThreatCount": "Mindestanzahl Bedrohungen",
+    "softwareName": "Softwarename",
+    "vendor": "Hersteller (optional)",
+    "presence": "Vorhandensein",
+    "version": "Versionsnummer",
+    "backupCheck": "Prüfung",
+    "maxAgeHours": "Maximales Alter (Stunden)",
+    "failureCount": "Anzahl Fehlschläge",
+    "script": "Skript",
+    "scriptSelectPlaceholder": "Skript auswählen…",
+    "scriptLoadError": "Skripte konnten nicht geladen werden",
+    "intervalMinutes": "Ausführen alle (Minuten)",
+    "timeoutSeconds": "Zeitlimit (Sekunden)",
+    "breachOnNonZeroExit": "Verstoß bei Exit-Code ungleich null",
+    "checkType": "Prüfungstyp",
+    "target": "Ziel",
+    "port": "Portnummer",
+    "expectStatus": "Erwarteter Statuscode",
+    "pollingIntervalSeconds": "Abfrage alle (Sekunden)"
   },
   "operators": {
     "gt": "größer als",
@@ -183,6 +209,27 @@
     "read": "Lesen",
     "write": "Schreiben",
     "total": "Gesamt"
+  },
+  "antivirusChecks": {
+    "not_protected": "Nicht geschützt",
+    "definitions_stale": "Definitionen veraltet",
+    "realtime_disabled": "Echtzeitschutz deaktiviert",
+    "threats_present": "Bedrohungen vorhanden"
+  },
+  "presences": {
+    "installed": "Installiert",
+    "not_installed": "Nicht installiert",
+    "version_below": "Version unter"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Kein erfolgreiches Backup",
+    "consecutive_failures": "Aufeinanderfolgende Fehlschläge"
+  },
+  "checkTypes": {
+    "icmp_ping": "ICMP-Ping",
+    "tcp_port": "TCP-Port",
+    "http_check": "HTTP-Prüfung",
+    "dns_check": "DNS-Prüfung"
   },
   "deploy": {
     "title": "Monitor bereitstellen",
