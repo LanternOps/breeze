@@ -1166,15 +1166,17 @@ describe('manifestToCommandResult originalPath (D12 reconcile path)', () => {
     expect(result.referencedBytes).toBe(11_000);
   });
 
-  it('reports zero references for a manifest whose every object lives under its own snapshot prefix', async () => {
+  it('omits the dedup fields, like the agent, for a manifest whose every object lives under its own snapshot prefix', async () => {
     const { manifestToCommandResult } = await import('./backupSnapshotReconcile');
     const result = manifestToCommandResult({
       snapshotId: 'snap-1',
       manifestText: JSON.stringify({ id: 'snap-1', files: [{ sourcePath: '/a', backupPath: 'snapshots/snap-1/files/a.gz', size: 5 }] }),
       matchedBy: 'time-window',
     });
-    expect(result.referencedFiles).toBe(0);
-    expect(result.referencedBytes).toBe(0);
+    // A reconciled full backup must persist NULL, not 0, so the UI's dedup
+    // breakdown is hidden exactly as it is for an agent-reported full backup.
+    expect(result.referencedFiles).toBeUndefined();
+    expect(result.referencedBytes).toBeUndefined();
   });
 
   it('forwards baseSnapshotId and formatVersion (D18 W01)', async () => {

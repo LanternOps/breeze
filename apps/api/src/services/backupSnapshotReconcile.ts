@@ -600,6 +600,13 @@ export function manifestToCommandResult(params: {
   // schema already requires a non-empty backupPath, so the agent's
   // content-less guard has nothing to exclude here. Without this, every
   // adopted incremental would finalize as "uploaded the whole corpus".
+  //
+  // Reported the way the agent reports it (`omitempty`): a run with no
+  // references OMITS both fields, so persistence leaves referenced_size NULL
+  // and the UI's dedup breakdown stays hidden for a plain full backup
+  // whichever path finalized it. Per-file `size` is assumed present on every
+  // reference entry — the agent's referenceEntry always copies it — so the
+  // schema's optional size cannot undercount a real manifest.
   const ownPrefix = `${BACKUP_SNAPSHOT_ROOT_DIR}/${params.snapshotId}/`;
   let referencedFiles = 0;
   let referencedBytes = 0;
@@ -609,6 +616,7 @@ export function manifestToCommandResult(params: {
       referencedBytes += file.size ?? 0;
     }
   }
+  const dedup = referencedFiles > 0 ? { referencedFiles, referencedBytes } : {};
 
   const timestamp =
     parsed.timestamp && Number.isFinite(Date.parse(parsed.timestamp)) ? parsed.timestamp : undefined;
@@ -617,8 +625,7 @@ export function manifestToCommandResult(params: {
     snapshotId: params.snapshotId,
     filesBackedUp: files.length,
     bytesBackedUp: size,
-    referencedFiles,
-    referencedBytes,
+    ...dedup,
     snapshot: {
       id: params.snapshotId,
       timestamp,
