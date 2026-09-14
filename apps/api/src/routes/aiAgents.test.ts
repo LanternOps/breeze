@@ -35,6 +35,7 @@ import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 const {
   selectMock,
   hasPermMock,
+  loadMeasuredImpactMock,
   authOkMock,
   mfaOkMock,
   getAgentMock,
@@ -91,6 +92,10 @@ const {
   // exercise only routing/auth/validation, the same convention as
   // createAndEnqueueAgentRun/getAgent/recordVerdictFeedback above.
   loadImpactSummaryMock: vi.fn(),
+  // W04 (#5761) — GET /impact/measured. Same convention as loadImpactSummary:
+  // the service has its own full unit coverage (impactMeasured.test.ts), so
+  // these route tests exercise only routing/auth/validation.
+  loadMeasuredImpactMock: vi.fn(),
   enqueueImpactRollupForOrgsMock: vi.fn(),
   saveImpactWeightsMock: vi.fn(),
   resolveImpactPartnerIdMock: vi.fn(),
@@ -279,6 +284,10 @@ vi.mock('../jobs/aiAgentImpactRollup', () => ({
 
 vi.mock('../services/aiAgents/impactQuery', () => ({
   loadImpactSummary: loadImpactSummaryMock,
+}));
+
+vi.mock('../services/aiAgents/impactMeasured', () => ({
+  loadMeasuredImpact: loadMeasuredImpactMock,
 }));
 
 const { ImpactPartnerUnresolvedError, ImpactPartnerNotFoundError } = vi.hoisted(() => ({
@@ -523,6 +532,7 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 beforeEach(() => {
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
+  loadMeasuredImpactMock.mockResolvedValue({ schemaVersion: 1, window: 30 });
   authOkMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
@@ -2645,6 +2655,86 @@ describe('GET /ai-agents/impact', () => {
 
     expect(res.status).toBe(403);
     expect(loadImpactSummaryMock).not.toHaveBeenCalled();
+  });
+});
+
+// W04 (#5761, refs #4182) — the MEASURED band's own endpoint. Registered beside
+// GET /impact and ahead of GET /:id for the same reason: a literal path segment
+// must not fall into the `:id` param route.
+describe('GET /ai-agents/impact/measured', () => {
+  it('returns the measured DTO for a partner-scope caller', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ schemaVersion: 1, window: 30 });
+    // 2nd arg is the resolved permission set. The requirePermission mock in this
+    // file does not populate `c.get('permissions')`, so it arrives undefined
+    // here -- which the service treats as "no time-entry authority" and omits
+    // that arm, the fail-closed behaviour asserted in impactMeasured.test.ts.
+    expect(loadMeasuredImpactMock).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      { window: 30, orgId: undefined },
+    );
+  });
+
+  it('resolves the measured handler, not GET /:id', async () => {
+    const app = buildApp();
+
+    await app.request('/ai-agents/impact/measured?window=7');
+
+    expect(loadMeasuredImpactMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported window', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=180');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a client-supplied through -- the server owns the last complete UTC day', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30&through=2026-01-01');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller, like /impact does', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inaccessible orgId with 403', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact/measured?window=30&orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a caller without ai_agents:read', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'read')
+    ));
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
   });
 });
 

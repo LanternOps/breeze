@@ -85,7 +85,10 @@ const omittedSignal = (
  * otherwise would produce a silently-empty arm indistinguishable from "no labour
  * was logged".
  */
-function canReadTechnicianMinutes(auth: AuthContext, permissions: UserPermissions): boolean {
+function canReadTechnicianMinutes(auth: AuthContext, permissions: UserPermissions | undefined): boolean {
+  // Fails CLOSED on an unresolved permission set: an arm whose authority we
+  // could not establish is omitted, never published.
+  if (permissions === undefined) return false;
   if (auth.scope !== 'partner' && auth.scope !== 'system') return false;
   return hasPermission(
     permissions,
@@ -100,7 +103,7 @@ function canReadTechnicianMinutes(auth: AuthContext, permissions: UserPermission
  */
 export async function loadMeasuredImpact(
   auth: AuthContext,
-  permissions: UserPermissions,
+  permissions: UserPermissions | undefined,
   input: MeasuredImpactInput,
 ): Promise<AiAgentImpactMeasuredDto> {
   if (!AI_AGENT_IMPACT_WINDOWS.includes(input.window)) {

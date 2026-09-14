@@ -19,6 +19,7 @@ import {
   type AiAgentsSystemStatusDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
+  impactMeasuredQuerySchema,
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
@@ -49,6 +50,7 @@ import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
 import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
 import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
 import { loadImpactSummary } from '../services/aiAgents/impactQuery';
+import { loadMeasuredImpact } from '../services/aiAgents/impactMeasured';
 import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
 import {
   ImpactPartnerNotFoundError,
@@ -92,7 +94,7 @@ import {
 import { verifyDeviceAccess } from '../services/aiTools';
 import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { resolveOrgId } from './networkShared';
 
@@ -1637,6 +1639,54 @@ aiAgentsRoutes.get(
     }
 
     const data = await loadImpactSummary(auth, query);
+    return c.json({ data });
+  },
+);
+
+/**
+ * AI Scorecard W04 (#5761, refs #4182) —
+ * `GET /ai/agents/impact/measured?window=7|30|90[&orgId]`.
+ *
+ * A SEPARATE endpoint rather than a widening of `/impact`: the measured queries
+ * are heavier and have different authorization outcomes *per signal*, so folding
+ * them in would make the estimate band's latency hostage to the measured band's
+ * and force the estimate DTO to grow an `omitted` vocabulary it does not need.
+ *
+ * Same `scopes` + `requireAiRead` gate as `/impact` — the measured band's EXTRA
+ * requirements (unrestricted site scope; the time-entry permission for the
+ * technician-minutes arm) are enforced inside `loadMeasuredImpact` as
+ * **omissions, not 403s**: a partner admin should see two of three signals, not
+ * an error page. A system-scope caller must name one org, exactly as above.
+ *
+ * `impactMeasuredQuerySchema` is `.strict()`, so a client-supplied `through` is
+ * a 400 rather than a silently-ignored key — `through` is always the last
+ * complete UTC day, computed server-side.
+ */
+aiAgentsRoutes.get(
+  '/impact/measured',
+  scopes,
+  requireAiRead,
+  zValidator('query', impactMeasuredQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    if (query.orgId !== undefined) {
+      if (!auth.canAccessOrg(query.orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+    } else if (auth.scope === 'system') {
+      return c.json({
+        error: 'org_id_required',
+        message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+      }, 400);
+    }
+
+    // Fails CLOSED when the middleware did not resolve a permission set: the
+    // technician-minutes arm omits itself rather than being published to a
+    // caller whose authority we could not establish.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const data = await loadMeasuredImpact(auth, permissions, query);
     return c.json({ data });
   },
 );
