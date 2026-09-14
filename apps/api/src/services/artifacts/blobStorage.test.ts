@@ -224,9 +224,11 @@ describe('S3 blob storage: streaming multipart put', () => {
     expect(fake.names()).toContain('CompleteMultipartUploadCommand');
     expect(fake.names()).not.toContain('AbortMultipartUploadCommand');
 
-    // Peak residency is bounded by partSize * queueSize, never by maxBytes.
-    expect(fake.maxPartsInFlight).toBeGreaterThanOrEqual(1);
-    expect(fake.maxPartsInFlight).toBeLessThanOrEqual(ARTIFACT_UPLOAD_QUEUE_SIZE);
+    // Residency is bounded by the queue, never by maxBytes. EXACT, not a range:
+    // `>= 1` would still pass if queueSize silently collapsed to serial uploads,
+    // and `<= queueSize` alone would still pass if it did. The 5 ms hold in the
+    // stub guarantees two parts overlap whenever the queue is really 2 deep.
+    expect(fake.maxPartsInFlight).toBe(ARTIFACT_UPLOAD_QUEUE_SIZE);
     expect(ARTIFACT_UPLOAD_QUEUE_SIZE).toBeLessThanOrEqual(4);
     for (const part of fake.partBodies) expect(part.length).toBeLessThanOrEqual(ARTIFACT_UPLOAD_PART_SIZE);
 
@@ -335,6 +337,92 @@ describe('S3 blob storage: streaming multipart put', () => {
       ),
     ).rejects.toBeInstanceOf(BlobTooLargeError);
     expect(fake.commands).toHaveLength(0);
+  });
+
+  it('accepts a body of exactly maxBytes', async () => {
+    const fake = makeFakeS3();
+    const body = Buffer.alloc(1024, 9);
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+    const put = await withBucket(() =>
+      store.put({ region: 'us', contentType: 'text/plain', body, maxBytes: 1024 }),
+    );
+    expect(put.bytes).toBe(1024);
+    expect(put.sha256).toBe(createHash('sha256').update(body).digest('hex'));
+  });
+
+  it('a NON-cap source fault aborts and surfaces as BlobStorageUnavailableError', async () => {
+    const fake = makeFakeS3();
+    // The upstream export reader dies mid-stream. This must NOT look like a cap
+    // refusal, and must never complete a short object whose sha256 would then
+    // describe the truncated bytes and look intact forever.
+    let emitted = 0;
+    const source = new Readable({
+      read() {
+        if (emitted >= 12) {
+          this.destroy(new Error('export reader failed'));
+          return;
+        }
+        emitted += 1;
+        this.push(Buffer.alloc(MiB, emitted % 251));
+      },
+    });
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+
+    await expect(
+      withBucket(() =>
+        store.put({
+          region: 'us',
+          contentType: 'application/x-ndjson',
+          body: source,
+          maxBytes: 64 * MiB,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BlobStorageUnavailableError);
+
+    expect(fake.names()).toContain('CreateMultipartUploadCommand');
+    expect(fake.names()).toContain('AbortMultipartUploadCommand');
+    expect(fake.names()).not.toContain('CompleteMultipartUploadCommand');
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it('a failing CompleteMultipartUpload is a failure, not a fabricated success', async () => {
+    const fake = makeFakeS3('CompleteMultipartUploadCommand');
+    const store = createS3BlobStorage({ clientFor: () => fake.client });
+
+    await expect(
+      withBucket(() =>
+        store.put({
+          region: 'us',
+          contentType: 'application/x-ndjson',
+          body: Readable.from(deterministicChunks(20)),
+          maxBytes: 64 * MiB,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BlobStorageUnavailableError);
+    expect(fake.objects.size).toBe(0);
+  });
+
+  it('destroys the caller body when the bucket is unconfigured, before any request', async () => {
+    const fake = makeFakeS3();
+    const source = Readable.from(deterministicChunks(1));
+    const prev = process.env.S3_BUCKET;
+    delete process.env.S3_BUCKET;
+    try {
+      const store = createS3BlobStorage({ clientFor: () => fake.client });
+      await expect(
+        store.put({
+          region: 'us',
+          contentType: 'text/plain',
+          body: source,
+          maxBytes: 64 * MiB,
+        }),
+      ).rejects.toBeInstanceOf(BlobStorageUnavailableError);
+    } finally {
+      if (prev === undefined) delete process.env.S3_BUCKET;
+      else process.env.S3_BUCKET = prev;
+    }
+    expect(fake.commands).toHaveLength(0);
+    expect(source.destroyed).toBe(true);
   });
 
   it('maps a provider failure to BlobStorageUnavailableError, never a silent fallback', async () => {

@@ -26,9 +26,11 @@ import { classifyS3Failure, isS3NotFound } from '../s3Storage';
  *    forever. Over-cap is a typed error the caller turns into a tool error, and
  *    the multipart upload is ABORTED so no partial object survives the refusal.
  *  - **The put STREAMS** through `@aws-sdk/lib-storage`'s multipart `Upload`
- *    (W06, #5774 decision B — supersedes W01 decision 8, which buffered the
- *    whole body). Peak resident memory is bounded by
- *    `ARTIFACT_UPLOAD_PART_SIZE * ARTIFACT_UPLOAD_QUEUE_SIZE`, NEVER by
+ *    (W06, #5774 option 2 — supersedes W01 decision 8, which buffered the whole
+ *    body). Peak resident memory is on the order of
+ *    `(ARTIFACT_UPLOAD_QUEUE_SIZE + 1) * ARTIFACT_UPLOAD_PART_SIZE` (~24 MiB
+ *    today — `queueSize` parts in flight plus the one the shared chunker is
+ *    accumulating for the next free worker), and is NEVER a function of
  *    `maxBytes`: W03's `EXPORT_DEFAULT_MAX_BYTES` is 256 MiB and `Buffer.concat`
  *    over that roughly doubled peak RSS, so a full-budget export could OOM an
  *    API pod. There is ONE upload path — a sub-part body still goes through
@@ -44,6 +46,12 @@ import { classifyS3Failure, isS3NotFound } from '../s3Storage';
  *    `BlobStorageUnavailableError`; the capture path turns that into
  *    `{ error: 'artifact_store_unavailable' }` and does NOT return the raw
  *    result inline (which would bypass the context cap the capture exists for).
+ *    ACCEPTED LIMITATION: when a provider fault AND the cleanup abort both fail,
+ *    `lib-storage`'s `markUploadAsAborted()` throws the ABORT's error and drops
+ *    the original one, so the log line names the abort's classification rather
+ *    than the precipitating fault. Only the cap error is protected from this
+ *    (it is captured on the pass-through and re-thrown), because only it is ours
+ *    to hold. The upload still fails loudly; only the attributed cause is lossy.
  *  - Per-region config falls back to the platform `S3_*` vars so a single-bucket
  *    dev stack (MinIO) works with no extra env.
  */
@@ -103,9 +111,13 @@ export function blobKeyFor(region: BlobRegion, now: Date = new Date()): string {
   return `${region}/${yyyy}/${mm}/${randomUUID()}`;
 }
 
-/** Multipart part size. Peak RSS per in-flight part; 8 MiB is the lib-storage default floor. */
+/**
+ * Multipart part size, and the RSS cost of one in-flight part. Chosen above
+ * lib-storage's own 5 MiB minimum (`Upload.MIN_PART_SIZE`, below which it throws
+ * `EntityTooSmall`) to keep the part count low on a 256 MiB export.
+ */
 export const ARTIFACT_UPLOAD_PART_SIZE = 8 * 1024 * 1024;
-/** Parts uploaded concurrently. Peak ≈ PART_SIZE * QUEUE_SIZE (~16 MiB), independent of `maxBytes`. */
+/** Parts uploaded concurrently. Peak ≈ (QUEUE_SIZE + 1) * PART_SIZE, independent of `maxBytes`. */
 export const ARTIFACT_UPLOAD_QUEUE_SIZE = 2;
 
 /**
@@ -270,9 +282,18 @@ export function createS3BlobStorage(
       const key = blobKeyFor(region);
       const sse = platformEnv('ARTIFACT_S3_SSE');
       // Resolve config BEFORE opening the upload: a misconfiguration is a
-      // BlobStorageUnavailableError, not a dangling multipart upload.
-      const bucket = bucketFor(region);
-      const client = resolveClient(region);
+      // BlobStorageUnavailableError, not a dangling multipart upload. Destroy
+      // the caller's body on that path too — nothing downstream will ever read
+      // it, and a live export reader would otherwise sit there un-drained.
+      let bucket: string;
+      let client: S3Client;
+      try {
+        bucket = bucketFor(region);
+        client = resolveClient(region);
+      } catch (err) {
+        source.destroy();
+        throw err;
+      }
 
       // `pipeline` (not `.pipe`) so a cap refusal destroys the SOURCE too — a
       // half-read export must not be left dribbling into a dead transform.
