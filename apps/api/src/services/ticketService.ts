@@ -1657,6 +1657,26 @@ export async function addAiTriageNote(
     });
     await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: false });
 
+    // #4209 (W03): an autonomous write must leave an audit trail. `audit_logs.actor_id`
+    // is uuid NOT NULL with NO FK, so the RUN id is legal there — and it is the
+    // right identifier: it is the thing an operator can open, whose policy
+    // snapshot froze the gate that authorised this note. Deliberately NOT the
+    // all-zero system sentinel other services use: that would erase the only
+    // link back to the authorising run. Deliberately NOT the agent id either —
+    // `aiAgents.id` is attribution-only and is not a `users` row, and the run is
+    // the narrower, replayable handle (the agent id is reachable from it).
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: runId,
+      actorType: 'ai_agent',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { commentId: comment.id, agentRunId: runId, isInternal: true, isPublic: false },
+      result: 'success',
+      initiatedBy: 'ai'
+    });
+
     return { comment };
   } catch (err) {
     if (isUniqueViolation(err)) {

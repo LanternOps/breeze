@@ -483,3 +483,44 @@ describe('updateTicketFields — field_provenance stamped in the same UPDATE (P2
     expect(sqlOf(setArg.fieldProvenance).params).toContain(JSON.stringify({ subject: 'user' }));
   });
 });
+
+// #4209 (W03) — the autonomous private-note lane writes without a human in the
+// loop, so the audit row IS the compliance artefact. Asserted on the real
+// `createAuditLogAsync` argument (the module is mocked at the top of this file),
+// not on a spy that would pass for any shape.
+describe('addAiTriageNote audit trail (#4209, W03)', () => {
+  it('writes an ai_agent-actor audit row naming the run', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push([{ id: 'comment-1' }]);
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID, 'Helpdesk Agent');
+
+    expect(auditMock).toHaveBeenCalledTimes(1);
+    expect(auditMock.mock.calls[0]![0]).toMatchObject({
+      orgId: ORG_ID,
+      actorType: 'ai_agent',
+      actorId: RUN_ID,
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: TICKET_ID,
+      initiatedBy: 'ai',
+      result: 'success',
+      details: expect.objectContaining({
+        commentId: 'comment-1',
+        agentRunId: RUN_ID,
+        isInternal: true,
+        isPublic: false,
+      }),
+    });
+  });
+
+  it('does not double-audit when the idempotent retry returns the existing row', async () => {
+    queueSelect(tickets, [{ id: TICKET_ID, orgId: ORG_ID, partnerId: PARTNER_ID }]);
+    dbState.insertReturningQueue.push(Object.assign(new Error('duplicate key'), { code: '23505' }));
+    queueSelect(ticketComments, [{ id: 'existing-comment' }]);
+
+    await addAiTriageNote(TICKET_ID, RUN_ID, 'note', ORG_ID);
+
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+});
