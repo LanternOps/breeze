@@ -816,6 +816,7 @@ export * from './fleetDesignApply';
 export * from './deviceFunction';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Billing Enum SSOT

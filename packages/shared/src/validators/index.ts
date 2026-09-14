@@ -1021,6 +1021,7 @@ export * from './fleetDesign';
 export * from './fleetDesignApply';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Tenant Variable Validators (#3409)
