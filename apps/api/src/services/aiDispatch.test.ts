@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./commandQueue', () => ({
   executeCommand: vi.fn().mockResolvedValue({ status: 'completed' }),
   queueCommandForExecution: vi.fn().mockResolvedValue({ command: { id: 'cmd-1' } }),
+  queueCommand: vi.fn().mockResolvedValue({ id: 'cmd-1' }),
   insertQueuedCommandInTransaction: vi.fn().mockResolvedValue({ id: 'cmd-1' }),
 }));
 vi.mock('./dispatchDeviceCommand', () => ({
@@ -12,12 +13,13 @@ vi.mock('./scriptDispatch', () => ({
   dispatchScriptToDevice: vi.fn().mockResolvedValue({ ok: true, commandId: 'cmd-1' }),
 }));
 
-import { executeCommand, queueCommandForExecution, insertQueuedCommandInTransaction } from './commandQueue';
+import { executeCommand, queueCommandForExecution, queueCommand, insertQueuedCommandInTransaction } from './commandQueue';
 import { dispatchDeviceCommand } from './dispatchDeviceCommand';
 import { dispatchScriptToDevice } from './scriptDispatch';
 import {
   aiExecuteCommand,
   aiQueueCommandForExecution,
+  aiQueueCommand,
   aiDispatchDeviceCommand,
   aiDispatchScriptToDevice,
   aiInsertQueuedCommandInTransaction,
@@ -59,12 +61,21 @@ describe('aiDispatch adapter (#5022 W01)', () => {
     }
   });
 
-  it('forwards the origin through every one of the five wrappers', async () => {
+  it('forwards the origin through every one of the six wrappers', async () => {
     await aiQueueCommandForExecution(withOrigin, 'manage_services', 'dev-1', 'restart_service', {});
     expect(queueCommandForExecution).toHaveBeenCalledWith(
       'dev-1',
       'restart_service',
       {},
+      expect.objectContaining({ aiOrigin: AGENT_ORIGIN }),
+    );
+
+    await aiQueueCommand(withOrigin, 'manage_alerts', 'dev-1', 'list_processes', {}, 'user-1');
+    expect(queueCommand).toHaveBeenCalledWith(
+      'dev-1',
+      'list_processes',
+      {},
+      'user-1',
       expect.objectContaining({ aiOrigin: AGENT_ORIGIN }),
     );
 
@@ -97,6 +108,9 @@ describe('aiDispatch adapter (#5022 W01)', () => {
       aiQueueCommandForExecution(withoutOrigin, 'manage_services', 'dev-1', 'restart_service', {}),
     ).rejects.toBeInstanceOf(MissingAiOriginError);
     await expect(
+      aiQueueCommand(withoutOrigin, 'manage_alerts', 'dev-1', 'list_processes', {}),
+    ).rejects.toBeInstanceOf(MissingAiOriginError);
+    await expect(
       aiDispatchDeviceCommand(withoutOrigin, 'manage_processes', { deviceId: 'dev-1', type: 'kill_process' }),
     ).rejects.toBeInstanceOf(MissingAiOriginError);
     await expect(
@@ -104,6 +118,7 @@ describe('aiDispatch adapter (#5022 W01)', () => {
     ).rejects.toBeInstanceOf(MissingAiOriginError);
 
     expect(queueCommandForExecution).not.toHaveBeenCalled();
+    expect(queueCommand).not.toHaveBeenCalled();
     expect(dispatchDeviceCommand).not.toHaveBeenCalled();
     expect(dispatchScriptToDevice).not.toHaveBeenCalled();
   });

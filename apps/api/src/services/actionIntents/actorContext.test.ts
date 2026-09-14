@@ -753,6 +753,44 @@ describe('buildAuthContextForIntent — agent-owned intents (wave 3b)', () => {
 
     expect(result).not.toBeNull();
   });
+
+  // ---------------------------------------------------------------------
+  // #5789 — agent-owned aiOrigin: persisted vs. freshly-minted
+  // ---------------------------------------------------------------------
+
+  it('prefers the PERSISTED aiOrigin (from a chat session) over the freshly-minted one', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(agentIntent({
+      aiOriginKind: 'ai_assistant',
+      aiOriginSessionId: 'sess-1',
+      aiOriginAgentRunId: null,
+    } as Partial<ActionIntent>));
+
+    expect(result).not.toBeNull();
+    // The persisted origin, NOT the freshly-minted { kind: 'ai_agent',
+    // agentRunId: 'run-1' } buildAgentAuthContext would otherwise mint.
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_assistant', sessionId: 'sess-1' });
+  });
+
+  it('falls back to the freshly-minted { kind: ai_agent, agentRunId } origin when the intent has no persisted one', async () => {
+    dbState.selectAgentRunsResults.push([runRow]);
+    dbState.selectAgentsResults.push([agentRow]);
+    dbState.selectOrgsResults.push([{ partnerId: 'partner-1' }]);
+    dbState.selectDevicesResults.push([{ siteId: 'site-1' }]);
+
+    const result = await buildAuthContextForIntent(agentIntent({
+      aiOriginKind: null,
+      aiOriginSessionId: null,
+      aiOriginAgentRunId: null,
+    } as Partial<ActionIntent>));
+
+    expect(result).not.toBeNull();
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_agent', agentRunId: 'run-1' });
+  });
 });
 
 describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widening (agent-owned)', () => {
@@ -795,6 +833,10 @@ describe('buildAuthContextForIntent — #4650 tenant-mutation target-org widenin
     expect(result!.canAccessOrg('org-1')).toBe(true);
     expect(result!.canAccessOrg('org-2')).toBe(true);
     expect(result!.canAccessOrg('org-3')).toBe(false);
+    // #5789: the widened-accessibleOrgIds branch rebuilds the returned object
+    // as `{ ...withOrigin, accessibleOrgIds, orgCondition, canAccessOrg }` —
+    // aiOrigin must still survive that spread.
+    expect(result!.aiOrigin).toEqual({ kind: 'ai_agent', agentRunId: 'run-1' });
   });
 
   it('does NOT widen for a partner-scoped agent when the recorded target org belongs to ANOTHER partner', async () => {
