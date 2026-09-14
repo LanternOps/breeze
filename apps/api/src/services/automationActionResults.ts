@@ -322,18 +322,14 @@ async function recordMonitorEpisodeOutcomes(
   const outcome = decideMonitorEpisodeOutcome(runStatus);
   if (!automationId || !outcome || deviceIds.length === 0) return;
 
+  let monitorId: string | null | undefined;
   try {
     const [automation] = await db
       .select({ monitorId: automations.managedByMonitorId })
       .from(automations)
       .where(eq(automations.id, automationId))
       .limit(1);
-    const monitorId = automation?.monitorId;
-    if (!monitorId) return;
-
-    for (const deviceId of deviceIds) {
-      await recordEpisodeResponse({ monitorId, deviceId, outcome });
-    }
+    monitorId = automation?.monitorId;
   } catch (error) {
     captureException(error, undefined, {
       errorId: 'monitor-episode-response-outcome-failed',
@@ -341,9 +337,31 @@ async function recordMonitorEpisodeOutcomes(
       runStatus,
     });
     console.error(
-      `[AutomationActionResults] Failed to record monitor episode outcome for automation ${automationId}:`,
+      `[AutomationActionResults] Failed to resolve the monitor for automation ${automationId}:`,
       error,
     );
+    return;
+  }
+  if (!monitorId) return;
+
+  // Per-device, not per-batch: this runs exactly once per terminal transition
+  // with no retry, so one bad device must not strand the rest at `queued` —
+  // and the capture has to name the device to be actionable.
+  for (const deviceId of deviceIds) {
+    try {
+      await recordEpisodeResponse({ monitorId, deviceId, outcome });
+    } catch (error) {
+      captureException(error, undefined, {
+        errorId: 'monitor-episode-response-outcome-failed',
+        automationId,
+        runStatus,
+        deviceId,
+      });
+      console.error(
+        `[AutomationActionResults] Failed to record monitor episode outcome for automation ${automationId} device ${deviceId}:`,
+        error,
+      );
+    }
   }
 }
 

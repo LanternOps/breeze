@@ -119,15 +119,31 @@ export async function fireEscalationLatch(
     });
 
     if (escalationAlertId) {
-      await db
-        .update(monitorDeviceState)
-        .set({ escalationAlertId, updatedAt: new Date() })
-        .where(
-          and(
-            eq(monitorDeviceState.monitorId, monitor.id),
-            eq(monitorDeviceState.deviceId, deviceId),
-          ),
+      // Its own catch: the alert EXISTS now, so a failed write-back must not be
+      // reported as "no alert was raised" — the next sweep would then see
+      // escalation_alert_id still null and raise a second one.
+      try {
+        await db
+          .update(monitorDeviceState)
+          .set({ escalationAlertId, updatedAt: new Date() })
+          .where(
+            and(
+              eq(monitorDeviceState.monitorId, monitor.id),
+              eq(monitorDeviceState.deviceId, deviceId),
+            ),
+          );
+      } catch (error) {
+        captureException(error, undefined, {
+          errorId: 'monitor-escalation-alert-link-failed',
+          monitorId: monitor.id,
+          deviceId,
+          escalationAlertId,
+        });
+        console.error(
+          `[EscalationLatch] Raised alert ${escalationAlertId} but could not stamp it on monitor_device_state for monitor ${monitor.id} device ${deviceId}; the next sweep may raise a duplicate:`,
+          error,
         );
+      }
     }
 
     return { escalationAlertId, recurrenceActionsPending };

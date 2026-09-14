@@ -258,6 +258,7 @@ beforeEach(() => {
       episodeClosed: false,
       episodesInWindow: 1,
       latched: false,
+      needsEscalationAlert: false,
       responsesPaused: false,
     };
   });
@@ -395,6 +396,7 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
       episodeClosed: false,
       episodesInWindow: 3,
       latched: true,
+      needsEscalationAlert: false,
       responsesPaused: true,
     });
     pushSweepQueue({ triggered: true });
@@ -410,6 +412,25 @@ describe('evaluateDeviceAlerts — monitor episodes (#5290)', () => {
         episodesInWindow: 3,
       }),
     );
+  });
+
+  it('retries the requires-human alert when the pair is escalated but has no alert id', async () => {
+    recordMonitorEvaluationMock.mockResolvedValue({
+      episodeId: 'episode-1',
+      episodeOpened: true,
+      episodeClosed: false,
+      episodesInWindow: 4,
+      latched: false,
+      needsEscalationAlert: true,
+      responsesPaused: true,
+    });
+    pushSweepQueue({ triggered: true });
+
+    await evaluateDeviceAlerts(DEVICE_ID);
+
+    // Not a re-latch — the earlier alert simply never landed, and the responses
+    // are already paused, so the human signal has to be retried.
+    expect(fireEscalationLatchMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not fire the latch when latched is false', async () => {

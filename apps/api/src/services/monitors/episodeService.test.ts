@@ -23,7 +23,24 @@ const state = vi.hoisted(() => ({
   capturedSelectSql: [] as string[],
   inserts: [] as ChainRecord[][],
   updates: [] as ChainRecord[][],
+  /** Date bound values passed to the window query's gte(), in call order. */
+  windowCutoffs: [] as Date[],
+  /** When set, the NEXT episode insert rejects with this error. */
+  insertThrow: null as unknown,
 }));
+
+/** Every Date reachable inside a drizzle condition tree, depth-limited. */
+function collectDates(node: unknown, depth = 0, seen = new Set<unknown>()): Date[] {
+  if (depth > 20 || node === null || typeof node !== 'object') return [];
+  if (node instanceof Date) return [node];
+  if (seen.has(node)) return [];
+  seen.add(node);
+  const out: Date[] = [];
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    out.push(...collectDates(value, depth + 1, seen));
+  }
+  return out;
+}
 
 function makeSelect() {
   return (fields?: unknown) => {
@@ -33,9 +50,14 @@ function makeSelect() {
       get(_t, prop: string) {
         if (prop === 'then') {
           try {
-            state.capturedSelectSql.push(
-              (real as { toSQL(): { sql: string } }).toSQL().sql.toLowerCase(),
-            );
+            const compiled = (real as { toSQL(): { sql: string; params: unknown[] } }).toSQL();
+            state.capturedSelectSql.push(compiled.sql.toLowerCase());
+            // Dates may already be serialised by the time the query compiles,
+            // so the cutoff is captured from the `where` condition tree instead
+            // (see collectDates below); params are scanned only as a fallback.
+            for (const param of compiled.params) {
+              if (param instanceof Date) state.windowCutoffs.push(param);
+            }
           } catch {
             state.capturedSelectSql.push('');
           }
@@ -44,6 +66,10 @@ function makeSelect() {
             Promise.resolve(rows).then(res, rej);
         }
         return (...args: unknown[]) => {
+          // The window query's only Date bound is its started_at cutoff, so
+          // capturing it lets a test assert the cutoff VALUE rather than merely
+          // that some cutoff exists.
+          if (prop === 'where') for (const d of collectDates(args[0])) state.windowCutoffs.push(d);
           const target = real as Record<string, unknown>;
           if (typeof target?.[prop] === 'function') {
             try {
@@ -60,13 +86,20 @@ function makeSelect() {
   };
 }
 
-function makeWriter(sink: ChainRecord[][], rowQueue: unknown[][]) {
+function makeWriter(sink: ChainRecord[][], rowQueue: unknown[][], throwOnSecond = false) {
   return (..._args: unknown[]) => {
     const calls: ChainRecord[] = [];
     sink.push(calls);
+    const isEpisodeInsert = throwOnSecond && sink.length === 2;
     const proxy: unknown = new Proxy(function () {} as unknown as object, {
       get(_t, prop: string) {
         if (prop === 'then') {
+          if (isEpisodeInsert && state.insertThrow) {
+            const err = state.insertThrow;
+            state.insertThrow = null;
+            return (_res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+              Promise.reject(err).catch(rej);
+          }
           const rows = rowQueue.shift() ?? [];
           return (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
             Promise.resolve(rows).then(res, rej);
@@ -109,7 +142,7 @@ const EPISODE = '44444444-4444-4444-8444-444444444444';
 function tx() {
   return {
     select: makeSelect(),
-    insert: makeWriter(state.inserts, state.insertRows),
+    insert: makeWriter(state.inserts, state.insertRows, true),
     update: makeWriter(state.updates, state.updateRows),
   };
 }
@@ -121,6 +154,8 @@ beforeEach(() => {
   state.capturedSelectSql = [];
   state.inserts = [];
   state.updates = [];
+  state.windowCutoffs = [];
+  state.insertThrow = null;
   dbMock.transaction.mockReset();
   dbMock.transaction.mockImplementation(
     async (cb: (t: ReturnType<typeof tx>) => Promise<unknown>) => cb(tx()),
@@ -356,6 +391,121 @@ describe('recordMonitorEvaluation', () => {
 
     expect(result.latched).toBe(true);
     expect(result.responsesPaused).toBe(false);
+  });
+
+  it('floors the recurrence window at reset_at, so a reset really does restart it', async () => {
+    const now = new Date('2026-09-13T12:00:00Z');
+    const resetAt = new Date('2026-09-13T11:00:00Z');
+    state.selectRows = [
+      [stateRow({ resetAt })],
+      // Only the episodes started AFTER the reset come back; the SQL cutoff is
+      // what must enforce that, so assert the compiled predicate too.
+      [{ startedAt: new Date('2026-09-13T11:30:00Z') }],
+    ];
+    state.insertRows = [[], [{ id: EPISODE, startedAt: now }]];
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+      now,
+    });
+
+    // Without the reset floor the 24h cutoff would be 2026-09-12T12:00:00Z and
+    // every pre-reset episode would still be counted — re-latching on the very
+    // next breach and making the human reset useless.
+    expect(state.windowCutoffs[0]?.getTime()).toBe(resetAt.getTime());
+    expect(result.episodesInWindow).toBe(1);
+    expect(result.latched).toBe(false);
+  });
+
+  it('uses the plain window cutoff when the pair has never been reset', async () => {
+    const now = new Date('2026-09-13T12:00:00Z');
+    state.selectRows = [[stateRow()], [{ startedAt: now }]];
+    state.insertRows = [[], [{ id: EPISODE, startedAt: now }]];
+
+    await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+      now,
+    });
+
+    expect(state.windowCutoffs[0]?.getTime()).toBe(
+      new Date('2026-09-12T12:00:00Z').getTime(),
+    );
+  });
+
+  it('adopts the concurrent winner\'s episode when the open-episode unique fires', async () => {
+    state.selectRows = [[stateRow()], [{ id: EPISODE }]];
+    state.insertRows = [[]];
+    state.insertThrow = Object.assign(new Error('duplicate key'), { code: '23505' });
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor(),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+    });
+
+    // The racing sweep already opened it: adopt, do not throw (an uncaught
+    // 23505 inside a request transaction surfaces as a 500).
+    expect(result.episodeId).toBe(EPISODE);
+    expect(result.episodeOpened).toBe(false);
+  });
+
+  it('rethrows an insert error that is NOT a unique violation', async () => {
+    state.selectRows = [[stateRow()]];
+    state.insertRows = [[]];
+    state.insertThrow = Object.assign(new Error('connection lost'), { code: '08006' });
+
+    await expect(
+      recordMonitorEvaluation({
+        monitor: monitor(),
+        deviceId: DEVICE,
+        orgId: ORG,
+        observation: 'breach',
+      }),
+    ).rejects.toThrow('connection lost');
+  });
+
+  it('reports that the latch needs its alert when escalated_at is set but the alert id is not', async () => {
+    state.selectRows = [
+      [stateRow({ escalatedAt: new Date('2026-09-13T11:00:00Z'), escalationAlertId: null, responsesPaused: true })],
+      [{ startedAt: new Date() }, { startedAt: new Date() }, { startedAt: new Date() }],
+    ];
+    state.insertRows = [[], [{ id: EPISODE, startedAt: new Date() }]];
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+    });
+
+    // Not a re-latch — the state is untouched — but the requires-human alert
+    // never got created, so the sweep must retry it.
+    expect(result.latched).toBe(false);
+    expect(result.needsEscalationAlert).toBe(true);
+  });
+
+  it('does not ask for an escalation alert once one exists', async () => {
+    state.selectRows = [
+      [stateRow({ escalatedAt: new Date(), escalationAlertId: 'alert-1', responsesPaused: true })],
+      [{ startedAt: new Date() }, { startedAt: new Date() }, { startedAt: new Date() }],
+    ];
+    state.insertRows = [[], [{ id: EPISODE, startedAt: new Date() }]];
+
+    const result = await recordMonitorEvaluation({
+      monitor: monitor({ recurrenceThreshold: 3, recurrenceWindowHours: 24 }),
+      deviceId: DEVICE,
+      orgId: ORG,
+      observation: 'breach',
+    });
+
+    expect(result.needsEscalationAlert).toBe(false);
   });
 
   it('takes FOR UPDATE on the state row before reading it', async () => {

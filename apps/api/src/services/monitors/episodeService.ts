@@ -51,6 +51,14 @@ export interface RecordEvaluationResult {
   episodesInWindow: number;
   /** True only on the sweep that latched escalation (never on a re-latch). */
   latched: boolean;
+  /**
+   * The pair IS escalated but has no `escalation_alert_id` — the requires-human
+   * alert was never created (a transient failure in `fireEscalationLatch`, whose
+   * error is deliberately swallowed so it cannot cost the device its ordinary
+   * alert). The sweep retries the alert on this signal; without it the responses
+   * stay paused forever with nothing telling a technician why.
+   */
+  needsEscalationAlert: boolean;
   responsesPaused: boolean;
 }
 
@@ -100,6 +108,8 @@ export async function recordMonitorEvaluation(
       currentEpisodeId: null as string | null,
       episodesInWindow: 0,
       escalatedAt: null as Date | null,
+      escalationAlertId: null as string | null,
+      resetAt: null as Date | null,
       responsesPaused: false,
     };
 
@@ -122,6 +132,7 @@ export async function recordMonitorEvaluation(
         episodeClosed: false,
         episodesInWindow: current.episodesInWindow ?? 0,
         latched: false,
+        needsEscalationAlert: false,
         responsesPaused: current.responsesPaused ?? false,
       };
     }
@@ -156,6 +167,7 @@ export async function recordMonitorEvaluation(
         // age, not by recovery.
         episodesInWindow: current.episodesInWindow ?? 0,
         latched: false,
+        needsEscalationAlert: false,
         responsesPaused: current.responsesPaused ?? false,
       };
     }
@@ -178,6 +190,7 @@ export async function recordMonitorEvaluation(
         episodeClosed: false,
         episodesInWindow: current.episodesInWindow ?? 0,
         latched: false,
+        needsEscalationAlert: false,
         responsesPaused: current.responsesPaused ?? false,
       };
     }
@@ -201,6 +214,9 @@ export async function recordMonitorEvaluation(
       if (!isUniqueViolation(err)) throw err;
       // A concurrent sweep raced past the lock: adopt its episode rather than
       // surfacing a 500 out of the request transaction.
+      console.warn(
+        `[EpisodeService] Concurrent sweep already opened an episode for monitor=${input.monitor.id} device=${input.deviceId}; adopting it`,
+      );
       const [existing] = await tx
         .select({ id: monitorEpisodes.id })
         .from(monitorEpisodes)
@@ -214,6 +230,14 @@ export async function recordMonitorEvaluation(
         .limit(1);
       episodeId = existing?.id ?? null;
       episodeOpened = false;
+      if (!episodeId) {
+        // The racing sweep's episode closed between its insert and this read.
+        // Callers all guard for a null episodeId, so this is not fatal — but a
+        // RUN of these means something other than the intended benign race.
+        console.warn(
+          `[EpisodeService] 23505 on the open-episode index but no open episode found for monitor=${input.monitor.id} device=${input.deviceId}`,
+        );
+      }
     }
 
     const threshold = input.monitor.recurrenceThreshold;
@@ -224,7 +248,13 @@ export async function recordMonitorEvaluation(
     let windowStartedAt: Date | null = null;
 
     if (counterOn) {
-      const cutoff = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
+      // The window is FLOORED at the last human reset. Without this floor the
+      // recompute would still see every pre-reset episode, so the very next
+      // breach would re-latch and the reset would be useless — exactly what
+      // `resetMonitorEscalation` promises not to happen.
+      const windowStart = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
+      const resetAt = current.resetAt ? new Date(current.resetAt) : null;
+      const cutoff = resetAt && resetAt > windowStart ? resetAt : windowStart;
       // A recomputed count, not an incremented counter, so a pruned window and
       // a replayed sweep agree.
       const rows = await tx
@@ -247,6 +277,9 @@ export async function recordMonitorEvaluation(
     const alreadyEscalated = Boolean(current.escalatedAt);
     const latched =
       counterOn && !alreadyEscalated && episodesInWindow >= (threshold as number);
+    // Already latched, but its requires-human alert never landed: ask the sweep
+    // to retry the alert without touching the (correct) state.
+    const needsEscalationAlert = alreadyEscalated && !current.escalationAlertId;
     const responsesPaused = latched
       ? Boolean(input.monitor.pauseResponsesOnEscalation)
       : (current.responsesPaused ?? false);
@@ -274,7 +307,15 @@ export async function recordMonitorEvaluation(
         ),
       );
 
-    return { episodeId, episodeOpened, episodeClosed: false, episodesInWindow, latched, responsesPaused };
+    return {
+      episodeId,
+      episodeOpened,
+      episodeClosed: false,
+      episodesInWindow,
+      latched,
+      needsEscalationAlert,
+      responsesPaused,
+    };
   });
 }
 

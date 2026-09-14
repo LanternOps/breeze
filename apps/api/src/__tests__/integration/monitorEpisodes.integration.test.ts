@@ -414,6 +414,48 @@ describe('recurrence latch and pause (#5290)', () => {
     expect(again).toEqual({ reset: false });
   });
 
+  it('a reset really restarts the window: the next breach does NOT immediately re-latch', async () => {
+    const f = await fixture();
+    const monitorId = await seedMonitor({
+      orgId: f.orgA,
+      recurrenceThreshold: 2,
+      recurrenceWindowHours: 24,
+    });
+    createdMonitorIds.push(monitorId);
+    const m = monitorArg(monitorId, { recurrenceThreshold: 2, recurrenceWindowHours: 24 });
+
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'breach' });
+      await recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'ok' });
+      const latched = await recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'breach' });
+      expect(latched.latched).toBe(true);
+    });
+
+    const auth = { user: { id: null }, orgCondition: () => undefined } as unknown as AuthContext;
+    await withDbAccessContext(orgContext(f.orgA, f.partnerA), () =>
+      resetMonitorEscalation({ monitorId, deviceId: f.deviceA, auth }),
+    );
+
+    // Both pre-reset episodes are still inside the 24h window. Without the
+    // reset_at floor in the window recompute, this single new breach would
+    // count 3 >= 2 and re-latch immediately, making the reset useless.
+    const after = await withDbAccessContext(SYSTEM_CTX, async () => {
+      await recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'ok' });
+      return recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'breach' });
+    });
+
+    expect(after.episodesInWindow).toBe(1);
+    expect(after.latched).toBe(false);
+    expect((await stateFor(monitorId, f.deviceA))?.responsesPaused).toBe(false);
+
+    // Two NEW post-reset episodes still latch, so the counter is restarted, not disabled.
+    const relatched = await withDbAccessContext(SYSTEM_CTX, async () => {
+      await recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'ok' });
+      return recordMonitorEvaluation({ monitor: m, deviceId: f.deviceA, orgId: f.orgA, observation: 'breach' });
+    });
+    expect(relatched.latched).toBe(true);
+  });
+
   it('detachMonitorFromDevice closes the open episode as monitor_detached', async () => {
     const f = await fixture();
     const monitorId = await seedMonitor({ orgId: f.orgA });

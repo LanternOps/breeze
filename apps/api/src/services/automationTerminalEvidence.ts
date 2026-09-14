@@ -77,7 +77,17 @@ export async function handleAgentRunTerminalForAutomation(
     : typeof payload.agentRunId === 'string'
       ? payload.agentRunId
       : null;
-  if (!agentRunId) return;
+  if (!agentRunId) {
+    // NOT the harmless case above: the subscriber only receives the three
+    // terminal ai.agent.run.* types, so a missing run id here is a malformed
+    // payload for an event we explicitly asked for. Left silent, the correlated
+    // action would sit non-terminal until the reaper stamped a provisional
+    // timeout over the child run's real outcome.
+    console.error(
+      `[AutomationTerminalEvidence] ${event.type} carried no run id; the correlated automation action cannot be terminalised`,
+    );
+    return;
+  }
 
   const error = typeof payload.error === 'string' ? payload.error : null;
   await applyAgentRunAutomationTerminal({ agentRunId, terminalStatus, error });

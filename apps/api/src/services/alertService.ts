@@ -1047,7 +1047,10 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
             observation,
           });
           episodeId = outcome.episodeId;
-          if (outcome.latched && outcome.episodeId) {
+          // `needsEscalationAlert` retries an alert that the latch failed to
+          // raise earlier — the pause is already durable, so without the retry
+          // the device's responses stay held with nothing telling a human why.
+          if ((outcome.latched || outcome.needsEscalationAlert) && outcome.episodeId) {
             await fireEscalationLatch({
               monitor,
               deviceId,
@@ -1119,6 +1122,15 @@ export async function evaluateDeviceAlerts(deviceId: string): Promise<string[]> 
                 `[AlertService] Failed to link alert ${alertId} to episode ${episodeId}:`,
                 error
               );
+              // Reported as well as logged: a run of these silently degrades the
+              // episode → alert traceability the Activity tab is built on, and
+              // nothing else would ever notice the pattern.
+              captureException(error, undefined, {
+                area: 'monitors',
+                issue: 'episode_alert_link_failed',
+                episodeId,
+                alertId,
+              });
             });
           }
         }
