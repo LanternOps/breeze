@@ -71,8 +71,15 @@ export default function IntegrationBadges({
   const badges = row.badges;
   if (badges === null) return <span className="text-muted-foreground">—</span>;
   if (badges.length === 0) {
+    // The desktop table cell and the phone card render the same row's IntegrationBadges
+    // simultaneously (ResponsiveTable renders both, CSS hides one) — the testid must vary
+    // with testIdPrefix like every other testid in this component, or Playwright's
+    // getByTestId resolves to two elements. Derived from testIdPrefix so the default
+    // ('org-board-badge' → 'org-board-nothing-linked') stays exactly what every existing
+    // test and the E2E page object already expect.
+    const nothingLinkedTestId = `${testIdPrefix.replace(/-?badge$/, '')}-nothing-linked-${orgId}`.replace(/^-/, '');
     return (
-      <span className="text-xs text-muted-foreground" data-testid={`org-board-nothing-linked-${orgId}`}>
+      <span className="text-xs text-muted-foreground" data-testid={nothingLinkedTestId}>
         {t('orgBoard.integrations.nothingLinked')}
       </span>
     );

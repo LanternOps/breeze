@@ -34,6 +34,14 @@ describe('IntegrationBadges', () => {
     expect(screen.getByTestId(`org-board-nothing-linked-${ORG}`)).toHaveTextContent('Nothing linked');
   });
 
+  it('gives the "Nothing linked" testid a distinct prefix per testIdPrefix — the desktop cell and the phone card render the same row simultaneously (ResponsiveTable), so a shared id is a Playwright strict-mode violation', () => {
+    const { rerender } = render(<IntegrationBadges row={row([])} />);
+    expect(screen.getByTestId(`org-board-nothing-linked-${ORG}`)).toBeInTheDocument();
+    rerender(<IntegrationBadges row={row([])} testIdPrefix="org-board-card-badge" />);
+    expect(screen.queryByTestId(`org-board-nothing-linked-${ORG}`)).not.toBeInTheDocument();
+    expect(screen.getByTestId(`org-board-card-nothing-linked-${ORG}`)).toHaveTextContent('Nothing linked');
+  });
+
   it('renders one badge per system with the state colour, the brand name, and an accessible name carrying the org and reason', () => {
     render(
       <IntegrationBadges
