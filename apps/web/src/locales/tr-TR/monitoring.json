@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Yapılandırma politikası",
     "selectTarget": "Hedef",
+    "noOrgSelected": "Dağıtılacak bir kuruluş seçin.",
     "policyName": "Politika adı",
     "attach": "Ekle",
     "cancel": "İptal",

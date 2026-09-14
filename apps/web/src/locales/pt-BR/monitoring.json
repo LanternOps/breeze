@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Política de configuração",
     "selectTarget": "Destino",
+    "noOrgSelected": "Selecione uma organização para implantar.",
     "policyName": "Nome da política",
     "attach": "Anexar",
     "cancel": "Cancelar",

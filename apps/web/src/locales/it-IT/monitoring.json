@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Criterio di configurazione",
     "selectTarget": "Destinazione",
+    "noOrgSelected": "Seleziona un'organizzazione per la distribuzione.",
     "policyName": "Nome del criterio",
     "attach": "Collega",
     "cancel": "Annulla",

@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Configuration policy",
     "selectTarget": "Target",
+    "noOrgSelected": "Select an organization to deploy to.",
     "policyName": "Policy name",
     "attach": "Attach",
     "cancel": "Cancel",

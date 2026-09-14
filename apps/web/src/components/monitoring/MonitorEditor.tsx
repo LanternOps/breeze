@@ -169,6 +169,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [builtinKey, setBuiltinKey] = useState<string | null>(null);
+  // Null for a partner-wide monitor — DeployMonitorDialog falls back to the
+  // currently selected org from the org store in that case.
+  const [monitorOrgId, setMonitorOrgId] = useState<string | null>(null);
 
   const [hashTab, setHashTab] = useHashState<EditorTab>('settings', tabFromHash);
   // The Activity tab needs a saved monitor id (#5290); an unsaved monitor
@@ -280,6 +283,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
       setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
+      setMonitorOrgId(typeof monitor.orgId === 'string' ? monitor.orgId : null);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -924,6 +928,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         {!isNew && monitorId && (
           <DeployMonitorDialog
             monitorId={monitorId}
+            orgId={monitorOrgId}
             open={deployOpen}
             onClose={() => setDeployOpen(false)}
             onDeployed={() => {

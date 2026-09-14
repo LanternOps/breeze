@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Konfigurationsrichtlinie",
     "selectTarget": "Ziel",
+    "noOrgSelected": "Wählen Sie eine Organisation aus, für die bereitgestellt werden soll.",
     "policyName": "Richtlinienname",
     "attach": "Anhängen",
     "cancel": "Abbrechen",

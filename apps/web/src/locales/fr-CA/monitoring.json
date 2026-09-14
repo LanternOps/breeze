@@ -246,6 +246,7 @@
     },
     "selectPolicy": "Politique de configuration",
     "selectTarget": "Cible",
+    "noOrgSelected": "Sélectionnez une organisation pour le déploiement.",
     "policyName": "Nom de la politique",
     "attach": "Joindre",
     "cancel": "Annuler",
