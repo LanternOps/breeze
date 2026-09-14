@@ -1,6 +1,21 @@
 import Redis from 'ioredis';
+import type { RedisOptions } from 'ioredis';
 import type { ConnectionOptions } from 'bullmq';
 import { readFileSync } from 'node:fs';
+
+/**
+ * Explicitly pin the wire protocol to RESP2 on every ioredis client this
+ * process creates. ioredis 5.x (current) has no RESP3 support at all — this
+ * `protocol` option isn't in its runtime or its `RedisOptions` type, so it is
+ * a silent no-op today and the `as Partial<RedisOptions>` cast below is load
+ * bearing, not a workaround. ioredis 6 DOES declare `protocol` on
+ * `RedisOptions` and defaults to negotiating RESP3 via `HELLO 3` when the
+ * server supports it. Pinning now means that future ioredis 6 upgrade won't
+ * silently flip every client's wire protocol — it'll already be locked to
+ * RESP2, matching current (tested) behavior, until protocol 3 is adopted
+ * deliberately.
+ */
+export const REDIS_CLIENT_BASE_OPTIONS = { protocol: 2 } as Partial<RedisOptions>;
 
 let redisClient: Redis | null = null;
 let redisAvailable = true;
@@ -115,6 +130,7 @@ export function getRedis(): Redis | null {
   if (!redisClient) {
     const url = resolveRedisUrl();
     redisClient = new Redis(url, {
+      ...REDIS_CLIENT_BASE_OPTIONS,
       maxRetriesPerRequest: 3,
       retryStrategy(times) {
         // Exponential backoff with 30s cap - never stop retrying so recovery is possible
@@ -203,6 +219,7 @@ export function getRedisConnection(): Redis {
     const url = resolveRedisUrl();
 
     bullmqConnection = new Redis(url, {
+      ...REDIS_CLIENT_BASE_OPTIONS,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       retryStrategy(times) {

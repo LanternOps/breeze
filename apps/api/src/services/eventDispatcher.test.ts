@@ -4,6 +4,7 @@ import { buildSiteFilter } from '../routes/eventWs';
 
 vi.mock('./redis', () => ({
   resolveRedisUrl: () => 'redis://localhost:6379',
+  REDIS_CLIENT_BASE_OPTIONS: { protocol: 2 },
 }));
 
 vi.mock('ioredis', () => {
