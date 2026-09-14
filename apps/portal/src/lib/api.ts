@@ -728,6 +728,7 @@ export interface BrandingConfig {
   enableSupportUsage?: boolean;
   enableService?: boolean;
   enableDocuments?: boolean;
+  enableLifecycle?: boolean;
 }
 
 export interface ListParams {

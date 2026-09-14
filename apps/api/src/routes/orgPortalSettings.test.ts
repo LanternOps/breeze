@@ -112,6 +112,7 @@ const FULL_ROW = {
   enableSupportUsage: false,
   enableService: false,
   enableDocuments: false,
+  enableLifecycle: false,
   supportEmail: 'help@msp.example',
   supportPhone: null,
   welcomeMessage: 'Welcome',
@@ -166,6 +167,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSupportUsage: false,
       enableService: false,
       enableDocuments: false,
+      enableLifecycle: false,
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
@@ -195,6 +197,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       enableSupportUsage: false,
       enableService: false,
       enableDocuments: false,
+      enableLifecycle: false,
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
@@ -315,13 +318,15 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableDashboard: true,
       enableReports: true,
       enableService: true,
-      enableDocuments: false
+      enableDocuments: false,
+      enableLifecycle: true
     }]);
 
     const res = await patch({
       enableDashboard: true,
       enableReports: true,
-      enableService: true
+      enableService: true,
+      enableLifecycle: true
     });
 
     expect(res.status).toBe(200);
@@ -332,7 +337,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       enableReports: true,
       enableSupportUsage: false,
       enableService: true,
-      enableDocuments: false
+      enableDocuments: false,
+      enableLifecycle: true
     });
     expect(onPortalFlagsChanged).toHaveBeenCalledWith({
       orgId: ORG_ID,
@@ -340,7 +346,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       requested: {
         enableDashboard: true,
         enableReports: true,
-        enableService: true
+        enableService: true,
+        enableLifecycle: true
       },
       current: {
         enableDashboard: true,
@@ -349,7 +356,8 @@ describe('PATCH /organizations/:id/portal-settings', () => {
         enableReports: true,
         enableSupportUsage: false,
         enableService: true,
-        enableDocuments: false
+        enableDocuments: false,
+        enableLifecycle: true
       }
     });
   });
