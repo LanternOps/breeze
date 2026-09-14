@@ -380,14 +380,26 @@ export default function TicketWorkbench({ ticketId, onChanged, onTicketPatched, 
   const [postingProposal, setPostingProposal] = useState(false);
 
   const refetchAiProposal = useCallback(async (forTicketId: string) => {
+    // #4211 review: same "best-effort, never clear on failure" contract as
+    // refetchAiDrafts above — the guard against a stale response applies to
+    // EVERY exit path (not just the success one), and a failed fetch/parse
+    // leaves the existing (possibly stale) card rather than nulling it out.
+    // The earlier version nulled aiProposal on !res.ok and on any thrown
+    // error with NO staleness guard on either branch: a slow failing
+    // request for ticket A landing after the technician had already
+    // switched to ticket B would silently wipe B's correctly-loaded,
+    // postable card off the screen.
     try {
       const res = await fetchWithAuth(`/tickets/${forTicketId}/ai-proposal`);
-      if (!res.ok) { setAiProposal(null); return; }
-      const body = await res.json();
       if (ticketIdRef.current !== forTicketId) return; // ticket switched mid-flight
+      if (!res.ok) return;
+      const body = await res.json();
+      if (ticketIdRef.current !== forTicketId) return; // switched while awaiting .json()
       setAiProposal(body?.data ?? null);
     } catch {
-      setAiProposal(null);
+      // Best-effort — leave the existing (possibly stale) card rather than
+      // clearing it out from under an in-progress "post as note" action on
+      // a network blip.
     }
   }, []);
 
