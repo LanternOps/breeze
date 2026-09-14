@@ -181,8 +181,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
        * Unrestricted callers (canAccessSite undefined) always pass.
        */
       async function assertMonitorSiteAccess(
-        monitor: { id: string; assetId: string | null; orgId: string },
+        monitor: { id: string; assetId: string | null; orgId: string | null },
       ): Promise<boolean> {
+        // #5291 W04 — `network_monitors.org_id` is nullable now (org XOR
+        // partner). A partner-wide row is always a compiled artefact of a
+        // `network_check` monitor definition: it has no org axis to authorize
+        // on and is owned by the compiler, so this org-axis AI surface refuses
+        // it outright rather than falling through to the unrestricted-caller
+        // short-circuit below. Read and edit it through the monitor editor.
+        if (monitor.orgId === null) return false;
         if (!auth.canAccessSite) return true; // unrestricted caller
         if (!monitor.assetId) return false;   // no asset → fail-closed
         const [asset] = await db
@@ -299,6 +306,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
         }
 
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
+        }
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
         if (typeof input.target === 'string') updates.target = input.target;
@@ -324,6 +340,15 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Site-axis gate — deny same as "not found" (no oracle).
         if (!(await assertMonitorSiteAccess(existing))) {
           return JSON.stringify({ error: 'Monitor not found or access denied' });
+        }
+
+        // #5291 W04 — a compiled `network_check` row is owned by the monitor
+        // compiler; a side edit here would survive only until the next compile.
+        if (existing.managedByMonitorId) {
+          return JSON.stringify({
+            error: 'network_monitor_managed_by_monitor',
+            monitorId: existing.managedByMonitorId,
+          });
         }
 
         // Cascade delete handles results and alert rules via FK onDelete: 'cascade'

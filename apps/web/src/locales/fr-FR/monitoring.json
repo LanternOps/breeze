@@ -126,7 +126,12 @@
     "cert_expiry": "Expiration du certificat",
     "bandwidth": "Bande passante",
     "disk_io": "E/S disque",
-    "network_errors": "Erreurs réseau"
+    "network_errors": "Erreurs réseau",
+    "antivirus": "Protection antivirus",
+    "software_presence": "Présence logicielle",
+    "backup_continuity": "Continuité des sauvegardes",
+    "script": "Vérification de script",
+    "network_check": "Vérification réseau"
   },
   "fields": {
     "operator": "Comparaison",
@@ -145,7 +150,28 @@
     "withinDays": "Expire dans (jours)",
     "direction": "Direction",
     "errorType": "Direction de l’erreur",
-    "interfaceName": "Interface (optionnel)"
+    "interfaceName": "Interface (optionnel)",
+    "check": "Vérification",
+    "staleAfterDays": "Périmé après (jours)",
+    "minThreatCount": "Nombre minimal de menaces",
+    "softwareName": "Nom du logiciel",
+    "vendor": "Éditeur (optionnel)",
+    "presence": "Présence",
+    "version": "Numéro de version",
+    "backupCheck": "Vérification",
+    "maxAgeHours": "Âge maximal (heures)",
+    "failureCount": "Nombre d’échecs",
+    "script": "Script à exécuter",
+    "scriptSelectPlaceholder": "Sélectionner un script…",
+    "scriptLoadError": "Échec du chargement des scripts",
+    "intervalMinutes": "Exécuter toutes les (minutes)",
+    "timeoutSeconds": "Délai d’expiration (secondes)",
+    "breachOnNonZeroExit": "Manquement si le code de sortie est différent de zéro",
+    "checkType": "Type de vérification",
+    "target": "Cible",
+    "port": "Numéro de port",
+    "expectStatus": "Code de statut attendu",
+    "pollingIntervalSeconds": "Interroger toutes les (secondes)"
   },
   "operators": {
     "gt": "supérieur à",
@@ -183,6 +209,27 @@
     "read": "Lecture",
     "write": "Écriture",
     "total": "Total"
+  },
+  "antivirusChecks": {
+    "not_protected": "Non protégé",
+    "definitions_stale": "Définitions périmées",
+    "realtime_disabled": "Protection en temps réel désactivée",
+    "threats_present": "Menaces présentes"
+  },
+  "presences": {
+    "installed": "Installé",
+    "not_installed": "Non installé",
+    "version_below": "Version inférieure à"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Aucune sauvegarde réussie",
+    "consecutive_failures": "Défaillances consécutives"
+  },
+  "checkTypes": {
+    "icmp_ping": "Ping ICMP",
+    "tcp_port": "Port TCP",
+    "http_check": "Vérification HTTP",
+    "dns_check": "Vérification DNS"
   },
   "deploy": {
     "title": "Déployer le moniteur",

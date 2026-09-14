@@ -230,6 +230,11 @@ export const monitorQueueJobDataSchema = z.discriminatedUnion('type', [
     type: z.literal('process-check-result'),
     monitorId: z.string().min(1),
     result: monitorCheckResultSchema,
+    // #5291 W04 - the org the probe ran FOR and the device it ran FROM. Both
+    // optional so a payload enqueued before this wave still parses at the
+    // dequeue boundary instead of dead-lettering the drain.
+    orgId: z.string().min(1).optional(),
+    deviceId: z.string().min(1).optional(),
     meta: queueActorMetaSchema.optional(),
   }).strict(),
   z.object({

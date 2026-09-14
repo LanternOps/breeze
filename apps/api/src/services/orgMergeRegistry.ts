@@ -774,6 +774,12 @@ const REPOINT_TABLES: readonly string[] = [
   "monitor_definitions",
   "network_baselines",
   "network_change_events",
+  // #5291 W04 - results carry the DEVICE org they ran for, so they repoint
+  // with the losing org like any other org_id row.
+  "network_monitor_results",
+  // A partner-wide network_monitors row has org_id NULL and belongs to the
+  // partner, not the losing org; the repoint is `WHERE org_id = <loser>`, so
+  // it never matches and the partner-wide row is correctly left alone.
   "network_monitors",
   "network_topology",
   "notification_channels",

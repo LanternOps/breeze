@@ -21,6 +21,10 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
   const withSystem = dbModule.withSystemDbAccessContext;
   return typeof withSystem === 'function' ? withSystem(fn) : fn();
 };
+const runOutsideRequestDbContext = <T>(fn: () => Promise<T>): Promise<T> => {
+  const runOutside = dbModule.runOutsideDbContext;
+  return typeof runOutside === 'function' ? runOutside(fn) : fn();
+};
 
 const PATCH_COMPLIANCE_REPORT_QUEUE = 'patch-compliance-reports';
 const PATCH_REPORT_STORAGE_PATH = process.env.PATCH_REPORT_STORAGE_PATH || './data/patch-reports';
@@ -393,15 +397,26 @@ export function getPatchComplianceReportQueue(): Queue<PatchComplianceReportJobD
   return patchComplianceReportQueue;
 }
 
+/**
+ * Redis-down / enqueue-failure fallback. This is scheduled from the request
+ * handler and `setImmediate` propagates the AsyncLocalStorage DB context, so
+ * `withSystemDbAccessContext` would early-return into the request's
+ * org-scoped transaction — a silent no-op that runs the claim, aggregate and
+ * completion writes on a transaction that may already have committed (#5566).
+ * Exiting the request context first is what makes the nested system context a
+ * genuinely fresh one on its own pooled connection.
+ *
+ * Rejections propagate on purpose: the shared processor has already written the
+ * fail-closed terminal state, but swallowing here would make the callers'
+ * `.catch(console.error)` handlers unreachable and leave every inline failure
+ * — including one thrown before the processor runs at all — with no operator
+ * signal whatsoever.
+ */
 async function processReportInline(reportId: string): Promise<void> {
-  try {
-    await processPatchComplianceReportJob({
-      type: 'generate-compliance-report',
-      reportId,
-    });
-  } catch {
-    // The shared processor records the fail-closed terminal state.
-  }
+  await runOutsideRequestDbContext(() => processPatchComplianceReportJob({
+    type: 'generate-compliance-report',
+    reportId,
+  }));
 }
 
 export async function enqueuePatchComplianceReport(

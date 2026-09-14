@@ -29,6 +29,14 @@ export const MONITOR_KINDS = [
   'bandwidth',
   'disk_io',
   'network_errors',
+  // W04 coverage (#5287 / #5291). The first three are handler-only kinds over
+  // data the agent already reports; `script` dispatches its own diagnostic
+  // probe; `network_check` compiles to a managed `network_monitors` row.
+  'antivirus',
+  'software_presence',
+  'backup_continuity',
+  'script',
+  'network_check',
 ] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 export const monitorKindSchema = z.enum(MONITOR_KINDS);
@@ -112,6 +120,73 @@ export const monitorConditionSchemas = {
       windowMinutes: z.number().int().min(1).max(1440).optional(),
     })
     .strict(),
+  antivirus: z
+    .object({
+      check: z.enum(['not_protected', 'definitions_stale', 'realtime_disabled', 'threats_present']),
+      staleAfterDays: z.number().int().min(1).max(365).optional(), // 'definitions_stale' only
+      minThreatCount: z.number().int().min(1).max(1000).optional(), // 'threats_present' only
+    })
+    .strict()
+    .refine((v) => v.check !== 'definitions_stale' || v.staleAfterDays != null, {
+      message: 'staleAfterDays required for definitions_stale',
+      path: ['staleAfterDays'],
+    }),
+  software_presence: z
+    .object({
+      name: z.string().min(1).max(500),
+      vendor: z.string().max(200).optional(),
+      presence: z.enum(['installed', 'not_installed', 'version_below']),
+      version: z.string().max(100).optional(), // 'version_below' only
+    })
+    .strict()
+    .refine((v) => v.presence !== 'version_below' || !!v.version, {
+      message: 'version required for version_below',
+      path: ['version'],
+    }),
+  backup_continuity: z
+    .object({
+      check: z.enum(['no_successful_backup', 'consecutive_failures']),
+      maxAgeHours: z.number().int().min(1).max(8760).optional(), // 'no_successful_backup' only
+      failureCount: z.number().int().min(1).max(50).optional(), // 'consecutive_failures' only
+    })
+    .strict()
+    .refine((v) => v.check !== 'no_successful_backup' || v.maxAgeHours != null, {
+      message: 'maxAgeHours required for no_successful_backup',
+      path: ['maxAgeHours'],
+    })
+    .refine((v) => v.check !== 'consecutive_failures' || v.failureCount != null, {
+      message: 'failureCount required for consecutive_failures',
+      path: ['failureCount'],
+    }),
+  script: z
+    .object({
+      scriptId: z.string().uuid(),
+      intervalMinutes: z.number().int().min(5).max(1440).default(60),
+      timeoutSeconds: z.number().int().min(10).max(3600).default(300),
+      parameters: z.record(z.string(), z.unknown()).optional(),
+      // Exit-code verdict is the default. A `::breeze:monitor::` marker line in
+      // stdout overrides it with a richer detail string; a script that emits
+      // neither and exits 0 passes.
+      breachOnNonZeroExit: z.boolean().default(true),
+    })
+    .strict(),
+  network_check: z
+    .object({
+      // These labels ARE the existing `monitor_type` pgEnum values, so the
+      // compiler adapter never maps a vocabulary.
+      checkType: z.enum(['icmp_ping', 'tcp_port', 'http_check', 'dns_check']),
+      target: z.string().min(1).max(500),
+      port: z.number().int().min(1).max(65535).optional(), // tcp_port
+      expectStatus: z.number().int().min(100).max(599).optional(), // http_check
+      pollingIntervalSeconds: z.number().int().min(30).max(3600).default(60),
+      timeoutSeconds: z.number().int().min(1).max(120).default(5),
+      consecutiveFailures: z.number().int().min(1).max(20).default(2),
+    })
+    .strict()
+    .refine((v) => v.checkType !== 'tcp_port' || v.port != null, {
+      message: 'port required for tcp_port',
+      path: ['port'],
+    }),
 } satisfies Record<MonitorKind, z.ZodTypeAny>;
 
 export type MonitorConditionSchemas = typeof monitorConditionSchemas;
