@@ -75,7 +75,7 @@ vi.mock('../services/siteScope', () => ({
 }));
 
 const emailState = vi.hoisted(() => ({ configured: true }));
-const sendEmail = vi.fn(async () => undefined);
+const sendEmail = vi.fn(async (_params: unknown) => undefined);
 vi.mock('../services/email', () => ({
   getEmailService: () => (emailState.configured ? { sendEmail } : null),
 }));
