@@ -162,7 +162,7 @@ function emptyRowsReport() {
  */
 function addAllowedSiteCondition(
   conditions: SQL[],
-  authority: ReportExecutionAuthority,
+  authority: ReportGenerationAuthority,
   siteColumn: AnyPgColumn = devices.siteId,
 ): boolean {
   if (authority.scope.kind === 'unrestricted') return false;
@@ -317,7 +317,14 @@ type DeviceInventoryRow = {
 export async function generateDeviceInventoryReport(
   orgId: string,
   config: Record<string, unknown>,
-  authority: ReportExecutionAuthority,
+  // `ReportGenerationAuthority`, not the request-path union: this generator
+  // reads only `authority.scope`, so it is the one existing type that can run
+  // under a system authority — which is what lets
+  // managedEvidenceFoundations.integration.test.ts prove the #5784 system path
+  // end to end on real Postgres before W02 ships the first registry type.
+  // Reaching it with a system authority still requires the closed registry to
+  // name 'device_inventory', which production never does.
+  authority: ReportGenerationAuthority,
 ) {
   assertReportExecutionPreflight(orgId, config, authority, 'device_inventory');
   // `isEphemeral = false` on every device predicate in this file: Quick Support
@@ -843,7 +850,7 @@ async function dispatchReportGeneration(
 
   switch (type) {
     case 'device_inventory':
-      return generateDeviceInventoryReport(orgId, config, requestAuthority());
+      return generateDeviceInventoryReport(orgId, config, authority);
     case 'software_inventory':
       return generateSoftwareInventoryReport(orgId, config, requestAuthority());
     case 'alert_summary':
