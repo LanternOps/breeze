@@ -229,8 +229,8 @@ describe('integration compatibility routes', () => {
       });
       expect(res.status).toBe(200);
       expect(safeFetchMock).toHaveBeenCalledTimes(1);
-      expect(safeFetchMock.mock.calls[0][0]).toBe('https://hooks.example.test/two');
-      expect(safeFetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' });
+      expect(safeFetchMock.mock.calls[0]![0]).toBe('https://hooks.example.test/two');
+      expect(safeFetchMock.mock.calls[0]![1]).toMatchObject({ method: 'POST' });
     });
   });
 
