@@ -99,7 +99,7 @@ export interface QueuedCommand {
   result: CommandResult | null;
 }
 
-type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type CommandQueueTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 
 
@@ -160,45 +160,12 @@ function writeAiCommandAudit(input: {
   });
 }
 
-/** Persist a command inside a caller-owned transaction without dispatch side effects. */
-export async function insertQueuedCommandInTransaction(
-  tx: CommandQueueTx,
-  input: {
-    id: string;
-    deviceId: string;
-    type: CommandType;
-    payload: CommandPayload;
-    /**
-     * `device_commands.created_by` is a NULLABLE uuid. Pass `null` for a
-     * synthetic principal that `resolveCommandCreatedBy` degraded — NOT `''`,
-     * which Postgres rejects with `22P02 invalid input syntax for type uuid`
-     * and which rolls back the caller's whole transaction (#3525 W02b).
-     */
-    createdBy: string | null;
-    /** #5022 W01 — who DECIDED this command, when an AI surface did. */
-    aiOrigin?: AiOriginRef;
-    /**
-     * Which consumer on the device picks this up. Defaults to 'agent' (the
-     * column default). Needed so callers that previously hand-rolled a
-     * `tx.insert(deviceCommands)` to set it can route through this chokepoint
-     * instead — see aiDispatch.contract.test.ts.
-     */
-    targetRole?: 'agent' | 'watchdog';
-  },
-): Promise<QueuedCommand> {
-  const [command] = await tx.insert(deviceCommands).values({
-    id: input.id,
-    deviceId: input.deviceId,
-    type: input.type,
-    payload: input.payload,
-    status: 'pending',
-    createdBy: input.createdBy,
-    ...(input.targetRole ? { targetRole: input.targetRole } : {}),
-    ...aiOriginColumns(input.aiOrigin),
-  }).returning();
-  if (!command) throw new Error('failed to persist queued command');
-  return command as QueuedCommand;
-}
+// The transaction-scoped insert chokepoint lives in its own leaf module so
+// that `services/peripheralPolicyState.ts` can reach it WITHOUT pulling this
+// file (and therefore `routes/agentWs.ts`) into two global-placement worker
+// closures — see the header of commandQueueInsert.ts. Re-exported here so
+// every existing importer keeps working.
+export { insertQueuedCommandInTransaction } from './commandQueueInsert';
 
 // Use the directly-imported runOutsideDbContext, NOT db.runOutsideDbContext.
 // The `db` proxy delegates property lookups to the active transaction when

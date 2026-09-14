@@ -36,6 +36,10 @@ const FILES = SCAN_ROOTS.flatMap((root) => walk(path.join(REPO_ROOT, root))).map
 // the chokepoint must stamp aiOriginColumns(...) or AI work goes unattributed.
 const INSERT_CHOKEPOINTS = new Set([
   'apps/api/src/services/commandQueue.ts',
+  // The transaction-scoped half, split out of commandQueue.ts purely so that
+  // peripheralPolicyState.ts can reach it without dragging routes/agentWs.ts
+  // into two worker closures — see its header and workerEntrypointClosure.
+  'apps/api/src/services/commandQueueInsert.ts',
   'apps/api/src/services/scriptDispatch.ts',
 ]);
 

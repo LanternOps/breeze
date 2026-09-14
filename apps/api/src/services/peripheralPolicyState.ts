@@ -16,7 +16,16 @@ import {
   peripheralPolicyDeviceStates,
 } from '../db/schema';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
-import { insertQueuedCommandInTransaction, type CommandPayload } from './commandQueue';
+// The insert chokepoint, from its LEAF module -- never from `commandQueue.ts`,
+// which statically imports `routes/agentWs.ts`. This module sits in the import
+// closure of `jobs/peripheralJobs.ts` -> `services/groupMembership.ts` ->
+// `contractQuantities` -> the quote and contract workers, so an edge to
+// `commandQueue.ts` from here drags the live agent-socket registry into two
+// `global`-placement worker processes -- which
+// `workerEntrypointClosure.contract.test.ts` (#4086) forbids, and which a lazy
+// `await import()` would NOT fix (its per-entry check follows dynamic edges).
+import { insertQueuedCommandInTransaction } from './commandQueueInsert';
+import type { CommandPayload } from './commandQueue';
 import { CommandTypes } from './commandTypes';
 import { randomUUID } from 'node:crypto';
 import type { AiOriginRef } from '@breeze/shared';
