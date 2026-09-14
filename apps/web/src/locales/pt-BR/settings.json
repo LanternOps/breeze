@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Documentos",
           "description": "Permite que os clientes baixem os documentos compartilhados."
+        },
+        "enableLifecycle": {
+          "label": "Ciclo de vida do hardware",
+          "description": "Mostra o plano de substituição atualizado dos equipamentos do seu cliente."
         }
       }
     },

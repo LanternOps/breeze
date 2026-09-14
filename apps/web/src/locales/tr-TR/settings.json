@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Belgeler",
           "description": "Müşterilerin paylaşılan belgeleri indirmesine izin verir."
+        },
+        "enableLifecycle": {
+          "label": "Donanım yaşam döngüsü",
+          "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
         }
       }
     },

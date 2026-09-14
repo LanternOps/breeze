@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Dokumente",
           "description": "Ermöglicht Kunden den Download freigegebener Dokumente."
+        },
+        "enableLifecycle": {
+          "label": "Hardware-Lebenszyklus",
+          "description": "Zeigt den aktuellen Austauschplan für die Geräte Ihres Kunden."
         }
       }
     },
