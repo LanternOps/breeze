@@ -155,7 +155,7 @@ const aiReportRunMetadataProjection = {
   executionScopePrincipalKind: reportRuns.executionScopePrincipalKind,
 };
 
-async function aiLiveReportAuthority(
+export async function aiLiveReportAuthority(
   auth: AuthContext,
   orgId: string,
   action: ReportAction,

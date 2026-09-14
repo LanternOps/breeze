@@ -1004,3 +1004,10 @@ describe('partner-wide config-policy access in fleet tools (#3493)', () => {
   });
 
 });
+
+describe('exported builders for export_dataset reuse', () => {
+  it('exports the live report authority resolver for reuse by export_dataset', async () => {
+    const mod = await import('./aiToolsFleet');
+    expect(typeof mod.aiLiveReportAuthority).toBe('function');
+  });
+});
