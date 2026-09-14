@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (minuti accreditati)",
         "neverRebuilt": "Mai ricostruito"
+      },
+      "measured": {
+        "heading": "Misurato (correlazionale)",
+        "caption": "Lavoro toccato dall'IA rispetto a lavoro non toccato, dello stesso tipo e nella stessa finestra. Non è un confronto prima/dopo né un'affermazione causale: l'IA di solito arriva prima ai casi più semplici.",
+        "alertResolution": "Risoluzione degli avvisi, per regola",
+        "ticketFirstResponse": "Prima risposta al ticket, per priorità e categoria",
+        "technicianMinutes": "Minuti tecnico registrati",
+        "armAiTouched": "Toccato dall'IA",
+        "armUntouched": "Non toccato",
+        "withinHorizonAlerts": "Risolti entro 24 h",
+        "withinHorizonTickets": "Prima risposta entro 4 h",
+        "cohortSize": "{n} nella coorte",
+        "recordedMinutesValue": "{minutes} min (mediana)",
+        "loggingCoverage": "Tempo registrato sul {ai} dei ticket toccati dall'IA e sul {untouched} degli altri. Una mediana su ticket registrati solo in parte non è una mediana del lavoro.",
+        "censoredNote": "Ogni percentile mostrato è censurato a destra: i casi ancora aperti contano come non conclusi invece di essere scartati.",
+        "loading": "Caricamento del confronto misurato…",
+        "error": "Impossibile caricare il confronto misurato.",
+        "omitted": {
+          "insufficientData": "Dati insufficienti: nessun gruppo di lavoro confrontabile ha almeno 20 casi per ciascun lato.",
+          "insufficientFollowup": "Questa finestra è troppo breve per osservare l'esito di un numero sufficiente di casi. Prova una finestra più lunga.",
+          "insufficientAuthority": "Non disponi dell'autorizzazione sulle registrazioni di tempo necessaria per vedere i minuti tecnico registrati.",
+          "siteRestricted": "Il confronto misurato non viene mostrato con accesso limitato per sede, perché aggrega dati di un'intera organizzazione."
+        }
       }
     },
     "graduation": {

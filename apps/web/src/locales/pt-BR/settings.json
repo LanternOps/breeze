@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (minutos creditados)",
         "neverRebuilt": "Nunca reconstruído"
+      },
+      "measured": {
+        "heading": "Medido (correlacional)",
+        "caption": "Trabalho tocado pela IA em comparação com o não tocado, do mesmo tipo e na mesma janela. Não é uma comparação antes/depois nem uma afirmação causal — a IA costuma atender primeiro os casos mais fáceis.",
+        "alertResolution": "Resolução de alertas, por regra",
+        "ticketFirstResponse": "Primeira resposta do chamado, por prioridade e categoria",
+        "technicianMinutes": "Minutos de técnico registrados",
+        "armAiTouched": "Tocado pela IA",
+        "armUntouched": "Não tocado",
+        "withinHorizonAlerts": "Resolvidos em 24 h",
+        "withinHorizonTickets": "Primeira resposta em 4 h",
+        "cohortSize": "{n} na coorte",
+        "recordedMinutesValue": "{minutes} min (mediana)",
+        "loggingCoverage": "Tempo registrado em {ai} dos chamados tocados pela IA e {untouched} dos demais. Uma mediana sobre chamados parcialmente registrados não é uma mediana do trabalho.",
+        "censoredNote": "Qualquer percentil exibido é censurado à direita: casos ainda abertos contam como não concluídos em vez de serem descartados.",
+        "loading": "Carregando a comparação medida…",
+        "error": "Não foi possível carregar a comparação medida.",
+        "omitted": {
+          "insufficientData": "Dados insuficientes: nenhum grupo de trabalho comparável tem pelo menos 20 casos de cada lado.",
+          "insufficientFollowup": "Esta janela é curta demais para observar o desfecho de casos suficientes. Tente uma janela maior.",
+          "insufficientAuthority": "Você não tem a permissão de apontamento de horas necessária para ver os minutos de técnico registrados.",
+          "siteRestricted": "A comparação medida não é exibida com acesso restrito por site, porque ela agrega dados de uma organização inteira."
+        }
       }
     },
     "graduation": {

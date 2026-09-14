@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (angerechnete Minuten)",
         "neverRebuilt": "Nie neu erstellt"
+      },
+      "measured": {
+        "heading": "Gemessen (korrelativ)",
+        "caption": "KI-berührte gegen unberührte Arbeit derselben Art, im selben Zeitraum. Kein Vorher-Nachher-Vergleich und keine Kausalaussage — die KI erreicht in der Regel zuerst die einfacheren Fälle.",
+        "alertResolution": "Alarmbehebung, nach Regel",
+        "ticketFirstResponse": "Erste Ticket-Antwort, nach Priorität und Kategorie",
+        "technicianMinutes": "Erfasste Technikerminuten",
+        "armAiTouched": "KI-berührt",
+        "armUntouched": "Unberührt",
+        "withinHorizonAlerts": "Innerhalb von 24 Std. behoben",
+        "withinHorizonTickets": "Erste Antwort innerhalb von 4 Std.",
+        "cohortSize": "{n} in der Kohorte",
+        "recordedMinutesValue": "{minutes} Min. Median",
+        "loggingCoverage": "Zeit erfasst bei {ai} der KI-berührten Tickets und {untouched} der unberührten. Ein Median über teilweise erfasste Tickets ist kein Median des Aufwands.",
+        "censoredNote": "Angezeigte Perzentile sind rechtszensiert: noch offene Fälle gelten als unerledigt und werden nicht verworfen.",
+        "loading": "Gemessener Vergleich wird geladen…",
+        "error": "Der gemessene Vergleich konnte nicht geladen werden.",
+        "omitted": {
+          "insufficientData": "Zu wenig Daten: keine Gruppe vergleichbarer Arbeit hat mindestens 20 Vorgänge je Seite.",
+          "insufficientFollowup": "Dieser Zeitraum ist zu kurz, um das Ergebnis für genügend Vorgänge zu beobachten. Bitte einen längeren Zeitraum wählen.",
+          "insufficientAuthority": "Ihnen fehlt die Berechtigung für Zeiterfassung, um erfasste Technikerminuten zu sehen.",
+          "siteRestricted": "Bei standortbeschränktem Zugriff wird der gemessene Vergleich nicht angezeigt, da er über eine gesamte Organisation aggregiert."
+        }
       }
     },
     "graduation": {

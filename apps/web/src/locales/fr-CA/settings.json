@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (minutes créditées)",
         "neverRebuilt": "Jamais reconstruit"
+      },
+      "measured": {
+        "heading": "Mesuré (corrélationnel)",
+        "caption": "Travail touché par l'IA comparé au travail non touché, de même nature et dans la même fenêtre. Ce n'est ni une comparaison avant/après ni une affirmation causale : l'IA s'occupe généralement des cas les plus faciles en premier.",
+        "alertResolution": "Résolution des alertes, par règle",
+        "ticketFirstResponse": "Première réponse au billet, par priorité et catégorie",
+        "technicianMinutes": "Minutes de technicien consignées",
+        "armAiTouched": "Touché par l'IA",
+        "armUntouched": "Non touché",
+        "withinHorizonAlerts": "Résolues en 24 h",
+        "withinHorizonTickets": "Première réponse en 4 h",
+        "cohortSize": "{n} dans la cohorte",
+        "recordedMinutesValue": "{minutes} min (médiane)",
+        "loggingCoverage": "Temps consigné sur {ai} des billets touchés par l'IA et {untouched} des autres. Une médiane calculée sur des billets partiellement consignés n'est pas une médiane du travail.",
+        "censoredNote": "Tout centile affiché est censuré à droite : les cas encore ouverts comptent comme inachevés plutôt que d'être écartés.",
+        "loading": "Chargement de la comparaison mesurée…",
+        "error": "Impossible de charger la comparaison mesurée.",
+        "omitted": {
+          "insufficientData": "Données insuffisantes : aucun groupe de travail comparable n'a au moins 20 cas de chaque côté.",
+          "insufficientFollowup": "Cette fenêtre est trop courte pour observer le résultat d'assez de cas. Essayez une fenêtre plus longue.",
+          "insufficientAuthority": "Vous n'avez pas la permission de saisie de temps requise pour voir les minutes de technicien consignées.",
+          "siteRestricted": "La comparaison mesurée n'est pas affichée en accès restreint par site, car elle agrège des données de toute une organisation."
+        }
       }
     },
     "graduation": {

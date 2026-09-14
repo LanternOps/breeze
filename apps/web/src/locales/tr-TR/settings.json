@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (kredilendirilen dakika)",
         "neverRebuilt": "Hiç yeniden oluşturulmadı"
+      },
+      "measured": {
+        "heading": "Ölçülen (korelasyonel)",
+        "caption": "Aynı türden ve aynı dönemdeki, yapay zekânın dokunduğu işler ile dokunmadıklarının karşılaştırması. Önce/sonra karşılaştırması değildir ve nedensellik iddiası taşımaz — yapay zekâ genellikle önce daha kolay işlere ulaşır.",
+        "alertResolution": "Uyarı çözümü, kurala göre",
+        "ticketFirstResponse": "Talebe ilk yanıt, önceliğe ve kategoriye göre",
+        "technicianMinutes": "Kaydedilen teknisyen dakikaları",
+        "armAiTouched": "Yapay zekânın dokunduğu",
+        "armUntouched": "Dokunulmamış",
+        "withinHorizonAlerts": "24 saat içinde çözülen",
+        "withinHorizonTickets": "4 saat içinde ilk yanıt",
+        "cohortSize": "Kohortta {n}",
+        "recordedMinutesValue": "{minutes} dk ortanca",
+        "loggingCoverage": "Yapay zekânın dokunduğu taleplerin {ai} kadarında, diğerlerinin {untouched} kadarında süre kaydı var. Kısmen kaydedilmiş talepler üzerinden alınan ortanca, emeğin ortancası değildir.",
+        "censoredNote": "Gösterilen her yüzdelik sağdan sansürlüdür: hâlâ açık olan işler elenmek yerine tamamlanmamış sayılır.",
+        "loading": "Ölçülen karşılaştırma yükleniyor…",
+        "error": "Ölçülen karşılaştırma yüklenemedi.",
+        "omitted": {
+          "insufficientData": "Yeterli veri yok: karşılaştırılabilir hiçbir iş grubunda her iki tarafta en az 20 kayıt bulunmuyor.",
+          "insufficientFollowup": "Bu dönem, yeterli sayıda kaydın sonucunu gözlemek için çok kısa. Daha uzun bir dönem deneyin.",
+          "insufficientAuthority": "Kaydedilen teknisyen dakikalarını görmek için gereken süre kaydı iznine sahip değilsiniz.",
+          "siteRestricted": "Siteye kısıtlı erişimde ölçülen karşılaştırma gösterilmez, çünkü tüm bir organizasyonu toplar."
+        }
       }
     },
     "graduation": {

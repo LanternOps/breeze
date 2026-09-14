@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (minutes créditées)",
         "neverRebuilt": "Jamais reconstruit"
+      },
+      "measured": {
+        "heading": "Mesuré (corrélationnel)",
+        "caption": "Travail traité par l'IA comparé au travail non traité, de même nature et sur la même période. Ce n'est ni une comparaison avant/après ni une affirmation causale : l'IA traite généralement les cas les plus simples en premier.",
+        "alertResolution": "Résolution des alertes, par règle",
+        "ticketFirstResponse": "Première réponse au ticket, par priorité et catégorie",
+        "technicianMinutes": "Minutes de technicien enregistrées",
+        "armAiTouched": "Traité par l'IA",
+        "armUntouched": "Non traité",
+        "withinHorizonAlerts": "Résolues sous 24 h",
+        "withinHorizonTickets": "Première réponse sous 4 h",
+        "cohortSize": "{n} dans la cohorte",
+        "recordedMinutesValue": "{minutes} min (médiane)",
+        "loggingCoverage": "Temps enregistré sur {ai} des tickets traités par l'IA et {untouched} des autres. Une médiane calculée sur des tickets partiellement renseignés n'est pas une médiane du travail.",
+        "censoredNote": "Tout centile affiché est censuré à droite : les cas encore ouverts comptent comme inachevés au lieu d'être écartés.",
+        "loading": "Chargement de la comparaison mesurée…",
+        "error": "Impossible de charger la comparaison mesurée.",
+        "omitted": {
+          "insufficientData": "Données insuffisantes : aucun groupe de travail comparable ne compte au moins 20 cas de chaque côté.",
+          "insufficientFollowup": "Cette période est trop courte pour observer le résultat d'assez de cas. Essayez une période plus longue.",
+          "insufficientAuthority": "Vous n'avez pas la permission de saisie des temps requise pour voir les minutes de technicien enregistrées.",
+          "siteRestricted": "La comparaison mesurée n'est pas affichée en accès restreint par site, car elle agrège des données de toute une organisation."
+        }
       }
     },
     "graduation": {

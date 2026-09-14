@@ -2172,6 +2172,29 @@
         },
         "weightRowLabel": "{{label}} (minutes credited)",
         "neverRebuilt": "Never rebuilt"
+      },
+      "measured": {
+        "heading": "Measured (correlational)",
+        "caption": "AI-touched vs untouched work of the same kind, in the same window. Not a before/after comparison, and not a causal claim — the AI generally reaches the easier items first.",
+        "alertResolution": "Alert resolution, by rule",
+        "ticketFirstResponse": "Ticket first response, by priority and category",
+        "technicianMinutes": "Recorded technician minutes",
+        "armAiTouched": "AI-touched",
+        "armUntouched": "Untouched",
+        "withinHorizonAlerts": "Resolved within 24 h",
+        "withinHorizonTickets": "First response within 4 h",
+        "cohortSize": "{n} in cohort",
+        "recordedMinutesValue": "{minutes} min median",
+        "loggingCoverage": "Time logged on {ai} of AI-touched tickets and {untouched} of untouched ones. A median over partly-logged tickets is not a median of the labour.",
+        "censoredNote": "Any percentile shown is right-censored: still-open items count as unfinished rather than being dropped.",
+        "loading": "Loading measured comparison…",
+        "error": "The measured comparison could not be loaded.",
+        "omitted": {
+          "insufficientData": "Not enough data: no group of comparable work has at least 20 items in each arm.",
+          "insufficientFollowup": "This window is too short to observe the outcome for enough items. Try a longer window.",
+          "insufficientAuthority": "You do not have the time-entry permission needed to see recorded technician minutes.",
+          "siteRestricted": "The measured comparison is not shown for site-restricted access, because it aggregates across a whole organization."
+        }
       }
     },
     "graduation": {

@@ -50,6 +50,13 @@ vi.mock('../reports/reportExport', () => ({
   },
 }));
 
+// W04 (#5761): the measured band fetches its OWN data through fetchWithAuth and
+// has its own full test suite (ImpactMeasuredBand.test.tsx). Stub it here, or
+// its fetch consumes this file's mockResolvedValueOnce sequences.
+vi.mock('./ImpactMeasuredBand', () => ({
+  default: () => <div data-testid="ai-impact-measured-band-stub" />,
+}));
+
 // The drawer has its own full test suite (ImpactWeightsDrawer.test.tsx) —
 // stub it here to a thin marker so this page's tests exercise only the
 // gating (canEditWeights) and the open/close wiring, not the drawer's own
