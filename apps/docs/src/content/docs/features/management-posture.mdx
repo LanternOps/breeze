@@ -62,6 +62,8 @@ In addition to management tool detection, Breeze reports the device's directory 
 
 On Windows, directory join status is gathered using `dsregcmd`. On macOS, it is gathered using `dsconfigad` for Active Directory binding and `profiles status -type enrollment` for MDM enrollment state.
 
+On platforms with no join-detection implementation (Linux and other Unix variants), the agent reports a **Source** of `unsupported`. The identity card then shows **Join Detection Not Supported** and marks the three join flags as *Unknown* — it does **not** report the device as "Not Joined", because no check was performed. A Linux device that is in fact Entra ID or Intune enrolled will show this unknown state until Linux join detection is implemented.
+
 ---
 
 ## Platform support
