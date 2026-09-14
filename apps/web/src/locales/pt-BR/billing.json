@@ -946,7 +946,7 @@
       "contract": {
         "templateLabel": "Modelo de acordo",
         "templatePlaceholder": "Selecione um modelo…",
-        "noTemplates": "Ainda não há modelos de acordo. <link>Crie um</link> em Contratos → Modelos de acordo.",
+        "noTemplates": "Ainda não há modelos de acordo. <templatesLink>Crie um</templatesLink> em Contratos → Modelos de acordo.",
         "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",

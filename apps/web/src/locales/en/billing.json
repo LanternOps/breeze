@@ -946,7 +946,7 @@
       "contract": {
         "templateLabel": "Agreement template",
         "templatePlaceholder": "Select a template…",
-        "noTemplates": "No agreement templates yet. <link>Create one</link> under Contracts → Agreement templates.",
+        "noTemplates": "No agreement templates yet. <templatesLink>Create one</templatesLink> under Contracts → Agreement templates.",
         "noPublishedVersion": "This template has no published version yet. Publish it before adding it to a quote.",
         "pinnedVersion": "Pinned to v{{version}}",
         "autoVariablesTitle": "Filled automatically from the quote",

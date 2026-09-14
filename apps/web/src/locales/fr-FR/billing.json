@@ -946,7 +946,7 @@
       "contract": {
         "templateLabel": "Modèle de convention",
         "templatePlaceholder": "Sélectionnez un modèle…",
-        "noTemplates": "Aucun modèle de convention pour le moment. <link>Créez-en un</link> dans Contrats → Modèles de convention.",
+        "noTemplates": "Aucun modèle de convention pour le moment. <templatesLink>Créez-en un</templatesLink> dans Contrats → Modèles de convention.",
         "noPublishedVersion": "Ce modèle n'a pas encore de version publiée. Publiez-la avant de l'ajouter à un devis.",
         "pinnedVersion": "Épinglé à v{{version}}",
         "autoVariablesTitle": "Rempli automatiquement à partir du devis",

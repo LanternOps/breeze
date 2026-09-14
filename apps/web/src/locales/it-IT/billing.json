@@ -909,7 +909,7 @@
       "contract": {
         "templateLabel": "Modello di accordo",
         "templatePlaceholder": "Seleziona un template…",
-        "noTemplates": "Nessun modello di accordo. <link>Creane uno</link> in Contratti → Modelli di accordo.",
+        "noTemplates": "Nessun modello di accordo. <templatesLink>Creane uno</templatesLink> in Contratti → Modelli di accordo.",
         "noPublishedVersion": "Questo modello non ha ancora una versione pubblicata. Pubblicalo prima di aggiungerlo a un preventivo.",
         "pinnedVersion": "Fissato a v{{version}}",
         "autoVariablesTitle": "Compilate automaticamente dal preventivo",

@@ -946,7 +946,7 @@
       "contract": {
         "templateLabel": "Vereinbarungsvorlage",
         "templatePlaceholder": "Vorlage auswählen…",
-        "noTemplates": "Noch keine Vereinbarungsvorlagen. <link>Erstellen Sie eine</link> unter Verträge → Vereinbarungsvorlagen.",
+        "noTemplates": "Noch keine Vereinbarungsvorlagen. <templatesLink>Erstellen Sie eine</templatesLink> unter Verträge → Vereinbarungsvorlagen.",
         "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",

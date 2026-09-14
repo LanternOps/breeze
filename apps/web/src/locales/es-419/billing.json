@@ -946,7 +946,7 @@
       "contract": {
         "templateLabel": "Plantilla de acuerdo",
         "templatePlaceholder": "Selecciona una plantilla…",
-        "noTemplates": "Aún no hay plantillas de acuerdo. <link>Crea una</link> en Contratos → Plantillas de acuerdo.",
+        "noTemplates": "Aún no hay plantillas de acuerdo. <templatesLink>Crea una</templatesLink> en Contratos → Plantillas de acuerdo.",
         "noPublishedVersion": "Esta plantilla aún no tiene una versión publicada. Publícala antes de agregarla a una cotización.",
         "pinnedVersion": "Fijado a v{{version}}",
         "autoVariablesTitle": "Se completa automáticamente desde la cotización",

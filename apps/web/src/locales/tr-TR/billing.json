@@ -954,7 +954,7 @@
       "contract": {
         "templateLabel": "Anlaşma şablonu",
         "templatePlaceholder": "Bir şablon seçin…",
-        "noTemplates": "Henüz anlaşma şablonu yok. Sözleşmeler → Anlaşma şablonları altında <link>bir tane oluşturun</link>.",
+        "noTemplates": "Henüz anlaşma şablonu yok. Sözleşmeler → Anlaşma şablonları altında <templatesLink>bir tane oluşturun</templatesLink>.",
         "noPublishedVersion": "Bu şablonun henüz yayınlanmış bir sürümü yok. Bir teklife eklemeden önce yayınlayın.",
         "pinnedVersion": "v{{version}}'ye sabitlendi",
         "autoVariablesTitle": "Alıntıdan otomatik olarak doldurulur",
