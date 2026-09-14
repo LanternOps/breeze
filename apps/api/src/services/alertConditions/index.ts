@@ -23,6 +23,12 @@ import { diskIoHighHandler } from './handlers/diskIoHigh';
 import { networkErrorsHandler } from './handlers/networkErrors';
 import { patchComplianceHandler } from './handlers/patchCompliance';
 import { certExpiryHandler } from './handlers/certExpiry';
+// W04 coverage kinds (#5287 / #5291).
+import { antivirusHandler } from './handlers/antivirus';
+import { softwarePresenceHandler } from './handlers/softwarePresence';
+import { backupContinuityHandler } from './handlers/backupContinuity';
+import { scriptMonitorHandler } from './handlers/scriptMonitor';
+import { networkCheckHandler } from './handlers/networkCheck';
 
 conditionRegistry.register(thresholdHandler);
 conditionRegistry.register(offlineHandler);
@@ -36,6 +42,11 @@ conditionRegistry.register(diskIoHighHandler);
 conditionRegistry.register(networkErrorsHandler);
 conditionRegistry.register(patchComplianceHandler);
 conditionRegistry.register(certExpiryHandler);
+conditionRegistry.register(antivirusHandler);
+conditionRegistry.register(softwarePresenceHandler);
+conditionRegistry.register(backupContinuityHandler);
+conditionRegistry.register(scriptMonitorHandler);
+conditionRegistry.register(networkCheckHandler);
 
 // Re-export types for backward compatibility
 export type {
@@ -52,6 +63,11 @@ export type {
   NetworkErrorsCondition,
   PatchComplianceCondition,
   CertExpiryCondition,
+  AntivirusCondition,
+  SoftwarePresenceCondition,
+  BackupContinuityCondition,
+  ScriptMonitorCondition,
+  NetworkCheckCondition,
   AlertCondition,
   ConditionGroup,
   RootCondition,

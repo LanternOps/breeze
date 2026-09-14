@@ -70,6 +70,42 @@ async function resolveOrgIdForAsset(auth: AuthContext, assetId: string, requeste
   return { orgId: asset.orgId } as const;
 }
 
+/**
+ * Resolve and, for a site-restricted caller, lock the discovered asset before a
+ * monitoring mutation. The ambient request transaction holds the row lock
+ * through the downstream SNMP/network-monitor write, so a concurrent asset move
+ * cannot invalidate the current-site decision between check and use.
+ */
+async function resolveAssetForMonitoringMutation(
+  auth: AuthContext,
+  perms: UserPermissions | undefined,
+  assetId: string,
+) {
+  if (perms?.allowedSiteIds?.length === 0) {
+    return { error: 'Access to this site denied', status: 403 } as const;
+  }
+
+  const orgResult = await resolveOrgIdForAsset(auth, assetId);
+  if ('error' in orgResult) {
+    return { error: orgResult.error, status: orgResult.status } as const;
+  }
+  const orgId = orgResult.orgId;
+  if (!orgId) return { error: 'Could not determine organization context', status: 400 } as const;
+
+  const query = db.select()
+    .from(discoveredAssets)
+    .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
+    .limit(1);
+  const rows = perms?.allowedSiteIds ? await query.for('update') : await query;
+  const asset = rows[0];
+  if (!asset) return { error: 'Asset not found', status: 404 } as const;
+  if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
+    return { error: 'Access to this site denied', status: 403 } as const;
+  }
+
+  return { asset } as const;
+}
+
 export const monitoringRoutes = new Hono();
 monitoringRoutes.use('*', authMiddleware);
 const requireMonitoringRead = requirePermission(PERMISSIONS.DEVICES_READ.resource, PERMISSIONS.DEVICES_READ.action);
@@ -411,17 +447,13 @@ monitoringRoutes.put(
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
-
-    const orgResult = await resolveOrgIdForAsset(auth, assetId);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const orgId = orgResult.orgId;
-    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
-
-    const [asset] = await db.select()
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
-      .limit(1);
-    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+    const assetResult = await resolveAssetForMonitoringMutation(
+      auth,
+      c.get('permissions') as UserPermissions | undefined,
+      assetId,
+    );
+    if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
+    const { asset } = assetResult;
 
     // #5213: ip_address is nullable now (manual website / DNS-only assets).
     // snmp_devices.ip_address is varchar NOT NULL, so the old `?? ''` fallback
@@ -558,17 +590,13 @@ monitoringRoutes.patch(
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
     const body = c.req.valid('json');
-
-    const orgResult = await resolveOrgIdForAsset(auth, assetId);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const orgId = orgResult.orgId;
-    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
-
-    const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
-      .limit(1);
-    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+    const assetResult = await resolveAssetForMonitoringMutation(
+      auth,
+      c.get('permissions') as UserPermissions | undefined,
+      assetId,
+    );
+    if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
+    const { asset } = assetResult;
 
     if (body.templateId && !(await validateSnmpTemplateAccess(body.templateId, asset.orgId))) {
       return c.json({ error: 'SNMP template not found' }, 404);
@@ -638,17 +666,13 @@ monitoringRoutes.delete(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const assetId = c.req.param('id')!;
-
-    const orgResult = await resolveOrgIdForAsset(auth, assetId);
-    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
-    const orgId = orgResult.orgId;
-    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
-
-    const [asset] = await db.select({ id: discoveredAssets.id, orgId: discoveredAssets.orgId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
-      .limit(1);
-    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+    const assetResult = await resolveAssetForMonitoringMutation(
+      auth,
+      c.get('permissions') as UserPermissions | undefined,
+      assetId,
+    );
+    if ('error' in assetResult) return c.json({ error: assetResult.error }, assetResult.status);
+    const { asset } = assetResult;
 
     const disabledSnmp = await db.update(snmpDevices)
       .set({ isActive: false })
@@ -703,17 +727,36 @@ monitoringRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
     const orgId = orgResult.orgId;
     if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+    const allowedSiteIds = (c.get('permissions') as UserPermissions | undefined)?.allowedSiteIds;
+
+    // An explicitly empty ceiling is deny-all. Return before either source
+    // query so an unavailable/misconfigured database cannot turn deny-all
+    // into an error oracle.
+    if (allowedSiteIds?.length === 0) return c.json({ data: [] });
 
     // Source 1: Distinct service names from device change log (change tracker
     // already snapshots all services on every heartbeat cycle)
     let changeLogNames: { subject: string }[] = [];
     try {
-      changeLogNames = await db
-        .select({ subject: deviceChangeLog.subject })
-        .from(deviceChangeLog)
-        .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
-        .groupBy(deviceChangeLog.subject)
-        .limit(1000);
+      changeLogNames = allowedSiteIds === undefined
+        ? await db
+            .select({ subject: deviceChangeLog.subject })
+            .from(deviceChangeLog)
+            .where(and(eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')))
+            .groupBy(deviceChangeLog.subject)
+            .limit(1000)
+        : await db
+            .select({ subject: deviceChangeLog.subject })
+            .from(deviceChangeLog)
+            .innerJoin(devices, eq(deviceChangeLog.deviceId, devices.id))
+            .where(and(
+              eq(deviceChangeLog.orgId, orgId),
+              eq(deviceChangeLog.changeType, 'service'),
+              eq(devices.orgId, orgId),
+              inArray(devices.siteId, allowedSiteIds)
+            ))
+            .groupBy(deviceChangeLog.subject)
+            .limit(1000);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('does not exist')) {
@@ -724,15 +767,28 @@ monitoringRoutes.get(
     // Source 2: Distinct service/process names from monitoring check results
     let checkNames: { name: string; watchType: string }[] = [];
     try {
-      checkNames = await db
-        .select({
-          name: serviceProcessCheckResults.name,
-          watchType: serviceProcessCheckResults.watchType,
-        })
-        .from(serviceProcessCheckResults)
-        .where(eq(serviceProcessCheckResults.orgId, orgId))
-        .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
-        .limit(500);
+      const selection = {
+        name: serviceProcessCheckResults.name,
+        watchType: serviceProcessCheckResults.watchType,
+      };
+      checkNames = allowedSiteIds === undefined
+        ? await db
+            .select(selection)
+            .from(serviceProcessCheckResults)
+            .where(eq(serviceProcessCheckResults.orgId, orgId))
+            .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
+            .limit(500)
+        : await db
+            .select(selection)
+            .from(serviceProcessCheckResults)
+            .innerJoin(devices, eq(serviceProcessCheckResults.deviceId, devices.id))
+            .where(and(
+              eq(serviceProcessCheckResults.orgId, orgId),
+              eq(devices.orgId, orgId),
+              inArray(devices.siteId, allowedSiteIds)
+            ))
+            .groupBy(serviceProcessCheckResults.name, serviceProcessCheckResults.watchType)
+            .limit(500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('does not exist')) {

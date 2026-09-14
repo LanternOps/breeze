@@ -288,6 +288,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
   // #5290 — both denormalise org_id from the device.
   'monitor_device_state', 'monitor_episodes',
+  // #5291 W04 - carries device_id AND a denormalized org_id.
+  'network_monitor_results',
   'onedrive_device_state',
   'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
   'playbook_executions', 'provision_credential_handles',
@@ -524,6 +526,8 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   'remote_sessions', 'tunnel_sessions',
   // Monitoring & logs
   'service_process_check_results', 'alerts', 'agent_logs', 'script_executions',
+  // #5291 W04 - probe results now name the device they ran FROM.
+  'network_monitor_results',
   'device_event_logs', 'automation_policy_compliance', 'backup_sla_events',
   // Per-device automation execution results (FK device_id → devices.id ON DELETE
   // CASCADE; leaf table, no children) — #2023

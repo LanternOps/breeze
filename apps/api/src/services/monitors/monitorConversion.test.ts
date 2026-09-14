@@ -22,7 +22,7 @@ describe('legacy alert condition → monitor definition (#5289)', () => {
 
     for (const [kind, sample] of Object.entries(samples)) {
       const spec = MONITOR_KIND_SPECS[kind as keyof typeof MONITOR_KIND_SPECS];
-      const compiled = spec.toAlertCondition(spec.conditionSchema.parse(sample));
+      const compiled = spec.toAlertCondition(spec.conditionSchema.parse(sample), { monitorId: 'm0000000-0000-4000-8000-000000000001' });
       const converted = convertAlertConditionToMonitor(compiled);
       expect(converted, `${kind} did not convert back`).not.toBeNull();
       expect(converted!.kind).toBe(kind);
