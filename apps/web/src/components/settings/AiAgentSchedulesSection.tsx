@@ -44,6 +44,8 @@ import '@/lib/i18n';
 import {
   AI_SWEEP_KINDS,
   DESIGN_DEFAULT_CRON,
+  PATCH_DEFAULT_CRON,
+  isDailyOrRarerLiteralCron,
   isHourlyFloorCron,
   isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
@@ -123,6 +125,7 @@ const SCHEDULE_ERROR_COPY: Record<string, ((t: (key: string) => string) => strin
   agent_not_partner_wide: (t) => t('aiAgentsPage.schedules.errors.agentNotPartnerWide'),
   agent_kind_not_triage: (t) => t('aiAgentsPage.schedules.errors.agentKindNotTriage'),
   agent_kind_not_designer: (t) => t('aiAgentsPage.schedules.errors.agentKindNotDesigner'),
+  agent_kind_not_patch: (t) => t('aiAgentsPage.schedules.errors.agentKindNotPatch'),
   // P2-3's two narrative-only codes. Both are unreachable through this form
   // (it never offers a kind on a narrative draft, and blocks Save on a
   // non-weekly narrative cron), so these are the concurrent-second-tab and
@@ -194,6 +197,10 @@ const CRON_DEFAULTS: Readonly<Record<AiAgentScheduleKind, string>> = Object.free
   sweep: '0 3 * * *',
   narrative: '0 7 * * 1',
   design: DESIGN_DEFAULT_CRON,
+  // AI patch agent (W01) — at most once a day (`isDailyOrRarerLiteralCron`);
+  // `PATCH_DEFAULT_CRON` (shared) is the 02:00 nightly literal the server
+  // creates on enable, restated here rather than duplicated.
+  patch: PATCH_DEFAULT_CRON,
 });
 
 /**
@@ -202,11 +209,28 @@ const CRON_DEFAULTS: Readonly<Record<AiAgentScheduleKind, string>> = Object.free
  * design schedule targets a designer agent exclusively, disjoint from the
  * sweep/narrative pair every other schedulable kind (triage, today) offers.
  */
-const SCHEDULE_KINDS_FOR_AGENT_KIND: Readonly<Record<'triage' | 'designer', readonly AiAgentScheduleKind[]>> =
+const SCHEDULE_KINDS_FOR_AGENT_KIND: Readonly<Record<SchedulableAgentKind, readonly AiAgentScheduleKind[]>> =
   Object.freeze({
     triage: ['sweep', 'narrative'],
     designer: ['design'],
+    // AI patch agent (W01) — disjoint from both sets above, for the same
+    // reason `design` is: the API refuses any other kind on a patch agent.
+    patch: ['patch'],
   });
+
+/** The agent kinds this section is ever mounted for (`AiAgentForm`'s gate). */
+type SchedulableAgentKind = 'triage' | 'designer' | 'patch';
+
+/**
+ * Which set a given agent kind may choose from. A real lookup keyed by the
+ * agent kind, with `triage` as the default — before AI patch agent W01 this
+ * was a `=== 'designer'` ternary, which would have silently handed a patch
+ * agent the sweep/narrative pair.
+ */
+function scheduleKindsFor(agentKind: string): readonly AiAgentScheduleKind[] {
+  return SCHEDULE_KINDS_FOR_AGENT_KIND[agentKind as SchedulableAgentKind]
+    ?? SCHEDULE_KINDS_FOR_AGENT_KIND.triage;
+}
 
 /**
  * A row's kind, tolerant of a body written by a pre-P2-3 API build (which
@@ -218,6 +242,7 @@ const SCHEDULE_KINDS_FOR_AGENT_KIND: Readonly<Record<'triage' | 'designer', read
 function kindOf(schedule: Pick<AiAgentEffectiveScheduleDto, 'kind'>): AiAgentScheduleKind {
   if (schedule.kind === 'narrative') return 'narrative';
   if (schedule.kind === 'design') return 'design';
+  if (schedule.kind === 'patch') return 'patch';
   return 'sweep';
 }
 
@@ -311,10 +336,9 @@ export default function AiAgentSchedulesSection({
   const schedulable = agentOwnerScope === 'partner';
   const canManageBaselines = schedulable && isPartnerScope;
   const canOverride = schedulable && orgId !== null;
-  // See `SCHEDULE_KINDS_FOR_AGENT_KIND`'s docstring — every non-designer kind
-  // this section is ever mounted for (today, only `triage`) offers the
-  // sweep/narrative pair.
-  const availableScheduleKinds = SCHEDULE_KINDS_FOR_AGENT_KIND[agentKind === 'designer' ? 'designer' : 'triage'];
+  // See `SCHEDULE_KINDS_FOR_AGENT_KIND`'s docstring — a real lookup keyed by
+  // the agent kind, defaulting to the sweep/narrative pair.
+  const availableScheduleKinds = scheduleKindsFor(agentKind);
 
   const [schedules, setSchedules] = useState<AiAgentEffectiveScheduleDto[]>([]);
   const [loading, setLoading] = useState(schedulable);
@@ -508,7 +532,10 @@ export default function AiAgentSchedulesSection({
         ? isWeeklyLiteralCron(draft.cron)
         : draft.kind === 'design'
           ? isMonthlyOrRarerLiteralCron(draft.cron)
-          : isHourlyFloorCron(draft.cron));
+          // AI patch agent (W01) — daily or rarer, the server's own floor.
+          : draft.kind === 'patch'
+            ? isDailyOrRarerLiteralCron(draft.cron)
+            : isHourlyFloorCron(draft.cron));
   // `.min(1)` on a SWEEP baseline (a sweep baseline that sweeps nothing is
   // pointless); a narrative baseline evaluates no kinds at all, and an
   // override's `[]` is meaningful — "run no check for this org".
@@ -635,7 +662,9 @@ export default function AiAgentSchedulesSection({
       ? t('aiAgentsPage.schedules.kinds.narrative')
       : kind === 'design'
         ? t('aiAgentsPage.schedules.kinds.design')
-        : t('aiAgentsPage.schedules.kinds.sweep');
+        : kind === 'patch'
+          ? t('aiAgentsPage.schedules.kinds.patch')
+          : t('aiAgentsPage.schedules.kinds.sweep');
 
   const kindsSentence = (kinds: readonly AiSweepKind[]) =>
     kinds.length === 0
@@ -711,14 +740,18 @@ export default function AiAgentSchedulesSection({
                   ? 'ai-agent-schedule-weekly-hint'
                   : drafted.kind === 'design'
                     ? 'ai-agent-schedule-monthly-hint'
-                    : 'ai-agent-schedule-cron-hint'
+                    : drafted.kind === 'patch'
+                      ? 'ai-agent-schedule-daily-hint'
+                      : 'ai-agent-schedule-cron-hint'
               }
             >
               {drafted.kind === 'narrative'
                 ? t('aiAgentsPage.schedules.weeklyOnlyHint')
                 : drafted.kind === 'design'
                   ? t('aiAgentsPage.schedules.monthlyOrRarerHint')
-                  : t('aiAgentsPage.schedules.cronHint')}
+                  : drafted.kind === 'patch'
+                    ? t('aiAgentsPage.schedules.dailyOrRarerHint')
+                    : t('aiAgentsPage.schedules.cronHint')}
             </span>
             {!cronValid && (
               <span className="block text-xs text-destructive" data-testid="ai-agent-schedule-cron-invalid">

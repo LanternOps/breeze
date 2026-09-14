@@ -514,6 +514,25 @@ describe('AiAgentForm — renders the create flow\'s step components (#5063)', (
   });
 });
 
+// AI patch agent W01 (#5747) — the schedules section is gated on the STORED
+// agent kind, and `patch` is the third schedulable one.
+describe('AiAgentForm — schedules section gate', () => {
+  it('renders the schedules section for a patch agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'patch', ownerScope: 'partner' }) });
+
+    expect(await screen.findByTestId('ai-agent-schedules')).toBeInTheDocument();
+  });
+
+  it('still hides it for a help desk agent', async () => {
+    mockEndpoints();
+    renderForm({ agent: makeAgent({ kind: 'helpdesk', ownerScope: 'partner', triggers: { respectMaintenanceWindows: true } }) });
+
+    await screen.findByTestId('ai-agent-permissions');
+    expect(screen.queryByTestId('ai-agent-schedules')).toBeNull();
+  });
+});
+
 describe('AiAgentForm — alert severities', () => {
   it('offers alert severities to an alert-triage agent', async () => {
     mockEndpoints();

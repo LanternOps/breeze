@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Balayage",
         "narrative": "Rapport hebdomadaire",
-        "design": "Conception du parc"
+        "design": "Conception du parc",
+        "patch": "Plan de correctifs"
       },
       "kindsLabel": "Contrôles à exécuter",
       "kind": "Type de planification",
       "weeklyOnlyHint": "Un rapport hebdomadaire se déclenche exactement une fois par semaine : une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine de 0 à 6. Par exemple, 0 7 * * 1 s'exécute chaque lundi à 7 h.",
       "monthlyOrRarerHint": "Une conception du parc se déclenche au plus une fois par mois : une minute, une heure et un jour-du-mois (1-28) littéraux, le mois étant * ou une liste de mois littéraux séparés par des virgules, et * pour le jour de la semaine. Par exemple, 0 6 1 1,4,7,10 * s'exécute chaque trimestre le 1er à 6 h.",
+      "dailyOrRarerHint": "Un plan de correctifs se déclenche au plus une fois par jour : une minute et une heure littérales, et * ou une liste littérale pour le jour-du-mois, le mois et le jour de la semaine. Par exemple, 0 2 * * * s'exécute chaque nuit à 2 h.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
       "override": "Déroger pour cette organisation",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Les horaires de balayage exigent un agent valable pour tout le partenaire.",
         "agentKindNotTriage": "Seul un agent de triage peut être planifié.",
         "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
+        "agentKindNotPatch": "Une planification de plan de correctifs doit cibler un agent Correctifs.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
         "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
       }
@@ -1615,6 +1618,8 @@
       "never": "Jamais exécuté",
       "at": "Dernière exécution {{at}}"
     },
+    "nextOccurrence": "Prochaine exécution {{at}}",
+    "runNowNoOrg": "Sélectionnez une organisation pour exécuter un plan de correctifs.",
     "disableDialog": {
       "title": "Désactiver {{name}}?",
       "message": "Les exécutions futures s’arrêtent, les planifications rattachées cessent de se déclencher et les dérogations d’organisation de cet agent cessent de s’appliquer. Une exécution déjà en cours se poursuit jusqu’à sa limite de temps.",
@@ -1646,6 +1651,7 @@
       "invalidSupervisedActionKeys": "Une ou plusieurs actions sélectionnées ne peuvent pas être autorisées par la politique.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Cet agent est déjà actif.",
+      "noPatchAgent": "Aucun agent de correctifs ne s'applique à cette organisation.",
       "actRecipientsUnreachable": "Les rôles de notification sélectionnés n'ont aucun membre actif, personne ne pourrait donc être sollicité. Choisissez un rôle comptant des membres avant d'activer le mode Agir.",
       "invalidScriptIds": "Un ou plusieurs scripts ne peuvent pas être autorisés pour cet agent.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1663,7 +1669,8 @@
       "disable": "Désactiver",
       "confirmDisable": "Confirmer la désactivation",
       "reenable": "Réactiver",
-      "runs": "Exécutions"
+      "runs": "Exécutions",
+      "runNow": "Exécuter maintenant"
     },
     "toasts": {
       "saved": "Agent enregistré",
@@ -1671,7 +1678,9 @@
       "disabled": "Agent désactivé",
       "disableFailed": "Impossible de désactiver l’agent.",
       "reenabled": "Agent réactivé",
-      "reenableFailed": "Impossible de réactiver l’agent."
+      "reenableFailed": "Impossible de réactiver l’agent.",
+      "runNowQueued": "Exécution du plan de correctifs mise en file d'attente",
+      "runNowFailed": "Impossible de démarrer une exécution du plan de correctifs."
     },
     "issues": {
       "name": "Donnez un nom à l’agent.",
@@ -1877,6 +1886,30 @@
           "no_eligible_approvers": "Aucun approbateur éligible",
           "intent_error": "Impossible de créer l’approbation",
           "max_actions_per_run": "Limite d’actions atteinte pour cette exécution"
+        }
+      },
+      "patch": {
+        "title": "Plan de correctifs",
+        "empty": "L'agent n'a proposé aucun travail de correctifs.",
+        "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n'ont pas été présentées à l'agent.",
+        "posture": "{{compliance}} % conforme · {{count}} appareil à risque",
+        "posture_other": "{{compliance}} % conforme · {{count}} appareils à risque",
+        "patchCount": "{{count}} mise à jour",
+        "patchCount_other": "{{count}} mises à jour",
+        "refused": "Non consigné : {{reason}}",
+        "classes": {
+          "install": "Installation",
+          "approval_advisory": "Recommandation d'approbation",
+          "reboot_plan": "Plan de redémarrage",
+          "chase": "Suivi d'échec",
+          "escalation": "Escalade"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Appareil absent des éléments de correctifs",
+          "device_not_in_org": "Appareil absent de cette organisation",
+          "patch_not_in_evidence": "Mise à jour absente des éléments de correctifs",
+          "window_not_resolved": "Impossible de résoudre la fenêtre de maintenance",
+          "job_result_not_in_evidence": "Résultat de la tâche de correctifs absent des éléments"
         }
       },
       "narrative": {
