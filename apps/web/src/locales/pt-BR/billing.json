@@ -70,7 +70,8 @@
         "autoIssue": "Emissão automática",
         "renewal": "Renovação",
         "estimatedPerPeriod": "Estim. / período",
-        "notes": "Observações"
+        "notes": "Observações",
+        "invoiceNote": "Observação na fatura"
       },
       "values": {
         "noDrafts": "Não (rascunhos)"
@@ -147,7 +148,8 @@
         "confirm": "Excluir rascunho"
       },
       "documents": {
-        "title": "Documentos executados",
+        "title": "Acordos assinados",
+        "subtitle": "Aceitos junto com o orçamento e fixados na versão do modelo que o cliente viu.",
         "columns": {
           "template": "Modelo",
           "signer": "Signatário",
@@ -155,8 +157,8 @@
           "quote": "Orçamento"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Ainda não há documentos executados.",
-        "loadError": "Não foi possível carregar os documentos executados.",
+        "empty": "Ainda não há acordos assinados.",
+        "loadError": "Não foi possível carregar os acordos assinados.",
         "downloadError": "Não foi possível baixar o PDF.",
         "download": "Baixar PDF",
         "preparing": "Preparando…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Conteúdo",
-        "notesOptional": "Observações (opcional)",
-        "termsOptional": "Termos (opcional, exibidos na fatura)",
+        "notesOptional": "Observações (opcional, adicionadas ao bloco Observações das faturas geradas)",
+        "termsOptional": "Observação na fatura (opcional, adicionada ao bloco Observações das faturas geradas)",
         "termsPlaceholder": "ex.: 30 dias líquidos. Renova automaticamente salvo cancelamento 30 dias antes."
       },
       "lines": {
@@ -397,8 +399,8 @@
     },
     "tabs": {
       "contracts": "Contratos",
-      "templates": "Modelos",
-      "documents": "Documentos",
+      "templates": "Modelos de acordo",
+      "documents": "Acordos assinados",
       "currencyMismatches": "Divergências de moeda"
     },
     "currencyMismatches": {
@@ -459,16 +461,16 @@
       }
     },
     "templatesTab": {
-      "title": "Modelos de contrato",
-      "description": "Documentos de contrato reutilizáveis que você pode anexar a orçamentos aceitos.",
-      "newTemplate": "Novo modelo",
+      "title": "Modelos de acordo",
+      "description": "Seu contrato mestre e seus termos padrão. Adicione um a um orçamento e o cliente o assina junto com a proposta; a cópia assinada fica arquivada no contrato que esse orçamento cria.",
+      "newTemplate": "Novo modelo de acordo",
       "includeArchived": "Mostrar arquivados",
       "allOrgs": "Todas as orgs",
       "ownerOrg": "Organização",
       "noVersions": "Ainda sem versões",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Arquivar",
-      "loadError": "Falha ao carregar os modelos de contrato",
+      "loadError": "Falha ao carregar os modelos de acordo",
       "createError": "Falha ao criar o modelo",
       "created": "Modelo criado",
       "archiveError": "Falha ao arquivar o modelo",
@@ -484,11 +486,11 @@
         "archived": "Arquivado"
       },
       "empty": {
-        "title": "Ainda não há modelos",
-        "description": "Crie seu primeiro modelo de contrato para começar."
+        "title": "Ainda não há modelos de acordo",
+        "description": "Adicione seu contrato mestre ou seus termos padrão uma única vez e depois inclua-os em qualquer orçamento. Os clientes assinam ao aceitar."
       },
       "createDialog": {
-        "title": "Novo modelo de contrato",
+        "title": "Novo modelo de acordo",
         "name": "Nome",
         "namePlaceholder": "ex. Contrato mestre de serviços",
         "description": "Descrição",
@@ -502,18 +504,18 @@
         "orgRequired": "Selecione uma organização para um modelo de propriedade da organização.",
         "nameRequired": "Informe um nome de modelo.",
         "cancel": "Cancelar",
-        "create": "Criar modelo",
+        "create": "Criar modelo de acordo",
         "creating": "Criando…"
       }
     },
     "documentsTab": {
-      "title": "Documentos",
-      "description": "Documentos de contrato executados ainda não vinculados a um contrato.",
+      "title": "Acordos assinados",
+      "description": "Acordos assinados ainda não vinculados a um contrato. Vincule cada um para que apareça no contrato que ele rege.",
       "empty": {
-        "title": "Nenhum documento não vinculado",
-        "description": "Os documentos executados aparecem aqui até serem vinculados a um contrato."
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Os acordos assinados aparecem aqui até serem vinculados a um contrato."
       },
-      "loadError": "Não foi possível carregar os documentos.",
+      "loadError": "Não foi possível carregar os acordos assinados.",
       "columns": {
         "template": "Modelo",
         "signer": "Signatário",
@@ -535,8 +537,8 @@
         "confirm": "Vincular",
         "linking": "Vinculando…"
       },
-      "linkSuccess": "Documento vinculado ao contrato.",
-      "linkError": "Não foi possível vincular o documento a esse contrato."
+      "linkSuccess": "Acordo assinado vinculado ao contrato.",
+      "linkError": "Não foi possível vincular o acordo assinado a esse contrato."
     },
     "templateEditor": {
       "back": "Voltar",
@@ -562,7 +564,7 @@
       "publish": "Publicar",
       "publishDirtyHint": "Salve seu rascunho antes de publicar",
       "body": "Corpo",
-      "bodyAria": "Corpo do modelo de contrato",
+      "bodyAria": "Corpo do modelo de acordo",
       "preview": "Pré-visualização",
       "edit": "Editar",
       "saveDraft": "Salvar rascunho",
@@ -579,7 +581,7 @@
       "publishError": "Falha ao publicar a versão",
       "publishSuccess": "Versão publicada",
       "warnings": {
-        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos contratos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
+        "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
     }
   },
@@ -684,7 +686,7 @@
         "image": "Imagem",
         "pricingTable": "Tabela de preços",
         "richText": "Texto rico",
-        "contract": "Contrato",
+        "contract": "Acordo / termos",
         "table": "Tabela",
         "callout": "Destaque"
       },
@@ -755,7 +757,7 @@
       "emptyBlocks": "Ainda não há conteúdo. Adicione um título, rich text ou uma tabela de preços abaixo.",
       "errors": {
         "addCatalogItem": "Não foi possível adicionar o item do catálogo.",
-        "addContractSection": "Não foi possível adicionar a seção de contrato",
+        "addContractSection": "Não foi possível adicionar a seção de acordo",
         "addDistributorItem": "Não foi possível adicionar o item do distribuidor.",
         "addImageSection": "Não foi possível adicionar a seção de imagem.",
         "addLine": "Não foi possível adicionar a linha.",
@@ -770,7 +772,7 @@
         "importPax8Product": "Não foi possível importar o produto Pax8.",
         "lineAddedCatalogSaveFailed": "Linha adicionada, mas o salvamento no catálogo falhou.",
         "lineNeedsNameOrDescription": "Uma linha precisa de um nome ou uma descrição.",
-        "loadContractTemplates": "Não foi possível carregar os modelos de contrato",
+        "loadContractTemplates": "Não foi possível carregar os modelos de acordo",
         "moveLine": "Não foi possível mover a linha.",
         "quantityWholeGreaterThanZero": "Informe uma quantidade inteira maior que 0.",
         "removeLine": "Não foi possível remover a linha.",
@@ -875,7 +877,7 @@
         "savedToCatalog": "Salvo no catálogo",
         "sectionAdded": "Seção adicionada",
         "sectionRemoved": "Seção removida",
-        "contractSectionAdded": "Seção de contrato adicionada"
+        "contractSectionAdded": "Seção de acordo adicionada"
       },
       "symbols": {
         "check": "✓",
@@ -921,8 +923,9 @@
         "reshapedWarning": "Esta tabela excedia o limite de {{columns}} colunas x {{rows}} linhas e foi ajustada. Salvar substitui a tabela armazenada pela exibida aqui."
       },
       "terms": {
-        "placeholder": "Termos de pagamento, cláusulas de garantia, etc.",
-        "title": "Termos e Condições"
+        "placeholder": "Condições de pagamento, observações de entrega, etc.",
+        "title": "Termos e Condições (texto simples)",
+        "helper": "Para termos jurídicos reutilizáveis, adicione uma seção Acordo / termos — o cliente a assina junto com a proposta."
       },
       "tidyAll": {
         "complete": "{{count}} descrição(ões) revisada(s).",
@@ -941,10 +944,10 @@
         "perYear": "/ano"
       },
       "contract": {
-        "templateLabel": "Modelo de contrato",
+        "templateLabel": "Modelo de acordo",
         "templatePlaceholder": "Selecione um modelo…",
-        "noTemplates": "Ainda não há modelos de contrato. Crie um em Contratos → Modelos.",
-        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de anexar.",
+        "noTemplates": "Ainda não há modelos de acordo. <link>Crie um</link> em Contratos → Modelos de acordo.",
+        "noPublishedVersion": "Este modelo ainda não tem uma versão publicada. Publique-a antes de adicioná-lo a um orçamento.",
         "pinnedVersion": "Fixado na v{{version}}",
         "autoVariablesTitle": "Preenchido automaticamente a partir do orçamento",
         "autoHint": "Esses valores são resolvidos a partir do orçamento quando a proposta é enviada.",
@@ -953,7 +956,7 @@
         "labelPlaceholder": "Rótulo opcional (por exemplo, Contrato mestre de serviços)",
         "variableRequired": "Insira um valor",
         "variableUnresolved": "Esta variável ainda não foi resolvida",
-        "untitledTemplate": "Contrato",
+        "untitledTemplate": "Acordo",
         "readOnlyHint": "Remova e adicione novamente esta seção para alterar o modelo, a versão ou as variáveis.",
         "updateToVersion": "Atualizar para v{{version}}",
         "saveVariables": "Salvar variáveis",
@@ -1292,8 +1295,8 @@
       },
       "additionalItems": "Itens adicionais",
       "contract": {
-        "download": "Baixar contrato",
-        "previewTitle": "Documento do contrato {{name}}",
+        "download": "Baixar acordo",
+        "previewTitle": "Acordo {{name}}",
         "unavailable": "Arquivo do contrato indisponível",
         "versionFooter": "{{name}} — versão {{version}}"
       },
