@@ -3,12 +3,13 @@ import {
   MANAGED_EVIDENCE_REGISTRY,
   isManagedEvidenceType,
   managedEvidenceEntry,
+  type ManagedEvidenceEntry,
 } from './managedEvidenceRegistry';
 import { reportTypeEnum } from '../db/schema/reports';
 
 describe('managed evidence registry', () => {
   it('is closed: every key equals its own report type, and every type is a real pg enum label', () => {
-    for (const [key, entry] of Object.entries(MANAGED_EVIDENCE_REGISTRY)) {
+    for (const [key, entry] of Object.entries(MANAGED_EVIDENCE_REGISTRY) as Array<[string, ManagedEvidenceEntry]>) {
       expect(entry.type).toBe(key);
       expect(reportTypeEnum.enumValues).toContain(entry.type);
     }
