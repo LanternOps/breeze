@@ -1,0 +1,38 @@
+{
+  "card": {
+    "title": "Checklist",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Ancora nessun passaggio.",
+    "addPlaceholder": "Aggiungi un passaggio",
+    "add": "Aggiungi",
+    "internalOnly": "Interno — mai mostrato al cliente",
+    "detailPlaceholder": "Nota facoltativa per questo passaggio"
+  },
+  "actions": {
+    "moveUp": "Sposta su",
+    "moveDown": "Sposta giù",
+    "delete": "Elimina",
+    "edit": "Modifica",
+    "save": "Salva",
+    "cancel": "Annulla"
+  },
+  "source": {
+    "manual": "Manuale",
+    "deliverable": "Deliverable",
+    "checklist_template": "Modello"
+  },
+  "editDoneWarning": "Modificare un passaggio completato cancella chi lo ha completato e quando.",
+  "resolveConfirm": {
+    "title": "Checklist incompleta",
+    "body_one": "{{count}} passaggio su {{total}} non è spuntato. Risolvere comunque?",
+    "body_other": "{{count}} passaggi su {{total}} non sono spuntati. Risolvere comunque?",
+    "confirm": "Risolvi comunque",
+    "cancel": "Torna indietro"
+  },
+  "errors": {
+    "loadFailed": "Impossibile caricare la checklist.",
+    "saveFailed": "Impossibile salvare il passaggio della checklist.",
+    "reorderFailed": "Impossibile riordinare la checklist.",
+    "tickRequiresUser": "Spuntare un passaggio richiede una sessione utente autenticata."
+  }
+}

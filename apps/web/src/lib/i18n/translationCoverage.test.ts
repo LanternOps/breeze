@@ -56,6 +56,10 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 60, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.manual "Manual" are
+    // identical cognates in pt-BR.
+    'checklists.json': 3,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -176,6 +180,9 @@ const namespaceDuplicateBaselines = {
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; source.manual "Manual" is an identical cognate in es-419.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -296,6 +303,8 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -431,6 +440,8 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -572,6 +583,8 @@ const namespaceDuplicateBaselines = {
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
     'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -691,6 +704,10 @@ const namespaceDuplicateBaselines = {
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
+    // are the same loanwords deliverables.json already keeps untranslated in it-IT.
+    'checklists.json': 3,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -780,6 +797,8 @@ const namespaceDuplicateBaselines = {
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)

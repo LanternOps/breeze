@@ -1,0 +1,38 @@
+{
+  "card": {
+    "title": "Kontrol listesi",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Henüz adım yok.",
+    "addPlaceholder": "Adım ekle",
+    "add": "Ekle",
+    "internalOnly": "Dahili — müşteriye asla gösterilmez",
+    "detailPlaceholder": "Bu adım için isteğe bağlı not"
+  },
+  "actions": {
+    "moveUp": "Yukarı taşı",
+    "moveDown": "Aşağı taşı",
+    "delete": "Sil",
+    "edit": "Düzenle",
+    "save": "Kaydet",
+    "cancel": "Vazgeç"
+  },
+  "source": {
+    "manual": "Manuel",
+    "deliverable": "Çıktı",
+    "checklist_template": "Şablon"
+  },
+  "editDoneWarning": "Tamamlanmış bir adımı düzenlemek, kimin ve ne zaman tamamladığını siler.",
+  "resolveConfirm": {
+    "title": "Eksik kontrol listesi",
+    "body_one": "{{total}} adımdan {{count}} tanesi işaretlenmedi. Yine de çözülsün mü?",
+    "body_other": "{{total}} adımdan {{count}} tanesi işaretlenmedi. Yine de çözülsün mü?",
+    "confirm": "Yine de çöz",
+    "cancel": "Geri dön"
+  },
+  "errors": {
+    "loadFailed": "Kontrol listesi yüklenemedi.",
+    "saveFailed": "Kontrol listesi adımı kaydedilemedi.",
+    "reorderFailed": "Kontrol listesi yeniden sıralanamadı.",
+    "tickRequiresUser": "Bir adımı işaretlemek, oturum açmış bir kullanıcı oturumu gerektirir."
+  }
+}
