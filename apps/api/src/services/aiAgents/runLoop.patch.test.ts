@@ -543,7 +543,7 @@ describe('patch run read-only backstop', () => {
     const bad = { ...VALID_PATCH_PLAN, items: [{ ...VALID_PATCH_PLAN.items[0]!, deviceId: D2 }] };
     const refused = await pre('submit_patch_plan', bad);
     expect(refused.allowed).toBe(false);
-    expect(refused.error).toContain('patchIds');
+    expect(refused.allowed === false && refused.error).toContain('patchIds');
 
     for (const profile of ['full', 'sweep', 'design'] as const) {
       const other = emptyOutcome();
