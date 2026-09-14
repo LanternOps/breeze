@@ -894,7 +894,7 @@ export async function getApplicableRules(deviceId: string): Promise<RuleWithTemp
         try {
           const spec = getMonitorKindSpec(def.kind);
           const base = spec.conditionSchema.parse(def.condition);
-          effectiveConditions = spec.toAlertCondition(applyOverrides(spec, base, effective.overrides));
+          effectiveConditions = spec.toAlertCondition(applyOverrides(spec, base, effective.overrides), { monitorId: def.id });
           effectiveSeverity =
             (effective.overrides.severity as typeof effectiveSeverity | undefined) ?? effectiveSeverity;
         } catch (error) {

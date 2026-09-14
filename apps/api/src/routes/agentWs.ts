@@ -1239,6 +1239,18 @@ export async function processOrphanedCommandResult(
     console.log(`[AgentWs] Processing monitor check result for monitor ${monitorData.monitorId} from agent ${agentId}`);
     try {
       const monitorId = monitorData.monitorId;
+      // #5291 W04 - the probing device and ITS org tenant-scope the result row.
+      // For a partner-wide network check the definition owns no org at all, so
+      // this is the ONLY thing that can say which tenant the result belongs to.
+      // A miss is a deny: we pass null rather than guess a tenant.
+      const [probeDevice] = await withSystemDbAccessContext(() =>
+        db
+          .select({ id: devices.id, orgId: devices.orgId })
+          .from(devices)
+          .where(eq(devices.id, authenticatedDeviceId))
+          .limit(1)
+      );
+      const reporter = { orgId: probeDevice?.orgId ?? null, deviceId: probeDevice?.id ?? null };
       const checkResult = {
         monitorId,
         checkId: result.commandId,
@@ -1257,15 +1269,23 @@ export async function processOrphanedCommandResult(
         // Redis round-trips; the full fix is dispatching enqueues after the
         // context closes (#1105).
         await runOutsideDbContext(() =>
-          enqueueMonitorCheckResult(monitorId, checkResult, {
-            actorType: 'agent',
-            actorId: agentId,
-            source: 'route:agentWs:monitor-result',
-          })
+          enqueueMonitorCheckResult(
+            monitorId,
+            checkResult,
+            {
+              actorType: 'agent',
+              actorId: agentId,
+              source: 'route:agentWs:monitor-result',
+            },
+            // #5291 W04 - the probing device and ITS org. For a partner-wide
+            // network check this is the fanned-out org, which is the only
+            // thing that can tenant-scope the result row.
+            reporter,
+          )
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, recording monitor result directly for ${monitorId}`);
-        await recordMonitorCheckResult(monitorId, checkResult);
+        await recordMonitorCheckResult(monitorId, checkResult, reporter);
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process monitor check result for ${agentId}:`, err);

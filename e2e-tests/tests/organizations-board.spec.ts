@@ -92,5 +92,41 @@ test.describe('organizations board', () => {
       await page.waitForURL((url) => url.pathname === '/organizations');
       await expect(board.root()).toBeVisible();
     });
+
+    // --- W03: Integrations column. A DNS filter integration is the one mapping that can be
+    // created through the API without an external system (POST /dns-security/integrations
+    // inserts the row directly), so it is the seed for a visible badge. This spec creates
+    // only one org (`org`) up front, so a second org is created here for the "Nothing
+    // linked" case (mirroring the orgA/orgB pattern organization-record.spec.ts uses).
+    await test.step('Integrations column shows a never-synced DNS badge and Nothing linked; the Unlinked filter is reachable', async () => {
+      const orgB = await apiJson<{ id: string; name: string }>(page.request, token, 'post', '/api/v1/orgs/organizations', {
+        name: `E2E Board B ${stamp}`,
+        slug: `e2e-board-b-${stamp}`,
+      });
+      await apiJson(page.request, token, 'post', '/api/v1/dns-security/integrations', {
+        orgId: org.id,
+        provider: 'pihole',
+        name: 'E2E Pi-hole',
+        apiKey: 'e2e-not-a-real-key',
+        // apiEndpoint is required by the route's createIntegrationSchema for provider 'pihole';
+        // 'on-prem-http' SSRF mode allows plain http:// on-prem hostnames.
+        config: { apiEndpoint: 'http://pihole.e2e.local/api' },
+      });
+      await board.goto();
+      await expect(board.columnIntegrations()).toBeVisible();
+      const dns = board.badge(org.id, 'dns_filter');
+      await expect(dns).toBeVisible();
+      await expect(dns).toHaveAttribute('title', 'Never synced');
+      await expect(board.nothingLinked(orgB.id)).toBeVisible();
+
+      // No partner connector is configured in the E2E stack, so no org can be "not linked":
+      // the Unlinked cell and filter exist (the caller has connected_apps:read) and count 0.
+      await expect(board.bandUnlinkedCount()).toHaveText('0');
+      await board.filterUnlinked().click();
+      await expect(board.bandUnlinked()).toHaveAttribute('aria-pressed', 'true');
+      await expect(page).toHaveURL(/filter=unlinked/);
+      await expect(board.row(org.id)).toHaveCount(0);
+      await expect(board.row(orgB.id)).toHaveCount(0);
+    });
   });
 });

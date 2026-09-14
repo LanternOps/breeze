@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import {
   generatePortalReport,
+  latestPortalHardwareLifecycleRun,
   listPortalRuns,
   PortalReportNoTabularDataError,
   PortalReportNotFoundError,
@@ -57,6 +58,42 @@ portalReportRoutes.get(
     return c.json(payload);
   },
 );
+
+// Mounted under BOTH the /reports/* enableReports gate and the narrower
+// /reports/lifecycle/* enableLifecycle gate (routes/portal/index.ts), so the
+// handler itself needs no flag check.
+portalReportRoutes.get('/reports/lifecycle/latest', async (c) => {
+  const auth = c.get('portalAuth');
+  try {
+    const payload = await latestPortalHardwareLifecycleRun(
+      auth.user.orgId,
+      auth.timezone,
+    );
+
+    applyPortalCacheHeaders(c, {
+      scope: 'private',
+      browserMaxAgeSeconds: 30,
+      staleWhileRevalidateSeconds: 30,
+      vary: ['Authorization', 'Cookie'],
+    });
+    const etag = buildWeakEtag(payload);
+    c.header('ETag', etag);
+    if (isEtagFresh(c.req.header('if-none-match'), etag)) {
+      return new Response(null, { status: 304, headers: c.res.headers });
+    }
+    return c.json(payload);
+  } catch (error) {
+    if (error instanceof PortalReportNotFoundError) {
+      // Deliberately the same answer an org with the flag off would get from
+      // the generic endpoints: "not generated yet", never "not allowed".
+      return c.json({
+        error: 'No hardware lifecycle report has been generated yet',
+        code: 'PORTAL_REPORT_NOT_GENERATED',
+      }, 404);
+    }
+    throw error;
+  }
+});
 
 portalReportRoutes.post(
   '/reports/generate',

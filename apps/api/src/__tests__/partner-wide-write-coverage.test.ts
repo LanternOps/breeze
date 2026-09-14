@@ -62,6 +62,16 @@ const API_SRC = resolve(__dirname, '..');
  * partner-wide capability gate. Every entry carries the reason it is exempt.
  */
 const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
+  // --- network_monitors became dual-axis in #5291 W04 ------------------------
+  // A partner-wide `network_monitors` row is ALWAYS a compiled artefact of a
+  // `network_check` monitor definition — the compiler is its only writer, and
+  // every caller-facing create/update/delete path below refuses one outright
+  // rather than gating it. So none of these four can reach a partner-owned row
+  // at all, which is a stronger property than passing the capability gate.
+  'routes/monitors.ts': 'legacy network-monitor CRUD is org-axis only: requireMonitorAccess refuses an org_id NULL row as 404, and a managed row as 409',
+  'routes/monitoring.ts': 'every write is scoped `networkMonitors.orgId = <org>`, which can never match a partner-wide (org_id NULL) row',
+  'routes/discovery.ts': 'asset-unlink delete is scoped `networkMonitors.orgId = <asset org>`, which can never match a partner-wide (org_id NULL) row',
+  'services/aiToolsMonitoring.ts': 'assertMonitorSiteAccess fails closed on org_id NULL, and a managed row is refused, so the AI tool cannot mutate a partner-owned row',
   // #5289 — the compiler's only write to monitor_definitions stamps the
   // compiled_* ids and hash back onto a definition its CALLER already loaded
   // and authorised. Every caller-facing write path (create/update/delete) runs

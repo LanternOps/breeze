@@ -228,10 +228,11 @@
       "accountMissing": "Hesap verileri eksik",
       "openTickets": "Açık biletler",
       "trial": "Deneme",
-      "archived": "Arşivlenenler"
+      "archived": "Arşivlenenler",
+      "unlinked": "Bağlı olmayan"
     },
     "sort": { "label": "Sırala", "manual": "Elle sıralama", "name": "A'dan Z'ye", "tickets": "Açık biletler" },
-    "columns": { "organization": "Kuruluş", "setup": "Kurulum", "account": "Hesap verileri", "tickets": "Açık biletler", "actions": "Satır işlemleri" },
+    "columns": { "organization": "Kuruluş", "setup": "Kurulum", "account": "Hesap verileri", "tickets": "Açık biletler", "actions": "Satır işlemleri", "integrations": "Entegrasyonlar" },
     "band": {
       "label": "Hesap hazırlığı",
       "all": "Hesaplar",
@@ -241,7 +242,8 @@
       "openTickets": "Açık biletler",
       "openTicketsSub": "{{count}} SLA ihlali",
       "pending": "Kuruluşlar denetleniyor…",
-      "partial": "Bazı kuruluşlar denetlenemedi."
+      "partial": "Bazı kuruluşlar denetlenemedi.",
+      "unlinked": "Bağlı olmayan"
     },
     "chips": {
       "noSite": "Site yok",
@@ -263,7 +265,9 @@
       "notApplicable": "Uygulanamaz",
       "unavailable": "Kullanılamıyor",
       "stillNeeded": "Hâlâ gerekli",
-      "link": "{{orgName}} için {{chip}}"
+      "link": "{{orgName}} için {{chip}}",
+      "noActiveContract": "Etkin sözleşme yok",
+      "noBackup": "Yedekleme yapılandırılmamış"
     },
     "repair": {
       "sites": "{{orgName}} için Siteler sekmesini aç",
@@ -271,7 +275,39 @@
       "policies": "Yapılandırma politikalarını aç",
       "contacts": "{{orgName}} için Kişiler sekmesini aç",
       "settings": "{{orgName}} ayarlarını aç",
-      "billing": "{{orgName}} için Faturalandırma sekmesini aç"
+      "billing": "{{orgName}} için Faturalandırma sekmesini aç",
+      "backup": "{{orgName}} yedeklemesini aç"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS filtresi" },
+      "state": { "linked": "Bağlı", "pending": "Beklemede", "error": "İlgilenilmesi gerekiyor", "identity": "Yalnızca kimlik", "not_linked": "Bağlı değil" },
+      "reason": {
+        "suggested_match": "Önerilen eşleşme, henüz onaylanmadı",
+        "sync_error": "Son eşitleme başarısız oldu",
+        "consent_pending": "Microsoft onayı bekleniyor",
+        "expired": "Bağlantının süresi doldu",
+        "degraded": "Bağlantı bozulmuş",
+        "suspended": "Bağlantı askıya alındı",
+        "error": "Bağlantı bir hata bildirdi",
+        "never_synced": "Hiç eşitlenmedi",
+        "sync_failed": "Bağlayıcı eşitlemesi başarısız oldu",
+        "disabled": "Bağlantı devre dışı",
+        "connector_error": "Bağlayıcı etkin değil veya hatalı"
+      },
+      "notLinked": "{{system}} bağlı değil",
+      "nothingLinked": "Hiçbir şey bağlı değil",
+      "connectorMuted": "{{system}} bağlayıcısı bağlı değil",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} yeniden bağlanmalı",
+          "disconnected": "{{system}} bağlantısı kesildi",
+          "error": "{{system}} bağlayıcısında bir hata var",
+          "disabled": "{{system}} bağlayıcısı devre dışı"
+        },
+        "openSettings": "{{system}} ayarlarını aç"
+      }
     },
     "tickets": { "open": "{{count}} açık", "awaiting": "{{count}} müşteri yanıtı bekliyor", "sla": "{{count}} SLA ihlali" },
     "meta": {

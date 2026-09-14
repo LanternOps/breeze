@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Clock,
   Globe,
+  HelpCircle,
   Loader2,
   Monitor,
   RefreshCw,
@@ -93,6 +94,15 @@ const JOIN_TYPE_LABELS: Record<JoinType, string> = {
   none: "Not Joined",
 };
 
+/**
+ * `IdentityStatus.source` reported by agent platforms that have no
+ * directory/join detection implementation (Linux, BSD, ...). Mirrors
+ * `mgmtdetect.IdentitySourceUnsupported` in the Go agent. On such a device the
+ * join type and the three join flags were never probed, so rendering them as
+ * "Not Joined" / false asserts a negative result nobody checked (#5626).
+ */
+const IDENTITY_SOURCE_UNSUPPORTED = "unsupported";
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function formatDateTime(value: string): string {
@@ -107,17 +117,33 @@ function formatDateTime(value: string): string {
   });
 }
 
-function BoolFlag({ label, value }: { label: string; value: boolean }) {
+function BoolFlag({
+  label,
+  value,
+  unknown = false,
+  testId,
+}: {
+  label: string;
+  value: boolean;
+  unknown?: boolean;
+  testId?: string;
+}) {
   const { t } = useTranslation("devices");
   return (
-    <div className="flex items-center gap-2 text-sm">
-      {value ? (
+    <div className="flex items-center gap-2 text-sm" data-testid={testId}>
+      {unknown ? (
+        <HelpCircle className="h-4 w-4 text-muted-foreground/60" />
+      ) : value ? (
         <CheckCircle2 className="h-4 w-4 text-emerald-600" />
       ) : (
         <span className="h-4 w-4 rounded-full border-2 border-muted-foreground/30" />
       )}
-      <span className={value ? "text-foreground" : "text-muted-foreground"}>
-        {label}
+      <span
+        className={value && !unknown ? "text-foreground" : "text-muted-foreground"}
+      >
+        {unknown
+          ? t("deviceManagementTab.flagUnknown", { label })
+          : label}
       </span>
     </div>
   );
@@ -210,6 +236,11 @@ export default function DeviceManagementTab({
   const { posture } = data;
   const { identity, categories } = posture;
 
+  // The agent never probed join state on this platform, so the join type and
+  // flags carry no information — show them as unknown rather than negative.
+  const identityDetectionUnsupported =
+    identity.source === IDENTITY_SOURCE_UNSUPPORTED;
+
   // Build ordered list of categories that have detections
   const populatedCategories = CATEGORY_ORDER.filter(
     (key) => categories[key] && categories[key]!.length > 0,
@@ -244,24 +275,43 @@ export default function DeviceManagementTab({
         <div className="rounded-md border bg-background p-4">
           <div className="flex items-center gap-2 mb-3">
             <Globe className="h-4 w-4 text-primary" />
-            <span className="text-sm font-medium">
-              {JOIN_TYPE_LABELS[identity.joinType]}
+            <span className="text-sm font-medium" data-testid="identity-join-type">
+              {identityDetectionUnsupported
+                ? t("deviceManagementTab.identityDetectionUnsupported")
+                : // A newer agent can report a join type this build predates;
+                  // fall back to the raw value rather than rendering "undefined".
+                  (JOIN_TYPE_LABELS[identity.joinType] ?? identity.joinType)}
             </span>
           </div>
+
+          {identityDetectionUnsupported && (
+            <p
+              className="mb-3 text-xs text-muted-foreground"
+              data-testid="identity-detection-unsupported"
+            >
+              {t("deviceManagementTab.identityDetectionUnsupportedHint")}
+            </p>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2">
               <BoolFlag
+                testId="identity-flag-azureAdJoined"
                 label={t("deviceManagementTab.azureAdEntraIdJoined")}
                 value={identity.azureAdJoined}
+                unknown={identityDetectionUnsupported}
               />
               <BoolFlag
+                testId="identity-flag-domainJoined"
                 label={t("deviceManagementTab.domainJoined")}
                 value={identity.domainJoined}
+                unknown={identityDetectionUnsupported}
               />
               <BoolFlag
+                testId="identity-flag-workplaceJoined"
                 label={t("deviceManagementTab.workplaceJoined")}
                 value={identity.workplaceJoined}
+                unknown={identityDetectionUnsupported}
               />
             </div>
 

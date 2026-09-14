@@ -1394,6 +1394,10 @@ scriptRoutes.get(
         completedAt: scriptExecutions.completedAt,
         exitCode: scriptExecutions.exitCode,
         errorMessage: scriptExecutions.errorMessage,
+        // #5040 — the cancel outcome that qualifies a terminal status in the
+        // UI ("stop arrived too late" / "the device could not stop it").
+        // Without it here the web label helper only ever sees `undefined`.
+        cancelState: scriptExecutions.cancelState,
         createdAt: scriptExecutions.createdAt,
         // #4888 — the run context this row actually ran in. NULL for rows
         // written before the column existed; the UI renders that as unknown
@@ -1443,6 +1447,8 @@ scriptRoutes.get(
         stdout: scriptExecutions.stdout,
         stderr: scriptExecutions.stderr,
         errorMessage: scriptExecutions.errorMessage,
+        // #5040 — see the list endpoint above.
+        cancelState: scriptExecutions.cancelState,
         // #2698 — what the script's custom-field write-back applied/rejected.
         // NULL for every run that emitted no marker. Wave 2 renders it; without
         // it here the summary would be stored but unreachable by any caller.

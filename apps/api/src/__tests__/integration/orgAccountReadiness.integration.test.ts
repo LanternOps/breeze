@@ -147,8 +147,16 @@ const ALL_CAPABILITIES = {
   portalUsers: true,
   invoices: true,
   tickets: true,
-  integrations: false,
+  // W03 (#5724): the default partner client carries connected_apps:read,
+  // contracts:read and backup:read, so all three sections are on.
+  integrations: true,
+  contracts: true,
+  backup: true,
 };
+// W03 per-org fields when every section is on and the partner has no
+// connectors, contracts or backup configs seeded: empty badges, zero
+// contracts, backup not applicable.
+const NO_EXTRAS = { integrations: [] as unknown[], activeContracts: 0, backupApplicable: false, backupConfigured: false };
 
 describe('GET /orgs/account-readiness', () => {
   runDb('computes every W02 signal for a partner token through the composed app', async () => {
@@ -283,7 +291,8 @@ describe('GET /orgs/account-readiness', () => {
     expect(body.partnerId).toBe(partnerId);
     expect(body.serviceManagementMode).toBe('native');
     expect(body.capabilities).toEqual(ALL_CAPABILITIES);
-    expect(body).not.toHaveProperty('connectors');
+    // W03: connectors is present (an array) whenever capabilities.integrations is on.
+    expect(Array.isArray(body.connectors)).toBe(true);
     expect(body.orgs.map((org: { orgId: string }) => org.orgId)).toEqual([orgA, orgB, orgC]);
 
     const [a, b, c] = body.orgs;
@@ -291,39 +300,50 @@ describe('GET /orgs/account-readiness', () => {
       orgId: orgA,
       type: 'customer',
       status: 'active',
-      setup: { sites: 1, devices: 2, lastSeenAt: new Date(onlineDevice.lastSeenAt!).toISOString(), policyAssigned: true },
+      setup: {
+        sites: 1,
+        devices: 2,
+        lastSeenAt: new Date(onlineDevice.lastSeenAt!).toISOString(),
+        policyAssigned: true,
+        backupApplicable: NO_EXTRAS.backupApplicable,
+        backupConfigured: NO_EXTRAS.backupConfigured,
+      },
       account: {
         primaryContact: { name: `Ada Primary ${suffix}`, email: `ada-${suffix}@example.com`, phone: '555-0100', mobile: null },
         billingRoleContact: true,
         billingAddress: true,
         pendingInvitations: 1,
         overdueInvoices: 2,
+        activeContracts: NO_EXTRAS.activeContracts,
       },
       tickets: { open: 3, awaitingCustomer: 1, slaBreached: 1 },
+      integrations: NO_EXTRAS.integrations,
     });
-    expect(a).not.toHaveProperty('integrations');
     expect(b).toEqual({
       orgId: orgB,
       type: 'internal',
       status: 'trial',
-      setup: { sites: 0, devices: 0, lastSeenAt: null, policyAssigned: false },
+      setup: { sites: 0, devices: 0, lastSeenAt: null, policyAssigned: false, backupApplicable: false, backupConfigured: false },
       account: {
         primaryContact: { name: `Nameless Reach ${suffix}`, email: null, phone: null, mobile: null },
         billingRoleContact: false,
         billingAddress: false,
         pendingInvitations: 0,
         overdueInvoices: 0,
+        activeContracts: 0,
       },
       tickets: ZERO_TICKETS,
+      integrations: [],
     });
     expect(c).toEqual({
       orgId: orgC,
       type: 'customer',
       status: 'active',
       // sites: 1 = the site carrying the site-level assignment; still unassigned.
-      setup: { sites: 1, devices: 0, lastSeenAt: null, policyAssigned: false },
-      account: { primaryContact: null, billingRoleContact: false, billingAddress: false, pendingInvitations: 0, overdueInvoices: 0 },
+      setup: { sites: 1, devices: 0, lastSeenAt: null, policyAssigned: false, backupApplicable: false, backupConfigured: false },
+      account: { primaryContact: null, billingRoleContact: false, billingAddress: false, pendingInvitations: 0, overdueInvoices: 0, activeContracts: 0 },
       tickets: ZERO_TICKETS,
+      integrations: [],
     });
 
     // The shape the spec ruled out is captured by orgRoutes' UUID guard —
@@ -433,7 +453,8 @@ describe('GET /orgs/account-readiness', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.serviceManagementMode).toBe('off');
-    expect(body.capabilities).toEqual({ ...ALL_CAPABILITIES, invoices: false, tickets: false });
+    // W03: contracts is also native-only.
+    expect(body.capabilities).toEqual({ ...ALL_CAPABILITIES, invoices: false, tickets: false, contracts: false });
     expect(body.orgs[0]).not.toHaveProperty('tickets');
     expect(body.orgs[0].account).not.toHaveProperty('overdueInvoices');
     expect(body.orgs[0].account).toHaveProperty('pendingInvitations');
@@ -456,6 +477,8 @@ describe('GET /orgs/account-readiness', () => {
       invoices: false,
       tickets: false,
       integrations: false,
+      contracts: false,
+      backup: false,
     });
     expect(body.orgs[0]).toEqual({
       orgId,

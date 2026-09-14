@@ -73,6 +73,14 @@ export const automationActionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('execute_command'),
     command: z.string(),
+    // #5291 W04 — an OPTIONAL, explicit intent discriminator. Spec §Responses:
+    // an execute_command of kind 'restart_service' on a `service` monitor
+    // compiles to `auto_restart: true` on the delivered watch, so the restart
+    // still happens locally and offline. It is a declared field rather than a
+    // sniff of the free-text `command` on purpose: a behaviour-changing flag
+    // must never be inferred from a shell string that varies by OS, locale and
+    // quoting. Additive and optional, so every existing action still parses.
+    kind: z.literal('restart_service').optional(),
     shell: z.enum(['bash', 'powershell', 'cmd']).optional(),
     // #5128 W4 — see the run_script arm above.
     whenOffline: z.enum(['queue', 'skip']).default('queue'),

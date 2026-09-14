@@ -23,6 +23,13 @@ export class OrganizationsBoardPage {
   more = (orgId: string) => this.page.getByTestId(`org-board-more-${orgId}`);
   menuOpenRecord = () => this.page.getByTestId('org-board-menu-open-record');
   columnHeader = (key: 'name' | 'tickets') => this.page.getByTestId(`org-board-sort-${key}`);
+  columnIntegrations = () => this.page.getByTestId('org-board-col-integrations');
+  badge = (orgId: string, system: string) => this.page.getByTestId(`org-board-badge-${orgId}-${system}`);
+  nothingLinked = (orgId: string) => this.page.getByTestId(`org-board-nothing-linked-${orgId}`);
+  bandUnlinked = () => this.page.getByTestId('org-board-band-unlinked');
+  bandUnlinkedCount = () => this.page.getByTestId('org-board-band-unlinked-count');
+  filterUnlinked = () => this.page.getByTestId('org-board-filter-unlinked');
+  repairLine = (system: string) => this.page.getByTestId(`org-board-repair-${system}`);
 
   async goto() {
     await this.page.goto(this.url);

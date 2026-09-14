@@ -87,7 +87,9 @@ const namespaceDuplicateBaselines = {
     'monitoring.json': 5,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // pt-BR.
-    'organizations.json': 6, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
+    'organizations.json': 9, // W01 #5075: cognates — "Sites", "{{count}} site(s)"; +2 W02: device status "Online"/"Offline" are identical cognates in pt-BR
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     // +1 #5288: titles.jobs — "Jobs" is the same loanword in pt-BR.
     'pages.json': 11, // Cognates: Backup, Webhooks (x2), OneDrive, Scripts, Logs, EDR, Software (x2), and one settings-card title (Sites).
     'patches.json': 23,
@@ -207,7 +209,9 @@ const namespaceDuplicateBaselines = {
     'monitoring.json': 6,
     // +1: updateRingList.badges.manual — "Manual" is spelled identically in
     // es-419.
-    'organizations.json': 1, // W01 #5075: cognate — "Tickets"
+    'organizations.json': 4, // W01 #5075: cognate — "Tickets"
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 12, // Cognates: CIS Benchmarks, Webhooks (x2), OneDrive, Scripts, EDR, Roles, Variables, Software (x2), Tickets, and Ticket (singular).
     'patches.json': 16,
     'peripherals.json': 4,
@@ -328,7 +332,8 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-FR.
     'monitoring.json': 7,
-    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    'organizations.json': 11, // W01 #5075: cognates — "Contacts", "Sites", "Tickets", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-FR; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-FR
+    // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-FR terminology with devices.json/settings.json/
     // scripts.json made titles.scripts an intentional cognate ("Script" is the
     // standard fr-FR loanword) on top of the pre-existing ones.
@@ -462,7 +467,8 @@ const namespaceDuplicateBaselines = {
     // (direction select), "Source" (policy-tab column) are identical
     // cognates in fr-CA.
     'monitoring.json': 7,
-    'organizations.json': 9, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    'organizations.json': 10, // W01 #5075: cognates — "Contacts", "Sites", "{{count}} site(s)"; +1 W02: device status "Maintenance" spells identically in fr-CA; +2 W02 account board: orgBoard.meta.sites_one/_other "{{count}} site(s)" spell identically in fr-CA
+    // +1 W03 account board: "PSA" is a locale-invariant acronym.
     // +1: PR review fix aligning fr-CA terminology with fr-FR (fr-CA mirrors it
     // here) made titles.scripts an intentional cognate ("Script" is the
     // standard loanword) on top of the pre-existing ones.
@@ -608,7 +614,9 @@ const namespaceDuplicateBaselines = {
     'monitoring.json': 8,
     // +1: updateRingList.badges.os — "OS: {{severities}}" is an acronym plus an
     // interpolation; German uses the same "OS" acronym.
-    'organizations.json': 3, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
+    'organizations.json': 6, // W01 #5075: cognate — "Tickets"; +2 W02: device status "Online"/"Offline" are identical cognates in de-DE
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 14, // Cognates: Backup, CIS Benchmarks, Dashboard, Webhooks (x2), OneDrive, Patches, EDR, Software (x2), Tickets, Ticket (singular), and two settings-card titles (Ticketing, Single Sign-On).
     'patches.json': 23,
     'peripherals.json': 4,
@@ -706,7 +714,9 @@ const namespaceDuplicateBaselines = {
     // (event-log category), "CPU" (resource select) are identical
     // cognates/loanwords in it-IT.
     'monitoring.json': 5,
-    'organizations.json': 3, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
+    'organizations.json': 6, // W01 #5075: "Workspace: {{orgName}}" — Workspace is the Italian UI term; +2 W02: device status "Online"/"Offline" are identical cognates in it-IT
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 10, // Cognates: Backup, CIS Benchmarks, Dashboard, OneDrive, EDR, Software (x2), Ticket, and two settings-card titles (Ticketing, SSO) — proper nouns/acronyms/loanwords.
     'patches.json': 18,
     'peripherals.json': 4,
@@ -786,7 +796,9 @@ const namespaceDuplicateBaselines = {
     // #5289 (monitors W02 web): "CPU" (resource select) is the identical
     // acronym in tr-TR.
     'monitoring.json': 1,
-    'organizations.json': 2, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
+    'organizations.json': 5, // W01 #5075: cognate — "{{count}} site"; +1 W02 account board: orgBoard.meta.sites_one "{{count}} site" is the same cognate in tr-TR
+    // +3 W03 account board: "PSA" is a locale-invariant acronym; orgBoard.integrations.badgeLabel /
+    // badgeLabelWithReason are pure-interpolation literals ("{{orgName}}: {{system}}, {{state}}").
     'pages.json': 3, // Cognates: CIS Benchmarks, OneDrive, EDR — proper nouns/acronyms.
     'patches.json': 11,
     'peripherals.json': 4,

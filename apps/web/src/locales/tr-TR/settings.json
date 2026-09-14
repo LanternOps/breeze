@@ -1157,6 +1157,10 @@
         "enableDocuments": {
           "label": "Belgeler",
           "description": "Müşterilerin paylaşılan belgeleri indirmesine izin verir."
+        },
+        "enableLifecycle": {
+          "label": "Donanım yaşam döngüsü",
+          "description": "Müşterinizin cihazları için güncel değişim planını gösterir."
         }
       }
     },
@@ -1592,7 +1596,14 @@
     "stateDisabled": "Devre dışı",
     "runningBadge": {
       "running": "Çalışıyor",
-      "notRunning": "Çalışmıyor"
+      "notRunning": "Çalışmıyor",
+      "inactive": "Etkin (etkisiz)"
+    },
+    "subsystemDisabled": {
+      "title": "Bu sunucuda yapay zekâ aracıları devre dışı",
+      "envFlag": "Aracıların çalışabilmesi için {{flag}} değerini ayarlayın. O zamana kadar her tetikleme atlanır.",
+      "killSwitch": "Platform acil durdurma anahtarı devrede. Bir yönetici bunu kaldırana kadar aracılar çalışmaz.",
+      "skips": "Son zamanlarda {{total}} tetikleme atlandı — {{reasons}}"
     },
     "reenableNote": "Geri yüklendi, kapalı durumda. Açmadan önce politikasını gözden geçirin.",
     "chipLabels": {

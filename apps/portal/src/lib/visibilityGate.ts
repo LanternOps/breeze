@@ -23,6 +23,7 @@ export const PORTAL_DISABLED_CODES = [
   // Service deliverables W04 (#5573): two more strict fail-closed flags.
   'PORTAL_SERVICE_DISABLED',
   'PORTAL_DOCUMENTS_DISABLED',
+  'PORTAL_LIFECYCLE_DISABLED',
 ] as const;
 
 const DISABLED_CODE_SET: ReadonlySet<string> = new Set(PORTAL_DISABLED_CODES);

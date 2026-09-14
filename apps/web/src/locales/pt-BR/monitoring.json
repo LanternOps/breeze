@@ -126,7 +126,12 @@
     "cert_expiry": "Expiração do certificado",
     "bandwidth": "Largura de banda",
     "disk_io": "E/S de disco",
-    "network_errors": "Erros de rede"
+    "network_errors": "Erros de rede",
+    "antivirus": "Antivírus",
+    "software_presence": "Presença de software",
+    "backup_continuity": "Continuidade do backup",
+    "script": "Verificação de script",
+    "network_check": "Verificação de rede"
   },
   "fields": {
     "operator": "Comparação",
@@ -145,7 +150,28 @@
     "withinDays": "Expira em (dias)",
     "direction": "Direção",
     "errorType": "Direção do erro",
-    "interfaceName": "Interface (opcional)"
+    "interfaceName": "Interface (opcional)",
+    "check": "Verificação",
+    "staleAfterDays": "Desatualizado após (dias)",
+    "minThreatCount": "Número mínimo de ameaças",
+    "softwareName": "Nome do software",
+    "vendor": "Fornecedor (opcional)",
+    "presence": "Presença",
+    "version": "Versão",
+    "backupCheck": "Verificação",
+    "maxAgeHours": "Idade máxima (horas)",
+    "failureCount": "Número de falhas",
+    "script": "Script a executar",
+    "scriptSelectPlaceholder": "Selecione um script…",
+    "scriptLoadError": "Falha ao carregar os scripts",
+    "intervalMinutes": "Executar a cada (minutos)",
+    "timeoutSeconds": "Tempo limite (segundos)",
+    "breachOnNonZeroExit": "Violação quando o código de saída não é zero",
+    "checkType": "Tipo de verificação",
+    "target": "Destino",
+    "port": "Porta",
+    "expectStatus": "Código de status esperado",
+    "pollingIntervalSeconds": "Consultar a cada (segundos)"
   },
   "operators": {
     "gt": "maior que",
@@ -183,6 +209,27 @@
     "read": "Leitura",
     "write": "Escrita",
     "total": "Total"
+  },
+  "antivirusChecks": {
+    "not_protected": "Não protegido",
+    "definitions_stale": "Definições desatualizadas",
+    "realtime_disabled": "Proteção em tempo real desativada",
+    "threats_present": "Ameaças presentes"
+  },
+  "presences": {
+    "installed": "Instalado",
+    "not_installed": "Não instalado",
+    "version_below": "Versão abaixo de"
+  },
+  "backupChecks": {
+    "no_successful_backup": "Nenhum backup bem-sucedido",
+    "consecutive_failures": "Falhas consecutivas"
+  },
+  "checkTypes": {
+    "icmp_ping": "Ping ICMP",
+    "tcp_port": "Porta TCP",
+    "http_check": "Verificação HTTP",
+    "dns_check": "Verificação DNS"
   },
   "deploy": {
     "title": "Implantar monitor",

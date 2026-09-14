@@ -322,6 +322,14 @@ const PARTNER_TENANT_TABLES: ReadonlyMap<string, string> = new Map<string, strin
 // is the canonical case: a user row is visible if the caller has access
 // to the user's partner OR the user's org OR is the user themselves.
 const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
+  // network_monitors (#5287 W04): reshaped from org-only to org XOR partner by
+  // 2026-10-16-181300-monitor-coverage-kinds, so one MSP-authored "is the
+  // gateway up" check runs for every org under the partner. CHECK
+  // network_monitors_one_owner_chk enforces exactly one axis; the partner-wide
+  // SELECT branch (network_monitors_partner_wide_select) ships in the same
+  // migration and is load-bearing on the agent path. Functional cross-partner
+  // forge proof: networkMonitorPartnerRls.integration.test.ts.
+  'network_monitors',
   // monitor_definitions (#5287 W02): a monitor is org-scoped (org_id set) or
   // partner-wide (partner_id set, org_id NULL — one MSP-authored monitor
   // deployed across every customer). Created dual-axis from day one in
@@ -743,6 +751,10 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // `scripts` could not satisfy the system-script INSERT under bound parameters.
   ['software_versions', ['software_catalog']],
   ['software_install_methods', ['software_catalog']],
+  // alert_correlations has TWO not-null FKs into `alerts` (parent_alert_id,
+  // child_alert_id). Because both parents are the SAME table, the all-of
+  // parent rule below cannot express "check both endpoints" — that half of the
+  // contract lives in PARENT_FK_REQUIRED_FK_COLUMNS instead (#5607).
   ['alert_correlations', ['alerts']],
   ['alert_notifications', ['alerts']],
   // 2026-06-13-b backstop: seven more child tables that shipped with NO rls and
@@ -752,7 +764,9 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   // breeze_has_org_access and joins through `roles`, so this assertion holds.
   ['webhook_deliveries', ['webhooks']],
   ['network_monitor_alert_rules', ['network_monitors']],
-  ['network_monitor_results', ['network_monitors']],
+  // network_monitor_results was HERE until #5287 W04: it now carries its own
+  // denormalized org_id (the parent can be partner-wide, which made the join
+  // blind), so it is auto-discovered as an ordinary Shape 1 org-tenant table.
   ['role_permissions', ['roles']],
   ['plugin_logs', ['plugin_installations']],
   ['report_runs', ['reports']],
@@ -973,6 +987,34 @@ const PARENT_FK_REQUIRED_PARENTS_PER_COMMAND: ReadonlyMap<string, PerCommandPare
       DELETE: { qual: { kind: 'any-of', parents: ['scripts'] } },
     },
   ],
+]);
+
+// Child tables that reach their tenant through MORE THAN ONE FK column into
+// the SAME parent table. PARENT_FK_REQUIRED_PARENTS_PER_COMMAND's 'all-of'
+// rule keys on parent TABLE names, so it is blind to this shape: listing
+// `['alerts', 'alerts']` proves nothing. This map pins the FK COLUMNS that
+// must appear in the slot Postgres evaluates, for every required command.
+//
+// alert_correlations (#5607): the 2026-05-30 parent-FK migration joined
+// `alerts` on parent_alert_id only, so an edge whose parent is org A's and
+// whose child is org B's was DB-visible (and insertable) under an org-A token.
+// 2026-10-16-170100-alert-correlations-child-org-rls.sql ANDs the same EXISTS
+// on child_alert_id. Both columns are NOT NULL, so the conjunction cannot go
+// three-valued.
+//
+// Scope limit, stated plainly: this is a co-presence check on column NAMES in
+// the evaluated predicate. It catches a column dropped from a slot entirely,
+// which is the regression this class has actually shipped. It does NOT parse
+// boolean structure, so it cannot tell `EXISTS(parent) AND EXISTS(child)` from
+// `EXISTS(parent) OR EXISTS(child)` — and the OR form is a full reopening of
+// the leak that mentions both columns. A green run here is therefore NOT proof
+// of isolation. The proof is behavioural, in
+// alertCorrelationsChildRls.integration.test.ts, which does discriminate the
+// OR form on the SELECT policy — the load-bearing one, since Postgres enforces
+// it on the rows an UPDATE/DELETE reads and writes too. See that file's header
+// for the measurement.
+const PARENT_FK_REQUIRED_FK_COLUMNS: ReadonlyMap<string, readonly string[]> = new Map<string, readonly string[]>([
+  ['alert_correlations', ['parent_alert_id', 'child_alert_id']],
 ]);
 
 async function loadPublicPolicies(): Promise<Map<string, PolicyRow[]>> {
@@ -1924,6 +1966,36 @@ describe('RLS coverage contract', () => {
         `Fix: SELECT/DELETE need the parent-alias helper in USING, INSERT in WITH CHECK, UPDATE in BOTH. ` +
         `Tables listed in PARENT_FK_REQUIRED_PARENTS_PER_COMMAND must satisfy every parent in their all-of rules. ` +
         `Shape reference: 2026-05-30-fk-child-tables-rls.sql; matcher: src/db/rlsPolicyShape.ts.`
+    ).toEqual([]);
+  });
+
+  // #5607: the two assertions above are blind to a child table with several FK
+  // columns into the SAME parent — they only ever prove the policy joins
+  // `alerts` once. Require every declared FK column to appear in the evaluated
+  // slot so a half predicate (parent checked, child not) cannot come back.
+  it('every multi-FK child table guards each declared FK column in the slot Postgres evaluates', async () => {
+    const policiesByTable = await loadPublicPolicies();
+    const offenders: Array<{ table: string; missing_cmds: string[] }> = [];
+
+    for (const [table, columns] of PARENT_FK_REQUIRED_FK_COLUMNS) {
+      const covered = coveredCommands(policiesByTable.get(table) ?? [], (pred) => {
+        if (!pred) return false;
+        const text = pred.toLowerCase();
+        return columns.every((col) => text.includes(col.toLowerCase()));
+      });
+      const missing = requiredCmdsFor(table).filter((cmd) => !covered.has(cmd));
+      if (missing.length > 0) offenders.push({ table, missing_cmds: missing });
+    }
+
+    expect(
+      offenders,
+      `Multi-FK child tables whose policies do not reference every tenant-bearing FK column:\n` +
+        `${JSON.stringify(offenders, null, 2)}\n\n` +
+        `Fix: AND one EXISTS-through-the-parent branch per FK column, in USING for SELECT/DELETE, ` +
+        `WITH CHECK for INSERT, and BOTH for UPDATE — e.g. ` +
+        `EXISTS (SELECT 1 FROM alerts p WHERE p.id = alert_correlations.parent_alert_id AND breeze_has_org_access(p.org_id)) ` +
+        `AND EXISTS (SELECT 1 FROM alerts c WHERE c.id = alert_correlations.child_alert_id AND breeze_has_org_access(c.org_id)). ` +
+        `Shape reference: 2026-10-16-170100-alert-correlations-child-org-rls.sql.`
     ).toEqual([]);
   });
 

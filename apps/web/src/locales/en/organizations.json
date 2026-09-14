@@ -228,10 +228,11 @@
       "accountMissing": "Account data missing",
       "openTickets": "Open tickets",
       "trial": "Trial",
-      "archived": "Archived"
+      "archived": "Archived",
+      "unlinked": "Unlinked"
     },
     "sort": { "label": "Sort", "manual": "Manual order", "name": "A to Z", "tickets": "Open tickets" },
-    "columns": { "organization": "Organization", "setup": "Setup", "account": "Account data", "tickets": "Open tickets", "actions": "Row actions" },
+    "columns": { "organization": "Organization", "setup": "Setup", "account": "Account data", "tickets": "Open tickets", "actions": "Row actions", "integrations": "Integrations" },
     "band": {
       "label": "Account readiness",
       "all": "Accounts",
@@ -241,7 +242,8 @@
       "openTickets": "Open tickets",
       "openTicketsSub": "{{count}} SLA breached",
       "pending": "Checking organizations…",
-      "partial": "Some organizations could not be checked."
+      "partial": "Some organizations could not be checked.",
+      "unlinked": "Unlinked"
     },
     "chips": {
       "noSite": "No site",
@@ -263,7 +265,9 @@
       "notApplicable": "Not applicable",
       "unavailable": "Unavailable",
       "stillNeeded": "Still needed",
-      "link": "{{chip}} for {{orgName}}"
+      "link": "{{chip}} for {{orgName}}",
+      "noActiveContract": "No active contract",
+      "noBackup": "No backup configured"
     },
     "repair": {
       "sites": "Open the Sites tab for {{orgName}}",
@@ -271,7 +275,45 @@
       "policies": "Open configuration policies",
       "contacts": "Open the Contacts tab for {{orgName}}",
       "settings": "Open settings for {{orgName}}",
-      "billing": "Open the Billing tab for {{orgName}}"
+      "billing": "Open the Billing tab for {{orgName}}",
+      "backup": "Open backup for {{orgName}}"
+    },
+    "integrations": {
+      "system": { "psa": "PSA", "dns_filter": "DNS filter" },
+      "state": {
+        "linked": "Linked",
+        "pending": "Pending",
+        "error": "Needs attention",
+        "identity": "Identity only",
+        "not_linked": "Not linked"
+      },
+      "reason": {
+        "suggested_match": "Suggested match, not yet confirmed",
+        "sync_error": "Last sync failed",
+        "consent_pending": "Waiting for Microsoft consent",
+        "expired": "Connection expired",
+        "degraded": "Connection degraded",
+        "suspended": "Connection suspended",
+        "error": "Connection reported an error",
+        "never_synced": "Never synced",
+        "sync_failed": "Connector sync failed",
+        "disabled": "Connection disabled",
+        "connector_error": "Connector inactive or failing"
+      },
+      "notLinked": "{{system}} not linked",
+      "nothingLinked": "Nothing linked",
+      "connectorMuted": "{{system}} connector is not connected",
+      "badgeLabel": "{{orgName}}: {{system}}, {{state}}",
+      "badgeLabelWithReason": "{{orgName}}: {{system}}, {{state}} ({{reason}})",
+      "connectors": {
+        "repair": {
+          "reauth_required": "{{system}} needs reconnecting",
+          "disconnected": "{{system}} is disconnected",
+          "error": "{{system}} connector has an error",
+          "disabled": "{{system}} connector is disabled"
+        },
+        "openSettings": "Open {{system}} settings"
+      }
     },
     "tickets": { "open": "{{count}} open", "awaiting": "{{count}} awaiting customer", "sla": "{{count}} SLA breached" },
     "meta": {

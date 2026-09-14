@@ -109,13 +109,23 @@ export type DispatchScriptInput = {
   >;
   source: ScriptDispatchSource;
   parameters?: Record<string, unknown>;
-  triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation';
+  // 'monitor' (#5291 W04): a diagnostic run dispatched by monitorScriptWorker
+  // for a `script` monitor's own probe.
+  triggerType?: 'manual' | 'scheduled' | 'alert' | 'policy' | 'automation' | 'monitor';
   triggeredBy?: string | null;
   createdBy?: string | null;
   runAs?: 'system' | 'user' | 'elevated';
   timeoutSeconds?: number;
   targetSessionId?: number;
   batchId?: string | null;
+  /**
+   * #5291 W04 — the `script` monitor this dispatch is a probe for. Stamped
+   * onto `script_executions.monitor_id` so the scriptMonitor condition
+   * handler can find its own run history. Set only by monitorScriptWorker
+   * (paired with `triggerType: 'monitor'`); every other caller leaves it
+   * unset and the row gets NULL.
+   */
+  monitorId?: string;
   /**
    * #5128 — explicit offline policy. Omit to take the registry default for
    * `script` (queue, standard TTL), which is what manual Run Script has always
@@ -555,6 +565,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
         safeTriggeredBy,
         targetSessionId: input.targetSessionId ?? null,
         provenance: input.provenance,
+        monitorId: input.monitorId,
       }) as typeof scriptExecutions.$inferInsert)
       .returning({ id: scriptExecutions.id });
     if (!execution) {
@@ -857,6 +868,7 @@ function buildExecutionValues(input: {
   safeTriggeredBy?: string | null;
   targetSessionId?: number | null;
   provenance?: ScriptDispatchProvenance;
+  monitorId?: string;
 }): Record<string, unknown> {
   const { device, source, provenance } = input;
   const isProposal = source.kind === 'proposal';
@@ -881,6 +893,9 @@ function buildExecutionValues(input: {
     triggerKind: input.trigger?.kind ?? null,
     triggerRefId: input.trigger?.refId ?? null,
     triggerKey: input.trigger?.key ?? null,
+    // #5291 W04 — the `script` monitor this run is a probe for, or NULL for
+    // every non-monitor dispatch.
+    monitorId: input.monitorId ?? null,
     ...(source.kind === 'saved' && source.automationRunId
       ? { automationRunId: source.automationRunId }
       : {}),

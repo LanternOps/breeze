@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
 import {
   rowsToCsv,
+  type HardwareLifecycleSummary,
   type PortalRunDto,
   type PortalRunsDto,
 } from '@breeze/shared';
 import { db } from '../../db';
 import { tightenStatementTimeout } from '../../db/lockTimeout';
-import { reportRuns, reports } from '../../db/schema';
+import { portalBranding, reportRuns, reports } from '../../db/schema';
 import { checkRateLimit, PORTAL_USE_REDIS } from './rateLimit';
 import { getRedis } from '../redis';
 import {
@@ -46,6 +47,17 @@ const PORTAL_DEFINITIONS = [
       maxSecurityStatusAgeDays: 30,
       includeCis: true,
       backupRequired: true,
+    },
+  },
+  {
+    type: 'hardware_lifecycle',
+    name: 'Customer portal — Hardware Lifecycle',
+    config: {
+      sites: [],
+      replaceAgeYears: 4,
+      serverReplaceAgeYears: 5,
+      includeManualAssets: true,
+      includeOtherEquipment: true,
     },
   },
 ] as const;
@@ -119,6 +131,7 @@ export async function provisionPortalReportDefinitions(
 export const PORTAL_REPORT_TYPES = [
   'security_compliance_posture',
   'executive_summary',
+  'hardware_lifecycle',
 ] as const;
 
 export type PortalReportType = typeof PORTAL_REPORT_TYPES[number];
@@ -160,6 +173,64 @@ async function tightenPortalReportStatementTimeout(): Promise<void> {
   await tightenStatementTimeout(db, PORTAL_REPORT_STATEMENT_TIMEOUT_MS);
 }
 
+/**
+ * The org's `enable_lifecycle` visibility flag, read inside the ambient
+ * organization-scoped RLS transaction the portal auth middleware already
+ * opened. Fail closed exactly like `createPortalFeatureGateStrict`: a missing
+ * portal_branding row, or anything that is not literally `true`, is `false`.
+ */
+export async function portalLifecycleEnabled(orgId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ enableLifecycle: portalBranding.enableLifecycle })
+    .from(portalBranding)
+    .where(eq(portalBranding.orgId, orgId))
+    .limit(1);
+
+  return row?.enableLifecycle === true;
+}
+
+// Decision B2: the portal's hardware_lifecycle run inherits the MSP's own
+// replacement thresholds so the customer sees the same ages the MSP set, but
+// never the MSP definition's `sites` — that scope may name sites this portal
+// user cannot see, and the portal definition is deliberately org-wide.
+const HARDWARE_LIFECYCLE_INHERITED_KEYS = [
+  'replaceAgeYears',
+  'serverReplaceAgeYears',
+  'includeManualAssets',
+  'includeOtherEquipment',
+] as const;
+
+async function hardwareLifecycleConfigWithInheritance(
+  orgId: string,
+  portalConfig: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const [mspDefinition] = await db
+    .select({ config: reports.config })
+    .from(reports)
+    .where(and(
+      eq(reports.orgId, orgId),
+      eq(reports.type, 'hardware_lifecycle'),
+      eq(reports.portalSelfService, false),
+    ))
+    .orderBy(desc(reports.updatedAt))
+    .limit(1);
+
+  const merged: Record<string, unknown> = { ...portalConfig };
+  const mspConfig = (mspDefinition?.config ?? null) as
+    | Record<string, unknown>
+    | null;
+
+  if (mspConfig) {
+    for (const key of HARDWARE_LIFECYCLE_INHERITED_KEYS) {
+      if (mspConfig[key] !== undefined) merged[key] = mspConfig[key];
+    }
+  }
+
+  // Always org-wide, whatever the MSP row said.
+  merged.sites = [];
+  return merged;
+}
+
 export function portalDefinitionPredicate(
   orgId: string,
   type: PortalReportType,
@@ -171,19 +242,37 @@ export function portalDefinitionPredicate(
   )!;
 }
 
-export function portalRunPredicate(runId: string, orgId: string) {
+// With enable_lifecycle off, a hardware_lifecycle run must be invisible
+// through the GENERIC report endpoints too, not just the dedicated
+// /reports/lifecycle/* routes: those generic routes are gated on enableReports
+// alone, and a run can outlive the flag being turned back off. `and()` drops
+// undefined arms, so this is a no-op when the flag is on.
+function lifecycleExclusion(lifecycleEnabled: boolean) {
+  return lifecycleEnabled ? undefined : ne(reports.type, 'hardware_lifecycle');
+}
+
+export function portalRunPredicate(
+  runId: string,
+  orgId: string,
+  lifecycleEnabled: boolean,
+) {
   return and(
     eq(reportRuns.id, runId),
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
+    lifecycleExclusion(lifecycleEnabled),
   )!;
 }
 
-export function portalRunListPredicate(orgId: string) {
+export function portalRunListPredicate(
+  orgId: string,
+  lifecycleEnabled: boolean,
+) {
   return and(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
+    lifecycleExclusion(lifecycleEnabled),
   )!;
 }
 
@@ -252,7 +341,10 @@ export async function listPortalRuns(
   const page = Math.max(1, opts.page);
   const limit = Math.min(100, Math.max(1, opts.limit));
   const offset = (page - 1) * limit;
-  const where = portalRunListPredicate(orgId);
+  const where = portalRunListPredicate(
+    orgId,
+    await portalLifecycleEnabled(orgId),
+  );
 
   const [totalRow] = await db.select({ total: count() })
     .from(reportRuns)
@@ -306,6 +398,23 @@ export async function generatePortalReport(args: {
 
   if (!definition) throw new PortalReportNotFoundError();
 
+  let effectiveConfig = (definition.config ?? {}) as Record<string, unknown>;
+
+  if (args.type === 'hardware_lifecycle') {
+    // The route-level enableLifecycle gate only covers /reports/lifecycle/*.
+    // POST /reports/generate is mounted under /reports/*, which checks
+    // enableReports alone, so the flag has to be enforced here too. Reuse the
+    // existing not-found error rather than a new one: with the flag off the
+    // report is indistinguishable from "never provisioned" by design.
+    if (!await portalLifecycleEnabled(args.orgId)) {
+      throw new PortalReportNotFoundError();
+    }
+    effectiveConfig = await hardwareLifecycleConfigWithInheritance(
+      args.orgId,
+      effectiveConfig,
+    );
+  }
+
   const inFlightKey = `portal:report:in-flight:${args.orgId}:${args.type}`;
   const release = await acquireInFlight(inFlightKey);
 
@@ -340,7 +449,7 @@ export async function generatePortalReport(args: {
       const result = await generateReport(
         definition.type,
         args.orgId,
-        (definition.config ?? {}) as Record<string, unknown>,
+        effectiveConfig,
         authority,
       );
       const previous = await previousBaselineFor(
@@ -398,7 +507,68 @@ export async function generatePortalReport(args: {
   }
 }
 
+/**
+ * The one dedicated read the portal's Hardware Lifecycle page needs: the most
+ * recent COMPLETED self-service hardware_lifecycle run for the session org.
+ *
+ * `generatedAt` is formatted from the RUN's completion time, not from
+ * `summary.generatedAt`. The stored summary carries whatever the generator
+ * stamped, which can be stale relative to the row; the run is the authority
+ * for when the customer's plan was actually produced.
+ *
+ * Today this is reached only through /reports/lifecycle/*, which carries both
+ * the enableReports and enableLifecycle gates. The flag is re-checked here
+ * anyway, so the service is safe for any future caller that is not behind that
+ * mount (an SSR page, a worker, an AI tool), and so every read in this file
+ * answers the flag the same way rather than one of them depending on where it
+ * happens to be mounted.
+ */
+export type HardwareLifecyclePortalLatestDto = {
+  run: { id: string; generatedAt: string };
+  summary: HardwareLifecycleSummary | null;
+};
+
+export async function latestPortalHardwareLifecycleRun(
+  orgId: string,
+  timezone: string,
+): Promise<HardwareLifecyclePortalLatestDto> {
+  if (!await portalLifecycleEnabled(orgId)) {
+    throw new PortalReportNotFoundError();
+  }
+
+  const [row] = await db.select({
+    id: reportRuns.id,
+    result: reportRuns.result,
+    completedAt: reportRuns.completedAt,
+  }).from(reportRuns)
+    .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+    .where(and(
+      eq(reports.orgId, orgId),
+      eq(reports.type, 'hardware_lifecycle'),
+      eq(reports.portalSelfService, true),
+      eq(reportRuns.status, 'completed'),
+    ))
+    .orderBy(desc(reportRuns.completedAt), desc(reportRuns.id))
+    .limit(1);
+
+  if (!row) throw new PortalReportNotFoundError();
+
+  const result = row.result as ReportResult | null;
+  const generatedAt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(row.completedAt ?? new Date());
+
+  return {
+    run: { id: row.id, generatedAt },
+    summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+  };
+}
+
 async function completedRun(runId: string, orgId: string) {
+  const lifecycleEnabled = await portalLifecycleEnabled(orgId);
+
   const [row] = await db.select({
     id: reportRuns.id,
     type: reports.type,
@@ -407,7 +577,7 @@ async function completedRun(runId: string, orgId: string) {
   }).from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
     .where(and(
-      portalRunPredicate(runId, orgId),
+      portalRunPredicate(runId, orgId, lifecycleEnabled),
       eq(reportRuns.status, 'completed'),
     ))
     .limit(1);

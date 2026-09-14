@@ -503,6 +503,46 @@ export const SUPPORTED_AGENT_MODES: readonly AiAgentMode[] = ['off', 'shadow', '
 export type AiAgentOwnerScope = 'organization' | 'partner';
 
 /**
+ * #5380 — the AI-agent SUBSYSTEM's state, as opposed to any one agent row's
+ * `enabled` flag. Returned alongside the agent list (`GET /ai/agents`) because
+ * an agent row that says `enabled: true` on a server where the subsystem is
+ * off is not running anything, and the page had no way to know that.
+ */
+export interface AiAgentsSystemStatusDto {
+  /** Both kill switches clear: triggers actually create runs. */
+  enabled: boolean;
+  /** The `BREEZE_AI_AGENTS_ENABLED` env flag alone. */
+  envFlagEnabled: boolean;
+  /** Named so a self-hoster is told exactly what to set. */
+  envFlagName: string;
+  /** The DB-backed `ai_kill_state` switch (an admin flip, not an env var). */
+  killSwitchEngaged: boolean;
+  /**
+   * Recent declined triggers, or `null` when the answer is UNKNOWN (counter
+   * store unreachable, or no bounded org set to aggregate). Never a zero
+   * standing in for "we could not tell".
+   */
+  skips: AiAgentRunSkipSummaryDto | null;
+}
+
+export interface AiAgentRunSkipReasonSummaryDto {
+  /** An `AgentRunSkipReason` value, e.g. `kill_switch_off`. */
+  reason: string;
+  count: number;
+  /** ISO of the oldest skip still counted. */
+  firstAt: string | null;
+  lastAt: string | null;
+}
+
+export interface AiAgentRunSkipSummaryDto {
+  /** How long a counter survives with no further skips for that org. */
+  retentionHours: number;
+  total: number;
+  /** Highest count first. */
+  reasons: AiAgentRunSkipReasonSummaryDto[];
+}
+
+/**
  * The wire shape of one agent as returned by /api/v1/ai/agents.
  *
  * Declared here, and named as the API handler's return type, so the endpoint

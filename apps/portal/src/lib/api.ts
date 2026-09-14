@@ -728,6 +728,7 @@ export interface BrandingConfig {
   enableSupportUsage?: boolean;
   enableService?: boolean;
   enableDocuments?: boolean;
+  enableLifecycle?: boolean;
 }
 
 export interface ListParams {
@@ -1219,7 +1220,10 @@ export const portalApi = {
   },
 
   generateReport: async (
-    type: 'security_compliance_posture' | 'executive_summary',
+    type:
+      | 'security_compliance_posture'
+      | 'executive_summary'
+      | 'hardware_lifecycle',
     config: ApiRequestConfig = {},
   ): Promise<ApiResponse<PortalRunDto>> => {
     const response = await apiPost<{ data: PortalRunDto }>(

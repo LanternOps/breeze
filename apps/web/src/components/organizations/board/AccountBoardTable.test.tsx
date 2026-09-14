@@ -20,6 +20,7 @@ function row(id: string, name: string, extra: Partial<BoardRow> = {}, org: Parti
     },
     state: 'ready',
     chips: { setup: [{ key: 'noSite', tone: 'warning', target: 'sites', href: `/organizations/${id}#sites` }], account: [], accountApplicable: true },
+    badges: null,
     ...extra,
   };
 }
