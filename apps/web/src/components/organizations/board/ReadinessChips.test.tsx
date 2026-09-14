@@ -10,6 +10,7 @@ const base: BoardRow = {
   readiness: undefined,
   state: 'ready',
   chips: { setup: [], account: [], accountApplicable: true },
+  badges: null,
 };
 
 describe('ReadinessChips', () => {
