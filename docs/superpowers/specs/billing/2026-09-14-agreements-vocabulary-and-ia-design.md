@@ -1,6 +1,10 @@
+---
+tracking_issue: LanternOps/breeze#5822
+---
 # Agreements: vocabulary and information-architecture split — Design
 
 **Status:** approved by Todd 2026-09-14 (critique → "I agree with your recommendations").
+**Tracking:** LanternOps/breeze#5822 (W01 #5823 · W02 #5824 · W03 #5825)
 **Advisor quorum:** Fable + Codex `gpt-6-astra` xhigh (verdict recorded in §8).
 
 ## 1. Problem

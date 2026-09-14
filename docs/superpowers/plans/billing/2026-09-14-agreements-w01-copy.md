@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#<<W1_ISSUE>>
+tracking_issue: LanternOps/breeze#5823
 ---
 # Agreements W01: Vocabulary Copy Pass — Implementation Plan
 
@@ -24,7 +24,7 @@ Copied from spec §2 and §3:
 - **Canonical translated terms for "agreement template" / "signed agreement" go into `apps/web/src/locales/TERMINOLOGY.md`** (Task 1 Step 4).
 - **No route, testid, nav, permission or API change in W1.** Testids stay exactly as they are so `e2e-tests/tests/quote-contract-proposal.spec.ts` is untouched. Do not add new testids either — the two new render sites in Task 2 are asserted by role and text, not by testid.
 - Route paths never live in a locale value (`localeParity.test.ts:331` `routePathValueErrors`, issue #3426). The `/contracts#tab=templates` href is a literal in the component; the JSON carries only `<link>…</link>`.
-- Branch: `feature/<<W1_ISSUE>>-agreements/wave-01-copy`. One PR, body contains `Closes #<<W1_ISSUE>>`. Final task opens the PR and **stops** — do not merge.
+- Branch: `feature/5823-agreements/wave-01-copy`. One PR, body contains `Closes #5823`. Final task opens the PR and **stops** — do not merge.
 
 ---
 
@@ -588,7 +588,7 @@ Expected: clean.
 - [ ] **Step 5: Push and open the PR — then STOP**
 
 ```bash
-git push -u origin feature/<<W1_ISSUE>>-agreements/wave-01-copy
+git push -u origin feature/5823-agreements/wave-01-copy
 gh pr create --base main --title "feat(billing): agreements vocabulary — copy pass (W01)" --body "$(cat <<'BODY'
 ## What
 
@@ -630,7 +630,7 @@ depend on the key names landed here.
 - `pnpm --filter @breeze/docs check && pnpm --filter @breeze/docs build`
 - `git diff origin/main -- apps/web apps/portal | grep -c '^[+-].*data-testid'` → 0
 
-Closes #<<W1_ISSUE>>
+Closes #5823
 BODY
 )"
 ```
@@ -671,4 +671,4 @@ BODY
 
 **The parity gap this plan exists to close.** `localeParity.test.ts` compares key sets, leaf types, interpolation tokens and rich-text tag multisets — never values. Renaming an English value while leaving `de-DE` saying *Vertragsvorlage* is therefore invisible to it, and `translationCoverage.test.ts` only fires if a translation is byte-identical to English. Task 1 Step 2 makes re-translation an explicit deliverable, and Step 3 adds a mechanical grep for the specific failure mode (a non-English catalog still using the contract word where English now says agreement) that neither suite can see.
 
-**No placeholders.** `<<W1_ISSUE>>` is the one intentional token, as requested, in the branch name, the frontmatter and the PR body. Every line number cited was read on `610baba63`; two spec citations were corrected against the file (`contracts.mdx` §3 section is `:185-213`, not `:153-182`; `ContractDetail.tsx` notes block is `:372-377`, not `~:371`). Two spec instructions were resolved by verification rather than guessed: the Starlight explicit-heading-id syntax is **unsupported here** (T5, heading text kept), and the portal's two terms blocks are **both genuinely terms** (T4 Step 4, labels kept).
+**No placeholders.** `5823` is the one intentional token, as requested, in the branch name, the frontmatter and the PR body. Every line number cited was read on `610baba63`; two spec citations were corrected against the file (`contracts.mdx` §3 section is `:185-213`, not `:153-182`; `ContractDetail.tsx` notes block is `:372-377`, not `~:371`). Two spec instructions were resolved by verification rather than guessed: the Starlight explicit-heading-id syntax is **unsupported here** (T5, heading text kept), and the portal's two terms blocks are **both genuinely terms** (T4 Step 4, labels kept).
