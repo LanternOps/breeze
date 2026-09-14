@@ -16,7 +16,7 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
-import type { AiTimeEntryProposalTrigger } from './aiTimeEntryProposal';
+import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -858,49 +858,31 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
 
 /**
  * #4177 (W04): an AI-drafted reply sent / an AI resolution note applied is
- * billable work the technician just did. Propose a time entry as a Tier-2,
- * human-reviewed action intent — never a write.
+ * billable work the technician just did. The time-entry PROPOSAL (a Tier-2,
+ * human-reviewed action intent — never a write) is minted by
+ * `services/aiAgents/ticketHelpdeskSubscriber.ts` from the `ticket_outbox`
+ * event this service already writes, so the claim rides in the outbox
+ * payload:
  *
- * Runs OUTSIDE the caller's request transaction (`runOutsideDbContext`): the
- * intent is minted in its own committed system transaction, so a failure
- * there can never poison the send/resolve transaction that already holds
- * the technician's write — and `createActionIntent`'s own fan-out never
- * runs nested inside the request's connection (the #1105 hold pattern).
- * Every error is swallowed and logged: the reply is already public; a
- * missing proposal is an annoyance, a rolled-back send is a data-loss
- * incident. A draft with no run (a hand-written draft, or one predating the
- * run pointer) proposes nothing — there is no AI-assisted work to bill.
+ *  - it commits atomically with the send/resolve and is published only
+ *    AFTER that transaction commits (jobs/ticketOutboxPublisher.ts) — a
+ *    failed proposal can never roll back or fail the technician's action;
+ *  - this service stays clear of the action-intent import graph
+ *    (intentService → aiTools → commandQueue → routes/agentWs.ts), which
+ *    the `global`-placement workers that import ticketService must never
+ *    reach (workerEntrypointClosure.contract.test.ts);
+ *  - the subscriber re-verifies every claim against the draft row before
+ *    minting — the payload is a pointer, not a fact.
  *
- * Lazy import on purpose: aiTimeEntryProposal pulls the whole action-intent
- * graph (intentService → aiDispatch → commandQueue …), and a static import
- * here would drag it into every one of ticketService's ~30 consumers and
- * their partial `../db` mocks. Same pattern as aiToolsScripts' commandQueue.
+ * A draft with no run (hand-written, or predating the run pointer) carries
+ * no claim: there is no AI-assisted work to bill.
  */
-async function proposeTimeEntryAfterAiDraft(args: {
-  ticketId: string;
-  orgId: string;
-  agentRunId: string | null;
-  trigger: AiTimeEntryProposalTrigger;
-  technicianUserId: string;
-}): Promise<void> {
-  if (!args.agentRunId) return;
-  const agentRunId = args.agentRunId;
-  try {
-    const { proposeTimeEntryForAiAssistedWork } = await import('./aiTimeEntryProposal');
-    await runOutsideDbContext(() =>
-      proposeTimeEntryForAiAssistedWork({
-        ticketId: args.ticketId,
-        orgId: args.orgId,
-        agentRunId,
-        trigger: args.trigger,
-        technicianUserId: args.technicianUserId,
-      }),
-    );
-  } catch (err) {
-    console.error('[tickets] AI time-entry proposal failed after AI-assisted work (non-fatal):', {
-      ticketId: args.ticketId, agentRunId, trigger: args.trigger, error: err instanceof Error ? err.message : String(err),
-    });
-  }
+function aiDraftOutboxClaim(
+  draft: { id: string; runId: string | null },
+  trigger: AiDraftOutboxClaim['trigger'],
+): { aiDraft: AiDraftOutboxClaim } | Record<string, never> {
+  if (!draft.runId) return {};
+  return { aiDraft: { draftId: draft.id, runId: draft.runId, trigger } };
 }
 
 export async function changeTicketStatus(
@@ -1033,12 +1015,11 @@ export async function changeTicketStatus(
       details: { from: fromStatus, to: toStatus },
       result: 'success'
     });
-    if (sameStatusDraft) {
-      await proposeTimeEntryAfterAiDraft({
-        ticketId, orgId: ticket.orgId, agentRunId: sameStatusDraft.runId,
-        trigger: 'resolved_with_ai_note', technicianUserId: actor.userId,
-      });
-    }
+    // #4177: no time-entry proposal on this path — it deliberately emits no
+    // `ticket.status_changed` outbox event (core status is unchanged), and
+    // the proposal rides on that event. Relabeling an already-resolved
+    // ticket with a resolution draft is the documented residue; see the
+    // W04 PR's follow-ups.
     return updated[0];
   }
 
@@ -1140,7 +1121,12 @@ export async function changeTicketStatus(
     actorUserId: actor.userId,
     payload: { from: fromStatus, to: toStatus }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', { from: fromStatus, to: toStatus });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+    from: fromStatus,
+    to: toStatus,
+    // #4177: the consumed AI resolution draft, for the time-entry proposal.
+    ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -1150,12 +1136,6 @@ export async function changeTicketStatus(
     details: { from: fromStatus, to: toStatus },
     result: 'success'
   });
-  if (draftToConsume) {
-    await proposeTimeEntryAfterAiDraft({
-      ticketId, orgId: ticket.orgId, agentRunId: draftToConsume.runId,
-      trigger: 'resolved_with_ai_note', technicianUserId: actor.userId,
-    });
-  }
   return updated[0];
 }
 
@@ -2133,7 +2113,12 @@ export async function sendTicketDraft(
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: true }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: true });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+    commentId: comment.id,
+    isPublic: true,
+    // #4177: the consumed AI reply draft, for the time-entry proposal.
+    ...aiDraftOutboxClaim({ id: draft.id, runId: draft.runId ?? null }, 'draft_sent'),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -2142,15 +2127,6 @@ export async function sendTicketDraft(
     resourceId: ticketId,
     details: { commentId: comment.id, isInternal: false, fromAiDraft: draftId },
     result: 'success'
-  });
-
-  // #4177: sending an AI-drafted reply is billable work the technician just
-  // did — propose (never write) a time entry, keyed to the run that authored
-  // the draft. See proposeTimeEntryAfterAiDraft for why this is last and
-  // why it can never fail the send.
-  await proposeTimeEntryAfterAiDraft({
-    ticketId, orgId: ticket.orgId, agentRunId: draft.runId ?? null,
-    trigger: 'draft_sent', technicianUserId: actor.userId,
   });
 
   return { comment, firstResponseStamped };

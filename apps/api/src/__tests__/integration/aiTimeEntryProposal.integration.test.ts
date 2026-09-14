@@ -2,9 +2,12 @@
  * #4177 (W04) — live-DB proof for the AI time-entry PROPOSAL lane.
  *
  * End-to-end against real Postgres:
- *   1. a technician sends an AI-drafted reply (`sendTicketDraft`) → exactly
- *      one supervised, human-required, ticket-scoped
- *      `manage_tickets:log_time_entry` intent is minted under the draft's run;
+ *   1. a technician sends an AI-drafted reply (`sendTicketDraft`) → the
+ *      `ticket_outbox` row carries the `aiDraft` claim → the helpdesk
+ *      subscriber (fed the row exactly as jobs/ticketOutboxPublisher.ts
+ *      publishes it) mints exactly one supervised, human-required,
+ *      ticket-scoped `manage_tickets:log_time_entry` intent under the
+ *      draft's run;
  *   2. nothing is written to `time_entries` before a human decides;
  *   3. the approval route + `releaseApprovedIntent` create ONE entry owned by
  *      the APPROVER (`decided_by_user_id`), `source = 'ai_suggested'`, with
@@ -22,7 +25,7 @@
 import './setup';
 import { getTestDb } from './setup';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
@@ -45,7 +48,10 @@ import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContex
 import { actionIntents } from '../../db/schema/actionIntents';
 import { approvalRequests } from '../../db/schema/approvals';
 import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
-import { ticketCategories, ticketDrafts, tickets, timeEntries } from '../../db/schema';
+import { ticketCategories, ticketDrafts, ticketOutbox, tickets, timeEntries } from '../../db/schema';
+import type { BreezeEvent } from '../../services/eventBus';
+import { handleTicketCommentedEvent, handleTicketStatusChangedEvent } from '../../services/aiAgents/ticketHelpdeskSubscriber';
+import { registerAgentRunEnqueuer, type AgentRunEnqueuer } from '../../services/aiAgents/runService';
 import { PERMISSIONS } from '../../services/permissions';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import {
@@ -201,6 +207,33 @@ async function seedDraft(s: Scenario, kind: 'reply' | 'resolution_note', runId: 
   return draft.id;
 }
 
+/**
+ * Drive the outbox hop the way jobs/ticketOutboxPublisher.ts does (it runs on
+ * a 5s timer, so the suite performs its exact publish step by hand): read the
+ * newest outbox row of `eventType` for the ticket and hand the subscriber the
+ * BreezeEvent the publisher would build — `{ ticketId, ...row.payload }`.
+ */
+async function publishLatestOutbox(s: Scenario, eventType: 'ticket.commented' | 'ticket.status_changed'): Promise<Record<string, unknown>> {
+  const rows = await withSystemDbAccessContext(() =>
+    db.select().from(ticketOutbox).where(eq(ticketOutbox.ticketId, s.ticketId)),
+  );
+  const row = rows.filter((r) => r.eventType === eventType).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  expect(row).toBeTruthy();
+  const payload = { ticketId: row!.ticketId, ...((row!.payload as Record<string, unknown>) ?? {}) };
+  const event: BreezeEvent = {
+    id: randomUUID(),
+    type: eventType,
+    orgId: row!.orgId,
+    source: 'ticket-outbox-publisher',
+    priority: 'normal',
+    payload,
+    metadata: { timestamp: new Date().toISOString() },
+  };
+  if (eventType === 'ticket.commented') await handleTicketCommentedEvent(event);
+  else await handleTicketStatusChangedEvent(event);
+  return payload;
+}
+
 async function intentsForTicket(ticketId: string) {
   return withSystemDbAccessContext(() =>
     db.select().from(actionIntents).where(eq(actionIntents.scopeTicketId, ticketId)),
@@ -251,7 +284,16 @@ async function dbErrorCause(fn: () => Promise<unknown>): Promise<{ code?: string
   }
 }
 
+// The same subscriber also runs W02's triage admission on these events;
+// without a registered enqueuer every admitted run is marked failed by
+// design (runService.ts). Same stand-in as aiAgentTicketTriage.integration.test.ts.
+beforeEach(() => {
+  const enqueuer: AgentRunEnqueuer = async (runId) => ({ enqueued: true, jobId: `agent-run-${runId}` });
+  registerAgentRunEnqueuer(enqueuer);
+});
+
 afterEach(() => {
+  registerAgentRunEnqueuer(null);
   vi.clearAllMocks();
 });
 
@@ -263,6 +305,13 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     await withDbAccessContext(s.orgContext, () =>
       sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
     );
+    // Nothing is minted by the send itself — the outbox hop is the mint.
+    expect(await intentsForTicket(s.ticketId)).toHaveLength(0);
+
+    const payload = await publishLatestOutbox(s, 'ticket.commented');
+    expect(payload.aiDraft).toEqual({ draftId, runId: s.runId, trigger: 'draft_sent' });
+    // Redelivery of the same outbox event must not double-mint.
+    await publishLatestOutbox(s, 'ticket.commented');
 
     const intents = await intentsForTicket(s.ticketId);
     expect(intents).toHaveLength(1);
@@ -298,6 +347,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     await withDbAccessContext(s.orgContext, () =>
       sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
     );
+    await publishLatestOutbox(s, 'ticket.commented');
     const [intent] = await intentsForTicket(s.ticketId);
     expect(intent).toBeTruthy();
 
@@ -331,6 +381,8 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     await withDbAccessContext(s.orgContext, () =>
       changeTicketStatus(s.ticketId, { status: 'resolved' }, { aiDraftId: draftId }, { userId: s.tech.id, name: 'Tess Tech' }),
     );
+    const payload = await publishLatestOutbox(s, 'ticket.status_changed');
+    expect(payload.aiDraft).toEqual({ draftId, runId: s.runId, trigger: 'resolved_with_ai_note' });
 
     const intents = await intentsForTicket(s.ticketId);
     expect(intents).toHaveLength(1);
@@ -360,6 +412,7 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
     await withDbAccessContext(s.orgContext, () =>
       sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
     );
+    await publishLatestOutbox(s, 'ticket.commented');
     const [intent] = await intentsForTicket(s.ticketId);
     expect(intent).toBeTruthy();
 
@@ -390,6 +443,8 @@ describe('AI time-entry proposal lane (#4177, W04) — real Postgres', () => {
       sendTicketDraft(s.ticketId, draftId, undefined, { userId: s.tech.id, name: 'Tess Tech' }),
     );
     expect(result.comment.id).toBeTruthy();
+    const payload = await publishLatestOutbox(s, 'ticket.commented');
+    expect(payload).not.toHaveProperty('aiDraft');
     expect(await intentsForTicket(s.ticketId)).toHaveLength(0);
   });
 

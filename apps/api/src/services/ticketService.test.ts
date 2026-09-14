@@ -65,12 +65,7 @@ vi.mock('./ticketPush', async () => {
 });
 vi.mock('./mlFeedbackEmitters', () => ({ emitTicketTriageFeedback: emitTriageFeedbackMock }));
 vi.mock('./auditService', () => ({ createAuditLogAsync: auditMock }));
-// #4177 (W04): the Tier-2 time-entry proposal minted after an AI draft is
-// consumed. Mocked at the module boundary — its own behavior is
-// aiTimeEntryProposal.test.ts; here we pin WHEN it is called and that it can
-// never fail the technician's send/resolve.
-const proposeTimeEntryMock = vi.hoisted(() => vi.fn().mockResolvedValue({ intentId: 'intent-1' }));
-vi.mock('./aiTimeEntryProposal', () => ({ proposeTimeEntryForAiAssistedWork: proposeTimeEntryMock }));
+
 vi.mock('./ticketNumbers', () => ({ allocateInternalTicketNumber: allocateMock }));
 // Task 13 (#3776): the locked currency guard is unit-tested on its own
 // (ticketMoveCurrencyGuard.test.ts); here it is a mock so moveTicketOrg's
@@ -4279,53 +4274,49 @@ describe('postProposalNote (#4211)', () => {
   });
 });
 
-describe('AI time-entry proposal after AI-assisted work (#4177, W04)', () => {
+describe('AI time-entry proposal claim on the ticket outbox (#4177, W04)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     valuesMock.mockClear();
     setMock.mockClear();
-    proposeTimeEntryMock.mockReset();
-    proposeTimeEntryMock.mockResolvedValue({ intentId: 'intent-1' });
   });
+
+  /** The ticket_outbox row payload written by the call under test, by event type. */
+  function outboxPayload(eventType: string): Record<string, unknown> | undefined {
+    const row = valuesMock.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((v) => v && v.eventType === eventType && 'payload' in v);
+    return row?.payload as Record<string, unknown> | undefined;
+  }
 
   const ticket = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', firstResponseAt: new Date() };
   const replyDraft = { id: 'draft-1', ticketId: 't-1', kind: 'reply', state: 'active', content: 'Draft body', runId: 'run-1' };
 
-  it('sendTicketDraft proposes once, keyed to the draft run, after the send', async () => {
+  it('sendTicketDraft writes the aiDraft claim (draft, run, trigger) into the ticket.commented outbox payload', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([replyDraft]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
 
-    expect(proposeTimeEntryMock).toHaveBeenCalledTimes(1);
-    expect(proposeTimeEntryMock).toHaveBeenCalledWith({
-      ticketId: 't-1', orgId: 'o-1', agentRunId: 'run-1', trigger: 'draft_sent', technicianUserId: 'u-1',
+    expect(outboxPayload('ticket.commented')).toEqual({
+      commentId: 'c-1',
+      isPublic: true,
+      aiDraft: { draftId: 'draft-1', runId: 'run-1', trigger: 'draft_sent' },
     });
-    // Called AFTER the comment insert + draft consume, never before.
-    expect(valuesMock.mock.invocationCallOrder[0]!).toBeLessThan(proposeTimeEntryMock.mock.invocationCallOrder[0]!);
-    expect(setMock.mock.invocationCallOrder[0]!).toBeLessThan(proposeTimeEntryMock.mock.invocationCallOrder[0]!);
   });
 
-  it('sendTicketDraft still sends the draft when the proposal throws', async () => {
-    proposeTimeEntryMock.mockRejectedValueOnce(new Error('intent service down'));
-    dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([replyDraft]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
-    dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
-
-    await expect(sendTicketDraft('t-1', 'draft-1', undefined, actor)).resolves.toMatchObject({ comment: { id: 'c-1' } });
-  });
-
-  it('sendTicketDraft does not propose for a draft with no run', async () => {
+  it('sendTicketDraft writes no claim for a draft with no run', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([ticket]).mockResolvedValueOnce([{ ...replyDraft, runId: null }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
     dbMocks.updateReturning.mockResolvedValue([{ id: 'draft-1' }]);
 
     await sendTicketDraft('t-1', 'draft-1', undefined, actor);
-    expect(proposeTimeEntryMock).not.toHaveBeenCalled();
+
+    expect(outboxPayload('ticket.commented')).toEqual({ commentId: 'c-1', isPublic: true });
   });
 
-  it('resolving with an aiDraftId proposes with the resolved_with_ai_note trigger (full transition)', async () => {
+  it('resolving with an aiDraftId writes the resolved_with_ai_note claim into the ticket.status_changed outbox payload', async () => {
     dbMocks.selectResult
       .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
       .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note', runId: 'run-9' }]);
@@ -4336,49 +4327,29 @@ describe('AI time-entry proposal after AI-assisted work (#4177, W04)', () => {
 
     await changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor);
 
-    expect(proposeTimeEntryMock).toHaveBeenCalledTimes(1);
-    expect(proposeTimeEntryMock).toHaveBeenCalledWith({
-      ticketId: 't-1', orgId: 'o-1', agentRunId: 'run-9', trigger: 'resolved_with_ai_note', technicianUserId: 'u-1',
+    expect(outboxPayload('ticket.status_changed')).toEqual({
+      from: 'open',
+      to: 'resolved',
+      aiDraft: { draftId: 'draft-1', runId: 'run-9', trigger: 'resolved_with_ai_note' },
     });
   });
 
-  it('resolving with an aiDraftId proposes on the same-status fast path too', async () => {
-    const resolved = { id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'resolved', statusId: 'old-status-id', resolvedAt: new Date('2026-08-01') };
-    dbMocks.selectResult
-      .mockResolvedValueOnce([resolved])
-      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI relabel note', runId: 'run-9' }]);
-    configMocks.getTicketStatusById.mockResolvedValueOnce({
-      id: 'new-status-id', partnerId: 'p-1', coreStatus: 'resolved', name: 'Resolved - Verified', isActive: true
-    });
-    dbMocks.updateReturning
-      .mockResolvedValueOnce([{ ...resolved, statusId: 'new-status-id', resolutionNote: 'AI relabel note' }])
-      .mockResolvedValueOnce([{ id: 'draft-1' }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
-
-    await changeTicketStatus('t-1', { statusId: 'new-status-id' }, { aiDraftId: 'draft-1' }, actor);
-
-    expect(proposeTimeEntryMock).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: 'run-9', trigger: 'resolved_with_ai_note' }));
-  });
-
-  it('resolving without an aiDraftId never proposes', async () => {
+  it('resolving without an aiDraftId writes the unchanged status_changed payload', async () => {
     dbMocks.selectResult.mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }]);
     dbMocks.updateReturning.mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }]);
     dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
 
     await changeTicketStatus('t-1', { status: 'resolved' }, { resolutionNote: 'Replaced toner' }, actor);
-    expect(proposeTimeEntryMock).not.toHaveBeenCalled();
+
+    expect(outboxPayload('ticket.status_changed')).toEqual({ from: 'open', to: 'resolved' });
   });
 
-  it('still resolves the ticket when the proposal throws', async () => {
-    proposeTimeEntryMock.mockRejectedValueOnce(new Error('boom'));
-    dbMocks.selectResult
-      .mockResolvedValueOnce([{ id: 't-1', orgId: 'o-1', partnerId: 'p-1', status: 'open', resolvedAt: null }])
-      .mockResolvedValueOnce([{ id: 'draft-1', ticketId: 't-1', kind: 'resolution_note', state: 'active', content: 'AI note', runId: 'run-9' }]);
-    dbMocks.updateReturning
-      .mockResolvedValueOnce([{ id: 't-1', status: 'resolved' }])
-      .mockResolvedValueOnce([{ id: 'draft-1' }]);
-    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-1' }]);
-
-    await expect(changeTicketStatus('t-1', { status: 'resolved' }, { aiDraftId: 'draft-1' }, actor)).resolves.toMatchObject({ id: 't-1' });
+  it('ticketService never imports the action-intent graph (worker closure contract)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const src = fs.readFileSync(path.join(__dirname, 'ticketService.ts'), 'utf8');
+    expect(src).not.toMatch(/import\(['"]\.\/aiTimeEntryProposal['"]\)/);
+    expect(src).not.toMatch(/^import (?!type ).*from ['"]\.\/aiTimeEntryProposal['"]/m);
+    expect(src).not.toMatch(/from ['"]\.\/actionIntents\/intentService['"]/);
   });
 });

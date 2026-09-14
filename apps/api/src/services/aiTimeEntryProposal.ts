@@ -32,7 +32,7 @@
  */
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { aiAgentRuns, aiAgents, devices, organizations, ticketCategories, tickets } from '../db/schema';
+import { aiAgentRuns, aiAgents, devices, organizations, ticketCategories, ticketDrafts, tickets } from '../db/schema';
 import { createActionIntent } from './actionIntents/intentService';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './aiAgents/agentAuthContext';
 import { getTicketTimeEntryDefaults, type TimeEntryActor } from './timeEntryService';
@@ -45,6 +45,25 @@ export interface AiTimeEntryProposalDefaults {
 }
 
 export type AiTimeEntryProposalTrigger = 'draft_sent' | 'resolved_with_ai_note';
+
+/**
+ * The claim `ticketService` writes into the `ticket_outbox` payload when a
+ * draft authored by an agent run is consumed. A POINTER only — the
+ * subscriber re-reads the draft row and trusts nothing else in it.
+ */
+export interface AiDraftOutboxClaim {
+  draftId: string;
+  runId: string;
+  trigger: AiTimeEntryProposalTrigger;
+}
+
+function parseClaim(raw: unknown): AiDraftOutboxClaim | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+  if (typeof c.draftId !== 'string' || typeof c.runId !== 'string') return null;
+  if (c.trigger !== 'draft_sent' && c.trigger !== 'resolved_with_ai_note') return null;
+  return { draftId: c.draftId, runId: c.runId, trigger: c.trigger };
+}
 
 /**
  * Read-only actor for `getTicketTimeEntryDefaults`. System-shaped (no partner
@@ -225,6 +244,75 @@ export async function proposeTimeEntryForAiAssistedWork(args: {
     const detail = err instanceof AgentRunOwnershipError ? err.message : err instanceof Error ? err.message : String(err);
     console.error('[aiTimeEntryProposal] proposal failed (non-fatal to the technician\'s action):', {
       agentRunId, ticketId, trigger, error: detail,
+    });
+    return null;
+  }
+}
+
+/**
+ * Subscriber entry point (services/aiAgents/ticketHelpdeskSubscriber.ts):
+ * mint the proposal from an outbox event's `aiDraft` claim. Every claim is
+ * verified against the draft row under a system read — the draft must exist,
+ * belong to this ticket AND org, be `consumed`, and name the claimed run;
+ * the technician is the row's `consumed_by`, never a payload field. Any
+ * mismatch is logged and dropped (returns null): the event is a redelivered
+ * pointer, and a claim that does not match the database is not something to
+ * retry into existence. Never throws.
+ */
+export async function proposeTimeEntryFromOutboxClaim(args: {
+  orgId: string;
+  ticketId: string;
+  claim: unknown;
+}): Promise<{ intentId: string } | null> {
+  const claim = parseClaim(args.claim);
+  if (!claim) {
+    console.warn('[aiTimeEntryProposal] malformed aiDraft claim on outbox event — dropping', {
+      orgId: args.orgId, ticketId: args.ticketId,
+    });
+    return null;
+  }
+  try {
+    const draft = await runOutsideDbContext(() =>
+      withSystemDbAccessContext(async () => {
+        const [row] = await db
+          .select({
+            id: ticketDrafts.id,
+            ticketId: ticketDrafts.ticketId,
+            orgId: ticketDrafts.orgId,
+            state: ticketDrafts.state,
+            runId: ticketDrafts.runId,
+            consumedBy: ticketDrafts.consumedBy,
+          })
+          .from(ticketDrafts)
+          .where(eq(ticketDrafts.id, claim.draftId))
+          .limit(1);
+        return row ?? null;
+      }),
+    );
+    if (
+      !draft
+      || draft.ticketId !== args.ticketId
+      || draft.orgId !== args.orgId
+      || draft.state !== 'consumed'
+      || draft.runId !== claim.runId
+      || !draft.consumedBy
+    ) {
+      console.warn('[aiTimeEntryProposal] aiDraft claim failed draft verification — dropping', {
+        orgId: args.orgId, ticketId: args.ticketId, draftId: claim.draftId, runId: claim.runId, trigger: claim.trigger,
+        found: !!draft, state: draft?.state ?? null,
+      });
+      return null;
+    }
+    return await proposeTimeEntryForAiAssistedWork({
+      ticketId: args.ticketId,
+      orgId: args.orgId,
+      agentRunId: claim.runId,
+      trigger: claim.trigger,
+      technicianUserId: draft.consumedBy,
+    });
+  } catch (err) {
+    console.error('[aiTimeEntryProposal] claim verification failed (non-fatal):', {
+      orgId: args.orgId, ticketId: args.ticketId, draftId: claim.draftId, error: err instanceof Error ? err.message : String(err),
     });
     return null;
   }

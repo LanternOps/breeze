@@ -69,6 +69,7 @@ import * as dbModule from '../../db';
 import { aiAgentRuns, ticketComments, ticketDrafts, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
 import { createAndEnqueueAgentRun } from './runService';
+import { proposeTimeEntryFromOutboxClaim } from '../aiTimeEntryProposal';
 
 // #4085-style fix, same as dnsThreatAlerts.ts / policyAlertBridge.ts:
 // publish() (eventBus.ts) invokes durable-registry handlers via
@@ -465,6 +466,22 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
  * per-ticket; see this file's header for why the created lane keeps its own
  * separate key.
  */
+/**
+ * #4177 (W04): a `ticket.commented` / `ticket.status_changed` outbox event
+ * whose payload carries an `aiDraft` claim (ticketService consumed a draft
+ * authored by an agent run) mints the Tier-2 time-entry PROPOSAL. Runs
+ * before — and independently of — the admission logic below: the proposal
+ * is about the technician's just-finished work, not about admitting a new
+ * run. `proposeTimeEntryFromOutboxClaim` DB-verifies the claim, is
+ * idempotent per (run, trigger), and never throws, so a redelivered event
+ * cannot double-mint and a proposal failure never blocks admission.
+ */
+async function proposeTimeEntryIfClaimed(event: BreezeEvent, ticketId: string, orgId: string): Promise<void> {
+  const claim = (event.payload as { aiDraft?: unknown } | null | undefined)?.aiDraft;
+  if (claim === undefined || claim === null) return;
+  await proposeTimeEntryFromOutboxClaim({ orgId, ticketId, claim });
+}
+
 export async function handleTicketCommentedEvent(event: BreezeEvent): Promise<void> {
   const payload = event.payload as { ticketId?: unknown; commentId?: unknown } | null | undefined;
   const ticketId = typeof payload?.ticketId === 'string' ? payload.ticketId : null;
@@ -478,6 +495,8 @@ export async function handleTicketCommentedEvent(event: BreezeEvent): Promise<vo
     );
     return;
   }
+
+  await proposeTimeEntryIfClaimed(event, ticketId, orgId);
 
   try {
     // DB verification of every payload claim — see `loadVerifiedHumanComment`'s
@@ -535,6 +554,8 @@ export async function handleTicketStatusChangedEvent(event: BreezeEvent): Promis
     );
     return;
   }
+
+  await proposeTimeEntryIfClaimed(event, ticketId, orgId);
 
   // Cheap prefilter only — see the docstring above. The real decision is
   // `isEligibleForResolvedAdmission`'s fresh re-read.

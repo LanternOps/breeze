@@ -43,10 +43,11 @@ vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: mocks.createActionIntent,
 }));
 
-import { aiAgentRuns, aiAgents, devices, organizations, tickets } from '../db/schema';
+import { aiAgentRuns, aiAgents, devices, organizations, ticketDrafts, tickets } from '../db/schema';
 import {
   AI_TIME_ENTRY_DEFAULT_MINUTES,
   proposeTimeEntryForAiAssistedWork,
+  proposeTimeEntryFromOutboxClaim,
   resolveAiTimeEntryDefaults,
 } from './aiTimeEntryProposal';
 
@@ -202,5 +203,52 @@ describe('proposeTimeEntryForAiAssistedWork (#4177)', () => {
     queueSelect(aiAgentRuns, []);
     await expect(proposeTimeEntryForAiAssistedWork(args)).resolves.toBeNull();
     expect(created).toHaveLength(0);
+  });
+});
+
+describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a pointer, the draft row is the fact', () => {
+  const DRAFT_ID = '77777777-7777-4777-8777-777777777777';
+  const claim = { draftId: DRAFT_ID, runId: RUN_ID, trigger: 'draft_sent' };
+  const consumedDraft = { id: DRAFT_ID, ticketId: TICKET_ID, orgId: ORG_ID, state: 'consumed', runId: RUN_ID, consumedBy: USER_ID };
+
+  function primeMint() {
+    mockRunLineage(); mockCategory({ defaultTimeEntryMinutes: null }); mockTicketDefaults({ isBillable: false });
+  }
+
+  it('mints for a verified consumed draft, with the technician taken from consumed_by (never the payload)', async () => {
+    const created = captureCreateActionIntent();
+    queueSelect(ticketDrafts, [consumedDraft]);
+    primeMint();
+
+    const result = await proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim: { ...claim, technicianUserId: 'forged' } });
+
+    expect(result).toEqual({ intentId: 'intent-1' });
+    expect((created[0]!.input.input as Record<string, unknown>).proposedForUserId).toBe(USER_ID);
+    expect(created[0]!.input.idempotencyKey).toBe(`ai-time-entry:${RUN_ID}:draft_sent`);
+  });
+
+  it.each([
+    ['missing draft', []],
+    ['wrong ticket', [{ ...consumedDraft, ticketId: '99999999-9999-4999-8999-999999999999' }]],
+    ['wrong org', [{ ...consumedDraft, orgId: '99999999-9999-4999-8999-999999999999' }]],
+    ['not consumed', [{ ...consumedDraft, state: 'active' }]],
+    ['run mismatch', [{ ...consumedDraft, runId: '99999999-9999-4999-8999-999999999999' }]],
+    ['no consumer', [{ ...consumedDraft, consumedBy: null }]],
+  ])('drops the claim without minting when the draft row disagrees: %s', async (_label, rows) => {
+    const created = captureCreateActionIntent();
+    queueSelect(ticketDrafts, rows as unknown[]);
+    await expect(proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim })).resolves.toBeNull();
+    expect(created).toHaveLength(0);
+  });
+
+  it.each([
+    ['not an object', 'x'],
+    ['missing runId', { draftId: DRAFT_ID, trigger: 'draft_sent' }],
+    ['unknown trigger', { draftId: DRAFT_ID, runId: RUN_ID, trigger: 'bogus' }],
+  ])('drops a malformed claim before any read: %s', async (_label, bad) => {
+    const created = captureCreateActionIntent();
+    await expect(proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim: bad })).resolves.toBeNull();
+    expect(created).toHaveLength(0);
+    expect(mocks.withSystemDbAccessContext).not.toHaveBeenCalled();
   });
 });
