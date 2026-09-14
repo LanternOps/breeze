@@ -602,3 +602,116 @@ describe('applyAiFieldUpdates — real-change guard against live Postgres (#4466
     expect(afterTicket.fieldProvenance).toEqual({ categoryId: 'user' });
   });
 });
+
+/**
+ * W03 (#4209) — the two properties of the autonomous private-note lane that
+ * only a real database can prove. Appended as its own describe block (imports
+ * are local on purpose) so this wave and its in-flight siblings union-merge.
+ */
+describe('autonomous private-note lane — DB-enforced privacy + audit trail (#4209)', () => {
+  it('rejects a forged PUBLIC ai_agent comment at the database level', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+    // The admin connection BYPASSES RLS, so a pass here cannot be an RLS
+    // policy quietly doing the work — the CHECK constraint is the only thing
+    // left that can refuse this row.
+    const adminDb = getTestDb() as any;
+
+    await expect(
+      adminDb.insert(ticketComments).values({
+        ticketId: ticket.id,
+        userId: null,
+        portalUserId: null,
+        authorName: 'Forged Agent',
+        authorType: 'ai_agent',
+        commentType: 'internal',
+        content: 'this should never reach the customer portal',
+        isPublic: true,
+        originPrincipalKind: 'ai_agent',
+        agentRunId: run.id,
+      }),
+    ).rejects.toThrow(/ticket_comments_agent_note_private_chk/);
+
+    // Control: the identical row with is_public=false is accepted, so the
+    // rejection above is the CHECK's scoped predicate and not some unrelated
+    // NOT NULL / FK failure.
+    const [ok] = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: null,
+      portalUserId: null,
+      authorName: 'Helpdesk Agent',
+      authorType: 'ai_agent',
+      commentType: 'internal',
+      content: 'private is fine',
+      isPublic: false,
+      originPrincipalKind: 'ai_agent',
+      agentRunId: run.id,
+    }).returning();
+    expect(ok.isPublic).toBe(false);
+  });
+
+  it('still admits a PUBLIC comment from a human principal — the CHECK is scoped to ai_agent rows', async () => {
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const adminDb = getTestDb() as any;
+
+    const [row] = await adminDb.insert(ticketComments).values({
+      ticketId: ticket.id,
+      userId: scenario.creator.id,
+      authorName: 'Tess Tech',
+      authorType: 'internal',
+      commentType: 'comment',
+      content: 'Replying to the customer.',
+      isPublic: true,
+      originPrincipalKind: 'user',
+    }).returning();
+
+    expect(row.isPublic).toBe(true);
+  });
+
+  it('an autonomous note leaves exactly one ai_agent audit row naming the run', async () => {
+    const { auditLogs } = await import('../../db/schema');
+    const { addAiTriageNote } = await import('../../services/ticketService');
+
+    const scenario = await seedTriageScenario(true);
+    const ticket = await seedTicket(scenario);
+    const run = await seedTicketTriageRun(scenario, ticket.id);
+
+    const { comment } = await withSystemDbAccessContext(() =>
+      addAiTriageNote(ticket.id, run.id, 'Spooler crashed twice; driver update queued.', scenario.org.id, 'Helpdesk Agent'),
+    );
+
+    const adminDb = getTestDb() as any;
+    const rows = await adminDb
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.actorId, run.id)));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actorType).toBe('ai_agent');
+    expect(rows[0].action).toBe('ticket.comment');
+    expect(rows[0].resourceType).toBe('ticket');
+    expect(rows[0].orgId).toBe(scenario.org.id);
+    expect(rows[0].details).toMatchObject({
+      commentId: comment.id,
+      agentRunId: run.id,
+      isInternal: true,
+      isPublic: false,
+    });
+
+    // The idempotent retry (same run) returns the existing comment and must
+    // NOT add a second audit row — otherwise a redelivered job inflates the
+    // compliance record.
+    const retry = await withSystemDbAccessContext(() =>
+      addAiTriageNote(ticket.id, run.id, 'Spooler crashed twice; driver update queued.', scenario.org.id, 'Helpdesk Agent'),
+    );
+    expect(retry.comment.id).toBe(comment.id);
+
+    const afterRetry = await adminDb
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.resourceId, ticket.id), eq(auditLogs.actorId, run.id)));
+    expect(afterRetry).toHaveLength(1);
+  });
+});
