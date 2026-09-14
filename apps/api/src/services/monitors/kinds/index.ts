@@ -14,6 +14,10 @@ import { certExpiryKind } from './certExpiry';
 import { bandwidthKind } from './bandwidth';
 import { diskIoKind } from './diskIo';
 import { networkErrorsKind } from './networkErrors';
+// W04 coverage (#5287 / #5291).
+import { antivirusKind } from './antivirus';
+import { softwarePresenceKind } from './softwarePresence';
+import { backupContinuityKind } from './backupContinuity';
 
 export type { MonitorKindSpec } from './types';
 export { MonitorValidationError } from './types';
@@ -44,6 +48,9 @@ export const MONITOR_KIND_SPECS: Record<MonitorKind, MonitorKindSpec<any>> = {
   bandwidth: bandwidthKind,
   disk_io: diskIoKind,
   network_errors: networkErrorsKind,
+  antivirus: antivirusKind,
+  software_presence: softwarePresenceKind,
+  backup_continuity: backupContinuityKind,
 };
 
 export function getMonitorKindSpec(kind: string): MonitorKindSpec {

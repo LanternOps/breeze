@@ -100,6 +100,37 @@ export interface CertExpiryCondition {
   withinDays: number;
 }
 
+// --- W04 coverage kinds (#5287 / #5291) ----------------------------------
+
+// Antivirus posture condition. `realTimeProtection` and `definitionsDate` are
+// three-valued in `security_status`; the handler treats NULL as "no data",
+// never as the bad state.
+export interface AntivirusCondition {
+  type: 'antivirus';
+  check: 'not_protected' | 'definitions_stale' | 'realtime_disabled' | 'threats_present';
+  staleAfterDays?: number;
+  minThreatCount?: number;
+}
+
+// Installed-software presence condition. `presence: 'installed'` BREACHES when
+// the software IS installed ("alert me that this is present").
+export interface SoftwarePresenceCondition {
+  type: 'software_presence';
+  name: string;
+  vendor?: string;
+  presence: 'installed' | 'not_installed' | 'version_below';
+  version?: string;
+}
+
+// Backup continuity condition, evaluated over `backup_jobs` (never over the
+// SLA worker's own state, which runs on its own cadence).
+export interface BackupContinuityCondition {
+  type: 'backup_continuity';
+  check: 'no_successful_backup' | 'consecutive_failures';
+  maxAgeHours?: number;
+  failureCount?: number;
+}
+
 // Union of all condition types
 export type AlertCondition =
   | ThresholdCondition
@@ -112,7 +143,10 @@ export type AlertCondition =
   | DiskIoHighCondition
   | NetworkErrorsCondition
   | PatchComplianceCondition
-  | CertExpiryCondition;
+  | CertExpiryCondition
+  | AntivirusCondition
+  | SoftwarePresenceCondition
+  | BackupContinuityCondition;
 
 // Compound condition with AND/OR logic
 export interface ConditionGroup {
