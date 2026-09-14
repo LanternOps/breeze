@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ne, sql } from 'drizzle-orm';
 import { buildReportPdf, type BuildOpts } from '@breeze/shared/reportPdf';
 import {
   rowsToCsv,
+  type HardwareLifecycleSummary,
   type PortalRunDto,
   type PortalRunsDto,
 } from '@breeze/shared';
@@ -241,19 +242,37 @@ export function portalDefinitionPredicate(
   )!;
 }
 
-export function portalRunPredicate(runId: string, orgId: string) {
+// With enable_lifecycle off, a hardware_lifecycle run must be invisible
+// through the GENERIC report endpoints too, not just the dedicated
+// /reports/lifecycle/* routes: those generic routes are gated on enableReports
+// alone, and a run can outlive the flag being turned back off. `and()` drops
+// undefined arms, so this is a no-op when the flag is on.
+function lifecycleExclusion(lifecycleEnabled: boolean) {
+  return lifecycleEnabled ? undefined : ne(reports.type, 'hardware_lifecycle');
+}
+
+export function portalRunPredicate(
+  runId: string,
+  orgId: string,
+  lifecycleEnabled: boolean,
+) {
   return and(
     eq(reportRuns.id, runId),
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
+    lifecycleExclusion(lifecycleEnabled),
   )!;
 }
 
-export function portalRunListPredicate(orgId: string) {
+export function portalRunListPredicate(
+  orgId: string,
+  lifecycleEnabled: boolean,
+) {
   return and(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
+    lifecycleExclusion(lifecycleEnabled),
   )!;
 }
 
@@ -322,7 +341,10 @@ export async function listPortalRuns(
   const page = Math.max(1, opts.page);
   const limit = Math.min(100, Math.max(1, opts.limit));
   const offset = (page - 1) * limit;
-  const where = portalRunListPredicate(orgId);
+  const where = portalRunListPredicate(
+    orgId,
+    await portalLifecycleEnabled(orgId),
+  );
 
   const [totalRow] = await db.select({ total: count() })
     .from(reportRuns)
@@ -485,7 +507,60 @@ export async function generatePortalReport(args: {
   }
 }
 
+/**
+ * The one dedicated read the portal's Hardware Lifecycle page needs: the most
+ * recent COMPLETED self-service hardware_lifecycle run for the session org.
+ *
+ * `generatedAt` is formatted from the RUN's completion time, not from
+ * `summary.generatedAt`. The stored summary carries whatever the generator
+ * stamped, which can be stale relative to the row; the run is the authority
+ * for when the customer's plan was actually produced.
+ *
+ * Reached only through /reports/lifecycle/*, which carries both the
+ * enableReports and enableLifecycle gates, so no flag check is repeated here.
+ */
+export type HardwareLifecyclePortalLatestDto = {
+  run: { id: string; generatedAt: string };
+  summary: HardwareLifecycleSummary | null;
+};
+
+export async function latestPortalHardwareLifecycleRun(
+  orgId: string,
+  timezone: string,
+): Promise<HardwareLifecyclePortalLatestDto> {
+  const [row] = await db.select({
+    id: reportRuns.id,
+    result: reportRuns.result,
+    completedAt: reportRuns.completedAt,
+  }).from(reportRuns)
+    .innerJoin(reports, eq(reportRuns.reportId, reports.id))
+    .where(and(
+      eq(reports.orgId, orgId),
+      eq(reports.type, 'hardware_lifecycle'),
+      eq(reports.portalSelfService, true),
+      eq(reportRuns.status, 'completed'),
+    ))
+    .orderBy(desc(reportRuns.completedAt), desc(reportRuns.id))
+    .limit(1);
+
+  if (!row) throw new PortalReportNotFoundError();
+
+  const result = row.result as ReportResult | null;
+  const generatedAt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(row.completedAt ?? new Date());
+
+  return {
+    run: { id: row.id, generatedAt },
+    summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+  };
+}
+
 async function completedRun(runId: string, orgId: string) {
+  const lifecycleEnabled = await portalLifecycleEnabled(orgId);
+
   const [row] = await db.select({
     id: reportRuns.id,
     type: reports.type,
@@ -494,7 +569,7 @@ async function completedRun(runId: string, orgId: string) {
   }).from(reportRuns)
     .innerJoin(reports, eq(reportRuns.reportId, reports.id))
     .where(and(
-      portalRunPredicate(runId, orgId),
+      portalRunPredicate(runId, orgId, lifecycleEnabled),
       eq(reportRuns.status, 'completed'),
     ))
     .limit(1);

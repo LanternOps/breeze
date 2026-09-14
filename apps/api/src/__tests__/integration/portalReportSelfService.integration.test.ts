@@ -8,6 +8,7 @@ import {
   type DbAccessContext,
 } from '../../db';
 import {
+  portalBranding,
   portalUsers,
   reportRuns,
   reports,
@@ -18,8 +19,10 @@ import {
 } from './db-utils';
 import {
   generatePortalReport,
+  latestPortalHardwareLifecycleRun,
   listPortalRuns,
   PortalReportNotFoundError,
+  renderRunCsv,
   renderRunPdf,
 } from '../../services/portal/reportsSelfService';
 import {
@@ -188,5 +191,204 @@ describe('portal report self-service tenancy', () => {
         renderRunPdf(fixture.runId, fixture.org.id, 'UTC'),
       ),
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+  });
+});
+
+// Spec section 4, decision A2: enable_lifecycle gates the hardware lifecycle
+// plan SEPARATELY from generic report self-service, and it has to hold on the
+// GENERIC endpoints too. Those are mounted under /reports/*, gated on
+// enableReports alone, and a completed run outlives the flag being switched
+// back off — so a run that was legitimately generated while the flag was on
+// must vanish from the run list and the download routes the moment it is off.
+describe('hardware_lifecycle visibility follows enable_lifecycle', () => {
+  async function seedLifecycleFixture(enableLifecycle: boolean) {
+    return withSystemDbAccessContext(async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const [portalUser] = await db.insert(portalUsers).values({
+        orgId: org.id,
+        email: `portal-${crypto.randomUUID()}@example.test`,
+        status: 'active',
+      }).returning({ id: portalUsers.id });
+
+      await db.insert(portalBranding).values({
+        orgId: org.id,
+        enableReports: true,
+        enableLifecycle,
+      });
+
+      const scope = {
+        version: 1,
+        kind: 'unrestricted',
+        orgId: org.id,
+      } as const;
+      const authority: UserReportExecutionAuthority = {
+        principalKind: 'user',
+        principalUserId: crypto.randomUUID(),
+        scope,
+        capturedAt: new Date(),
+        fingerprint: siteScopeFingerprint(scope),
+      };
+
+      const [lifecycleDefinition] = await db.insert(reports).values({
+        orgId: org.id,
+        name: 'Customer portal — Hardware Lifecycle',
+        type: 'hardware_lifecycle',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: {
+          sites: [],
+          replaceAgeYears: 4,
+          serverReplaceAgeYears: 5,
+          includeManualAssets: true,
+          includeOtherEquipment: true,
+        },
+        portalSelfService: true,
+        ...persistedSiteScopeValues(authority),
+      }).returning({ id: reports.id });
+
+      const [summaryDefinition] = await db.insert(reports).values({
+        orgId: org.id,
+        name: 'Customer portal — Executive summary',
+        type: 'executive_summary',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: { dateRange: { preset: 'last_30_days' } },
+        portalSelfService: true,
+        ...persistedSiteScopeValues(authority),
+      }).returning({ id: reports.id });
+
+      const completed = {
+        status: 'completed' as const,
+        startedAt: new Date(),
+        completedAt: new Date(),
+        result: { rows: [], summary: {} },
+        rowCount: 0,
+        requestedByKind: 'portal_user' as const,
+        requestedByUserId: null,
+        requestedByPortalUserId: portalUser!.id,
+        ...persistedSiteScopeValues(authority),
+      };
+
+      const [lifecycleRun] = await db.insert(reportRuns).values({
+        reportId: lifecycleDefinition!.id,
+        ...completed,
+      }).returning({ id: reportRuns.id });
+
+      const [summaryRun] = await db.insert(reportRuns).values({
+        reportId: summaryDefinition!.id,
+        ...completed,
+      }).returning({ id: reportRuns.id });
+
+      return {
+        org,
+        portalUser: portalUser!,
+        lifecycleRunId: lifecycleRun!.id,
+        summaryRunId: summaryRun!.id,
+      };
+    });
+  }
+
+  runDb('hides a completed hardware_lifecycle run from every generic endpoint when the flag is off', async () => {
+    const fixture = await seedLifecycleFixture(false);
+
+    const listed = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      listPortalRuns(fixture.org.id, 'UTC', { page: 1, limit: 50 }),
+    );
+
+    const listedIds = listed.data.map((row) => row.id);
+    expect(listedIds).not.toContain(fixture.lifecycleRunId);
+    // The exclusion must be surgical: the org's other portal report types are
+    // still listed. A blanket failure would look identical in a weaker test.
+    expect(listedIds).toContain(fixture.summaryRunId);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunPdf(fixture.lifecycleRunId, fixture.org.id, 'UTC'),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunCsv(fixture.lifecycleRunId, fixture.org.id),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        generatePortalReport({
+          orgId: fixture.org.id,
+          portalUserId: fixture.portalUser.id,
+          type: 'hardware_lifecycle',
+        }),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        latestPortalHardwareLifecycleRun(fixture.org.id, 'UTC'),
+      ),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+  });
+
+  runDb('exposes the same run through every endpoint once the flag is on', async () => {
+    const fixture = await seedLifecycleFixture(true);
+
+    const listed = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      listPortalRuns(fixture.org.id, 'UTC', { page: 1, limit: 50 }),
+    );
+    expect(listed.data.map((row) => row.id)).toContain(fixture.lifecycleRunId);
+
+    await expect(
+      withDbAccessContext(orgContext(fixture.org.id), () =>
+        renderRunPdf(fixture.lifecycleRunId, fixture.org.id, 'UTC'),
+      ),
+    ).resolves.toBeInstanceOf(Buffer);
+
+    const latest = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      latestPortalHardwareLifecycleRun(fixture.org.id, 'UTC'),
+    );
+    expect(latest.run.id).toBe(fixture.lifecycleRunId);
+    expect(latest.run.generatedAt).toEqual(expect.any(String));
+  });
+
+  // Decision B2: the customer's run must use the MSP's own thresholds. The
+  // MSP-side definition is portal_self_service = false, so nothing about it
+  // except these four keys may reach the portal run.
+  runDb('inherits the MSP definition thresholds but never its site scope', async () => {
+    const fixture = await seedLifecycleFixture(true);
+    const otherSiteId = crypto.randomUUID();
+
+    await withSystemDbAccessContext(() =>
+      db.insert(reports).values({
+        orgId: fixture.org.id,
+        name: 'Internal hardware lifecycle',
+        type: 'hardware_lifecycle',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: {
+          sites: [otherSiteId],
+          replaceAgeYears: 6,
+          serverReplaceAgeYears: 9,
+          includeManualAssets: false,
+          includeOtherEquipment: false,
+        },
+        portalSelfService: false,
+        executionScopeKind: 'unrestricted',
+        executionScopePrincipalKind: 'user',
+      }),
+    );
+
+    const generated = await withDbAccessContext(orgContext(fixture.org.id), () =>
+      generatePortalReport({
+        orgId: fixture.org.id,
+        portalUserId: fixture.portalUser.id,
+        type: 'hardware_lifecycle',
+      }),
+    );
+
+    expect(generated.status).toBe('completed');
+    expect(generated.type).toBe('hardware_lifecycle');
   });
 });

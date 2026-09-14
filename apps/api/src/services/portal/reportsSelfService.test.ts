@@ -91,6 +91,7 @@ vi.mock('@breeze/shared', async (importOriginal) => ({
 import {
   PORTAL_REPORT_TYPES,
   generatePortalReport,
+  latestPortalHardwareLifecycleRun,
   listPortalRuns,
   portalDefinitionPredicate,
   portalReportDefinitionsInsertQuery,
@@ -233,7 +234,7 @@ describe('portal report SQL scope', () => {
 
   it('pins run rendering to run id, org id, and portal flag', () => {
     const query = new PgDialect().sqlToQuery(
-      portalRunPredicate(RUN_ID, ORG_ID),
+      portalRunPredicate(RUN_ID, ORG_ID, true),
     );
 
     expect(query.sql).toContain('"report_runs"."id" = $');
@@ -248,12 +249,48 @@ describe('portal report SQL scope', () => {
 
   it('pins run listing to the session org and portal flag', () => {
     const query = new PgDialect().sqlToQuery(
-      portalRunListPredicate(ORG_ID),
+      portalRunListPredicate(ORG_ID, true),
     );
 
     expect(query.sql).toContain('"reports"."org_id" = $');
     expect(query.sql).toContain('"reports"."portal_self_service" = $');
     expect(query.params).toEqual(expect.arrayContaining([ORG_ID, true]));
+  });
+
+  it('excludes hardware_lifecycle from run listing when the flag is off', () => {
+    const query = new PgDialect().sqlToQuery(
+      portalRunListPredicate(ORG_ID, false),
+    );
+
+    expect(query.sql).toContain('"reports"."type" <> $');
+    expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('adds no type exclusion to run listing when the flag is on', () => {
+    const query = new PgDialect().sqlToQuery(
+      portalRunListPredicate(ORG_ID, true),
+    );
+
+    expect(query.sql).not.toContain('<>');
+    expect(query.params).not.toContain('hardware_lifecycle');
+  });
+
+  it('excludes hardware_lifecycle from run rendering when the flag is off', () => {
+    const query = new PgDialect().sqlToQuery(
+      portalRunPredicate(RUN_ID, ORG_ID, false),
+    );
+
+    expect(query.sql).toContain('"reports"."type" <> $');
+    expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('adds no type exclusion to run rendering when the flag is on', () => {
+    const query = new PgDialect().sqlToQuery(
+      portalRunPredicate(RUN_ID, ORG_ID, true),
+    );
+
+    expect(query.sql).not.toContain('<>');
+    expect(query.params).not.toContain('hardware_lifecycle');
   });
 });
 
@@ -747,10 +784,96 @@ describe('generatePortalReport', () => {
   });
 });
 
+
+describe('latestPortalHardwareLifecycleRun', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.where = undefined;
+    state.execute.mockReset().mockResolvedValue([{ prior_ms: 0 }]);
+  });
+
+  it('pins the lookup to the org, the type, the portal flag, and completion', async () => {
+    state.selected.mockReset().mockResolvedValue([{
+      id: RUN_ID,
+      result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
+      completedAt: new Date('2026-09-02T18:00:00.000Z'),
+    }]);
+
+    await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"reports"."org_id" = $');
+    expect(query.sql).toContain('"reports"."type" = $');
+    expect(query.sql).toContain('"reports"."portal_self_service" = $');
+    expect(query.sql).toContain('"report_runs"."status" = $');
+    expect(query.params).toEqual(expect.arrayContaining([
+      ORG_ID,
+      'hardware_lifecycle',
+      true,
+      'completed',
+    ]));
+  });
+
+  it('formats generatedAt from the run completion time, not the stored summary', async () => {
+    state.selected.mockReset().mockResolvedValue([{
+      id: RUN_ID,
+      // A stale generatedAt inside the stored result must not win: the run row
+      // is the authority for when the customer's plan was actually produced.
+      result: { summary: { generatedAt: '1999-01-01T00:00:00.000Z' } },
+      completedAt: new Date('2026-09-02T18:00:00.000Z'),
+    }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+
+    expect(dto.run.id).toBe(RUN_ID);
+    expect(dto.run.generatedAt).not.toContain('1999');
+    expect(dto.run.generatedAt).toContain('2026');
+    expect(dto.summary).toEqual({ generatedAt: '1999-01-01T00:00:00.000Z' });
+  });
+
+  it('formats generatedAt in the caller timezone', async () => {
+    state.selected.mockReset().mockResolvedValue([{
+      id: RUN_ID,
+      result: { summary: {} },
+      completedAt: new Date('2026-09-03T02:00:00.000Z'),
+    }]);
+
+    const utc = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+    const denver = await latestPortalHardwareLifecycleRun(
+      ORG_ID,
+      'America/Denver',
+    );
+
+    expect(denver.run.generatedAt).not.toBe(utc.run.generatedAt);
+    expect(denver.run.generatedAt).toContain('Sep 2');
+    expect(utc.run.generatedAt).toContain('Sep 3');
+  });
+
+  it('uses the typed not-found error when the org has no completed run', async () => {
+    state.selected.mockReset().mockResolvedValue([]);
+
+    await expect(
+      latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
+    ).rejects.toBeInstanceOf(PortalReportNotFoundError);
+  });
+
+  it('returns a null summary rather than throwing when the result has none', async () => {
+    state.selected.mockReset().mockResolvedValue([{
+      id: RUN_ID,
+      result: null,
+      completedAt: new Date('2026-09-02T18:00:00.000Z'),
+    }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+    expect(dto.summary).toBeNull();
+  });
+});
+
 describe('listPortalRuns', () => {
   it('returns completed portal runs with clamped pagination', async () => {
     state.selected
       .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
       .mockResolvedValueOnce([{ total: 1 }])
       .mockResolvedValueOnce([{
         id: RUN_ID,
@@ -778,6 +901,33 @@ describe('listPortalRuns', () => {
       status: 'completed',
     })]);
   });
+
+  it('excludes hardware_lifecycle runs when the org flag is off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: false }])
+      .mockResolvedValueOnce([{ total: 0 }])
+      .mockResolvedValueOnce([]);
+
+    await listPortalRuns(ORG_ID, 'UTC', { page: 1, limit: 25 });
+
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"reports"."type" <> $');
+    expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('keeps hardware_lifecycle runs listed when the org flag is on', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValueOnce([{ total: 0 }])
+      .mockResolvedValueOnce([]);
+
+    await listPortalRuns(ORG_ID, 'UTC', { page: 1, limit: 25 });
+
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.params).not.toContain('hardware_lifecycle');
+  });
 });
 
 describe('portal run rendering', () => {
@@ -790,6 +940,37 @@ describe('portal run rendering', () => {
       logoDataUrl: null,
       logoAspect: null,
     });
+  });
+
+  it('excludes a hardware_lifecycle run from PDF rendering when the flag is off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: false }])
+      .mockResolvedValueOnce([]);
+
+    await expect(renderRunPdf(
+      RUN_ID,
+      ORG_ID,
+      'America/Denver',
+    )).rejects.toBeInstanceOf(PortalReportNotFoundError);
+
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.sql).toContain('"reports"."type" <> $');
+    expect(query.params).toContain('hardware_lifecycle');
+  });
+
+  it('excludes a hardware_lifecycle run from CSV rendering when the flag is off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: false }])
+      .mockResolvedValueOnce([]);
+
+    await expect(renderRunCsv(RUN_ID, ORG_ID)).rejects.toBeInstanceOf(
+      PortalReportNotFoundError,
+    );
+
+    const query = new PgDialect().sqlToQuery(state.where as SQL);
+    expect(query.params).toContain('hardware_lifecycle');
   });
 
   it('renders a stored run as PDF with the requested timezone', async () => {
