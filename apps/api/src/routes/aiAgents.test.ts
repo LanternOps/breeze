@@ -1135,6 +1135,16 @@ const runDetailResponseSchema = z.object({
       contextTruncated: z.boolean(),
     }).strict().nullable(),
     reportRunId: z.string().nullable(),
+    // Execution plane W03 (spec §5.8) — live progress beats off the capped
+    // Redis ring, always an array (never null): `[]` for a finished run
+    // whose one-hour window has expired and for a mocked db path like this
+    // suite's, which never calls the real `readRunProgress`.
+    progress: z.array(z.object({
+      step: z.string(),
+      label: z.string(),
+      ordinal: z.number(),
+      at: z.string(),
+    }).strict()),
     // Fleet Designer W01 (#5651), Task 9: `null` for every non-design run
     // and for a design run that produced nothing.
     fleetDesign: z.object({

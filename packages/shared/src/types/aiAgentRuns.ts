@@ -492,6 +492,18 @@ export interface AiAgentRunSweepDto {
   evidenceTruncated: boolean;
 }
 
+/**
+ * Execution plane W03 (spec §5.8) — one live progress beat published by
+ * `emitRunProgress` and read back by `readRunProgress` (`services/aiAgents/
+ * runProgress.ts`) off the capped Redis ring, never the DB.
+ */
+export interface AiAgentRunProgressEntryDto {
+  step: string;
+  label: string;
+  ordinal: number;
+  at: string;
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -583,6 +595,10 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump the DTO schema version.
    */
   reportRunId: string | null;
+  /** Live progress beats (spec §5.8). Always an array — `[]` for a finished
+   *  run whose one-hour window has expired, and for every run from before this
+   *  field existed. Additive: does NOT bump AI_AGENT_RUN_DTO_SCHEMA_VERSION. */
+  progress: AiAgentRunProgressEntryDto[];
   /**
    * Fleet Designer (W01) — the report this run produced, for a
    * `design`-profile run that reached a `submit_fleet_design` outcome. Null

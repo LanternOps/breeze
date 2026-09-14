@@ -82,6 +82,7 @@ import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
+import { readRunProgress } from '../services/aiAgents/runProgress';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
@@ -1306,6 +1307,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
 
+  // Live progress (spec §5.8). Read from the short-lived ring, never the DB:
+  // this page polls every 5s and a per-poll table read for telemetry would be
+  // a query per viewer per five seconds for a value that is worth a spinner.
+  const progress = await readRunProgress(run.id);
+
   // The execution ledger is keyed by session, not run — `run.session_id` is
   // set once, inside `driveSdkLoop`, right after the model resolves
   // (runLoop.ts), and stays null for the lifetime of the run if that
@@ -1504,7 +1510,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     draftRows,
     fleetDesignArtifact,
   );
-  return c.json({ data: detail });
+  return c.json({
+    data: {
+      ...detail,
+      progress,
+    },
+  });
 });
 
 /**
