@@ -885,6 +885,14 @@ const REPOINT_TABLES: readonly string[] = [
   // so no dedupe key is needed. Pending rows (comment_id NULL) repoint too:
   // the claim predicate in addTicketComment matches on the ticket's org_id.
   "ticket_attachments",
+  // #5783 W01. Own org_id (shape 1), so plain repoint like its siblings — the
+  // only unique index is the pkey on `id`, which cannot collide across orgs, so
+  // no dedupe key is needed, and there is no history to preserve by renaming.
+  // Its composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // orgMerge's `SET CONSTRAINTS ALL DEFERRED` lets tickets and this child
+  // repoint in separate statements without a 23503 — unlike ticket_drafts,
+  // whose non-deferrable legs forced a custom executor.
+  "ticket_checklist_items",
   "ticket_email_links",
   "ticket_forms",
   "ticket_outbox",

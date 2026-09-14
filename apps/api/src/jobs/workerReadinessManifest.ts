@@ -229,6 +229,8 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   // Worker, no flag gate, constructs and attaches unconditionally under its
   // own registry-key name.
   consumers('monitorEpisodeRetention'),
+  // #4248 W03 — one Worker, unconditional, attached under its registry name.
+  consumers('reportRunDeliveryReconciler'),
   consumers('accountingReconcileWorker'),
   // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
   // entries, each read rather than inferred. None is feature-flag gated and

@@ -60,6 +60,19 @@ const createNotification = vi.hoisted(() =>
   vi.fn<(input: Record<string, unknown>) => Promise<string | null>>());
 vi.mock('../userNotifications', () => ({ createNotification }));
 
+// #4248 W03 — the narrative EMAIL pass, mocked at the module boundary (its own
+// suite is reportNarrativeDelivery.test.ts). `contextAtEmailPass` records the
+// ambient DB context at the moment it is called: it must be undefined.
+const contextAtEmailPass = vi.hoisted(() => [] as Array<{ scope: string } | undefined>);
+const deliverNarrativeEmails = vi.hoisted(() =>
+  vi.fn<(reportRunId: string, ctx: { orgId: string }) => Promise<Record<string, number>>>());
+vi.mock('../reportNarrativeDelivery', () => ({
+  deliverNarrativeEmails: (reportRunId: string, ctx: { orgId: string }) => {
+    contextAtEmailPass.push(dbMockState.ambientContext);
+    return deliverNarrativeEmails(reportRunId, ctx);
+  },
+}));
+
 import { deliverRunFinishedNotifications } from './runFinishedNotify';
 
 function queueRows(table: string, rows: unknown[]): void {
@@ -85,6 +98,10 @@ beforeEach(() => {
   dbMockState.ambientContext = undefined;
   resolveRecipientUserIds.mockReset().mockResolvedValue([]);
   createNotification.mockReset().mockResolvedValue('notification-1');
+  contextAtEmailPass.length = 0;
+  deliverNarrativeEmails.mockReset().mockResolvedValue({
+    total: 1, sent: 1, failed: 0, unknown: 0, pending: 0, refused: 0, transient: 0,
+  });
 });
 
 describe('deliverRunFinishedNotifications', () => {
@@ -460,6 +477,78 @@ describe('deliverRunFinishedNotifications — narrative (P2-3)', () => {
     const [input] = createNotification.mock.calls[0]!;
     expect(input).toMatchObject({ title: 'Agent run finished', link: `/ai-agents/runs/${RUN_ID}` });
     expect((input as { metadata: Record<string, unknown> }).metadata.narrative).toBeUndefined();
+  });
+
+  // #4248 W03 (Task 7): the email pass runs AFTER the in-app notification
+  // loop's system context closes, and independently of it.
+  it('runs the narrative email delivery pass after the in-app notifications, outside the notification context', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(deliverNarrativeEmails).toHaveBeenCalledTimes(1);
+    expect(deliverNarrativeEmails).toHaveBeenCalledWith(REPORT_RUN_ID, { orgId: ORG_ID });
+    expect(createNotification.mock.invocationCallOrder[0]!)
+      .toBeLessThan(deliverNarrativeEmails.mock.invocationCallOrder[0]!);
+    expect(contextAtEmailPass).toEqual([undefined]);
+  });
+
+  it('leaves the in-app notification untouched for a recipient the email gate refuses', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    deliverNarrativeEmails.mockResolvedValueOnce({
+      total: 1, sent: 0, failed: 1, unknown: 0, pending: 0, refused: 1, transient: 0,
+    });
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledWith(expect.objectContaining({ userId: USER_A }));
+  });
+
+  it('runs the email pass even when the run has ZERO in-app recipients — the delivery rows are the source of truth', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).not.toHaveBeenCalled();
+    expect(deliverNarrativeEmails).toHaveBeenCalledWith(REPORT_RUN_ID, { orgId: ORG_ID });
+    // Same invariant as the sibling test above, asserted on THIS branch too:
+    // the early return must not call the email pass from inside a still-open
+    // DB context. `deliverNarrativeEmails` is module-mocked here, so without
+    // this line a regression on this branch alone would only surface at
+    // runtime, via the real function's own guard.
+    expect(contextAtEmailPass).toEqual([undefined]);
+  });
+
+  it('does not run the email pass for a narrative run without an artifact', async () => {
+    queueRows('ai_agent_runs', [narrativeRun({
+      outcome: { toolExecutionCount: 0, narrative: { version: 1, headline: 'h', sections: [], markdown: '' } },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(deliverNarrativeEmails).not.toHaveBeenCalled();
+  });
+
+  it('propagates an email-pass failure so the durable notify retry lane re-runs it (idempotent claims)', async () => {
+    queueRows('ai_agent_runs', [narrativeRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    queueRows('organizations', [{ name: 'Acme Dental' }]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    deliverNarrativeEmails.mockRejectedValueOnce(new Error('pg down'));
+
+    await expect(deliverRunFinishedNotifications(RUN_ID)).rejects.toThrow('pg down');
+    expect(createNotification).toHaveBeenCalledTimes(1);
   });
 
   it('never applies the narrative copy to another profile, even with a narrativeReport on the outcome', async () => {

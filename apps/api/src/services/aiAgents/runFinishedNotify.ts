@@ -48,6 +48,7 @@ import { aiAgents, aiAgentRuns } from '../../db/schema/aiAgents';
 import { organizations } from '../../db/schema/orgs';
 import { tickets } from '../../db/schema/portal';
 import { ticketDrafts } from '../../db/schema/ticketDrafts';
+import { deliverNarrativeEmails } from '../reportNarrativeDelivery';
 import { createNotification } from '../userNotifications';
 import { resolveRecipientUserIds } from './recipients';
 
@@ -508,8 +509,17 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
     },
     run.orgId,
   );
+  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
+  // gets its own copy; everything else (including a narrative run whose
+  // persistence failed) keeps the generic branch. Read HERE, before the
+  // zero-recipient return, because the #4248 W03 email pass below keys off
+  // the artifact's own `report_run_deliveries` rows (created atomically with
+  // it), not off the in-app recipient set.
+  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
+
   if (userIds.length === 0) {
     console.warn('[runFinishedNotify] no recipients resolved for finished run', { runId });
+    if (narrative) await deliverNarrativeEmailPass(narrative, run.orgId);
     return;
   }
 
@@ -522,10 +532,6 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
   // a sweep run that never produced findings) keeps the generic verdict-aware
   // title untouched.
   const sweep = run.profile === 'sweep' ? readSweepDigest(run.outcome ?? {}) : null;
-  // Task A7 (wave P2-3) — a narrative run that actually produced an artifact
-  // gets its own copy; everything else (including a narrative run whose
-  // persistence failed) keeps the branch above.
-  const narrative = run.profile === 'narrative' ? readNarrativeDigest(run.outcome ?? {}) : null;
   // Fleet Designer W01 (#5651), Task 9 — same shape, a design run that
   // actually produced an artifact gets its own copy.
   const design = run.profile === 'design' ? readFleetDesignDigest(run.outcome ?? {}) : null;
@@ -671,5 +677,21 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
         dedupeKey: `agent-run:${run.id}`,
       });
     }
+  });
+
+  // #4248 W03 — the narrative EMAIL pass, AFTER the notification context above
+  // has closed and outside every DB context (`deliverNarrativeEmails` refuses
+  // otherwise). Deliberately not inside the loop: a send inside a transaction
+  // can be rolled back after the mail has left. A throw here propagates to
+  // the durable notify retry lane (runLoop.ts) — the in-app rows above are
+  // deduped by `dedupeKey`, and the email pass claims each delivery row
+  // before sending, so a retry never double-sends.
+  if (narrative) await deliverNarrativeEmailPass(narrative, run.orgId);
+}
+
+async function deliverNarrativeEmailPass(narrative: NarrativeDigest, orgId: string): Promise<void> {
+  const result = await deliverNarrativeEmails(narrative.reportRunId, { orgId });
+  console.info('[runFinishedNotify] narrative email pass finished', {
+    reportRunId: narrative.reportRunId, orgId, ...result,
   });
 }

@@ -1927,7 +1927,17 @@
         "truncatedNote": "O contexto do agente foi cortado: esta narrativa não viu a semana inteira.",
         "openReport": "Abrir relatório",
         "download": "Baixar PDF",
-        "downloadFailed": "Não foi possível baixar o PDF."
+        "downloadFailed": "Não foi possível baixar o PDF.",
+        "delivery": {
+          "sent": "Enviado por e-mail para {{sent}} de {{total}} destinatários",
+          "refused_one": "{{count}} destinatário não recebeu o e-mail: autoridade de relatório, endereço ausente ou o provedor recusou.",
+          "refused_other": "{{count}} destinatários não receberam o e-mail: autoridade de relatório, endereço ausente ou o provedor recusou.",
+          "pending_one": "{{count}} entrega ainda não foi enviada: será repetida.",
+          "pending_other": "{{count}} entregas ainda não foram enviadas: serão repetidas.",
+          "unknown_one": "{{count}} entrega não pôde ser confirmada: o provedor de e-mail não deu uma resposta definitiva.",
+          "unknown_other": "{{count}} entregas não puderam ser confirmadas: o provedor de e-mail não deu uma resposta definitiva.",
+          "recipientsUnresolved": "A busca de destinatários falhou, então ninguém recebeu esta narrativa por e-mail. O relatório em si foi salvo."
+        }
       },
       "fleetDesign": {
         "title": "Projeto de frota",

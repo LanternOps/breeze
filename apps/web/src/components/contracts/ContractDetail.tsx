@@ -375,6 +375,15 @@ export default function ContractDetail({ detail, onChanged }: Props) {
                 <dd className="mt-1 whitespace-pre-wrap text-sm">{contract.notes}</dd>
               </div>
             )}
+            {contract.terms && (
+              <div className="mt-4 border-t pt-3">
+                {/* contract.terms is the free-text note appended to the Notes block
+                    on generated invoices (contractService.ts:1899). It is NOT the
+                    legal agreement — that is a signed agreement, listed below. */}
+                <dt className="text-xs uppercase text-muted-foreground">{t('contracts.contractDetail.fields.invoiceNote')}</dt>
+                <dd className="mt-1 whitespace-pre-wrap text-sm">{contract.terms}</dd>
+              </div>
+            )}
           </div>
 
           {/* Lines (read-only) */}

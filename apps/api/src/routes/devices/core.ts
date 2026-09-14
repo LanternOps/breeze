@@ -408,6 +408,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   'ticket_outbox',
   'ticket_attachments',
   'ticket_email_links',
+  // ticket_checklist_items (#5783 W01): rewritten through the tickets join,
+  // appended last to extend — not reorder — the shared lock order. Its
+  // composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // moveOrg.ts also names ticket_checklist_items_ticket_org_fk in its
+  // SET CONSTRAINTS … DEFERRED statement.
+  'ticket_checklist_items',
 ] as const;
 
 /**

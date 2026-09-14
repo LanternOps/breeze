@@ -50,6 +50,7 @@ import DeviceOneDriveTab from "./DeviceOneDriveTab";
 import DeviceSecurityTab from "./DeviceSecurityTab";
 import DeviceAlertHistory from "./DeviceAlertHistory";
 import DeviceActivityFeed from "./DeviceActivityFeed";
+import DeviceAiActivitySignal from "./DeviceAiActivitySignal";
 import DeviceQueuedActions from "./DeviceQueuedActions";
 import DeviceScriptHistory from "./DeviceScriptHistory";
 import DevicePerformanceGraphs from "./DevicePerformanceGraphs";
@@ -779,6 +780,9 @@ export default function DeviceDetails({
               activityCollapsed ? "lg:w-11 lg:self-stretch" : "lg:w-80"
             }`}
           >
+            {/* #5022 W02 — mounted above the activity feed; renders nothing
+                when there is no recorded AI activity in the window. */}
+            <DeviceAiActivitySignal deviceId={device.id} />
             <DeviceActivityFeed
               deviceId={device.id}
               timezone={effectiveTimezone}

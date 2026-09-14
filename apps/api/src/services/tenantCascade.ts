@@ -721,6 +721,16 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // S3 objects are cleared BEFORE this DELETE by the pre-step in
   // cascadeDeleteOrg — the rows are the only index to the object keys.
   'ticket_attachments',
+  // ticket_checklist_items (#5783 W01): one tickable step on a ticket. Shape 1
+  // (direct org_id, denormalised from tickets.org_id). The composite
+  // (ticket_id, org_id) FK is ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE;
+  // done_by_user_id / created_by are ON DELETE SET NULL. Cascade leaf — nothing
+  // FK-references it. localeCompare: 'ticket_attachments' <
+  // 'ticket_checklist_items' < 'ticket_drafts' ('at' < 'ch' < 'dr'), and it
+  // precedes its FK parent 'tickets'. The FK would take the rows anyway, but
+  // the cascade walks this array explicitly and an unlisted org_id table fails
+  // tenantCascade.integration.test.ts.
+  'ticket_checklist_items',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,

@@ -580,6 +580,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
     excludedSensitive: [],
     excludedOpen: ["data"],
   }),
+  // ticket_checklist_items (#5783 W01): one tickable step on a ticket. label and
+  // detail are ordinary work content — an org-erasure export that silently
+  // dropped the steps a technician performed would be an incomplete GDPR
+  // export. No json/jsonb/bytea column, so excludedOpen is empty, and no column
+  // name matches SUSPICIOUS_NAME_PARTS, so reviewedIncluded is empty.
+  "ticket_checklist_items": tablePolicy("org_id", {"included":["id","org_id","ticket_id","label","detail","position","done_at","done_by_user_id","source","source_template_item_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_drafts (P2-4, #4191): the reply/resolution-note text an agent
   // proposes for a ticket. content/kind/state are ordinary customer-facing
   // draft content and lifecycle state -> included, same treatment as

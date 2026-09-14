@@ -604,6 +604,42 @@ export interface AiAgentRunDetailDto {
    * (same rule as `alertVerdict`/`sweep`/`narrative`/`fleetDesign` above).
    */
   patch: AiAgentRunPatchDto | null;
+  /**
+   * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
+   * went, for a `narrative`-profile run that materialised an artifact. Null
+   * for every other run. COUNTS ONLY: a skipped count is a small authority
+   * oracle, acceptable to someone who already holds `ai_agents:read` on the
+   * run; the recipients themselves are never named. Non-null whenever the run
+   * produced an artifact — including with `total: 0`, so a failed recipient
+   * lookup (`recipientsUnresolved`) is still visible.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+}
+
+/** See `AiAgentRunDetailDto.narrativeDelivery`. */
+export interface AiAgentRunNarrativeDeliveryDto {
+  total: number;
+  sent: number;
+  /**
+   * Permanently not delivered. Deliberately NOT called "skipped (insufficient
+   * authority)": the same terminal state is reached by an authority refusal,
+   * by a recipient with no usable address, AND by a hard provider refusal, so
+   * naming one cause would send a technician to investigate permissions when
+   * the real problem is a missing address or a mail-provider error.
+   */
+  refused: number;
+  /** Not delivered YET — still queued or mid-send; the reconciler retries. */
+  pending: number;
+  /** Provider outcome ambiguous — never auto-replayed; a human decision. */
+  unknown: number;
+  /**
+   * The recipient lookup itself failed, so the narrative was stored with ZERO
+   * delivery rows and nobody was emailed. Without this, the run detail cannot
+   * tell that apart from an org that deliberately has no recipients — and the
+   * weekly report reaches nobody in silence.
+   */
+  recipientsUnresolved: boolean;
 }
 
 /**

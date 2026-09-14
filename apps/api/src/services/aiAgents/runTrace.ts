@@ -36,6 +36,7 @@ import {
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
   type AiAgentRunLedgerEntryDto,
+  type AiAgentRunNarrativeDeliveryDto,
   type AiAgentRunStatus,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
@@ -408,6 +409,10 @@ export function buildRunTrace(
   // scalars, or `null` for every run that has none. Defaults null so every
   // existing caller is unchanged.
   fleetDesignArtifact: RunTraceFleetDesignArtifactInput | null = null,
+  // #4248 W03 (Task 10) — the narrative's email delivery counts, or `null`
+  // for every run that produced no narrative artifact. Defaults null so every
+  // existing caller is unchanged.
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null = null,
 ): AiAgentRunDetailDto {
   const outcome = run.outcome as Partial<AgentRunOutcome>;
   return {
@@ -484,5 +489,7 @@ export function buildRunTrace(
     // contract. The raw patch/job-result id lists never reach the wire.
     // Hostnames ride the same batched map the sweep uses.
     patch: projectPatch(run, outcome, deviceHostnames),
+    // #4248 W03: counts only, never a recipient — see the DTO docstring.
+    narrativeDelivery,
   };
 }

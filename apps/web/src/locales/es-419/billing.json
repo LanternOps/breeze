@@ -70,7 +70,8 @@
         "autoIssue": "Emisión automática",
         "renewal": "Renovación",
         "estimatedPerPeriod": "Est. / período",
-        "notes": "Notas"
+        "notes": "Notas",
+        "invoiceNote": "Nota en la factura"
       },
       "values": {
         "noDrafts": "No (borradores)"
@@ -147,7 +148,8 @@
         "confirm": "Eliminar borrador"
       },
       "documents": {
-        "title": "Documentos ejecutados",
+        "title": "Acuerdos firmados",
+        "subtitle": "Aceptados junto con la cotización y fijados a la versión de la plantilla que vio el cliente.",
         "columns": {
           "template": "Plantilla",
           "signer": "Firmante",
@@ -155,8 +157,8 @@
           "quote": "Cotización"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Aún no hay documentos ejecutados.",
-        "loadError": "No se pudieron cargar los documentos ejecutados.",
+        "empty": "Aún no hay acuerdos firmados.",
+        "loadError": "No se pudieron cargar los acuerdos firmados.",
         "downloadError": "No se pudo descargar el PDF.",
         "download": "Descargar PDF",
         "preparing": "Preparando…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Contenido",
-        "notesOptional": "Notas (opcional)",
-        "termsOptional": "Términos (opcional, mostrados en la factura)",
+        "notesOptional": "Notas (opcional, se agregan al bloque de Notas de las facturas generadas)",
+        "termsOptional": "Nota en la factura (opcional, se agrega al bloque de Notas de las facturas generadas)",
         "termsPlaceholder": "p.ej. Neto 30. Se renueva automáticamente a menos que se cancele 30 días antes."
       },
       "lines": {
@@ -397,8 +399,8 @@
     },
     "tabs": {
       "contracts": "Contratos",
-      "templates": "Plantillas",
-      "documents": "Documentos",
+      "templates": "Plantillas de acuerdo",
+      "documents": "Acuerdos firmados",
       "currencyMismatches": "Diferencias de moneda"
     },
     "currencyMismatches": {
@@ -459,16 +461,16 @@
       }
     },
     "templatesTab": {
-      "title": "Plantillas de contrato",
-      "description": "Documentos de contrato reutilizables que puedes adjuntar a cotizaciones aceptadas.",
-      "newTemplate": "Nueva plantilla",
+      "title": "Plantillas de acuerdo",
+      "description": "Tu contrato marco y tus términos estándar. Agrega uno a una cotización y el cliente lo firma junto con la propuesta; la copia firmada queda archivada en el contrato que crea esa cotización.",
+      "newTemplate": "Nueva plantilla de acuerdo",
       "includeArchived": "Mostrar archivadas",
       "allOrgs": "Todas las org.",
       "ownerOrg": "Organización",
       "noVersions": "Aún sin versiones",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Archivar",
-      "loadError": "No se pudieron cargar las plantillas de contrato",
+      "loadError": "No se pudieron cargar las plantillas de acuerdo",
       "createError": "No se pudo crear la plantilla",
       "created": "Plantilla creada",
       "archiveError": "No se pudo archivar la plantilla",
@@ -484,11 +486,11 @@
         "archived": "Archivada"
       },
       "empty": {
-        "title": "Aún no hay plantillas",
-        "description": "Crea tu primera plantilla de contrato para empezar."
+        "title": "Aún no hay plantillas de acuerdo",
+        "description": "Agrega tu contrato marco o tus términos estándar una sola vez y luego inclúyelos en cualquier cotización. Los clientes los firman al aceptar."
       },
       "createDialog": {
-        "title": "Nueva plantilla de contrato",
+        "title": "Nueva plantilla de acuerdo",
         "name": "Nombre",
         "namePlaceholder": "ej. Acuerdo maestro de servicios",
         "description": "Descripción",
@@ -502,18 +504,18 @@
         "orgRequired": "Selecciona una organización para una plantilla propiedad de la organización.",
         "nameRequired": "Ingresa un nombre de plantilla.",
         "cancel": "Cancelar",
-        "create": "Crear plantilla",
+        "create": "Crear plantilla de acuerdo",
         "creating": "Creando…"
       }
     },
     "documentsTab": {
-      "title": "Documentos",
-      "description": "Documentos de contrato ejecutados que aún no están vinculados a un contrato.",
+      "title": "Acuerdos firmados",
+      "description": "Acuerdos firmados que aún no están vinculados a un contrato. Vincula cada uno para que aparezca en el contrato que rige.",
       "empty": {
-        "title": "No hay documentos sin vincular",
-        "description": "Los documentos ejecutados aparecen aquí hasta que se vinculan a un contrato."
+        "title": "No hay acuerdos firmados sin vincular",
+        "description": "Los acuerdos firmados aparecen aquí hasta que se vinculan a un contrato."
       },
-      "loadError": "No se pudieron cargar los documentos.",
+      "loadError": "No se pudieron cargar los acuerdos firmados.",
       "columns": {
         "template": "Plantilla",
         "signer": "Firmante",
@@ -535,8 +537,8 @@
         "confirm": "Vincular",
         "linking": "Vinculando…"
       },
-      "linkSuccess": "Documento vinculado al contrato.",
-      "linkError": "No se pudo vincular el documento a ese contrato."
+      "linkSuccess": "Acuerdo firmado vinculado al contrato.",
+      "linkError": "No se pudo vincular el acuerdo firmado a ese contrato."
     },
     "templateEditor": {
       "back": "Volver",
@@ -562,7 +564,7 @@
       "publish": "Publicar",
       "publishDirtyHint": "Guarda tu borrador antes de publicar",
       "body": "Cuerpo",
-      "bodyAria": "Cuerpo de la plantilla de contrato",
+      "bodyAria": "Cuerpo de la plantilla de acuerdo",
       "preview": "Vista previa",
       "edit": "Editar",
       "saveDraft": "Guardar borrador",
@@ -579,7 +581,7 @@
       "publishError": "No se pudo publicar la versión",
       "publishSuccess": "Versión publicada",
       "warnings": {
-        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de contrato admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
+        "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de los acuerdos admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
     }
   },
@@ -684,7 +686,7 @@
         "image": "Imagen",
         "pricingTable": "tabla de precios",
         "richText": "Texto enriquecido",
-        "contract": "Contrato",
+        "contract": "Acuerdo / términos",
         "table": "Tabla",
         "callout": "Recuadro"
       },
@@ -755,7 +757,7 @@
       "emptyBlocks": "Aún no hay contenido. Agregue un encabezado, texto enriquecido o una tabla de precios a continuación.",
       "errors": {
         "addCatalogItem": "No se pudo agregar el elemento del catálogo.",
-        "addContractSection": "No se pudo agregar la sección de contrato",
+        "addContractSection": "No se pudo agregar la sección de acuerdo",
         "addDistributorItem": "No se pudo agregar el artículo del distribuidor.",
         "addImageSection": "No se pudo agregar la sección de imagen.",
         "addLine": "No se pudo agregar la línea.",
@@ -770,7 +772,7 @@
         "importPax8Product": "No se pudo importar el producto Pax8.",
         "lineAddedCatalogSaveFailed": "Se agregó la línea, pero no se pudo guardar en el catálogo.",
         "lineNeedsNameOrDescription": "Una línea necesita un nombre o una descripción.",
-        "loadContractTemplates": "No se pudieron cargar las plantillas de contrato",
+        "loadContractTemplates": "No se pudieron cargar las plantillas de acuerdo",
         "moveLine": "No se pudo mover la línea.",
         "quantityWholeGreaterThanZero": "Ingrese una cantidad de número entero mayor que 0.",
         "removeLine": "No se pudo eliminar la línea.",
@@ -875,7 +877,7 @@
         "savedToCatalog": "Guardado en el catálogo",
         "sectionAdded": "Sección agregada",
         "sectionRemoved": "Sección eliminada",
-        "contractSectionAdded": "Sección de contrato agregada"
+        "contractSectionAdded": "Sección de acuerdo agregada"
       },
       "symbols": {
         "check": "✓",
@@ -921,8 +923,9 @@
         "reshapedWarning": "Esta tabla no cabía en el límite de {{columns}} columnas x {{rows}} filas, así que se ajustó. Al guardar, se reemplaza la tabla almacenada por la que ves aquí."
       },
       "terms": {
-        "placeholder": "Condiciones de pago, cláusulas de garantía, etc.",
-        "title": "Términos y condiciones"
+        "placeholder": "Condiciones de pago, notas de entrega, etc.",
+        "title": "Términos y condiciones (texto sin formato)",
+        "helper": "Para términos legales reutilizables, agrega una sección Acuerdo / términos: el cliente la firma junto con la propuesta."
       },
       "tidyAll": {
         "complete": "Se revisaron {{count}} descripción(es).",
@@ -941,10 +944,10 @@
         "perYear": "/yr"
       },
       "contract": {
-        "templateLabel": "Plantilla de contrato",
+        "templateLabel": "Plantilla de acuerdo",
         "templatePlaceholder": "Selecciona una plantilla…",
-        "noTemplates": "Aún no hay plantillas de contrato. Crea una en Contratos → Plantillas.",
-        "noPublishedVersion": "Esta plantilla aún no tiene una versión publicada. Publícala antes de adjuntarla.",
+        "noTemplates": "Aún no hay plantillas de acuerdo. <templatesLink>Crea una</templatesLink> en Contratos → Plantillas de acuerdo.",
+        "noPublishedVersion": "Esta plantilla aún no tiene una versión publicada. Publícala antes de agregarla a una cotización.",
         "pinnedVersion": "Fijado a v{{version}}",
         "autoVariablesTitle": "Se completa automáticamente desde la cotización",
         "autoHint": "Estos valores se resuelven desde la cotización al enviar la propuesta.",
@@ -953,7 +956,7 @@
         "labelPlaceholder": "Etiqueta opcional (p. ej., Acuerdo maestro de servicios)",
         "variableRequired": "Ingresa un valor",
         "variableUnresolved": "Esta variable aún no está resuelta",
-        "untitledTemplate": "Contrato",
+        "untitledTemplate": "Acuerdo",
         "readOnlyHint": "Quita y vuelve a agregar esta sección para cambiar la plantilla, la versión o las variables.",
         "updateToVersion": "Actualizar a v{{version}}",
         "saveVariables": "Guardar variables",
@@ -1292,8 +1295,8 @@
       },
       "additionalItems": "Artículos adicionales",
       "contract": {
-        "download": "Descargar contrato",
-        "previewTitle": "Documento del contrato {{name}}",
+        "download": "Descargar acuerdo",
+        "previewTitle": "Acuerdo {{name}}",
         "unavailable": "Archivo del contrato no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },

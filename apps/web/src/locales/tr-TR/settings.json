@@ -1927,7 +1927,17 @@
         "truncatedNote": "Aracının bağlamı kısaltıldı: bu anlatı haftanın tamamını görmedi.",
         "openReport": "Raporu aç",
         "download": "PDF'yi indir",
-        "downloadFailed": "PDF indirilemedi."
+        "downloadFailed": "PDF indirilemedi.",
+        "delivery": {
+          "sent": "{{total}} alıcıdan {{sent}} tanesine e-posta gönderildi",
+          "refused_one": "{{count}} alıcıya e-posta gönderilmedi — rapor yetkisi, eksik adres veya sağlayıcı reddetti.",
+          "refused_other": "{{count}} alıcıya e-posta gönderilmedi — rapor yetkisi, eksik adres veya sağlayıcı reddetti.",
+          "pending_one": "{{count}} teslimat henüz gönderilmedi — yeniden denenecek.",
+          "pending_other": "{{count}} teslimat henüz gönderilmedi — yeniden denenecek.",
+          "unknown_one": "{{count}} teslimat doğrulanamadı — e-posta sağlayıcısı kesin bir yanıt vermedi.",
+          "unknown_other": "{{count}} teslimat doğrulanamadı — e-posta sağlayıcısı kesin bir yanıt vermedi.",
+          "recipientsUnresolved": "Alıcı araması başarısız oldu, bu nedenle bu anlatı kimseye e-postayla gönderilmedi. Raporun kendisi kaydedildi."
+        }
       },
       "fleetDesign": {
         "title": "Filo tasarımı",

@@ -1212,6 +1212,17 @@ const runDetailResponseSchema = z.object({
       refusedCount: z.number(),
       evidenceTruncated: z.boolean(),
     }).strict().nullable(),
+    // #4248 W03 (OD-7 B): per-run narrative email delivery counts. `null`
+    // for every run that produced no narrative artifact. COUNTS ONLY — never
+    // a recipient id, name or address.
+    narrativeDelivery: z.object({
+      total: z.number(),
+      sent: z.number(),
+      refused: z.number(),
+      pending: z.number(),
+      unknown: z.number(),
+      recipientsUnresolved: z.boolean(),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -1649,6 +1660,100 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrative).toBeNull();
     expect(parsed.data.reportRunId).toBeNull();
+    expect(parsed.data.narrativeDelivery).toBeNull();
+  });
+
+  // #4248 W03 (Task 10, OD-7 B) — the skipped count is a small authority
+  // oracle, acceptable only because it is COUNTS to someone who already holds
+  // ai_agents:read on the run, and because the alternative (a permanently
+  // invisible failure) is worse. Never who.
+  it('reports the narrative delivery outcome in separate buckets, as counts only', async () => {
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    let summaryWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        profile: 'narrative',
+        reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: { version: 1, headline: 'A quiet week.', sections: [], markdown: '# A quiet week.' },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([{
+        reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
+      }]))
+      // The delivery summary: 4 rows — sent, sent, failed, pending.
+      .mockReturnValueOnce(selectChain(
+        [{ total: 4, sent: 2, failed: 1, unknown: 0, pending: 1 }],
+        (predicate) => { summaryWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const parsed = runDetailResponseSchema.parse(body);
+
+    expect(selectMock).toHaveBeenCalledTimes(3);
+    expect(sqlParams(summaryWhere)).toContain(REPORT_RUN_ID);
+    // Terminal `refused` and not-yet-delivered `pending` stay SEPARATE: they
+    // have different causes and different remedies, and folding them under one
+    // "skipped (insufficient authority)" label misdiagnoses both.
+    expect(parsed.data.narrativeDelivery).toEqual({
+      total: 4, sent: 2, refused: 1, pending: 1, unknown: 0, recipientsUnresolved: false,
+    });
+    expect(JSON.stringify(body)).not.toMatch(/recipient_user_id|recipientUserId|@/);
+  });
+
+  it('flags a failed recipient lookup, so zero delivery rows is not mistaken for zero recipients', async () => {
+    const REPORT_ID = '77777777-7777-4777-8777-777777777777';
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'narrative', reportRunId: REPORT_RUN_ID,
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          narrative: { version: 1, headline: 'A quiet week.', sections: [], markdown: '# A quiet week.' },
+          narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
+          narrativeRecipientsUnresolved: true,
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([{
+        reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
+      }]))
+      .mockReturnValueOnce(selectChain([{ total: 0, sent: 0, failed: 0, unknown: 0, pending: 0 }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    expect(parsed.data.narrativeDelivery).toEqual({
+      total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: true,
+    });
+  });
+
+  it('is null for a narrative run whose artifact is not visible, without querying deliveries', async () => {
+    const REPORT_RUN_ID = '66666666-6666-4666-8666-666666666666';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'narrative', reportRunId: REPORT_RUN_ID,
+        outcome: { executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0 },
+      })]))
+      .mockReturnValueOnce(selectChain([])); // artifact read finds nothing
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.narrativeDelivery).toBeNull();
   });
 
   /**

@@ -1,13 +1,14 @@
 import React from 'react';
 import { cn } from '@/lib/utils';
+import { quarterLabel } from '@breeze/shared';
 import type { HardwareLifecycleDeviceRow, ReplacementStatus } from '@breeze/shared';
 
 /**
  * The timeline every row shares: one cell per quarter, from two years before
  * today to three years after. Ported from `drawHandCell`'s `RUNWAY_COL`
  * branch (packages/shared/src/reportPdf/hardwareLifecyclePdf.ts) — same
- * math, Tailwind opacity utilities instead of the PDF's colour mix. No hover
- * title yet (W03).
+ * math, Tailwind opacity utilities instead of the PDF's colour mix. Each
+ * cell carries a `title` with its quarter label (W03).
  */
 export const TIMELINE_QUARTERS_BEFORE = 8;
 export const TIMELINE_QUARTERS_AFTER = 12;
@@ -57,6 +58,16 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** First-of-month ISO date `quarterOffset` quarters from `fromIso`, for
+ *  feeding into `quarterLabel` (which only reads year + month from it). */
+function isoAtQuarterOffset(fromIso: string, quarterOffset: number): string {
+  const d = new Date(`${fromIso.slice(0, 10)}T00:00:00Z`);
+  const totalMonths = d.getUTCFullYear() * 12 + d.getUTCMonth() + quarterOffset * 3;
+  const year = Math.floor(totalMonths / 12);
+  const month = totalMonths - year * 12;
+  return `${year}-${String(month + 1).padStart(2, '0')}-01`;
+}
+
 export function TimelineCell({ row }: { row: HardwareLifecycleDeviceRow }) {
   // Status already reads "Purchase date unknown"; the timeline stays quiet.
   if (!row.replaceBy) return null;
@@ -87,10 +98,12 @@ export function TimelineCell({ row }: { row: HardwareLifecycleDeviceRow }) {
           const overdueRun = dueQ < todayQ && q > dueQ && q <= todayQ;
           const inLife = q >= boughtQ && q < dueQ;
           const fillClass = isDue || overdueRun ? TONE_SOLID[tone] : inLife ? TONE_TINT[tone] : 'bg-muted';
+          const title = quarterLabel(isoAtQuarterOffset(today, q - todayQ));
           return (
             <div
               key={q}
               data-testid={`lifecycle-timeline-quarter-${q}`}
+              title={title}
               className={cn(
                 'h-full flex-1',
                 fillClass,

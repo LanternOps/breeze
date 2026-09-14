@@ -33,10 +33,10 @@ function DocumentDownloadButton({ doc }: { doc: ContractDocument }) {
 }
 
 /**
- * Executed contract documents for one contract (Task 18): the legal
- * snapshots created at quote-acceptance time (Task 15), each pinned to the
- * template version + variables the signer actually saw. Read-only — linking
- * an unattached document to a contract happens from the Documents tab on the
+ * Signed agreements for one contract: the frozen instances created at
+ * quote-acceptance time, each pinned to the agreement template version and the
+ * variable values the signer actually saw. Read-only — linking an unlinked
+ * signed agreement to a contract happens from the Signed agreements tab on the
  * contracts landing page, not here.
  */
 export default function ContractDocumentsSection({ contractId }: Props) {
@@ -69,9 +69,14 @@ export default function ContractDocumentsSection({ contractId }: Props) {
 
   return (
     <div className="rounded-lg border bg-card shadow-xs" data-testid="contract-documents-section">
-      <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {t('contracts.contractDetail.documents.title')}
-      </h3>
+      <div className="border-b px-3 py-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {t('contracts.contractDetail.documents.title')}
+        </h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {t('contracts.contractDetail.documents.subtitle')}
+        </p>
+      </div>
       {loading ? (
         <div className="flex items-center justify-center py-8" data-testid="contract-documents-loading">
           <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />

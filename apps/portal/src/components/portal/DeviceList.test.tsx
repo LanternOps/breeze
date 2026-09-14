@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EnrichedPortalDevice } from '@breeze/shared';
 
 // Resolving the full API module pulls in Astro's virtual transitions module,
@@ -178,5 +178,56 @@ describe('DeviceList', () => {
   it('titles its empty state one level under the page title', () => {
     render(<DeviceList devices={[]} />);
     expect(screen.getByRole('heading', { name: 'No devices' }).tagName).toBe('H2');
+  });
+
+  describe('scroll-and-highlight from a #<deviceId> hash', () => {
+    const scrollIntoView = vi.fn();
+
+    beforeEach(() => {
+      scrollIntoView.mockClear();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    });
+
+    afterEach(() => {
+      window.location.hash = '';
+    });
+
+    it('highlights and scrolls to the row matching the hash on mount', () => {
+      window.location.hash = '#d-1';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      const row = screen.getByTestId('portal-device-d-1');
+      expect(row.className).toContain('ring-2');
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+      expect(screen.getByTestId('portal-device-d-2').className).not.toContain('ring-2');
+    });
+
+    it('highlights nothing and never throws when there is no hash', () => {
+      window.location.hash = '';
+      expect(() => render(<DeviceList devices={[laptop, server]} />)).not.toThrow();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+    });
+
+    it('highlights nothing when the hash matches no device', () => {
+      window.location.hash = '#does-not-exist';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+      expect(screen.getByTestId('portal-device-d-2').className).not.toContain('ring-2');
+    });
+
+    it('clears the highlight after the timeout', () => {
+      vi.useFakeTimers();
+      window.location.hash = '#d-1';
+      render(<DeviceList devices={[laptop, server]} />);
+
+      expect(screen.getByTestId('portal-device-d-1').className).toContain('ring-2');
+      act(() => {
+        vi.runAllTimers();
+      });
+      expect(screen.getByTestId('portal-device-d-1').className).not.toContain('ring-2');
+    });
   });
 });

@@ -1098,6 +1098,17 @@ export {
   type EvidenceRef,
 } from './serviceDeliverables';
 export {
+  CHECKLIST_ITEM_SOURCES,
+  checklistItemSourceSchema,
+  checklistItemCreateSchema,
+  checklistItemPatchSchema,
+  checklistReorderSchema,
+  type ChecklistItemSource,
+  type ChecklistItemCreateInput,
+  type ChecklistItemPatchInput,
+  type ChecklistReorderInput,
+} from './ticketChecklists';
+export {
   templateOwnerScopeSchema,
   createTemplateItemSchema,
   updateTemplateItemSchema,

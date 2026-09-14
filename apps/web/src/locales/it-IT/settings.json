@@ -1927,7 +1927,17 @@
         "truncatedNote": "Il contesto dell'agente è stato troncato: questa sintesi non ha visto l'intera settimana.",
         "openReport": "Apri il report",
         "download": "Scarica il PDF",
-        "downloadFailed": "Impossibile scaricare il PDF."
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "delivery": {
+          "sent": "Inviato via e-mail a {{sent}} destinatari su {{total}}",
+          "refused_one": "{{count}} destinatario non ha ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "refused_other": "{{count}} destinatari non hanno ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "pending_one": "{{count}} consegna non è ancora stata inviata: verrà ritentata.",
+          "pending_other": "{{count}} consegne non sono ancora state inviate: verranno ritentate.",
+          "unknown_one": "{{count}} consegna non ha potuto essere confermata: il provider e-mail non ha dato una risposta definitiva.",
+          "unknown_other": "{{count}} consegne non hanno potuto essere confermate: il provider e-mail non ha dato una risposta definitiva.",
+          "recipientsUnresolved": "La ricerca dei destinatari non è riuscita, quindi questa sintesi non è stata inviata a nessuno. Il report è stato comunque salvato."
+        }
       },
       "fleetDesign": {
         "title": "Progettazione della flotta",

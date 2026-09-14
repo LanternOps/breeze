@@ -3702,7 +3702,7 @@ describe('moveTicketOrg', () => {
     }
   });
 
-  it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+  it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
     // The tickets UPDATE below changes tickets.org_id while time_entries and
     // ticket_parts still point at the old org, so both composite FKs must be
     // deferred to COMMIT or the UPDATE 23503s the instant it completes.
@@ -3725,7 +3725,7 @@ describe('moveTicketOrg', () => {
 
     const texts = executedSqlTexts();
     expect(texts[0]).toBe(
-      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED'
+      'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED'
     );
     // Never `SET CONSTRAINTS ALL DEFERRED` — that would also defer the three
     // constraints this path relies on failing fast.
@@ -3734,11 +3734,12 @@ describe('moveTicketOrg', () => {
     // SET CONSTRAINTS statement twice, or interposes an extra unnamed raw
     // statement, is visible here — executedTableNames() only counts
     // statements with a table identifier chunk and would not catch either.
-    // 1 SET CONSTRAINTS + 6 child-table rewrites (time_entries, ticket_parts,
-    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links
-    // — same 6 tables as the 'moves ticket to a same-partner org' test below).
-    expect(texts).toHaveLength(7);
-    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED')).toHaveLength(1);
+    // 1 SET CONSTRAINTS + 7 child-table rewrites (time_entries, ticket_parts,
+    // ticket_alert_links, ticket_outbox, ticket_attachments, ticket_email_links,
+    // ticket_checklist_items — same 7 tables as the 'moves ticket to a
+    // same-partner org' test below).
+    expect(texts).toHaveLength(8);
+    expect(texts.filter((t) => t === 'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED')).toHaveLength(1);
   });
 
   it('#5573 W02: refuses to move a ticket pinned to a deliverable occurrence, before the ticket UPDATE', async () => {
@@ -3903,12 +3904,14 @@ describe('moveTicketOrg', () => {
     const tables = executedTableNames();
     expect(tables).toContain('ticket_attachments');
     expect(tables).toContain('ticket_email_links');
-    // ticket_email_links is appended last (after ticket_attachments) so the
+    // ticket_checklist_items (#5783 W01) is appended last, after
+    // ticket_email_links, which itself follows ticket_attachments — so the
     // device-move path (routes/devices/moveOrg.ts) and this path touch the
-    // ticket-linked tables in the same relative order — the shared order
-    // lives in ticketOrgMoveLockOrder.ts.
-    expect(tables[tables.length - 1]).toBe('ticket_email_links');
+    // ticket-linked tables in the same relative order. The shared order lives
+    // in ticketOrgMoveLockOrder.ts.
+    expect(tables[tables.length - 1]).toBe('ticket_checklist_items');
     expect(tables.indexOf('ticket_attachments')).toBeLessThan(tables.indexOf('ticket_email_links'));
+    expect(tables.indexOf('ticket_email_links')).toBeLessThan(tables.indexOf('ticket_checklist_items'));
   });
 
 
@@ -4006,7 +4009,7 @@ describe('moveTicketOrg', () => {
     const result = await moveTicketOrg('t1', 'oB', { userId: 'admin' }, { acceptCurrencyMismatch: true });
     expect(result.orgId).toBe('oB');
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ acceptCurrencyMismatch: true }));
-    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(7); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
       commentType: 'system',
       content: 'Moved to Beta Corp — 2 unbilled items stay in USD'
@@ -4045,7 +4048,7 @@ describe('moveTicketOrg', () => {
 
     await moveTicketOrg('t1', 'oB', { userId: 'admin' });
     expect(guardMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ sourceCurrency: 'USD', targetCurrency: 'USD', acceptCurrencyMismatch: false }));
-    expect(executedTableNames()).toHaveLength(6); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links; #4596 SET CONSTRAINTS is not a rewrite
+    expect(executedTableNames()).toHaveLength(7); // W08 #3902 added ticket_attachments, #4643 added ticket_email_links, #5783 W01 added ticket_checklist_items; #4596 SET CONSTRAINTS is not a rewrite
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ content: 'Moved to Beta Corp' }));
     const sourceAudit = auditMock.mock.calls.find((c) => c[0].action === 'ticket.move_org.source')![0];
     expect(sourceAudit.details).not.toHaveProperty('currencyMismatchAccepted');

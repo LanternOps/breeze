@@ -252,6 +252,12 @@ jobs:
       - name: Run TypeScript type check
         run: pnpm exec tsc --noEmit --project apps/api/tsconfig.json
 
+      # packages/shared is consumed through source imports, so apps/api's tsc
+      # only reaches the files it happens to import; its own test files were
+      # never checked anywhere and drifted (#5552).
+      - name: Type-check shared package
+        run: pnpm --filter @breeze/shared typecheck
+
       - name: Run Astro check
         working-directory: apps/web
         run: pnpm exec astro check

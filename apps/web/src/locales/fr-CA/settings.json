@@ -1927,7 +1927,17 @@
         "truncatedNote": "Le contexte de l'agent a été tronqué : cette synthèse n'a pas vu la semaine entière.",
         "openReport": "Ouvrir le rapport",
         "download": "Télécharger le PDF",
-        "downloadFailed": "Impossible de télécharger le PDF."
+        "downloadFailed": "Impossible de télécharger le PDF.",
+        "delivery": {
+          "sent": "Envoyé par courriel à {{sent}} destinataires sur {{total}}",
+          "refused_one": "{{count}} destinataire n’a pas reçu le courriel : autorité sur le rapport, adresse manquante ou refus du fournisseur.",
+          "refused_other": "{{count}} destinataires n’ont pas reçu le courriel : autorité sur le rapport, adresse manquante ou refus du fournisseur.",
+          "pending_one": "{{count}} envoi n’a pas encore été effectué : il sera réessayé.",
+          "pending_other": "{{count}} envois n’ont pas encore été effectués : ils seront réessayés.",
+          "unknown_one": "{{count}} envoi n’a pas pu être confirmé : le fournisseur de courriel n’a pas donné de réponse définitive.",
+          "unknown_other": "{{count}} envois n’ont pas pu être confirmés : le fournisseur de courriel n’a pas donné de réponse définitive.",
+          "recipientsUnresolved": "La recherche des destinataires a échoué; personne n’a reçu cette synthèse par courriel. Le rapport lui-même a été enregistré."
+        }
       },
       "fleetDesign": {
         "title": "Conception du parc",
