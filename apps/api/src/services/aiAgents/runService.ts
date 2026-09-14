@@ -147,6 +147,20 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - designMaxTurns        — run loop (designLimits(), designProfile.ts):
  *                            substitutes for maxTurnsPerRun on a
  *                            design-profile run; not enforced here.
+ *  - maxConcurrentPatchRuns — HERE (admission rule 6b, via profileCaps()),
+ *                            patch-profile runs only — counted separately
+ *                            from every other per-run-shape concurrency cap
+ *                            above (AI patch agent W01).
+ *  - maxPatchRunsPerDay    — HERE (admission rule 6b, via profileCaps()),
+ *                            patch-profile runs only, over the same 24-HOUR
+ *                            window as design: a patch run is once a day per
+ *                            org plus the occasional manual "Run now".
+ *  - patchBudgetCentsPerRun — run loop (patchLimits(), patchProfile.ts):
+ *                            substitutes for maxBudgetCentsPerRun on a
+ *                            patch-profile run; not enforced here.
+ *  - patchMaxTurns         — run loop (patchLimits(), patchProfile.ts):
+ *                            substitutes for maxTurnsPerRun on a
+ *                            patch-profile run; not enforced here.
  */
 
 export interface CreateAgentRunInput {
@@ -301,7 +315,12 @@ export type AgentRunSkipReason =
   // pairs above: deliberately NOT added to PUBLISHED_SKIP_REASONS — a volume
   // guard on a scheduled-at-most-monthly, manually-triggerable run shape,
   // not a policy event worth a bus publish.
-  | 'max_concurrent_design_runs' | 'design_rate';
+  | 'max_concurrent_design_runs' | 'design_rate'
+  // AI patch agent (W01) — the patch-profile equivalents, counted against
+  // maxConcurrentPatchRuns/maxPatchRunsPerDay (admission rule 6b, via
+  // profileCaps()). Same posture as every pair above: deliberately NOT added
+  // to PUBLISHED_SKIP_REASONS — volume guards on a scheduled shape.
+  | 'max_concurrent_patch_runs' | 'patch_rate';
 
 export type CreateAgentRunResult =
   | { created: true; run: AiAgentRunRow }
@@ -787,6 +806,17 @@ function profileCaps(
         concurrentSkip: 'max_concurrent_design_runs',
         rateSkip: 'design_rate',
       };
+    // AI patch agent (W01) — a patch run is scheduled once a day per org
+    // (plus the occasional manual "Run now"), so it shares design's 24-HOUR
+    // rate window rather than the hourly one.
+    case 'patch':
+      return {
+        maxConcurrent: limits.maxConcurrentPatchRuns ?? AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
+        maxPerWindow: limits.maxPatchRunsPerDay ?? AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
+        windowMs: 86_400_000,
+        concurrentSkip: 'max_concurrent_patch_runs',
+        rateSkip: 'patch_rate',
+      };
     default: {
       const exhaustive: never = profile;
       throw new Error(`[profileCaps] Unknown run profile: ${String(exhaustive)}`);
@@ -1152,6 +1182,14 @@ export async function createAndEnqueueAgentRun(
     //     as the cross-table invariant above: this is the same class of
     //     violation, just on `kind`/`deviceId` instead of `orgId`.
     if (profile === 'design' && (agentRow.kind !== 'designer' || deviceId !== null)) {
+      return skip('ownership_mismatch');
+    }
+    // 8a (patch). AI patch agent (W01): a `patch`-profile run must be driven
+    //     by a `patch` agent against no device. Only THIS direction — the
+    //     reverse pin (rule 2a's designer arm) would delete the device lane a
+    //     patch agent already has on the `full` profile (POST
+    //     /ai/agents/:id/runs), which this program does not remove.
+    if (profile === 'patch' && (agentRow.kind !== 'patch' || deviceId !== null)) {
       return skip('ownership_mismatch');
     }
 
