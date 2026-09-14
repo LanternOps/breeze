@@ -3,7 +3,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OrganizationsBoardPage, { ORG_BOARD_LENS_STORAGE_KEY, ORG_LIST_SORT_STORAGE_KEY, ROW_HIGHLIGHT_MS } from './OrganizationsBoardPage';
 import { fetchWithAuth } from '@/stores/auth';
-import { ALL_CAPS, ALPHA, BETA, GAMMA, flush, jsonResponse, mockBoardApi, readinessFor, renderedRowIds } from './boardTestKit';
+import { showToast } from '@/components/shared/Toast';
+import { ALL_CAPS, ALPHA, BETA, GAMMA, NEW_ORG_ID, flush, jsonResponse, mockBoardApi, readinessFor, renderedRowIds } from './boardTestKit';
 
 vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn(), handleSessionExpired: vi.fn() }));
 vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
@@ -43,6 +44,7 @@ vi.mock('@/lib/permissions', () => ({
 }));
 
 const fetchMock = vi.mocked(fetchWithAuth);
+const toastMock = vi.mocked(showToast);
 const desktop = () => within(screen.getByTestId('responsive-table-desktop'));
 const row = (id: string) => within(desktop().getByTestId(`org-board-row-${id}`));
 
@@ -62,6 +64,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-13T12:00:00.000Z'));
   fetchMock.mockReset();
+  toastMock.mockReset();
   navigateTo.mockReset();
   window.location.hash = '';
   window.localStorage.clear();
@@ -284,5 +287,35 @@ describe('OrganizationsBoardPage — readiness states', () => {
     await flush();
     fireEvent.click(desktop().getByTestId(`org-board-row-${ALPHA.id}`));
     expect(navigateTo).toHaveBeenCalledWith(`/organizations/${ALPHA.id}`);
+  });
+});
+
+describe('OrganizationsBoardPage — add organization', () => {
+  it('submits the Add organization dialog, POSTs the values, refreshes, closes, toasts and highlights the new row', async () => {
+    mockBoardApi(fetchMock, { readiness: standardReadiness() });
+    render(<OrganizationsBoardPage />);
+    await flush();
+
+    fireEvent.click(screen.getByTestId('org-board-add'));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Organization name'), { target: { value: 'New Co' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create organization' }));
+    await flush();
+
+    const postCall = fetchMock.mock.calls.find(([url, init]) => url === '/orgs/organizations' && init?.method === 'POST');
+    expect(postCall).toBeDefined();
+    const body = JSON.parse(String(postCall![1]?.body)) as { name: string; slug: string; type: string; status: string };
+    expect(body).toMatchObject({ name: 'New Co', slug: 'new-co', type: 'customer', status: 'active' });
+
+    // Modal closed.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    // Success toast names the created org.
+    expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringContaining('New Co') }));
+    // Hash points at the new org id, driving the highlight.
+    expect(window.location.hash).toBe(`#${NEW_ORG_ID}`);
+
+    await flush();
+    expect(renderedRowIds()).toContain(NEW_ORG_ID);
+    expect(desktop().getByTestId(`org-board-row-${NEW_ORG_ID}`)).toHaveAttribute('data-highlighted', 'true');
   });
 });

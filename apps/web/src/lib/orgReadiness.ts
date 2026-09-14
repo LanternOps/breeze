@@ -164,8 +164,10 @@ export function deriveReadinessChips(
 ): DerivedChips | null {
   if (!readiness || !capabilities) return null;
   // Archived and archive-draining orgs are listed only under the Archived
-  // filter and carry no readiness chips.
-  if (isArchiveLifecycleOrg(org)) return { setup: [], account: [], accountApplicable: false };
+  // filter and carry no readiness chips. `null` (not `{accountApplicable:
+  // false}`) so this matches the encoding `archivedRows` already uses for
+  // rows in the Archived list — ReadinessChips renders both as a dash.
+  if (isArchiveLifecycleOrg(org)) return null;
 
   const type = readiness.type ?? org.type ?? 'customer';
   const status = readiness.status ?? org.status;

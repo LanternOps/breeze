@@ -122,6 +122,35 @@ describe('useAccountReadiness', () => {
     await waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
   });
 
+  it('decrements inFlight on the 401 branch so a concurrent successful batch still lands on ready, not a wedged loading', async () => {
+    const all = ids(250); // splits into a 200-chunk and a 50-chunk, run concurrently (READINESS_CONCURRENCY=2)
+    fetchMock.mockImplementation(async (input) => {
+      const requested = new URL(String(input), 'http://x').searchParams.get('orgIds')!.split(',');
+      if (requested.length === 200) return jsonResponse({ error: 'Unauthorized' }, false, 401);
+      return jsonResponse(body(requested));
+    });
+    const { result } = renderHook(() => useAccountReadiness(all));
+    await waitFor(() => expect(handleSessionExpired).toHaveBeenCalled());
+    // Without the inFlight decrement on the unauthorized branch, this never
+    // resolves: inFlight is stuck above 0 and status is wedged at 'loading'.
+    await waitFor(() => expect(result.current.status).not.toBe('loading'));
+    expect(result.current.status).toBe('ready');
+    expect(result.current.rowState.get(all[249])).toBe('ready'); // the 50-chunk that succeeded
+  });
+
+  it('marks a requested id absent from the response as failed, not ready', async () => {
+    const all = ids(2);
+    fetchMock.mockImplementation(async (input) => {
+      const requested = new URL(String(input), 'http://x').searchParams.get('orgIds')!.split(',');
+      return jsonResponse(body([requested[0]])); // omits the second requested id
+    });
+    const { result } = renderHook(() => useAccountReadiness(all));
+    await waitFor(() => expect(result.current.rowState.get(all[0])).toBe('ready'));
+    expect(result.current.rowState.get(all[1])).toBe('failed');
+    expect(result.current.byOrg.has(all[0])).toBe(true);
+    expect(result.current.byOrg.has(all[1])).toBe(false);
+  });
+
   it('the same ids in a different order (a manual reorder) do not refetch', async () => {
     fetchMock.mockImplementation(async (input) => jsonResponse(body(new URL(String(input), 'http://x').searchParams.get('orgIds')!.split(','))));
     const all = ids(3);

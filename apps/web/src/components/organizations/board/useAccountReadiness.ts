@@ -85,6 +85,7 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
         if (!mounted.current || gen !== generation.current) return;
         if (result.kind === 'unauthorized') {
           handleSessionExpired();
+          setInFlight((n) => n - 1);
           return;
         }
         if (result.kind === 'failed') {
@@ -103,9 +104,13 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
             for (const org of response.orgs) next.set(org.orgId, org);
             return next;
           });
+          // Mark ready only ids the server actually returned; a requested id
+          // absent from `response.orgs` is a real data gap, not "complete" —
+          // 'ready' with no `byOrg` entry would render an indistinguishable dash.
+          const returnedIds = new Set(response.orgs.map((org) => org.orgId));
           setRowState((prev) => {
             const next = new Map(prev);
-            for (const id of chunk) next.set(id, 'ready');
+            for (const id of chunk) next.set(id, returnedIds.has(id) ? 'ready' : 'failed');
             return next;
           });
         }

@@ -195,19 +195,19 @@ describe('deriveReadinessChips — applicability rules', () => {
     expect([...result.setup, ...result.account]).toEqual([]);
   });
 
-  it('an archived org has no chips at all', () => {
+  it('an archived org yields null, not an empty-but-applicable chip set (matches archivedRows\' encoding)', () => {
     const result = derive(
       readiness({ setup: { sites: 0 }, account: { primaryContact: null } }),
       ALL_CAPS,
       'native',
       { id: ORG_ID, status: 'archived', archived: true },
-    )!;
-    expect(result).toEqual({ setup: [], account: [], accountApplicable: false });
+    );
+    expect(result).toBeNull();
   });
 
-  it('an org mid-archive-drain (offboarding + archived flag) has no chips either', () => {
-    const result = derive(readiness({ setup: { sites: 0 } }), ALL_CAPS, 'native', { id: ORG_ID, status: 'offboarding', archived: true })!;
-    expect(result.setup).toEqual([]);
+  it('an org mid-archive-drain (offboarding + archived flag) also yields null', () => {
+    const result = derive(readiness({ setup: { sites: 0 } }), ALL_CAPS, 'native', { id: ORG_ID, status: 'offboarding', archived: true });
+    expect(result).toBeNull();
   });
 });
 
