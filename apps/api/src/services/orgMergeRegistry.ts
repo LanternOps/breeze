@@ -756,6 +756,9 @@ const REPOINT_TABLES: readonly string[] = [
   // other config row; its compiled alert_rules/alert_templates/automations rows
   // are already in this list and repoint alongside it.
   "monitor_definitions",
+  // #5290 — device-org denormalised; a merge restamps org_id with the device.
+  "monitor_device_state",
+  "monitor_episodes",
   "network_baselines",
   "network_change_events",
   "network_monitors",

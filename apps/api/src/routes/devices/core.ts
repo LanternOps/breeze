@@ -286,6 +286,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
+  // #5290 — both denormalise org_id from the device.
+  'monitor_device_state', 'monitor_episodes',
   'onedrive_device_state',
   'peripheral_events', 'peripheral_policy_delivery_events', 'peripheral_policy_device_states',
   'playbook_executions', 'provision_credential_handles',
@@ -490,6 +492,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Latest projection references the immutable observation, so it must be
   // deleted before the observation in the explicit device cascade.
   'device_agent_health_latest', 'device_software_inventory_state',
+  // #5290 — monitor_device_state.current_episode_id FKs to monitor_episodes
+  // (ON DELETE SET NULL), so delete the state rows before the episodes.
+  'monitor_device_state', 'monitor_episodes',
   'agent_health_observations', 'software_inventory_observations',
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',
