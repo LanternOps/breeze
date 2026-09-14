@@ -1694,7 +1694,10 @@
     "saveChanges": "Save Changes",
     "site": "Site",
     "tags": "Tags",
-    "title": "Device Settings"
+    "title": "Device Settings",
+    "purchaseDate": "Purchase date",
+    "purchaseDateHelp": "Used by the Hardware Lifecycle report to plan replacement.",
+    "purchaseDateVendorHint": "Set from the manufacturer’s ship date. Enter a date to override it."
   },
   "deviceSoftwareInventory": {
     "actions": {
@@ -2787,7 +2790,8 @@
       "assignedContactPlaceholder": "Search contacts…",
       "tags": "Tags",
       "tagsPlaceholder": "Comma-separated",
-      "notes": "Notes"
+      "notes": "Notes",
+      "purchaseDate": "Purchase date"
     }
   },
   "addNetworkAssetModal": {

@@ -212,6 +212,18 @@
       "cancel": "Cancelar",
       "createReport": "Crear informe"
     },
+    "lifecycleOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Crear informe",
+      "includeManualAssets": "Incluir activos ingresados manualmente",
+      "includeManualAssetsHelp": "Los activos manuales con fecha de compra o garantía aparecen junto a los equipos con agente.",
+      "includeOtherEquipment": "Listar otros equipos",
+      "includeOtherEquipmentHelp": "Impresoras, hardware de red e IoT se listan sin cronograma de reemplazo.",
+      "replaceAgeYears": "Planificar reemplazo después de (años)",
+      "replaceAgeYearsHelp": "Un equipo debe reemplazarse esta cantidad de años después de la compra, o cuando termine la garantía activa si es más tarde.",
+      "serverReplaceAgeYears": "Planificar reemplazo de servidores después de (años)",
+      "serverReplaceAgeYearsHelp": "Los servidores siguen su propio calendario y se listan en una sección separada del informe."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuración de informes",
       "description": "Genere un informe único sin guardarlo.",
@@ -264,6 +276,14 @@
         "showing": "Mostrando {{start}} a {{end}} de registros {{total}}"
       },
       "refresh": "Actualizar",
+      "lifecycle": {
+        "dueSoon": "Próximo a vencer",
+        "onTrack": "En plazo",
+        "otherEquipment": "Otros equipos",
+        "recommendations": "Lo que recomendamos",
+        "replaceNow": "Reemplazar ahora",
+        "unknownAge": "Antigüedad desconocida"
+      },
       "reportTypes": {
         "ai_fleet_design": "Diseño de flota",
         "ai_org_narrative": "Narrativa semanal de operaciones con IA",
@@ -271,6 +291,7 @@
         "compliance": "Informe de cumplimiento",
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
+        "hardware_lifecycle": "Ciclo de vida del hardware",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software"
@@ -330,6 +351,7 @@
         "compliance": "Informe de cumplimiento",
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
+        "hardware_lifecycle": "Ciclo de vida del hardware",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software"
@@ -703,7 +725,18 @@
         "templateName": "Paquete de cumplimiento trimestral",
         "value": "Valor"
       },
-      "recipients": { "contacts": "Contactos de la organización", "legacy": "Direcciones de correo electrónico heredadas", "convert": "Convertir en contacto", "added": "Destinatario del informe agregado", "removed": "Destinatario del informe eliminado", "converted": "Dirección de correo electrónico convertida en contacto", "updateFailed": "No se pudieron actualizar los destinatarios del informe", "convertFailed": "No se pudo convertir esta dirección de correo electrónico", "mfaRequired": "La conversión de un destinatario requiere autenticación multifactor. Activa MFA en tu perfil y vuelve a intentarlo.", "loadFailed": "No se pudieron cargar los destinatarios del informe" },
+      "recipients": {
+        "contacts": "Contactos de la organización",
+        "legacy": "Direcciones de correo electrónico heredadas",
+        "convert": "Convertir en contacto",
+        "added": "Destinatario del informe agregado",
+        "removed": "Destinatario del informe eliminado",
+        "converted": "Dirección de correo electrónico convertida en contacto",
+        "updateFailed": "No se pudieron actualizar los destinatarios del informe",
+        "convertFailed": "No se pudo convertir esta dirección de correo electrónico",
+        "mfaRequired": "La conversión de un destinatario requiere autenticación multifactor. Activa MFA en tu perfil y vuelve a intentarlo.",
+        "loadFailed": "No se pudieron cargar los destinatarios del informe"
+      },
       "previewTable": {
         "selectFields": "Seleccione campos para completar la tabla de vista previa."
       },
@@ -828,6 +861,7 @@
         "device_inventory": "Inventario de dispositivos",
         "devices": "Dispositivos",
         "executive_summary": "Resumen ejecutivo",
+        "hardware_lifecycle": "Ciclo de vida del hardware",
         "patches": "Parches",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
@@ -861,6 +895,10 @@
         "executive_summary": {
           "description": "KPI de alto nivel, postura de riesgo y tendencias estratégicas para el liderazgo.",
           "name": "Resumen ejecutivo"
+        },
+        "hardware_lifecycle": {
+          "description": "Plan de reemplazo de equipos listo para el cliente: antigüedad, garantía, fechas de reemplazo y estado de soporte del sistema operativo, con una recomendación por etapas.",
+          "name": "Informe de ciclo de vida del hardware"
         },
         "security_compliance_posture": {
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",

@@ -268,6 +268,20 @@ x-api-env: &api-env
   # Wave 5 Part B (#3827) sub-flag of BREEZE_AI_AGENTS_ENABLED — gates
   # attemptPolicyDecision; default off (dark-ship). See .env.example.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  # AI execution plane (W01). Hosted-only; all optional. Empty strings are
+  # treated as unset by the readers (config/env.ts, services/artifacts/blobStorage.ts).
+  BREEZE_AI_WORKSPACE_ENABLED: ${BREEZE_AI_WORKSPACE_ENABLED:-false}
+  BREEZE_REGION: ${BREEZE_REGION:-}
+  ARTIFACT_BLOB_BACKEND: ${ARTIFACT_BLOB_BACKEND:-}
+  ARTIFACT_S3_ENDPOINT_EU: ${ARTIFACT_S3_ENDPOINT_EU:-}
+  ARTIFACT_S3_ENDPOINT_US: ${ARTIFACT_S3_ENDPOINT_US:-}
+  ARTIFACT_S3_BUCKET_EU: ${ARTIFACT_S3_BUCKET_EU:-}
+  ARTIFACT_S3_BUCKET_US: ${ARTIFACT_S3_BUCKET_US:-}
+  ARTIFACT_S3_REGION_EU: ${ARTIFACT_S3_REGION_EU:-}
+  ARTIFACT_S3_REGION_US: ${ARTIFACT_S3_REGION_US:-}
+  ARTIFACT_S3_ACCESS_KEY: ${ARTIFACT_S3_ACCESS_KEY:-}
+  ARTIFACT_S3_SECRET_KEY: ${ARTIFACT_S3_SECRET_KEY:-}
+  ARTIFACT_S3_SSE: ${ARTIFACT_S3_SSE:-}
   # Per-partner BYO-LLM provider catalog (#3922 W01-W04) — off by default.
   LLM_PROVIDER_CATALOG_ENABLED: ${LLM_PROVIDER_CATALOG_ENABLED:-false}
   # Native APNs push for the iOS app (all optional; unset = push disabled).

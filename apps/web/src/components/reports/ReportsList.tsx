@@ -38,7 +38,8 @@ export type ReportType =
   | 'executive_summary'
   | 'security_compliance_posture'
   | 'ai_org_narrative'
-  | 'ai_fleet_design';
+  | 'ai_fleet_design'
+  | 'hardware_lifecycle';
 
 /**
  * Report types the API owns end to end: the AI schedule creates the definition,

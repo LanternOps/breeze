@@ -212,6 +212,18 @@
       "cancel": "İptal",
       "createReport": "Rapor oluştur"
     },
+    "lifecycleOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "includeManualAssets": "Elle girilen varlıkları dahil et",
+      "includeManualAssetsHelp": "Satın alma veya garanti tarihi olan manuel varlıklar ajanlı cihazların yanında görünür.",
+      "includeOtherEquipment": "Diğer ekipmanları listele",
+      "includeOtherEquipmentHelp": "Yazıcılar, ağ ve IoT donanımı değiştirme takvimi olmadan listelenir.",
+      "replaceAgeYears": "Değiştirmeyi planla (yıl sonra)",
+      "replaceAgeYearsHelp": "Bir cihaz satın alımdan bu kadar yıl sonra, veya daha geçse aktif garanti bittiğinde değiştirilmelidir.",
+      "serverReplaceAgeYears": "Sunucu değişimini planla (yıl sonra)",
+      "serverReplaceAgeYearsHelp": "Sunucular kendi zaman çizelgesini izler ve raporun ayrı bir bölümünde listelenir."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Rapor Yapılandırması",
       "description": "Kaydetmeden tek seferlik bir rapor oluşturun.",
@@ -264,6 +276,14 @@
         "showing": "{{start}} ila {{end}} / {{total}} kayıt gösteriliyor"
       },
       "refresh": "Yenile",
+      "lifecycle": {
+        "dueSoon": "Yakında",
+        "onTrack": "Yolunda",
+        "otherEquipment": "Diğer ekipman",
+        "recommendations": "Önerimiz",
+        "replaceNow": "Şimdi değiştir",
+        "unknownAge": "Yaş bilinmiyor"
+      },
       "reportTypes": {
         "ai_fleet_design": "Filo Tasarımı",
         "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
@@ -271,6 +291,7 @@
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri"
@@ -330,6 +351,7 @@
         "compliance": "Uyumluluk Raporu",
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri"
@@ -703,7 +725,18 @@
         "templateName": "Üç Aylık Uyumluluk Paketi",
         "value": "Değer"
       },
-      "recipients": { "contacts": "Kuruluş kişileri", "legacy": "Eski e-posta adresleri", "convert": "Kişiye dönüştür", "added": "Rapor alıcısı eklendi", "removed": "Rapor alıcısı kaldırıldı", "converted": "E-posta adresi kişiye dönüştürüldü", "updateFailed": "Rapor alıcıları güncellenemedi", "convertFailed": "Bu e-posta adresi dönüştürülemedi", "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.", "loadFailed": "Rapor alıcıları yüklenemedi" },
+      "recipients": {
+        "contacts": "Kuruluş kişileri",
+        "legacy": "Eski e-posta adresleri",
+        "convert": "Kişiye dönüştür",
+        "added": "Rapor alıcısı eklendi",
+        "removed": "Rapor alıcısı kaldırıldı",
+        "converted": "E-posta adresi kişiye dönüştürüldü",
+        "updateFailed": "Rapor alıcıları güncellenemedi",
+        "convertFailed": "Bu e-posta adresi dönüştürülemedi",
+        "mfaRequired": "Bir alıcıyı dönüştürmek için çok faktörlü kimlik doğrulama gerekir. Profilinizde MFA'yı etkinleştirin ve tekrar deneyin.",
+        "loadFailed": "Rapor alıcıları yüklenemedi"
+      },
       "previewTable": {
         "selectFields": "Önizleme tablosunun doldurulacağı alanları seçin."
       },
@@ -828,6 +861,7 @@
         "device_inventory": "Cihaz Envanteri",
         "devices": "Cihazlar",
         "executive_summary": "Yönetici Özeti",
+        "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
@@ -861,6 +895,10 @@
         "executive_summary": {
           "description": "Liderliğe yönelik üst düzey KPI'lar, risk duruşu ve stratejik eğilimler.",
           "name": "Yönetici Özeti"
+        },
+        "hardware_lifecycle": {
+          "description": "Müşteriye hazır cihaz değiştirme planı: yaş, garanti, değiştirme tarihleri ve işletim sistemi destek durumu, aşamalı bir öneriyle.",
+          "name": "Donanım Yaşam Döngüsü Raporu"
         },
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",

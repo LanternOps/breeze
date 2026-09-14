@@ -2585,6 +2585,11 @@ describe('validateConfig', () => {
       VERCEL_SANDBOX_TOKEN: 'prod-test-vercel-sandbox-token',
       VERCEL_TEAM_ID: 'team_xxx',
       VERCEL_PROJECT_ID: 'prj_xxx',
+      // W01's artifact-store rule: a hosted workspace lane needs a blob bucket
+      // for its region (validate.ts, BREEZE_AI_WORKSPACE_ENABLED hosted branch).
+      ARTIFACT_S3_BUCKET_US: 'breeze-ai-artifacts-us',
+      ARTIFACT_S3_ACCESS_KEY: 'artifact-access-key',
+      ARTIFACT_S3_SECRET_KEY: 'artifact-secret-key',
     }, () => {
       const config = validateConfig();
       expect(config.NODE_ENV).toBe('production');
@@ -3285,5 +3290,80 @@ describe('M365_TENANT_SYNC_ENABLED + sync knobs (wave 04)', () => {
     withEnv({ ...validEnv, M365_SYNC_TICK_BATCH: 'lots' }, () => {
       expect(() => validateConfig()).toThrow(/M365_SYNC_TICK_BATCH/);
     });
+  });
+});
+
+describe('execution-plane env (W01): BREEZE_REGION / BREEZE_AI_WORKSPACE_ENABLED / ARTIFACT_*', () => {
+  const KEYS = [
+    'BREEZE_REGION',
+    'BREEZE_AI_WORKSPACE_ENABLED',
+    'ARTIFACT_BLOB_BACKEND',
+    'ARTIFACT_S3_ENDPOINT_EU', 'ARTIFACT_S3_ENDPOINT_US',
+    'ARTIFACT_S3_BUCKET_EU', 'ARTIFACT_S3_BUCKET_US',
+    'ARTIFACT_S3_REGION_EU', 'ARTIFACT_S3_REGION_US',
+    'ARTIFACT_S3_ACCESS_KEY', 'ARTIFACT_S3_SECRET_KEY',
+    'ARTIFACT_S3_SSE',
+  ] as const;
+
+  it.each(KEYS)('declares %s in the env schema', (key) => {
+    expect(ENV_SCHEMA_KEYS).toContain(key);
+    expect(buildEnvParseInput({ [key]: 'sentinel' })[key]).toBe('sentinel');
+  });
+
+  it('refuses an unrecognised BREEZE_REGION', () => {
+    withEnv({ ...validEnv, BREEZE_REGION: 'mars' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_REGION/);
+    });
+  });
+
+  it('accepts BREEZE_REGION=eu and BREEZE_REGION=us', () => {
+    withEnv({ ...validEnv, BREEZE_REGION: 'eu' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+    withEnv({ ...validEnv, BREEZE_REGION: 'us' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('refuses a non-boolean BREEZE_AI_WORKSPACE_ENABLED', () => {
+    withEnv({ ...validEnv, BREEZE_AI_WORKSPACE_ENABLED: 'ture' }, () => {
+      expect(() => validateConfig()).toThrow(/BREEZE_AI_WORKSPACE_ENABLED/);
+    });
+  });
+
+  it('refuses ARTIFACT_BLOB_BACKEND=db (not available in v1) and any other non-s3 value', () => {
+    withEnv({ ...validEnv, ARTIFACT_BLOB_BACKEND: 'db' }, () => {
+      expect(() => validateConfig()).toThrow(/ARTIFACT_BLOB_BACKEND/);
+    });
+    withEnv({ ...validEnv, ARTIFACT_BLOB_BACKEND: 'gcs' }, () => {
+      expect(() => validateConfig()).toThrow(/ARTIFACT_BLOB_BACKEND/);
+    });
+    withEnv({ ...validEnv, ARTIFACT_BLOB_BACKEND: 's3' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+    withEnv({ ...validEnv, ARTIFACT_BLOB_BACKEND: '' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it('when the workspace flag is on and hosted, requires a bucket for the deployment region', () => {
+    const base = {
+      ...validEnv,
+      IS_HOSTED: 'true',
+      BREEZE_AI_AGENTS_ENABLED: 'true',
+      BREEZE_AI_WORKSPACE_ENABLED: 'true',
+      BREEZE_REGION: 'eu',
+    };
+    withoutEnv(
+      ['S3_BUCKET', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'ARTIFACT_S3_BUCKET_EU', 'ARTIFACT_S3_ACCESS_KEY', 'ARTIFACT_S3_SECRET_KEY'],
+      () => {
+        withEnv(base, () => {
+          expect(() => validateConfig()).toThrow(/ARTIFACT_S3_BUCKET_EU/);
+        });
+        withEnv({ ...base, ARTIFACT_S3_BUCKET_EU: 'bucket', ARTIFACT_S3_ACCESS_KEY: 'k', ARTIFACT_S3_SECRET_KEY: 's' }, () => {
+          expect(() => validateConfig()).not.toThrow();
+        });
+      },
+    );
   });
 });

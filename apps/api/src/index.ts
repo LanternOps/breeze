@@ -147,6 +147,7 @@ import { aiScriptPolicyRoutes } from './routes/ai/scriptPolicy';
 import { partnerAiScriptPolicyRoutes } from './routes/partnerAiScriptPolicy';
 import { aiProviderRoutes } from './routes/aiProvider';
 import { aiAgentsRoutes } from './routes/aiAgents';
+import { aiArtifactRoutes } from './routes/aiArtifacts';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
@@ -1017,6 +1018,11 @@ api.route('/ai/script-proposals', aiScriptProposalRoutes);
 // registered ahead of '/ai' so the literal paths never fall into a sibling
 // param route.
 api.route('/ai', aiScriptPolicyRoutes);
+// BEFORE /ai: aiRoutes owns broad paths. There is no /ai/agents mount here —
+// the per-run artifact LIST lives inside aiAgentsRoutes itself (see
+// routes/aiAgents.ts, above its /runs/:runId), so no second router shares
+// that prefix.
+api.route('/ai/artifacts', aiArtifactRoutes);
 api.route('/ai', aiRoutes);
 api.route('/ai/script-builder', scriptAiRoutes);
 api.route('/mcp', mcpServerRoutes);

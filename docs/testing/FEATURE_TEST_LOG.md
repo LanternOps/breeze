@@ -2,6 +2,26 @@
 
 Tracking file for post-implementation feature verification results. Entries are logged most-recent-first.
 
+## Hardware Lifecycle Report (PR #5701) — 2026-09-13
+
+**Branch:** `feature/hardware-lifecycle-report`
+**Commit:** `87fcc856f`
+**Tested by:** Claude
+**Result:** PASS
+
+### What was tested
+- [x] UI: `/reports/templates` → Hardware Lifecycle card → options dialog → Create report → saved with `type=hardware_lifecycle`, monthly, PDF.
+- [x] UI: Generate now → completed run; Recent Runs → Download → 2-page PDF rendered and inspected (summary bars, replacement table, other equipment, recommendations, vendor-date footnote).
+- [x] UI: Edit page loads lifecycle options from config; changed replace-age 4→5 + other-equipment off → Update → config persisted, type preserved; regenerate honours both (otherEquipmentCount 0, due_soon recount).
+- [x] Data: wt-stack seed + e2e fixtures + 12 seeded devices (device_hardware, device_warranty incl. AppleCare subscription, vendor/manual purchase dates, undated) + 4 manual assets (workstation w/ warranty, printer, switch, unknown). 15 computers / 3 other classified correctly (6 replace, 2 due soon, 4 on track, 3 unknown age; Win10 → ended, Server 2016 → ending).
+- [x] Bug fix: saved report no longer duplicates its curated template card (`ReportTemplates.savedReportMerge.test.tsx`), verified live after "Use template".
+
+### Issues Found
+- Fixed in `87fcc856f`: `/reports/templates` returns every saved report; name-matched rows were keyed by their own UUID and rendered as a second card.
+- Pre-existing, not fixed: Saved Reports "Last Generated" column stays stale after Generate now until reload (`handleGenerate` refreshes runs only).
+- Cosmetic: PDF table ellipsises long OS/model cells ("Windows Server 2016 Stand…", "ThinkPad X1 Carbon Ge…").
+- Note: OS classifier keys on the agent's product-name `os_version` ("Microsoft Windows 10 Pro 22H2"); a bare NT build string ("10.0.19045") stays `unclassified` (conservative by design).
+
 Use the `feature-testing` skill to run structured verification and record results here.
 
 ## Network device detail page + discovered asset list (branch `network-assets-list`) — 2026-09-06
