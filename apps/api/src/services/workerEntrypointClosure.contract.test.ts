@@ -312,6 +312,7 @@ const EXPECTED_NAMES = [
   'aiBudgetReservationSweep',
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
+  'reportRunDeliveryReconciler',
 ];
 
 // ---------------------------------------------------------------------------

@@ -73,6 +73,8 @@ const EXPECTED_WORKER_NAMES = [
   // #5290 (Monitoring & automation unification, W03) — daily prune of closed
   // monitor_episodes rows past the 400-day retention window.
   'monitorEpisodeRetention',
+  // #4248 W03 (AI Scorecard #5757) — narrative delivery reconciliation sweep.
+  'reportRunDeliveryReconciler',
 ];
 
 describe('workerRegistry: losslessness', () => {
@@ -81,7 +83,7 @@ describe('workerRegistry: losslessness', () => {
   });
 
   it('has exactly the expected number of entries', () => {
-    expect(WORKER_REGISTRY.length).toBe(139);
+    expect(WORKER_REGISTRY.length).toBe(140);
   });
 
   it('registers the m365 sync retention worker as global placement', async () => {
@@ -123,14 +125,14 @@ describe('workerRegistry: losslessness', () => {
 
 describe('workerRegistry: selectWorkers', () => {
   it("'all' selects every entry", () => {
-    expect(selectWorkers('all').length).toBe(139);
+    expect(selectWorkers('all').length).toBe(140);
     expect(selectWorkers('all')).toEqual(WORKER_REGISTRY);
   });
 
   it("'api' and 'worker' partition the set with no overlap and no loss", () => {
     const api = selectWorkers('api');
     const worker = selectWorkers('worker');
-    expect(api.length + worker.length).toBe(139);
+    expect(api.length + worker.length).toBe(140);
 
     const apiNames = new Set(api.map((e) => e.name));
     const workerNames = new Set(worker.map((e) => e.name));
@@ -138,7 +140,7 @@ describe('workerRegistry: selectWorkers', () => {
       expect(workerNames.has(name)).toBe(false);
     }
     const union = new Set([...apiNames, ...workerNames]);
-    expect(union.size).toBe(139);
+    expect(union.size).toBe(140);
   });
 
   it("'api' selects only socket-owner placements", () => {

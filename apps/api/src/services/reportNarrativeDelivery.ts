@@ -63,6 +63,8 @@ export interface NarrativeDeliveryResult extends DeliverySummary {
   refused: number;
   /** Recipients left retryable in this pass (transient gate failure, no transport). */
   transient: number;
+  /** Emails the provider accepted in THIS pass (the run totals above are cumulative). */
+  sentNow: number;
 }
 
 interface NarrativeArtifact {
@@ -154,9 +156,10 @@ export async function deliverNarrativeEmails(
 
   let refused = 0;
   let transient = 0;
+  let sentNow = 0;
   const pending = await listPendingDeliveriesForRun(reportRunId);
   if (pending.length === 0) {
-    return { ...(await summarizeDeliveries(reportRunId)), refused, transient };
+    return { ...(await summarizeDeliveries(reportRunId)), refused, transient, sentNow };
   }
 
   // No transport at all: nothing can leave, so nothing is claimed. Every row
@@ -170,7 +173,7 @@ export async function deliverNarrativeEmails(
       await recordTransientGateFailure(delivery.id, 'transport:not_configured');
     }
     transient = pending.length;
-    return { ...(await summarizeDeliveries(reportRunId)), refused, transient };
+    return { ...(await summarizeDeliveries(reportRunId)), refused, transient, sentNow };
   }
 
   const artifact = await loadArtifact(reportRunId);
@@ -178,7 +181,7 @@ export async function deliverNarrativeEmails(
     // The artifact is gone (FK cascade would have removed the rows too, so
     // this is a narrow race). Nothing to send; leave the rows as they are.
     console.warn('[narrativeDelivery] report run no longer exists; nothing to deliver', { reportRunId });
-    return { ...(await summarizeDeliveries(reportRunId)), refused, transient };
+    return { ...(await summarizeDeliveries(reportRunId)), refused, transient, sentNow };
   }
   if (artifact.orgId !== ctx.orgId) {
     // Defence in depth: the caller's org and the artifact's org disagree.
@@ -198,6 +201,7 @@ export async function deliverNarrativeEmails(
     const outcome = await deliverOne(delivery, artifact, ctx.orgId, timezone, branding);
     if (outcome === 'refused') refused += 1;
     if (outcome === 'transient') transient += 1;
+    if (outcome === 'sent') sentNow += 1;
   }
 
   const summary = await summarizeDeliveries(reportRunId);
@@ -206,7 +210,7 @@ export async function deliverNarrativeEmails(
       reportRunId, orgId: ctx.orgId, refused, transient, total: summary.total,
     });
   }
-  return { ...summary, refused, transient };
+  return { ...summary, refused, transient, sentNow };
 }
 
 type OneOutcome = 'sent' | 'refused' | 'transient' | 'lost_claim' | 'failed' | 'unknown';
