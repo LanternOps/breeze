@@ -1,7 +1,7 @@
 ---
-tracking_issue: TBD (register after Gate B)
-wave_issue: TBD (W01 #4211, W02 #4212, W03 #4209, W04 #4177 — sub-issues minted at registration)
-branch: plan/4209-ai-helpdesk-followon
+tracking_issue: LanternOps/breeze#5739
+wave_issues: W01 LanternOps/breeze#5740 (#4211), W02 LanternOps/breeze#5741 (#4212), W03 LanternOps/breeze#5742 (#4209), W04 LanternOps/breeze#5743 (#4177)
+branch: feature/5739-ai-helpdesk-followon/wave-<sub-issue>
 ---
 
 # AI Helpdesk Agent Follow-On Implementation Plan (#4209 cluster)

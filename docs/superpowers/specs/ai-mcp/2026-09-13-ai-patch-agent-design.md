@@ -257,3 +257,5 @@ W02 depends on W01; W03 on W02; W04 on W01 (routing) and W03 (escalation shape).
 No unresolved disagreement. Every remaining fork is an Open Decision above.
 
 **Not verified** (flagged for the plan author): whether `requireMfa` is attached to each specific patch approval/operation handler; whether `deadlineDays`, `gracePeriodHours`, `ringOrder` or `patch_policies.notifyOnComplete` have any runtime consumer (none found); whether the Go agent ingest path writes `device_patches.failure_count`; the exact enclosing constant of the four-eyes entry for `manage_patches:rollback` (`aiGuardrails.ts:357`).
+
+- 2026-09-13 — **Gate A approved by the product owner: all eleven recommendations (OD-1…OD-11, option A each).** `spec-approved` applied to #4174 and #5382. Plan authoring follows; migration slot reserved `2026-10-16-181300`.

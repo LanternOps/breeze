@@ -349,3 +349,5 @@ Findings raised, each re-read against the code before adoption:
 | 16 | Prefers columns over a polymorphic `remediation_triggers` table for single-cause v1 (subject-integrity and retention problems; introduce one only when multiple causes or a canonical execution ledger justify it). | **Agrees with the author position** — columns retained. |
 
 **Net:** the two advisors agree on the shape (intents not child runs; typed cert observations; columns not a join table) and disagree on five mechanics, all resolved in the code's favour above. No disagreement remains unresolved; the two genuine product judgements are surfaced as OD-2 and OD-5.
+
+- 2026-09-13 — **Gate A approved by the product owner: all six recommendations (OD-1 A, OD-2 A, OD-3 A, OD-4 A, OD-5 A, OD-6 A).** The §8 issue was filed as #5744 (fix-by-trigger tagging; ships as W01). `spec-approved` applied to #4442, #4230, #5744. Migration slot reserved `2026-10-16-181500`.
