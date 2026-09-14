@@ -58,7 +58,30 @@
       "disconnectFailed": "La connexion n’a pas pu être déconnectée.",
       "disconnectSucceeded": "La connexion Breeze a été déconnectée.",
       "approveNewPermissions": "Approuver les nouvelles autorisations",
-      "upgradeFailed": "L'approbation des nouvelles autorisations n'a pas pu être lancée."
+      "upgradeFailed": "L'approbation des nouvelles autorisations n'a pas pu être lancée.",
+      "syncNow": "Synchroniser maintenant",
+      "syncFailed": "Impossible de demander la synchronisation du locataire.",
+      "syncSucceeded": "Synchronisation du locataire demandée."
+    },
+    "sync": {
+      "lastSynced": "Dernière synchronisation {{relative}}",
+      "counts": "{{users}} utilisateurs · {{devices}} appareils",
+      "never": "Pas encore synchronisé",
+      "chips": {
+        "partial": "{{domain}} : partiel",
+        "needsConsent": "{{domain}} : consentement requis",
+        "throttled": "{{domain}} : limité",
+        "error": "{{domain}} : erreur",
+        "unlicensed": "L'activité de connexion nécessite Entra ID P1"
+      },
+      "domains": {
+        "users": "Utilisateurs",
+        "signin_activity": "Activité de connexion",
+        "intune_devices": "Appareils Intune",
+        "ca_policies": "Accès conditionnel",
+        "skus": "Licences",
+        "secure_score": "Niveau de sécurité"
+      }
     },
     "errors": {
       "consent_expired": "La session de consentement a expiré. Redémarrez le consentement.",

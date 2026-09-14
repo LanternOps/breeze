@@ -1,6 +1,6 @@
 import '@/lib/i18n';
 
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import DeviceDetailPage from './DeviceDetailPage';
@@ -56,19 +56,30 @@ describe('DeviceDetailPage — recent devices', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(deviceResponse({ displayName: 'Front desk PC' }));
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     await screen.findByRole('link', { name: 'Acme Corp' });
-    expect(useRecentsStore.getState().devices).toEqual([
-      expect.objectContaining({ id: DEVICE_ID, name: 'Front desk PC', orgId: 'org-42' }),
-    ]);
+    // The link render and the recentsStore write happen in separate effects
+    // fired off the same `device` fetch, so the link can appear before the
+    // store write's effect has flushed — wait for the store, don't assert
+    // synchronously right after the link shows up (#5696).
+    await waitFor(() => {
+      expect(useRecentsStore.getState().devices).toEqual([
+        expect.objectContaining({ id: DEVICE_ID, name: 'Front desk PC', orgId: 'org-42' }),
+      ]);
+    });
   });
 
   it('still records a device whose fetch finished before the store hydrated', async () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(deviceResponse());
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     await screen.findByRole('link', { name: 'Acme Corp' });
+    // Meaningful because the store is never hydrated at this point (no
+    // `hydrate()` call yet) — recordDevice no-ops on a null userId
+    // regardless of effect timing, so this doesn't race the fetch effect.
     expect(useRecentsStore.getState().devices).toEqual([]);
 
     act(() => { useRecentsStore.getState().hydrate('u1'); });
-    expect(useRecentsStore.getState().devices.map((d) => d.name)).toEqual(['alpha-01']);
+    await waitFor(() => {
+      expect(useRecentsStore.getState().devices.map((d) => d.name)).toEqual(['alpha-01']);
+    });
   });
 
   it('forgets a device the API reports as gone', async () => {
@@ -78,6 +89,8 @@ describe('DeviceDetailPage — recent devices', () => {
     vi.mocked(fetchWithAuth).mockResolvedValue(new Response('{}', { status: 404 }));
     render(<DeviceDetailPage deviceId={DEVICE_ID} />);
     await screen.findByText(/Device not found/);
-    expect(useRecentsStore.getState().devices.map((d) => d.id)).toEqual(['other']);
+    await waitFor(() => {
+      expect(useRecentsStore.getState().devices.map((d) => d.id)).toEqual(['other']);
+    });
   });
 });

@@ -305,6 +305,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'ai_operator_operations',
   'ai_operator_task_outbox',
   'ai_operator_tasks',
+  // Execution plane W02 (#5713): one row per sandbox instance, Shape 1 with a
+  // NOT NULL org_id, so an entry here is mandatory. Its only outbound FK is
+  // the composite (run_id, org_id) -> ai_agent_runs ON DELETE CASCADE, and
+  // ai_agent_runs sorts EARLIER in this alphabetical list — harmless, because
+  // the FK carries an explicit ON DELETE and topologicalCascadeOrder()'s
+  // runtime pg_constraint read, not this array, decides the real DELETE order.
+  'ai_run_workspaces',
   'ai_screenshots',
   // AI script authoring W04 (#5612). ai_script_lane_state is per-org circuit
   // state (PK org_id); ai_script_policies is dual-owner config whose PARTNER
@@ -475,6 +482,10 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'escalation_policies',
   'event_delivery_receipts',
   'executive_summaries',
+  // Fleet Designer W03 (#5653): apply ledger. report_run_id FK is ON DELETE
+  // CASCADE (report_runs is pre-cleared above), org_id reached here too —
+  // either order is a no-op for the other. Leaf table, no children.
+  'fleet_design_applied_items',
   'fleet_finding_devices',
   'fleet_findings',
   'fleet_remediation_run_targets',

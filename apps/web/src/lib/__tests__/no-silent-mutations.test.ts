@@ -289,6 +289,11 @@ const TARGET_GLOBS = [
   // against customer machines unattended — a silent failure here would leave
   // an operator believing the lane is off (or on) when it is not.
   'src/components/settings/ScriptAuthoringPage.tsx',
+  // Fleet Designer W03 (#5653): starting a design run and the apply/rollback
+  // flow write configuration policies and device groups against a customer's
+  // fleet — a silent failure here reads as "applied" while nothing landed.
+  'src/components/fleetDesign/FleetDesignPage.tsx',
+  'src/components/fleetDesign/ApplyDrawer.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -613,8 +618,10 @@ describe('no silent mutations in targeted set', () => {
     // lib/api/scriptProposals.ts (request-changes + promote), so the count is
     // now 126. #5612 W05 Tasks 23-24 add ScriptAuthoringPage.tsx, so the
     // count is now 127. Fleet Designer W02 (#5652) adds
-    // devices/DeviceFunctionField.tsx, so the count is now 128.
-    expect(absoluteFiles.length).toBe(128);
+    // devices/DeviceFunctionField.tsx, so the count is now 128. Fleet
+    // Designer W03 (#5653) adds fleetDesign/FleetDesignPage.tsx and
+    // fleetDesign/ApplyDrawer.tsx, so the count is now 130.
+    expect(absoluteFiles.length).toBe(130);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

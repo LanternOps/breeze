@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MergeOrgModal, { MERGE_POLL_INTERVAL_MS } from './MergeOrgModal';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import { fetchWithAuth, handleSessionExpired } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 

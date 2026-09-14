@@ -176,15 +176,17 @@ describe('m365 sync claim protocol (real Postgres, spec §5.2)', () => {
     expect(claimed[0]).toMatchObject({ orgId: a.orgId, domain: 'skus', priority: 1 });
   });
 
-  runDb('reconcile seeds the four implemented domains once and is idempotent', async () => {
+  runDb('reconcile seeds all six domains once and is idempotent', async () => {
     const t = await seedConnection();
 
-    expect(await reconcileEligibleConnections()).toBe(4);
+    expect(await reconcileEligibleConnections()).toBe(6);
     expect(await reconcileEligibleConnections()).toBe(0);
 
     const rows = await withSystemDbAccessContext(() =>
       db.select().from(m365SyncState).where(eq(m365SyncState.orgId, t.orgId)));
-    expect(rows.map((r) => r.domain).sort()).toEqual(['ca_policies', 'intune_devices', 'skus', 'users']);
+    expect(rows.map((r) => r.domain).sort()).toEqual([
+      'ca_policies', 'intune_devices', 'secure_score', 'signin_activity', 'skus', 'users',
+    ]);
     for (const row of rows) {
       const ahead = row.nextSyncAt!.getTime() - Date.now();
       expect(ahead).toBeGreaterThanOrEqual(-5_000);
@@ -192,6 +194,7 @@ describe('m365 sync claim protocol (real Postgres, spec §5.2)', () => {
     }
     expect(rows.find((r) => r.domain === 'users')!.intervalSeconds).toBe(21600);
     expect(rows.find((r) => r.domain === 'skus')!.intervalSeconds).toBe(86400);
+    expect(rows.find((r) => r.domain === 'signin_activity')!.intervalSeconds).toBe(86400);
   });
 
   runDb('reconcile ignores a revoked connection', async () => {
@@ -212,5 +215,49 @@ describe('m365 sync claim protocol (real Postgres, spec §5.2)', () => {
     await seedState(t);
     const [job] = await claimDueDomains({ limit: 1 });
     expect(syncJobId(job!)).not.toContain(':');
+  });
+});
+
+describe('m365 sync claim — two concurrent tickers over a multi-domain batch', () => {
+  runDb('partition the due rows completely: no overlap and nothing lost', async () => {
+    // Six tenants × two domains = twelve due rows, so each claimer's limit is
+    // reachable and SKIP LOCKED has something to skip.
+    const tenants = await Promise.all(Array.from({ length: 6 }, () => seedConnection()));
+    for (const tenant of tenants) {
+      await seedState(tenant, { domain: 'users' });
+      await seedState(tenant, { domain: 'skus' });
+    }
+    const orgIds = new Set(tenants.map((tenant) => tenant.orgId));
+
+    const [left, right] = await Promise.all([
+      claimDueDomains({ limit: 12 }),
+      claimDueDomains({ limit: 12 }),
+    ]);
+    const mine = (claimed: typeof left) => claimed
+      .filter((job) => orgIds.has(job.orgId))
+      .map((job) => `${job.orgId}:${job.domain}`);
+    const leftKeys = mine(left);
+    const rightKeys = mine(right);
+
+    expect(new Set(leftKeys).size, 'a single claim never returns a duplicate').toBe(leftKeys.length);
+    expect(leftKeys.filter((key) => rightKeys.includes(key)), 'claims must be disjoint').toEqual([]);
+    expect(
+      new Set([...leftKeys, ...rightKeys]).size,
+      'SKIP LOCKED must not lose a row: the union of both claims covers all twelve',
+    ).toBe(12);
+
+    // Every row was claimed exactly once: one generation bump, a live lease,
+    // and a due time the claim did not advance.
+    for (const tenant of tenants) {
+      for (const domain of ['users', 'skus'] as const) {
+        const state = await readState(tenant.orgId, domain);
+        expect(state.runGeneration, `${tenant.orgId}:${domain}`).toBe(1);
+        expect(state.leaseUntil, `${tenant.orgId}:${domain}`).not.toBeNull();
+        expect(
+          state.nextSyncAt!.getTime(),
+          'the claim must not advance next_sync_at',
+        ).toBeLessThanOrEqual(Date.now());
+      }
+    }
   });
 });

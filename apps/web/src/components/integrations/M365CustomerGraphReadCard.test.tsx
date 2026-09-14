@@ -85,6 +85,7 @@ vi.mock("@/lib/navigation", () => ({ navigateTo: vi.fn() }));
 
 vi.mock("@/lib/dateTimeFormat", () => ({
   formatDateTime: vi.fn((value: string) => `formatted ${value}`),
+  formatRelativeTime: vi.fn((value: string) => `relative ${value}`),
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
@@ -126,6 +127,20 @@ function envelope(overrides: Record<string, unknown> = {}) {
     },
     onboardingEnabled: true,
     connection: null,
+    syncEnabled: true,
+    sync: {
+      lastSuccessAt: "2026-09-08T11:30:00.000Z",
+      users: 128,
+      devices: 96,
+      domains: [
+        { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+        { domain: "signin_activity", status: "success", asOf: "2026-09-08T06:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+        { domain: "secure_score", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+      ],
+    },
     ...overrides,
   };
 }
@@ -710,6 +725,7 @@ describe("M365CustomerGraphReadCard", () => {
     ["consent", "Connect"],
     ["retest", "Retest"],
     ["disconnect", "Disconnect from Breeze"],
+    ["sync", "Sync now"],
   ])("silences a stale %s network rejection after switching to Org B", async (operation, buttonName) => {
     const confirm = operation === "disconnect"
       ? vi.spyOn(window, "confirm").mockReturnValue(true)
@@ -757,6 +773,8 @@ describe("M365CustomerGraphReadCard", () => {
     ["retest", "Retest", "reject"],
     ["disconnect", "Disconnect from Breeze", "complete"],
     ["disconnect", "Disconnect from Breeze", "reject"],
+    ["sync", "Sync now", "complete"],
+    ["sync", "Sync now", "reject"],
   ])("silences a stale %s response body %s after switching to Org B", async (operation, buttonName, outcome) => {
     const confirm = operation === "disconnect"
       ? vi.spyOn(window, "confirm").mockReturnValue(true)
@@ -982,6 +1000,238 @@ describe("M365CustomerGraphReadCard", () => {
 
       expect(await screen.findByText("Connection details are unavailable."))
         .toBeInTheDocument();
+    });
+  });
+
+  describe("Sync now", () => {
+    it("is hidden when the DTO says sync is disabled", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        connection: connection(),
+        syncEnabled: false,
+        sync: null,
+      })));
+      render(<M365CustomerGraphReadCard />);
+      await screen.findByRole("button", { name: "Retest" });
+      expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+    });
+
+    it("is hidden when there is no connection", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: null, syncEnabled: true })));
+      render(<M365CustomerGraphReadCard />);
+      await screen.findByRole("button", { name: "Connect" });
+      expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+    });
+
+    it("is hidden for a revoked connection", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        syncEnabled: true, connection: connection({ status: "revoked" }),
+      })));
+      render(<M365CustomerGraphReadCard />);
+      await screen.findByRole("button", { name: "Re-consent" });
+      expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
+    });
+
+    it("posts through runAction, prevents duplicate clicks, and reloads", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+      render(<M365CustomerGraphReadCard />);
+      const button = await screen.findByRole("button", { name: "Sync now" });
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ requested: true, domains: [] }));
+
+      fireEvent.click(button);
+      fireEvent.click(button);
+      expect(button).toBeDisabled();
+
+      await waitFor(() => {
+        expect(fetchWithAuthMock).toHaveBeenCalledWith(
+          `/m365/connections/${CONNECTION_ID}/sync?orgId=${ORG_A}`,
+          { method: "POST" },
+        );
+      });
+      expect(runActionMock).toHaveBeenCalledOnce();
+      expect(state.successMessages).toContain("Tenant sync requested.");
+    });
+
+    it("surfaces a failure through runAction rather than silently no-opping", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+      render(<M365CustomerGraphReadCard />);
+      const button = await screen.findByRole("button", { name: "Sync now" });
+      fetchWithAuthMock.mockResolvedValue(makeResponse({ error: "rate limited" }, false, 429));
+
+      fireEvent.click(button);
+
+      await waitFor(() => {
+        expect(state.errorMessages).toContain("Tenant sync could not be requested.");
+      });
+    });
+
+    it("is disabled without organizations:write", async () => {
+      state.canWrite = false;
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ connection: connection() })));
+      render(<M365CustomerGraphReadCard />);
+      expect(await screen.findByRole("button", { name: "Sync now" })).toBeDisabled();
+    });
+
+    it("does not let a deferred Org A sync block Org B actions", async () => {
+      // mirrors the existing retest scope-isolation test in this file
+      const pendingSync = deferredResponse();
+      fetchWithAuthMock
+        .mockResolvedValueOnce(makeResponse(envelope({ connection: connection() })))
+        .mockReturnValueOnce(pendingSync.promise)
+        .mockResolvedValueOnce(makeResponse(envelope({
+          connection: connection({
+            id: "88888888-8888-4888-8888-888888888888",
+            tenantId: "99999999-9999-4999-8999-999999999999",
+            displayName: "Contoso B",
+          }),
+        })));
+      const view = render(<M365CustomerGraphReadCard />);
+      fireEvent.click(await screen.findByRole("button", { name: "Sync now" }));
+
+      state.currentOrgId = ORG_B;
+      view.rerender(<M365CustomerGraphReadCard />);
+      expect(await screen.findByText("Contoso B")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
+
+      pendingSync.resolve(makeResponse({ requested: true, domains: [] }));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(fetchWithAuthMock).toHaveBeenCalledTimes(3);
+      expect(screen.getByText("Contoso B")).toBeInTheDocument();
+      expect(screen.queryByText("Northwind Tenant")).not.toBeInTheDocument();
+      expect(state.successMessages).toEqual([]);
+    });
+  });
+
+  describe("sync summary line and chips", () => {
+    it("shows the last-synced line with user and device counts", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ syncEnabled: true })));
+      render(<M365CustomerGraphReadCard />);
+
+      const summary = await screen.findByTestId("m365-sync-summary");
+      expect(summary).toHaveTextContent("Last synced relative 2026-09-08T11:30:00.000Z");
+      expect(summary).toHaveTextContent("128 users");
+      expect(summary).toHaveTextContent("96 devices");
+      expect(screen.queryAllByTestId("m365-sync-chip")).toHaveLength(0);
+    });
+
+    it("says not synced yet before the first successful run", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        syncEnabled: true,
+        sync: { lastSuccessAt: null, users: null, devices: null, domains: [] },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByTestId("m365-sync-summary")).toHaveTextContent("Not synced yet");
+    });
+
+    it("renders a chip per degraded domain, in a fixed precedence, and none for healthy ones", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        syncEnabled: true,
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z",
+          users: 10,
+          devices: 5,
+          domains: [
+            { domain: "users", status: "partial", asOf: "2026-09-08T11:30:00.000Z", truncated: true, unlicensed: false },
+            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "intune_devices", status: "throttled", asOf: null, truncated: false, unlicensed: false },
+            { domain: "ca_policies", status: "needs_consent", asOf: null, truncated: false, unlicensed: false },
+            { domain: "skus", status: "error", asOf: null, truncated: false, unlicensed: false },
+            { domain: "secure_score", status: "never", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      const chips = await screen.findAllByTestId("m365-sync-chip");
+      expect(chips.map((chip) => chip.textContent)).toEqual([
+        "Users: partial",
+        "Sign-in activity needs Entra ID P1",
+        "Intune devices: throttled",
+        "Conditional Access: needs consent",
+        "Licenses: error",
+      ]);
+      // 'never' and 'success' are not problems; a domain nobody has run yet is
+      // reported by the summary line, not by a warning chip.
+    });
+
+    it("hides the sync summary entirely when tenant sync is off", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({ syncEnabled: false, sync: null })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByRole("heading", { name: "Customer Graph Read" })).toBeInTheDocument();
+      expect(screen.queryByTestId("m365-sync-summary")).not.toBeInTheDocument();
+    });
+
+    it("rejects an envelope whose sync block has an unknown domain", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        sync: {
+          lastSuccessAt: null, users: null, devices: null,
+          domains: [{ domain: "mailboxes", status: "success", asOf: null, truncated: false, unlicensed: false }],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+    });
+
+    it("rejects an envelope whose sync block has an unknown status", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        sync: {
+          lastSuccessAt: null, users: null, devices: null,
+          domains: [{ domain: "users", status: "weird", asOf: null, truncated: false, unlicensed: false }],
+        },
+      })));
+      render(<M365CustomerGraphReadCard />);
+
+      expect(await screen.findByText("Connection details are unavailable.")).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Verification, not TDD: W05 built this card and its own suite covers the
+   * button, the parser and the hidden states. What only this wave can see is
+   * that the envelope shape the API really sends — `syncEnabled` and `sync`
+   * on the ENVELOPE, beside `connection`, not inside it — survives the
+   * card's strict `hasExactKeys` parser and reaches the screen. A drift
+   * between the DTO and the parser degrades the whole card to
+   * "unavailable" silently, which is exactly the failure no other test in
+   * this wave would notice.
+   */
+  describe("sync summary renders from the envelope", () => {
+    it("shows the last-synced line, the counts, and a chip for the unlicensed domain", async () => {
+      fetchWithAuthMock.mockResolvedValue(makeResponse(envelope({
+        syncEnabled: true,
+        sync: {
+          lastSuccessAt: "2026-09-08T11:30:00.000Z",
+          users: 128,
+          devices: 96,
+          domains: [
+            { domain: "users", status: "success", asOf: "2026-09-08T11:30:00.000Z", truncated: false, unlicensed: false },
+            { domain: "signin_activity", status: "success", asOf: null, truncated: false, unlicensed: true },
+            { domain: "intune_devices", status: "success", asOf: "2026-09-08T11:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "ca_policies", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "skus", status: "success", asOf: "2026-09-08T02:00:00.000Z", truncated: false, unlicensed: false },
+            { domain: "secure_score", status: "never", asOf: null, truncated: false, unlicensed: false },
+          ],
+        },
+      })));
+
+      render(<M365CustomerGraphReadCard />);
+
+      // The card parsed the envelope rather than degrading to its
+      // "Connection details are unavailable." state. "Last synced" and the
+      // counts share ONE text node (M365CustomerGraphReadCard.tsx: the
+      // `sync.lastSynced` + `sync.counts` strings are joined with " · "
+      // inside a single <p>), so assert on that node's combined content
+      // rather than three separate getByText calls.
+      const summary = await screen.findByTestId("m365-sync-summary");
+      expect(summary).toHaveTextContent(/Last synced/);
+      expect(summary).toHaveTextContent("128 users");
+      expect(summary).toHaveTextContent("96 devices");
+      // At least one chip: sign-in activity on a tenant without Entra ID P1.
+      expect(screen.getByText(/Entra ID P1/)).toBeInTheDocument();
     });
   });
 });

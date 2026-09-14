@@ -42,6 +42,7 @@ const {
 }));
 
 vi.mock('../middleware/auth', () => ({
+  authMiddleware: async (_c: unknown, next: () => Promise<void>) => next(),
   requireScope: () => async (_c: unknown, next: () => Promise<void>) => next(),
   requireMfa: () => async (c: { json: (body: unknown, status: number) => Response }, next: () => Promise<void>) => (
     mfaOkMock() ? next() : c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403)
@@ -303,6 +304,37 @@ describe('POST /monitor-definitions', () => {
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ data: created });
     expect(createMonitorDefinitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the ambient ?orgId= query when the body carries none (partner tokens have auth.orgId null, cf. #808)', async () => {
+    const created = monitorRow();
+    createMonitorDefinitionMock.mockResolvedValue(created);
+    const orgId = '44444444-4444-4444-8444-444444444444';
+
+    const res = await jsonRequest(buildApp(), 'POST', `?orgId=${orgId}`, validCreateBody());
+
+    expect(res.status).toBe(201);
+    expect(createMonitorDefinitionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId }),
+      expect.anything(),
+    );
+  });
+
+  it('prefers an explicit body orgId over the ambient query', async () => {
+    const created = monitorRow();
+    createMonitorDefinitionMock.mockResolvedValue(created);
+    const bodyOrg = '55555555-5555-4555-8555-555555555555';
+
+    const res = await jsonRequest(buildApp(), 'POST', '?orgId=44444444-4444-4444-8444-444444444444', {
+      ...validCreateBody(),
+      orgId: bodyOrg,
+    });
+
+    expect(res.status).toBe(201);
+    expect(createMonitorDefinitionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: bodyOrg }),
+      expect.anything(),
+    );
   });
 
   it('maps a MonitorOwnershipError to 403 with the error message', async () => {

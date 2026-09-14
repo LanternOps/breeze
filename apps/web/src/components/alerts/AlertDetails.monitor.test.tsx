@@ -34,7 +34,7 @@ describe('AlertDetails — monitor-raised alerts (#5287)', () => {
 
     const row = screen.getByTestId('alert-details-monitor');
     const link = row.querySelector('a');
-    expect(link).toHaveAttribute('href', '/monitoring/monitors/monitor-1');
+    expect(link).toHaveAttribute('href', '/alerts/monitors/monitor-1');
   });
 
   it('omits the Monitor row when monitorId is not set', () => {

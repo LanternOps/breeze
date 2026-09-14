@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type KeyboardEvent } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
-import type { Organization } from './OrganizationList';
+import type { Organization } from './organizationTypes';
 import OrganizationForm from './OrganizationForm';
 import SiteList from './SiteList';
 import SiteModals from './SiteModals';
@@ -18,8 +18,41 @@ import { runAction, ActionError, handleActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { navigateTo } from '@/lib/navigation';
 import { isArchiveLifecycleOrg } from '@/lib/archiveLifecycle';
+import { Dialog } from '../shared/Dialog';
+import { ActionMenu } from '../shared/ActionMenu';
+import { applyOrgSwitch } from '@/lib/orgSwitch';
+import { makeOrgFetch, useLatest, type OrgSummary } from '../organizations/record/orgRecordFetch';
+import { formatDate } from '@/lib/dateTimeFormat';
+import { formatNumber } from '@/lib/i18n/format';
+import { Building2, ChevronDown, ChevronRight, GripVertical, Settings } from 'lucide-react';
 
 type ModalMode = 'closed' | 'add' | 'edit' | 'archive' | 'merge';
+
+/** `aria-describedby` target for every row's reorder handle: one hidden
+ *  sentence explaining the arrow-key alternative to dragging. */
+const REORDER_HINT_ID = 'org-list-reorder-hint';
+const ADD_ORG_TITLE_ID = 'org-add-dialog-title';
+const noop = () => {};
+
+/** localStorage key for the list's sort choice: a per-browser convenience,
+ *  never authoritative state. Exported for the test. */
+export const ORG_LIST_SORT_STORAGE_KEY = 'breeze.orgList.sort';
+type SortMode = 'manual' | 'name' | 'devices';
+const SORT_MODES: SortMode[] = ['manual', 'name', 'devices'];
+
+function readStoredSortMode(): SortMode {
+  try {
+    const stored = window.localStorage.getItem(ORG_LIST_SORT_STORAGE_KEY);
+    return stored === 'name' || stored === 'devices' ? stored : 'manual';
+  } catch {
+    return 'manual';
+  }
+}
+
+/** Chip order for the status filter: lifecycle order, `active` excluded —
+ *  it is the steady state the other chips are the exceptions to, the same
+ *  rule that keeps the active rows free of a status pill. */
+const FILTERABLE_STATUSES: Organization['status'][] = ['trial', 'suspended', 'churned', 'offboarding', 'merging'];
 
 type OrganizationFormValues = {
   name: string;
@@ -117,6 +150,16 @@ export default function OrganizationsPage() {
   // answer for the life of the mount (#4013's lesson, TicketingSettingsTabs).
   const jwt = useJwtClaims();
   const canMergeOrgs = jwt.status === 'resolved' && jwt.claims.scope === 'partner';
+  // The workspace org (the OrgSwitcher's selection) is a separate axis from
+  // the org selected on this page, and the two disagree constantly on a
+  // two-monitor desk: a tech acts on OliveTech here while the switcher says
+  // Liggett. The page never used to read it at all. Both are read through
+  // store selectors so the chip re-renders when the org list lands after
+  // mount (the name lives in the store's list, not on the token).
+  const workspaceOrgId = useOrgStore((s) => s.currentOrgId);
+  const workspaceOrgName = useOrgStore((s) =>
+    s.currentOrgId ? (s.organizations.find((o) => o.id === s.currentOrgId)?.name ?? null) : null,
+  );
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -127,6 +170,19 @@ export default function OrganizationsPage() {
   const [initialOrgId] = useHashState<string | null>(null, (h) => h || undefined);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // List controls for a long list (the stated persona has 60+ customers):
+  // a status filter that only offers the statuses actually present, and a
+  // sort that defaults to the partner's own manual (drag) order.
+  const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
+  const [statusFilter, setStatusFilter] = useState<'all' | Organization['status']>('all');
+  const changeSortMode = (mode: SortMode) => {
+    setSortMode(mode);
+    try {
+      window.localStorage.setItem(ORG_LIST_SORT_STORAGE_KEY, mode);
+    } catch {
+      /* per-browser nicety only; nothing depends on it persisting */
+    }
+  };
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [draggedOrgId, setDraggedOrgId] = useState<string | null>(null);
   /**
@@ -142,6 +198,19 @@ export default function OrganizationsPage() {
    */
   const [reorderPending, setReorderPending] = useState(false);
   const [dragOverOrgId, setDragOverOrgId] = useState<string | null>(null);
+  /**
+   * Roving tabindex for the org list. Exactly one row's controls are in the
+   * Tab order at a time (`activeOrgId` below); the arrow keys move that row
+   * without selecting it, so a keyboard user can walk 60 rows in 60
+   * keystrokes instead of 240 Tab stops, and only fires the sites fetch on
+   * Enter/Space. A ref map, not `document.querySelector`, finds the button
+   * to focus.
+   */
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
+  const rowSelectRefs = useRef(new Map<string, HTMLButtonElement>());
+  /** Last keyboard reorder, read out by the polite live region below the
+   *  list — the visual row move is invisible to a screen reader. */
+  const [reorderAnnouncement, setReorderAnnouncement] = useState('');
 
   // Archived-organizations section state. Collapsed by default and fetched
   // ONLY on expand (`includeArchived=true`) — deliberately NOT threaded through
@@ -176,6 +245,36 @@ export default function OrganizationsPage() {
   // Sites state — CRUD state and handlers moved to `useSiteCrud` (#5075 W02) so
   // the organization record's Sites tab can share the exact same behaviour.
   const siteCrud = useSiteCrud(selectedOrg?.id ?? null, { onUnauthorized: handleSessionExpired, t });
+
+  // The selected org's summary counts (`GET /orgs/organizations/:id/summary`,
+  // the same read the record page's overview tiles use). "N devices" was the
+  // only fleet fact this page had; a manager could not read health from it
+  // and a tech could not triage from it. Sections the caller cannot read are
+  // absent from the payload, so the strip hides a tile rather than showing a
+  // false zero. Latest-wins guarded: clicking quickly through rows fires
+  // overlapping reads, and a slow one must not repaint a stale customer's
+  // counts. The strip is also cleared the moment the selection changes (see
+  // the selectedOrg effect) so the previous customer's numbers never sit
+  // under the new customer's name while its read is in flight.
+  const [summary, setSummary] = useState<OrgSummary | null>(null);
+  const [summaryFailed, setSummaryFailed] = useState(false);
+  const summaryLatest = useLatest<OrgSummary | null>();
+  const loadSummary = useCallback(
+    async (orgId: string) => {
+      const next = await summaryLatest.run(
+        makeOrgFetch(orgId)(`/orgs/organizations/${orgId}/summary`)
+          .then(async (res) => (res.ok ? ((await res.json()) as OrgSummary) : null))
+          .catch(() => null),
+      );
+      if (next === undefined) return; // superseded by a newer selection
+      // A payload without the always-present `sites` block is not a summary
+      // (e.g. an unexpected envelope); treat it as unavailable, not as empty.
+      const usable = next && typeof next === 'object' && next.sites ? next : null;
+      setSummary(usable);
+      setSummaryFailed(usable === null);
+    },
+    [summaryLatest],
+  );
   // Partner's configured timezone, used to pre-select the timezone for new sites
   // instead of falling back to UTC. Undefined until loaded / if unavailable.
   const [partnerTimezone, setPartnerTimezone] = useState<string>();
@@ -184,11 +283,35 @@ export default function OrganizationsPage() {
   // redundant duplicate GET it would otherwise fire (#1978 follow-up).
   const skipSiteFetchForOrgId = useRef<string | null>(null);
 
+  const presentStatuses = useMemo(
+    () => FILTERABLE_STATUSES.filter((status) => organizations.some((org) => org.status === status)),
+    [organizations],
+  );
+
+  // A filter whose status just left the list (its last org was archived or
+  // merged away) would leave an empty list behind a chip that no longer
+  // exists; fall back to the full list instead.
+  useEffect(() => {
+    if (statusFilter !== 'all' && !presentStatuses.includes(statusFilter)) setStatusFilter('all');
+  }, [presentStatuses, statusFilter]);
+
   const filteredOrgs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return organizations;
-    return organizations.filter(org => org.name.toLowerCase().includes(q));
-  }, [organizations, searchQuery]);
+    let rows = organizations;
+    if (q) rows = rows.filter(org => org.name.toLowerCase().includes(q));
+    if (statusFilter !== 'all') rows = rows.filter(org => org.status === statusFilter);
+    if (sortMode === 'name') {
+      rows = [...rows].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (sortMode === 'devices') {
+      rows = [...rows].sort((a, b) => (b.deviceCount ?? 0) - (a.deviceCount ?? 0) || a.name.localeCompare(b.name));
+    }
+    return rows;
+  }, [organizations, searchQuery, statusFilter, sortMode]);
+
+  /** Manual (drag / arrow-key) ordering only means something against the
+   *  full, server-ordered list: a search, a filter or another sort hides
+   *  rows, so a move's neighbours would not be its real neighbours. */
+  const manualOrderActive = sortMode === 'manual' && statusFilter === 'all' && searchQuery.trim().length === 0;
 
   /**
    * Client-side re-filter of whatever archived rows are already loaded, using
@@ -205,6 +328,16 @@ export default function OrganizationsPage() {
     if (!q) return archivedOrgs;
     return archivedOrgs.filter(org => org.name.toLowerCase().includes(q));
   }, [archivedOrgs, searchQuery]);
+
+  /** The one row whose controls are in the Tab order: the last row the
+   *  arrow keys landed on, else the selected org, else the first row —
+   *  always re-resolved against the CURRENT filtered list so a search that
+   *  hides the remembered row never leaves the list with no tab stop. */
+  const activeOrgId = useMemo(() => {
+    if (activeRowId && filteredOrgs.some(org => org.id === activeRowId)) return activeRowId;
+    if (selectedOrg && filteredOrgs.some(org => org.id === selectedOrg.id)) return selectedOrg.id;
+    return filteredOrgs[0]?.id ?? null;
+  }, [activeRowId, filteredOrgs, selectedOrg]);
 
   /** Renders an archived org's purge countdown, shared by the row and the
    *  read-only detail pane. `purgeAt: null` (retention "Never") and an
@@ -431,8 +564,15 @@ export default function OrganizationsPage() {
       // anyway, so skip the request outright.
       if (isArchiveLifecycleOrg(selectedOrg)) {
         siteCrud.clear();
+        setSummary(null);
+        setSummaryFailed(false);
         return;
       }
+      // Clear first: the previous org's counts must not render under this
+      // org's name while its own read is in flight (review of #5708).
+      setSummary(null);
+      setSummaryFailed(false);
+      void loadSummary(selectedOrg.id);
       // Skip the fetch if org creation already fetched sites for this org
       // synchronously — avoids a redundant concurrent GET per create.
       if (skipSiteFetchForOrgId.current === selectedOrg.id) {
@@ -442,8 +582,10 @@ export default function OrganizationsPage() {
       siteCrud.refresh();
     } else {
       siteCrud.clear();
+      setSummary(null);
+      setSummaryFailed(false);
     }
-  }, [selectedOrg, siteCrud.refresh, siteCrud.clear]);
+  }, [selectedOrg, siteCrud.refresh, siteCrud.clear, loadSummary]);
 
   // Org handlers
   const handleAdd = () => {
@@ -518,8 +660,31 @@ export default function OrganizationsPage() {
 
   const handleSelectOrg = (org: Organization) => {
     setSelectedOrg(prev => prev?.id === org.id ? prev : org);
+    setActiveRowId(org.id);
     siteCrud.close();
     window.location.hash = org.id;
+  };
+
+  /** Same ritual as the record page's "Work in this org": the switch
+   *  re-navigates this page under the new scope, so no local state to keep. */
+  const handleWorkHere = (org: Organization) => {
+    void applyOrgSwitch(org.id, t('organizations:orgRecord.actions.workHereToast', { orgName: org.name }));
+  };
+
+  /** Arrow/Home/End on a row's select button: move focus and the roving tab
+   *  stop, never the selection (see `activeRowId`). */
+  const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number | null = null;
+    if (event.key === 'ArrowDown') next = Math.min(index + 1, filteredOrgs.length - 1);
+    else if (event.key === 'ArrowUp') next = Math.max(index - 1, 0);
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = filteredOrgs.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    if (next === index) return;
+    const target = filteredOrgs[next];
+    setActiveRowId(target.id);
+    rowSelectRefs.current.get(target.id)?.focus();
   };
 
   const handleToggleArchived = () => {
@@ -717,6 +882,42 @@ export default function OrganizationsPage() {
     setDragOverOrgId(null);
   };
 
+  /**
+   * Keyboard reorder: the same splice-and-persist as `handleOrgDrop`, one
+   * step at a time. The handle is rendered whenever manual order is active
+   * (no search, no status filter, manual sort) and stays MOUNTED while a
+   * reorder PATCH is in flight — unmounting it would drop focus to <body>
+   * after a single move. Moves are ignored, not hidden, until the previous
+   * one settles; because React keys the rows by id the focused handle
+   * survives the re-render, so a held arrow key walks the org through the
+   * list.
+   */
+  const moveOrganization = (org: Organization, delta: -1 | 1) => {
+    if (reorderPending) return;
+    const sourceIndex = organizations.findIndex(o => o.id === org.id);
+    if (sourceIndex === -1) return;
+    const targetIndex = sourceIndex + delta;
+    if (targetIndex < 0 || targetIndex >= organizations.length) return;
+    const next = [...organizations];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setOrganizations(next);
+    setReorderAnnouncement(
+      t('organizationsPage.list.movedAnnouncement', {
+        name: org.name,
+        position: targetIndex + 1,
+        total: next.length,
+      }),
+    );
+    void persistOrganizationOrder(next.map(o => o.id));
+  };
+
+  const handleReorderKeyDown = (event: KeyboardEvent<HTMLButtonElement>, org: Organization) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    moveOrganization(org, event.key === 'ArrowUp' ? -1 : 1);
+  };
+
   const handleCloseModal = () => {
     setModalMode('closed');
   };
@@ -800,16 +1001,11 @@ export default function OrganizationsPage() {
 
   // Site handlers — moved to `useSiteCrud` (#5075 W02); `siteCrud` above.
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="text-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
-          <p className="mt-4 text-sm text-muted-foreground">{t('organizationsPage.loading')}</p>
-        </div>
-      </div>
-    );
-  }
+  // The first load keeps the page frame (header, actions, empty panel) and
+  // shows a skeleton list where the rows will land, instead of replacing the
+  // whole page with a spinner. Later non-silent refreshes (after a create or
+  // import) already have rows to show and never flash the skeleton.
+  const initialLoading = loading && organizations.length === 0;
 
   if (error && organizations.length === 0) {
     return (
@@ -828,25 +1024,26 @@ export default function OrganizationsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-center justify-between">
+      {/* Page header. Actions drop under the title on narrow screens instead
+          of squeezing it into a two-line wrap beside two-line buttons. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('organizationsPage.title')}</h1>
           <p className="text-muted-foreground">{t('organizationsPage.description')}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             data-testid="bulk-org-import-toggle"
             onClick={() => setShowBulkImport((v) => !v)}
-            className="inline-flex h-10 items-center justify-center rounded-md border bg-background px-4 text-sm font-medium transition hover:bg-muted"
+            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
           >
             {t('bulkOrgImport.title')}
           </button>
           <button
             type="button"
             onClick={handleAdd}
-            className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
           >
             {t('organizationsPage.actions.addOrganization')}
           </button>
@@ -867,37 +1064,131 @@ export default function OrganizationsPage() {
         </div>
       )}
 
-      {/* Split view: org list (left) + detail panel (right) */}
-      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
+      {/* Split view: org list (left) + detail panel (right). The list is the
+          navigator: it keeps its own scroll box and stays put while the
+          panel scrolls, and the panel is only as tall as its content rather
+          than stretched to the list's height with nothing in it. */}
+      {/* `minmax(0, 1fr)` on purpose: a bare `1fr` (and the implicit single
+          column below `lg`) has an `auto` minimum, so any non-wrapping content
+          — a row of action buttons — widened the track past the viewport and
+          the whole page scrolled sideways on a phone. */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(320px,26%)_minmax(0,1fr)] lg:items-start">
         {/* Left panel - Organization list */}
-        <div className="rounded-lg border bg-card shadow-xs">
+        <div className="rounded-lg border bg-card shadow-xs lg:sticky lg:top-6">
           <div className="border-b px-4 py-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {t('organizationsPage.list.title')}
             </h2>
             <input
               type="search"
-              placeholder={t('organizationsPage.list.searchPlaceholder')}
+              placeholder={t('organizationsPage.list.searchLabel')}
+              aria-label={t('organizationsPage.list.searchLabel')}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="mt-2 h-8 w-full rounded-md border bg-background px-2.5 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
             />
+            {/* Status chips only for statuses present (exception-only, like
+                the row pills); the sort select sits at the end of the row.
+                Both hide manual reordering while they narrow or reorder the
+                list. */}
+            <div className="mt-2 flex items-start gap-2">
+              {presentStatuses.length > 0 && (
+                <div
+                  role="group"
+                  aria-label={t('organizationsPage.list.filter.label')}
+                  className="flex min-w-0 flex-1 flex-wrap gap-1"
+                >
+                  {(['all', ...presentStatuses] as const).map((status) => {
+                    const pressed = statusFilter === status;
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        aria-pressed={pressed}
+                        onClick={() => setStatusFilter(status)}
+                        className={`inline-flex h-8 items-center rounded-full border px-2.5 text-xs font-medium transition ${
+                          pressed
+                            ? 'border-foreground bg-foreground text-background'
+                            : 'bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                        }`}
+                      >
+                        {status === 'all'
+                          ? t('organizationsPage.list.filter.all')
+                          : t(/* i18n-dynamic */ statusLabelKeys[status])}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <select
+                aria-label={t('organizationsPage.list.sort.label')}
+                value={sortMode}
+                onChange={(e) => changeSortMode(e.target.value as SortMode)}
+                // `py-0` overrides the forms plugin's vertical padding, which
+                // otherwise pushes a 28px select's text out of its own box.
+                className="ml-auto h-8 shrink-0 rounded-md border bg-background py-0 pl-2 pr-7 text-xs leading-none focus:outline-hidden focus:ring-2 focus:ring-ring"
+              >
+                {SORT_MODES.map((mode) => (
+                  <option key={mode} value={mode}>
+                    {t(/* i18n-dynamic */ `organizationsPage.list.sort.${mode}`)}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          <div className="max-h-[calc(100vh-320px)] overflow-y-auto">
-            {filteredOrgs.length === 0 ? (
+          <p id={REORDER_HINT_ID} className="sr-only">
+            {t('organizationsPage.list.reorderHint')}
+          </p>
+          <div
+            data-testid="org-reorder-announcement"
+            role="status"
+            aria-live="polite"
+            className="sr-only"
+          >
+            {reorderAnnouncement}
+          </div>
+
+          {/* One scroll region for the active list AND the Archived section:
+              the Archived bar sits sticky at the bottom of the box and its
+              rows flow on underneath, so there is never a second, stacked
+              scroller pushing off the bottom of a 1080p screen. */}
+          <div data-testid="org-list-scroll" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+            {initialLoading ? (
+              <div data-testid="org-list-skeleton" aria-busy="true" className="divide-y">
+                <p className="sr-only">{t('organizationsPage.loading')}</p>
+                {Array.from({ length: 6 }, (_, i) => (
+                  <div key={i} className="px-3 py-3" aria-hidden="true">
+                    <div className="skeleton h-3.5 w-2/3" />
+                    <div className="skeleton mt-2 h-3 w-1/3" />
+                  </div>
+                ))}
+              </div>
+            ) : filteredOrgs.length === 0 ? (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                 {organizations.length === 0
                   ? t('organizationsPage.list.empty')
                   : t('organizationsPage.list.noMatches')}
               </div>
             ) : (
-              <ul className="divide-y">
-                {filteredOrgs.map(org => {
-                  const dragEnabled = searchQuery.trim().length === 0 && !reorderPending;
+              <ul className="divide-y" aria-label={t('organizationsPage.list.title')}>
+                {filteredOrgs.map((org, index) => {
+                  // Two gates on purpose: the handle is SHOWN whenever manual
+                  // order applies, and DRAGGING is enabled only while no
+                  // reorder is in flight. Tying the handle's presence to the
+                  // in-flight flag unmounted the focused handle on every
+                  // keyboard move (review of #5708).
+                  const showReorderHandle = manualOrderActive;
+                  const dragEnabled = showReorderHandle && !reorderPending;
                   const isDragging = draggedOrgId === org.id;
                   const isDropTarget = dragOverOrgId === org.id && draggedOrgId !== org.id;
+                  const isSelected = selectedOrg?.id === org.id;
+                  const rowTabIndex = activeOrgId === org.id ? 0 : -1;
                   return (
+                  /* The <li> keeps a click handler as a whole-row hit area for
+                     the mouse; the select button inside it is the keyboard
+                     and assistive-tech path to the same action, so the row's
+                     click is a convenience, never the only route. */
                   <li
                     key={org.id}
                     data-testid={`org-row-${org.id}`}
@@ -908,140 +1199,140 @@ export default function OrganizationsPage() {
                     onDragLeave={dragEnabled ? handleOrgDragLeave : undefined}
                     onDrop={dragEnabled ? (e) => handleOrgDrop(e, org) : undefined}
                     onDragEnd={dragEnabled ? handleOrgDragEnd : undefined}
-                    className={`group relative cursor-pointer px-4 py-3 transition hover:bg-muted/50 ${
-                      selectedOrg?.id === org.id
+                    className={`group relative flex cursor-pointer items-start gap-1.5 px-3 py-3 transition [contain-intrinsic-size:auto_60px] [content-visibility:auto] hover:bg-muted/50 ${
+                      isSelected
                         ? 'bg-muted/60 border-l-2 border-l-primary'
                         : 'border-l-2 border-l-transparent'
                     } ${isDragging ? 'opacity-50' : ''} ${isDropTarget ? 'border-t-2 border-t-primary' : ''}`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      {dragEnabled && (
-                        <span
-                          data-testid="org-drag-handle"
-                          className="mt-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition group-hover:opacity-100 active:cursor-grabbing"
-                          title={t('organizationsPage.list.dragToReorder')}
-                          aria-hidden="true"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="9" cy="6" r="1" />
-                            <circle cx="9" cy="12" r="1" />
-                            <circle cx="9" cy="18" r="1" />
-                            <circle cx="15" cy="6" r="1" />
-                            <circle cx="15" cy="12" r="1" />
-                            <circle cx="15" cy="18" r="1" />
-                          </svg>
-                        </span>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <a
-                          href={`/organizations/${org.id}`}
-                          data-testid={`org-open-record-${org.id}`}
-                          onClick={e => e.stopPropagation()}
-                          className="truncate text-sm font-medium hover:underline block"
-                        >
-                          {org.name}
-                        </a>
-                        <div className="mt-1 flex items-center gap-2">
-                          {/* Exception-only: an org's status is worth a glance
-                              only when it's NOT the steady state every other
-                              row is in. `active` is the overwhelming majority
-                              of rows, so giving it the same pill as every
-                              other status just added visual noise the eye had
-                              to filter past to spot the rows that actually
-                              need attention (trial/suspended/churned/etc). */}
-                          {org.status !== 'active' && (
-                            <span
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${statusColors[org.status]}`}
-                            >
-                              {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
-                            </span>
-                          )}
-                          {shouldShowDeviceCount(org.deviceCount) && (
-                            <span className="text-xs text-muted-foreground">
-                              {t('organizationsPage.deviceCount', { count: org.deviceCount })}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Hover action buttons */}
-                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleEdit(org);
-                          }}
-                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                          title={t('organizationsPage.actions.openSettings')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
-                            <path d="m15 5 4 4" />
-                          </svg>
-                        </button>
-                        <button
-                          type="button"
-                          data-testid={`org-archive-open-row-${org.id}`}
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleArchive(org);
-                          }}
-                          className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          title={t('organizationsPage.actions.archiveOrganization')}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="2" y="4" width="20" height="5" rx="1" />
-                            <path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9" />
-                            <path d="M10 13h4" />
-                          </svg>
-                        </button>
-                      </div>
-
-                      {/* Row-end chevron — persistent (not hover-only), so the
-                          record page is reachable without discovering the
-                          hover affordances above; same icon-button styling. */}
-                      <a
-                        href={`/organizations/${org.id}`}
-                        aria-label={t('organizationsPage.actions.openRecord')}
-                        title={t('organizationsPage.actions.openRecord')}
+                    {showReorderHandle && (
+                      /* Always visible (dimmed) so manual ordering is
+                         discoverable; a real button so it takes focus and
+                         moves the row with the arrow keys. */
+                      <button
+                        type="button"
+                        data-testid="org-drag-handle"
+                        aria-label={t('organizationsPage.list.reorderHandle', { name: org.name })}
+                        aria-describedby={REORDER_HINT_ID}
+                        aria-busy={reorderPending || undefined}
+                        title={t('organizationsPage.list.dragToReorder')}
+                        tabIndex={rowTabIndex}
                         onClick={e => e.stopPropagation()}
-                        className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onKeyDown={e => handleReorderKeyDown(e, org)}
+                        className="mt-0.5 shrink-0 cursor-grab rounded p-0.5 text-muted-foreground/40 transition group-hover:text-muted-foreground group-focus-within:text-muted-foreground active:cursor-grabbing"
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="m9 18 6-6-6-6" />
-                        </svg>
-                      </a>
-                    </div>
+                        <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      ref={el => {
+                        if (el) rowSelectRefs.current.set(org.id, el);
+                        else rowSelectRefs.current.delete(org.id);
+                      }}
+                      data-testid={`org-select-${org.id}`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      tabIndex={rowTabIndex}
+                      onClick={e => {
+                        e.stopPropagation();
+                        handleSelectOrg(org);
+                      }}
+                      onKeyDown={e => handleRowKeyDown(e, index)}
+                      className="min-w-0 flex-1 rounded text-left"
+                    >
+                      <span className="block truncate text-sm font-medium">{org.name}</span>
+                      <span className="mt-1 flex items-center gap-2">
+                        {/* Exception-only: an org's status is worth a glance
+                            only when it's NOT the steady state every other
+                            row is in. `active` is the overwhelming majority
+                            of rows, so giving it the same pill as every
+                            other status just added visual noise the eye had
+                            to filter past to spot the rows that actually
+                            need attention (trial/suspended/churned/etc). */}
+                        {org.status !== 'active' && (
+                          <span
+                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-medium leading-none ${statusColors[org.status]}`}
+                          >
+                            {t(/* i18n-dynamic */ statusLabelKeys[org.status])}
+                          </span>
+                        )}
+                        {/* The one row that IS the current workspace — the
+                            same exception-only rule: at most one row ever
+                            carries it, so it reads as a landmark, not noise. */}
+                        {workspaceOrgId === org.id && (
+                          <span
+                            data-testid="org-workspace-marker"
+                            className="inline-flex items-center rounded-full border border-primary/30 bg-primary/5 px-1.5 py-0.5 text-xs font-medium leading-none text-primary"
+                          >
+                            {t('organizationsPage.list.workspaceMarker')}
+                          </span>
+                        )}
+                        {shouldShowDeviceCount(org.deviceCount) && (
+                          <span className="text-xs text-muted-foreground">
+                            {t('organizationsPage.deviceCount', { count: org.deviceCount })}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+
+                    {/* Row actions mirror the detail header's two routes —
+                        Settings and Open record — and nothing else; the rare
+                        lifecycle actions live in the header's More menu.
+                        Settings is revealed on hover AND on keyboard focus
+                        within the row, so it is never focusable-but-invisible;
+                        the record link stays visible so the destination is
+                        discoverable without hovering. */}
+                    <button
+                      type="button"
+                      aria-label={t('organizationsPage.actions.openSettingsFor', { name: org.name })}
+                      title={t('organizationsPage.actions.openSettings')}
+                      tabIndex={rowTabIndex}
+                      onClick={e => {
+                        e.stopPropagation();
+                        handleEdit(org);
+                      }}
+                      className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
+                    >
+                      <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                    <a
+                      href={`/organizations/${org.id}`}
+                      data-testid={`org-open-record-${org.id}`}
+                      aria-label={t('organizationsPage.actions.openRecordFor', { name: org.name })}
+                      title={t('organizationsPage.actions.openRecord')}
+                      tabIndex={rowTabIndex}
+                      onClick={e => e.stopPropagation()}
+                      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    </a>
                   </li>
                   );
                 })}
               </ul>
             )}
-          </div>
 
-          {/* Archived organizations — collapsed by default, fetched only on expand */}
-          <div className="border-t">
-            <button
-              type="button"
-              data-testid="org-archived-toggle"
-              onClick={handleToggleArchived}
-              aria-expanded={archivedExpanded}
-              className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
-            >
-              <span>{t('organizationsPage.archived.sectionTitle')}</span>
-              <svg
-                xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
-                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                className={`transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
-                aria-hidden="true"
+            {/* Archived organizations — collapsed by default, fetched only on
+                expand. The bar is sticky at the bottom of the shared scroll
+                box; expanded rows continue below it in the same box. */}
+            <div className="sticky bottom-0 z-10 border-t bg-card">
+              <button
+                type="button"
+                data-testid="org-archived-toggle"
+                onClick={handleToggleArchived}
+                aria-expanded={archivedExpanded}
+                className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50"
               >
-                <path d="m6 9 6 6 6-6" />
-              </svg>
-            </button>
+                <span>{t('organizationsPage.archived.sectionTitle')}</span>
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform ${archivedExpanded ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
 
             {archivedExpanded && (
-              <div data-testid="org-archived-section" className="max-h-[calc(100vh-320px)] overflow-y-auto">
+              <div data-testid="org-archived-section" className="border-t">
                 {archivedLoading ? (
                   <div className="px-4 py-6 text-center text-sm text-muted-foreground">
                     {t('organizationsPage.archived.loading')}
@@ -1068,7 +1359,7 @@ export default function OrganizationsPage() {
                         {t('organizationsPage.archived.truncatedNote', { count: archivedOrgs.length })}
                       </p>
                     )}
-                    <ul className="divide-y">
+                    <ul className="divide-y" aria-label={t('organizationsPage.archived.sectionTitle')}>
                       {filteredArchivedOrgs.map(org => (
                         <li
                           key={org.id}
@@ -1078,18 +1369,29 @@ export default function OrganizationsPage() {
                             selectedOrg?.id === org.id ? 'bg-muted/60 border-l-2 border-l-primary' : 'border-l-2 border-l-transparent'
                           }`}
                         >
-                          <p className="truncate text-sm font-medium">{org.name}</p>
-                          <div className="mt-1 flex items-center gap-2">
-                            <span
-                              data-testid="org-archived-badge"
-                              className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-medium leading-none ${archiveBadge(org).color}`}
-                            >
-                              {archiveBadge(org).label}
+                          <button
+                            type="button"
+                            data-testid="org-archived-select"
+                            aria-current={selectedOrg?.id === org.id ? 'true' : undefined}
+                            onClick={e => {
+                              e.stopPropagation();
+                              handleSelectOrg(org);
+                            }}
+                            className="block w-full min-w-0 rounded text-left"
+                          >
+                            <span className="block truncate text-sm font-medium">{org.name}</span>
+                            <span className="mt-1 flex items-center gap-2">
+                              <span
+                                data-testid="org-archived-badge"
+                                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-xs font-medium leading-none ${archiveBadge(org).color}`}
+                              >
+                                {archiveBadge(org).label}
+                              </span>
+                              <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
+                                {renderPurgeCountdown(org.purgeAt)}
+                              </span>
                             </span>
-                            <span data-testid="org-archived-purge" className="text-xs text-muted-foreground">
-                              {renderPurgeCountdown(org.purgeAt)}
-                            </span>
-                          </div>
+                          </button>
                         </li>
                       ))}
                     </ul>
@@ -1115,10 +1417,10 @@ export default function OrganizationsPage() {
                * this row has to be reachable at all. */
               <>
                 <div className="border-b px-6 py-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                         <span
                           data-testid="org-archived-detail-badge"
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${archiveBadge(selectedOrg).color}`}
@@ -1136,7 +1438,7 @@ export default function OrganizationsPage() {
                         data-testid="org-restore"
                         onClick={() => void handleRestore(selectedOrg)}
                         disabled={restoringOrgId === selectedOrg.id}
-                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {restoringOrgId === selectedOrg.id
                           ? t('organizationsPage.restore.restoring')
@@ -1155,10 +1457,10 @@ export default function OrganizationsPage() {
               <>
                 {/* Org header */}
                 <div className="border-b px-6 py-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg font-semibold">{selectedOrg.name}</h2>
-                      <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <h2 className="truncate text-lg font-semibold">{selectedOrg.name}</h2>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                         <span
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${statusColors[selectedOrg.status]}`}
                         >
@@ -1169,48 +1471,160 @@ export default function OrganizationsPage() {
                             {t('organizationsPage.deviceCount', { count: selectedOrg.deviceCount })}
                           </span>
                         )}
+                        {/* Stated, never implied: when the workspace is a
+                            different org, say which — the same chip and
+                            wording as the record page — and offer the switch
+                            right here. Nothing renders in the fleet view or
+                            when the two agree. */}
+                        {workspaceOrgId && workspaceOrgId !== selectedOrg.id && workspaceOrgName && (
+                          <span className="inline-flex items-center gap-2">
+                            <span
+                              data-testid="org-scope-chip"
+                              title={t('organizationsPage.scope.hint', { orgName: workspaceOrgName })}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-0.5 text-xs text-muted-foreground"
+                            >
+                              <Building2 className="h-3 w-3" aria-hidden="true" />
+                              {t('organizations:orgRecord.header.scopeChip', { orgName: workspaceOrgName })}
+                            </span>
+                            <button
+                              type="button"
+                              data-testid="org-work-here"
+                              onClick={() => handleWorkHere(selectedOrg)}
+                              className="text-xs font-medium text-primary hover:underline"
+                            >
+                              {t('organizations:orgRecord.actions.workHere')}
+                            </button>
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    {/* One primary, one secondary, one overflow. Archive and
+                        merge are quarterly actions; as permanent red-outline
+                        buttons they outweighed Settings and taught the eye to
+                        skip the header. Merge (irreversible) keeps the
+                        destructive tone inside the menu; archive is reversible
+                        and reads as an ordinary item. */}
+                    <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
                       <button
                         type="button"
                         data-testid="org-open-record"
                         onClick={() => void navigateTo(`/organizations/${selectedOrg.id}`)}
-                        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition hover:opacity-90"
+                        className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground transition hover:opacity-90"
                       >
                         {t('organizationsPage.actions.openRecord')}
                       </button>
                       <button
                         type="button"
                         onClick={() => handleEdit(selectedOrg)}
-                        className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border bg-background px-3 text-sm font-medium transition hover:bg-muted"
                       >
+                        <Settings className="h-3.5 w-3.5" aria-hidden="true" />
                         {t('organizationsPage.actions.openSettings')}
                       </button>
-                      <button
-                        type="button"
-                        data-testid="org-archive-open"
-                        onClick={() => handleArchive(selectedOrg)}
-                        className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        {t('organizationsPage.actions.archiveOrganization')}
-                      </button>
-                      {canMergeOrgs && (
-                        <button
-                          type="button"
-                          data-testid="org-merge-open"
-                          onClick={() => handleMerge(selectedOrg)}
-                          className="rounded-md border border-destructive/40 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/10"
-                        >
-                          {t('organizationsPage.merge.openButton')}
-                        </button>
-                      )}
+                      <ActionMenu
+                        label={t('organizationsPage.actions.more')}
+                        testId="org-more-actions"
+                        items={[
+                          {
+                            id: 'archive',
+                            label: t('organizationsPage.actions.archiveOrganization'),
+                            onSelect: () => handleArchive(selectedOrg),
+                            testId: 'org-archive-open',
+                          },
+                          ...(canMergeOrgs
+                            ? [
+                                {
+                                  id: 'merge',
+                                  label: t('organizationsPage.merge.openButton'),
+                                  onSelect: () => handleMerge(selectedOrg),
+                                  tone: 'destructive' as const,
+                                  testId: 'org-merge-open',
+                                },
+                              ]
+                            : []),
+                        ]}
+                      />
                     </div>
                   </div>
                 </div>
 
-                {/* Sites section */}
-                <div className="p-6">
+                {/* Facts strip: the customer at a glance, in the record
+                    overview's own words. Tiles come and go with the payload;
+                    a failed read says so in one line with a retry, and an
+                    empty payload renders nothing rather than zeros. */}
+                {summaryFailed ? (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-6 py-3 text-sm text-muted-foreground">
+                    <span>{t('organizations:orgRecord.overview.noSummary')}</span>
+                    <button
+                      type="button"
+                      data-testid="org-facts-retry"
+                      onClick={() => void loadSummary(selectedOrg.id)}
+                      className="font-medium text-primary hover:underline"
+                    >
+                      {t('organizationsPage.actions.tryAgain')}
+                    </button>
+                  </div>
+                ) : (
+                  summary && (
+                    <dl
+                      data-testid="org-facts"
+                      className="flex flex-wrap gap-x-8 gap-y-3 border-b px-6 py-4"
+                    >
+                      {summary.devices && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.devices')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.devices.total)}</dd>
+                          <dd className="text-xs text-muted-foreground tabular-nums">
+                            {t('organizations:orgRecord.overview.tiles.devicesSub', {
+                              online: formatNumber(summary.devices.online),
+                              total: formatNumber(summary.devices.total),
+                            })}
+                          </dd>
+                        </div>
+                      )}
+                      {summary.alerts && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.alerts')}</dt>
+                          <dd className={`mt-0.5 text-sm font-semibold tabular-nums ${summary.alerts.critical > 0 ? 'text-destructive' : ''}`}>
+                            {formatNumber(summary.alerts.open)}
+                          </dd>
+                          <dd className="text-xs text-muted-foreground tabular-nums">
+                            {t('organizations:orgRecord.overview.tiles.alertsSub', {
+                              critical: formatNumber(summary.alerts.critical),
+                              high: formatNumber(summary.alerts.high),
+                            })}
+                          </dd>
+                        </div>
+                      )}
+                      {summary.contracts && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.contracts')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.contracts.active)}</dd>
+                          <dd className="text-xs text-muted-foreground">
+                            {summary.contracts.nextRenewalAt
+                              ? t('organizations:orgRecord.overview.tiles.contractsSub', { date: formatDate(summary.contracts.nextRenewalAt) })
+                              : t('organizations:orgRecord.overview.tiles.contractsNoRenewal')}
+                          </dd>
+                        </div>
+                      )}
+                      <div className="min-w-32">
+                        <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.sites')}</dt>
+                        <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatNumber(summary.sites.count)}</dd>
+                      </div>
+                      {summary.lastActivityAt && (
+                        <div className="min-w-32">
+                          <dt className="text-xs text-muted-foreground">{t('organizations:orgRecord.overview.tiles.lastActivity')}</dt>
+                          <dd className="mt-0.5 text-sm font-semibold tabular-nums">{formatDate(summary.lastActivityAt)}</dd>
+                        </div>
+                      )}
+                    </dl>
+                  )
+                )}
+
+                {/* Sites section — flat inside the panel (the panel is the
+                    card); count and search appear only once the list is long
+                    enough to need them. */}
+                <div className="px-6 py-5">
                   {siteCrud.sitesLoading ? (
                     <div className="flex items-center justify-center py-8">
                       <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
@@ -1218,6 +1632,7 @@ export default function OrganizationsPage() {
                     </div>
                   ) : (
                     <SiteList
+                      variant="section"
                       sites={siteCrud.sites}
                       onAddSite={siteCrud.openAdd}
                       onEdit={siteCrud.openEdit}
@@ -1232,15 +1647,7 @@ export default function OrganizationsPage() {
             /* Empty state */
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <div className="rounded-full bg-muted/50 p-4">
-                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/60">
-                  <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
-                  <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
-                  <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
-                  <path d="M10 6h4" />
-                  <path d="M10 10h4" />
-                  <path d="M10 14h4" />
-                  <path d="M10 18h4" />
-                </svg>
+                <Building2 className="h-8 w-8 text-muted-foreground/60" strokeWidth={1.5} aria-hidden="true" />
               </div>
               <h3 className="mt-4 text-sm font-medium">{t('organizationsPage.emptySelection.title')}</h3>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -1251,24 +1658,31 @@ export default function OrganizationsPage() {
         </div>
       </div>
 
-      {/* Org Add/Edit Modal */}
+      {/* Org Add dialog. Escape and the backdrop are inert while the create
+          POST is in flight so a half-submitted form cannot be dismissed. */}
       {modalMode === 'add' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="mb-4 rounded-lg border bg-card p-6 shadow-xs">
-              <h2 className="text-lg font-semibold">{t('organizationsPage.add.title')}</h2>
-              <p className="text-sm text-muted-foreground">
-                {t('organizationsPage.add.description')}
-              </p>
-            </div>
-            <OrganizationForm
-              onSubmit={handleSubmit}
-              onCancel={handleCloseModal}
-              submitLabel={t('organizationsPage.add.submit')}
-              loading={submitting}
-            />
+        <Dialog
+          open
+          onClose={submitting ? noop : handleCloseModal}
+          title={t('organizationsPage.add.title')}
+          labelledBy={ADD_ORG_TITLE_ID}
+          maxWidth="2xl"
+          alignTop
+        >
+          <div className="border-b px-6 py-4">
+            <h2 id={ADD_ORG_TITLE_ID} className="text-lg font-semibold">{t('organizationsPage.add.title')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('organizationsPage.add.description')}
+            </p>
           </div>
-        </div>
+          <OrganizationForm
+            onSubmit={handleSubmit}
+            onCancel={handleCloseModal}
+            submitLabel={t('organizationsPage.add.submit')}
+            loading={submitting}
+            className="space-y-6 p-6"
+          />
+        </Dialog>
       )}
 
       {/* Org Archive Modal */}

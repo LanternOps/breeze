@@ -93,10 +93,10 @@ export async function persistSkus(
         staleSince: sqlNull(),
       },
     });
-  });
+  }, ctx);
 
   const stale = plan.staleIds.length
-    ? await markEntitiesStale(m365LicenseSkus as never, ctx.orgId, plan.staleIds, ctx.now)
+    ? await markEntitiesStale(m365LicenseSkus as never, ctx.orgId, plan.staleIds, ctx.now, ctx)
     : 0;
 
   let seatsPurchased = 0;

@@ -326,6 +326,13 @@ export default defineConfig({
       // see vitest.config.integration-suite-coverage.ts for its
       // dedicated runner.
       'src/__tests__/integration/integration-suite-coverage.integration.test.ts',
+      // workspace.vercel.e2e.test.ts is the NIGHTLY real-Vercel suite: it needs
+      // live VERCEL_* credentials, spends real sandbox-minutes, and every case
+      // waits out a deliberate deny-all network failure. It must never run in
+      // the PR-blocking Integration Tests job, and it needs no Postgres/Redis
+      // setup at all — see vitest.config.workspace-e2e.ts
+      // (`pnpm test:workspace-e2e`) and .github/workflows/workspace-nightly.yml.
+      'src/__tests__/integration/workspace.vercel.e2e.test.ts',
     ],
     // Migrations run ONCE per invocation here (not in setup.ts's per-file
     // beforeAll): re-verifying 400+ migration checksums for every test file

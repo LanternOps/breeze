@@ -18,6 +18,9 @@ import { applyCadence } from './cadence';
 import { claimDueDomains } from './claim';
 import { persistCaPolicies } from './domains/caPolicies';
 import { persistIntuneDevices } from './domains/intuneDevices';
+import { M365SyncRunFencedError } from './domains/persist';
+import { persistSecureScore } from './domains/secureScore';
+import { persistSigninActivity } from './domains/signinActivity';
 import { persistSkus } from './domains/skus';
 import { persistUsers } from './domains/users';
 import { afterDomainPersisted } from './hooks';
@@ -215,20 +218,51 @@ export async function releaseLease(data: M365SyncJobData): Promise<void> {
 }
 
 /**
- * Every domain, four with a persister and two explicitly `undefined`. A TOTAL
- * Record rather than a Partial on purpose: when W05 registers
- * `persistSigninActivity` and `persistSecureScore` it edits two `undefined`s
- * into two functions, and a domain added to `M365SyncDomain` later is a compile
- * error here instead of a silent `noop` in production.
+ * Every contracted domain has a persister as of W05. A TOTAL Record rather than
+ * a Partial on purpose: a domain added to `M365SyncDomain` later is a compile
+ * error here instead of a silent `noop` in production. The `| undefined` stays
+ * so the no-persister branch in runSyncDomain remains typed and testable.
  */
 export const DOMAIN_PERSISTERS: Record<M365SyncDomain, M365DomainPersister | undefined> = {
   users: persistUsers,
+  signin_activity: persistSigninActivity,
   intune_devices: persistIntuneDevices,
   ca_policies: persistCaPolicies,
   skus: persistSkus,
-  signin_activity: undefined,   // W05
-  secure_score: undefined,      // W05
+  secure_score: persistSecureScore,
 };
+
+/**
+ * The continuation a persister handed back, if any. Only the sign-in persister
+ * returns one (its result is a structural superset of DomainPersistResult), so
+ * this reads it without widening the shared persister contract.
+ */
+function continuationOf(persisted: DomainPersistResult): string | null {
+  const value = (persisted as DomainPersistResult & { continuation?: unknown }).continuation;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Re-claim the SAME domain for a new generation at the normal lane and enqueue
+ * it. Used when a walk must go on (a continuation page) or start over (a
+ * rejected cursor). Called only AFTER the continuation write has committed, so
+ * the new generation reads the stored cursor. Survivable on failure: the row's
+ * next_sync_at was never advanced and the lease is cleared, so the next 60 s
+ * tick reclaims it anyway.
+ */
+async function reclaimSameDomain(data: M365SyncJobData, event: string): Promise<void> {
+  try {
+    const reclaimed = await claimDueDomains({
+      limit: 1, orgId: data.orgId, domains: [data.domain], priority: 10,
+    });
+    for (const job of reclaimed) await enqueueSyncDomain(job);
+  } catch (error) {
+    logSync(event, {
+      orgId: data.orgId, domain: data.domain, generation: data.generation,
+      error: redactLogMessage(error instanceof Error ? error.message : String(error)),
+    });
+  }
+}
 
 /**
  * The one structured log call for this service. Tagged + JSON payload, matching
@@ -493,6 +527,9 @@ export async function runSyncDomain(
     const persistCtx: PersistContext = {
       orgId: data.orgId, tenantId: data.tenantId, connectionId: data.connectionId,
       generation: data.generation, existing: loaded.existing, now,
+      // Every persist transaction re-proves ownership of this (org, domain,
+      // generation) state row under FOR SHARE (domains/persist.ts).
+      domain: data.domain,
     };
 
     // ---- Phase B: NO DB context held --------------------------------------
@@ -551,19 +588,7 @@ export async function runSyncDomain(
       // generation — which is also what fences the attempt we are abandoning.
       if (restartWalk) {
         await writeCompletion(completionCtx, { mode: 'continuation', continuation: null });
-        try {
-          const reclaimed = await claimDueDomains({
-            limit: 1, orgId: data.orgId, domains: [data.domain], priority: 10,
-          });
-          for (const job of reclaimed) await enqueueSyncDomain(job);
-        } catch (error) {
-          // Survivable: next_sync_at was never advanced, so the row is still
-          // due and the next 60 s tick reclaims it.
-          logSync('continuation-restart-failed', {
-            orgId: data.orgId, domain: data.domain, generation: data.generation,
-            error: redactLogMessage(error instanceof Error ? error.message : String(error)),
-          });
-        }
+        await reclaimSameDomain(data, 'continuation-restart-failed');
         return 'partial-continue';
       }
 
@@ -625,7 +650,47 @@ export async function runSyncDomain(
       return 'needs_consent';
     }
 
-    const persisted: DomainPersistResult = await persister(persistCtx, result);
+    let persisted: DomainPersistResult;
+    try {
+      persisted = await persister(persistCtx, result);
+    } catch (error) {
+      // Lost ownership mid-persist (a disconnect, rebind or re-claim committed
+      // between the Phase C check and a chunk). Same meaning as a Phase C
+      // fence: discard, write no completion, let the owner of the row decide.
+      // Chunks already committed are either erased by the disconnect (it waits
+      // on our FOR SHARE) or re-written by the newer generation.
+      if (error instanceof M365SyncRunFencedError) {
+        recordM365SyncFenced();
+        logSync('fenced-mid-persist', {
+          orgId: data.orgId, domain: data.domain, generation: data.generation, correlationId,
+        });
+        return 'fenced';
+      }
+      throw error;
+    }
+
+    // Sign-in continuation loop (spec §5.7, §6 "unchanged until exhausted").
+    // A page that still has more behind it stores ONLY the cursor (and clears
+    // the lease) through writeCompletion's continuation mode — last_status,
+    // last_success_at, next_sync_at, interval and last_counts stay exactly as
+    // the previous COMPLETED walk left them, so a mid-loop crash still leaves
+    // an honest "as of". No cadence (making progress must not stretch the
+    // interval), no audit event or run metric (the run has not finished), no
+    // post-commit hook (there is no complete snapshot to roll up). Then the
+    // same domain is re-claimed for a new generation, which is also what
+    // fences this job should it somehow run again.
+    const nextPage = continuationOf(persisted);
+    if (nextPage !== null) {
+      await writeCompletion(completionCtx, { mode: 'continuation', continuation: nextPage });
+      recordM365SyncItems(data.domain, 'update', persisted.updated);
+      recordM365SyncItems(data.domain, 'unchanged', persisted.unchanged);
+      logSync('m365.sync.continuation', {
+        orgId: data.orgId, domain: data.domain, generation: data.generation,
+        correlationId, updated: persisted.updated, unchanged: persisted.unchanged,
+      });
+      await reclaimSameDomain(data, 'continuation-reclaim-failed');
+      return 'partial-continue';
+    }
 
     // partial when anything was less than whole: truncated, or ANY source not ok.
     const allSourcesOk = Object.values(result.sources).every((state) => state === 'ok' || state === 'unlicensed');

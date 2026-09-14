@@ -6,6 +6,7 @@ import {
 } from '@breeze/shared/m365';
 import { and, eq } from 'drizzle-orm';
 import { Hono, type Context } from 'hono';
+import { isM365TenantSyncEnabled } from '../config/env';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { m365Connections } from '../db/schema';
 import {
@@ -56,6 +57,7 @@ import {
   recordM365CustomerGraphReadEvent,
   recordM365CustomerGraphReadMetric,
 } from '../services/m365ControlPlane/metrics';
+import { onConnectionConsented, onConnectionUpgraded } from '../services/m365Sync/lifecycle';
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -253,6 +255,32 @@ interface CallbackDependencies {
   correlationId(): string;
   audit(c: Context, input: CallbackAuditInput): void;
   metric(event: string, outcome: PublicOutcome): void;
+  /**
+   * Tenant-sync lifecycle (W05, spec §5.8). A verified first-time/re-consent
+   * seeds the sync; an upgrade that promoted the manifest re-arms domains
+   * parked on needs_consent. No-ops for the actions profile: the sync reads
+   * exclusively through the customer-graph-read connection.
+   */
+  onSyncConsented(conn: { id: string; orgId: string; tenantId: string; status: 'active' | 'degraded' }): Promise<void>;
+  onSyncUpgraded(conn: { id: string; orgId: string }): Promise<void>;
+}
+
+const NO_SYNC_HOOK = async (): Promise<void> => {};
+
+/**
+ * Spec §10.1: every sync entry point is flag-gated, and a Microsoft consent
+ * that actually succeeded must never redirect the administrator to a failure
+ * page because our scheduler had a bad minute. The lifecycle hooks already log
+ * and never throw by contract; this is the belt to that brace, and the ticker's
+ * reconciliation re-seeds on the next tick either way.
+ */
+async function runSyncLifecycleHook(label: string, run: () => Promise<void>): Promise<void> {
+  if (!isM365TenantSyncEnabled()) return;
+  try {
+    await run();
+  } catch (err) {
+    console.error(`[m365ConsentCallback] ${label} failed:`, err);
+  }
 }
 
 /** Fixed per-profile event names — the audit/metric event enums are profile-scoped siblings. */
@@ -408,6 +436,8 @@ function buildDefaultDependencies(
     correlationId: randomUUID,
     audit: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsEvent : recordM365CustomerGraphReadEvent,
     metric: profile === 'customer-graph-actions' ? recordM365CustomerGraphActionsMetric : recordM365CustomerGraphReadMetric,
+    onSyncConsented: profile === 'customer-graph-read' ? onConnectionConsented : NO_SYNC_HOOK,
+    onSyncUpgraded: profile === 'customer-graph-read' ? onConnectionUpgraded : NO_SYNC_HOOK,
   };
 }
 
@@ -693,10 +723,34 @@ export function createM365ConsentCallbackRoutes(
         const upgraded = await dependencies.applyUpgradeResult(attempt, result);
         applied = upgraded.connection;
         upgradeFailureCode = upgraded.failureCode;
-        // W05: onConnectionUpgraded(connection) is called here after in-place promotion
+        // Spec §5.8: the in-place promotion may have granted the scopes some
+        // domains were parked on needs_consent for; re-arm them. Only when the
+        // apply did not fail in band (a failed upgrade is a deliberate no-op on
+        // the row). Idempotent: it touches only rows that are BOTH unscheduled
+        // and needs_consent, so an approval that granted nothing costs one
+        // indexed UPDATE of zero rows.
+        if (upgradeFailureCode === null) {
+          await runSyncLifecycleHook(
+            `sync re-seed for connection=${attempt.id}`,
+            () => dependencies.onSyncUpgraded({ id: attempt.id, orgId: attempt.orgId }),
+          );
+        }
         outcome = upgradeOutcome(applied, currentManifestVersion, upgradeFailureCode);
       } else {
         applied = await dependencies.applyIdentityResult(attempt, result);
+        // A verified first-time (or re-)consent seeds all six domains due now
+        // at priority 1, for `degraded` as well as `active` — a connection
+        // missing one optional grant still syncs every other domain.
+        const seededStatus = applied.status;
+        const seededTenant = applied.tenantId;
+        if (result.success && seededTenant && (seededStatus === 'active' || seededStatus === 'degraded')) {
+          await runSyncLifecycleHook(
+            `sync seeding for connection=${attempt.id}`,
+            () => dependencies.onSyncConsented({
+              id: attempt.id, orgId: attempt.orgId, tenantId: seededTenant, status: seededStatus,
+            }),
+          );
+        }
         outcome = outcomeFromConnection(applied);
       }
       // An upgrade that did not promote is a FAILED verification even though

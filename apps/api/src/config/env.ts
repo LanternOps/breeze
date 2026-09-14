@@ -163,6 +163,28 @@ export function aiOperatorServiceRecoveryEnabled(): boolean {
   return envFlag('AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED', false);
 }
 
+/**
+ * AI execution-plane workspaces (spec §8 "Hosted only", §2.2 D-I).
+ *
+ * THREE conditions, all read at CALL time so a test can flip one without
+ * vi.resetModules(): the deployment is hosted, the AI agents platform switch is
+ * on, and this sub-flag is on. Default OFF.
+ *
+ * Hosted-only is not squeamishness: the sandbox runs on a third-party vendor
+ * under LanternOps' own account and billing, so a self-hosted deployment
+ * enabling it would be spending our money in our tenant. config/validate.ts
+ * refuses the flag in production without IS_HOSTED=true, a `vercel` backend and
+ * all three Vercel credentials, so a misconfigured deploy fails at boot rather
+ * than at the first analysis run.
+ */
+export function aiWorkspaceEnabled(): boolean {
+  return (
+    isHosted()
+    && envFlag('BREEZE_AI_AGENTS_ENABLED', false)
+    && envFlag('BREEZE_AI_WORKSPACE_ENABLED', false)
+  );
+}
+
 // Microsoft 365 identity tools. Defaults OFF everywhere; an org must also have
 // an explicit m365_connections row before any tool is usable. Gates tool
 // registration (aiAgentSdkTools.ts) and the connect routes.

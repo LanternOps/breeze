@@ -110,7 +110,7 @@ describe('AutomationEditPage monitor-managed automations (#5287)', () => {
     expect(screen.queryByRole('button', { name: /Save Changes/i })).toBeNull();
 
     const link = screen.getByTestId('automation-managed-monitor-link');
-    expect(link).toHaveAttribute('href', '/monitoring/monitors/monitor-1');
+    expect(link).toHaveAttribute('href', '/alerts/monitors/monitor-1');
   });
 
   it('takes priority over the agent-managed banner when both are somehow set', async () => {

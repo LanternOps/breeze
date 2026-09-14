@@ -199,6 +199,9 @@ export const configPolicyAlertRules = pgTable('config_policy_alert_rules', {
   titleTemplate: text('title_template').notNull().default('{{ruleName}} triggered on {{deviceName}}'),
   messageTemplate: text('message_template').notNull().default('{{ruleName}} condition met'),
   sortOrder: integer('sort_order').notNull().default(0),
+  // Fleet Designer W03 (#5653): the designer's "why" for a rule it proposed;
+  // NULL for hand-authored rules. Round-trips through inlineSettings.
+  rationale: text('rationale'),
   // #5289 delivery parity: a config-policy alert rule could not say where it
   // notifies or which escalation policy applies, so its alerts fell back to org
   // defaults with no escalation at all while the standalone alert-rule path
@@ -422,6 +425,8 @@ export const configPolicyMonitoringWatches = pgTable('config_policy_monitoring_w
   autoRestart: boolean('auto_restart').notNull().default(false),
   maxRestartAttempts: integer('max_restart_attempts').notNull().default(3),
   restartCooldownSeconds: integer('restart_cooldown_seconds').notNull().default(300),
+  // Fleet Designer W03 (#5653): the designer's "why" for a watch it proposed.
+  rationale: text('rationale'),
 
   sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),

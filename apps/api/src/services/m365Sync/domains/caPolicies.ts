@@ -101,10 +101,10 @@ export async function persistCaPolicies(
         staleSince: sqlNull(),
       },
     });
-  });
+  }, ctx);
 
   const stale = plan.staleIds.length
-    ? await markEntitiesStale(m365CaPolicies as never, ctx.orgId, plan.staleIds, ctx.now)
+    ? await markEntitiesStale(m365CaPolicies as never, ctx.orgId, plan.staleIds, ctx.now, ctx)
     : 0;
 
   // Keys are m365_posture_rollups COLUMN names (spec §5.9). The rollup reads

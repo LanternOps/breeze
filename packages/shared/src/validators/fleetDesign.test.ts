@@ -89,6 +89,21 @@ describe('fleetDesignSubmissionSchema', () => {
     s.functions.push({ functionKey: 'print_server', deviceIds: [D1], confidence: 0.8, evidence: ['spooler'] });
     expect(fleetDesignSubmissionSchema.safeParse(s).success).toBe(false);
   });
+  it('legacy: requires coveredBy on a covered entry and classifies each script once (W04)', () => {
+    const L = '33333333-3333-4333-8333-333333333333';
+    const entry = { scriptId: L, scriptName: 'Old cleanup', intent: 'Free disk', bucket: 'covered' as const, notes: 'n' };
+    const s = validSubmission();
+    (s.legacy as unknown[]) = [entry];
+    const r = fleetDesignSubmissionSchema.safeParse(s);
+    expect(r.success).toBe(false);
+    expect(r.error!.issues.map((i) => i.path.join('.'))).toContain('legacy.0.coveredBy');
+    (s.legacy as unknown[]) = [{ ...entry, coveredBy: 'disk_cleanup module' }];
+    expect(fleetDesignSubmissionSchema.safeParse(s).success).toBe(true);
+    (s.legacy as unknown[]) = [{ ...entry, coveredBy: 'x' }, { ...entry, bucket: 'obsolete' }];
+    const dup = fleetDesignSubmissionSchema.safeParse(s);
+    expect(dup.success).toBe(false);
+    expect(dup.error!.issues.map((i) => i.path.join('.'))).toContain('legacy.1.scriptId');
+  });
 });
 
 describe('triggerFleetDesignRunSchema', () => {

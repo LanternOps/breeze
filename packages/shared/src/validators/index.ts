@@ -25,6 +25,7 @@ export * from './remoteAccessLauncherScheme';
 export * from './httpUrl';
 export * from './currency';
 export * from './remoteAccessInlineSettings';
+export * from './warrantyInlineSettings';
 export * from './safeRelativePath';
 export * from './authenticator';
 export * from './catalog';
@@ -886,7 +887,14 @@ export const alertRuleItemSchema = z.object({
   // notifies or WHICH escalation policy it uses, so those alerts silently fell
   // back to org defaults while the standalone alert-rule path honoured both.
   escalationPolicyId: z.string().uuid().nullable().optional(),
-  notificationChannelIds: z.array(z.string().uuid()).max(20).optional(),
+  // `.nullable()` matches its siblings above and, critically, the READ path:
+  // assembleInlineSettings returns the raw column, which is NULL whenever the
+  // rule never set channels (config_policy_alert_rules.notification_channel_ids
+  // is nullable, decomposeInlineSettings writes `?? null`). Without it, reading
+  // a link and saving it straight back — the retire path, and every editor
+  // round trip — threw `expected array, received null` (#5653).
+  notificationChannelIds: z.array(z.string().uuid()).max(20).nullable().optional(),
+  rationale: z.string().trim().max(2000).nullable().optional(),
 });
 
 export const alertRuleInlineSettingsSchema = z.object({
@@ -937,6 +945,7 @@ export const monitoringInlineSettingsSchema = z.object({
     autoRestart: z.boolean().default(false),
     maxRestartAttempts: z.number().int().min(0).max(50).default(3),
     restartCooldownSeconds: z.number().int().min(30).max(86400).default(300),
+    rationale: z.string().trim().max(2000).nullable().optional(),
   })).max(200).default([]),
   // Write barrier (2026-07-30 consolidation): server-evaluated rules moved to the
   // alert_rule feature. Empty arrays from stale clients are tolerated; non-empty
@@ -1009,6 +1018,7 @@ export * from './aiAgentSchedules';
 export * from './aiOperator';
 export * from './orgNarrative';
 export * from './fleetDesign';
+export * from './fleetDesignApply';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 

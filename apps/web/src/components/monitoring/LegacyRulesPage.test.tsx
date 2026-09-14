@@ -6,6 +6,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../hooks/useMlFeatureFlags', () => ({ useMlFeatureFlags: () => ({ isDisabled: () => false }) }));
 vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
 
@@ -89,7 +90,7 @@ describe('LegacyRulesPage (#5289)', () => {
 
     fireEvent.click(within(screen.getByTestId('legacy-rules-row-r-legacy')).getByTestId('legacy-rules-convert-r-legacy'));
 
-    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/monitoring/monitors/monitor-9'));
+    await waitFor(() => expect(navMock).toHaveBeenCalledWith('/alerts/monitors/monitor-9'));
   });
 
   it('shows the not-convertible message inline on a 409', async () => {

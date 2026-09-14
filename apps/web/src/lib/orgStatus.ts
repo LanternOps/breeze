@@ -8,7 +8,8 @@ import type { Organization } from '../stores/orgStore';
  * header (#5075) — needs the same pill, and importing it from the page
  * component would pull the entire settings page into the record's bundle.
  * `OrganizationsPage` re-exports both, so it stays the documented home of the
- * status contract and its tests.
+ * status contract and its tests. The header OrgSwitcher reads the same map,
+ * so one status is one colour everywhere on screen.
  */
 export const statusLabelKeys: Record<Organization['status'], string> = {
   active: 'organizationsPage.status.active',
@@ -21,13 +22,23 @@ export const statusLabelKeys: Record<Organization['status'], string> = {
   purging: 'organizationsPage.status.purging',
 };
 
+/**
+ * Semantic tokens only (`success` / `warning` / `destructive` / `muted`), so
+ * each status keeps the meaning its colour has everywhere else in the app and
+ * dark mode themes itself. Trial is deliberately neutral: it is a lifecycle
+ * stage, not a health state, and on the brand colour it read as a link.
+ */
 export const statusColors: Record<Organization['status'], string> = {
-  active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-  trial: 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400',
-  suspended: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-  churned: 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400',
-  offboarding: 'border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-400',
-  merging: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400',
-  archived: 'border-gray-500/30 bg-gray-500/10 text-gray-700 dark:text-gray-400',
-  purging: 'border-red-400/30 bg-red-400/10 text-red-600 dark:text-red-300',
+  active: 'border-success/30 bg-success/10 text-success',
+  trial: 'border-border bg-muted text-foreground',
+  suspended: 'border-warning/40 bg-warning/10 text-warning-strong',
+  churned: 'border-destructive/30 bg-destructive/10 text-destructive',
+  offboarding: 'border-warning/40 bg-warning/10 text-warning-strong',
+  merging: 'border-border bg-muted text-muted-foreground',
+  archived: 'border-border bg-muted text-muted-foreground',
+  purging: 'border-destructive/30 bg-destructive/10 text-destructive',
 };
+
+/** Pill classes for a status the client does not know (legacy `inactive`,
+ *  a value newer than this build): neutral, never an empty class list. */
+export const FALLBACK_STATUS_CLASS = 'border-border bg-muted text-muted-foreground';

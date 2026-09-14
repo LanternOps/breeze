@@ -1,4 +1,8 @@
-import type { M365SyncDomain } from '@breeze/shared/m365';
+import {
+  M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS,
+  M365_SYNC_DOMAIN_INTERVAL_BOUNDS,
+  type M365SyncDomain,
+} from '@breeze/shared/m365';
 import type { CadenceSignals, M365SyncOutcome } from './types';
 
 export type { CadenceSignals };
@@ -17,31 +21,66 @@ export function nextSyncAt(now: Date, intervalSeconds: number, rng: () => number
   return new Date(now.getTime() + Math.round(intervalSeconds * 1000 * jitter));
 }
 
+/** Executor latency above this is evidence the tenant is large (spec §5.7). */
+const SLOW_EXECUTOR_MS = 60_000;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
 /**
- * SEAM — the BODY is owned by W05 (spec §5.7 adaptive cadence).
- *
- * W04 returns the stored interval unchanged, so a run's cadence is exactly what
- * `m365_sync_state.interval_seconds` says, plus the jittered due time. W05
- * replaces the interval computation with the clamped ladder from
- * `M365_SYNC_DOMAIN_INTERVAL_BOUNDS` (x2 on truncated or >60 s latency, x1.5 on
- * throttled/capacity, 25 % decay toward the default on success) and may return
- * `nextSyncAt: null` to unschedule.
- *
- * It returns the PAIR, not just a number: `next_sync_at` and `interval_seconds`
- * are written in the same statement and must be decided together, and run.ts
- * having its own due-time helper is exactly how the two drift apart. `rng` is
- * an optional fifth argument purely so a test can pin the jitter; the
- * four-argument contract call still type-checks.
+ * Spec §5.7, in order of signal strength rather than the spec table's order: a
+ * truncated or slow run is evidence about the tenant's SIZE and must not be
+ * softened by the success decay that would otherwise apply to the same run (a
+ * truncated run is `partial`, but a slow run can be `success`). Every result is
+ * clamped to the domain's bounds, so sign-in activity can never be pulled below
+ * its 24 h floor.
+ */
+export function nextInterval(
+  domain: M365SyncDomain,
+  current: number,
+  outcome: M365SyncOutcome,
+  signals: CadenceSignals,
+): number {
+  const { min, max } = M365_SYNC_DOMAIN_INTERVAL_BOUNDS[domain];
+  const target = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS[domain];
+
+  // A tenant that cannot use the feature at all (no Entra ID P1) should not be
+  // polled at the default cadence forever — straight to the domain ceiling.
+  if (signals.unlicensed) return max;
+
+  let next = current;
+  if (signals.truncated || signals.latencyMs > SLOW_EXECUTOR_MS) {
+    next = current * 2;
+  } else if (outcome === 'throttled' || signals.capacity) {
+    next = current * 1.5;
+  } else if (outcome === 'success') {
+    next = current + (target - current) * 0.25;
+  }
+  return clamp(Math.round(next), min, max);
+}
+
+/**
+ * The seam W04's completion writer calls. Returns the PAIR the state row
+ * carries — `next_sync_at` and `interval_seconds` are written in one statement
+ * and decided together here, never in run.ts. `nextSyncAt: null` takes the row
+ * out of the ticker's due set until an (upgrade-)consent or retest re-seeds it
+ * (spec §5.7, §5.8): that is what `needs_consent` and a dead credential get. A
+ * non-auth terminal error still schedules, otherwise one bad run would silently
+ * retire a domain. `rng` is optional purely so a test can pin the jitter.
  */
 export function applyCadence(
-  _domain: M365SyncDomain,
+  domain: M365SyncDomain,
   state: { intervalSeconds: number },
-  _outcome: M365SyncOutcome,
+  outcome: M365SyncOutcome,
   signals: CadenceSignals,
   rng?: () => number,
 ): { intervalSeconds: number; nextSyncAt: Date | null } {
-  return {
-    intervalSeconds: state.intervalSeconds,
-    nextSyncAt: nextSyncAt(signals.now, state.intervalSeconds, rng),
-  };
+  const intervalSeconds = nextInterval(domain, state.intervalSeconds, outcome, signals);
+  if (outcome === 'needs_consent' || signals.authFailure) {
+    return { intervalSeconds, nextSyncAt: null };
+  }
+  // The NEW interval is what gets scheduled, through the one shared jitter
+  // helper above.
+  return { intervalSeconds, nextSyncAt: nextSyncAt(signals.now, intervalSeconds, rng) };
 }

@@ -4,7 +4,7 @@ import type { M365SyncJobData } from './types';
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     loadContext: vi.fn(), assertFence: vi.fn(), release: vi.fn(),
-    persistUsers: vi.fn(), callExecutor: vi.fn(),
+    persistUsers: vi.fn(), persistSignin: vi.fn(), persistSecureScore: vi.fn(), callExecutor: vi.fn(),
     completion: [] as Record<string, unknown>[],
     audit: vi.fn(), metricRun: vi.fn(), metricFenced: vi.fn(), metricItems: vi.fn(),
     hook: vi.fn(), captureException: vi.fn(),
@@ -29,6 +29,8 @@ vi.mock('../../db', () => ({
   }),
 }));
 vi.mock('./domains/users', () => ({ persistUsers: mocks.persistUsers }));
+vi.mock('./domains/signinActivity', () => ({ persistSigninActivity: mocks.persistSignin }));
+vi.mock('./domains/secureScore', () => ({ persistSecureScore: mocks.persistSecureScore }));
 vi.mock('./metrics', () => ({
   recordM365SyncRun: mocks.metricRun, recordM365SyncFenced: mocks.metricFenced,
   recordM365SyncItems: mocks.metricItems, recordM365SyncExecutorSeconds: vi.fn(),
@@ -46,7 +48,10 @@ vi.mock('./claim', () => ({ claimDueDomains: mocks.claim }));
 vi.mock('../../jobs/m365SyncQueue', () => ({ enqueueSyncDomain: mocks.enqueue }));
 vi.mock('../sentry', () => ({ captureException: mocks.captureException }));
 
-import { outcomeForFailure, runSyncDomain } from './run';   // nextSyncAt lives in cadence.ts (Task 12) and is covered by cadence.test.ts
+import { M365_SYNC_DOMAINS } from '@breeze/shared/m365';
+import { DOMAIN_PERSISTERS, outcomeForFailure, runSyncDomain } from './run';   // nextSyncAt lives in cadence.ts (Task 12) and is covered by cadence.test.ts
+import { M365_SYNC_IMPLEMENTED_DOMAINS } from './types';
+import { M365SyncRunFencedError } from './domains/persist';
 
 const JOB = { orgId: 'org-1', domain: 'users' as const, generation: 5, connectionId: 'conn-1',
   tenantId: 'tenant-1', consentGeneration: 2, priority: 10 as const };
@@ -145,6 +150,28 @@ describe('runSyncDomain', () => {
     expect(mocks.persistUsers).not.toHaveBeenCalled();
     expect(mocks.completion).toEqual([]);
     expect(mocks.metricFenced).toHaveBeenCalledTimes(1);
+  });
+
+  it('a persister that loses ownership mid-persist is FENCED: no completion, no audit, fenced metric', async () => {
+    mocks.persistUsers.mockRejectedValue(new M365SyncRunFencedError('gone'));
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(run()).resolves.toBe('fenced');
+    } finally { spy.mockRestore(); }
+    expect(mocks.completion).toEqual([]);
+    expect(mocks.audit).not.toHaveBeenCalled();
+    expect(mocks.hook).not.toHaveBeenCalled();
+    expect(mocks.metricFenced).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the owned domain into the persist context so every chunk re-proves ownership', async () => {
+    await run();
+    expect(mocks.persistUsers.mock.calls[0]![0]).toMatchObject({ domain: 'users', generation: 5, orgId: 'org-1' });
+  });
+
+  it('a non-fence persist error still propagates', async () => {
+    mocks.persistUsers.mockRejectedValue(new Error('chunk exploded'));
+    await expect(run()).rejects.toThrow('chunk exploded');
   });
 
   it('fences BEFORE the fetch too, without spending a Graph call', async () => {
@@ -325,15 +352,27 @@ describe('runSyncDomain', () => {
     expect(JSON.stringify(payload)).not.toContain('u1');
   });
 
+  // As of W05 every contracted domain has a persister, so the no-persister
+  // branch is only reachable if a future domain is added without one. It is
+  // still a live safety net, so it is exercised by unregistering one domain.
+  async function withoutPersister<T>(domain: 'secure_score', body: () => Promise<T>): Promise<T> {
+    const saved = DOMAIN_PERSISTERS[domain];
+    DOMAIN_PERSISTERS[domain] = undefined;
+    try { return await body(); } finally { DOMAIN_PERSISTERS[domain] = saved; }
+  }
+
   it('is a no-op that unschedules a domain with no persister, so it cannot spin every tick', async () => {
-    await expect(runSyncDomain({ ...JOB, domain: 'secure_score' }, { callExecutor: mocks.callExecutor }))
-      .resolves.toBe('noop');
+    await withoutPersister('secure_score', async () => {
+      await expect(runSyncDomain({ ...JOB, domain: 'secure_score' }, { callExecutor: mocks.callExecutor }))
+        .resolves.toBe('noop');
+    });
     expect(mocks.callExecutor).not.toHaveBeenCalled();
     expect(mocks.completion.at(-1)).toMatchObject({ nextSyncAt: null, leaseUntil: null });
   });
 
   it('a domain with no persister still writes the ONE audit event and run metric (spec §7)', async () => {
-    await runSyncDomain({ ...JOB, domain: 'secure_score' }, { callExecutor: mocks.callExecutor });
+    await withoutPersister('secure_score', () =>
+      runSyncDomain({ ...JOB, domain: 'secure_score' }, { callExecutor: mocks.callExecutor }));
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit.mock.calls[0]![0]).toMatchObject({
       orgId: 'org-1', connectionId: 'conn-1', domain: 'secure_score', generation: 5, outcome: 'error',
@@ -373,5 +412,171 @@ describe('outcomeForFailure (spec §6)', () => {
     for (const code of ['credential_unavailable', 'application_token_invalid', 'continuation_invalid'] as const) {
       expect(outcomeForFailure(code).sentryWorthy).toBe(false);
     }
+  });
+});
+
+const SIGNIN_JOB = { ...JOB, domain: 'signin_activity' as const };
+const SIGNIN_PAGE = (continuation?: string) => ({
+  ok: true, kind: 'sync', executorMs: 900,
+  result: {
+    success: true, kind: 'sync', items: [{ id: 'u1', lastSuccessfulSignInAt: null }], truncated: false,
+    fetchedAt: '2026-09-08T00:00:00.000Z', sources: { signInActivity: 'ok' },
+    ...(continuation ? { continuation } : {}),
+  },
+});
+const SIGNIN_PERSISTED = (continuation: string | null) => ({
+  inserted: 0, updated: 5, stale: 0, unchanged: 1, counts: {},
+  complete: continuation === null, continuation, unlicensed: false,
+});
+
+describe('W05: every domain has a persister', () => {
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.completion = []; mocks.depth = 0;
+    mocks.claim.mockResolvedValue([]); mocks.enqueue.mockResolvedValue('job-1');
+    mocks.loadContext.mockResolvedValue(CTX);
+    mocks.assertFence.mockResolvedValue(null);
+  });
+
+  it('has a function for all six contracted domains', () => {
+    expect(Object.keys(DOMAIN_PERSISTERS).sort()).toEqual([...M365_SYNC_DOMAINS].sort());
+    for (const domain of M365_SYNC_DOMAINS) expect(DOMAIN_PERSISTERS[domain]).toBeTypeOf('function');
+  });
+
+  it('M365_SYNC_IMPLEMENTED_DOMAINS is the full contracted set', () => {
+    expect([...M365_SYNC_IMPLEMENTED_DOMAINS].sort()).toEqual([...M365_SYNC_DOMAINS].sort());
+  });
+
+  it('runs signin_activity instead of returning noop', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED(null));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE());
+    await expect(runSyncDomain(SIGNIN_JOB, {
+      callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5,
+      deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+    })).resolves.toBe('success');
+    expect(mocks.persistSignin).toHaveBeenCalled();
+  });
+
+  it('runs secure_score with backfill on a never-succeeded state row', async () => {
+    mocks.persistSecureScore.mockResolvedValue({ ...PERSISTED, counts: { secure_score: 1 } });
+    mocks.callExecutor.mockResolvedValue({ ...SYNC_OK, result: { ...SYNC_OK.result, sources: { secureScores: 'ok' } } });
+    await expect(runSyncDomain({ ...JOB, domain: 'secure_score' }, {
+      callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5,
+      deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+    })).resolves.toBe('success');
+    expect(mocks.callExecutor.mock.calls[0]![1]).toEqual({ type: 'm365.sync.secure_score', backfill: true });
+    expect(mocks.persistSecureScore).toHaveBeenCalled();
+  });
+});
+
+describe('W05: sign-in continuation loop (spec §5.7, §6)', () => {
+  const runSignin = () => runSyncDomain(SIGNIN_JOB, {
+    callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5,
+    deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.completion = []; mocks.depth = 0;
+    mocks.claim.mockResolvedValue([{ ...SIGNIN_JOB, generation: 6 }]); mocks.enqueue.mockResolvedValue('job-1');
+    mocks.loadContext.mockResolvedValue({ ...CTX, state: { ...CTX.state, continuation: 'blob-1' } });
+    mocks.assertFence.mockResolvedValue(null);
+  });
+
+  it('returns partial-continue and re-claims a NEW generation of the same domain at priority 10', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+
+    await expect(runSignin()).resolves.toBe('partial-continue');
+
+    expect(mocks.claim).toHaveBeenCalledWith(
+      expect.objectContaining({ orgId: 'org-1', domains: ['signin_activity'], priority: 10 }),
+    );
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({ domain: 'signin_activity', generation: 6 }));
+  });
+
+  it('stores ONLY the cursor and clears the lease — the state is unchanged until exhausted', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+
+    await runSignin();
+
+    expect(mocks.completion).toHaveLength(1);
+    const set = mocks.completion[0]!;
+    expect(set).toMatchObject({ continuation: 'blob-2', leaseUntil: null });
+    for (const key of ['lastStatus', 'lastSuccessAt', 'nextSyncAt', 'lastCounts', 'lastCompleteSnapshotAt', 'intervalSeconds']) {
+      expect(set).not.toHaveProperty(key);
+    }
+  });
+
+  it('does not advance cadence, audit, meter a run, or run the post-commit hook on a continuation page', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+
+    await runSignin();
+
+    expect(mocks.cadence).not.toHaveBeenCalled();
+    expect(mocks.hook).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+    expect(mocks.metricRun).not.toHaveBeenCalled();
+    // The page's writes are still real and still metered.
+    expect(mocks.metricItems).toHaveBeenCalledWith('signin_activity', 'update', 5);
+  });
+
+  it('writes the cursor BEFORE re-claiming, so the new generation reads it', async () => {
+    const order: string[] = [];
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+    mocks.claim.mockImplementation(async () => {
+      order.push(`claim-after-${mocks.completion.length}-writes`);
+      return [{ ...SIGNIN_JOB, generation: 6 }];
+    });
+    await runSignin();
+    expect(order).toEqual(['claim-after-1-writes']);
+  });
+
+  it('a failed re-claim is survivable: still partial-continue, cursor still stored', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED('blob-2'));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+    mocks.claim.mockRejectedValue(new Error('redis blip'));
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(runSignin()).resolves.toBe('partial-continue');
+    } finally { spy.mockRestore(); }
+    expect(mocks.completion.at(-1)).toMatchObject({ continuation: 'blob-2' });
+  });
+
+  it('passes the stored continuation into the executor action', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED(null));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE());
+    await runSignin();
+    expect(mocks.callExecutor.mock.calls[0]![1]).toEqual({ type: 'm365.sync.signin_activity', continuation: 'blob-1' });
+  });
+
+  it('asks for page 1 once the stored continuation is NULL', async () => {
+    mocks.loadContext.mockResolvedValue(CTX);
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED(null));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE());
+    await runSignin();
+    expect(mocks.callExecutor.mock.calls[0]![1]).toEqual({ type: 'm365.sync.signin_activity' });
+  });
+
+  it('the last page completes normally: continuation cleared, cadence applied, hook run, no re-claim', async () => {
+    mocks.persistSignin.mockResolvedValue(SIGNIN_PERSISTED(null));
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE());
+
+    await expect(runSignin()).resolves.toBe('success');
+
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.completion.at(-1)).toMatchObject({ continuation: null, lastStatus: 'success' });
+    expect(mocks.completion.at(-1)!.nextSyncAt).toBeInstanceOf(Date);
+    expect(mocks.cadence).toHaveBeenCalledOnce();
+    expect(mocks.hook).toHaveBeenCalledOnce();
+  });
+
+  it('does NOT re-claim from a fenced run — a late job must never resurrect the loop', async () => {
+    mocks.assertFence.mockResolvedValue('generation_mismatch');
+    mocks.callExecutor.mockResolvedValue(SIGNIN_PAGE('blob-2'));
+    await expect(runSignin()).resolves.toBe('fenced');
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.persistSignin).not.toHaveBeenCalled();
   });
 });

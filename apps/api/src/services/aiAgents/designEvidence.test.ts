@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FLEET_DESIGN_PRECURSOR_THRESHOLDS } from '@breeze/shared';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // db + leaf-service mocks for the `loadDesignEvidence` suite at the bottom of
@@ -56,6 +57,15 @@ vi.mock('../vulnerabilityFleetAggregation', () => ({
 vi.mock('../securityPosture', () => ({
   getSecurityPostureTrend: vi.fn(async () => []),
 }));
+// W05 (#5655): `loadApprovedDesign`/`loadDriftLiveState` reach the DB through
+// `db.select(...)` (a Drizzle query builder), not the `db.execute()` helper
+// the mock above serves — mocked separately so every OTHER test in this file
+// (written before W05) keeps seeing `approvedDesign`/`driftLive` resolve to
+// null without wiring up a `db.select` double it never needed.
+vi.mock('../fleetDesign/drift', () => ({
+  loadApprovedDesign: vi.fn(async () => null),
+  loadDriftLiveState: vi.fn(async () => ({ policies: [], assignments: [], groupMembers: {} })),
+}));
 
 // --- compiled-SQL helper (the narrativeContext.test.ts / sweepEvidence.test.ts idiom) ---
 function sqlText(node: unknown): string {
@@ -67,6 +77,7 @@ function sqlText(node: unknown): string {
 }
 
 import { captureException } from '../sentry';
+import { loadApprovedDesign, loadDriftLiveState, type ApprovedDesignSummary, type DriftLiveState } from '../fleetDesign/drift';
 import {
   DESIGN_EVIDENCE_HARD_LIMIT_BYTES, DESIGN_EVIDENCE_MAX_DEVICES,
   assembleDesignEvidence, designBaselineNumbers, loadDesignEvidence, type RawDesignEvidence,
@@ -86,6 +97,8 @@ function raw(overrides: Partial<RawDesignEvidence> = {}): RawDesignEvidence {
     counts: { alerts90d: 0, tickets90d: 0, endpoints: 1 },
     precursors: { diskOver: 0, rebootPending: 0, rebootPendingOver: 0, patchAgeOver: 0, certificateExpiring: null, backupMissed: 0, serviceRestartsOver: 0 },
     unavailable: [],
+    approvedDesign: null,
+    driftLive: null,
     ...overrides,
   };
 }
@@ -114,6 +127,25 @@ describe('assembleDesignEvidence', () => {
     expect(e.truncated).toBe(true);
     expect(e.devices).toHaveLength(1);
   });
+  it('keeps legacy-import scripts ahead of the rest so neither the count cap nor the byte trim drops them first (W04)', () => {
+    const script = (i: number, legacyImport: boolean) => ({
+      id: uuid(i), name: `S${i}`, language: 'powershell', osTypes: ['windows'], tags: legacyImport ? ['legacy-import'] : [],
+      legacyImport, description: 'd'.repeat(150),
+    });
+    // 1,000 ordinary scripts, then 5 legacy ones at the END of the loader order.
+    const scripts = [...Array.from({ length: 1000 }, (_, i) => script(i + 1, false)), ...Array.from({ length: 5 }, (_, i) => script(2001 + i, true))];
+    const capped = assembleDesignEvidence(raw({ automation: { playbooks: [], scripts } }));
+    expect(capped.automation.scripts.filter((s) => s.legacyImport)).toHaveLength(5);
+    const trimmed = assembleDesignEvidence(raw({ automation: { playbooks: [], scripts } }), { limitBytes: 32 * 1024 });
+    expect(trimmed.truncated).toBe(true);
+    expect(trimmed.automation.scripts.filter((s) => s.legacyImport)).toHaveLength(5);
+  });
+  it('the automation loader orders legacy-import scripts first and matches the tag case-insensitively (W04)', () => {
+    const src = readFileSync(new URL('./designEvidence.ts', import.meta.url), 'utf8');
+    const loader = src.slice(src.indexOf('async function loadAutomation'), src.indexOf('type LogRow'));
+    expect(loader).toMatch(/ORDER BY[\s\S]*lower\(t\d?\.name\) = 'legacy-import'[\s\S]*DESC/);
+    expect(loader).toContain("toLowerCase() === 'legacy-import'");
+  });
   it('computes baseline numbers with the frozen thresholds', () => {
     const e = assembleDesignEvidence(raw({ counts: { alerts90d: 126, tickets90d: 21, endpoints: 100 }, precursors: { ...raw().precursors, diskOver: 4, certificateExpiring: null } }));
     const n = designBaselineNumbers(e);
@@ -122,6 +154,24 @@ describe('assembleDesignEvidence', () => {
     expect(n.precursors.find((p) => p.condition === 'disk_used_over_threshold')?.deviceCount).toBe(4);
     expect(n.precursors.find((p) => p.condition === 'certificate_expiring')?.deviceCount).toBeNull();
     expect(e.thresholds).toEqual(FLEET_DESIGN_PRECURSOR_THRESHOLDS);
+  });
+  it('never trims approvedDesign/driftLive — they pass through untouched even under a tiny byte ceiling', () => {
+    const approvedDesign: ApprovedDesignSummary = {
+      reportRunId: 'run-1',
+      appliedAt: '2026-09-01T10:00:00.000Z',
+      functions: [{ functionKey: 'file_server', label: 'File servers', groupId: 'g1', policyId: 'p1', deviceIds: ['d1', 'd2'], watches: [], rules: [] }],
+      retired: [],
+    };
+    const driftLive: DriftLiveState = { policies: [], assignments: [], groupMembers: {} };
+    const big = raw({
+      approvedDesign,
+      driftLive,
+      software: Array.from({ length: 500 }, (_, i) => ({ name: `App ${i} ${'x'.repeat(200)}`, vendor: 'V', versions: 3, deviceCount: 2 })),
+    });
+    const e = assembleDesignEvidence(big, { limitBytes: 4 * 1024 });
+    expect(e.truncated).toBe(true);
+    expect(e.approvedDesign).toEqual(approvedDesign);
+    expect(e.driftLive).toEqual(driftLive);
   });
   it('marks a failed loader as unavailable rather than inventing zeros', () => {
     const e = assembleDesignEvidence(raw({ unavailable: ['software'] }));
@@ -226,5 +276,34 @@ describe('loadDesignEvidence (loader failure isolation)', () => {
     expect(evidence.unavailable).toContain('devices');
     expect(evidence.devices).toEqual([]);
     expect(evidence.devicesTotal).toBe(0);
+  });
+
+  // W05 (#5655): `approvedDesign`/`driftLive` are loaded through the SAME
+  // `settled()` isolation as every other section, but through a different
+  // module (`../fleetDesign/drift`, mocked separately above since it reaches
+  // the DB via `db.select(...)`, not the `db.execute()` double `rowsFor`/
+  // `failOn` serve).
+  it('carries approvedDesign and driftLive when loadApprovedDesign resolves a summary', async () => {
+    const summary: ApprovedDesignSummary = { reportRunId: 'run-1', appliedAt: '2026-09-01T10:00:00.000Z', functions: [], retired: [] };
+    const driftState: DriftLiveState = { policies: [], assignments: [], groupMembers: {} };
+    vi.mocked(loadApprovedDesign).mockResolvedValueOnce(summary);
+    vi.mocked(loadDriftLiveState).mockResolvedValueOnce(driftState);
+
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+
+    expect(evidence.approvedDesign).toEqual(summary);
+    expect(evidence.driftLive).toEqual(driftState);
+    expect(evidence.unavailable).not.toContain('approvedDesign');
+  });
+
+  it('reports approvedDesign as unavailable and both fields null when loadApprovedDesign rejects', async () => {
+    vi.mocked(loadApprovedDesign).mockRejectedValueOnce(new Error('drift lookup failed'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const evidence = await loadDesignEvidence(ORG, { siteId: null });
+
+    expect(evidence.unavailable).toContain('approvedDesign');
+    expect(evidence.approvedDesign).toBeNull();
+    expect(evidence.driftLive).toBeNull();
   });
 });

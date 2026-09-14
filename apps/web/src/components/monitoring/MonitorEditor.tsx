@@ -17,6 +17,7 @@ import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
+import { BuiltInBadge } from './BuiltInBadge';
 import ActionsEditor, {
   type Script,
   type NotificationChannel,
@@ -156,6 +157,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [aiAgents, setAiAgents] = useState<AiAgent[]>([]);
   const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [builtinKey, setBuiltinKey] = useState<string | null>(null);
 
   const methods = useForm<MonitorFormValues>({
     resolver: zodResolver(monitorFormSchema),
@@ -258,6 +260,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       const data = await response.json();
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
+      setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -340,7 +343,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       const data = await response.json();
       const savedId = data?.data?.id ?? monitorId;
       if (isNew) {
-        void navigateTo(`/monitoring/monitors/${savedId}`);
+        void navigateTo(`/alerts/monitors/${savedId}`);
       } else {
         void fetchMonitor();
       }
@@ -360,7 +363,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         const data = await response.json().catch(() => ({}));
         throw new Error(extractApiError(data, t('monitoring:editor.errors.delete')));
       }
-      void navigateTo('/monitoring');
+      void navigateTo('/alerts/monitors');
     } catch (err) {
       setError(err instanceof Error ? err.message : t('monitoring:editor.errors.delete'));
     } finally {
@@ -439,18 +442,19 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       <div className="space-y-6" data-testid="monitor-editor">
         <Breadcrumbs
           items={[
-            { label: t('monitoring:editor.breadcrumb.monitors'), href: '/monitoring' },
+            { label: t('monitoring:editor.breadcrumb.monitors'), href: '/alerts/monitors' },
             { label: isNew ? t('monitoring:editor.breadcrumb.new') : watch('name') || t('monitoring:editor.titleEdit') },
           ]}
         />
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <a href="/monitoring" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
+            <a href="/alerts/monitors" className="flex h-10 w-10 items-center justify-center rounded-md border hover:bg-muted">
               <ArrowLeft className="h-5 w-5" />
             </a>
             <h1 className="text-xl font-semibold tracking-tight">
               {isNew ? t('monitoring:editor.titleNew') : t('monitoring:editor.titleEdit')}
             </h1>
+            {builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
           </div>
           {!isNew && (
             <button

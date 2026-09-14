@@ -23,6 +23,7 @@ import { useFeatureLink } from "./useFeatureLink";
 import { handleToggleKeyDown } from "./disclosureKeyboard";
 import FeatureTabShell from "./FeatureTabShell";
 import { fetchWithAuth } from "../../../stores/auth";
+import RationaleField from "./RationaleField";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
 // ============================================
@@ -44,6 +45,9 @@ type WatchEntry = {
   autoRestart: boolean;
   maxRestartAttempts: number;
   restartCooldownSeconds: number;
+  /** Fleet Designer W03 (#5653): why this watch exists; null/undefined for a
+   *  manually-authored watch. */
+  rationale?: string | null;
 };
 // Server-evaluated alert rules (metric thresholds, offline detection, event log
 // alerts) used to live here as `alertRules`/`eventLogAlerts`. They are now owned
@@ -501,6 +505,7 @@ export default function MonitoringTab({
                 <WatchCard
                   key={idx}
                   watch={watch}
+                  index={idx}
                   knownServices={knownServices}
                   expanded={expandedKey === `watches:${idx}`}
                   onToggle={() => toggleExpand(`watches:${idx}`)}
@@ -578,6 +583,7 @@ export default function MonitoringTab({
 // ============================================
 function WatchCard({
   watch,
+  index,
   knownServices,
   expanded,
   onToggle,
@@ -586,6 +592,8 @@ function WatchCard({
   nameInputRef,
 }: {
   watch: WatchEntry;
+  /** Stable per-item index, for the rationale field's data-testid. */
+  index: number;
   knownServices: KnownService[];
   expanded: boolean;
   onToggle: () => void;
@@ -929,6 +937,11 @@ function WatchCard({
               </>
             )}
           </div>
+          <RationaleField
+            value={watch.rationale}
+            onChange={(rationale) => onChange({ rationale })}
+            testId={`watch-rationale-${index}`}
+          />
         </div>
       )}
     </div>

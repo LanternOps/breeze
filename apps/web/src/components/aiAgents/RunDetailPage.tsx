@@ -1914,7 +1914,7 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {run.fleetDesign.reportRunId && (
             <div className="mt-3 flex flex-wrap items-center gap-4">
               <a
-                href="/reports"
+                href={`/ai-agents/fleet-design#${run.fleetDesign.reportRunId}`}
                 data-testid="ai-agent-run-fleet-design-report-link"
                 className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
               >

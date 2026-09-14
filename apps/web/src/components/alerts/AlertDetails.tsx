@@ -272,7 +272,7 @@ export default function AlertDetails({
                 <div data-testid="alert-details-monitor">
                   <p className="text-xs text-muted-foreground">{t('monitoring:managed.monitorLabel')}</p>
                   <a
-                    href={`/monitoring/monitors/${alert.monitorId}`}
+                    href={`/alerts/monitors/${alert.monitorId}`}
                     className="flex items-center gap-1 text-sm font-medium hover:underline"
                   >
                     {t('monitoring:managed.open')}

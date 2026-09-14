@@ -870,7 +870,7 @@ export default function AlertTemplateEditor({ templateId }: AlertTemplateEditorP
           {/* Monitor detail page lands in a later wave — the route is reserved
               now so this link lights up without another edit here (#5287). */}
           <a
-            href={`/monitoring/monitors/${managedByMonitorId}`}
+            href={`/alerts/monitors/${managedByMonitorId}`}
             className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
             data-testid="alert-template-managed-link"
           >

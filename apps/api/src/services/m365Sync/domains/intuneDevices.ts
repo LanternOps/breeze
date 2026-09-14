@@ -140,10 +140,10 @@ export async function persistIntuneDevices(
         staleSince: sqlNull(),
       },
     });
-  });
+  }, ctx);
 
   const stale = plan.staleIds.length
-    ? await markEntitiesStale(m365IntuneDevices as never, ctx.orgId, plan.staleIds, ctx.now)
+    ? await markEntitiesStale(m365IntuneDevices as never, ctx.orgId, plan.staleIds, ctx.now, ctx)
     : 0;
 
   const counts: Record<string, number> = {

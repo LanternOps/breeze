@@ -716,12 +716,15 @@ describe('RunDetailPage fleetDesign', () => {
     expect(screen.queryByTestId('ai-agent-run-fleet-design-truncated')).not.toBeInTheDocument();
   });
 
-  it('links to /reports and offers the download as a button, never a raw API anchor', async () => {
+  it('links to the Fleet Design page (scoped to this report run) and offers the download as a button, never a raw API anchor', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, fleetDesign: FLEET_DESIGN } });
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-fleet-design')).toBeInTheDocument());
-    expect(screen.getByTestId('ai-agent-run-fleet-design-report-link')).toHaveAttribute('href', '/reports');
+    expect(screen.getByTestId('ai-agent-run-fleet-design-report-link')).toHaveAttribute(
+      'href',
+      '/ai-agents/fleet-design#frr-1',
+    );
 
     const download = screen.getByTestId('ai-agent-run-fleet-design-download');
     expect(download.tagName).toBe('BUTTON');

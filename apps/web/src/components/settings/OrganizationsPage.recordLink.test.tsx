@@ -15,8 +15,16 @@ const navigateTo = vi.fn();
 vi.mock('@/lib/navigation', () => ({ navigateTo: (...args: unknown[]) => navigateTo(...args) }));
 
 const storeFetchOrganizations = vi.fn().mockResolvedValue(undefined);
+// Workspace scope the page reads through the store selector; the scope tests
+// set these, everything else leaves the workspace unset (fleet view).
+const mockStoreCurrentOrgId: string | null = null;
+const mockStoreOrganizations: Array<{ id: string; name: string }> = [];
 vi.mock('../../stores/orgStore', () => ({
-  useOrgStore: { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  useOrgStore: Object.assign(
+    (selector?: (s: { currentOrgId: string | null; organizations: Array<{ id: string; name: string }> }) => unknown) =>
+      selector ? selector({ currentOrgId: mockStoreCurrentOrgId, organizations: mockStoreOrganizations }) : undefined,
+    { getState: () => ({ fetchOrganizations: storeFetchOrganizations }) },
+  ),
 }));
 
 let mockJwtScope: 'system' | 'partner' | 'organization' | null = 'partner';
@@ -100,19 +108,23 @@ describe('OrganizationsPage — list rows link to the organization record page',
     expect(link).toHaveAttribute('href', `/organizations/${ORG_ACTIVE.id}`);
   });
 
-  it('clicking the org name link opens the record without selecting/expanding the row', async () => {
+  it('the org name is the row select control; only the row-end link opens the record', async () => {
     mockApi();
     render(<OrganizationsPage />);
     await flush();
 
-    const nameLink = screen.getByRole('link', { name: ORG_ACTIVE.name });
-    fireEvent.click(nameLink);
+    // The name is no longer a link: it selects the row (keyboard-reachable
+    // via the select button), and the record is reached through the
+    // persistent row-end link named after the org.
+    expect(screen.queryByRole('link', { name: ORG_ACTIVE.name })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${ORG_ACTIVE.name}`) }));
     await flush();
 
-    // Selecting the row would render the detail pane header with the org name
-    // as an <h2>; clicking the name link must not trigger that row selection.
-    expect(screen.queryByRole('heading', { level: 2, name: ORG_ACTIVE.name })).not.toBeInTheDocument();
-    expect(screen.getByText('No organization selected')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: ORG_ACTIVE.name })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: `Open record for ${ORG_ACTIVE.name}` })).toHaveAttribute(
+      'href',
+      `/organizations/${ORG_ACTIVE.id}`,
+    );
   });
 });
 

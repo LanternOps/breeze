@@ -39,7 +39,9 @@
       "delete": "No se pudo eliminar el monitor",
       "toggle": "No se pudo actualizar el monitor"
     },
-    "deleteConfirm": "¿Eliminar el monitor {{name}}? También se eliminarán su regla de alerta y la automatización de respuesta."
+    "deleteConfirm": "¿Eliminar el monitor {{name}}? También se eliminarán su regla de alerta y la automatización de respuesta.",
+    "builtIn": "Integrado",
+    "builtInHint": "Aprovisionado por Breeze. Edita los umbrales, desactívalo o elimínalo; no volverá a aparecer."
   },
   "editor": {
     "titleNew": "Nuevo monitor",

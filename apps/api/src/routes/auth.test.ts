@@ -263,6 +263,10 @@ vi.mock('./auth/passkeys', async (importOriginal) => {
   };
 });
 
+vi.mock('../services/monitors/builtInMonitors', () => ({
+  ensureBuiltInMonitorsForPartner: vi.fn(async () => ({ provisioned: true, monitorIds: [] })),
+  ensureBuiltInMonitorsForAllPartners: vi.fn(async () => ({ provisioned: 0, skipped: 0, failed: 0 })),
+}));
 vi.mock('../db', () => ({
   db: {
     select: vi.fn(() => ({

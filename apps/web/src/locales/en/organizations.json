@@ -72,7 +72,8 @@
         "invoicesNothingDue": "Nothing due",
         "contacts": "Contacts",
         "portalUsers": "Portal users",
-        "sites": "Sites"
+        "sites": "Sites",
+        "lastActivity": "Last activity"
       },
       "activity": {
         "title": "Recent activity",

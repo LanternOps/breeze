@@ -2152,6 +2152,7 @@
           "fixWatchesHeld": "Monitoreos de corrección retenidos",
           "fixWatchesRecurred": "Monitoreos de corrección recurrentes",
           "narrativesDelivered": "Informes semanales entregados",
+          "fleetDesignsDelivered": "Fleet Designs entregados",
           "estTimeSaved": "Tiempo ahorrado estimado",
           "llmSpend": "Gasto en LLM",
           "window": "Ventana del informe (días)",
@@ -4409,27 +4410,10 @@
       "suspended": "Suspendido",
       "churned": "Dado de baja",
       "offboarding": "En proceso de baja"
+    },
+    "help": {
+      "slug": "Se genera a partir del nombre. Es único en tu cuenta y lo usan la API y las integraciones."
     }
-  },
-  "organizationList": {
-    "title": "Organizaciones",
-    "count": "{{filtered}} de organizaciones {{total}}",
-    "searchPlaceholder": "Buscar organizaciones",
-    "allStatuses": "Todos los estados",
-    "status": {
-      "active": "Activo",
-      "trial": "Prueba",
-      "suspended": "Suspendido",
-      "churned": "Dado de baja",
-      "offboarding": "En proceso de baja",
-      "merging": "En proceso de fusión",
-      "archived": "Archivado",
-      "purging": "En proceso de purgado"
-    },
-    "columns": {
-      "devices": "Dispositivos"
-    },
-    "empty": "No se encontraron organizaciones. Intente ajustar su búsqueda o filtros."
   },
   "bulkOrgImport": {
     "title": "Importación masiva",
@@ -4494,7 +4478,7 @@
   },
   "organizationsPage": {
     "loading": "Cargando organizaciones...",
-    "title": "Organizaciones y sitios",
+    "title": "Organizaciones",
     "description": "Gestionar organizaciones y sus sitios.",
     "actions": {
       "addOrganization": "Agregar organización",
@@ -4503,7 +4487,10 @@
       "archiveOrganization": "Archivar organización",
       "deleting": "Eliminando...",
       "openRecord": "Abrir registro",
-      "openSettings": "Configuración"
+      "openSettings": "Configuración",
+      "openSettingsFor": "Configuración de {{name}}",
+      "openRecordFor": "Abrir el registro de {{name}}",
+      "more": "Más acciones"
     },
     "errors": {
       "fetchOrganizations": "No se han podido recuperar las organizaciones",
@@ -4527,17 +4514,31 @@
     "deviceCount": "dispositivos {{count}}",
     "list": {
       "title": "Organizaciones",
-      "searchPlaceholder": "Buscar...",
       "empty": "No se encontraron organizaciones.",
-      "noMatches": "Ninguna organización coincide con su búsqueda.",
-      "dragToReorder": "Arrastre para reordenar"
+      "noMatches": "Ninguna organización coincide con tu búsqueda o filtro.",
+      "dragToReorder": "Arrastre para reordenar",
+      "searchLabel": "Buscar organizaciones",
+      "reorderHandle": "Reordenar {{name}}",
+      "reorderHint": "Usa las flechas arriba y abajo para mover esta organización.",
+      "movedAnnouncement": "{{name}} se movió a la posición {{position}} de {{total}}",
+      "workspaceMarker": "Espacio de trabajo",
+      "sort": {
+        "label": "Ordenar",
+        "manual": "Orden manual",
+        "name": "De la A a la Z",
+        "devices": "Más dispositivos"
+      },
+      "filter": {
+        "label": "Filtrar por estado",
+        "all": "Todas"
+      }
     },
     "sites": {
       "loading": "Cargando sitios..."
     },
     "emptySelection": {
       "title": "Ninguna organización seleccionada",
-      "description": "Seleccione una organización de la lista para ver sus sitios."
+      "description": "Selecciona una organización para ver su estado, sus sitios y sus acciones."
     },
     "add": {
       "title": "Agregar organización",
@@ -4558,8 +4559,9 @@
     },
     "deleteSite": {
       "title": "Eliminar sitio",
-      "messagePrefix": "¿Está seguro de que desea eliminar?",
-      "messageSuffix": "Esta acción no se puede deshacer."
+      "message": "¿Eliminar {{name}}? El sitio se eliminará de forma permanente y no se puede deshacer.",
+      "blockedMessage_one": "{{name}} todavía tiene {{count}} dispositivo. Muévelo a otro sitio antes de eliminar este.",
+      "blockedMessage_other": "{{name}} todavía tiene {{count}} dispositivos. Muévelos a otro sitio antes de eliminar este."
     },
     "merge": {
       "openButton": "Fusionar con otra organización",
@@ -4660,6 +4662,9 @@
         "mfaRequired": "Restaurar organizaciones requiere autenticación multifactor. Active la MFA en la configuración de seguridad de su perfil y vuelva a intentarlo.",
         "purging": "Esta organización ya se está eliminando permanentemente y no se puede restaurar."
       }
+    },
+    "scope": {
+      "hint": "Tu espacio de trabajo está configurado en {{orgName}}. Las acciones de esta página se aplican a la organización seleccionada aquí."
     }
   },
   "siteDetailPage": {
@@ -4757,7 +4762,9 @@
     "count": "{{filtered}} de sitios {{total}}",
     "searchPlaceholder": "Buscar sitios",
     "actions": {
-      "add": "Agregar sitio"
+      "add": "Agregar sitio",
+      "editSite": "Editar {{name}}",
+      "deleteSite": "Eliminar {{name}}"
     },
     "columns": {
       "timezone": "Zona horaria",

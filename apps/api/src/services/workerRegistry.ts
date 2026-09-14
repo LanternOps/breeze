@@ -970,6 +970,18 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'workspaceReaper',
+    // 'global', like approvalExpiryReaper: it touches Postgres and the sandbox
+    // vendor only — no agent WS, no socket-local dispatch — so any role may
+    // host it, and exactly one instance claims each row (FOR UPDATE SKIP
+    // LOCKED). Not flag-gated on purpose; see the job's header.
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/workspaceReaper');
+      return { init: m.initializeWorkspaceReaper, shutdown: m.shutdownWorkspaceReaper };
+    },
+  },
+  {
     name: 'offboardingDrainReaper',
     // socket-owner, not global: its static closure is clean, but at RUNTIME
     // it reaches routes/agentWs.ts via a dynamic import one hop out —

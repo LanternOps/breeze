@@ -4,7 +4,6 @@ import { Plus, Trash2, GripVertical, ArrowUpDown, ChevronDown, ChevronRight } fr
 import NotificationChannelList, { type NotificationChannel } from './NotificationChannelList';
 import NotificationChannelForm, { type NotificationChannelFormValues } from './NotificationChannelForm';
 import AlertsTabStrip from './AlertsTabStrip';
-import MonitoringTabStrip from '../monitoring/MonitoringTabStrip';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { getJwtClaims } from '@/lib/authScope';
@@ -131,12 +130,7 @@ type RoutingRule = {
   enabled: boolean;
 };
 
-interface NotificationChannelsPageProps {
-  /** #5288: which hub the page is mounted under. */
-  tabStrip?: 'alerts' | 'monitoring';
-}
-
-export default function NotificationChannelsPage({ tabStrip = 'alerts' }: NotificationChannelsPageProps = {}) {
+export default function NotificationChannelsPage() {
   const { t } = useTranslation('alerts');
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [loading, setLoading] = useState(true);
@@ -507,9 +501,7 @@ export default function NotificationChannelsPage({ tabStrip = 'alerts' }: Notifi
 
   return (
     <div className="space-y-6">
-      {tabStrip === 'monitoring'
-        ? <MonitoringTabStrip currentPath="/monitoring/delivery" />
-        : <AlertsTabStrip currentPath="/alerts/channels" />}
+      <AlertsTabStrip currentPath="/alerts/channels" />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{t('notificationChannelsPage.notificationChannels')}</h1>

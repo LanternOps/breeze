@@ -2152,6 +2152,7 @@
           "fixWatchesHeld": "Fix watches held",
           "fixWatchesRecurred": "Fix watches recurred",
           "narrativesDelivered": "Weekly reports delivered",
+          "fleetDesignsDelivered": "Fleet Designs delivered",
           "estTimeSaved": "Estimated time saved",
           "llmSpend": "LLM spend",
           "window": "Reporting window (days)",
@@ -4462,27 +4463,10 @@
       "suspended": "Suspended",
       "churned": "Churned",
       "offboarding": "Offboarding"
+    },
+    "help": {
+      "slug": "Generated from the name. Unique within your account; used by the API and integrations."
     }
-  },
-  "organizationList": {
-    "title": "Organizations",
-    "count": "{{filtered}} of {{total}} organizations",
-    "searchPlaceholder": "Search organizations",
-    "allStatuses": "All statuses",
-    "status": {
-      "active": "Active",
-      "trial": "Trial",
-      "suspended": "Suspended",
-      "churned": "Churned",
-      "offboarding": "Offboarding",
-      "merging": "Merging…",
-      "archived": "Archived",
-      "purging": "Purging"
-    },
-    "columns": {
-      "devices": "Devices"
-    },
-    "empty": "No organizations found. Try adjusting your search or filters."
   },
   "bulkOrgImport": {
     "title": "Bulk import",
@@ -4547,7 +4531,7 @@
   },
   "organizationsPage": {
     "loading": "Loading organizations...",
-    "title": "Organizations & Sites",
+    "title": "Organizations",
     "description": "Manage organizations and their sites.",
     "actions": {
       "addOrganization": "Add organization",
@@ -4556,7 +4540,10 @@
       "archiveOrganization": "Archive organization",
       "deleting": "Deleting...",
       "openRecord": "Open record",
-      "openSettings": "Settings"
+      "openSettings": "Settings",
+      "openSettingsFor": "Settings for {{name}}",
+      "openRecordFor": "Open record for {{name}}",
+      "more": "More actions"
     },
     "errors": {
       "fetchOrganizations": "Failed to fetch organizations",
@@ -4580,17 +4567,31 @@
     "deviceCount": "{{count}} devices",
     "list": {
       "title": "Organizations",
-      "searchPlaceholder": "Search...",
       "empty": "No organizations found.",
-      "noMatches": "No organizations match your search.",
-      "dragToReorder": "Drag to reorder"
+      "noMatches": "No organizations match your search or filter.",
+      "dragToReorder": "Drag to reorder",
+      "searchLabel": "Search organizations",
+      "reorderHandle": "Reorder {{name}}",
+      "reorderHint": "Use the up and down arrow keys to move this organization.",
+      "movedAnnouncement": "{{name}} moved to position {{position}} of {{total}}",
+      "workspaceMarker": "Workspace",
+      "sort": {
+        "label": "Sort",
+        "manual": "Manual order",
+        "name": "A to Z",
+        "devices": "Most devices"
+      },
+      "filter": {
+        "label": "Filter by status",
+        "all": "All"
+      }
     },
     "sites": {
       "loading": "Loading sites..."
     },
     "emptySelection": {
       "title": "No organization selected",
-      "description": "Select an organization from the list to view its sites."
+      "description": "Select an organization to see its status, sites, and actions."
     },
     "add": {
       "title": "Add Organization",
@@ -4611,8 +4612,9 @@
     },
     "deleteSite": {
       "title": "Delete Site",
-      "messagePrefix": "Are you sure you want to delete",
-      "messageSuffix": " This action cannot be undone."
+      "message": "Delete {{name}}? This removes the site permanently and cannot be undone.",
+      "blockedMessage_one": "{{name}} still has {{count}} device. Move it to another site before deleting this one.",
+      "blockedMessage_other": "{{name}} still has {{count}} devices. Move them to another site before deleting this one."
     },
     "merge": {
       "openButton": "Merge into another organization",
@@ -4713,6 +4715,9 @@
         "mfaRequired": "Restoring organizations requires multi-factor authentication. Enable MFA in your profile security settings, then try again.",
         "purging": "This organization is already being permanently deleted and can no longer be restored."
       }
+    },
+    "scope": {
+      "hint": "Your workspace is set to {{orgName}}. Actions on this page apply to the organization selected here."
     }
   },
   "siteDetailPage": {
@@ -4810,7 +4815,9 @@
     "count": "{{filtered}} of {{total}} sites",
     "searchPlaceholder": "Search sites",
     "actions": {
-      "add": "Add site"
+      "add": "Add site",
+      "editSite": "Edit {{name}}",
+      "deleteSite": "Delete {{name}}"
     },
     "columns": {
       "timezone": "Timezone",

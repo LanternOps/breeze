@@ -64,6 +64,9 @@ export const alertTemplates = pgTable('alert_templates', {
   // severity enum and escalation policies from this file); the FK itself is in
   // the migration and drift detection compares columns, not FK declarations.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  // Fleet Designer W03 (#5653): free-text "why" when a template is created
+  // from a design; NULL otherwise.
+  rationale: text('rationale'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({

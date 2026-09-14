@@ -225,6 +225,56 @@ export async function clearDeviceFunction(
   });
 }
 
+export interface RestoreDeviceFunctionInput {
+  deviceId: string;
+  orgId: string;
+  /** The assessment to make active again; null = leave the device with no function. */
+  assessmentId: string | null;
+  userId?: string | null;
+}
+
+/**
+ * Rollback primitive (Fleet Designer W03): supersede whatever is active and
+ * re-activate `assessmentId` (a row this device owned before the apply), or
+ * clear the projection when the device had no function. Same parent-first
+ * lock as every other writer; the re-activated row keeps its original
+ * provenance (source, confidence, run) — nothing is rewritten on it except
+ * `active` / `superseded_at`.
+ */
+export async function restoreDeviceFunction(
+  input: RestoreDeviceFunctionInput,
+  exec?: Executor,
+): Promise<{ outcome: 'restored' | 'cleared'; supersededAssessmentId: string | null }> {
+  return runInTransaction(exec, async (tx) => {
+    const device = await lockDevice(tx, input.deviceId, input.orgId);
+    if (!device) throw new DeviceFunctionError('device_not_found');
+
+    const active = await readActive(tx, device.id, device.orgId);
+    const now = new Date();
+    if (active && active.id !== input.assessmentId) await supersede(tx, active.id, device.orgId, now);
+
+    if (input.assessmentId) {
+      const [restored] = await tx
+        .update(deviceFunctionAssessments)
+        .set({ active: true, supersededAt: null })
+        .where(and(
+          eq(deviceFunctionAssessments.id, input.assessmentId),
+          eq(deviceFunctionAssessments.deviceId, device.id),
+          eq(deviceFunctionAssessments.orgId, device.orgId),
+        ))
+        .returning({ functionKey: deviceFunctionAssessments.functionKey, source: deviceFunctionAssessments.source });
+      if (restored) {
+        await writeProjection(tx, device.id, device.orgId, { deviceFunction: restored.functionKey, deviceFunctionSource: restored.source }, now);
+        return { outcome: 'restored', supersededAssessmentId: active && active.id !== input.assessmentId ? active.id : null };
+      }
+      // The prior row is gone (erased); fall through to a clear rather than
+      // leave a projection pointing at nothing.
+    }
+    await writeProjection(tx, device.id, device.orgId, { deviceFunction: null, deviceFunctionSource: null }, now);
+    return { outcome: 'cleared', supersededAssessmentId: active && active.id !== input.assessmentId ? active.id : null };
+  });
+}
+
 export async function getDeviceFunction(deviceId: string, orgId: string, exec: Executor = db): Promise<DeviceFunctionDto> {
   const active = await readActive(exec, deviceId, orgId);
   if (!active) {

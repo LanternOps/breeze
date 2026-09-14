@@ -119,6 +119,22 @@ export interface FleetDesignOutcome {
   markdown: string;
 }
 
+export type FleetDesignDriftKind = 'watch' | 'rule' | 'assignment' | 'group_member';
+
+/**
+ * W05 (#5655): how the live fleet has moved away from the approved (applied)
+ * design, computed server-side by `services/fleetDesign/drift.ts` on a design
+ * run that follows an applied one. `missing` = approved and gone; `extra` =
+ * live and not carried by the design; `changed` = approved but edited.
+ */
+export interface FleetDesignDrift {
+  approvedReportRunId: string;
+  appliedAt: string;
+  missing: { functionKey: string; kind: FleetDesignDriftKind; name: string }[];
+  extra: { policyId: string; policyName: string; kind: 'watch' | 'rule'; name: string; deviceCount: number }[];
+  changed: { functionKey: string; kind: 'watch' | 'rule'; name: string; field: string; approved: string; live: string }[];
+}
+
 /** `report_runs.result.summary.fleetDesign`. Every field optional (persisted jsonb, old snapshots must render). */
 export interface FleetDesignReportSummary {
   fleetDesign?: {
@@ -134,6 +150,8 @@ export interface FleetDesignReportSummary {
     devicesNotAssessed?: number;
     /** Evidence sections whose loader failed — their numbers were never measured (never invented zeros). */
     unavailable?: string[];
+    /** W05: set only when an applied design existed for the org when this run started; null/absent otherwise. */
+    drift?: FleetDesignDrift | null;
   };
 }
 

@@ -15,6 +15,9 @@ export const M365_CUSTOMER_GRAPH_READ_EVENTS = [
   'm365.customer_graph_read.grant_drift_detected',
   'm365.customer_graph_read.retested',
   'm365.customer_graph_read.disconnected',
+  // On-demand tenant sync requested by a technician (spec §5.2). Outcome is
+  // always 'initiated' — the run's own outcome is the sync worker's event.
+  'm365.customer_graph_read.sync_requested',
 ] as const;
 
 export type M365CustomerGraphReadEvent = typeof M365_CUSTOMER_GRAPH_READ_EVENTS[number];

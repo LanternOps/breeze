@@ -21,8 +21,13 @@ function thenable(rows: Array<Record<string, unknown>>, call: SelectCall) {
   return promise;
 }
 
-function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
+function makeExec(selectRows: Array<Array<Record<string, unknown>>> = [], updateReturningRows: Array<Array<Record<string, unknown>>> = []) {
   const queue = [...selectRows];
+  // Consumed only by an update chain that actually calls `.returning(...)`
+  // (restoreDeviceFunction's reactivate step); every other update in this
+  // file never calls `.returning()`, so this queue stays untouched for them
+  // and the pre-existing `[{ id: 'x' }]` fallback below is unchanged.
+  const updateQueue = [...updateReturningRows];
   const calls: Capture = { selects: [], inserts: [], updates: [] };
   let seq = 0;
   let generated = 0;
@@ -54,7 +59,9 @@ function makeExec(selectRows: Array<Array<Record<string, unknown>>> = []) {
         return {
           where: (condition: unknown) => {
             entry.where = condition;
-            return Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([{ id: 'x' }]) });
+            return Object.assign(Promise.resolve([]), {
+              returning: () => Promise.resolve(updateQueue.length > 0 ? updateQueue.shift()! : [{ id: 'x' }]),
+            });
           },
         };
       },
@@ -78,6 +85,7 @@ import {
   applyDesignFunctions,
   clearDeviceFunction,
   getDeviceFunction,
+  restoreDeviceFunction,
   upsertDeviceFunction,
 } from './deviceFunction';
 import { devices } from '../db/schema/devices';
@@ -109,8 +117,8 @@ beforeEach(() => {
   transactionSpy.mockClear();
 });
 
-function seed(rows: Array<Array<Record<string, unknown>>>) {
-  const made = makeExec(rows);
+function seed(rows: Array<Array<Record<string, unknown>>>, updateReturningRows: Array<Array<Record<string, unknown>>> = []) {
+  const made = makeExec(rows, updateReturningRows);
   holder.exec = made.exec;
   return made.calls;
 }
@@ -323,5 +331,79 @@ describe('applyDesignFunctions', () => {
         functions: [{ functionKey: 'custom:pos', deviceIds: [DEVICE], confidence: 0.9, evidence: [] }],
       }),
     ).rejects.toMatchObject({ code: 'label_required' });
+  });
+});
+
+describe('restoreDeviceFunction', () => {
+  it("locks the device row FOR UPDATE in the device's org before any write", async () => {
+    const calls = seed([[DEVICE_ROW], []], [[{ functionKey: 'file_server', source: 'manual' }]]);
+    await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: 'assess-x', userId: USER });
+    const first = calls.selects[0]!;
+    expect(first.table).toBe(devices);
+    expect(first.lockMode).toBe('update');
+    for (const w of [...calls.inserts, ...calls.updates]) expect(w.seq).toBeGreaterThan(first.seq);
+  });
+
+  it('throws device_not_found when the device is not in the org and writes nothing', async () => {
+    const calls = seed([[]]);
+    await expect(
+      restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: null }),
+    ).rejects.toMatchObject({ code: 'device_not_found' });
+    expect(calls.updates).toHaveLength(0);
+  });
+
+  it("reactivates the given assessment, supersedes the previously-active row, and projects the REACTIVATED row's own functionKey/source", async () => {
+    const calls = seed([[DEVICE_ROW], [ACTIVE_AI]], [[{ functionKey: 'print_server', source: 'manual' }]]);
+    const result = await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: 'assess-prior', userId: USER });
+    expect(result).toEqual({ outcome: 'restored', supersededAssessmentId: 'assess-ai' });
+
+    const supersede = calls.updates.find((u) => u.table === deviceFunctionAssessments && u.set.active === false)!;
+    expect(supersede.set.supersededAt).toBeInstanceOf(Date);
+    const { params: supersedeParams } = compile(supersede.where);
+    expect(supersedeParams).toEqual(['assess-ai', ORG]);
+
+    const reactivate = calls.updates.find((u) => u.table === deviceFunctionAssessments && u.set.active === true)!;
+    expect(reactivate.set.supersededAt).toBeNull();
+    const { params: reactivateParams } = compile(reactivate.where);
+    expect(reactivateParams).toEqual(['assess-prior', DEVICE, ORG]);
+
+    // The projection comes from the REACTIVATED row, not from the input.
+    const projection = calls.updates.find((u) => u.table === devices)!;
+    expect(projection.set).toMatchObject({ deviceFunction: 'print_server', deviceFunctionSource: 'manual' });
+
+    expect(supersede.seq).toBeLessThan(reactivate.seq);
+    expect(reactivate.seq).toBeLessThan(projection.seq);
+  });
+
+  it('does not supersede when the assessment being restored is already the active row', async () => {
+    const calls = seed([[DEVICE_ROW], [ACTIVE_AI]], [[{ functionKey: 'file_server', source: 'ai' }]]);
+    const result = await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: 'assess-ai', userId: USER });
+    expect(result.supersededAssessmentId).toBeNull();
+    expect(calls.updates.filter((u) => u.set.active === false)).toHaveLength(0);
+  });
+
+  it('clears the projection and supersedes the active row when assessmentId is null (the device had no function before the design ran)', async () => {
+    const calls = seed([[DEVICE_ROW], [ACTIVE_AI]]);
+    const result = await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: null, userId: USER });
+    expect(result).toEqual({ outcome: 'cleared', supersededAssessmentId: 'assess-ai' });
+    const projection = calls.updates.find((u) => u.table === devices)!;
+    expect(projection.set).toMatchObject({ deviceFunction: null, deviceFunctionSource: null });
+    // No reactivate attempted when assessmentId is null.
+    expect(calls.updates.filter((u) => u.set.active === true)).toHaveLength(0);
+  });
+
+  it('clears without a supersede update when nothing was active and assessmentId is null', async () => {
+    const calls = seed([[DEVICE_ROW], []]);
+    const result = await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: null, userId: USER });
+    expect(result).toEqual({ outcome: 'cleared', supersededAssessmentId: null });
+    expect(calls.updates.filter((u) => u.table === deviceFunctionAssessments)).toHaveLength(0);
+  });
+
+  it('falls back to a clear when the prior assessment row no longer exists (erased), still superseding whatever was active', async () => {
+    const calls = seed([[DEVICE_ROW], [ACTIVE_AI]], [[]]); // reactivate update matches no row
+    const result = await restoreDeviceFunction({ deviceId: DEVICE, orgId: ORG, assessmentId: 'assess-erased', userId: USER });
+    expect(result).toEqual({ outcome: 'cleared', supersededAssessmentId: 'assess-ai' });
+    const projection = calls.updates.find((u) => u.table === devices)!;
+    expect(projection.set).toMatchObject({ deviceFunction: null, deviceFunctionSource: null });
   });
 });

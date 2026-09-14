@@ -49,7 +49,13 @@ vi.mock('../../services/auditEvents', () => ({
 // This is an ORDERING stand-in: it proves `requireMfa()` runs ahead of every
 // handler body. What the real gate ACCEPTS is asserted in `crud.test.ts`,
 // which mounts the genuine middleware via `importOriginal`.
-const { mfaState } = vi.hoisted(() => ({ mfaState: { satisfied: true } }));
+const { mfaState, permState } = vi.hoisted(() => ({
+  mfaState: { satisfied: true },
+  // #5511 W02: resolved permissions, as requirePermission would set them.
+  // Default to the strongest grant so every pre-existing case in this file
+  // keeps its current meaning; the hpCmsl cases narrow it per test.
+  permState: { permissions: { permissions: [{ resource: '*', action: '*' }] } as any },
+}));
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
@@ -59,6 +65,8 @@ vi.mock('../../middleware/auth', () => ({
     if (!mfaState.satisfied) return c.json({ error: 'MFA required', code: 'MFA_REQUIRED' }, 403);
     await next();
   }),
+  // hpCmslGate.ts re-checks MFA itself (a belt to the route-level requireMfa).
+  hasSatisfiedMfa: vi.fn(() => mfaState.satisfied),
 }));
 
 import { featureLinkRoutes } from './featureLinks';
@@ -85,6 +93,7 @@ function buildApp() {
   const app = new Hono();
   app.use('*', async (c, next) => {
     c.set('auth', makeAuth());
+    c.set('permissions', permState.permissions);
     await next();
   });
   app.route('/', featureLinkRoutes);
@@ -142,6 +151,7 @@ describe('featureLinks routes', () => {
   beforeEach(() => {
     // A case that flips the MFA answer must not leak into the next one.
     mfaState.satisfied = true;
+    permState.permissions = { permissions: [{ resource: '*', action: '*' }] } as any;
     vi.clearAllMocks();
     app = buildApp();
   });
@@ -1171,5 +1181,285 @@ describe('featureLinks routes', () => {
       expect(addFeatureLinkMock).toHaveBeenCalled();
     });
 
+  });
+
+  // ============================================================
+  // #5511 W02 — warranty hpCmsl block, server-stamped consent (D3)
+  // ============================================================
+
+  describe('warranty inlineSettings validation and consent', () => {
+    const CONSENT = {
+      acceptedByUserId: 'attacker',
+      acceptedAt: '2020-01-01T00:00:00.000Z',
+      eulaId: 'hp-cmsl-eula-2026-04-01',
+    };
+
+    beforeEach(() => {
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'warranty', inlineSettings: {} }],
+      });
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+    });
+
+    it('POST refuses a client-supplied consent with a coded 400 and never calls the service', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'warranty',
+          inlineSettings: { hpCmsl: { enabled: true, consent: CONSENT } },
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('PATCH refuses a client-supplied consent with the same coded 400', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: true, consent: CONSENT } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'WARRANTY_CONSENT_NOT_CLIENT_SETTABLE' });
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST rejects an unknown warranty key instead of persisting it', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCsml: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST passes the authenticated user to the service as the consent actor', async () => {
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'warranty',
+          inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30, hpCmsl: { enabled: true } },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalledWith(
+        POLICY_ID,
+        'warranty',
+        undefined,
+        { enabled: true, warnDays: 90, criticalDays: 30, hpCmsl: { enabled: true } },
+        { userId: 'user-1' },
+      );
+    });
+
+    it('PATCH passes the authenticated user to the service as the consent actor', async () => {
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalledWith(
+        LINK_ID,
+        expect.objectContaining({ inlineSettings: { hpCmsl: { enabled: false } } }),
+        POLICY_ID,
+        { userId: 'user-1' },
+      );
+    });
+
+    it('maps a WarrantyConsentError from the service to a 400, not a 500', async () => {
+      const { WarrantyConsentError } = await import('../../services/configurationPolicy');
+      addFeatureLinkMock.mockRejectedValueOnce(new WarrantyConsentError('nope'));
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // ============================================================
+  // #5511 W02 — the hpCmsl authorization gate (contract D4)
+  // ============================================================
+
+  describe('hpCmsl authorization gate', () => {
+    const CONSENT = {
+      acceptedByUserId: 'user-1',
+      acceptedAt: '2026-09-10T00:00:00.000Z',
+      eulaId: 'hp-cmsl-eula-2026-04-01',
+    };
+    const WRITE_ONLY = { permissions: [{ resource: 'devices', action: 'write' }] } as any;
+    const EXECUTE = { permissions: [{ resource: 'devices', action: 'execute' }] } as any;
+
+    const collectingLink = (id: string) => ({
+      id,
+      featureType: 'warranty',
+      inlineSettings: { hpCmsl: { enabled: true, consent: CONSENT } },
+    });
+
+    beforeEach(() => {
+      addFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+      updateFeatureLinkMock.mockResolvedValue({ id: LINK_ID });
+      removeFeatureLinkMock.mockResolvedValue({ id: LINK_ID, featureType: 'warranty' });
+      getConfigPolicyMock.mockResolvedValue(STUB_POLICY);
+    });
+
+    it('POST enabling collection is refused for devices.write-only', async () => {
+      permState.permissions = WRITE_ONLY;
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'HP_CMSL_EXECUTE_REQUIRED' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST enabling collection is refused when MFA is not satisfied', async () => {
+      permState.permissions = EXECUTE;
+      mfaState.satisfied = false;
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: 'MFA_REQUIRED' });
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('POST of alert thresholds only is NOT gated — devices.write still suffices', async () => {
+      permState.permissions = WRITE_ONLY;
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          featureType: 'warranty',
+          inlineSettings: { enabled: true, warnDays: 90, criticalDays: 30 },
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('PATCH turning collection OFF is NOT gated (fail-safe direction)', async () => {
+      permState.permissions = WRITE_ONLY;
+      getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, featureLinks: [collectingLink(LINK_ID)] });
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: false } } }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('PATCH turning collection ON is gated', async () => {
+      permState.permissions = WRITE_ONLY;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [{ id: LINK_ID, featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: false } } }],
+      });
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(updateFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('DELETE of a warranty link that REVERTS to a collecting parent is gated (inheritance transition)', async () => {
+      permState.permissions = WRITE_ONLY;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: { id: PARENT_POLICY_ID, featureLinks: [collectingLink('parent-link')] },
+        featureLinks: [{ id: LINK_ID, featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: false } } }],
+      });
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('DELETE fails CLOSED when the parent row could not be resolved', async () => {
+      permState.permissions = WRITE_ONLY;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        parentPolicyId: PARENT_POLICY_ID,
+        parentPolicy: null,
+        featureLinks: [{ id: LINK_ID, featureType: 'warranty', inlineSettings: {} }],
+      });
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(403);
+      expect(removeFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('DELETE of a warranty link with no parent link is NOT gated — it only revokes', async () => {
+      permState.permissions = WRITE_ONLY;
+      getConfigPolicyMock.mockResolvedValue({
+        ...STUB_POLICY,
+        featureLinks: [collectingLink(LINK_ID)],
+      });
+
+      const res = await app.request(`/${POLICY_ID}/features/${LINK_ID}`, { method: 'DELETE' });
+
+      expect(res.status).toBe(200);
+      expect(removeFeatureLinkMock).toHaveBeenCalled();
+    });
+
+    it('an org-scoped caller cannot enable collection on a PARTNER-WIDE policy', async () => {
+      // Partner-wide policies reach every org under the partner, so the
+      // existing canManagePartnerWidePolicies gate must still fire ahead of
+      // the hpCmsl gate — even for a caller holding devices.execute + MFA.
+      permState.permissions = EXECUTE;
+      getConfigPolicyMock.mockResolvedValue({ ...STUB_POLICY, orgId: null, partnerId: 'partner-1' });
+
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(403);
+      expect(addFeatureLinkMock).not.toHaveBeenCalled();
+    });
+
+    it('a devices.execute caller with MFA may enable collection', async () => {
+      permState.permissions = EXECUTE;
+      const res = await app.request(`/${POLICY_ID}/features`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featureType: 'warranty', inlineSettings: { hpCmsl: { enabled: true } } }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(addFeatureLinkMock).toHaveBeenCalled();
+    });
   });
 });

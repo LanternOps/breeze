@@ -26,6 +26,9 @@
     "alertsChannels": "Bildirim Kanalları",
     "alertsCorrelations": "Uyarı Korelasyonları",
     "alertsDetail": "Uyarı Ayrıntıları",
+    "alertsMonitors": "Uyarılar – Monitörler",
+    "alertsMonitorDetail": "Uyarılar – Monitör",
+    "alertsRules": "Uyarılar – Eski kurallar",
     "alerts": "Uyarılar",
     "analytics": "Analitik",
     "approvals": "Onaylar",
@@ -74,10 +77,6 @@
     "login": "Giriş Yap",
     "logs": "Günlükler",
     "monitoring": "İzleme",
-    "monitoringNetwork": "İzleme – Ağ",
-    "monitoringDelivery": "İzleme – Teslimat",
-    "monitoringMonitorDetail": "İzleme – Monitör",
-    "monitoringRules": "İzleme – Eski kurallar",
     "oauthConsent": "Erişimi yetkilendir",
     "onedrive": "OneDrive",
     "organizationsDetail": "Organizasyon",
@@ -160,7 +159,8 @@
     "ticketsNew": "Bilet Oluştur",
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
-    "workspace": "Yapay Zeka Asistanı"
+    "workspace": "Yapay Zeka Asistanı",
+    "aiAgentsFleetDesign": "Filo Tasarımı"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

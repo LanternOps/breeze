@@ -53,6 +53,7 @@ import { orgRoutes } from './routes/orgs';
 import { orgMergeRoutes } from './routes/orgMerge';
 import { orgArchiveRoutes } from './routes/orgArchive';
 import { orgSummaryRoutes } from './routes/orgSummary';
+import { orgAccountReadinessRoutes } from './routes/orgAccountReadiness';
 import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
@@ -158,6 +159,7 @@ import { playbookRoutes } from './routes/playbooks';
 import { remediationSuggestionRoutes } from './routes/remediationSuggestions';
 import { seedBuiltInPlaybooks } from './services/builtInPlaybooks';
 import { ensureSystemLibraryScripts } from './services/systemScriptLibrary';
+import { ensureBuiltInMonitorsForAllPartners } from './services/monitors/builtInMonitors';
 import { seedDefaultAuditBaselines } from './services/auditBaselineService';
 import { changesRoutes } from './routes/changes';
 import { dnsSecurityRoutes } from './routes/dnsSecurity';
@@ -848,6 +850,7 @@ api.route('/orgs', orgRoutes);
 api.route('/orgs', orgMergeRoutes);
 api.route('/orgs', orgArchiveRoutes);
 api.route('/orgs', orgSummaryRoutes);
+api.route('/orgs', orgAccountReadinessRoutes); // GET /orgs/account-readiness — Organizations board bulk read (#5721 W01)
 api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
@@ -1669,6 +1672,7 @@ async function bootstrap(): Promise<void> {
     console.error('[startup] Failed to ensure system script library:', err);
   }
 
+
   try {
     await runWithSystemDbAccess(async () => {
       const seeded = await seedDefaultAuditBaselines();
@@ -1742,6 +1746,23 @@ async function bootstrap(): Promise<void> {
 
   console.log(`Breeze API running at http://localhost:${port}`);
   console.log(`WebSocket endpoint available at ws://localhost:${port}/api/v1/agent-ws/:id/ws`);
+
+  // Built-in CPU / memory / disk monitors for partners created before the
+  // feature shipped. Detached and AFTER the listener is up: hundreds of
+  // partners × ~40 queries each must never delay /health. One-time per partner
+  // (partners.settings marker), each partner its own transaction; opt out with
+  // BREEZE_BUILTIN_MONITORS_AUTOSEED=false.
+  void ensureBuiltInMonitorsForAllPartners()
+    .then((result) => {
+      if (result.provisioned > 0 || result.failed > 0) {
+        console.log(
+          `[startup] Built-in monitors provisioned for ${result.provisioned} partner(s), ${result.failed} failed`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[startup] Failed to provision built-in monitors:', err);
+    });
 
   // Explicit registration (wave 3.5d-b, #4086): the lazy worker registry only
   // loads `jobs/aiAgentRunner` for a process that runs global workers, so an
