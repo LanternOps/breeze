@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} aggiornamento",
         "patchCount_other": "{{count}} aggiornamenti",
         "refused": "Non registrato: {{reason}}",
+        "unconfirmed": "Questo piano non è mai stato confermato — l'agente non ha potuto riverificare le sue voci rispetto alle evidenze, quindi nulla di quanto segue è stato convalidato.",
+        "unconfirmedItem": "Non confermato — questa voce non è mai stata riverificata.",
         "classes": {
           "install": "Installazione",
           "approval_advisory": "Consiglio di approvazione",

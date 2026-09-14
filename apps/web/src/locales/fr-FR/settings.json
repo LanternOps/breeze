@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} mise à jour",
         "patchCount_other": "{{count}} mises à jour",
         "refused": "Non consigné : {{reason}}",
+        "unconfirmed": "Ce plan n'a jamais été confirmé — l'agent n'a pas pu revérifier ses entrées par rapport aux éléments, donc rien ci-dessous n'a été validé.",
+        "unconfirmedItem": "Non confirmé — cette entrée n'a jamais été revérifiée.",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Recommandation d'approbation",

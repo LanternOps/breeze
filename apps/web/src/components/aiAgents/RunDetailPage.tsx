@@ -585,6 +585,12 @@ function patchRefusalReasonLabel(t: (key: string) => string, reason: string): st
  * A REFUSED item is rendered, dimmed, with its reason. W01 mints no intents,
  * so nothing here is an action — an item the persister would not record is
  * still what the agent proposed, and hiding it would misreport the run.
+ *
+ * An item with NO disposition is a THIRD state, not a recorded one: the
+ * finalizer's re-validation never completed (`patch_plan_persist_failed`), so
+ * nothing about this item has been checked against the evidence or the
+ * device's current org. Rendering it like a recorded item told the technician
+ * the plan was confirmed when it was not — review finding on PR #5792.
  */
 function PatchPlanItem({
   item,
@@ -594,9 +600,10 @@ function PatchPlanItem({
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const refused = item.disposition === 'refused';
+  const unconfirmed = item.disposition === null;
   return (
     <li
-      className={`py-3 ${refused ? 'opacity-70' : ''}`}
+      className={`py-3 ${refused || unconfirmed ? 'opacity-70' : ''}`}
       data-testid={`ai-agent-run-patch-item-${item.index}`}
     >
       <div className="flex flex-wrap items-center gap-1.5">
@@ -625,6 +632,14 @@ function PatchPlanItem({
           {t('aiAgentsPage.runs.patch.refused', {
             reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
           })}
+        </p>
+      )}
+      {unconfirmed && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-unconfirmed`}
+        >
+          {t('aiAgentsPage.runs.patch.unconfirmedItem')}
         </p>
       )}
     </li>
@@ -1692,6 +1707,21 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {run.patch.evidenceTruncated && (
             <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-patch-truncated">
               {t('aiAgentsPage.runs.patch.evidenceTruncated')}
+            </p>
+          )}
+
+          {/* The finalizer's re-validation never completed, so NOTHING below
+              has been checked against the evidence or the devices' current
+              orgs. Driven off the items themselves rather than off
+              `errorCode`, so a plan that is unconfirmed for any future reason
+              still says so. Review finding on PR #5792: without this, a
+              failed persist rendered as a fully recorded plan. */}
+          {run.patch.items.length > 0 && run.patch.items.every((item) => item.disposition === null) && (
+            <p
+              className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-400"
+              data-testid="ai-agent-run-patch-unconfirmed"
+            >
+              {t('aiAgentsPage.runs.patch.unconfirmed')}
             </p>
           )}
 

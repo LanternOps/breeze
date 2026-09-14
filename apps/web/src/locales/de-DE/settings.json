@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} Update",
         "patchCount_other": "{{count}} Updates",
         "refused": "Nicht erfasst: {{reason}}",
+        "unconfirmed": "Dieser Plan wurde nie bestätigt — der Agent konnte seine Einträge nicht erneut mit den Belegen abgleichen, daher wurde nichts davon unten validiert.",
+        "unconfirmedItem": "Nicht bestätigt — dieser Eintrag wurde nie erneut geprüft.",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Genehmigungsempfehlung",

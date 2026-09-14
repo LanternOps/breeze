@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} actualización",
         "patchCount_other": "{{count}} actualizaciones",
         "refused": "No se registró: {{reason}}",
+        "unconfirmed": "Este plan nunca se confirmó — el agente no pudo volver a verificar sus elementos con la evidencia, por lo que nada de lo siguiente se validó.",
+        "unconfirmedItem": "No confirmado — este elemento nunca se volvió a verificar.",
         "classes": {
           "install": "Instalación",
           "approval_advisory": "Recomendación de aprobación",

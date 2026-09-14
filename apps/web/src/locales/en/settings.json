@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} update",
         "patchCount_other": "{{count}} updates",
         "refused": "Not recorded: {{reason}}",
+        "unconfirmed": "This plan was never confirmed — the agent could not re-check its items against the evidence, so nothing below has been validated.",
+        "unconfirmedItem": "Not confirmed — this item was never re-checked.",
         "classes": {
           "install": "Install",
           "approval_advisory": "Approval advice",

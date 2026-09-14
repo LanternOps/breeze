@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} atualização",
         "patchCount_other": "{{count}} atualizações",
         "refused": "Não registrado: {{reason}}",
+        "unconfirmed": "Este plano nunca foi confirmado — o agente não conseguiu reverificar seus itens em relação às evidências, então nada abaixo foi validado.",
+        "unconfirmedItem": "Não confirmado — este item nunca foi reverificado.",
         "classes": {
           "install": "Instalação",
           "approval_advisory": "Recomendação de aprovação",

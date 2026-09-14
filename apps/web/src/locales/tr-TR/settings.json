@@ -1904,6 +1904,8 @@
         "patchCount": "{{count}} güncelleme",
         "patchCount_other": "{{count}} güncelleme",
         "refused": "Kaydedilmedi: {{reason}}",
+        "unconfirmed": "Bu plan hiçbir zaman onaylanmadı — aracı öğelerini kanıtlarla yeniden karşılaştıramadı, bu nedenle aşağıdakilerin hiçbiri doğrulanmadı.",
+        "unconfirmedItem": "Onaylanmadı — bu öğe hiçbir zaman yeniden kontrol edilmedi.",
         "classes": {
           "install": "Kurulum",
           "approval_advisory": "Onay tavsiyesi",

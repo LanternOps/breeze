@@ -2060,4 +2060,44 @@ describe('RunDetailPage — patch plan', () => {
     await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-agent-run-patch')).toBeNull();
   });
+
+  // Review finding (silent-failure hunter, PR #5792): when the finalizer's
+  // membership read throws, the run still finishes `completed` carrying
+  // `errorCode: 'patch_plan_persist_failed'` and a plan whose items have NO
+  // disposition. Rendering those identically to a recorded item told the
+  // technician the plan was confirmed when nothing had been re-validated.
+  const UNCONFIRMED = {
+    ...PATCH,
+    items: PATCH.items.map((item) => ({ ...item, disposition: null, reason: null })),
+    recordedCount: 0,
+    refusedCount: 0,
+  };
+
+  it('warns that the plan was never confirmed when persistence failed', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, errorCode: 'patch_plan_persist_failed', patch: UNCONFIRMED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-unconfirmed')).toBeInTheDocument();
+  });
+
+  it('marks an item with no disposition as unconfirmed, never as recorded', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, errorCode: 'patch_plan_persist_failed', patch: UNCONFIRMED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeInTheDocument();
+    // A confirmed plan must NOT grow the warning — otherwise the banner is
+    // decoration rather than a signal.
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-reason')).toBeNull();
+  });
+
+  it('shows no unconfirmed warning for a normally persisted plan', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-unconfirmed')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeNull();
+  });
 });
