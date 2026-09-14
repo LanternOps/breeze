@@ -50,19 +50,17 @@ vi.mock('./tenantExportPolicyRegistry', () => ({
 
 vi.mock('archiver', async (importOriginal) => {
   const actual = await importOriginal<typeof import('archiver')>();
-  const createArchive = (
-    actual as unknown as { default?: typeof actual }
-  ).default ?? actual;
   return {
     ...actual,
-    default: (...args: Parameters<typeof createArchive>) => {
-      const archive = createArchive(...args);
-      const append = archive.append.bind(archive);
-      archive.append = ((source: Parameters<typeof append>[0], data: Parameters<typeof append>[1]) => {
-        if (data?.name) mockState.archiveAppends.push(data.name);
-        return append(source, data);
-      }) as typeof archive.append;
-      return archive;
+    ZipArchive: class extends actual.ZipArchive {
+      constructor(...args: ConstructorParameters<typeof actual.ZipArchive>) {
+        super(...args);
+        const append = this.append.bind(this);
+        this.append = ((source: Parameters<typeof append>[0], data: Parameters<typeof append>[1]) => {
+          if (data?.name) mockState.archiveAppends.push(data.name);
+          return append(source, data);
+        }) as typeof append;
+      }
     },
   };
 });

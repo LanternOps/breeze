@@ -1,15 +1,26 @@
 import { describe, it, expect } from "vitest";
-import archiver from "archiver";
+import { ZipArchive } from "archiver";
 import StreamZip from "node-stream-zip";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { renameAppInZip } from "./installerAppZip";
+
+/** True when the platform `unzip` CLI is on PATH (present on macOS/Linux CI runners). */
+function hasUnzipOnPath(): boolean {
+  try {
+    execFileSync("unzip", ["-v"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Build a fixture zip containing a fake `.app` directory. */
 async function buildFixtureZip(appName: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const archive = archiver("zip", { zlib: { level: 0 } });
+    const archive = new ZipArchive({ zlib: { level: 0 } });
     const chunks: Buffer[] = [];
     archive.on("data", (c: Buffer) => chunks.push(c));
     archive.on("end", () => resolve(Buffer.concat(chunks)));
@@ -140,6 +151,26 @@ describe("renameAppInZip", () => {
       await unlink(tmp).catch(() => {});
     }
   });
+
+  it.skipIf(!hasUnzipOnPath())(
+    "produces a zip readable by the platform unzip binary (archiver v8 byte regression check)",
+    async () => {
+      const input = await buildFixtureZip("Breeze Installer.app");
+      const out = await renameAppInZip(input, {
+        oldAppName: "Breeze Installer.app",
+        newAppName: "Breeze Installer [UNZIPT1@host.local].app",
+      });
+      const tmp = join(tmpdir(), `installer-zip-unzip-t-${Date.now()}.zip`);
+      await writeFile(tmp, out);
+      try {
+        expect(() =>
+          execFileSync("unzip", ["-t", tmp], { stdio: "pipe" }),
+        ).not.toThrow();
+      } finally {
+        await unlink(tmp).catch(() => {});
+      }
+    },
+  );
 
   it("throws if no entry matches the old app name", async () => {
     const input = await buildFixtureZip("Different.app");

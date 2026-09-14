@@ -19,7 +19,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import { sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { getOrgCascadeDeleteOrder } from './tenantCascade';
@@ -76,7 +76,7 @@ export async function buildOrgExportZip(
   // Policy and information-schema classification must finish before archive
   // creation. A failure therefore cannot return or append a partial ZIP.
   const exportedAt = new Date().toISOString();
-  const archive = archiver('zip', { zlib: { level: 6 } });
+  const archive = new ZipArchive({ zlib: { level: 6 } });
   const chunks: Buffer[] = [];
   const files: ExportManifestEntry[] = [];
 
