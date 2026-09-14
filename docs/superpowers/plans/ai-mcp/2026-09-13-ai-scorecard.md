@@ -1,6 +1,7 @@
 ---
-tracking_issue: TBD (register after Gate B)
-branch: feature/<parent>-ai-scorecard/wave-<sub-issue>
+tracking_issue: LanternOps/breeze#5757
+wave_issues: W01 LanternOps/breeze#5758, W02 LanternOps/breeze#5759, W03 LanternOps/breeze#5760, W04 LanternOps/breeze#5761
+branch: feature/5757-ai-scorecard/wave-<sub-issue>
 ---
 
 # AI Scorecard — attribution, narrative email, measured impact (plan hub)

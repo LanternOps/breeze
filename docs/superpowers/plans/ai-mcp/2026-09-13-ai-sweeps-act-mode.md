@@ -1,6 +1,7 @@
 ---
-tracking_issue: TBD (register after Gate B)
-branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
+tracking_issue: LanternOps/breeze#5751
+wave_issues: W01 LanternOps/breeze#5752, W02 LanternOps/breeze#5753, W03 LanternOps/breeze#5754, W04 LanternOps/breeze#5755, W05 LanternOps/breeze#5756
+branch: feature/5751-ai-sweeps-act-mode/wave-<sub-issue>
 ---
 
 # AI sweeps — act mode, certificate evidence and fix-by-trigger provenance — Plan Hub

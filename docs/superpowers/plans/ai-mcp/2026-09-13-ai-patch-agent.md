@@ -1,7 +1,7 @@
 ---
-tracking_issue: TBD (register after Gate B)
-wave_issues: TBD
-branch: feature/<parent>-ai-patch-agent/wave-<sub-issue>
+tracking_issue: LanternOps/breeze#5746
+wave_issues: W01 LanternOps/breeze#5747, W02 LanternOps/breeze#5748, W03 LanternOps/breeze#5749, W04 LanternOps/breeze#5750
+branch: feature/5746-ai-patch-agent/wave-<sub-issue>
 ---
 # AI patch agent — Plan Index
 
