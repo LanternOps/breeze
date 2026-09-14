@@ -888,6 +888,18 @@ describe('core migration ordering', () => {
   });
 });
 
+describe('AI origin attribution migration (#5022 W01)', () => {
+  it('sorts after every migration committed on main at authoring time', () => {
+    const files = listMigrationFilenames();
+    const idx = files.indexOf('2026-10-16-182100-ai-origin-attribution.sql');
+
+    expect(idx, 'migration file missing').toBeGreaterThan(-1);
+    expect(idx, 'migration must sort last among committed files at authoring time').toBe(
+      files.length - 1,
+    );
+  });
+});
+
 describe('Wave 3 durable live authorization expansion', () => {
   it('maps the user permission epoch as a non-null bigint defaulting to zero', () => {
     const column = getTableConfig(users).columns.find((candidate) => candidate.name === 'permissions_epoch');
