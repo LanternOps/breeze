@@ -1294,9 +1294,15 @@ async function handleToolsCall(
   // complete + uniform audit. The callback owns executeTool + the MCP response
   // shape (including the image content-block special case) and classifies its
   // own success/failure; the wrapper owns the ledger + audit for both outcomes.
-  const execute = async (): Promise<Tier3ExecutionOutcome> => {
+  const execute = async (ledger: McpToolExecutionLedgerHandle | null): Promise<Tier3ExecutionOutcome> => {
     try {
-      const result = await executeTool(toolName, toolInput, auth);
+      // #5022 W01: the AI-surface mint site for MCP. The origin comes from the
+      // execution LEDGER, whose `sessionId` is the persisted `ai_sessions.id`
+      // it just created -- never from `ctx.sessionId`, which is the MCP
+      // TRANSPORT session id and resolves to nothing. Tiers below 3 create no
+      // ledger and therefore carry no origin; they are reads.
+      const toolAuth = ledger ? { ...auth, aiOrigin: ledger.aiOrigin } : auth;
+      const result = await executeTool(toolName, toolInput, toolAuth);
       const safeResult = compactToolResultForChat(toolName, result);
 
       // If result contains imageBase64, return it as an MCP image content block
@@ -1499,7 +1505,7 @@ interface Tier3ExecutionOutcome {
  */
 async function runTier3ToolLifecycle(
   ctx: Tier3LifecycleContext,
-  execute: () => Promise<Tier3ExecutionOutcome>,
+  execute: (ledger: McpToolExecutionLedgerHandle | null) => Promise<Tier3ExecutionOutcome>,
 ): Promise<JsonRpcResponse> {
   let ledgerHandle: McpToolExecutionLedgerHandle | null = null;
   if (ctx.tier >= 3) {
@@ -1530,7 +1536,7 @@ async function runTier3ToolLifecycle(
   const startedAt = Date.now();
   let outcome: Tier3ExecutionOutcome;
   try {
-    outcome = await execute();
+    outcome = await execute(ledgerHandle);
   } catch (err) {
     // The execute callback is expected to classify its own outcome and never
     // throw. This defensive net STILL completes the ledger + audit (never skip
@@ -1757,6 +1763,8 @@ async function dispatchBootstrapAuthTool(
   // complete + uniform `mcp.tool.<name>` audit. The handler's own business
   // audits + dedup (per-invite events, configure_defaults audit, 24h dedupe)
   // remain intact; this wraps them with the fail-closed ledger + uniform audit.
+  // The bootstrap handlers take `bootstrapCtx`, not an AuthContext, and never
+  // reach the device command queue, so they need no AI origin (#5022 W01).
   const execute = async (): Promise<Tier3ExecutionOutcome> => {
     try {
       const result = await tool.handler(parsed.data, bootstrapCtx);
