@@ -200,6 +200,29 @@ describe('runReprovisionSweep', () => {
       expect(summary.repaired).toBe(0);
       expect(d.log).toHaveBeenCalledWith(expect.stringContaining('would repair'));
     });
+
+    it("keeps repairing after one org's repair throws, counts it, and still prints the summary", async () => {
+      const d = deps({
+        listReportEnabledOrgs: vi.fn(async () => ['org-a', 'org-b']),
+        loadManagedConfig: vi.fn(async () => ({ sites: ['drifted'] })),
+        updateConfig: vi.fn(async (orgId: string) => {
+          if (orgId === 'org-a') throw new Error('boom');
+        }),
+      });
+
+      const summary = await runReprovisionSweep(d, { apply: true, repair: true });
+
+      // org-a's repair failure must not stop org-b from being repaired.
+      expect(d.updateConfig).toHaveBeenCalledWith('org-b', 'threat_detection_review', { sites: [] });
+      expect(summary.failed).toBe(1);
+      expect(summary.repaired).toBe(1);
+      expect(exitCodeFor(summary)).toBe(1);
+      expect(d.error).toHaveBeenCalledWith(
+        expect.stringContaining('org-a/threat_detection_review'),
+        expect.any(Error),
+      );
+      expect(d.log).toHaveBeenCalledWith(expect.stringContaining('done'));
+    });
   });
 });
 

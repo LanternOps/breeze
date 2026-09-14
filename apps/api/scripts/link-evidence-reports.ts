@@ -25,24 +25,18 @@ import { organizations } from '../src/db/schema/orgs';
 import { deliverableTemplateItems, deliverableTemplateSets } from '../src/db/schema/deliverableTemplates';
 import { serviceDeliverables } from '../src/db/schema/serviceDeliverables';
 import { reports } from '../src/db/schema/reports';
-import { isManagedEvidenceType, type ManagedEvidenceType } from '../src/services/managedEvidenceRegistry';
+import { isManagedEvidenceType } from '../src/services/managedEvidenceRegistry';
 import { resolveManagedEvidenceDefinition } from '../src/services/managedEvidenceDefinitions';
+import {
+  buildEvidenceItemIndex,
+  findCandidates,
+  parseArgs,
+  type Candidate,
+} from './link-evidence-reports.lib';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const LOG = '[link-evidence-reports]';
 
 type OrgScope = { orgId: string; partnerId: string };
-
-type Candidate = {
-  id: string;
-  name: string;
-  type: ManagedEvidenceType;
-};
-
-function flag(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i === -1 ? undefined : process.argv[i + 1];
-}
 
 /** Every org in scope, with the partnerId needed to also see partner-wide items. */
 async function resolveOrgScope(orgId: string | undefined, partnerId: string | undefined): Promise<OrgScope[]> {
@@ -72,7 +66,7 @@ async function resolveOrgScope(orgId: string | undefined, partnerId: string | un
  * First). Keyed by `name::cadence` since that's the only link a deliverable
  * carries back to the item it was created from — there is no FK.
  */
-async function loadEvidenceItemIndex(orgId: string, partnerId: string): Promise<Map<string, ManagedEvidenceType>> {
+async function loadEvidenceItemIndex(orgId: string, partnerId: string) {
   const rows = await db
     .select({
       name: deliverableTemplateItems.name,
@@ -89,24 +83,16 @@ async function loadEvidenceItemIndex(orgId: string, partnerId: string): Promise<
       ),
     ));
 
-  const index = new Map<string, ManagedEvidenceType>();
-  for (const row of rows) {
-    if (!row.type || !isManagedEvidenceType(row.type)) continue;
-    const key = `${row.name}::${row.cadence}`;
-    // First match wins on a name/cadence collision between an org-owned and a
-    // partner-wide item — a real ambiguity, but not one this script should
-    // silently resolve one way or the other differently across runs.
-    if (!index.has(key)) index.set(key, row.type);
-  }
-  return index;
+  return buildEvidenceItemIndex(rows, isManagedEvidenceType);
 }
 
-async function loadUnlinkedDeliverables(orgId: string): Promise<Array<{ id: string; name: string; cadence: string }>> {
+async function loadUnlinkedDeliverables(orgId: string) {
   return db
     .select({
       id: serviceDeliverables.id,
       name: serviceDeliverables.name,
       cadence: serviceDeliverables.cadence,
+      autoEvidenceReportId: serviceDeliverables.autoEvidenceReportId,
     })
     .from(serviceDeliverables)
     .where(and(
@@ -115,19 +101,13 @@ async function loadUnlinkedDeliverables(orgId: string): Promise<Array<{ id: stri
     ));
 }
 
-async function findCandidates(orgId: string, partnerId: string): Promise<Candidate[]> {
+async function findOrgCandidates(orgId: string, partnerId: string): Promise<Candidate[]> {
   const [index, deliverables] = await Promise.all([
     loadEvidenceItemIndex(orgId, partnerId),
     loadUnlinkedDeliverables(orgId),
   ]);
 
-  const candidates: Candidate[] = [];
-  for (const deliverable of deliverables) {
-    const type = index.get(`${deliverable.name}::${deliverable.cadence}`);
-    if (!type) continue;
-    candidates.push({ id: deliverable.id, name: deliverable.name, type });
-  }
-  return candidates;
+  return findCandidates(index, deliverables);
 }
 
 // resolveManagedEvidenceDefinition stamps created_by as the principal that owns
@@ -147,26 +127,7 @@ async function existingCreator(orgId: string): Promise<string | null> {
 }
 
 async function main(): Promise<void> {
-  const orgIdRaw = flag('org-id');
-  const partnerIdRaw = flag('partner-id');
-  const ownerUserIdRaw = flag('owner-user-id');
-  const apply = process.argv.includes('--apply');
-
-  if (!orgIdRaw && !partnerIdRaw) {
-    throw new Error('one of --partner-id or --org-id is required');
-  }
-  if (orgIdRaw && partnerIdRaw) {
-    throw new Error('specify only one of --partner-id or --org-id');
-  }
-  if (orgIdRaw && !UUID.test(orgIdRaw)) {
-    throw new Error('--org-id must be a UUID');
-  }
-  if (partnerIdRaw && !UUID.test(partnerIdRaw)) {
-    throw new Error('--partner-id must be a UUID');
-  }
-  if (ownerUserIdRaw && !UUID.test(ownerUserIdRaw)) {
-    throw new Error('--owner-user-id must be a UUID');
-  }
+  const { orgId: orgIdRaw, partnerId: partnerIdRaw, ownerUserId: ownerUserIdRaw, apply } = parseArgs(process.argv);
 
   await withSystemDbAccessContext(async () => {
     const orgs = await resolveOrgScope(orgIdRaw, partnerIdRaw);
@@ -176,9 +137,10 @@ async function main(): Promise<void> {
     let linked = 0;
     let definitionsCreated = 0;
     let definitionsAdopted = 0;
+    let failed = 0;
 
     for (const { orgId, partnerId } of orgs) {
-      const candidates = await findCandidates(orgId, partnerId);
+      const candidates = await findOrgCandidates(orgId, partnerId);
       if (candidates.length === 0) continue;
 
       let createdBy = ownerUserIdRaw;
@@ -199,18 +161,26 @@ async function main(): Promise<void> {
           continue;
         }
 
-        await db.transaction(async (tx) => {
-          const definition = await resolveManagedEvidenceDefinition(orgId, candidate.type, createdBy!, tx);
-          if (definition.adopted) definitionsAdopted += 1;
-          else definitionsCreated += 1;
+        try {
+          await db.transaction(async (tx) => {
+            const definition = await resolveManagedEvidenceDefinition(orgId, candidate.type, createdBy!, tx);
+            if (definition.adopted) definitionsAdopted += 1;
+            else definitionsCreated += 1;
 
-          await tx
-            .update(serviceDeliverables)
-            .set({ autoEvidenceReportId: definition.id })
-            .where(eq(serviceDeliverables.id, candidate.id));
-        });
-        linked += 1;
-        console.log(`${LOG} linked ${candidate.name} (${orgId}) -> ${candidate.type}`);
+            await tx
+              .update(serviceDeliverables)
+              .set({ autoEvidenceReportId: definition.id })
+              .where(eq(serviceDeliverables.id, candidate.id));
+          });
+          linked += 1;
+          console.log(`${LOG} linked ${candidate.name} (${orgId}) -> ${candidate.type}`);
+        } catch (cause) {
+          // One candidate's failure must not abort the sweep; the script is
+          // re-runnable, so report and continue.
+          failed += 1;
+          const message = cause instanceof Error ? cause.message : cause;
+          console.error(`${LOG} FAILED ${candidate.name} (${orgId}) -> ${candidate.type}:`, message);
+        }
       }
     }
 
@@ -218,8 +188,9 @@ async function main(): Promise<void> {
       console.log(`${LOG} ${wouldLink} deliverables would be linked`);
     } else {
       console.log(
-        `${LOG} linked ${linked} (definitions created ${definitionsCreated}, adopted ${definitionsAdopted})`,
+        `${LOG} linked ${linked} (definitions created ${definitionsCreated}, adopted ${definitionsAdopted}, failed ${failed})`,
       );
+      if (failed > 0) process.exitCode = 1;
     }
   }, 'linkEvidenceReports');
 }

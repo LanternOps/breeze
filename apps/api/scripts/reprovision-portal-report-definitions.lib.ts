@@ -109,20 +109,28 @@ async function repairConfigs(
     let orgRepairs = 0;
 
     for (const type of types) {
-      const stored = await deps.loadManagedConfig(orgId, type);
-      if (stored === null) continue; // org has no managed definition of this type
+      try {
+        const stored = await deps.loadManagedConfig(orgId, type);
+        if (stored === null) continue; // org has no managed definition of this type
 
-      const target = managedEvidenceEntry(type).defaultConfig as Record<string, unknown>;
-      if (deepEqual(stored, target)) continue;
+        const target = managedEvidenceEntry(type).defaultConfig as Record<string, unknown>;
+        if (deepEqual(stored, target)) continue;
 
-      const diff = diffKeys(stored, target);
-      if (opts.apply) {
-        await deps.updateConfig(orgId, type, { ...target });
-        summary.repaired += 1;
-        orgRepairs += 1;
-        deps.log(`${TAG} repaired ${orgId} ${type} config drift: ${diff}`);
-      } else {
-        deps.log(`${TAG} would repair ${orgId} ${type} config drift: ${diff}`);
+        const diff = diffKeys(stored, target);
+        if (opts.apply) {
+          await deps.updateConfig(orgId, type, { ...target });
+          summary.repaired += 1;
+          orgRepairs += 1;
+          deps.log(`${TAG} repaired ${orgId} ${type} config drift: ${diff}`);
+        } else {
+          deps.log(`${TAG} would repair ${orgId} ${type} config drift: ${diff}`);
+        }
+      } catch (cause) {
+        // One org/type's repair failure must not abort the sweep; the script
+        // is re-runnable, so report and continue — same isolation contract as
+        // the provisioning loop above.
+        summary.failed += 1;
+        deps.error(`${TAG} REPAIR FAILED ${orgId}/${type}:`, cause);
       }
     }
 

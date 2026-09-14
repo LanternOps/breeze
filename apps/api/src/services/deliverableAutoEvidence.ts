@@ -258,6 +258,11 @@ export async function generateAutoEvidenceForOccurrence(args: AutoEvidenceOccurr
       // occurrence's transaction, or the failed-run stamp below could not run.
       result = await db.transaction(() => generate());
     } catch (err) {
+      // Log the generator's own failure BEFORE the bookkeeping writes: if one of
+      // those throws, the whole occurrence transaction rolls back and only the
+      // secondary error would otherwise reach the caller and Sentry.
+      console.error('[deliverables] auto-evidence generation failed', `occurrenceId=${args.occurrenceId}`,
+        `reportId=${definition.id}`, err instanceof Error ? err.message : String(err));
       const outcome = await recordRefusal('generation_failed');
       await db.update(reportRuns).set({
           status: 'failed', completedAt: new Date(),

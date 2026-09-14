@@ -828,6 +828,10 @@ describe('latestPortalHardwareLifecycleRun', () => {
       true,
       'completed',
     ]));
+    // OD-12 (#5784): the dedicated reader carries the same delivery gate as
+    // portalRunPredicate, or an auto-evidence run leaks through "latest".
+    expect(query.sql).toMatch(/not exists \(\s*select 1 from service_deliverable_evidence/i);
+    expect(query.sql).toMatch(/status = 'delivered'/i);
   });
 
   it('formats generatedAt from the run completion time, not the stored summary', async () => {

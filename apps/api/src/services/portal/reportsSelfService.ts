@@ -596,6 +596,11 @@ export async function latestPortalHardwareLifecycleRun(
       eq(reports.type, 'hardware_lifecycle'),
       eq(reports.portalSelfService, true),
       eq(reportRuns.status, 'completed'),
+      // OD-12 (#5784): this dedicated reader is a third portal path to a run.
+      // A deliverable may name the canonical lifecycle definition as its
+      // auto-evidence, so the delivery gate applies here exactly as in
+      // portalRunPredicate — or "latest" leaks an unreviewed run.
+      deliveredEvidenceOnly(),
     ))
     .orderBy(desc(reportRuns.completedAt), desc(reportRuns.id))
     .limit(1);
