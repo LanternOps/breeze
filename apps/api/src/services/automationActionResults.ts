@@ -9,8 +9,12 @@ import {
   automationActionResults,
   automationRunDeviceResults,
   automationRuns,
+  automations,
 } from '../db/schema';
 import { publishEvent } from './eventBus';
+import { captureException } from './sentry';
+import { recordEpisodeResponse } from './monitors/episodeService';
+import type { MonitorResponseOutcome } from '../db/schema/monitorEpisodes';
 
 export type AutomationActionResultStatus =
   | 'pending' | 'queued' | 'delivered' | 'running'
@@ -270,6 +274,63 @@ async function publishAll(publications: Publication[]): Promise<void> {
   }
 }
 
+/**
+ * #5290 — map a terminal automation-run status onto the episode's
+ * `response_outcome`.
+ *
+ * `cancelled` returns null deliberately: an operator stop is not evidence that
+ * the remediation succeeded or failed, so the outcome already on the episode
+ * (usually `queued`) stands. `running` returns null because the run is not
+ * terminal yet.
+ */
+function decideMonitorEpisodeOutcome(
+  runStatus: AutomationRunStatus,
+): MonitorResponseOutcome | null {
+  if (runStatus === 'completed') return 'completed';
+  if (runStatus === 'failed' || runStatus === 'partial') return 'failed';
+  return null;
+}
+
+/**
+ * Write the run's terminal outcome onto the open breach episode of every device
+ * the run touched, when the run belongs to a monitor-compiled automation.
+ *
+ * Never allowed to abort reconciliation: a monitor bookkeeping failure must not
+ * strand an automation run mid-transition.
+ */
+async function recordMonitorEpisodeOutcomes(
+  automationId: string | null,
+  runStatus: AutomationRunStatus,
+  deviceIds: string[],
+): Promise<void> {
+  const outcome = decideMonitorEpisodeOutcome(runStatus);
+  if (!automationId || !outcome || deviceIds.length === 0) return;
+
+  try {
+    const [automation] = await db
+      .select({ monitorId: automations.managedByMonitorId })
+      .from(automations)
+      .where(eq(automations.id, automationId))
+      .limit(1);
+    const monitorId = automation?.monitorId;
+    if (!monitorId) return;
+
+    for (const deviceId of deviceIds) {
+      await recordEpisodeResponse({ monitorId, deviceId, outcome });
+    }
+  } catch (error) {
+    captureException(error, undefined, {
+      errorId: 'monitor-episode-response-outcome-failed',
+      automationId,
+      runStatus,
+    });
+    console.error(
+      `[AutomationActionResults] Failed to record monitor episode outcome for automation ${automationId}:`,
+      error,
+    );
+  }
+}
+
 async function reconcileInCurrentContext(
   runId: string,
   provisionalTimeoutRepair?: ProvisionalTimeoutRepair,
@@ -466,6 +527,12 @@ async function reconcileInCurrentContext(
     .returning({ id: automationRuns.id });
   if (transitioned.length === 0 || !statusChanged) return [];
 
+  await recordMonitorEpisodeOutcomes(
+    run.automationId,
+    aggregate.status,
+    deviceRows.map((row) => row.deviceId),
+  );
+
   return buildPublications(aggregate.status);
 }
 
@@ -592,6 +659,7 @@ export async function reconcileAutomationRun(runId: string): Promise<void> {
 }
 
 export const __testOnly = {
+  decideMonitorEpisodeOutcome,
   decideDispatchTransition,
   decideTerminalTransition,
   aggregateActionStatuses,
