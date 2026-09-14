@@ -2152,7 +2152,7 @@ export function createBreezeMcpServer(
       {
         dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
         format: z.enum(['jsonl', 'csv']).optional(),
-        filters: z.record(z.unknown()).optional(),
+        filters: z.record(z.string(), z.unknown()).optional(),
         deviceIds: z.array(z.string()).optional(),
         siteId: z.string().optional(),
         maxRows: z.number().optional(),

@@ -37,9 +37,9 @@ describe('export_dataset registration', () => {
 
   it('5. has a Zod input schema', () => {
     expect('export_dataset' in toolInputSchemas).toBe(true);
-    const parsed = toolInputSchemas.export_dataset.safeParse({ dataset: 'event_logs', format: 'csv' });
+    const parsed = toolInputSchemas.export_dataset!.safeParse({ dataset: 'event_logs', format: 'csv' });
     expect(parsed.success).toBe(true);
-    expect(toolInputSchemas.export_dataset.safeParse({ dataset: 'nope' }).success).toBe(false);
+    expect(toolInputSchemas.export_dataset!.safeParse({ dataset: 'nope' }).success).toBe(false);
   });
 
   it('6. has an RBAC permission entry', () => {
