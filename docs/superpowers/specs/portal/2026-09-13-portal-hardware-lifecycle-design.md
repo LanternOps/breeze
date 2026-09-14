@@ -216,7 +216,7 @@ some MSPs are already relying on `enableReports` alone gating it.
 **Schema.** `portal_branding.enable_lifecycle boolean NOT NULL DEFAULT false`,
 same fail-closed shape as the seven existing visibility columns. New
 idempotent migration
-`apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql`:
+`apps/api/migrations/2026-10-16-181500-portal-lifecycle-flag.sql`:
 
 ```sql
 ALTER TABLE portal_branding
@@ -596,7 +596,7 @@ to miss:
 Three waves, each independently shippable once #5701 is on `main`.
 
 - **W01, flag, API, and data path.**
-  - Migration `apps/api/migrations/2026-10-16-180500-portal-lifecycle-flag.sql`
+  - Migration `apps/api/migrations/2026-10-16-181500-portal-lifecycle-flag.sql`
     (§4).
   - Flag wiring (§4, the `enableDocuments`-pattern sweep): `db/schema/portal.ts`
     (`enableLifecycle` column); `services/portal/portalFlags.ts`
