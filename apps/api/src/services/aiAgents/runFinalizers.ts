@@ -30,6 +30,7 @@ import { fileFleetDesignDocument } from '../fleetDesign/documents';
 import { captureException } from '../sentry';
 import { isNarrativeProfile } from './narrativeProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
+import { resolveRecipientUserIds } from './recipients';
 import { persistSweepFindings } from './sweepFindings';
 import { isSweepProfile } from './sweepProfile';
 import { persistTicketTriage } from './ticketTriageFindings';
@@ -268,6 +269,33 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
     return null;
   }
 
+  // #4248 W03 — resolve the EMAIL recipients before the persist, from the
+  // run's immutable policy snapshot against the RUN org (the same input
+  // `runFinishedNotify` uses for the in-app notification), so the delivery
+  // rows land in the artifact's own transaction. A resolver failure must not
+  // cost the document: log loudly and persist with zero deliveries — the
+  // in-app notification path resolves its own recipients independently, so
+  // the run is still announced; only the email is missing, visibly, on the
+  // run detail's delivery summary (Task 10).
+  let emailRecipientUserIds: string[] = [];
+  try {
+    emailRecipientUserIds = await resolveRecipientUserIds(
+      {
+        orgId: ctx.agent.orgId,
+        partnerId: ctx.agent.partnerId,
+        recipients: ctx.run.policySnapshot.effective.recipients,
+      },
+      ctx.run.orgId,
+    );
+  } catch (error) {
+    console.error('[aiAgentRunLoop] could not resolve narrative email recipients — persisting with no deliveries', {
+      runId: ctx.run.id, orgId: ctx.run.orgId, error,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)), undefined, {
+      service: 'aiAgents', operation: 'resolveNarrativeEmailRecipients', runId: ctx.run.id, orgId: ctx.run.orgId,
+    });
+  }
+
   try {
     const { reportId, reportRunId } = await persistNarrativeReport({
       run: {
@@ -280,6 +308,7 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
       occurrenceKey: ctx.narrative.occurrenceKey || null,
       context: ctx.narrative.context,
       outcome: outcome.narrative,
+      emailRecipientUserIds,
     });
     // TWO ids, never the narrative or the context — see the field's docstring.
     outcome.narrativeReport = { reportId, reportRunId };
