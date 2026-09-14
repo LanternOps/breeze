@@ -96,7 +96,7 @@ interface RunLineage {
   agent: { id: string; orgId: string | null; partnerId: string | null; name: string; kind: typeof aiAgents.$inferSelect['kind'] };
   org: { id: string; partnerId: string };
   deviceSiteId: string | null;
-  ticketNumber: number | null;
+  ticketNumber: string | null;
 }
 
 async function loadRunLineage(agentRunId: string, ticketId: string): Promise<RunLineage | null> {

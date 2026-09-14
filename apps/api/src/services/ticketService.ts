@@ -16,6 +16,7 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
+import { proposeTimeEntryForAiAssistedWork, type AiTimeEntryProposalTrigger } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -824,7 +825,7 @@ export interface ChangeStatusTarget {
 async function lockAndValidateResolutionDraft(
   ticketId: string,
   draftId: string
-): Promise<{ id: string; content: string }> {
+): Promise<{ id: string; content: string; runId: string | null }> {
   const [draft] = await db
     .select()
     .from(ticketDrafts)
@@ -838,7 +839,7 @@ async function lockAndValidateResolutionDraft(
   if (draft.state !== 'active') {
     throw new TicketServiceError('Draft is no longer active', 409);
   }
-  return { id: draft.id, content: draft.content };
+  return { id: draft.id, content: draft.content, runId: draft.runId ?? null };
 }
 
 /** Companion to `lockAndValidateResolutionDraft` — CAS `active -> consumed` in the
@@ -852,6 +853,47 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
     .returning({ id: ticketDrafts.id });
   if (consumed.length === 0) {
     throw new TicketServiceError('Draft was already consumed', 409);
+  }
+}
+
+/**
+ * #4177 (W04): an AI-drafted reply sent / an AI resolution note applied is
+ * billable work the technician just did. Propose a time entry as a Tier-2,
+ * human-reviewed action intent — never a write.
+ *
+ * Runs OUTSIDE the caller's request transaction (`runOutsideDbContext`): the
+ * intent is minted in its own committed system transaction, so a failure
+ * there can never poison the send/resolve transaction that already holds
+ * the technician's write — and `createActionIntent`'s own fan-out never
+ * runs nested inside the request's connection (the #1105 hold pattern).
+ * Every error is swallowed and logged: the reply is already public; a
+ * missing proposal is an annoyance, a rolled-back send is a data-loss
+ * incident. A draft with no run (a hand-written draft, or one predating the
+ * run pointer) proposes nothing — there is no AI-assisted work to bill.
+ */
+async function proposeTimeEntryAfterAiDraft(args: {
+  ticketId: string;
+  orgId: string;
+  agentRunId: string | null;
+  trigger: AiTimeEntryProposalTrigger;
+  technicianUserId: string;
+}): Promise<void> {
+  if (!args.agentRunId) return;
+  const agentRunId = args.agentRunId;
+  try {
+    await runOutsideDbContext(() =>
+      proposeTimeEntryForAiAssistedWork({
+        ticketId: args.ticketId,
+        orgId: args.orgId,
+        agentRunId,
+        trigger: args.trigger,
+        technicianUserId: args.technicianUserId,
+      }),
+    );
+  } catch (err) {
+    console.error('[tickets] AI time-entry proposal failed after AI-assisted work (non-fatal):', {
+      ticketId: args.ticketId, agentRunId, trigger: args.trigger, error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -906,7 +948,7 @@ export async function changeTicketStatus(
   // no-op-resolving it) was silently dropped: no error, no consumption, no
   // resolutionNote write. Lock + validate it HERE, unconditionally, whenever
   // the target core status is 'resolved' and the core status isn't changing.
-  let sameStatusDraft: { id: string; content: string } | null = null;
+  let sameStatusDraft: { id: string; content: string; runId: string | null } | null = null;
   if (toStatus === fromStatus && toStatus === 'resolved' && opts.aiDraftId) {
     sameStatusDraft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
   }
@@ -985,6 +1027,12 @@ export async function changeTicketStatus(
       details: { from: fromStatus, to: toStatus },
       result: 'success'
     });
+    if (sameStatusDraft) {
+      await proposeTimeEntryAfterAiDraft({
+        ticketId, orgId: ticket.orgId, agentRunId: sameStatusDraft.runId,
+        trigger: 'resolved_with_ai_note', technicianUserId: actor.userId,
+      });
+    }
     return updated[0];
   }
 
@@ -999,14 +1047,14 @@ export async function changeTicketStatus(
   // update below: a missing/wrong-kind/inactive draft must fail the whole
   // resolve, not silently resolve without it.
   let resolutionNote = opts.resolutionNote;
-  let draftToConsume: { id: string } | null = null;
+  let draftToConsume: { id: string; runId: string | null } | null = null;
   if (toStatus === 'resolved' && opts.aiDraftId) {
     const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
     // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
     // (e.g. the technician edited the prefilled AI draft before submitting)
     // wins over the draft's content — the draft is still consumed below.
     resolutionNote = opts.resolutionNote?.trim() ? opts.resolutionNote : draft.content;
-    draftToConsume = { id: draft.id };
+    draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
   const now = new Date();
@@ -1096,6 +1144,12 @@ export async function changeTicketStatus(
     details: { from: fromStatus, to: toStatus },
     result: 'success'
   });
+  if (draftToConsume) {
+    await proposeTimeEntryAfterAiDraft({
+      ticketId, orgId: ticket.orgId, agentRunId: draftToConsume.runId,
+      trigger: 'resolved_with_ai_note', technicianUserId: actor.userId,
+    });
+  }
   return updated[0];
 }
 
@@ -2082,6 +2136,15 @@ export async function sendTicketDraft(
     resourceId: ticketId,
     details: { commentId: comment.id, isInternal: false, fromAiDraft: draftId },
     result: 'success'
+  });
+
+  // #4177: sending an AI-drafted reply is billable work the technician just
+  // did — propose (never write) a time entry, keyed to the run that authored
+  // the draft. See proposeTimeEntryAfterAiDraft for why this is last and
+  // why it can never fail the send.
+  await proposeTimeEntryAfterAiDraft({
+    ticketId, orgId: ticket.orgId, agentRunId: draft.runId ?? null,
+    trigger: 'draft_sent', technicianUserId: actor.userId,
   });
 
   return { comment, firstResponseStamped };
