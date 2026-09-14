@@ -118,11 +118,11 @@ test.describe('inline sole-operator self-approve', () => {
         body: JSON.stringify({}),
       });
       if (!refreshRes.ok) {
-        return { stage: 'refresh', status: refreshRes.status, body: await refreshRes.text() };
+        return { ok: false, stage: 'refresh', status: refreshRes.status, body: await refreshRes.text() };
       }
       const { tokens } = await refreshRes.json();
       const accessToken: string = tokens?.accessToken;
-      if (!accessToken) return { stage: 'refresh', status: 200, body: 'no accessToken in refresh body' };
+      if (!accessToken) return { ok: false, stage: 'refresh', status: 200, body: 'no accessToken in refresh body' };
 
       const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
 
