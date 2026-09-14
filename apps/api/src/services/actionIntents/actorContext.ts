@@ -189,18 +189,31 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
  * refuses the ai_agent principal on exactly this action), and the decision
  * itself is what put the human present. The AI origin still travels on
  * `aiOrigin` so dispatch attribution is not lost.
+ *
+ * The context is PARTNER-scoped, and the approver must resolve on the
+ * partner axis (a `partner_users` member of `intent.partnerId`). `time_entries`
+ * is a partner-axis table (RLS Shape 3: `breeze_has_partner_access(partner_id)`)
+ * and its own HTTP surface is `requireScope('partner', 'system')` — an
+ * org-axis approver (a customer-side user) can never log time through the UI
+ * and must not be able to through a release either. The generic user-owned
+ * builder synthesises `scope: 'organization'` (accessiblePartnerIds = []),
+ * under which the insert is an RLS violation — proven live by
+ * aiTimeEntryProposal.integration.test.ts before this branch existed.
  */
 export async function buildApproverAuthContextForIntent(
   intent: ActionIntent,
   approverUserId: string,
 ): Promise<AuthContext | null> {
-  return buildUserOwnedAuthContext(intent, approverUserId, { principal: { kind: 'user_session' } });
+  return buildUserOwnedAuthContext(intent, approverUserId, {
+    principal: { kind: 'user_session' },
+    requirePartnerAxis: true,
+  });
 }
 
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
-  overrides: { principal?: AuthContext['principal'] } = {},
+  overrides: { principal?: AuthContext['principal']; requirePartnerAxis?: boolean } = {},
 ): Promise<AuthContext | null> {
   return withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
     const [user] = await db
@@ -255,6 +268,16 @@ async function buildUserOwnedAuthContext(
     if (!permsCanAccessOrg(perms, intent.orgId)) {
       return null;
     }
+
+    // #4177: a user-owned release runs partner-scoped (see
+    // buildApproverAuthContextForIntent). Fail closed unless the approver's
+    // CURRENT permissions resolved on the partner axis for the intent's own
+    // partner — never widen an org-axis member to partner scope.
+    const partnerAxis = overrides.requirePartnerAxis === true;
+    if (partnerAxis && (perms.scope !== 'partner' || !intent.partnerId || perms.partnerId !== intent.partnerId)) {
+      return null;
+    }
+    const scope: 'partner' | 'organization' = partnerAxis ? 'partner' : 'organization';
 
     // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
     // manage_tickets:move_org), widen accessibleOrgIds to also cover the
@@ -313,7 +336,7 @@ async function buildUserOwnedAuthContext(
       roleId: perms.roleId,
       orgId: intent.orgId,
       partnerId: intent.partnerId ?? null,
-      scope: 'organization',
+      scope,
       type: 'access',
       mfa: true,
     };
@@ -356,7 +379,7 @@ async function buildUserOwnedAuthContext(
       // orgCondition below.
       partnerId: intent.partnerId ?? null,
       orgId: intent.orgId,
-      scope: 'organization',
+      scope,
       accessibleOrgIds,
       orgCondition,
       canAccessOrg,
