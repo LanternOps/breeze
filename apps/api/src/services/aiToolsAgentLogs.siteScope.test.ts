@@ -39,6 +39,7 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     token: {} as any, partnerId: null, orgId: 'org-1', scope: 'organization',
     accessibleOrgIds: ['org-1'], orgCondition: () => undefined, canAccessOrg: () => true,
     allowedSiteIds, canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   };
 }
 

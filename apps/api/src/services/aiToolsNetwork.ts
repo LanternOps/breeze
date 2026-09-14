@@ -31,6 +31,7 @@ import {
   buildBaselineAuthorityEnvelope,
   type BaselineAuthorityEnvelope,
 } from './networkBaselineAuthority';
+import { aiExecuteCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -82,11 +83,6 @@ function siteAccessDenied(auth: AuthContext, siteId: string | null | undefined):
   return !auth.canAccessSite || !auth.canAccessSite(siteId);
 }
 
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
-}
 
 // ============================================
 // Registration
@@ -664,8 +660,7 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
       const access = await verifyDeviceAccess(deviceId, auth, true);
       if ('error' in access) return JSON.stringify({ error: access.error });
 
-      const { executeCommand } = await getCommandQueue();
-      const result = await executeCommand(deviceId, 'network_discovery', {
+      const result = await aiExecuteCommand(auth, 'network_discovery', deviceId, 'network_discovery', {
         subnet: input.subnet,
         scanType: input.scanType ?? 'ping'
       }, { userId: auth.user.id, timeoutMs: 120000 });

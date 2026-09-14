@@ -7,9 +7,16 @@ vi.mock('../db', () => ({
   db: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
 }));
 
-const { queueCommand } = vi.hoisted(() => ({ queueCommand: vi.fn(async () => ({ id: 'cmd-1', status: 'sent' })) }));
-vi.mock('./commandQueue', () => ({
-  queueCommand,
+// #5022 W01: `remediate_sensitive_data` now queues through the
+// mandatory-origin adapter, not raw commandQueue.
+const { aiQueueCommand } = vi.hoisted(() => ({
+  aiQueueCommand: vi.fn(async () => ({ id: 'cmd-1', status: 'sent' })),
+}));
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommand,
+  aiExecuteCommand: vi.fn(async () => ({ status: 'completed' })),
+}));
+vi.mock('./commandTypes', () => ({
   CommandTypes: { ENCRYPT_FILE: 'encrypt_file', QUARANTINE_FILE: 'quarantine_file', SECURE_DELETE_FILE: 'secure_delete_file' },
 }));
 vi.mock('./securityPosture', () => ({
@@ -52,6 +59,8 @@ function makeAuth(allowedSiteIds?: string[]): AuthContext {
     canAccessOrg: () => true,
     allowedSiteIds,
     canAccessSite: (s) => (!allowedSiteIds ? true : !!s && allowedSiteIds.includes(s)),
+    // #5022 W01: the adapter refuses an unattributed dispatch by design.
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-test' },
   };
 }
 
@@ -85,7 +94,7 @@ describe('remediate_sensitive_data — site scoping (destructive device commands
       makeAuth(['site-A']),
     );
     expect(r).toContain('access denied');
-    expect(queueCommand).not.toHaveBeenCalled();
+    expect(aiQueueCommand).not.toHaveBeenCalled();
     expect(mockDb.update).not.toHaveBeenCalled();
   });
 
@@ -101,7 +110,15 @@ describe('remediate_sensitive_data — site scoping (destructive device commands
       makeAuth(undefined),
     );
     expect(r).not.toContain('access denied');
-    expect(queueCommand).toHaveBeenCalledTimes(1);
+    expect(aiQueueCommand).toHaveBeenCalledTimes(1);
+    expect(aiQueueCommand).toHaveBeenCalledWith(
+      expect.objectContaining({ aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-test' } }),
+      'remediate_sensitive_data',
+      'd1',
+      'quarantine_file',
+      expect.objectContaining({ findingId: 'f1' }),
+      'u1',
+    );
   });
 });
 

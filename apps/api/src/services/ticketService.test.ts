@@ -275,6 +275,7 @@ import {
   updateTicketFields, editTicketComment, deleteTicketComment, portalCommentMutable,
   moveTicketOrg, softDeleteTicket, restoreTicket, listOrgTicketsForAddin,
   listActiveTicketDrafts, sendTicketDraft, discardTicketDraft,
+  postProposalNote,
   TicketServiceError, TICKET_STATUS_TRANSITIONS, SYSTEM_COMMENT_TYPES
 } from './ticketService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
@@ -3830,6 +3831,34 @@ describe('moveTicketOrg', () => {
     }));
   });
 
+  it('nulls proposed_by_run_id alongside agent_run_id on a cross-org move (#4211)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: 't1', orgId: 'oA', partnerId: 'p1', deviceId: 'd1' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([{ currencyCode: 'USD' }])
+      .mockResolvedValueOnce([
+        { id: 'oA', partnerId: 'p1', name: 'Alpha Corp', currencyCode: 'USD' },
+        { id: 'oB', partnerId: 'p1', name: 'Beta Corp', currencyCode: 'USD' }
+      ]);
+    dbMocks.txUpdateReturning.mockResolvedValue([{ id: 't1', orgId: 'oB', deviceId: null }]);
+    dbMocks.txExecuteMock.mockResolvedValue(undefined);
+    dbMocks.insertReturning.mockResolvedValue([{ id: 'c-sys' }]);
+
+    await moveTicketOrg('t1', 'oB', { userId: 'admin' });
+
+    // The ticket_comments detach UPDATE clears BOTH reverse pointers in one
+    // statement (agentRunId per #4524, proposedByRunId per #4211) so a
+    // target-org comment never names a source-org run under either column.
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agentRunId: null, proposedByRunId: null })
+    );
+    // The system feed-entry insert also carries proposedByRunId: null,
+    // alongside the pre-existing agentRunId: null.
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      ticketId: 't1', agentRunId: null, proposedByRunId: null, commentType: 'system'
+    }));
+  });
+
   it('detaches requester_contact_id in the SAME UPDATE that re-stamps org_id', async () => {
     // #3258 W03 final review C1: `tickets_requester_contact_org_fk` is
     // COMPOSITE (requester_contact_id, org_id) -> contacts(id, org_id) and
@@ -4157,5 +4186,89 @@ describe('listOrgTicketsForAddin', () => {
 
     expect(result.openTickets.map(t => t.id)).toEqual(['t-open-1']);
     expect(result.recentTickets.map(t => t.id)).toEqual(['t-recent-1']);
+  });
+});
+
+describe('postProposalNote (#4211)', () => {
+  const TICKET_ID = 't-proposal-1';
+  const RUN_ID = 'run-proposal-1';
+  const OTHER_RUN_ID = 'run-other';
+  const USER_ID = 'tech-1';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    valuesMock.mockClear();
+    auditMock.mockClear();
+  });
+
+  it('posts under the technician identity, private, linked to the run', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
+
+    await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      userId: USER_ID,
+      originPrincipalKind: 'user',
+      agentRunId: null,
+      proposedByRunId: RUN_ID,
+      isPublic: false,
+      commentType: 'internal',
+      authorType: 'internal',
+    }));
+  });
+
+  it('audits the technician as actor and the run in details', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockResolvedValueOnce([{ id: 'comment-1' }]);
+
+    await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
+      actorId: USER_ID,
+      actorType: 'user',
+      action: 'ticket.comment',
+      initiatedBy: 'ai',
+      details: expect.objectContaining({ isInternal: true, fromAgentRunId: RUN_ID }),
+    }));
+  });
+
+  it('404s when the run does not belong to this ticket', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(postProposalNote(TICKET_ID, OTHER_RUN_ID, 'x', { userId: USER_ID }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it('recovers via ticket_comments_one_proposal_note_per_run_uq on a duplicate retry (#4211 review)', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }]) // getTicketOrThrow
+      .mockResolvedValueOnce([{ id: RUN_ID }]) // run lookup
+      .mockResolvedValueOnce([{ id: 'existing-comment' }]); // catch's existing-row lookup
+    dbMocks.insertReturning.mockRejectedValueOnce(Object.assign(new Error('duplicate key value'), { code: '23505' }));
+
+    const result = await postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' });
+
+    expect(result.comment).toEqual({ id: 'existing-comment' });
+    // No duplicate side effects: the original successful attempt already
+    // emitted the event/outbox/audit row, so a recovered retry must not
+    // re-fire them.
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it('rethrows a non-unique-violation insert failure unchanged', async () => {
+    dbMocks.selectResult
+      .mockResolvedValueOnce([{ id: TICKET_ID, orgId: 'org-1', partnerId: 'p-1' }])
+      .mockResolvedValueOnce([{ id: RUN_ID }]);
+    dbMocks.insertReturning.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(postProposalNote(TICKET_ID, RUN_ID, 'Proposed summary', { userId: USER_ID, name: 'Tech' }))
+      .rejects.toThrow('connection reset');
   });
 });

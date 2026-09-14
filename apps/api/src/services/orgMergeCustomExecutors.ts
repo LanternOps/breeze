@@ -418,6 +418,43 @@ const moveAiRunArtifacts: CustomMergeExecutor = async (loser, survivor) => {
   };
 };
 
+/**
+ * script_executions, MOVE half (#5022 W01).
+ *
+ * One statement so the row is never briefly inconsistent: org_id advances to
+ * the survivor and both AI origin pointers are severed together.
+ *
+ * Only `ai_agent_run_id` is genuinely at risk — `ai_sessions` is in
+ * REPOINT_TABLES and follows the merge, while `ai_agent_runs` is
+ * `leave-for-erasure` with a trigger-immutable org_id, so a repointed
+ * execution would hold a pointer into the loser shell that is about to be
+ * erased. `ai_session_id` is nulled anyway so merge and device move obey the
+ * same single rule ("the fact survives, the pointer does not"); the asymmetry
+ * is recorded here so a later reader does not "simplify" it away.
+ *
+ * `ai_initiator_kind` is RETAINED: the surviving org still gets to see that an
+ * AI did this work.
+ */
+const moveScriptExecutionsDetachingAiOrigin: CustomMergeExecutor = async (loser, survivor) => {
+  const moved = await run(sql`
+    UPDATE script_executions
+       SET org_id = ${uuid(survivor)},
+           ai_session_id = NULL,
+           ai_agent_run_id = NULL
+     WHERE org_id = ${uuid(loser)}`);
+
+  return {
+    moved,
+    dropped: 0,
+    notes: [
+      `script_executions: re-tenanted ${moved} execution(s) to the surviving organization and `
+      + 'detached their AI origin pointers. The originating agent run stays with the source org '
+      + 'and is erased with its shell, so the pointer would have crossed tenants; the '
+      + 'ai_initiator_kind marker is kept.',
+    ],
+  };
+};
+
 /** ticket_drafts, MOVE half — a no-op: resolve already leaves zero rows behind. */
 const moveTicketDrafts: CustomMergeExecutor = async () => ({ moved: 0, dropped: 0, notes: [] });
 // ---------------------------------------------------------------------------
@@ -1374,6 +1411,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   ticket_drafts: moveTicketDrafts,
   ai_operator_tasks: moveAiOperatorTasks,
   ai_run_artifacts: moveAiRunArtifacts,
+  script_executions: moveScriptExecutionsDetachingAiOrigin,
   script_proposals: moveScriptProposals,
   m365_sync_state: moveM365SnapshotTable,
   m365_users: moveM365SnapshotTable,

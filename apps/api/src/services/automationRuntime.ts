@@ -1346,6 +1346,13 @@ type ActionExecutionOutcome =
       commandId?: string;
       scriptExecutionId?: string;
       /**
+       * #5290 — the child ai_triage agent run this action is waiting on. The
+       * action stays NONTERMINAL until `ai.agent.run.completed/failed/skipped`
+       * terminalises it through this correlation; reporting successful enqueue
+       * as `succeeded` made a queued triage look like a completed remediation.
+       */
+      agentRunId?: string;
+      /**
        * #5128 W4 — operator-facing reason this step is not running yet. Only
        * set on the queued-because-offline path; everything else keeps falling
        * back to the run-log message in `persistActionExecutionOutcome`.
@@ -1979,13 +1986,16 @@ async function executeAiTriageAction(
       };
     }
 
-    // The child agent run completes out-of-band and reports through
-    // ai.agent.run.* events and 3c recipient notifications. The parent
-    // automation action has no action-result correlation to that child run,
-    // so its terminal contract is successful enqueue (not child completion).
+    // #5290 — the child agent run completes out-of-band and reports through
+    // ai.agent.run.* events. The action result now CARRIES that correlation
+    // (automation_action_results.agent_run_id), so the action stays queued and
+    // is terminalised by the child's own terminal event. Reporting successful
+    // enqueue as `succeeded` used to aggregate the run to `completed` for a
+    // response that had not run — which W03 then wrote onto the episode.
+    const queuedMessage = 'ai_triage queued agent run';
     return {
-      outcome: { status: 'succeeded' },
-      log: logEntry('ai_triage queued agent run', 'info', {
+      outcome: { status: 'queued', agentRunId: result.run.id, message: queuedMessage },
+      log: logEntry(queuedMessage, 'info', {
         actionType: 'ai_triage',
         actionIndex,
         deviceId: context.device.id,
@@ -2054,6 +2064,7 @@ export async function persistActionExecutionOutcome(
     ...('scriptExecutionId' in outcome && outcome.scriptExecutionId
       ? { scriptExecutionId: outcome.scriptExecutionId }
       : {}),
+    ...('agentRunId' in outcome && outcome.agentRunId ? { agentRunId: outcome.agentRunId } : {}),
     message: 'message' in outcome && outcome.message
       ? outcome.message
       : result.log.message,

@@ -95,7 +95,7 @@ function isConditionGroup(condition: RootCondition): condition is ConditionGroup
 async function evaluateConditionRecursive(
   condition: RootCondition,
   deviceId: string,
-  results: { met: string[]; notMet: string[]; primaryActualValue?: number }
+  results: { met: string[]; notMet: string[]; primaryActualValue?: number; sawUnknown?: boolean }
 ): Promise<boolean> {
   if (isConditionGroup(condition)) {
     const evaluations = await Promise.all(
@@ -113,6 +113,10 @@ async function evaluateConditionRecursive(
       condition as { type: string },
       deviceId
     );
+
+    if (result.dataAvailable === false) {
+      results.sawUnknown = true;
+    }
 
     if (result.passed) {
       results.met.push(result.description);
@@ -155,6 +159,7 @@ export async function evaluateConditions(
       triggered: false,
       conditionsMet: [],
       conditionsNotMet: ['No conditions defined'],
+      dataState: 'unknown',
       context: { deviceId, evaluatedAt }
     };
   }
@@ -173,6 +178,7 @@ export async function evaluateConditions(
       triggered: false,
       conditionsMet: [],
       conditionsNotMet: ['Invalid conditions format'],
+      dataState: 'unknown',
       context: { deviceId, evaluatedAt }
     };
   }
@@ -181,6 +187,7 @@ export async function evaluateConditions(
     met: string[];
     notMet: string[];
     primaryActualValue?: number;
+    sawUnknown?: boolean;
   };
   const triggered = await evaluateConditionRecursive(rootCondition, deviceId, results);
 
@@ -220,6 +227,7 @@ export async function evaluateConditions(
     triggered,
     conditionsMet: results.met,
     conditionsNotMet: results.notMet,
+    dataState: results.sawUnknown ? 'unknown' : 'ok',
     context
   };
 }

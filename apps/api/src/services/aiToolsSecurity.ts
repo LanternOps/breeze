@@ -26,18 +26,18 @@ import {
 import { publishEvent } from './eventBus';
 import { resolveSensitiveDataKeySelection } from './sensitiveDataKeys';
 import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { aiExecuteCommand, aiQueueCommand } from './aiDispatch';
+// Static, from the pure type module — NOT from './commandQueue', whose lazy
+// import used to be this file's last route to the queue (#5022 W01).
+// `commandTypes.ts` is a constant table with no dispatch surface, so importing
+// it does not re-open the hole the contract scan closes.
+import { CommandTypes } from './commandTypes';
 
 function getOrgId(auth: AuthContext): string | null {
   return auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
 }
 
 type AiToolTier = 1 | 2 | 3 | 4;
-
-let _commandQueue: typeof import('./commandQueue') | null = null;
-async function getCommandQueue() {
-  if (!_commandQueue) _commandQueue = await import('./commandQueue');
-  return _commandQueue;
-}
 
 function envFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -139,7 +139,6 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      const { executeCommand } = await getCommandQueue();
       const actionMap: Record<string, string> = {
         scan: 'security_scan',
         status: 'security_collect_status',
@@ -151,7 +150,7 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const secCommandType = actionMap[input.action as string];
       if (!secCommandType) return JSON.stringify({ error: `Unknown action: ${input.action}` });
 
-      const result = await executeCommand(deviceId, secCommandType, {
+      const result = await aiExecuteCommand(auth, 'security_scan', deviceId, secCommandType, {
         threatId: input.threatId
       }, { userId: auth.user.id, timeoutMs: 60000 });
 
@@ -590,7 +589,6 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
         });
       }
 
-      const { queueCommand, CommandTypes } = await getCommandQueue();
       const commandType = action === 'encrypt'
         ? CommandTypes.ENCRYPT_FILE
         : action === 'quarantine'
@@ -619,7 +617,9 @@ export function registerSecurityTools(aiTools: Map<string, AiTool>): void {
       const failed: Array<{ findingId: string; error: string }> = [];
       for (const finding of findings) {
         try {
-          const command = await queueCommand(
+          const command = await aiQueueCommand(
+            auth,
+            'remediate_sensitive_data',
             finding.deviceId,
             commandType,
             {

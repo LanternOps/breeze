@@ -16,14 +16,17 @@ vi.mock('./commandQueue', () => ({
   CommandTypes: {
     VAULT_SYNC: 'vault_sync',
   },
-  queueCommandForExecution: vi.fn(),
+}));
+
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { validateToolInput } from './aiToolSchemas';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerVaultTools } from './aiToolsVault';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -114,7 +117,7 @@ function setDefaultDbMocks() {
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([]) as any);
   vi.mocked(db.update).mockImplementation(() => createUpdateChain([]) as any);
   vi.mocked(db.delete).mockImplementation(() => createDeleteChain([]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({
     command: { id: 'cmd-1', status: 'queued' },
     error: null,
   } as any);
@@ -140,6 +143,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -275,7 +279,9 @@ describe('aiToolsVault handlers', () => {
     prepareHandlerMocks('trigger_vault_sync');
     await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
 
-    expect(queueCommandForExecution).toHaveBeenCalledWith(
+    expect(aiQueueCommandForExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      'trigger_vault_sync',
       DEVICE_ID,
       'vault_sync',
       expect.objectContaining({ vaultId: VAULT_ID }),
@@ -292,7 +298,7 @@ describe('aiToolsVault handlers', () => {
       return chain as any;
     });
     // Force the failure branch so BOTH the pending and the failed write run.
-    vi.mocked(queueCommandForExecution).mockResolvedValue({ command: null, error: 'Device not found' } as any);
+    vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ command: null, error: 'Device not found' } as any);
 
     await toolMap.get('trigger_vault_sync')!.handler({ vaultId: VAULT_ID }, makeAuth());
 

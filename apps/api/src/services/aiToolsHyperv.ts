@@ -11,7 +11,8 @@ import { backupJobs, devices, hypervVms } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { CommandTypes, queueCommandForExecution } from './commandQueue';
+import { CommandTypes } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
 import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
@@ -251,7 +252,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_vm',
         vm.deviceId,
         CommandTypes.HYPERV_VM_STATE,
         { vmName: vm.vmName, targetState: action },
@@ -334,7 +337,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         })
         .returning({ id: backupJobs.id });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'trigger_hyperv_backup',
         vm.deviceId,
         CommandTypes.HYPERV_BACKUP,
         {
@@ -441,7 +446,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         return JSON.stringify({ error: message });
       }
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'restore_hyperv_vm',
         deviceId,
         CommandTypes.HYPERV_RESTORE,
         {
@@ -501,7 +508,9 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
       const vm = await loadVmWithAccess(vmId, auth);
       if (!vm) return JSON.stringify({ error: 'VM not found or access denied' });
 
-      const { command, error } = await queueCommandForExecution(
+      const { command, error } = await aiQueueCommandForExecution(
+        auth,
+        'manage_hyperv_checkpoints',
         vm.deviceId,
         CommandTypes.HYPERV_CHECKPOINT,
         {

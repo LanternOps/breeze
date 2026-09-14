@@ -84,8 +84,18 @@ describe('process_absent', () => {
   it('verifies when the independent process list has no match', async () => {
     verifyProcessAbsentByNameForTask.mockResolvedValue({ verification: 'passed' });
     const r = await evaluateVerificationClaim({ kind: 'process_absent', name: 'evil.exe' }, ok, device, 'u1');
-    expect(verifyProcessAbsentByNameForTask).toHaveBeenCalledWith({ processName: 'evil.exe' }, device, 'u1');
     expect(r.outcome).toBe('verified');
+  });
+
+  it('threads a kind-only aiOrigin — this worker has no agent run to point at, but the read is still AI-decided (#5789)', async () => {
+    verifyProcessAbsentByNameForTask.mockResolvedValue({ verification: 'passed' });
+    await evaluateVerificationClaim({ kind: 'process_absent', name: 'evil.exe' }, ok, device, 'u1');
+    expect(verifyProcessAbsentByNameForTask).toHaveBeenCalledWith(
+      { processName: 'evil.exe' },
+      device,
+      'u1',
+      { kind: 'ai_agent' },
+    );
   });
   it('fails when the process is still there', async () => {
     verifyProcessAbsentByNameForTask.mockResolvedValue({ verification: 'failed', detail: 'still present' });

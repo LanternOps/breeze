@@ -58,6 +58,10 @@
       "escalate": "Escalonar para uma pessoa",
       "deployed": "Implantado em"
     },
+    "tabs": {
+      "settings": "Configurações",
+      "activity": "Atividade"
+    },
     "fields": {
       "name": "Nome",
       "description": "Descrição",
@@ -304,6 +308,50 @@
     "empty": "Nenhum dispositivo é coberto por este monitor ainda.",
     "errors": {
       "fetch": "Falha ao carregar os dispositivos"
+    }
+  },
+  "activity": {
+    "title": "Atividade",
+    "columns": {
+      "device": "Dispositivo",
+      "state": "Estado",
+      "openSince": "Aberto desde",
+      "episodesInWindow": "Episódios na janela",
+      "escalated": "Escalado",
+      "responses": "Respostas"
+    },
+    "state": {
+      "ok": "Saudável",
+      "breach": "Violação",
+      "unknown": "Desconhecido"
+    },
+    "responses": {
+      "active": "Ativas",
+      "paused": "Respostas pausadas até a redefinição"
+    },
+    "reset": {
+      "button": "Redefinir escalonamento",
+      "confirm": "Redefinir o escalonamento de {{device}}? Isso zera o contador de recorrência e retoma as respostas automáticas. Não fecha o episódio aberto nem resolve o alerta.",
+      "success": "Escalonamento redefinido",
+      "error": "Falha ao redefinir o escalonamento"
+    },
+    "empty": {
+      "title": "Ainda sem atividade",
+      "body": "Este monitor ainda não avaliou nenhum dispositivo."
+    },
+    "episodes": {
+      "title": "Episódios",
+      "endReason": {
+        "recovered": "Recuperado",
+        "monitorDetached": "Monitor desanexado"
+      },
+      "outcome": {
+        "queued": "Na fila",
+        "completed": "Concluído",
+        "failed": "Falhou",
+        "skippedPaused": "Ignorado (respostas pausadas)",
+        "skippedNoResponse": "Ignorado (nenhuma resposta configurada)"
+      }
     }
   }
 }

@@ -43,6 +43,12 @@ export const eventLogHandler: ConditionHandler = {
       .from(deviceEventLogs)
       .where(and(...conditions));
 
+    // #5290 — deliberately NO `dataAvailable: false` here. This is a
+    // count-over-threshold condition, so zero matching events is a real, healthy
+    // observation ("the device logged no errors"), not an absence of data.
+    // Flagging it as no-data would make every quiet device report `unknown`
+    // forever and no breach episode would ever close. A device that has stopped
+    // reporting entirely is covered by the `offline` monitor kind.
     const matchCount = Number(countResult[0]?.count ?? 0);
     const passed = matchCount >= cond.countThreshold;
 

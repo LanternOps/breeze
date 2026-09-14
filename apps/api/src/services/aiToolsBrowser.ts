@@ -9,7 +9,6 @@
 import { db } from '../db';
 import {
   devices,
-  deviceCommands,
   browserExtensions,
   browserPolicies,
   browserPolicyViolations
@@ -19,6 +18,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
+import { aiDispatchDeviceCommand } from './aiDispatch';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -468,22 +468,53 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           });
         }
 
-        const queued = await db
-          .insert(deviceCommands)
-          .values(targetDevices.map((device) => ({
+        // #5022 W01: this was a hand-rolled multi-row insert straight into the
+        // device_commands table that bypassed `queueCommand`, `dispatchDeviceCommand` AND
+        // `resolveCommandCreatedBy` -- so it could also write a `created_by`
+        // that is not a `users` row. Routed through the AI dispatch adapter per
+        // device instead, which stamps the AI origin and runs the created_by
+        // probe. `aiDispatch.contract.test.ts` now forbids the raw shape.
+        //
+        // Per-device aggregation and the tool's return shape are preserved
+        // exactly: `queued` still holds one entry per SUCCESSFULLY queued
+        // command, so `queuedCommands: queued.length` is unchanged for the
+        // all-succeed case and now correctly under-counts a partial failure
+        // instead of over-counting it.
+        const browserPolicyPayload = {
+          policyId: policy.id,
+          name: policy.name,
+          allowedExtensions: policy.allowedExtensions,
+          blockedExtensions: policy.blockedExtensions,
+          requiredExtensions: policy.requiredExtensions,
+          settings: policy.settings
+        };
+        const queued: Array<{ id: string; deviceId: string }> = [];
+        const queueFailures: Array<{ deviceId: string; error: string }> = [];
+        for (const device of targetDevices) {
+          // `previouslyRejected: false` is load-bearing, not boilerplate. The
+          // insert this replaced wrote a pending row unconditionally, ONLINE OR
+          // NOT -- a browser policy is meant to land whenever the machine next
+          // checks in. `queueCommandForExecution` is the adapter for callers
+          // that HARD-REJECTED offline devices before #5128 (it passes
+          // previouslyRejected: true), so routing through it would make this
+          // tool start refusing offline devices the moment
+          // DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED is turned off. Going straight
+          // at `dispatchDeviceCommand` with `false` preserves the old
+          // always-queue behaviour under every flag setting.
+          const result = await aiDispatchDeviceCommand(auth, 'manage_browser_policy', {
             deviceId: device.id,
             type: 'apply_browser_policy',
-            payload: {
-              policyId: policy.id,
-              name: policy.name,
-              allowedExtensions: policy.allowedExtensions,
-              blockedExtensions: policy.blockedExtensions,
-              requiredExtensions: policy.requiredExtensions,
-              settings: policy.settings
-            },
-            createdBy: auth.user.id
-          })))
-          .returning({ id: deviceCommands.id, deviceId: deviceCommands.deviceId });
+            payload: browserPolicyPayload,
+            userId: auth.user.id,
+            expectedOrgId: policy.orgId,
+            previouslyRejected: false,
+          });
+          if (result.ok) {
+            queued.push({ id: result.command.id, deviceId: result.command.deviceId });
+          } else {
+            queueFailures.push({ deviceId: device.id, error: result.error });
+          }
+        }
 
         let scheduleWarning: string | undefined;
         try {
@@ -514,6 +545,11 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           policyId: policy.id,
           targetDeviceCount: targetDevices.length,
           queuedCommands: queued.length,
+          // Surfaced rather than swallowed: before #5022 W01 a multi-row insert
+          // either wrote every row or threw, so there was no partial state to
+          // report. There is now, and a silent under-count would read as
+          // success.
+          ...(queueFailures.length > 0 ? { queueFailures } : {}),
           warning: scheduleWarning ?? eventWarning
         });
       }

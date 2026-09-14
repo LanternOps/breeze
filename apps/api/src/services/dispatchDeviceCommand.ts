@@ -15,6 +15,8 @@ import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.com
 import { captureException } from './sentry';
 import { decryptCommandForDelivery, toAgentCommandFrame } from './sensitiveCommandPayload';
 
+import type { AiOriginRef } from '@breeze/shared';
+
 export type DispatchDeviceCommandInput = {
   deviceId: string;
   type: string;
@@ -34,6 +36,8 @@ export type DispatchDeviceCommandInput = {
   preferHeartbeat?: boolean;
   /** Reserve the command id up-front (#3409: the secret envelope's AAD binds it). */
   commandId?: string;
+  /** #5022 W01 — who DECIDED this command, when an AI surface did. */
+  aiOrigin?: AiOriginRef;
 };
 
 export type DispatchDeviceCommandResult =
@@ -127,6 +131,7 @@ export async function dispatchDeviceCommand(
     ...(input.commandId ? { commandId: input.commandId } : {}),
     deliverBy,
     submittedOrgId: device.orgId,
+    ...(input.aiOrigin ? { aiOrigin: input.aiOrigin } : {}),
   });
 
   if (!online) return { ok: true, command, delivery: 'queued_offline', deliverBy };

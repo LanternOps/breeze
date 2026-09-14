@@ -36,6 +36,14 @@ vi.mock('../db', () => ({
   },
 }));
 
+// aiToolsNetwork.ts reaches the queue through the mandatory-origin adapter;
+// none of these tests exercise network_discovery, so a bare stub keeps the
+// (much heavier) real commandQueue/dispatchDeviceCommand/scriptDispatch
+// import graph out of this suite.
+vi.mock('./aiDispatch', () => ({
+  aiExecuteCommand: vi.fn(),
+}));
+
 vi.mock('../db/schema', () => ({
   devices: { id: 'devices.id', orgId: 'devices.orgId', siteId: 'devices.siteId' },
   deviceIpHistory: {},

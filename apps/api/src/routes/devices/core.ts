@@ -254,6 +254,14 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
  * route code runs. moveOrg detaches device_id instead — an explicit,
  * LOAD-BEARING statement, not a mirror of the generic loop. It is listed in
  * INTENTIONALLY_NO_ORG_ID in moveOrg.coverage.test.ts.
+ *
+ * script_executions IS in the list below and so re-stamps normally, but its AI
+ * ORIGIN POINTERS are detached on the way (#5022 W01): ai_agent_runs above is
+ * not re-stamped and ai_sessions is re-stamped only when device-bound, so a
+ * moved execution could otherwise keep pointing at a session or run in the
+ * source tenant. ai_initiator_kind is RETAINED — the fact that an AI did the
+ * work survives the move; the cross-tenant pointer does not. Mirrored in
+ * moveOrg.ts and in breeze_cascade_device_org_id().
  */
 // offline_transition_effects is intentionally absent: immutable historical source
 // ownership remains with the original org; pending alert admission rejects a moved
@@ -286,6 +294,8 @@ const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
   'group_membership_log',
   'huntress_agents', 'huntress_incidents', 'hyperv_vms', 'local_vaults',
   'metric_anomaly_candidates', 'metric_anomalies', 'metric_anomaly_incidents', 'metric_rollups',
+  // #5290 — both denormalise org_id from the device.
+  'monitor_device_state', 'monitor_episodes',
   // #5291 W04 - carries device_id AND a denormalized org_id.
   'network_monitor_results',
   'onedrive_device_state',
@@ -492,6 +502,9 @@ const CORE_DEVICE_CASCADE_DELETE_TABLES = [
   // Latest projection references the immutable observation, so it must be
   // deleted before the observation in the explicit device cascade.
   'device_agent_health_latest', 'device_software_inventory_state',
+  // #5290 — monitor_device_state.current_episode_id FKs to monitor_episodes
+  // (ON DELETE SET NULL), so delete the state rows before the episodes.
+  'monitor_device_state', 'monitor_episodes',
   'agent_health_observations', 'software_inventory_observations',
   'device_group_memberships', 'group_membership_log',
   'device_hardware', 'device_network', 'device_ip_history', 'device_disks',

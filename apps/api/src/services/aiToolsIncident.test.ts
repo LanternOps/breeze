@@ -26,8 +26,8 @@ vi.mock('../db', () => ({
   },
 }));
 
-vi.mock('./commandQueue', () => ({
-  queueCommandForExecution: vi.fn(),
+vi.mock('./aiDispatch', () => ({
+  aiQueueCommandForExecution: vi.fn(),
 }));
 
 vi.mock('./eventBus', () => ({
@@ -46,7 +46,7 @@ import { db } from '../db';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
-import { queueCommandForExecution } from './commandQueue';
+import { aiQueueCommandForExecution } from './aiDispatch';
 import { registerIncidentTools } from './aiToolsIncident';
 
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
@@ -83,6 +83,7 @@ function makeAuth(): AuthContext {
     accessibleOrgIds: [ORG_ID],
     canAccessOrg: (orgId: string) => orgId === ORG_ID,
     orgCondition: vi.fn(() => undefined),
+    aiOrigin: { kind: 'ai_assistant', sessionId: 'test-session' },
   } as any;
 }
 
@@ -99,7 +100,7 @@ beforeEach(() => {
   // findIncidentWithAccess() select returns the caller's own incident.
   vi.mocked(db.select).mockImplementation(() => createQueryChain([INCIDENT_ROW]) as any);
   vi.mocked(db.insert).mockImplementation(() => createInsertChain([{ id: 'action-1' }]) as any);
-  vi.mocked(queueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-1', status: 'queued' } } as any);
+  vi.mocked(aiQueueCommandForExecution).mockResolvedValue({ command: { id: 'cmd-1', status: 'queued' } } as any);
 });
 
 describe('incident AI tools — cross-org device gate', () => {
@@ -134,7 +135,7 @@ describe('incident AI tools — cross-org device gate', () => {
       // The gate must be consulted with the user-supplied deviceId.
       expect(verifyDeviceAccess).toHaveBeenCalledWith(FOREIGN_DEVICE_ID, expect.anything());
       // And on denial, NO command may be dispatched to the foreign device.
-      expect(queueCommandForExecution).not.toHaveBeenCalled();
+      expect(aiQueueCommandForExecution).not.toHaveBeenCalled();
       expect(JSON.parse(result).error).toMatch(/not found or access denied/i);
     });
 
@@ -148,7 +149,7 @@ describe('incident AI tools — cross-org device gate', () => {
       const result = await toolMap.get(tool)!.handler(accessibleInput as Record<string, unknown>, makeAuth());
 
       expect(verifyDeviceAccess).toHaveBeenCalledWith(OWN_DEVICE_ID, expect.anything());
-      expect(queueCommandForExecution).toHaveBeenCalledTimes(1);
+      expect(aiQueueCommandForExecution).toHaveBeenCalledTimes(1);
       expect(JSON.parse(result).success).toBe(true);
     });
   }
