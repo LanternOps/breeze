@@ -20,12 +20,14 @@ import type { z } from 'zod';
 import {
   canonicalizeTimezone,
   createAiAgentScheduleSchema,
+  isDailyOrRarerLiteralCron,
   isHourlyFloorCron,
   isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
   updateAiAgentScheduleSchema,
   type AiAgentEffectiveScheduleDto,
+  type AiAgentKind,
   type AiAgentScheduleDto,
   type AiAgentScheduleKind,
   type AiSweepKind,
@@ -62,12 +64,46 @@ export type ScheduleValidationCode =
   // Fleet Designer (W01), the mirror of `agent_kind_not_triage` for a
   // `design` schedule: it must target a `designer` agent.
   | 'agent_kind_not_designer'
+  // AI patch agent (W01), the same mirror for a `patch` schedule: it must
+  // target a `patch` agent.
+  | 'agent_kind_not_patch'
   | 'invalid_cron'
   // P2-3: structurally fine and inside the hourly floor, but wrong for THIS
   // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
   // cron" from "not a WEEKLY cron" without parsing the message.
   | 'invalid_cron_for_kind'
   | 'invalid_timezone';
+
+/**
+ * Which `ai_agents.kind` each schedule kind runs. `Record<AiAgentScheduleKind,
+ * …>` is the exhaustiveness guard: a fifth schedule kind does not compile
+ * without a decision here (AI patch agent W01 replaced a designer-or-triage
+ * ternary that would have silently routed `patch` to `triage`).
+ */
+const REQUIRED_AGENT_KIND: Readonly<Record<AiAgentScheduleKind, AiAgentKind>> = {
+  sweep: 'triage',
+  narrative: 'triage',
+  design: 'designer',
+  patch: 'patch',
+};
+
+/** The 422 code for "wrong agent kind", keyed by the kind that was required. */
+const AGENT_KIND_MISMATCH: Readonly<Record<AiAgentKind, { code: ScheduleValidationCode; message: string }>> = {
+  triage: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
+  designer: { code: 'agent_kind_not_designer', message: 'A design schedule must target a designer agent' },
+  patch: { code: 'agent_kind_not_patch', message: 'A patch schedule must target a patch agent' },
+  // helpdesk has no schedule kind, so it is never the REQUIRED kind; the
+  // entry exists only because the Record is keyed on every AiAgentKind.
+  helpdesk: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
+};
+
+/**
+ * The agent kinds that own schedules — derived from `REQUIRED_AGENT_KIND` so
+ * the org-listing predicate below cannot drift from the create/update gate.
+ * A CLOSED literal list (never "any kind"): it is the only filter inside the
+ * partner-axis escape an org caller's baseline read goes through.
+ */
+const SCHEDULABLE_AGENT_KINDS: readonly AiAgentKind[] = [...new Set(Object.values(REQUIRED_AGENT_KIND))];
 
 /** Routes map this to 422 `{ error: code }`. The code IS the client contract. */
 export class ScheduleValidationError extends Error {
@@ -144,6 +180,16 @@ function assertValidCron(cron: string, kind: AiAgentScheduleKind): void {
       `a design schedule fires at most once a month — literal minute, hour and day-of-month (or a divisor-of-12 month step), \`*\` day-of-week: ${cron}`,
     );
   }
+  // AI patch agent (W01). One occurrence is one LLM-spending patch run per
+  // live org, and patch posture moves on the order of a day, so a patch
+  // schedule fires at most daily. Same ordering rationale as the two checks
+  // above: it only decides which code a client sees.
+  if (kind === 'patch' && !isDailyOrRarerLiteralCron(cron)) {
+    throw new ScheduleValidationError(
+      'invalid_cron_for_kind',
+      `a patch schedule fires at most once a day — a single literal minute and a single literal hour: ${cron}`,
+    );
+  }
 }
 
 /**
@@ -163,7 +209,9 @@ function assertPartnerKindsForScheduleKind(kind: AiAgentScheduleKind, sweepKinds
   // Fleet Designer (W01) behaves exactly like `narrative` here: a design run
   // evaluates no sweep kinds either — its whole input is the system-assembled
   // evidence bundle, not a sweep-kind-scoped finding pass.
-  if (kind === 'narrative' || kind === 'design') {
+  // AI patch agent (W01): `patch` likewise sweeps nothing — its input is the
+  // system-assembled patch evidence bundle.
+  if (kind === 'narrative' || kind === 'design' || kind === 'patch') {
     if (sweepKinds.length > 0) {
       throw new ScheduleValidationError(
         'kinds_not_empty',
@@ -366,12 +414,10 @@ async function assertPartnerWideScheduledAgent(
       'Schedules require a partner-wide agent belonging to this partner',
     );
   }
-  const required = kind === 'design' ? 'designer' : 'triage';
+  const required = REQUIRED_AGENT_KIND[kind];
   if (agent.kind !== required) {
-    throw new ScheduleValidationError(
-      required === 'designer' ? 'agent_kind_not_designer' : 'agent_kind_not_triage',
-      required === 'designer' ? 'A design schedule must target a designer agent' : 'Only a triage agent can be scheduled',
-    );
+    const mismatch = AGENT_KIND_MISMATCH[required];
+    throw new ScheduleValidationError(mismatch.code, mismatch.message);
   }
 }
 
@@ -684,7 +730,11 @@ export async function listSchedules(
   // Org-scoped callers cannot see partner-axis rows at all (#2822), so the
   // baselines are read through the escape — where the app predicate is the ONLY
   // filter and therefore has to be maximally narrow: this partner's rows, for
-  // this partner's own partner-wide triage agents, and nothing else.
+  // this partner's own partner-wide SCHEDULABLE agents, and nothing else.
+  // `SCHEDULABLE_AGENT_KINDS` is a closed list derived from the create gate
+  // (triage/designer/patch); before AI patch agent W01 it was `'triage'`
+  // alone, which hid every design and patch baseline from an org token.
+  // `helpdesk` has no schedule kind and is excluded.
   const baselines = await readWithPartnerAxisVisibility(async () => {
     const agentIds = await db
       .select({ id: aiAgents.id })
@@ -692,7 +742,7 @@ export async function listSchedules(
       .where(and(
         isNull(aiAgents.orgId),
         eq(aiAgents.partnerId, orgPartnerId),
-        eq(aiAgents.kind, 'triage'),
+        inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
         // Same predicate as assertPartnerWideScheduledAgent: a soft-deleted agent
         // can no longer be scheduled, so its baselines are not offered either.
         isNull(aiAgents.disabledAt),
