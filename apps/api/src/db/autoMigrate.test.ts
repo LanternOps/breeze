@@ -889,13 +889,16 @@ describe('core migration ordering', () => {
 });
 
 describe('AI origin attribution migration (#5022 W01)', () => {
-  it('sorts after every migration committed on main at authoring time', () => {
+  it('sorts after the portal lifecycle flag migration it was authored on top of', () => {
     const files = listMigrationFilenames();
-    const idx = files.indexOf('2026-10-16-182100-ai-origin-attribution.sql');
 
-    expect(idx, 'migration file missing').toBeGreaterThan(-1);
-    expect(idx, 'migration must sort last among committed files at authoring time').toBe(
-      files.length - 1,
+    expect(files).toContain('2026-10-16-182100-ai-origin-attribution.sql');
+    // Relative order against the newest migration on main when this file was
+    // authored — NOT absolute-last, so a later migration landing anywhere
+    // else does not redden this test (see the sibling "device removal
+    // retention" test above for the same pattern).
+    expect(files.indexOf('2026-10-16-182100-ai-origin-attribution.sql')).toBeGreaterThan(
+      files.indexOf('2026-10-16-181500-portal-lifecycle-flag.sql'),
     );
   });
 });

@@ -22,6 +22,7 @@ import {
   releaseClaimedCommandDelivery,
 } from './commandDispatch';
 import { TrustDeniedError } from './partnerTrust.commands';
+import { captureException } from './sentry';
 
 const partnerTrustCommandMocks = vi.hoisted(() => ({
   assertDeviceExecuteAllowed: vi.fn(),
@@ -1880,6 +1881,39 @@ describe('agent principals are attributed, not silently dropped (#5022 W01)', ()
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  // Review fix (#5789): the degrade warn now branches on `hasAiOrigin` — an
+  // expected ai_agent/synthetic-principal degrade stays console-only, but an
+  // ANOMALOUS degrade (a plain user id that just doesn't resolve — a stale or
+  // deleted user) also reports to Sentry so it gets triaged instead of only
+  // logged.
+  it('does NOT captureException for the expected ai_agent degrade', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await captureDegradedInsert();
+    warn.mockRestore();
+
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('DOES captureException for an anomalous degrade with no aiOrigin (stale/deleted user id)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const insertValues = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([{ id: 'cmd-stale' }]),
+    });
+    vi.mocked(db.insert).mockReturnValue({ values: insertValues } as never);
+    // users probe misses, and this call carries no aiOrigin at all — a plain
+    // user id that no longer resolves, not the expected agent case.
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+
+    await queueCommand('dev-1', 'list_processes', {}, 'stale-user-1');
+    warn.mockRestore();
+
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -553,12 +553,22 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     // execution's `parameters` jsonb. Log it once so a lane that loses the
     // sidecar too is visible in Postgres/app logs rather than only in a row
     // nobody reads.
+    const hasAiOrigin = Boolean(input.aiOrigin);
     console.warn('[scriptDispatch] triggered_by/created_by degraded to NULL: actor is not a users row', {
       degradedActorId,
       deviceId: device.id,
-      hasAiOrigin: Boolean(input.aiOrigin),
+      hasAiOrigin,
       aiInitiatorKind: input.aiOrigin?.kind ?? null,
     });
+    // `hasAiOrigin: false` means this is NOT the expected ai_agent/synthetic-
+    // principal degrade — mirrors resolveCommandCreatedBy's own branch in
+    // commandQueue.ts. A plain user id that does not resolve to a users row
+    // is anomalous enough to want triage, not just a log line.
+    if (!hasAiOrigin) {
+      captureException(
+        new Error('[scriptDispatch] triggered_by/created_by degraded to NULL for a non-AI dispatch: candidate actor id does not resolve to a users row'),
+      );
+    }
   }
 
   let executionId: string | null = null;
@@ -683,10 +693,18 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
       submittedOrgId: device.orgId,
       // #5022 W01: the script's own command row carries the origin too, so a
       // reader of device_commands alone can still answer "who decided this" --
-      // but NOT a second audit row. This dispatch already writes
-      // `ai.script.executed` below, and W02's Overview count depends on
-      // exactly one `ai.` row per dispatched mutation.
-      ...(input.aiOrigin ? { aiOrigin: input.aiOrigin, suppressAiCommandAudit: true } : {}),
+      // but NOT a second audit row, ONLY when the `ai.script.executed` write
+      // below will actually fire. That write is gated on `executionId`
+      // (`source.kind === 'saved' || 'proposal'`); a `source.kind === 'raw'`
+      // dispatch never gets an execution row, so suppressing here
+      // unconditionally would leave it with ZERO `ai.` audit rows, breaking
+      // the one-`ai.`-row-per-mutation invariant W02's Overview count
+      // depends on. Fall back to commandQueue's own `ai.command.executed`
+      // write for that case by only suppressing when we know the other write
+      // will happen.
+      ...(input.aiOrigin
+        ? { aiOrigin: input.aiOrigin, suppressAiCommandAudit: Boolean(executionId) }
+        : {}),
     });
   } catch (err) {
     await discardPendingExecution(`${stage} threw`);

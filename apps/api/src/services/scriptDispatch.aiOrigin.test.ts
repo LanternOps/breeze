@@ -48,6 +48,7 @@ vi.mock('./auditService', () => ({ createAuditLogAsync: vi.fn().mockResolvedValu
 import { db } from '../db';
 import { queueCommand } from './commandQueue';
 import { dispatchScriptToDevice } from './scriptDispatch';
+import { captureException } from './sentry';
 
 const device = () =>
   ({
@@ -138,5 +139,102 @@ describe('dispatchScriptToDevice — aiOrigin conduit (#5022 W01)', () => {
       aiAgentRunId: null,
     });
     expect(vi.mocked(queueCommand).mock.calls[0]![4]).not.toHaveProperty('aiOrigin');
+  });
+
+  it('a raw-source AI dispatch never gets a script_executions row, so it must NOT suppress the ai.command.executed fallback', async () => {
+    const result = await dispatchScriptToDevice({
+      device: device(),
+      source: { kind: 'raw', content: 'ipconfig', language: 'powershell', provenance: 'automation:auto-1' },
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+      aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
+    } as never);
+
+    expect(result.ok).toBe(true);
+    // No execution row for a raw source: the ai.script.executed write below
+    // is gated on `executionId`, which is never set for 'raw'.
+    expect(executionInsertValues).not.toHaveBeenCalled();
+
+    // Must NOT suppress commandQueue's own ai.command.executed write, or a
+    // raw-source AI dispatch writes ZERO `ai.` audit rows.
+    expect(queueCommand).toHaveBeenCalledWith(
+      'device-1',
+      'script',
+      expect.anything(),
+      'user-1',
+      expect.objectContaining({
+        aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
+        suppressAiCommandAudit: false,
+      }),
+    );
+  });
+
+  it('a saved/proposal AI dispatch suppresses commandQueue audit and relies on its own ai.script.executed write', async () => {
+    const { createAuditLogAsync } = await import('./auditService');
+
+    await dispatchScriptToDevice({
+      device: device(),
+      source: savedSource(),
+      triggeredBy: 'user-1',
+      createdBy: 'user-1',
+      aiOrigin: { kind: 'ai_assistant', sessionId: 'sess-1' },
+    } as never);
+
+    expect(queueCommand).toHaveBeenCalledWith(
+      'device-1',
+      'script',
+      expect.anything(),
+      'user-1',
+      expect.objectContaining({ suppressAiCommandAudit: true }),
+    );
+    expect(createAuditLogAsync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(createAuditLogAsync).mock.calls[0]![0]).toMatchObject({
+      action: 'ai.script.executed',
+    });
+  });
+});
+
+// Review fix (#5789): the triggered_by/created_by degrade warn now branches on
+// hasAiOrigin — an expected ai_agent degrade stays console-only, but an
+// ANOMALOUS one (a plain actor id that just doesn't resolve — a stale or
+// deleted user) also reports to Sentry.
+describe('dispatchScriptToDevice — degraded actor reporting (#5789)', () => {
+  function mockMissingUserProbe() {
+    vi.mocked(db.select).mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as never);
+  }
+
+  it('does NOT captureException for the expected ai_agent degrade', async () => {
+    mockMissingUserProbe();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await dispatchScriptToDevice({
+      device: device(),
+      source: savedSource(),
+      triggeredBy: 'agent-synthetic-1',
+      createdBy: 'agent-synthetic-1',
+      aiOrigin: { kind: 'ai_agent', agentRunId: 'run-1' },
+    } as never);
+    warn.mockRestore();
+
+    expect(captureException).not.toHaveBeenCalled();
+  });
+
+  it('DOES captureException for an anomalous degrade with no aiOrigin (stale/deleted user id)', async () => {
+    mockMissingUserProbe();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await dispatchScriptToDevice({
+      device: device(),
+      source: savedSource(),
+      triggeredBy: 'stale-user-1',
+      createdBy: 'stale-user-1',
+    } as never);
+    warn.mockRestore();
+
+    expect(captureException).toHaveBeenCalledTimes(1);
   });
 });

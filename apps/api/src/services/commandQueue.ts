@@ -529,12 +529,23 @@ export async function resolveCommandCreatedBy(
       // a warn per dispatch was the cry-wolf shape. `hasAiOrigin` is exactly
       // that missing discriminator, which is what makes the line worth
       // emitting now.
+      const hasAiOrigin = Boolean(aiOrigin);
       console.warn('[commandQueue] created_by degraded to NULL: actor is not a users row', {
         candidateUserId,
         deviceId,
-        hasAiOrigin: Boolean(aiOrigin),
+        hasAiOrigin,
         aiInitiatorKind: aiOrigin?.kind ?? null,
       });
+      // `hasAiOrigin: false` means this degrade was NOT the expected
+      // ai_agent/synthetic-principal case above -- the caller claimed a plain
+      // user id, and it does not resolve to a users row (stale or deleted
+      // user). That is anomalous enough to want triage, not just a log line
+      // nobody greps for.
+      if (!hasAiOrigin) {
+        captureException(
+          new Error('[commandQueue] created_by degraded to NULL for a non-AI dispatch: candidate user id does not resolve to a users row'),
+        );
+      }
       return null;
     })
   );
