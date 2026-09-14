@@ -28,6 +28,7 @@ vi.mock('../../db/schema', () => ({
     agentRunId: 'agent_run_id',
     isPublic: 'is_public',
     deletedAt: 'deleted_at',
+    createdAt: 'created_at',
   },
   tickets: {
     id: 'id',
@@ -83,11 +84,17 @@ function ticketCreatedEvent(over: Partial<BreezeEvent> = {}): BreezeEvent {
 let lastOriginWhereMock: ReturnType<typeof vi.fn> | undefined;
 let lastTicketWhereMock: ReturnType<typeof vi.fn> | undefined;
 
-/** db.select().from().where().limit() -> rows (the origin-guard probe). Must
- *  be queued FIRST — it is the first `db.select()` call the handler makes. */
+/** db.select().from().where().orderBy().limit() -> rows (the recency-ordered
+ *  loop guard probe, #4212 — `humanCommentIsNewerThanAgentActivity`). Must be
+ *  queued FIRST — it is the first `db.select()` call the handler makes when
+ *  the guard is not skipped. Rows carry `createdAt`, not `id` — the guard
+ *  compares timestamps, not presence. */
 function mockOriginProbe(rows: unknown[]) {
-  const whereMock = vi.fn().mockReturnValue({
+  const orderByMock = vi.fn().mockReturnValue({
     limit: vi.fn().mockResolvedValue(rows),
+  });
+  const whereMock = vi.fn().mockReturnValue({
+    orderBy: orderByMock,
   });
   lastOriginWhereMock = whereMock;
   vi.mocked(db.select).mockReturnValueOnce({
@@ -233,8 +240,8 @@ describe('handleTicketCreatedEvent', () => {
     expect(withSystemDbAccessContext).toHaveBeenCalled();
   });
 
-  it('loop guard: skips admission when a prior comment on the ticket is agent-originated', async () => {
-    mockOriginProbe([{ id: 'comment-1' }]);
+  it('loop guard: skips admission when the ticket already has agent-originated activity (created lane passes epoch as its humanCommentAt, #4212)', async () => {
+    mockOriginProbe([{ createdAt: new Date('2026-09-10T10:00:00Z') }]);
 
     await handleTicketCreatedEvent(ticketCreatedEvent());
 
@@ -325,12 +332,18 @@ describe('handleTicketCreatedEvent', () => {
     expect(db.select).not.toHaveBeenCalled();
   });
 
-  it('rethrows when the origin-guard probe itself fails (queue-mode retry contract)', async () => {
+  // #4212: `humanCommentIsNewerThanAgentActivity` fails CLOSED internally
+  // (denies rather than rethrowing) — a queue-mode retry of a transient read
+  // error can't distinguish "no agent activity" from "couldn't tell", so the
+  // safe default is deny, not retry. This supersedes the old rethrow
+  // contract for this specific probe (the ticket-filter-context read below
+  // still rethrows — it has no such fail-closed design).
+  it('denies rather than rethrowing when the loop-guard probe itself fails (fail-closed, #4212)', async () => {
     vi.mocked(db.select).mockImplementationOnce(() => {
       throw new Error('boom');
     });
 
-    await expect(handleTicketCreatedEvent(ticketCreatedEvent())).rejects.toThrow('boom');
+    await expect(handleTicketCreatedEvent(ticketCreatedEvent())).resolves.toBeUndefined();
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
@@ -381,12 +394,69 @@ describe('handleTicketCreatedEvent', () => {
 });
 
 // -----------------------------------------------------------------------
+// Task 8 (#4212): the loop guard is recency-ordered, not a permanent latch —
+// a ticket may re-triage whenever the human spoke AFTER the agent last did.
+// -----------------------------------------------------------------------
+describe('recency-ordered loop guard (#4212)', () => {
+  it('admits when the human comment is newer than the newest agent comment', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([{ createdAt: new Date('2026-09-10T10:00:00Z') }]);
+    mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c2', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+  });
+
+  it('skips when the newest agent comment is newer than the human comment (redelivery / no new activity)', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([{ createdAt: new Date('2026-09-10T12:00:00Z') }]);
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('a brand-new ticket with no comments still admits (created lane passes epoch vacuously)', async () => {
+    mockCleanTicket();
+
+    await handleTicketCreatedEvent(ticketCreatedEvent());
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+  });
+
+  it('a DB error in the guard denies rather than admitting (fail-closed)', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    vi.mocked(db.select).mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));
+
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('the resolved lane skips the guard entirely — an ancient agent note does not block resolution admission', async () => {
+    mockResolvedTicketRead([{ status: 'resolved', resolutionNote: null }]);
+    mockActiveResolutionDraftRead([]);
+    mockTicketFilterRead([{ category: 'hardware', categoryId: null, priority: 'normal' }]);
+
+    await handleTicketStatusChangedEvent(ticketStatusChangedEvent());
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+    // No origin-guard probe at all for this lane — 3 selects total (resolved
+    // read, active-draft read, ticket-filter-context read).
+    expect(db.select).toHaveBeenCalledTimes(3);
+  });
+});
+
+// -----------------------------------------------------------------------
 // Task 9 (#4191): ticket.commented admission — first genuinely-human
 // comment on a ticket.
 // -----------------------------------------------------------------------
 describe('handleTicketCommentedEvent', () => {
   it('admits a triage run when the comment DB-verifies as human/public and matches the ticket/org, using a per-comment dedupe key (#4212)', async () => {
-    mockCommentVerification([{ id: COMMENT_ID }]);
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
     mockCleanTicket();
 
     await handleTicketCommentedEvent(ticketCommentedEvent());
@@ -430,9 +500,9 @@ describe('handleTicketCommentedEvent', () => {
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
-  it('loop guard is still consulted after comment verification passes', async () => {
-    mockCommentVerification([{ id: COMMENT_ID }]);
-    mockOriginProbe([{ id: 'prior-agent-comment' }]); // ticket already has agent-originated activity
+  it('loop guard is still consulted after comment verification passes — denies when the newest agent comment is newer than this human comment', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockOriginProbe([{ createdAt: new Date('2026-09-10T12:00:00Z') }]); // agent spoke AFTER this human comment
 
     await handleTicketCommentedEvent(ticketCommentedEvent());
 
@@ -465,7 +535,7 @@ describe('handleTicketCommentedEvent', () => {
   // (id, ticket_id, org_id, origin, agent_run_id, is_public, deleted_at),
   // not just that SOME query ran.
   it('comment-verification WHERE clause scopes to the comment id, ticket id, org id, and every human/public/not-deleted condition', async () => {
-    mockCommentVerification([{ id: COMMENT_ID }]);
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
     mockCleanTicket();
 
     await handleTicketCommentedEvent(ticketCommentedEvent());
@@ -493,9 +563,9 @@ describe('handleTicketCommentedEvent', () => {
   // triage run for life (the superseded "first-admitting-event-wins"
   // contract).
   it('a second human comment admits a second run under its own dedupe key (#4212)', async () => {
-    mockCommentVerification([{ id: 'c1' }]);
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
     mockCleanTicket();
-    mockCommentVerification([{ id: 'c2' }]);
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T13:00:00Z') }]);
     mockCleanTicket();
 
     await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c1', isPublic: true } }));

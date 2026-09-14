@@ -42,25 +42,29 @@
  *    distinct, later admission on the same ticket, not a duplicate of it.
  *
  * Every admission path shares:
- *  1. Origin-based loop guard (design authority: never `source`-string
+ *  1. Recency-ordered loop guard (design authority: never `source`-string
  *     matching — see the migration header and `ticket_comments.origin_
- *     principal_kind`/`agent_run_id`, Task 1) — `ticketHasAgentOriginatedActivity`.
+ *     principal_kind`/`agent_run_id`, Task 1) — `humanCommentIsNewerThanAgentActivity`
+ *     (#4212, replacing the old permanent latch `ticketHasAgentOriginatedActivity`).
  *     APPLIED to created/commented, SKIPPED for the resolved lane (I1, final
- *     review #4191) — see `admitTriageRun`'s `applyLoopGuard` param doc:
- *     every triage run posts an AI note, so applying this guard to the
- *     resolved lane would permanently dead-end it after the ticket's first
- *     triage pass ever. `isEligibleForResolvedAdmission`'s fresh re-read is
- *     that lane's own anti-loop gate instead.
- *  2. Load the ticket's category/priority (`loadTicketFilterContext`) and
+ *     review #4191) — see `admitTriageRun`'s `loopGuard` param doc: every
+ *     triage run posts an AI note, so applying this guard to the resolved
+ *     lane would permanently dead-end it after the ticket's first triage pass
+ *     ever. `isEligibleForResolvedAdmission`'s fresh re-read is that lane's
+ *     own anti-loop gate instead.
+ *  2. A hard per-ticket re-triage ceiling (#4212) — `MAX_TRIAGE_RUNS_PER_TICKET`
+ *     — an absolute backstop independent of the loop guard and of
+ *     runService.ts's per-AGENT rate/concurrency/budget caps.
+ *  3. Load the ticket's category/priority (`loadTicketFilterContext`) and
  *     pass them as `ticketContext` so `runService.ts`'s
  *     `evaluateTicketTriggerFilters` can enforce `policy.triggers.
  *     ticketCategories`/`ticketPriorities`.
- *  3. Call `createAndEnqueueAgentRun` with `kind: 'helpdesk'`,
+ *  4. Call `createAndEnqueueAgentRun` with `kind: 'helpdesk'`,
  *     `triggerKind: 'ticket'`, `deviceId: null` (tickets have no device
  *     axis), `profile: 'triage'`, `ticketContext`, and the event's dedupe
  *     key — all via the shared `admitTriageRun` helper.
  */
-import { and, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
 import * as dbModule from '../../db';
 import { ticketComments, ticketDrafts, tickets } from '../../db/schema';
 import type { BreezeEvent } from '../eventBus';
@@ -103,25 +107,47 @@ const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
 const HUMAN_ORIGIN_KIND = 'user';
 
 /**
- * True when ANY comment already on this ticket was agent-originated (either
- * `origin_principal_kind` is not the human-family value, or `agent_run_id`
- * is set — checked independently because a future writer could plausibly set
- * one without the other). A brand-new ticket has zero comments, so this is
- * vacuously false for every `ticket.created` admission today.
+ * #4212 — the loop guard, ordered rather than latching.
+ *
+ * The old `ticketHasAgentOriginatedActivity` returned true as soon as ANY
+ * agent-originated comment existed, which permanently dead-ended the
+ * created/commented lanes after a ticket's first triage pass — acceptable when
+ * those lanes shared one dedupe key and could only fire once anyway (#3828 /
+ * #4191), and wrong now that each human comment carries its own key (Task 7).
+ *
+ * The replacement admits only when the human actually spoke AFTER the agent
+ * last did. That is exactly what stops ping-pong: the agent's own note (and
+ * any comment a human posted FROM an agent proposal, which carries
+ * origin_principal_kind='user' and so is human by construction — #4211) can
+ * never be the thing that re-admits a run, because a run's note is never
+ * newer than the human comment that triggered it.
+ *
+ * Fail-closed: any read error denies. Same discipline as
+ * `evaluateTicketAutonomy` — a loop guard that fails open is a runaway spend.
  */
-async function ticketHasAgentOriginatedActivity(ticketId: string): Promise<boolean> {
+async function humanCommentIsNewerThanAgentActivity(
+  ticketId: string,
+  humanCommentCreatedAt: Date,
+): Promise<boolean> {
   const { db } = dbModule;
-  const [row] = await db
-    .select({ id: ticketComments.id })
-    .from(ticketComments)
-    .where(
-      and(
-        eq(ticketComments.ticketId, ticketId),
-        or(ne(ticketComments.originPrincipalKind, HUMAN_ORIGIN_KIND), isNotNull(ticketComments.agentRunId)),
-      ),
-    )
-    .limit(1);
-  return row !== undefined;
+  try {
+    const [newestAgent] = await db
+      .select({ createdAt: ticketComments.createdAt })
+      .from(ticketComments)
+      .where(
+        and(
+          eq(ticketComments.ticketId, ticketId),
+          or(ne(ticketComments.originPrincipalKind, HUMAN_ORIGIN_KIND), isNotNull(ticketComments.agentRunId)),
+        ),
+      )
+      .orderBy(desc(ticketComments.createdAt))
+      .limit(1);
+    if (!newestAgent) return true;
+    return humanCommentCreatedAt.getTime() > newestAgent.createdAt.getTime();
+  } catch (err) {
+    console.error('[ticketHelpdesk] loop-guard read failed — denying admission:', err);
+    return false;
+  }
 }
 
 /**
@@ -165,7 +191,7 @@ async function loadTicketFilterContext(
  * event's org, atomically, rather than checking the ticket id string match
  * and the org match as two independently-mockable conditions.
  *
- * Returns `false` (never throws for a plain verification miss) whenever any
+ * Returns `null` (never throws for a plain verification miss) whenever any
  * one of these does not hold:
  *  - the comment exists and its `id` is `commentId`
  *  - its `ticket_id` is `ticketId`
@@ -174,15 +200,19 @@ async function loadTicketFilterContext(
  *  - `agent_run_id IS NULL`
  *  - `is_public = true`
  *  - not soft-deleted (`deleted_at IS NULL`)
+ *
+ * Returns the comment's `createdAt` (#4212) rather than a plain boolean — the
+ * commented lane's loop guard needs it as `humanCommentAt` to decide whether
+ * this comment is newer than the ticket's last agent-originated activity.
  */
 async function loadVerifiedHumanComment(
   commentId: string,
   ticketId: string,
   orgId: string,
-): Promise<boolean> {
+): Promise<{ createdAt: Date } | null> {
   const { db } = dbModule;
   const [row] = await db
-    .select({ id: ticketComments.id })
+    .select({ createdAt: ticketComments.createdAt })
     .from(ticketComments)
     .innerJoin(tickets, eq(ticketComments.ticketId, tickets.id))
     .where(
@@ -197,7 +227,7 @@ async function loadVerifiedHumanComment(
       ),
     )
     .limit(1);
-  return row !== undefined;
+  return row ?? null;
 }
 
 /**
@@ -244,44 +274,46 @@ async function isEligibleForResolvedAdmission(ticketId: string, orgId: string): 
  * The shared "admit a triage run for this ticket" body every event handler
  * below funnels into once its own event-specific gate has passed: the loop
  * guard, the ticket-filter-context read, and the `createAndEnqueueAgentRun`
- * call with `profile: 'triage'`. Only the two reads run under a system DB
+ * call with `profile: 'triage'`. Only the reads run under a system DB
  * context — the admission call itself must run with NONE active (see this
  * file's header and `runWithSystemDbAccess`'s comment below).
  *
- * `applyLoopGuard` (I1, final review #4191): defaults to `true` for the
- * created/commented lanes, where `ticketHasAgentOriginatedActivity` guards
- * against a real risk — an AI-authored comment re-triggering
- * `ticket.commented` and admitting a second run off its own note. The
- * `ticket.status_changed -> resolved` lane (its one caller passes `false`)
- * has no such risk: every triage run posts an AI note as a side effect
- * (Task 6), so with the guard applied the resolved lane could never admit —
- * ANY prior triage pass on the ticket, no matter how old, permanently
- * blocks it. Skipping the guard there is safe because
+ * `loopGuard` (#4212, replacing the old boolean `applyLoopGuard`): either
+ * `{ humanCommentAt: Date }` — applied for the created/commented lanes, where
+ * `humanCommentIsNewerThanAgentActivity` guards against a real risk, an
+ * AI-authored comment re-triggering `ticket.commented` and admitting a
+ * second run off its own note — or the literal `'skip'`, used by the
+ * `ticket.status_changed -> resolved` lane. That lane has no such risk: every
+ * triage run posts an AI note as a side effect (Task 6), so applying the
+ * guard there would let ANY prior triage pass on the ticket, no matter how
+ * old, permanently block it. Skipping the guard there is safe because
  * `isEligibleForResolvedAdmission`'s fresh re-read (active resolution_note
  * draft + no resolution note already present) is itself the anti-loop gate
  * for that lane: a run this function admits either produces a draft
  * (blocking the NEXT resolved event) or the ticket is no longer resolved,
  * either of which already prevents readmission without help from the
- * agent-origin check.
+ * recency check.
  */
 async function admitTriageRun(
   orgId: string,
   ticketId: string,
   dedupeKey: string,
-  applyLoopGuard = true,
+  loopGuard: { humanCommentAt: Date } | 'skip',
 ): Promise<void> {
-  // Only the origin-guard probe and the ticket-filter-context read run under
-  // a system context — see `runWithSystemDbAccess`'s header comment (#1105
+  // Only the loop-guard probe and the ticket-filter-context read run under a
+  // system context — see `runWithSystemDbAccess`'s header comment (#1105
   // pool-hold seam).
-  const hasAgentActivity = applyLoopGuard
-    ? await runWithSystemDbAccess(() => ticketHasAgentOriginatedActivity(ticketId))
-    : false;
-  if (hasAgentActivity) {
-    console.info(
-      '[ticketHelpdeskSubscriber] skipping admission — ticket has agent-originated activity (loop guard)',
-      { ticketId, orgId },
+  if (loopGuard !== 'skip') {
+    const ok = await runWithSystemDbAccess(() =>
+      humanCommentIsNewerThanAgentActivity(ticketId, loopGuard.humanCommentAt),
     );
-    return;
+    if (!ok) {
+      console.info(
+        '[ticketHelpdeskSubscriber] skipping admission — no human activity newer than the ticket\'s last agent action (loop guard)',
+        { ticketId, orgId },
+      );
+      return;
+    }
   }
 
   // Load the ticket's category/priority for `runService.ts`'s trigger-filter
@@ -350,7 +382,12 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
   }
 
   try {
-    await admitTriageRun(orgId, ticketId, `ticket-created:${ticketId}`);
+    // #4212: a brand-new ticket has no prior comments, so the recency-ordered
+    // loop guard returns true vacuously — passing epoch as `humanCommentAt`
+    // means the ONLY way this can admit is "no agent activity yet", which
+    // still denies a redelivered `ticket.created` for an already-triaged
+    // ticket.
+    await admitTriageRun(orgId, ticketId, `ticket-created:${ticketId}`, { humanCommentAt: new Date(0) });
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,
@@ -407,7 +444,7 @@ export async function handleTicketCommentedEvent(event: BreezeEvent): Promise<vo
     // with the created lane, which capped the ticket at one triage run for
     // life (the "first-admitting-event-wins contract" the old header comment
     // described — deliberately superseded here).
-    await admitTriageRun(orgId, ticketId, `ticket-commented:${commentId}`);
+    await admitTriageRun(orgId, ticketId, `ticket-commented:${commentId}`, { humanCommentAt: verified.createdAt });
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,
@@ -460,10 +497,10 @@ export async function handleTicketStatusChangedEvent(event: BreezeEvent): Promis
       return;
     }
 
-    // applyLoopGuard=false — see admitTriageRun's docstring: every triage
-    // run posts an AI note, so the standard loop guard would permanently
-    // block this lane after the ticket's first-ever triage pass.
-    await admitTriageRun(orgId, ticketId, `ticket-resolved:${ticketId}`, false);
+    // loopGuard: 'skip' — see admitTriageRun's docstring: every triage run
+    // posts an AI note, so the standard loop guard would permanently block
+    // this lane after the ticket's first-ever triage pass.
+    await admitTriageRun(orgId, ticketId, `ticket-resolved:${ticketId}`, 'skip');
   } catch (err) {
     console.error('[ticketHelpdeskSubscriber] handler failed', {
       ticketId,
