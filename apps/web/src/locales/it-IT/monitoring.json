@@ -58,6 +58,10 @@
       "escalate": "Escalation verso una persona",
       "deployed": "Distribuito su"
     },
+    "tabs": {
+      "settings": "Impostazioni",
+      "activity": "Attività"
+    },
     "fields": {
       "name": "Nome",
       "description": "Descrizione",
@@ -304,6 +308,50 @@
     "empty": "Nessun dispositivo è ancora coperto da questo monitor.",
     "errors": {
       "fetch": "Impossibile caricare i dispositivi"
+    }
+  },
+  "activity": {
+    "title": "Attività",
+    "columns": {
+      "device": "Dispositivo",
+      "state": "Stato",
+      "openSince": "Aperto da",
+      "episodesInWindow": "Episodi nella finestra",
+      "escalated": "Escalato",
+      "responses": "Risposte"
+    },
+    "state": {
+      "ok": "Integro",
+      "breach": "Violazione",
+      "unknown": "Sconosciuto"
+    },
+    "responses": {
+      "active": "Attive",
+      "paused": "Risposte sospese fino al ripristino"
+    },
+    "reset": {
+      "button": "Reimposta escalation",
+      "confirm": "Reimpostare l’escalation per {{device}}? Questo azzera il contatore di ricorrenza e riprende le risposte automatiche. Non chiude l’episodio aperto né risolve l’avviso.",
+      "success": "Escalation reimpostata",
+      "error": "Impossibile reimpostare l’escalation"
+    },
+    "empty": {
+      "title": "Nessuna attività finora",
+      "body": "Questo monitor non ha ancora valutato alcun dispositivo."
+    },
+    "episodes": {
+      "title": "Episodi",
+      "endReason": {
+        "recovered": "Ripristinato",
+        "monitorDetached": "Monitor scollegato"
+      },
+      "outcome": {
+        "queued": "In coda",
+        "completed": "Completato",
+        "failed": "Non riuscito",
+        "skippedPaused": "Ignorato (risposte sospese)",
+        "skippedNoResponse": "Ignorato (nessuna risposta configurata)"
+      }
     }
   }
 }

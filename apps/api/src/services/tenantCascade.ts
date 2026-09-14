@@ -554,6 +554,13 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // of which are listed earlier or reached by FK, so alphabetical order is also
   // a safe delete order here (asserted by tenantCascade.integration.test.ts).
   'monitor_definitions',
+  // #5290 — device-scoped operational rows. Both FK to monitor_definitions with
+  // ON DELETE CASCADE, and monitor_device_state.current_episode_id FKs to
+  // monitor_episodes with ON DELETE SET NULL, so neither ordering can raise an
+  // FK violation and pure alphabetical order satisfies the children-before-
+  // parents property too.
+  'monitor_device_state',
+  'monitor_episodes',
   'network_baselines',
   'network_change_events',
   // #5291 W04 - gained a denormalized org_id so a partner-wide parent's

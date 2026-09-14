@@ -171,7 +171,14 @@ describe('executeAiTriageAction', () => {
       },
       dedupeKey: 'alert:alert-1',
     });
-    expect(result.outcome.status).toBe('succeeded');
+    // #5290 — a queued child run is NOT a completed action. The action stays
+    // nonterminal and carries the correlation the ai.agent.run.* events use to
+    // terminalise it.
+    expect(result.outcome).toEqual({
+      status: 'queued',
+      agentRunId: 'agent-run-1',
+      message: 'ai_triage queued agent run',
+    });
     expect(result.log.message).toBe('ai_triage queued agent run');
     expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
   });
@@ -327,7 +334,11 @@ describe('executeAiTriageAction', () => {
       makeContext(),
     );
 
-    expect(result.outcome.status).toBe('succeeded');
+    expect(result.outcome).toEqual({
+      status: 'queued',
+      agentRunId: 'agent-run-3',
+      message: 'ai_triage queued agent run',
+    });
     expect(result.log.message).toBe('ai_triage queued agent run');
   });
 

@@ -437,7 +437,11 @@ export async function runAlertCorrelationForDevice(options: {
         eq(alerts.orgId, options.orgId),
         eq(devices.siteId, targetDevice.siteId),
         gte(alerts.triggeredAt, windowStart),
-        inArray(alerts.status, ['active', 'acknowledged'])
+        inArray(alerts.status, ['active', 'acknowledged']),
+        // #5290 — a recurrence escalation is ALWAYS its own correlation root:
+        // folding it into another group would hide the one alert that exists
+        // specifically to demand a human.
+        eq(alerts.requiresHuman, false)
       )
     )
     .orderBy(desc(alerts.triggeredAt))

@@ -414,7 +414,12 @@ export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created'
  */
 export type AlertVerdictSuggestionReason =
   | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
-  | 'not_allowlisted' | 'superseded_concurrently' | 'intent_invalid_provenance';
+  | 'not_allowlisted' | 'superseded_concurrently'
+  // #5290 — the target is a recurrence-escalation alert. The verdict is still
+  // recorded (advisory analysis is wanted), but the suggested mutation is
+  // refused: a requires-human alert is closed by a person, never by the machine.
+  | 'requires_human'
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one

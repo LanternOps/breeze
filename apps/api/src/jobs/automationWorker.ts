@@ -18,6 +18,7 @@ import {
   devices,
   deviceGroupMemberships,
   deviceGroups,
+  monitorDeviceState,
   organizations,
 } from '../db/schema';
 import { type BreezeEvent } from '../services/eventBus';
@@ -44,6 +45,7 @@ import { isReusableState } from '../services/bullmqUtils';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import { automationQueueJobDataSchema, type AutomationAssignmentLevel, type AutomationQueueJobData } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
+import { recordEpisodeResponse } from '../services/monitors/episodeService';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -542,6 +544,29 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
       // until wave 6 revisits it.
       return { skipped: 'managed_automation_skips_automation_created_alerts' };
     }
+    // #5290 — a monitor whose recurrence latch fired pauses its own compiled
+    // response for THIS device only. The latch and the pause are written under
+    // the state row lock before the alert is ever published, so this read can
+    // never observe a half-latched pair.
+    if (isMonitorManaged) {
+      const monitorId = automation.managedByMonitorId as string;
+      const [state] = await db
+        .select({ paused: monitorDeviceState.responsesPaused })
+        .from(monitorDeviceState)
+        .where(
+          and(
+            eq(monitorDeviceState.monitorId, monitorId),
+            eq(monitorDeviceState.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+
+      if (state?.paused) {
+        await recordEpisodeResponse({ monitorId, deviceId, outcome: 'skipped_paused' });
+        return { skipped: 'monitor_responses_paused' };
+      }
+    }
+
     boundDeviceIds = [deviceId];
     triggerContext = {
       alertId: typeof payload.alertId === 'string' ? payload.alertId : null,
@@ -566,6 +591,19 @@ async function processTriggerEvent(data: TriggerEventJobData): Promise<{ runId?:
     await enqueueAutomationRun(run.id, targetDeviceIds, triggerContext);
   } else {
     await enqueueAutomationRun(run.id, targetDeviceIds);
+  }
+
+  // #5290 — record the response attempt on the OPEN episode for the pair. The
+  // outcome walks forward only: automationActionResults terminalises it to
+  // completed/failed when the run finishes.
+  if (isMonitorManaged && boundDeviceIds?.[0]) {
+    const actions = Array.isArray(automation.actions) ? automation.actions : [];
+    await recordEpisodeResponse({
+      monitorId: automation.managedByMonitorId as string,
+      deviceId: boundDeviceIds[0],
+      runId: run.id,
+      outcome: actions.length === 0 ? 'skipped_no_response' : 'queued',
+    });
   }
 
   return { runId: run.id };

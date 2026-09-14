@@ -1391,6 +1391,19 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       };
     },
   },
+  {
+    // #5290 (Monitoring & automation unification, W03) — daily prune of
+    // CLOSED monitor_episodes rows past the 400-day retention window.
+    name: 'monitorEpisodeRetention',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/monitorEpisodeRetention');
+      return {
+        init: m.initializeMonitorEpisodeRetention,
+        shutdown: m.shutdownMonitorEpisodeRetention,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

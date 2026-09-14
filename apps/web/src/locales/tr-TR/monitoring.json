@@ -58,6 +58,10 @@
       "escalate": "Bir kişiye yükselt",
       "deployed": "Dağıtıldığı yer"
     },
+    "tabs": {
+      "settings": "Ayarlar",
+      "activity": "Etkinlik"
+    },
     "fields": {
       "name": "Ad",
       "description": "Açıklama",
@@ -304,6 +308,50 @@
     "empty": "Bu monitör tarafından henüz kapsanan bir cihaz yok.",
     "errors": {
       "fetch": "Cihazlar yüklenemedi"
+    }
+  },
+  "activity": {
+    "title": "Etkinlik",
+    "columns": {
+      "device": "Cihaz",
+      "state": "Durum",
+      "openSince": "Şu zamandan beri açık",
+      "episodesInWindow": "Pencere içindeki olaylar",
+      "escalated": "Yükseltildi",
+      "responses": "Yanıtlar"
+    },
+    "state": {
+      "ok": "Sağlıklı",
+      "breach": "İhlal",
+      "unknown": "Bilinmiyor"
+    },
+    "responses": {
+      "active": "Etkin",
+      "paused": "Sıfırlanana kadar yanıtlar duraklatıldı"
+    },
+    "reset": {
+      "button": "Yükseltmeyi sıfırla",
+      "confirm": "{{device}} için yükseltme sıfırlansın mı? Bu, tekrarlama sayacını sıfırlar ve otomatik yanıtları devam ettirir. Açık olayı kapatmaz veya uyarıyı çözmez.",
+      "success": "Yükseltme sıfırlandı",
+      "error": "Yükseltme sıfırlanamadı"
+    },
+    "empty": {
+      "title": "Henüz etkinlik yok",
+      "body": "Bu izleyici henüz hiçbir cihazı değerlendirmedi."
+    },
+    "episodes": {
+      "title": "Olaylar",
+      "endReason": {
+        "recovered": "Düzeldi",
+        "monitorDetached": "İzleyici ayrıldı"
+      },
+      "outcome": {
+        "queued": "Kuyrukta",
+        "completed": "Tamamlandı",
+        "failed": "Başarısız",
+        "skippedPaused": "Atlandı (yanıtlar duraklatıldı)",
+        "skippedNoResponse": "Atlandı (yanıt yapılandırılmadı)"
+      }
     }
   }
 }

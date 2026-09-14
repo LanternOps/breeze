@@ -29,6 +29,9 @@ export const automationActionResultStatusEnum = pgEnum('automation_action_result
 ]);
 export const automationActionTerminalSourceEnum = pgEnum('automation_action_terminal_source', [
   'command', 'script_execution', 'deployment_result', 'timeout', 'cancellation', 'reaper', 'dispatch',
+  // #5290 — a child ai_triage agent run terminalises its action result from the
+  // ai.agent.run.* events. Appended last: the enum is order-sensitive for drift.
+  'agent_run',
 ]);
 export const policyEnforcementEnum = pgEnum('policy_enforcement', ['monitor', 'warn', 'enforce']);
 export const complianceStatusEnum = pgEnum('compliance_status', ['compliant', 'non_compliant', 'pending', 'error']);
@@ -197,6 +200,8 @@ export const automationActionResults = pgTable('automation_action_results', {
   commandId: uuid('command_id'),
   scriptExecutionId: uuid('script_execution_id'),
   deploymentResultId: uuid('deployment_result_id'),
+  // #5290 — correlation to the child ai_triage agent run (see Task 7).
+  agentRunId: uuid('agent_run_id'),
   message: text('message'),
   output: text('output'),
   error: text('error'),
@@ -218,6 +223,8 @@ export const automationActionResults = pgTable('automation_action_results', {
     .on(table.scriptExecutionId).where(sql`${table.scriptExecutionId} IS NOT NULL`),
   uniqueIndex('automation_action_results_deployment_result_uq')
     .on(table.deploymentResultId).where(sql`${table.deploymentResultId} IS NOT NULL`),
+  uniqueIndex('automation_action_results_agent_run_uq')
+    .on(table.agentRunId).where(sql`${table.agentRunId} IS NOT NULL`),
   index('automation_action_results_run_idx').on(table.runId),
   index('automation_action_results_device_idx').on(table.deviceId),
   index('automation_action_results_org_idx').on(table.orgId),
