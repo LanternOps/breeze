@@ -222,6 +222,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
   consumers('ticketOutboxRetention'),
   consumers('intentOutboxRetention'),
   consumers('metricAnomalyIncidentRetention'),
+  // #5290 (W03) — daily monitor breach-episode retention prune, same shape as
+  // mlOutputRetention/metricAnomalyIncidentRetention/agentLogRetention: one
+  // Worker, no flag gate, constructs and attaches unconditionally under its
+  // own registry-key name.
+  consumers('monitorEpisodeRetention'),
   consumers('accountingReconcileWorker'),
   // Merge-forward (origin/main 2026-09-06): three more `socket-owner` registry
   // entries, each read rather than inferred. None is feature-flag gated and

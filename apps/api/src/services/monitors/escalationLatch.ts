@@ -13,7 +13,7 @@
  * is durable before any alert is published, so the compiled response automation
  * can never be queued between the latch and the pause.
  *
- * **Known gap — recurrence actions are NOT executed here (#5290 follow-up).**
+ * **Known gap — recurrence actions are NOT executed here (tracked as #5767).**
  * `monitor_definitions.recurrence_actions` has no execution path in this wave.
  * Running an arbitrary action list requires an `automation_runs` row, whose
  * `automation_id` is a real FK, and the executor re-reads the action list from
@@ -23,7 +23,7 @@
  * and `automations_managed_by_monitor_uidx` forbids a second managed row per
  * monitor. Rather than invent a mechanism, authored-but-unrun actions are
  * surfaced on the escalation alert as `recurrenceActionsPending` so a
- * technician sees them, and the execution path is a filed follow-up.
+ * technician sees them, and the execution path is filed as #5767.
  */
 
 import { eq, and } from 'drizzle-orm';

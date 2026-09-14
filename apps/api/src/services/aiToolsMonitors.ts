@@ -283,6 +283,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 2,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'get_monitor_activity',
       description:
@@ -328,6 +329,7 @@ export function registerMonitorTools(aiTools: Map<string, AiTool>): void {
   // ============================================
   registerTool({
     tier: 2,
+    deviceArgs: ['deviceId'],
     definition: {
       name: 'reset_monitor_escalation',
       description:

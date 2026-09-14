@@ -267,6 +267,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
+  // get_monitor / manage_monitor_definitions remain in the frozen
+  // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
+  // — these two are new and wired directly instead of widening that list.
+  get_monitor_activity: 2,
+  reset_monitor_escalation: 2,
   // Org lifecycle tools (issue #2366) — new-customer intake (org → site → quote)
   list_organizations: 1,
   manage_organizations: 2,      // create_org/update_org/create_site escalate to 3 in guardrails
