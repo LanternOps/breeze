@@ -25,6 +25,7 @@ import {
   NARRATIVE_HEADLINE_MAX_CHARS,
   NARRATIVE_SECTION_KEYS,
   PATCH_PLAN_DETAIL_MAX_CHARS,
+  PATCH_FAILURE_CLASSES,
   PATCH_PLAN_ITEM_CLASSES,
   PATCH_PLAN_MAX_ITEMS,
   PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM,
@@ -668,6 +669,13 @@ const SUBMIT_PATCH_PLAN_SHAPE = {
     title: z.string().max(PATCH_PLAN_TITLE_MAX_CHARS).describe('One line — what an approval card would show.'),
     detail: z.string().max(PATCH_PLAN_DETAIL_MAX_CHARS).describe('Why, citing the evidence numbers.'),
     evidenceRef: z.string().max(200).describe('Which evidence section/row this item comes from, e.g. "topNonCompliant".'),
+    // W03 (#5749): quoted from the failedWork evidence, checked by the persister.
+    failureClass: z.enum(PATCH_FAILURE_CLASSES).optional().describe(
+      'chase and escalation only: the failure class shown in the failed-work evidence for this device and patch, copied verbatim.',
+    ),
+    attemptCount: z.number().int().min(1).optional().describe(
+      'chase and escalation only: the attempt count shown in the failed-work evidence for this device and patch, copied verbatim.',
+    ),
   })).max(PATCH_PLAN_MAX_ITEMS).describe('The plan items, most important first. An empty array is valid.'),
 };
 
