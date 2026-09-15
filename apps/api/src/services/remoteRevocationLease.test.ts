@@ -31,6 +31,7 @@ import {
   type RevocationRecheckRow,
 } from './remoteRevocationLease';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
+import { afterEach } from 'vitest';
 
 const NOW = Date.parse('2026-10-15T12:00:00.000Z');
 
@@ -56,6 +57,7 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       siteId: 'site-1',
       agentId: 'agent-1',
       revocationLeaseProtocolVersion: 1,
+      desktopFenceProtocolVersion: 1,
     },
     user: {
       status: 'active',
@@ -593,5 +595,58 @@ describe('prepareRevocationLeaseForStart', () => {
       renewEverySec: 25,
       graceSec: 90,
     });
+  });
+});
+
+// SEC-038 W06 (#5537): the desktop-fence capability gate mirrors the #5481
+// lease gate — same denial code, same upgrade message — but sits behind
+// REMOTE_DESKTOP_FENCE_REQUIRED, default OFF, so the release that introduces
+// it is a no-op for the fleet until the flag is flipped one release later.
+describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-038 W06)', () => {
+  const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+  afterEach(() => {
+    if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
+  });
+
+  it('gate off: admits an unfenced agent (fleet no-op on the introducing release)', async () => {
+    delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: refuses an unfenced agent with the agent_upgrade_required code', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: refuses an unknown future fence protocol version rather than assuming forward compatibility', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 2;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: admits a fenced agent', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => row(), now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: the lease gate still wins first — a lease-incapable agent is refused regardless of fence', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.revocationLeaseProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
   });
 });

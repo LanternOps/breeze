@@ -41,6 +41,7 @@ import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
 import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
 import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
+import { remoteDesktopFenceRequired } from '../config/env';
 
 // ---------------------------------------------------------------------------
 // Constants — owned here, never borrowed from remoteWsSharedLease.ts
@@ -170,6 +171,8 @@ export interface RevocationRecheckRow {
     agentId: string | null;
     /** Agent-declared revocation-lease protocol version; 0 = not capable. */
     revocationLeaseProtocolVersion: number;
+    /** SEC-038 agent-declared desktop start/terminal fence version; 0 = unfenced. */
+    desktopFenceProtocolVersion: number;
   };
   user: {
     status: string;
@@ -339,6 +342,7 @@ export async function loadRevocationRecheckRow(
           deviceSiteId: devices.siteId,
           deviceAgentId: devices.agentId,
           deviceLeaseVersion: devices.revocationLeaseProtocolVersion,
+          deviceFenceVersion: devices.desktopFenceProtocolVersion,
           userStatus: users.status,
           userPermissionsEpoch: users.permissionsEpoch,
           userOrgId: users.orgId,
@@ -423,6 +427,7 @@ export async function loadRevocationRecheckRow(
           siteId: found.deviceSiteId ?? null,
           agentId: found.deviceAgentId ?? null,
           revocationLeaseProtocolVersion: Number(found.deviceLeaseVersion ?? 0),
+          desktopFenceProtocolVersion: Number(found.deviceFenceVersion ?? 0),
         },
         user: {
           status: found.userStatus,
@@ -717,6 +722,14 @@ export async function renewRevocationLease(
 // Desktop-start capability gate
 // ---------------------------------------------------------------------------
 
+/**
+ * SEC-038: the only desktop start/terminal fence protocol version this server
+ * speaks. An agent reporting exactly this value keeps the durable per-session
+ * generation fence (W04/W05); anything else is unfenced. Enforced only while
+ * REMOTE_DESKTOP_FENCE_REQUIRED is on (default off — owner decision 1).
+ */
+export const DESKTOP_FENCE_PROTOCOL_VERSION = 1;
+
 /** Machine code every desktop-start dispatch site returns with its 503. */
 export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
 
@@ -727,7 +740,7 @@ export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
  * heartbeat interval (default 60 s).
  */
 export const AGENT_UPGRADE_REQUIRED_MESSAGE =
-  'Remote desktop needs an agent update on this device (session revocation lease support). '
+  'Remote desktop needs an agent update on this device (session revocation lease and start fence support). '
   + 'The agent updates itself automatically — this usually clears within a minute. '
   + 'Terminal and file transfer are unaffected.';
 
@@ -763,6 +776,12 @@ export async function prepareRevocationLeaseForStart(
   if (row.device.revocationLeaseProtocolVersion !== REVOCATION_LEASE_PROTOCOL_VERSION) {
     return { ok: false, reason: 'agent_upgrade_required' };
   }
+  // SEC-038 W06: behind the flag, an agent without the durable start fence is
+  // refused with the same code — the generation in the start payload is only
+  // meaningful when the endpoint honours it.
+  if (!isDesktopFenceCapable(row.device.desktopFenceProtocolVersion)) {
+    return { ok: false, reason: 'agent_upgrade_required' };
+  }
   if (row.session.permissionsEpochSnapshot === null) {
     // No durable baseline means no renew can ever prove authority — refusing
     // here is the same fail-closed answer the renew path would give anyway.
@@ -789,18 +808,35 @@ export async function prepareRevocationLeaseForStart(
 }
 
 /**
- * Cheap standalone capability probe for callers that only need to fail fast
- * (session creation) and have no session row yet.
+ * SEC-038 W06 fence admission. Gate off (the default) admits every agent so
+ * the release that introduces the gate is a fleet no-op; gate on admits only
+ * an agent declaring exactly DESKTOP_FENCE_PROTOCOL_VERSION. Read at call time
+ * so the flag can be flipped without a restart-sensitive module constant.
  */
-export async function isRevocationLeaseCapable(deviceId: string): Promise<boolean> {
+export function isDesktopFenceCapable(desktopFenceProtocolVersion: number): boolean {
+  if (!remoteDesktopFenceRequired()) return true;
+  return desktopFenceProtocolVersion === DESKTOP_FENCE_PROTOCOL_VERSION;
+}
+
+/**
+ * Cheap standalone capability probe for callers that only need to fail fast
+ * (session creation) and have no session row yet. Covers both desktop-start
+ * capability gates: the unconditional revocation lease (#5481) and the
+ * flag-gated start fence (SEC-038 W06).
+ */
+export async function isDesktopStartCapable(deviceId: string): Promise<boolean> {
   const [row] = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ version: devices.revocationLeaseProtocolVersion })
+        .select({
+          leaseVersion: devices.revocationLeaseProtocolVersion,
+          fenceVersion: devices.desktopFenceProtocolVersion,
+        })
         .from(devices)
         .where(eq(devices.id, deviceId))
         .limit(1),
     ),
   );
-  return Number(row?.version ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION;
+  return Number(row?.leaseVersion ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION
+    && isDesktopFenceCapable(Number(row?.fenceVersion ?? 0));
 }

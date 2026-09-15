@@ -346,6 +346,7 @@ export const heartbeatSchema = z.object({
     // tolerant contract: a malformed value drops this field alone, since the
     // route treats anything other than exactly 1 as "not capable".
     revocationLeaseProtocolVersion: z.number().int().optional().catch(undefined),
+    desktopFenceProtocolVersion: z.number().int().optional().catch(undefined),
     pamReconciliation: z.object({
       unresolvedCount: z.number().int().nonnegative(),
       quarantinedCount: z.number().int().nonnegative(),

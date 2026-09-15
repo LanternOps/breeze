@@ -30,8 +30,12 @@
     "desktopUnavailable": "Desktop nicht verfügbar",
     "dismiss": "Schließen",
     "downloadFor": "Für {{platform}} herunterladen",
+    "ending": {
+      "description": "Die vorherige Sitzung wird auf dem Gerät noch beendet. Warten Sie einen Moment und versuchen Sie es erneut.",
+      "title": "Sitzung wird noch beendet"
+    },
     "errors": {
-      "agentUpgradeRequired": "Remote-Desktop erfordert auf diesem Gerät ein Agent-Update (Unterstützung für Sitzungs-Widerrufsleases). Der Agent aktualisiert sich automatisch – das ist in der Regel innerhalb einer Minute erledigt. Terminal und Dateiübertragung sind nicht betroffen.",
+      "agentUpgradeRequired": "Remote-Desktop erfordert auf diesem Gerät ein Agent-Update (Unterstützung für Sitzungs-Widerrufsleases und Start-Fence). Der Agent aktualisiert sich automatisch – das ist in der Regel innerhalb einer Minute erledigt. Terminal und Dateiübertragung sind nicht betroffen.",
       "connectionFailed": "Verbindung fehlgeschlagen",
       "createDesktopCode": "Desktop-Verbindungscode konnte nicht erstellt werden",
       "createDesktopSession": "Die Desktop-Sitzung konnte nicht erstellt werden",
@@ -664,7 +668,8 @@
       "connecting": "Verbinden...",
       "disconnected": "Nicht verbunden",
       "failed": "Fehlgeschlagen",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "teardownPending": "Wird beendet (Gerät bestätigt noch)"
     },
     "subtitle": "Überwachungsprotokoll für den Fernzugriff",
     "title": "Sitzungsverlauf",
@@ -700,6 +705,7 @@
       "timeline": "Zeitleiste"
     },
     "subtitle": "Fernzugriffssitzungen anzeigen und überwachen",
+    "teardownPending": "Bestätigung des Geräts ausstehend",
     "title": "Sitzungsverlauf",
     "viewDevice": "Gerät anzeigen",
     "viewRecording": "Aufzeichnung ansehen"
