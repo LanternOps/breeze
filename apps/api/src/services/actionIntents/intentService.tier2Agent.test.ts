@@ -98,7 +98,7 @@ const { schema, dbState, authMock, guardrailAgentMock, aiToolsState, permState, 
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
   };
 });
@@ -264,6 +264,8 @@ vi.mock('./effectDigest', () => ({
 
 vi.mock('../../config/env', () => ({
   policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
 }));
 
 vi.mock('./policyDecide', () => ({

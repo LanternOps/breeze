@@ -1,5 +1,5 @@
 // apps/api/src/services/aiAgents/sweepFindings.test.ts
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { sweepSubjectIndexKey, type SweepEvidenceSubject } from './sweepEvidence';
 import type { SQL } from 'drizzle-orm';
@@ -11,6 +11,8 @@ const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 const RUN_ID = '00000000-0000-4000-8000-0000000000a2';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000a3';
 const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000a4';
+/** The org's tighten-only override of SCHEDULE_ID (#4442 W04). */
+const OVERRIDE_SCHEDULE_ID = '00000000-0000-4000-8000-0000000000a6';
 const USER_ID = '00000000-0000-4000-8000-0000000000a5';
 /** In the run's evidence set AND in the org. */
 const DEVICE_A = '00000000-0000-4000-8000-0000000000b1';
@@ -216,6 +218,13 @@ describe('persistSweepFindings', () => {
       trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
       idempotencyKey: `sweep:${RUN_ID}:0`,
       scope: { deviceId: DEVICE_A },
+      // #4442 W04 — the act descriptor rides along on every sweep-minted
+      // intent; with the sub-flag off it can only ever say "not armed".
+      sweepAct: {
+        scheduleActMode: false,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T10:00:00.000Z' },
+        argumentsMatchSubject: true,
+      },
     });
     expect(result.intentIds).toEqual([INTENT_A]);
     expect(result.proposals).toEqual<SweepProposalRecord[]>([{
@@ -634,6 +643,102 @@ describe('persistSweepFindings — the trusted subject (gate 1b)', () => {
 
     expect(result.proposals).toEqual([]);
     expect(createActionIntent).not.toHaveBeenCalled();
+  });
+});
+
+// #4442 W04 Task 5 — what `persistSweepFindings` hands the CREATION gate.
+// The act descriptor is assembled from SYSTEM state only: the effective
+// (partner baseline ∧ org override) schedule act mode, the trusted subject
+// gate 1b matched, and whether the intent's own arguments name that subject.
+describe('persistSweepFindings — the sweep act descriptor', () => {
+  const ORIGINAL_FLAG = process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED;
+
+  afterEach(() => {
+    if (ORIGINAL_FLAG === undefined) delete process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED;
+    else process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = ORIGINAL_FLAG;
+  });
+
+  it('reads no schedule and passes no descriptor when the sub-flag is off (byte-identical to today)', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'false';
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth);
+
+    // ONE select only — the device existence read. A schedule lookup behind
+    // the flag would be a behaviour change even with the same verdict.
+    expect(state.selectCount).toBe(1);
+    // The descriptor is still handed over (it is inert data), but it can only
+    // ever say "not armed" — and `resolvePolicyDecisionState` checks the flag
+    // before it reads any of it.
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      sweepAct: expect.objectContaining({ scheduleActMode: false }),
+    }));
+  });
+
+  it('passes the effective act mode and the SYSTEM subject when the partner baseline is armed', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    // baseline, then this org's override, then the device existence read.
+    state.selectQueue.push([{ id: SCHEDULE_ID, actMode: true }]);
+    state.selectQueue.push([]);
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth);
+
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      sweepAct: {
+        scheduleActMode: true,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T10:00:00.000Z' },
+        argumentsMatchSubject: true,
+      },
+    }));
+  });
+
+  it('an ORG override that disarms wins over an armed partner baseline', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    state.selectQueue.push([{ id: SCHEDULE_ID, actMode: true }]);
+    state.selectQueue.push([{ id: OVERRIDE_SCHEDULE_ID, actMode: false }]);
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth);
+
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      sweepAct: expect.objectContaining({ scheduleActMode: false }),
+    }));
+  });
+
+  it('a run with no schedule id at all resolves act mode FALSE without querying', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(
+      runInput({ scheduleId: null }),
+      outcomeWith(restartFinding(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(state.selectCount).toBe(1);
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      sweepAct: expect.objectContaining({ scheduleActMode: false }),
+    }));
+  });
+
+  it('a schedule row that has vanished resolves act mode FALSE — fail closed', async () => {
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    // No baseline row: the override is never even read (nothing to tighten),
+    // so the next queued result is the device existence read.
+    state.selectQueue.push([]);
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    await persistSweepFindings(runInput(), outcomeWith(restartFinding(DEVICE_A)), agentAuth);
+
+    expect(createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      sweepAct: expect.objectContaining({ scheduleActMode: false }),
+    }));
   });
 });
 

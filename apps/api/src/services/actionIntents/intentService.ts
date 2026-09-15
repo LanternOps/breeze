@@ -14,7 +14,8 @@ import {
 import { db, runOutsideDbContext, withDbAccessContext, withSystemDbAccessContext, type Database, type DbAccessContext } from '../../db';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
-import { policyDecideEnabled } from '../../config/env';
+import { policyDecideEnabled, sweepActEnabled } from '../../config/env';
+import { subjectMatchesArguments } from './intentTargetScope';
 import {
   actionIntents,
   intentOutbox,
@@ -207,6 +208,15 @@ export interface CreateActionIntentInput {
    * non-null `scope_ticket_id`, same shape as the device pairing).
    */
   scope?: { deviceId: string } | { ticketId: string };
+  /**
+   * #4442 W04 — the sweep-act eligibility the CALLER assembled from system
+   * state (`sweepFindings.ts`: the effective schedule act mode plus the
+   * trusted evidence subject it matched). Agent principal only, and only ever
+   * meaningful alongside `trigger.kind === 'sweep_finding'` and a device
+   * `scope` — `resolvePolicyDecisionState` re-checks both, so passing this
+   * from anywhere else changes nothing.
+   */
+  sweepAct?: SweepActEligibility;
   /**
    * P2-4 (#4191): requests the creation-transaction ticket-autonomy decision
    * (`ticketAutonomy.ts`'s `evaluateTicketAutonomy`) — honored ONLY for the
@@ -640,7 +650,7 @@ export interface SweepActEligibility {
   /** The EFFECTIVE (partner baseline ∧ org override) act-mode value. */
   scheduleActMode: boolean;
   /** The SYSTEM's own subject for the evidence row this proposal cites. */
-  subject: { kind: AiSweepKind; key: string; observedAt: string };
+  subject: { kind: AiSweepKind; key: string; observedAt: string | null };
   /** Whether the intent's arguments name exactly that subject. */
   argumentsMatchSubject: boolean;
 }
@@ -721,7 +731,28 @@ function resolvePolicyDecisionState(args: {
   // is roadmap #4442 (explicitly OUT of P2-5, quorum 2026-09-01), behind
   // its own review, and is expected to REPLACE this line rather than route
   // around it.
-  if (args.hasScope) return 'human_required';
+  // #4442 W04 — the narrow replacement for P2-2's blanket `if (args.hasScope)`.
+  // A scoped intent is decidable ONLY when every one of these holds; anything
+  // unresolved falls through to human_required, like every other branch here.
+  // Keying on trigger_kind and NOT on "has a scope" is load-bearing: a ticket
+  // scope (P2-4), or a scope kind added later, must not inherit this allowance.
+  //
+  // `sweepActEnabled()` is checked FIRST inside the branch, before anything
+  // else on `args` is even read, so the flag-off regression control's "reads
+  // nothing else" assertion holds (policyDecide.sweepFlagOff.test.ts).
+  if (args.hasScope) {
+    if (!sweepActEnabled()) return 'human_required';
+    if (args.triggerKind !== 'sweep_finding') return 'human_required';
+    const act = args.sweepAct;
+    if (!act) return 'human_required';
+    if (!act.scheduleActMode) return 'human_required';
+    if (!act.argumentsMatchSubject) return 'human_required';
+    // Freshness and the live condition re-probe are DECIDE-time, not here —
+    // see attemptPolicyDecision. Creation cannot probe: it runs inside the
+    // intent's own transaction and a probe there would hold a pooled
+    // connection across a second query for every proposal in the occurrence.
+  }
+
   if (!args.agentRun) return 'human_required';
   if (args.approvalScope !== 'supervised') return 'human_required';
   if (args.agentMode !== 'act') return 'human_required';
@@ -1675,6 +1706,10 @@ export async function createActionIntent(
         input: input.input,
         agentMode: agentRunMode,
         hasScope: input.scope !== undefined,
+        // #4442 W04: the PARSED trigger, i.e. the same value stamped onto
+        // `action_intents.trigger_kind` below — never the raw input.
+        triggerKind: trigger?.kind ?? null,
+        sweepAct: input.sweepAct,
       });
 
       // P2-4 Task A3 (#4191) — the creation-transaction ticket-autonomy
@@ -2135,13 +2170,20 @@ export async function createActionIntent(
   // `pending_approval` snapshot exactly as it always did; the attempt's
   // outcome surfaces later via the intent's own state, not this call's return
   // value.
-  // `!input.scope` is belt-and-braces, not redundancy with taste: a scoped
-  // intent cannot BE 'unattempted' (resolvePolicyDecisionState forces
-  // human_required for it — spec §4.2 amendment, #4189), so this second
-  // condition only fires if that invariant is ever broken upstream. It is
-  // cheap, and the failure it guards against is a sweep proposal
-  // auto-executing.
-  if (creation.isNew && !input.scope && creation.intent.policyDecisionState === 'unattempted') {
+  // The second, belt-and-braces gate. Before #4442 W04 this was a blanket
+  // `!input.scope`, mirroring the creation gate's blanket refusal of every
+  // scoped intent. W04 narrows BOTH in the same shape: an unscoped intent is
+  // unchanged, and a scoped one is only kicked off when the same act
+  // conditions `resolvePolicyDecisionState` applied still hold here. It is
+  // deliberately not deleted — it is cheap, and the failure it guards against
+  // is a sweep proposal auto-executing.
+  const scopedAttemptAllowed = !input.scope || (
+    sweepActEnabled()
+    && trigger?.kind === 'sweep_finding'
+    && input.sweepAct?.scheduleActMode === true
+    && input.sweepAct.argumentsMatchSubject === true
+  );
+  if (creation.isNew && scopedAttemptAllowed && creation.intent.policyDecisionState === 'unattempted') {
     triggerPolicyDecisionAttempt(creation.intent.id);
   }
 

@@ -406,13 +406,15 @@ vi.mock('../services/aiAgents/scheduleService', () => ({
   loadEnabledBaselineCadences: loadEnabledBaselineCadencesMock,
 }));
 
-const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
+const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true), sweepActEnabled: vi.fn(() => false) }));
 vi.mock('../config/env', async (importOriginal) => ({
   // #5380: `envFlag` stays REAL — `aiAgentsEnvFlagEnabled` reads
   // BREEZE_AI_AGENTS_ENABLED through it at call time, and that read is the
   // behaviour the `system` block's tests drive through process.env.
   ...(await importOriginal<typeof import('../config/env')>()),
   policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
 }));
 
 import {

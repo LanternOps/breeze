@@ -91,7 +91,7 @@
  * caps a run at 50 findings.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
@@ -111,8 +111,15 @@ import {
 // Direct module import, not the schema barrel — same note as runLoop.ts.
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
+import { sweepActEnabled } from '../../config/env';
+import { aiAgentSchedules } from '../../db/schema/aiAgentSchedules';
 import { createActionIntent } from '../actionIntents/intentService';
+// From `intentTargetScope`, deliberately NOT from `intentService`: it is the
+// pure home of the creation-time argument gates, and importing it here keeps
+// this module's one comparison out of the heavy service module.
+import { subjectMatchesArguments } from '../actionIntents/intentTargetScope';
 import { captureException } from '../sentry';
+import { effectiveSchedule } from './scheduleService';
 import { sweepSubjectIndexKey, type SweepEvidenceSubject } from './sweepEvidence';
 import { isToolAllowlisted } from './toolAllowlist';
 
@@ -217,6 +224,54 @@ export interface SweepPersistRunInput {
   evidenceSubjects: ReadonlyMap<string, SweepEvidenceSubject>;
 }
 
+/**
+ * #4442 W04 — the EFFECTIVE act mode for this occurrence's schedule, resolved
+ * ONCE per run rather than per proposal.
+ *
+ * `ai_agent_runs.schedule_id` is the partner BASELINE (the sweeper ticks
+ * baselines only — `loadDueBaselines` filters `org_id IS NULL`), so the org's
+ * tighten-only override has to be read separately and merged through
+ * `effectiveSchedule`. Everything unresolved is FALSE: no schedule id, a
+ * baseline that has been deleted, a query that returns nothing. Act mode is a
+ * grant of unattended Tier-3 execution; "we could not tell" is not a grant.
+ *
+ * Skipped entirely when the sub-flag is off, so a flag-off run issues exactly
+ * the same statements it did before this wave.
+ */
+async function resolveEffectiveActMode(run: SweepPersistRunInput): Promise<boolean> {
+  if (!sweepActEnabled() || !run.scheduleId) return false;
+  const scheduleId = run.scheduleId;
+
+  return inSystemDbContext(async () => {
+    const [baseline] = await db
+      .select({ id: aiAgentSchedules.id, actMode: aiAgentSchedules.actMode })
+      .from(aiAgentSchedules)
+      .where(and(eq(aiAgentSchedules.id, scheduleId), isNull(aiAgentSchedules.orgId)))
+      .limit(1);
+    if (!baseline) return false;
+
+    const [override] = await db
+      .select({ id: aiAgentSchedules.id, actMode: aiAgentSchedules.actMode })
+      .from(aiAgentSchedules)
+      .where(and(
+        eq(aiAgentSchedules.orgId, run.orgId),
+        eq(aiAgentSchedules.baselineScheduleId, scheduleId),
+      ))
+      .limit(1);
+
+    // `effectiveSchedule` owns the three-valued truth table (baseline `true`
+    // arms; an override `false` disarms; anything else inherits) — never a
+    // second hand-rolled copy of it here. `enabled`/`sweepKinds` are supplied
+    // as inert values: this call asks about act mode only, and whether the
+    // schedule was enabled for this occurrence was already decided by the
+    // sweeper before the run existed.
+    return effectiveSchedule(
+      { enabled: true, sweepKinds: [], actMode: baseline.actMode },
+      override ? { enabled: true, sweepKinds: [], actMode: override.actMode } : null,
+    ).actMode;
+  });
+}
+
 /** `action` for the record/projection: only `manage_services` carries one. */
 function proposedActionName(proposal: SweepProposedAction): string | null {
   return proposal.tool === 'manage_services' ? proposal.action : null;
@@ -304,6 +359,10 @@ export async function persistSweepFindings(
     }
     candidates.push({ index, finding, proposal });
   }
+
+  // #4442 W04 — the schedule brake, resolved ONCE for the whole occurrence and
+  // before the device read so a disarmed schedule costs nothing per proposal.
+  const scheduleActMode = await resolveEffectiveActMode(run);
 
   // Gate 2, batched: ONE org-pinned, non-ephemeral existence read for every
   // device that cleared gate 1 — never a query per finding.
@@ -395,6 +454,21 @@ export async function persistSweepFindings(
         // intent for the same finding.
         idempotencyKey: `sweep:${run.id}:${index}`,
         scope: { deviceId },
+        // #4442 W04 — everything CREATION needs to decide act eligibility,
+        // assembled from SYSTEM state only. `argumentsMatchSubject` compares
+        // the arguments built above against the subject gate 1b matched,
+        // through the one shared comparison in `intentService.ts` so the gate
+        // and any later re-check cannot drift.
+        sweepAct: {
+          scheduleActMode,
+          subject: { kind: subject.kind, key: subject.key, observedAt: subject.observedAt },
+          argumentsMatchSubject: subjectMatchesArguments(
+            subject,
+            proposal.tool,
+            proposalToolInput(proposal),
+            deviceId,
+          ),
+        },
       });
       if (intent.status === 'pending_approval') {
         record.disposition = 'intent_created';
