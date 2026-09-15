@@ -4,10 +4,11 @@ import { AI_AGENT_KINDS, type AiAgentKind } from '@breeze/shared';
 import type { Database } from '../../db';
 import {
   quotes, quoteLines, invoices, invoicePayments, contracts, organizations,
-  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks,
+  tickets, drPlans, partners, aiAgents, configPolicyFeatureLinks, devices,
 } from '../../db/schema';
 import { scriptProposals, type ScriptProposalRow } from '../../db/schema/scriptProposals';
 import { buildRunScriptSnapshot, runScriptDigestMaterial } from './runScriptSnapshot';
+import { resolvePatchInstallEligibility } from '../patchEligibility';
 import type { ToolExecutionContext, VerifiedRunScript } from '../toolExecutionContext';
 
 /**
@@ -429,6 +430,47 @@ const EFFECT_DIGEST_RESOLVERS: Record<
       featureType: link.featureType,
       featurePolicyId: link.featurePolicyId,
       inlineSettings: link.inlineSettings,
+    }));
+  },
+
+  // manage_patches:install (Tier 3, SUPERVISED) — AI patch agent W02 (#5748).
+  // The pinned content is the ELIGIBILITY VERDICT for (deviceId, patchIds…)
+  // under the device's CURRENT org, ring and policy — never the `patches`
+  // catalog row: `patches` is a GLOBAL vendor catalog re-synced on a schedule,
+  // so hashing its `updated_at` would fail closed on routine syncs — the exact
+  // trap recorded for `manage_patches:rollback` in
+  // effectDigestCoverage.contract.test.ts. A patch that was deferred,
+  // category-blocked, superseded, un-approved, or whose device changed ring or
+  // org between approval and release therefore changes the digest and the
+  // worker refuses the release with `content_changed`. `resolvedAt` is
+  // deliberately NOT part of the material (it moves on every recompute).
+  //
+  // The org comes off the device row read through the caller's `database`,
+  // never off the tool input (an intent's arguments carry no orgId, and if
+  // they did, the approver's org is what `revalidateRelease` checks — this
+  // pin is about the CONTENT). `resolvePatchInstallEligibility` reads through
+  // the ambient `db`, which every call site of this module (creation
+  // transaction, release worker, inline chat release) runs system-scoped —
+  // the same caller obligation the run_script resolver's `opts.database`
+  // carries.
+  'manage_patches:install': async (args, database) => {
+    const deviceIds = Array.isArray(args.deviceIds) ? args.deviceIds : null;
+    const deviceId = deviceIds?.length === 1 && typeof deviceIds[0] === 'string' ? deviceIds[0] : null;
+    const patchIds = Array.isArray(args.patchIds) ? args.patchIds.filter((p): p is string => typeof p === 'string') : [];
+    if (!deviceId || patchIds.length === 0) return MISSING_ARG;
+    const [device] = await database
+      .select({ orgId: devices.orgId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    if (!device) return TARGET_ABSENT;
+    const verdict = await resolvePatchInstallEligibility({ deviceId, orgId: device.orgId, patchIds });
+    return material(JSON.stringify({
+      v: 1,
+      orgId: device.orgId,
+      ringId: verdict.ringId,
+      eligible: verdict.eligible.map((e) => e.patchId).sort(),
+      ineligible: verdict.ineligible.map((e) => `${e.patchId}:${e.reason}`).sort(),
     }));
   },
 
