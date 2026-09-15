@@ -384,3 +384,44 @@ describe('action_intents immutability trigger (live DB)', () => {
     expect(row?.approvalExpiresAt?.getTime()).toBe(deadline.getTime());
   });
 });
+
+// Tool catalog W01 PR B (#5216): the external tool binding is a PAIR — both
+// columns set or both NULL — pinned by `action_intents_external_tool_chk`
+// (migrations/2026-10-16-193700-action-intents-external-tool.sql). A tool id
+// without a revision is an unrevalidatable half-record; a revision without a
+// tool id pins nothing.
+describe('action_intents external tool binding CHECK (live DB)', () => {
+  let intentId: string;
+  beforeEach(async () => {
+    intentId = (await seedPendingIntent()).id;
+  });
+
+  async function cloneIntentWith(overrides: Partial<NewActionIntent>): Promise<void> {
+    await withSystemDbAccessContext(async () => {
+      const [row] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+      const { id: _id, createdAt: _c, ...rest } = row!;
+      await db.insert(actionIntents).values({
+        ...(rest as NewActionIntent),
+        idempotencyKey: `idem-ext-${randomUUID().slice(0, 8)}`,
+        correlationId: randomUUID(),
+        ...overrides,
+      });
+    });
+  }
+
+  it('rejects a tool id without a revision with 23514', async () => {
+    await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: null }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_external_tool_chk' } });
+  });
+
+  it('rejects a revision without a tool id with 23514', async () => {
+    await expect(cloneIntentWith({ toolSourceToolId: null, toolRevision: 'rev-1' }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_external_tool_chk' } });
+  });
+
+  it('accepts a full binding, and the id carries no FK (a stale id is evidence, not an error)', async () => {
+    // A random uuid names no tool_source_tools row: the column is deliberately
+    // FK-less (schema/actionIntents.ts), so this must insert cleanly.
+    await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: 'rev-1' })).resolves.toBeUndefined();
+  });
+});
