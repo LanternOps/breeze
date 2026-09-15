@@ -82,10 +82,14 @@ describe('workspace_* guardrail contract (W04)', () => {
     },
   );
 
-  it('a protected-resource hit still denies workspace_stage', () => {
+  // `paths` is a PATH_INPUT_KEY (aiGuardrails.ts), so `workspace_collect` is
+  // the workspace tool the protected-resource scan actually reaches. The
+  // property under test is ORDERING: the W04 forced-allow sits AFTER the
+  // protected check, so a protected hit still wins.
+  it('a protected-resource hit still denies workspace_collect', () => {
     const verdict = checkAgentGuardrails(
-      'workspace_stage',
-      { handles: ['x'], into: '/work/in/C:\\Windows\\System32' },
+      'workspace_collect',
+      { paths: ['C:\\Windows\\System32\\drivers\\etc\\hosts'] },
       policyWith({
         toolAllowlist: [...WORKSPACE_TOOL_NAMES],
         protectedResources: {

@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Gestión de organizaciones",
           "description": "Administrar organizaciones, sitios e integraciones entre organizaciones."
+        },
+        "workspace": {
+          "label": "Entorno aislado de análisis de datos",
+          "description": "Exporta conjuntos de datos de la flota y ejecuta código de análisis en un entorno aislado sin red ni acceso a dispositivos. Los hallazgos se devuelven como propuestas que aprueba un técnico."
         }
       },
       "tools": {

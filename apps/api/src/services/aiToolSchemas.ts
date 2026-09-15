@@ -1276,6 +1276,26 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     maxRows: z.number().int().min(1).max(1_000_000).optional(),
   }),
 
+  // Execution plane W04 — sandbox workspace tools. Bounds mirror
+  // WORKSPACE_MCP_SHAPES (services/workspace/workspaceTools.ts); this map is
+  // the gate the non-SDK callers (chat dispatch, MCP server) pass through. A
+  // tool with no entry here is REJECTED by validateToolInput, not defaulted.
+  workspace_stage: z.object({
+    handles: z.array(uuid).min(1).max(200),
+    into: z.string().max(200).optional(),
+  }).strict(),
+  workspace_run: z.object({
+    script: z.string().min(1).max(100_000),
+    language: z.enum(['bash', 'python', 'node']),
+    timeoutSeconds: z.number().int().min(1).max(600).optional(),
+    stdinHandle: uuid.optional(),
+  }).strict(),
+  workspace_collect: z.object({
+    paths: z.array(z.string().min(1).max(400)).min(1).max(50),
+    labels: z.record(z.string().max(400), z.string().max(200)).optional(),
+  }).strict(),
+  workspace_cancel: z.object({}).strict(),
+
   get_log_trends: z.object({
     timeRange: z.object({
       start: z.string().datetime({ offset: true }),

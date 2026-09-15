@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Kiracı yönetimi",
           "description": "Organizasyonları, siteleri ve kiracılar arası entegrasyonları yönetin."
+        },
+        "workspace": {
+          "label": "Veri analizi korumalı alanı",
+          "description": "Filo veri kümelerini dışa aktarın ve analiz kodunu ağ erişimi ve cihaz erişimi olmayan yalıtılmış bir korumalı alanda çalıştırın. Bulgular, bir teknisyenin onayladığı öneriler olarak döner."
         }
       },
       "tools": {

@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Gestione organizzazioni",
           "description": "Gestire organizzazioni, sedi e integrazioni tra organizzazioni."
+        },
+        "workspace": {
+          "label": "Sandbox di analisi dei dati",
+          "description": "Esporta i set di dati della flotta ed esegui codice di analisi in una sandbox isolata, senza rete e senza accesso ai dispositivi. I risultati tornano come proposte che un tecnico approva."
         }
       },
       "tools": {

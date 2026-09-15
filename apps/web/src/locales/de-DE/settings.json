@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Mandantenverwaltung",
           "description": "Organisationen, Standorte und mandantenübergreifende Integrationen verwalten."
+        },
+        "workspace": {
+          "label": "Sandbox für Datenanalysen",
+          "description": "Flottendatensätze exportieren und Analysecode in einer isolierten Sandbox ohne Netzwerk- und ohne Gerätezugriff ausführen. Ergebnisse kommen als Vorschläge zurück, die eine Technikerin oder ein Techniker freigibt."
         }
       },
       "tools": {

@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Tenancy",
           "description": "Manage organizations, sites and cross-tenant integrations."
+        },
+        "workspace": {
+          "label": "Data analysis sandbox",
+          "description": "Export fleet datasets and run analysis code in an isolated sandbox with no network and no device access. Findings come back as proposals a technician approves."
         }
       },
       "tools": {

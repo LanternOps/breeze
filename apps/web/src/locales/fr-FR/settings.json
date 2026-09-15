@@ -2392,6 +2392,10 @@
         "tenancy": {
           "label": "Gestion des organisations",
           "description": "Gérer les organisations, les sites et les intégrations inter-organisations."
+        },
+        "workspace": {
+          "label": "Bac à sable d’analyse de données",
+          "description": "Exportez des jeux de données du parc et exécutez du code d’analyse dans un bac à sable isolé, sans réseau ni accès aux appareils. Les constats reviennent sous forme de propositions qu’un technicien valide."
         }
       },
       "tools": {
