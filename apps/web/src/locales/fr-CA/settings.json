@@ -2194,6 +2194,8 @@
         "withinHorizonAlerts": "Résolues en 24 h",
         "withinHorizonTickets": "Première réponse en 4 h",
         "cohortSize": "{n} dans la cohorte",
+        "percentileP50": "p50 : {minutes} min",
+        "percentileP90": "p90 : {minutes} min",
         "recordedMinutesValue": "{minutes} min (médiane)",
         "loggingCoverage": "Temps consigné sur {ai} des billets touchés par l'IA et {untouched} des autres. Une médiane calculée sur des billets partiellement consignés n'est pas une médiane du travail.",
         "censoredNote": "Tout centile affiché est censuré à droite : les cas encore ouverts comptent comme inachevés plutôt que d'être écartés.",

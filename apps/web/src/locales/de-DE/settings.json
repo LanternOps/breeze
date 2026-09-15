@@ -2194,6 +2194,8 @@
         "withinHorizonAlerts": "Innerhalb von 24 Std. behoben",
         "withinHorizonTickets": "Erste Antwort innerhalb von 4 Std.",
         "cohortSize": "{n} in der Kohorte",
+        "percentileP50": "p50: {minutes} Min.",
+        "percentileP90": "p90: {minutes} Min.",
         "recordedMinutesValue": "{minutes} Min. Median",
         "loggingCoverage": "Zeit erfasst bei {ai} der KI-berührten Tickets und {untouched} der unberührten. Ein Median über teilweise erfasste Tickets ist kein Median des Aufwands.",
         "censoredNote": "Angezeigte Perzentile sind rechtszensiert: noch offene Fälle gelten als unerledigt und werden nicht verworfen.",

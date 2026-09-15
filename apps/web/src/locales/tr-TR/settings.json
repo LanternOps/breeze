@@ -2194,6 +2194,8 @@
         "withinHorizonAlerts": "24 saat içinde çözülen",
         "withinHorizonTickets": "4 saat içinde ilk yanıt",
         "cohortSize": "Kohortta {n}",
+        "percentileP50": "p50: {minutes} dk",
+        "percentileP90": "p90: {minutes} dk",
         "recordedMinutesValue": "{minutes} dk ortanca",
         "loggingCoverage": "Yapay zekânın dokunduğu taleplerin {ai} kadarında, diğerlerinin {untouched} kadarında süre kaydı var. Kısmen kaydedilmiş talepler üzerinden alınan ortanca, emeğin ortancası değildir.",
         "censoredNote": "Gösterilen her yüzdelik sağdan sansürlüdür: hâlâ açık olan işler elenmek yerine tamamlanmamış sayılır.",

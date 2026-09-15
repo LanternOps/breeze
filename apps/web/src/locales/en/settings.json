@@ -2194,6 +2194,8 @@
         "withinHorizonAlerts": "Resolved within 24 h",
         "withinHorizonTickets": "First response within 4 h",
         "cohortSize": "{n} in cohort",
+        "percentileP50": "p50 {minutes} min",
+        "percentileP90": "p90 {minutes} min",
         "recordedMinutesValue": "{minutes} min median",
         "loggingCoverage": "Time logged on {ai} of AI-touched tickets and {untouched} of untouched ones. A median over partly-logged tickets is not a median of the labour.",
         "censoredNote": "Any percentile shown is right-censored: still-open items count as unfinished rather than being dropped.",

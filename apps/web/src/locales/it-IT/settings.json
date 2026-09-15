@@ -2194,6 +2194,8 @@
         "withinHorizonAlerts": "Risolti entro 24 h",
         "withinHorizonTickets": "Prima risposta entro 4 h",
         "cohortSize": "{n} nella coorte",
+        "percentileP50": "p50: {minutes} min",
+        "percentileP90": "p90: {minutes} min",
         "recordedMinutesValue": "{minutes} min (mediana)",
         "loggingCoverage": "Tempo registrato sul {ai} dei ticket toccati dall'IA e sul {untouched} degli altri. Una mediana su ticket registrati solo in parte non è una mediana del lavoro.",
         "censoredNote": "Ogni percentile mostrato è censurato a destra: i casi ancora aperti contano come non conclusi invece di essere scartati.",

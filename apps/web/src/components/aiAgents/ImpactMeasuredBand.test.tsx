@@ -144,6 +144,58 @@ describe('ImpactMeasuredBand', () => {
     expect(await screen.findByTestId('measured-censored-note')).toBeInTheDocument();
   });
 
+  it('renders the censored p50/p90 minutes per arm (#5879)', async () => {
+    mockMeasured(dto());
+
+    render(<ImpactMeasuredBand window={90} />);
+
+    const cohortEl = await screen.findByTestId('measured-cohort-rule-a');
+    // arm(40, 0.8) / arm(60, 0.5) both carry censoredP50Minutes: 42, censoredP90Minutes: 300.
+    expect(cohortEl).toHaveTextContent('42');
+    expect(cohortEl).toHaveTextContent('300');
+  });
+
+  it('omits a percentile the DTO reported as null, without dropping the other one', async () => {
+    mockMeasured(dto({
+      alertResolution: {
+        cohorts: [cohort({
+          aiTouched: { n: 40, proportionWithinHorizon: 0.8, censoredP50Minutes: 42, censoredP90Minutes: null },
+        })],
+        omitted: null,
+        exposureAgeMinutes: 15,
+        horizonHours: 24,
+      },
+    }));
+
+    render(<ImpactMeasuredBand window={90} />);
+
+    const cohortEl = await screen.findByTestId('measured-cohort-rule-a');
+    expect(cohortEl).toHaveTextContent('42');
+  });
+
+  it('hides the censored note when no arm has a percentile to show', async () => {
+    const noPercentile = () => ({
+      n: 25,
+      proportionWithinHorizon: 0.5,
+      censoredP50Minutes: null,
+      censoredP90Minutes: null,
+    });
+    mockMeasured(dto({
+      alertResolution: {
+        cohorts: [cohort({ aiTouched: noPercentile(), untouched: noPercentile() })],
+        omitted: null,
+        exposureAgeMinutes: 15,
+        horizonHours: 24,
+      },
+      ticketFirstResponse: { cohorts: [], omitted: 'insufficient_data', exposureAgeMinutes: 15, horizonHours: 4 },
+    }));
+
+    render(<ImpactMeasuredBand window={90} />);
+
+    await screen.findByTestId('measured-cohort-rule-a');
+    expect(screen.queryByTestId('measured-censored-note')).not.toBeInTheDocument();
+  });
+
   it('requests the window it was given, and refetches when it changes', async () => {
     mockMeasured(dto());
 
