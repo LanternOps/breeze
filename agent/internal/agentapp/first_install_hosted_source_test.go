@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,8 +29,21 @@ type hostedControlPlane struct {
 	keys   map[string]ed25519.PublicKey
 	body   []byte
 
-	mu       sync.Mutex
-	requests []string
+	mu            sync.Mutex
+	requests      []string
+	assetRequests int
+
+	// status, when non-zero, is returned instead of the JSON body.
+	status int
+	// rawBody, when non-empty, is returned instead of the JSON body.
+	rawBody string
+}
+
+// assetFetches returns how many times the artifact itself was downloaded.
+func (cp *hostedControlPlane) assetFetches() int {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return cp.assetRequests
 }
 
 // seenRequests returns a copy of the recorded request lines. The handler runs
@@ -48,6 +62,12 @@ type hostedControlPlaneOptions struct {
 	mutate                           func(*firstInstallManifest)
 	// omitSignature drops manifestSignature from the JSON response.
 	omitSignature bool
+	// omitURL drops the artifact url from the JSON response.
+	omitURL bool
+	// status, when non-zero, makes the endpoint answer with that status only.
+	status int
+	// rawBody, when non-empty, is returned instead of a JSON object.
+	rawBody string
 }
 
 func newHostedControlPlane(t *testing.T, opts hostedControlPlaneOptions) *hostedControlPlane {
@@ -98,14 +118,26 @@ func newHostedControlPlane(t *testing.T, opts hostedControlPlaneOptions) *hosted
 	}
 	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload))
 
-	cp := &hostedControlPlane{keys: map[string]ed25519.PublicKey{firstInstallManifestKeyID: pub}, body: body}
+	cp := &hostedControlPlane{
+		keys:   map[string]ed25519.PublicKey{firstInstallManifestKeyID: pub},
+		body:   body,
+		status: opts.status, rawBody: opts.rawBody,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/agent-versions/", func(w http.ResponseWriter, r *http.Request) {
 		cp.mu.Lock()
 		cp.requests = append(cp.requests, r.URL.String())
 		cp.mu.Unlock()
+		if cp.status != 0 {
+			http.Error(w, "nope", cp.status)
+			return
+		}
+		if cp.rawBody != "" {
+			_, _ = w.Write([]byte(cp.rawBody))
+			return
+		}
 		resp := map[string]string{
-			"url":               "http://" + r.Host + "/api/v1/agents/download/watchdog/" + opts.goos + "/" + opts.goarch,
+			"url":               "http://" + r.Host + "/api/v1/agents/download/" + opts.component + "/" + opts.goos + "/" + opts.goarch,
 			"checksum":          hex.EncodeToString(sum[:]),
 			"manifest":          string(payload),
 			"manifestSignature": signature,
@@ -114,10 +146,16 @@ func newHostedControlPlane(t *testing.T, opts hostedControlPlaneOptions) *hosted
 		if opts.omitSignature {
 			delete(resp, "manifestSignature")
 		}
+		if opts.omitURL {
+			delete(resp, "url")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("/api/v1/agents/download/", func(w http.ResponseWriter, _ *http.Request) {
+		cp.mu.Lock()
+		cp.assetRequests++
+		cp.mu.Unlock()
 		_, _ = w.Write(body)
 	})
 	cp.server = httptest.NewServer(mux)
@@ -352,8 +390,10 @@ func TestWatchdogManualDownloadURL_HostedPointsAtTheControlPlane(t *testing.T) {
 	}
 }
 
-// Sanity: the fixture's own JSON shape matches what the server actually sends,
-// so the test cannot pass against a response the API would never produce.
+// Fixture guard, NOT a regression test for the fix: this only asserts the stub
+// control plane answers in the same shape apps/api's agent-versions route does,
+// so the suite above cannot pass against a response the real server would never
+// produce. It would pass with applyHostedFirstInstallSource deleted.
 func TestHostedControlPlaneFixtureMatchesServerContract(t *testing.T) {
 	cp := newHostedControlPlane(t, hostedControlPlaneOptions{
 		component: "watchdog", goos: "linux", goarch: "amd64", version: "1.2.3",
@@ -369,5 +409,270 @@ func TestHostedControlPlaneFixtureMatchesServerContract(t *testing.T) {
 	}
 	if info.URL == "" || info.Manifest == "" || info.ManifestSignature == "" || info.SigningKeyID == "" {
 		t.Fatalf("fixture response does not match the agent-versions contract: %+v", info)
+	}
+}
+
+// The macOS desktop helper shares the staging path, so it had the SAME #5899
+// bug and gets the same fix. Without this test a dropped `serverURL:` line in
+// desktop_helper_bootstrap.go would break only hosted macOS installs.
+func TestStageDesktopHelper_HostedStagesFromControlPlane(t *testing.T) {
+	cp := newHostedControlPlane(t, hostedControlPlaneOptions{
+		component: "desktop-helper", goos: "darwin", goarch: "arm64", version: "1.2.3",
+	})
+	cp.hosted(t)
+
+	dest := filepath.Join(t.TempDir(), desktopHelperBinaryName)
+	err := stageDesktopHelper(desktopHelperStageOptions{
+		agentPath: newAgentBinary(t), destPath: dest, version: "1.2.3",
+		goos: "darwin", goarch: "arm64",
+		serverURL: cp.server.URL, clientOverride: cp.server.Client(), trustKeysOverride: cp.keys,
+	})
+	if err != nil {
+		t.Fatalf("hosted stageDesktopHelper: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(cp.body) {
+		t.Fatal("staged helper is not the control-plane-verified artifact")
+	}
+	if seen := cp.seenRequests(); len(seen) != 1 || !strings.Contains(seen[0], "component=desktop-helper") {
+		t.Fatalf("control plane was not asked for the desktop-helper component: %v", seen)
+	}
+}
+
+func TestDesktopHelperManualDownloadURL_HostedPointsAtTheControlPlane(t *testing.T) {
+	if got := desktopHelperManualDownloadURL("1.2.3", "darwin", "arm64", ""); !strings.HasPrefix(got, "https://github.com/"+firstInstallRepository) {
+		t.Errorf("self-host hint = %q, want the public GitHub release", got)
+	}
+	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
+	defer restore()
+	got := desktopHelperManualDownloadURL("1.2.3", "darwin", "arm64", "https://hosted-a.example")
+	want := "https://hosted-a.example/api/v1/agents/download/helper/darwin/arm64"
+	if got != want {
+		t.Errorf("hosted hint = %q, want %q", got, want)
+	}
+}
+
+// A hosted host that already has an unprotected sibling watchdog must verify
+// those LOCAL bytes against the control plane's hosted manifest — the manifest
+// moves, the artifact source does not. A regression that also overwrote
+// assetURL would turn an offline/sibling install into a network fetch.
+func TestBootstrapWatchdog_HostedSiblingVerifiedAgainstControlPlaneManifest(t *testing.T) {
+	cp := newHostedControlPlane(t, hostedControlPlaneOptions{
+		component: "watchdog", goos: "linux", goarch: "amd64", version: "1.2.3",
+	})
+	cp.hosted(t)
+
+	agentPath := newAgentBinary(t)
+	sibling := filepath.Join(filepath.Dir(agentPath), watchdogBinaryName("linux"))
+	if err := os.WriteFile(sibling, cp.body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staged := false
+	err := bootstrapWatchdog(bootstrapOptions{
+		agentPath: agentPath, version: "1.2.3", goos: "linux", goarch: "amd64",
+		serverURL: cp.server.URL, clientOverride: cp.server.Client(), trustKeysOverride: cp.keys,
+		// Not an OS-package-protected sibling: the bytes must be verified, not trusted.
+		protectedSiblingOverride: func(string, string) bool { return false },
+		runInstaller: func(path string) error {
+			staged = true
+			got, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			if string(got) != string(cp.body) {
+				t.Fatal("installer did not receive the sibling bytes")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("hosted sibling bootstrap: %v", err)
+	}
+	if !staged {
+		t.Fatal("installer was never invoked")
+	}
+	if seen := cp.seenRequests(); len(seen) != 1 {
+		t.Fatalf("expected the hosted manifest to be fetched once, got %v", seen)
+	}
+	if n := cp.assetFetches(); n != 0 {
+		t.Fatalf("a local sibling must not be re-downloaded, got %d asset fetches", n)
+	}
+}
+
+// A sibling whose bytes do NOT match the hosted manifest is refused, so the
+// manifest move cannot be mistaken for "trust whatever is on disk".
+func TestBootstrapWatchdog_HostedSiblingWithWrongBytesIsRefused(t *testing.T) {
+	cp := newHostedControlPlane(t, hostedControlPlaneOptions{
+		component: "watchdog", goos: "linux", goarch: "amd64", version: "1.2.3",
+	})
+	cp.hosted(t)
+
+	agentPath := newAgentBinary(t)
+	sibling := filepath.Join(filepath.Dir(agentPath), watchdogBinaryName("linux"))
+	if err := os.WriteFile(sibling, writeLargeBody(9), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := bootstrapWatchdog(bootstrapOptions{
+		agentPath: agentPath, version: "1.2.3", goos: "linux", goarch: "amd64",
+		serverURL: cp.server.URL, clientOverride: cp.server.Client(), trustKeysOverride: cp.keys,
+		protectedSiblingOverride: func(string, string) bool { return false },
+		runInstaller:             func(string) error { t.Fatal("installer must not run"); return nil },
+	})
+	if err == nil {
+		t.Fatal("a sibling that does not match the signed manifest was staged")
+	}
+}
+
+// Whatever the control plane answers with — a status code, a truncated body,
+// an object missing a required field — must become a clean, specific error, not
+// a panic and not a silent fallback to the public GitHub release.
+func TestBootstrapWatchdog_HostedRefusesMalformedControlPlaneResponses(t *testing.T) {
+	cases := []struct {
+		name string
+		opts hostedControlPlaneOptions
+		want string
+	}{
+		{"not found", hostedControlPlaneOptions{status: http.StatusNotFound}, "status 404"},
+		{"server error", hostedControlPlaneOptions{status: http.StatusInternalServerError}, "status 500"},
+		{"not json", hostedControlPlaneOptions{rawBody: "<html>proxy error</html>"}, "invalid JSON"},
+		{"empty object", hostedControlPlaneOptions{rawBody: "{}"}, "no signed release manifest"},
+		{"no artifact url", hostedControlPlaneOptions{omitURL: true}, "no artifact URL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := tc.opts
+			opts.component, opts.goos, opts.goarch, opts.version = "watchdog", "linux", "amd64", "1.2.3"
+			cp := newHostedControlPlane(t, opts)
+			cp.hosted(t)
+			err := bootstrapWatchdog(bootstrapOptions{
+				agentPath: newAgentBinary(t), version: "1.2.3", goos: "linux", goarch: "amd64",
+				serverURL: cp.server.URL, clientOverride: cp.server.Client(), trustKeysOverride: cp.keys,
+				runInstaller: func(string) error { t.Fatal("installer must not run"); return nil },
+			})
+			if err == nil {
+				t.Fatal("a malformed control-plane response was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name the cause %q", err, tc.want)
+			}
+			if n := cp.assetFetches(); n != 0 {
+				t.Errorf("artifact was fetched despite a bad metadata response (%d times)", n)
+			}
+		})
+	}
+}
+
+// A hosted build whose allowlist names several control planes must refuse to
+// pick one before enrollment rather than guessing a region.
+func TestResolveFirstInstallServerURL_MultiHostUnenrolledRefusesToGuess(t *testing.T) {
+	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example,hosted-b.example")
+	defer restore()
+
+	got, err := resolveFirstInstallServerURL("")
+	if err == nil {
+		t.Fatalf("a multi-region build guessed %q instead of refusing", got)
+	}
+	for _, want := range []string{"hosted-a.example", "hosted-b.example", "enroll"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	// An enrolled host in the same build still resolves, without ambiguity.
+	if got, err := resolveFirstInstallServerURL("https://hosted-b.example"); err != nil || got != "https://hosted-b.example" {
+		t.Errorf("enrolled multi-region resolve = (%q, %v), want the configured host", got, err)
+	}
+}
+
+// The production path must refuse to fetch a manifest over plaintext http even
+// from an allowlisted host. Deliberately leaves clientOverride nil so the
+// production branch of applyHostedFirstInstallSource is the one executed.
+func TestApplyHostedFirstInstallSource_ProductionRequiresHTTPS(t *testing.T) {
+	restore := hostpolicy.SetAllowedHostsForTest("hosted-a.example")
+	defer restore()
+
+	spec := firstInstallArtifactSpec{
+		component: "watchdog", version: "1.2.3", goos: "linux", goarch: "amd64",
+		serverURL: "http://hosted-a.example",
+	}
+	err := applyHostedFirstInstallSource(&spec)
+	if err == nil {
+		t.Fatal("plaintext http control-plane staging was allowed in production")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error %q does not name the https requirement", err)
+	}
+	if spec.serverSourced || spec.manifestBytes != nil {
+		t.Fatal("spec was mutated despite the refusal")
+	}
+}
+
+// persistedServerURLForInstall must degrade silently ONLY for the two shapes a
+// not-yet-enrolled host really has. A broken config must say so: reporting it
+// as "not enrolled yet" sends the operator to re-enroll instead of to the file.
+func TestPersistedServerURLForInstall_DistinguishesFreshFromBroken(t *testing.T) {
+	cases := []struct {
+		name      string
+		write     func(t *testing.T, path string)
+		want      string
+		wantWarn  bool
+		warnNeeds string
+	}{
+		{"no config file at all", func(*testing.T, string) {}, "", false, ""},
+		{"config without server_url", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("agent_id: abc\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "", false, ""},
+		{"enrolled", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("server_url: https://hosted-a.example\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "https://hosted-a.example", false, ""},
+		{"corrupt yaml warns", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("server_url: [unclosed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "", true, "could not read the persisted server URL"},
+		{"torn server_url warns", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("server_url: \"https://ba\x00d\"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "", true, "could not read the persisted server URL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent.yaml")
+			tc.write(t, path)
+
+			prevCfg := cfgFile
+			cfgFile = path
+			defer func() { cfgFile = prevCfg }()
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			prevStderr := os.Stderr
+			os.Stderr = w
+			got := persistedServerURLForInstall()
+			os.Stderr = prevStderr
+			_ = w.Close()
+			warned, _ := io.ReadAll(r)
+			_ = r.Close()
+
+			if got != tc.want {
+				t.Errorf("persistedServerURLForInstall = %q, want %q", got, tc.want)
+			}
+			if tc.wantWarn {
+				if !strings.Contains(string(warned), tc.warnNeeds) {
+					t.Errorf("expected a stderr warning containing %q, got %q", tc.warnNeeds, warned)
+				}
+			} else if len(warned) != 0 {
+				t.Errorf("expected no warning for a normal pre-enrollment shape, got %q", warned)
+			}
+		})
 	}
 }

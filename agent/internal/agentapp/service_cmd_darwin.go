@@ -171,16 +171,17 @@ var serviceInstallCmd = &cobra.Command{
 		// agent binary: see stageDesktopHelper for why (#3457). A failure here
 		// is a warning, not a fatal error, so an offline or air-gapped install
 		// still gets a working agent service (same policy as the watchdog).
+		helperServerURL := persistedServerURLForInstall()
 		stageHelperErr := stageDesktopHelper(desktopHelperStageOptions{
 			agentPath: exePath,
 			destPath:  darwinDesktopHelperBinaryPath,
 			version:   version,
 			goos:      runtime.GOOS,
 			goarch:    runtime.GOARCH,
-			serverURL: persistedServerURLForInstall(),
+			serverURL: helperServerURL,
 		})
 		if stageHelperErr != nil {
-			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH, persistedServerURLForInstall()))
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH, helperServerURL))
 		} else {
 			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}

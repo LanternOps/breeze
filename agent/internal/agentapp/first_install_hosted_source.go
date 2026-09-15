@@ -2,9 +2,12 @@ package agentapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/breeze-rmm/agent/internal/config"
@@ -97,19 +100,40 @@ func resolveFirstInstallServerURL(configured string) (string, error) {
 }
 
 // persistedServerURLForInstall reads the enrolled control-plane URL out of
-// agent.yaml for the `service install` command paths.
-//
-// It deliberately swallows every error and returns "": on a fresh host there is
-// simply no config yet (install runs before enroll), and a single-control-plane
-// hosted build resolves the URL from its own allowlist instead. It uses
+// agent.yaml for the `service install` command paths. It uses
 // config.PersistedServerURL rather than config.Load because that helper reads
 // only agent.yaml and never touches the root-only secrets.yaml.
+//
+// "No URL" degrades to "" so a single-control-plane hosted build can fall back
+// to its own allowlist — but only TWO causes are allowed to do so silently: the
+// file does not exist, and the file exists without a server_url. Both are the
+// normal shape of a host that has not run `enroll` yet, and `service install`
+// runs before `enroll` in every install lane.
+//
+// Every other cause — unreadable file, corrupt YAML, a torn/malformed
+// server_url (config.SetAllAndPersist truncates in place, so a concurrent read
+// really can observe one) — means this host probably IS enrolled and its config
+// is broken. Returning a bare "" there made the fallback either guess a control
+// plane and carry on as if nothing happened, or tell the operator "this host is
+// not enrolled yet" — advice that is simply false and sends them to re-enroll
+// instead of to the config file. So those warn on stderr, which is where every
+// other diagnostic in the service-install command family goes.
 func persistedServerURLForInstall() string {
 	serverURL, err := config.PersistedServerURL(cfgFile)
-	if err != nil {
+	switch {
+	case err == nil:
+		return serverURL
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, config.ErrNoPersistedServerURL):
+		// Genuinely fresh host: expected, silent.
+		return ""
+	default:
+		fmt.Fprintf(os.Stderr,
+			"Warning: could not read the persisted server URL (%v).\n"+
+				"Falling back to this build's control-plane allowlist. If this host IS\n"+
+				"enrolled, fix the agent config — the fallback can otherwise report it as\n"+
+				"un-enrolled or resolve the wrong control plane.\n", err)
 		return ""
 	}
-	return serverURL
 }
 
 // fetchFirstInstallServerArtifact asks the control plane for the signed release
