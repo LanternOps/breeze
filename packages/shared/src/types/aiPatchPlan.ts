@@ -144,6 +144,12 @@ export const PATCH_PLAN_REFUSAL_REASONS = [
   'chase_attempts_exhausted',
   /** The cited `attemptCount` is not what the evidence computed for that group. */
   'attempt_count_mismatch',
+  /**
+   * The failed-work read was capped, so this group's attempt count is a FLOOR,
+   * not a total — a chase could be minted past its real retry budget. Refused
+   * in favour of an escalation rather than guessed.
+   */
+  'failure_history_truncated',
 ] as const;
 export type PatchPlanRefusalReason = (typeof PATCH_PLAN_REFUSAL_REASONS)[number];
 
@@ -248,7 +254,13 @@ export interface PatchFailedWorkRef {
   deviceId: string;
   patchId: string;
   failureClass: PatchFailureClass;
+  /**
+   * Failed attempts the evidence counted. A FLOOR when `truncated` is true —
+   * the read was capped and older attempts were dropped.
+   */
   attemptCount: number;
+  /** The failedWork section was capped, so `attemptCount` may undercount. */
+  truncated: boolean;
   jobResultIds: readonly string[];
 }
 

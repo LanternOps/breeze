@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "Die angegebene Fehlerklasse stimmt nicht mit den Belegen überein",
           "class_not_retryable": "Diese Art von Fehler wird nie automatisch wiederholt",
           "chase_attempts_exhausted": "Das Wiederholungslimit für dieses Update wurde erreicht – stattdessen eskaliert",
-          "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein"
+          "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein",
+          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich"
         },
         "ineligible": {
           "not_outstanding": "Auf diesem Gerät nicht ausstehend",

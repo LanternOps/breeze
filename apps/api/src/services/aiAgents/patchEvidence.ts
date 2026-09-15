@@ -319,6 +319,11 @@ export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs
   }
   const jobResultIds = new Set<string>();
   const failedWorkByJobResult = new Map<string, PatchFailedWorkRef>();
+  // A capped read drops the OLDEST rows first, so every group's attemptCount
+  // is a floor rather than a total. The persister refuses a chase off a
+  // truncated group (it could exceed the real retry budget) — so the flag
+  // travels with the group, not just on the section.
+  const truncated = evidence.sections.failedWork.truncated;
   for (const row of evidence.sections.failedWork.rows) {
     const patchId = row.fields.patchId;
     const failureClass = row.fields.failureClass;
@@ -328,7 +333,8 @@ export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs
     admitPatch(row.deviceId, patchId);
     const ids = row.jobResultIds ?? [];
     const group: PatchFailedWorkRef = {
-      deviceId: row.deviceId, patchId, failureClass: failureClass as PatchFailureClass, attemptCount, jobResultIds: [...ids],
+      deviceId: row.deviceId, patchId, failureClass: failureClass as PatchFailureClass, attemptCount, truncated,
+      jobResultIds: [...ids],
     };
     for (const id of ids) {
       jobResultIds.add(id);

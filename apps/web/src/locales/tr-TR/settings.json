@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "Belirtilen hata sınıfı kanıtlarla eşleşmiyor",
           "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
           "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
-          "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor"
+          "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor",
+          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi"
         },
         "ineligible": {
           "not_outstanding": "Bu cihazda bekleyen değil",

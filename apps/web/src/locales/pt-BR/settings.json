@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "A classe de falha citada não corresponde às evidências",
           "class_not_retryable": "Esse tipo de falha nunca é repetido automaticamente",
           "chase_attempts_exhausted": "O limite de novas tentativas desta atualização foi atingido — escalonado em vez disso",
-          "attempt_count_mismatch": "O número de tentativas citado não corresponde às evidências"
+          "attempt_count_mismatch": "O número de tentativas citado não corresponde às evidências",
+          "failure_history_truncated": "O histórico de falhas estava incompleto, portanto a contagem de tentativas não era confiável"
         },
         "ineligible": {
           "not_outstanding": "Não pendente neste dispositivo",

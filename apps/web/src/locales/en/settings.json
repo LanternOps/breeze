@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "The quoted failure class does not match the evidence",
           "class_not_retryable": "This kind of failure is never retried automatically",
           "chase_attempts_exhausted": "The retry limit for this update was reached — escalated instead",
-          "attempt_count_mismatch": "The quoted attempt count does not match the evidence"
+          "attempt_count_mismatch": "The quoted attempt count does not match the evidence",
+          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted"
         },
         "ineligible": {
           "not_outstanding": "Not outstanding on this device",

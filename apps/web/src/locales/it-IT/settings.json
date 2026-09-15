@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "La classe di errore citata non corrisponde alle evidenze",
           "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
           "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
-          "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze"
+          "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile"
         },
         "ineligible": {
           "not_outstanding": "Non in sospeso su questo dispositivo",

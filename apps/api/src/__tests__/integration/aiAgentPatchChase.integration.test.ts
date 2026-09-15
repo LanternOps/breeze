@@ -190,6 +190,12 @@ async function seedFixture(): Promise<Fixture> {
   return { partnerId: partner.id, orgId: org.id, siteId: site.id, deviceId: device.id, patchId: patch.id, jobId, agentId: agent!.id };
 }
 
+/** OD-7 A: no run in this program opens a ticket. */
+async function ticketCount(orgId: string): Promise<number> {
+  const rows = (await getTestDb().execute(sql`SELECT COUNT(*) AS c FROM tickets WHERE org_id = ${orgId}::uuid`)) as unknown as Array<{ c: unknown }>;
+  return Number(rows[0]?.c ?? 0);
+}
+
 async function insertRunRow(f: Fixture): Promise<string> {
   const snapshot = {
     schemaVersion: 1, agentId: f.agentId, kind: 'patch', effective: effectivePolicyFields(), resolvedAt: new Date().toISOString(),
@@ -359,9 +365,14 @@ describe('chase and escalation over real attempt history', () => {
     expect(second.dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'chase_attempts_exhausted' });
     expect(second.intentIds).toEqual([]);
 
+    // OD-7 A: an escalation opens NO ticket. Counted against the live table
+    // across the persist, so a future ticket write in persistPatchPlan fails
+    // here — a source grep over runFinishedNotify.ts would not.
+    const ticketsBefore = await ticketCount(f.orgId);
     const escalated = await persist(f, chasePlan(f, g2, 'escalation'), patchEvidenceRefs(e2));
     expect(escalated.dispositions[0]).toMatchObject({ class: 'escalation', disposition: 'recorded' });
     expect(escalated.intentIds).toEqual([]);
+    expect(await ticketCount(f.orgId)).toBe(ticketsBefore);
   });
 
   runDb('a non-retryable class is refused and a quoted class the evidence did not compute is refused', async () => {

@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "La clase de fallo citada no coincide con la evidencia",
           "class_not_retryable": "Este tipo de fallo nunca se reintenta automáticamente",
           "chase_attempts_exhausted": "Se alcanzó el límite de reintentos para esta actualización; se escaló en su lugar",
-          "attempt_count_mismatch": "El número de intentos citado no coincide con la evidencia"
+          "attempt_count_mismatch": "El número de intentos citado no coincide con la evidencia",
+          "failure_history_truncated": "El historial de fallos estaba incompleto, por lo que no se pudo confiar en el número de reintentos"
         },
         "ineligible": {
           "not_outstanding": "No está pendiente en este dispositivo",

@@ -1945,7 +1945,8 @@
           "failure_class_mismatch": "La classe d'échec citée ne correspond pas aux éléments de preuve",
           "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
           "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
-          "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve"
+          "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable"
         },
         "ineligible": {
           "not_outstanding": "Non en attente sur cet appareil",

@@ -190,8 +190,18 @@ describe('assemblePatchEvidence', () => {
     expect(refs.deviceIds.has(DEV2)).toBe(true);
     expect([...(refs.patchIdsByDevice.get(DEV2) ?? [])]).toEqual([P2]);
     expect([...refs.jobResultIds].sort()).toEqual([JR1, JR2].sort());
-    expect(refs.failedWorkByJobResult?.get(JR1)).toEqual({ deviceId: DEV2, patchId: P2, failureClass: 'transient', attemptCount: 2, jobResultIds: [JR1, JR2] });
+    expect(refs.failedWorkByJobResult?.get(JR1)).toEqual({ deviceId: DEV2, patchId: P2, failureClass: 'transient', attemptCount: 2, truncated: false, jobResultIds: [JR1, JR2] });
     expect(refs.failedWorkByJobResult?.get(JR2)).toBe(refs.failedWorkByJobResult?.get(JR1));
+  });
+
+  it('refs: a truncated failedWork section marks every group truncated — the attempt count is a floor', () => {
+    const failed = {
+      rows: [{ deviceId: DEV2, hostname: 'h2', fields: { patchId: P2, failureClass: 'transient', attemptCount: 1 }, jobResultIds: [JR1] }],
+      total: 1,
+      truncated: true,
+    };
+    const refs = patchEvidenceRefs(assemblePatchEvidence(raw({ failedWork: failed })));
+    expect(refs.failedWorkByJobResult?.get(JR1)?.truncated).toBe(true);
   });
 
   it('caps the job result ids carried per failedWork row', () => {

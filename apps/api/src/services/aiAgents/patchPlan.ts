@@ -73,8 +73,11 @@
  *  b. the cited `failureClass` / `attemptCount` equal what the evidence
  *     computed — the model may QUOTE a class, never assign one
  *     (`failure_class_mismatch` / `attempt_count_mismatch`);
- *  c. the group's class is retryable (`class_not_retryable`) and its attempt
- *     count is below `PATCH_CHASE_MAX_ATTEMPTS` (`chase_attempts_exhausted`).
+ *  c. the group's class is retryable (`class_not_retryable`), its attempt
+ *     count is below `PATCH_CHASE_MAX_ATTEMPTS` (`chase_attempts_exhausted`),
+ *     and the failed-work read was NOT capped — a truncated read makes the
+ *     count a floor, so a chase off one could retry past the real budget
+ *     (`failure_history_truncated`).
  *
  * `escalation` items never mint. One that quotes a class or attempt count
  * must cite the job results that prove it (gate b applies); one that quotes
@@ -141,11 +144,17 @@ function citedFailedWorkGroup(item: PatchPlanItem, refs: PatchPlanOutcomeRefs): 
   return group;
 }
 
-/** W03 gate b — a quoted class / attempt count must be what the evidence computed. */
+/**
+ * W03 gate b — a quoted class / attempt count must be what the evidence
+ * computed. Each field is judged on its own so the recorded reason names the
+ * field that actually disagreed: an item quoting only `attemptCount` is an
+ * `attempt_count_mismatch`, never a class mismatch it never made.
+ */
 function quoteMismatch(item: PatchPlanItem, group: PatchFailedWorkRef | null): PatchPlanRefusalReason | null {
   if (item.failureClass === undefined && item.attemptCount === undefined) return null;
-  if (!group) return 'failure_class_mismatch';
-  if (item.failureClass !== group.failureClass) return 'failure_class_mismatch';
+  // Nothing to check the quote against: whichever field was quoted is unbacked.
+  if (!group) return item.failureClass !== undefined ? 'failure_class_mismatch' : 'attempt_count_mismatch';
+  if (item.failureClass !== undefined && item.failureClass !== group.failureClass) return 'failure_class_mismatch';
   if (item.attemptCount !== undefined && item.attemptCount !== group.attemptCount) return 'attempt_count_mismatch';
   return null;
 }
@@ -172,6 +181,11 @@ function gateOne(
     if (mismatch) return { reason: mismatch, group };
     if (!PATCH_FAILURE_RETRYABLE_CLASSES.has(group.failureClass)) return { reason: 'class_not_retryable', group };
     if (group.attemptCount >= PATCH_CHASE_MAX_ATTEMPTS) return { reason: 'chase_attempts_exhausted', group };
+    // The read was capped, so `attemptCount` is a FLOOR: a group that looks
+    // like one attempt may already have had three. Minting here would retry
+    // past the budget with no signal, so it is refused and the model is asked
+    // for an escalation instead. Never widened into "probably fine".
+    if (group.truncated) return { reason: 'failure_history_truncated', group };
     return { reason: null, group };
   }
   if (item.class === 'escalation') {

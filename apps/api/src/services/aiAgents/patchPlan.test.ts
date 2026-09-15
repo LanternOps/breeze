@@ -333,7 +333,7 @@ describe('persistPatchPlan — W03 chase gates', () => {
   const JR2 = '00000000-0000-4000-8000-0000000000f3';
   const JR3 = '00000000-0000-4000-8000-0000000000f4';
   const group = (over: Partial<PatchFailedWorkRef> = {}): PatchFailedWorkRef =>
-    ({ deviceId: D1, patchId: P1, failureClass: 'transient', attemptCount: 1, jobResultIds: [JR], ...over });
+    ({ deviceId: D1, patchId: P1, failureClass: 'transient', attemptCount: 1, truncated: false, jobResultIds: [JR], ...over });
   const refsWith = (...groups: PatchFailedWorkRef[]): PatchPlanOutcomeRefs => {
     const byJob = new Map<string, PatchFailedWorkRef>();
     for (const g of groups) for (const id of g.jobResultIds) byJob.set(id, g);
@@ -405,6 +405,47 @@ describe('persistPatchPlan — W03 chase gates', () => {
   it('refuses a chase whose cited attemptCount disagrees with the evidence', async () => {
     const { dispositions } = await persistPatchPlan(run, plan([chase({ attemptCount: 5 })]), refsWith(group()), agentAuth);
     expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'attempt_count_mismatch' });
+  });
+
+  it('mints a chase for EVERY retryable class, not just transient', async () => {
+    for (const cls of ['transient', 'disk_space', 'store_corrupt'] as const) {
+      w02.createActionIntent.mockClear();
+      w02.resolveEligibility.mockClear();
+      state.rows = [[{ id: D1 }]];
+      const g = group({ failureClass: cls });
+      const { dispositions, intentIds } = await persistPatchPlan(run, plan([chase({ failureClass: cls })]), refsWith(g), agentAuth);
+      expect(dispositions[0], cls).toMatchObject({ class: 'chase', disposition: 'intent_created', mintedPatchIds: [P1] });
+      expect(intentIds, cls).toEqual(['intent-1']);
+      expect((w02.createActionIntent.mock.calls[0]![1] as { reason: string }).reason, cls).toContain(cls);
+    }
+  });
+
+  it('refuses a chase off a TRUNCATED failure history — the attempt count is a floor, not a total', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan(run, plan([chase()]), refsWith(group({ truncated: true })), agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'failure_history_truncated' });
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('records an ESCALATION off a truncated history — only a chase is bounded by the count', async () => {
+    state.rows = [[{ id: D1 }]];
+    const g = group({ truncated: true });
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'escalation', deviceId: D1, jobResultIds: [JR], failureClass: 'transient', attemptCount: 1 },
+    ]), refsWith(g), agentAuth);
+    expect(dispositions[0]).toMatchObject({ class: 'escalation', disposition: 'recorded' });
+  });
+
+  it('names the field that actually disagreed when only attemptCount is quoted', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'escalation', deviceId: D1, jobResultIds: [JR], attemptCount: 9 },
+      // Nothing to check against at all: the quoted field is the one named.
+      { ...base, class: 'escalation', deviceId: D1, attemptCount: 9 },
+      { ...base, class: 'escalation', deviceId: D1, failureClass: 'permanent' },
+    ]), refsWith(group()), agentAuth);
+    expect(dispositions.map((d) => d.reason)).toEqual(['attempt_count_mismatch', 'attempt_count_mismatch', 'failure_class_mismatch']);
   });
 
   it('refuses a chase on a non-retryable class', async () => {
