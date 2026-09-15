@@ -174,7 +174,9 @@ vi.mock('../contractQuantities', () => ({ countContractDevices: contractMock.cou
 const notifyMock = vi.hoisted(() => ({ createNotification: vi.fn(async () => 'notif-1') }));
 vi.mock('../userNotifications', () => ({ createNotification: notifyMock.createNotification }));
 
-const probeMock = vi.hoisted(() => ({ probeSweepSubject: vi.fn(async () => 'present' as const) }));
+const probeMock = vi.hoisted(() => ({
+  probeSweepSubject: vi.fn<(...args: unknown[]) => Promise<'present' | 'cleared' | 'unknown'>>(async () => 'present'),
+}));
 vi.mock('../aiAgents/sweepSubjectProbe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../aiAgents/sweepSubjectProbe')>();
   return { ...actual, probeSweepSubject: probeMock.probeSweepSubject };
