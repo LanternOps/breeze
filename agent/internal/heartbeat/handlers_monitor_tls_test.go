@@ -138,6 +138,44 @@ func TestHandleNetworkHttpCheck_TLSObservation(t *testing.T) {
 		}
 	})
 
+	// The masking case. `http.Client.Do` follows redirects by building a NEW
+	// request per hop and never mutates the caller's, so keying the
+	// handshake_failed emission off the ORIGINAL request's scheme reports
+	// nothing when an http:// monitor redirects to a broken https endpoint.
+	// The API then sees no sslState, leaves the stored observation untouched,
+	// and a stale `observed` row keeps reading as "fine" while the endpoint is
+	// failing TLS right now — exactly what tls_state exists to prevent.
+	t.Run("a handshake failure reached VIA a redirect from http is still handshake_failed", func(t *testing.T) {
+		broken := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer broken.Close()
+
+		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, broken.URL, http.StatusFound)
+		}))
+		defer plain.Close()
+
+		out := runHttpCheck(t, map[string]any{
+			"monitorId":       "m6",
+			"url":             plain.URL, // http://
+			"verifySsl":       true,      // the self-signed cert fails on the SECOND hop
+			"followRedirects": true,
+		})
+
+		if got := out["status"]; got != "offline" {
+			t.Errorf("status = %v, want offline", got)
+		}
+		if got := out["sslState"]; got != "handshake_failed" {
+			t.Errorf("sslState = %v, want handshake_failed (the failing hop was https)", got)
+		}
+		// Naming the original http host would point an operator at the wrong
+		// endpoint; the broken one is the one that needs fixing.
+		if got := out["sslObservedHost"]; got != hostOf(t, broken.URL) {
+			t.Errorf("sslObservedHost = %v, want the failing hop %s", got, hostOf(t, broken.URL))
+		}
+	})
+
 	t.Run("after a redirect the observed host is the FINAL hop", func(t *testing.T) {
 		final := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)

@@ -88,6 +88,18 @@ export function readTlsObservation(
 }
 
 /**
+ * The URL an `http_check` is actually dispatched against — `config.url` when
+ * set, otherwise the monitor's `target` (mirrors `buildMonitorCommand`).
+ * Both inputs change only via `PATCH /monitors/:id`, which is what makes this
+ * a sound provenance key.
+ */
+export function monitorRequestUrl(monitor: { target: string; config: unknown }): string {
+  const config = (monitor.config ?? {}) as Record<string, unknown>;
+  const url = config['url'];
+  return typeof url === 'string' && url.trim() !== '' ? url : monitor.target;
+}
+
+/**
  * Builds the `network_monitors` update fragment for one check result.
  *
  * Empty when there is no observation, so the fragment can be spread into the
@@ -97,20 +109,72 @@ export function readTlsObservation(
  * `tls_not_after` and records the state, which is the whole reason the state
  * column exists — a stale expiry left behind by a monitor that can no longer
  * complete a handshake would read as "fine".
+ *
+ * `expectedRequestUrl` closes the other half of the staleness problem.
+ * `PATCH /monitors/:id` clears the columns when the target or config changes,
+ * but that does nothing about a check ALREADY in flight: its result lands
+ * afterwards and would be attributed to the new endpoint. The agent echoes the
+ * URL it actually requested, so a mismatched (or missing) echo means this
+ * result describes an endpoint the monitor no longer points at, and the
+ * observation is dropped rather than misattributed. The rest of the writeback
+ * — status, response time, failure counter — still lands, because those are
+ * about reachability at that moment and remain true.
  */
 export function tlsObservationUpdate(
   details: Record<string, unknown> | undefined | null,
   observedAt: Date,
+  options: {
+    /** The monitor's CURRENT request URL, read under a row lock. */
+    expectedRequestUrl?: string | null;
+    /** For the log line only. */
+    monitorId?: string;
+  } = {},
 ): TlsObservationUpdate {
+  const rawState = details?.['sslState'];
   const tls = readTlsObservation(details);
-  if (!tls) return {};
+  if (!tls) {
+    // A value we do not recognise is dropped rather than written, but silently
+    // dropping it would leave no trace of a protocol drift between agent and
+    // API. "No sslState key at all" is the ordinary non-HTTP case and is not
+    // worth a line.
+    if (typeof rawState === 'string' && rawState !== '') {
+      console.warn(
+        `[monitorTls] Ignoring unrecognised sslState ${JSON.stringify(rawState)} for monitor ${options.monitorId ?? 'unknown'}`,
+      );
+    }
+    return {};
+  }
+
+  if (options.expectedRequestUrl !== undefined) {
+    const requested = readText(details?.['sslRequestedUrl']);
+    if (requested === null || requested !== options.expectedRequestUrl) {
+      console.warn(
+        `[monitorTls] Dropping TLS observation for monitor ${options.monitorId ?? 'unknown'}: `
+        + `result was produced against ${requested === null ? 'an unrecorded URL' : JSON.stringify(requested)}, `
+        + `but the monitor now points at ${JSON.stringify(options.expectedRequestUrl)}`,
+      );
+      return {};
+    }
+  }
 
   // `network_monitors_tls_observed_shape_chk` requires an `observed` row to
-  // carry a not-after and a host. An agent result missing either is degraded
-  // to `handshake_failed` — "we could not read a usable certificate" — rather
-  // than aborting the entire check-result transaction with a 23514.
+  // carry a not-after, an observed-at AND a host. `observedAt` is a required
+  // parameter here so the third leg is always satisfied; an agent result
+  // missing either of the other two is degraded to `handshake_failed` — "we
+  // could not read a usable certificate" — rather than aborting the entire
+  // check-result transaction with a 23514.
   const complete = tls.state === 'observed' && tls.notAfter !== null && tls.observedHost !== null;
   const state: TlsState = tls.state === 'observed' && !complete ? 'handshake_failed' : tls.state;
+  if (state !== tls.state) {
+    // A degraded row is byte-for-byte identical to a genuine handshake
+    // failure, so without this an operator debugging "why does this say
+    // handshake_failed when the cert is obviously fine" gets no breadcrumb.
+    console.warn(
+      `[monitorTls] Degrading an incomplete 'observed' result to handshake_failed for monitor `
+      + `${options.monitorId ?? 'unknown'} (sslExpiry=${JSON.stringify(details?.['sslExpiry'])}, `
+      + `sslObservedHost=${JSON.stringify(details?.['sslObservedHost'])})`,
+    );
+  }
 
   return {
     tlsState: state,

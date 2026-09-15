@@ -52,13 +52,13 @@
  * already holds a SYSTEM DB context (full RLS bypass) — no context management
  * here, matching `loadAnomalyContext`/`loadTicketContext`. That makes the
  * `org_id = $orgId` predicate in every statement below the ONLY thing keeping
- * one tenant's sweep out of another tenant's rows. Every statement pins the
- * org on BOTH sides of its join, and every device-based statement excludes
- * ephemeral (Quick Support) devices, which are one-off support enrolments
- * that no scheduled hygiene sweep should ever report on. `expiring_certs`
- * (#5754) is the one kind that reads no device table at all — it reads
- * `network_monitors` alone, so its single `org_id` predicate is the entire
- * boundary and there is no ephemeral filter to apply.
+ * one tenant's sweep out of another tenant's rows. Every statement that JOINS
+ * a second table pins the org on both sides of that join, and every statement
+ * reading a device table excludes ephemeral (Quick Support) devices, which are
+ * one-off support enrolments that no scheduled hygiene sweep should ever
+ * report on. `expiring_certs` (#5754) is the single exception to both: it
+ * reads `network_monitors` alone, with no join, so its one `org_id` predicate
+ * is the entire boundary and there is no device table to filter.
  *
  * `assembleSweepEvidence` is the pure core (fixture-testable, no DB) that
  * `loadSweepEvidence` wraps with the actual reads.
@@ -475,13 +475,17 @@ async function loadUnpatchedCritical(orgId: string): Promise<LoadedKind> {
  * (`device_not_in_evidence`) then refuses any proposal naming a device, which
  * is exactly the fail-closed posture a finding-only kind wants.
  *
- * Three predicates carry the weight:
- *  - `tls_state = 'observed'` — a `handshake_failed` or `not_tls` row has no
- *    usable expiry, and a NULL `tls_not_after` must never read as "fine".
- *  - a 7-day staleness bound — a reading nobody has refreshed in a week is
- *    not current evidence about a live endpoint.
+ * The full predicate set, all five of which matter:
  *  - `org_id = $1`, which under the run's SYSTEM DB context is the WHOLE
  *    isolation boundary here, there being no join to pin on a second side.
+ *  - `is_active = true` — a paused monitor is not evidence about anything.
+ *  - `tls_state = 'observed'` — a `handshake_failed` or `not_tls` row has no
+ *    usable expiry, and a NULL `tls_not_after` must never read as "fine".
+ *  - `tls_observed_at > now() - interval '7 days'` — a reading nobody has
+ *    refreshed in a week is not current evidence about a live endpoint.
+ *  - `tls_not_after <= now() + interval '45 days'` — the window that DEFINES
+ *    "expiring". Widen or remove it and the kind reports every certificate
+ *    the fleet has ever observed.
  *
  * Partner-wide `network_monitors` rows (`org_id IS NULL`, #5291 W04) are
  * deliberately NOT reached in v1 — spec §2 scopes certificate evidence to

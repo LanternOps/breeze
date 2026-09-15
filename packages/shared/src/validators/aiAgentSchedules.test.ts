@@ -39,6 +39,23 @@ describe('createAiAgentScheduleSchema', () => {
       sweepKinds: ['expiring_certs'], enabled: true,
     }).success).toBe(true);
   });
+  // All THREE schemas carry the cap. Only the partner one was covered above,
+  // so a revert of either of the other two to a hardcoded literal — exactly
+  // the drift .max(AI_SWEEP_KINDS.length) exists to prevent — would ship.
+  it('the org-override and update schemas accept every kind and reject one more', () => {
+    const org = (kinds: readonly string[]) => createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: true,
+      sweepKinds: [...kinds],
+    });
+    expect(org(AI_SWEEP_KINDS).success).toBe(true);
+    expect(org([...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]!]).success).toBe(false);
+
+    const patch = (kinds: readonly string[]) =>
+      updateAiAgentScheduleSchema.safeParse({ sweepKinds: [...kinds] });
+    expect(patch(AI_SWEEP_KINDS).success).toBe(true);
+    expect(patch([...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]!]).success).toBe(false);
+  });
+
   it('an org override carries baselineScheduleId and no cron', () => {
     expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: false, sweepKinds: [] }).success).toBe(true);
     expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, cron: '0 6 * * *', enabled: true, sweepKinds: [] }).success).toBe(false);
