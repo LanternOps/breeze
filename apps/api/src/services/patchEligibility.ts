@@ -41,6 +41,7 @@ import {
 } from '../db/schema';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
 import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
+import { captureException } from './sentry';
 import {
   buildAllowedPatchSources,
   buildAppRuleMap,
@@ -420,6 +421,16 @@ export async function resolveDevicePatchEvaluationConfig(deviceId: string): Prom
     if (ringRow) {
       config.deferralDays = ringRow.deferralDays;
       config.ringPartnerId = ringRow.partnerId;
+    } else {
+      // The ring resolved as valid a moment ago and is gone now (deleted
+      // between the two reads). Keeping its category/auto-approve rules with
+      // a zeroed deferral window would fail OPEN — the direction
+      // `disabledForMalformedField` refuses. Fail closed: no ring, manual
+      // approvals only, and say so.
+      const message = `[patchEligibility] device ${deviceId}: ring ${ringId} vanished between resolution and read — treating as no ring (manual approvals only)`;
+      console.warn(message);
+      captureException(new Error(message));
+      return { ...NO_POLICY_CONFIG, sources: config.sources, policyAutoApprove: config.policyAutoApprove, apps: config.apps };
     }
   }
   return config;

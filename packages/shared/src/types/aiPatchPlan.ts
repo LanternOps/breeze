@@ -146,8 +146,9 @@ export interface PatchPlanItemRecord {
   /**
    * W02: the patch ids the resolver dropped from the card, each with why. A
    * multi-patch card carries ONE idempotency key (the first surviving id's);
-   * every surviving id is listed in `mintedPatchIds` so the next occurrence's
-   * suppression read can still see them.
+   * every surviving id is listed in `mintedPatchIds` as an audit trail on the
+   * run outcome (the suppression read keys on `action_intents.idempotency_key`
+   * alone).
    */
   droppedPatchIds?: Array<{ patchId: string; reason: PatchIneligibleReason }>;
   mintedPatchIds?: string[];

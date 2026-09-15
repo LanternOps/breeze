@@ -2248,8 +2248,26 @@ describe('RunDetailPage — patch plan', () => {
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
     const dropped = screen.getByTestId('ai-agent-run-patch-item-0-dropped');
     expect(dropped).toBeInTheDocument();
+    expect(dropped).toHaveTextContent('2 updates were left out of the card');
+    expect(dropped).toHaveTextContent('Superseded by a newer update');
+    expect(dropped).toHaveTextContent('Held by the deferral window');
     expect(dropped).not.toHaveTextContent('patch-kb5000002');
     expect(dropped).not.toHaveTextContent('patch-kb5000003');
+  });
+
+  it('flags an intent_created item whose card id is missing instead of rendering it as a plain success', async () => {
+    const DESYNC = {
+      ...PATCH,
+      items: [{ ...PATCH.items[0], disposition: 'intent_created' as const, intentId: null }, PATCH.items[1]],
+      intentCreatedCount: 1,
+      suppressedCount: 0,
+    };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: DESYNC } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-intent')).toBeNull();
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeInTheDocument();
   });
 
   it('renders a suppressed item with its suppression reason, not as a silent gap', async () => {
@@ -2272,6 +2290,7 @@ describe('RunDetailPage — patch plan', () => {
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
     const suppressed = screen.getByTestId('ai-agent-run-patch-item-0-suppressed');
     expect(suppressed).toBeInTheDocument();
+    expect(suppressed).toHaveTextContent('Already proposed: An approval card for this update is already open');
     expect(suppressed).not.toHaveTextContent('live_intent_exists');
   });
 
@@ -2308,7 +2327,7 @@ describe('RunDetailPage — patch plan', () => {
     render(<RunDetailPage runId="run-1" />);
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
-    expect(screen.getByTestId('ai-agent-run-patch-counts')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-patch-counts')).toHaveTextContent('1 awaiting approval · 2 already proposed');
   });
 
   it('omits the counts summary when nothing was minted or suppressed', async () => {

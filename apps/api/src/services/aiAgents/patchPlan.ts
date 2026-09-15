@@ -41,8 +41,9 @@
  *     `patch:<orgId>:<deviceId>:<patchId>`; `shouldSuppressPatchEpisode` per
  *     key. A live or recently-decided card for ANY id on the card suppresses
  *     the card. The intent's own key is the FIRST surviving id's; every
- *     surviving id is recorded in `mintedPatchIds` so the next occurrence's
- *     read still sees them. A multi-patch card therefore has one key, and the
+ *     surviving id is recorded in `mintedPatchIds` on the run outcome (an
+ *     audit trail — the suppression read itself only sees
+ *     `action_intents.idempotency_key`). A multi-patch card therefore has one key, and the
  *     plan deliberately accepts that a second card can appear for a patch that
  *     was bundled into a suppressed one — if that proves wrong in practice it
  *     is the OD-4 B (durable `ai_patch_episodes` table) trigger.
@@ -225,7 +226,18 @@ async function mintInstallIntents(
     const kept = requested.filter((id) => verdict.eligible.has(id));
     const dropped = requested
       .filter((id) => !verdict.eligible.has(id))
-      .map((patchId) => ({ patchId, reason: verdict.reasons.get(patchId) ?? ('not_outstanding' as const) }));
+      .map((patchId) => {
+        const reason = verdict.reasons.get(patchId);
+        if (!reason) {
+          // The resolver is total over the requested ids (every candidate is
+          // either eligible or denied with a reason); reaching here means that
+          // invariant broke. Say so rather than mislabel silently.
+          captureException(new Error('patchPlan: eligibility verdict named no reason for a dropped patch id'), undefined, {
+            service: 'aiAgents', operation: 'mintInstallIntents', runId: run.id, deviceId: record.deviceId!,
+          });
+        }
+        return { patchId, reason: reason ?? ('not_outstanding' as const) };
+      });
     if (dropped.length > 0) record.droppedPatchIds = dropped;
     if (kept.length === 0) {
       record.disposition = 'refused';

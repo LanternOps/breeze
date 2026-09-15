@@ -624,11 +624,14 @@ function PatchPlanItem({
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const refused = item.disposition === 'refused';
-  const unconfirmed = item.disposition === null;
   const suppressed = item.disposition === 'suppressed';
   const capReached = item.disposition === 'cap_reached';
   const intentError = item.disposition === 'error';
   const intentCreated = item.disposition === 'intent_created' && Boolean(item.intentId);
+  // No disposition at all, OR a "card created" record whose card id did not
+  // survive (projectPatch nulls a corrupt intentId): either way nothing here
+  // is confirmed, so it must not read as a plain success.
+  const unconfirmed = item.disposition === null || (item.disposition === 'intent_created' && !item.intentId);
   const dimmed = refused || unconfirmed || suppressed || capReached || intentError;
   return (
     <li

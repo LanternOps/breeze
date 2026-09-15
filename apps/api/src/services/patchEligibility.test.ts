@@ -42,10 +42,12 @@ vi.mock('./featureConfigResolver', () => ({
 vi.mock('./configPolicyPatching', () => ({
   loadPolicyLocalPatchConfig: vi.fn(),
 }));
+vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 
 import { db } from '../db';
 import { resolvePatchConfigDetailsForDevice } from './featureConfigResolver';
 import { loadPolicyLocalPatchConfig } from './configPolicyPatching';
+import { captureException } from './sentry';
 import type { ApprovalEvaluationConfig } from './patchApprovalEvaluator';
 import {
   evaluatePatchInstallEligibility,
@@ -351,6 +353,24 @@ describe('resolvePatchInstallEligibility — the live composition', () => {
     expect(res.eligible.map((e) => e.patchId)).toEqual([P1]);
     expect(res.ineligible).toEqual([{ patchId: P2, reason: 'no_ring_resolved' }]);
     expect(loadPolicyLocalPatchConfig).not.toHaveBeenCalled();
+  });
+
+  it('fails CLOSED when the ring vanishes between resolution and the deferral read — no ring, loudly', async () => {
+    mockDevice(true);
+    vi.mocked(resolvePatchConfigDetailsForDevice).mockResolvedValue({ configPolicyId: 'cp-1' } as never);
+    vi.mocked(loadPolicyLocalPatchConfig).mockResolvedValue(policyLocal() as never);
+    // The ring row read comes back empty (deleted mid-flight).
+    vi.mocked(db.select).mockReturnValueOnce(chain('limit', []) as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Category rule on the (vanished) ring would otherwise admit P1.
+    mockEvaluatorReads([row({ patchId: P1 })], []);
+    const res = await resolvePatchInstallEligibility({ deviceId: DEV, orgId: ORG });
+    expect(res.ringId).toBeNull();
+    expect(res.eligible).toEqual([]);
+    expect(res.ineligible).toEqual([{ patchId: P1, reason: 'no_ring_resolved' }]);
+    expect(captureException).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('treats an invalid ring reference as no ring, keeping the policy sources/app rules', async () => {
