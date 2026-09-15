@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Yama onaylandı",
       "declined": "Yama reddedildi",
+      "declinedAllRings": "Yama tüm güncelleme halkaları için reddedildi",
       "deferred": "Yama ertelendi"
+    },
+    "allRings": {
+      "label": "Tüm halka onaylarını temizle",
+      "description": "Bu yamanın onayını yalnızca mevcut kapsamda değil, bu iş ortağına ait diğer tüm güncelleme halkalarında da iptal eder."
     },
     "confirm": {
       "title": "Yama onayını onaylayın",
@@ -264,6 +269,7 @@
     "actions": {
       "deploy": "Dağıt",
       "review": "İnceleme",
+      "unapprove": "Onayı kaldır",
       "details": "Ayrıntılar",
       "approveCount": "Onayla {{count}}",
       "declineCount": "Reddet {{count}}",

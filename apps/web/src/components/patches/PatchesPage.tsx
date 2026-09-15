@@ -171,6 +171,10 @@ export default function PatchesPage() {
   const [selectedRingId, setSelectedRingId] = useState<string | null>(null);
   const [selectedPatch, setSelectedPatch] = useState<Patch | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  // Which tab the approval modal opens on: 'approve' from Review (the default,
+  // for not-yet-decided rows), 'decline' from the Unapprove row action on an
+  // already-approved row (#5585).
+  const [modalInitialAction, setModalInitialAction] = useState<PatchApprovalAction>('approve');
   const [ringModalOpen, setRingModalOpen] = useState(false);
   const [ringSubmitting, setRingSubmitting] = useState(false);
   const [editingRing, setEditingRing] = useState<UpdateRingItem | null>(null);
@@ -371,6 +375,16 @@ export default function PatchesPage() {
 
   const handleReview = (patch: Patch) => {
     setSelectedPatch(patch);
+    setModalInitialAction('approve');
+    setModalOpen(true);
+  };
+
+  // Unapprove/decline an already-approved row (#5585) — same modal as Review,
+  // opened straight into the 'decline' tab (which also offers "clear all ring
+  // approvals").
+  const handleUnapprove = (patch: Patch) => {
+    setSelectedPatch(patch);
+    setModalInitialAction('decline');
     setModalOpen(true);
   };
 
@@ -889,6 +903,7 @@ export default function PatchesPage() {
             onRetry={fetchPatches}
             onReview={handleReview}
             onDeploy={handleDeploy}
+            onUnapprove={handleUnapprove}
             onBulkApprove={handleBulkApprove}
             onBulkDecline={handleBulkDecline}
           />
@@ -905,6 +920,7 @@ export default function PatchesPage() {
         ringId={selectedRingId}
         orgName={currentOrg?.name ?? null}
         ringDeviceCount={selectedRingId ? (rings.find(r => r.id === selectedRingId)?.deviceCount ?? null) : null}
+        initialAction={modalInitialAction}
         onClose={() => {
           setModalOpen(false);
           setSelectedPatch(null);
