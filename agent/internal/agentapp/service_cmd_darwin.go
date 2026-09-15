@@ -171,15 +171,17 @@ var serviceInstallCmd = &cobra.Command{
 		// agent binary: see stageDesktopHelper for why (#3457). A failure here
 		// is a warning, not a fatal error, so an offline or air-gapped install
 		// still gets a working agent service (same policy as the watchdog).
+		helperServerURL := persistedServerURLForInstall()
 		stageHelperErr := stageDesktopHelper(desktopHelperStageOptions{
 			agentPath: exePath,
 			destPath:  darwinDesktopHelperBinaryPath,
 			version:   version,
 			goos:      runtime.GOOS,
 			goarch:    runtime.GOARCH,
+			serverURL: helperServerURL,
 		})
 		if stageHelperErr != nil {
-			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH))
+			fmt.Fprint(os.Stderr, desktopHelperUnavailableWarning(stageHelperErr, version, runtime.GOOS, runtime.GOARCH, helperServerURL))
 		} else {
 			fmt.Printf("Desktop helper installed to %s\n", darwinDesktopHelperBinaryPath)
 		}
@@ -277,11 +279,13 @@ var serviceInstallCmd = &cobra.Command{
 			if started {
 				agentStateLine = "The agent service is installed and running."
 			}
+			serverURL := persistedServerURLForInstall()
 			err := bootstrapWatchdog(bootstrapOptions{
 				agentPath: exePath,
 				version:   version,
 				goos:      runtime.GOOS,
 				goarch:    runtime.GOARCH,
+				serverURL: serverURL,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr,
@@ -292,7 +296,7 @@ var serviceInstallCmd = &cobra.Command{
 						"  2. Download %s manually, place it next to breeze-agent,\n"+
 						"     then run `sudo breeze-watchdog service install`.\n"+
 						"  3. To skip the watchdog entirely, use `--no-watchdog`.\n",
-					err, agentStateLine, watchdogDownloadURL(version, runtime.GOOS, runtime.GOARCH))
+					err, agentStateLine, watchdogManualDownloadURL(version, runtime.GOOS, runtime.GOARCH, serverURL))
 			}
 		}
 

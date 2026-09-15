@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/breeze-rmm/agent/internal/hostpolicy"
 )
 
 // desktopHelperBinaryName is the on-disk name of the per-user desktop helper.
@@ -29,6 +31,20 @@ func desktopHelperDownloadURL(version, goos, goarch string) string {
 		firstInstallReleaseBase(), version, desktopHelperBinaryName, goos, goarch, ext)
 }
 
+// desktopHelperManualDownloadURL returns the URL an operator should fetch the
+// desktop helper from by hand. Mirrors watchdogManualDownloadURL: a hosted
+// build must not be sent to the public GitHub release, whose assets are all
+// edition "self-host" and are refused by hosted asset policy (#5899).
+func desktopHelperManualDownloadURL(version, goos, goarch, serverURL string) string {
+	if hostpolicy.Enforced() {
+		if base, err := resolveFirstInstallServerURL(serverURL); err == nil {
+			return fmt.Sprintf("%s/api/v1/agents/download/helper/%s/%s", base, goos, goarch)
+		}
+		return fmt.Sprintf("/api/v1/agents/download/helper/%s/%s on your Breeze server", goos, goarch)
+	}
+	return desktopHelperDownloadURL(version, goos, goarch)
+}
+
 // desktopHelperStageOptions is the input for stageDesktopHelper. Kept as a
 // struct so the OS callers stay short and tests don't need long arg lists.
 type desktopHelperStageOptions struct {
@@ -37,6 +53,11 @@ type desktopHelperStageOptions struct {
 	version   string // agent version (main.version), e.g. "0.109.0" or "dev"
 	goos      string // runtime.GOOS
 	goarch    string // runtime.GOARCH
+
+	// serverURL is the persisted control-plane URL, when this host has already
+	// enrolled. Hosted builds stage the helper from there instead of the public
+	// GitHub release, which carries only self-host-edition assets (#5899).
+	serverURL string
 
 	// urlOverride, if non-empty, replaces the full download URL. Test-only.
 	urlOverride string
@@ -92,6 +113,7 @@ func stageDesktopHelper(opts desktopHelperStageOptions) error {
 		assetURL: assetURL, manifestURL: opts.manifestURLOverride,
 		signatureURL: opts.signatureURLOverride, destPath: opts.destPath,
 		client: opts.clientOverride, trustKeys: opts.trustKeysOverride,
+		serverURL: opts.serverURL,
 	}
 	if readErr == nil {
 		protectedSibling := protectedPackagedSibling
@@ -116,7 +138,7 @@ func stageDesktopHelper(opts desktopHelperStageOptions) error {
 // desktopHelperUnavailableWarning is the operator-facing message for a failed
 // stageDesktopHelper. It says what is degraded, why the agent binary is not
 // substituted, and how to fix it — the install itself continues.
-func desktopHelperUnavailableWarning(err error, version, goos, goarch string) string {
+func desktopHelperUnavailableWarning(err error, version, goos, goarch, serverURL string) string {
 	return fmt.Sprintf(
 		"Warning: desktop helper not installed: %v\n"+
 			"The agent service is installed and will run. Features that need the\n"+
@@ -129,7 +151,7 @@ func desktopHelperUnavailableWarning(err error, version, goos, goarch string) st
 			"  1. Install with the macOS .pkg, which ships the signed helper.\n"+
 			"  2. Download %s, place it next to breeze-agent,\n"+
 			"     then re-run `sudo breeze-agent service install`.\n",
-		err, desktopHelperDownloadURL(version, goos, goarch))
+		err, desktopHelperManualDownloadURL(version, goos, goarch, serverURL))
 }
 
 // writeBinaryAtomically writes data to path via a sibling temp file and an
