@@ -43,6 +43,7 @@ import {
   buildMicrosoftAuthorizationUrl,
   exchangeMicrosoftAuthorizationCode,
   hasMailboxConsentAdminRole,
+  hasMailboxConsentAdminRoleViaGraph,
   verifyMicrosoftAdminIdToken,
 } from '../../services/ticketMailbox/microsoftIdentity';
 import {
@@ -460,7 +461,13 @@ mailboxRoutes.get('/callback', zValidator('query', callbackQuery), async (c) => 
       clientId: platform.clientId,
       nonce: session.nonce,
     });
-    if (!hasMailboxConsentAdminRole(claims.wids)) return fail('insufficient_role');
+    // Fast path: the wids ID token claim, when the tenant actually populates
+    // it. Fallback: a live Graph directory-role lookup using the delegated
+    // access token from the same exchange, for tenants where wids is absent
+    // despite correct optionalClaims.idToken configuration.
+    const isAdmin = hasMailboxConsentAdminRole(claims.wids)
+      || await hasMailboxConsentAdminRoleViaGraph(exchanged.accessToken);
+    if (!isAdmin) return fail('insufficient_role');
 
     const probe = await probeMailbox(claims.tid, connection.mailboxAddress);
     if (!probe.ok) return fail('probe_failed', 'needs_policy', claims.tid);

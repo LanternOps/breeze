@@ -42,6 +42,7 @@ const { authRef, mocks } = vi.hoisted(() => ({
     exchangeMicrosoftAuthorizationCode: vi.fn(),
     verifyMicrosoftAdminIdToken: vi.fn(),
     hasMailboxConsentAdminRole: vi.fn(() => true),
+    hasMailboxConsentAdminRoleViaGraph: vi.fn(async () => false),
     writeRouteAudit: vi.fn(),
     writeAuditEvent: vi.fn(),
     captureException: vi.fn(),
@@ -117,6 +118,7 @@ vi.mock('../../services/ticketMailbox/microsoftIdentity', () => ({
   exchangeMicrosoftAuthorizationCode: mocks.exchangeMicrosoftAuthorizationCode,
   verifyMicrosoftAdminIdToken: mocks.verifyMicrosoftAdminIdToken,
   hasMailboxConsentAdminRole: mocks.hasMailboxConsentAdminRole,
+  hasMailboxConsentAdminRoleViaGraph: mocks.hasMailboxConsentAdminRoleViaGraph,
 }));
 vi.mock('../../services/auditEvents', () => ({
   writeRouteAudit: mocks.writeRouteAudit,
@@ -212,11 +214,14 @@ describe('M365 mailbox lifecycle routes', () => {
       session: session('identity_verification'), codeChallenge: 'stored-code-challenge',
     });
     mocks.consumeConsentSession.mockImplementation(async (_state: string, phase: string) => session(phase as never));
-    mocks.exchangeMicrosoftAuthorizationCode.mockResolvedValue({ idToken: 'verified-id-token' });
+    mocks.exchangeMicrosoftAuthorizationCode.mockResolvedValue({
+      idToken: 'verified-id-token', accessToken: 'delegated-access-token',
+    });
     mocks.verifyMicrosoftAdminIdToken.mockResolvedValue({
       tid: TENANT_ID, oid: MICROSOFT_OID, sub: 'microsoft-sub', wids: ['accepted-role'],
     });
     mocks.hasMailboxConsentAdminRole.mockReturnValue(true);
+    mocks.hasMailboxConsentAdminRoleViaGraph.mockResolvedValue(false);
     mocks.getMailboxConnection.mockResolvedValue(connection());
     mocks.probeMailbox.mockResolvedValue({ ok: true });
     app = new Hono();
@@ -578,8 +583,9 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(serialized).not.toContain('bad-code');
   });
 
-  it('rejects an identity without an accepted administrator role', async () => {
+  it('rejects an identity without an accepted administrator role via wids or a live Graph lookup', async () => {
     mocks.hasMailboxConsentAdminRole.mockReturnValue(false);
+    mocks.hasMailboxConsentAdminRoleViaGraph.mockResolvedValue(false);
     const response = await app.request('/callback?state=identity-state&code=authorization-code', {
       headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
     });
@@ -589,6 +595,21 @@ describe('M365 mailbox lifecycle routes', () => {
     expect(mocks.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       details: expect.objectContaining({ outcome: 'insufficient_role' }),
     }));
+  });
+
+  it('falls back to a live Graph directory-role check when wids has no accepted role, and connects on success', async () => {
+    // Reproduces tenants where wids is absent or unaccepted in the ID token
+    // despite correct optionalClaims.idToken configuration.
+    mocks.hasMailboxConsentAdminRole.mockReturnValue(false);
+    mocks.hasMailboxConsentAdminRoleViaGraph.mockResolvedValue(true);
+    const response = await app.request('/callback?state=identity-state&code=authorization-code', {
+      headers: { cookie: `ticket_mailbox_oauth_state=${cookieFor('identity_verification', 'identity-state')}` },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toContain('ticketMailbox=connected');
+    expect(mocks.hasMailboxConsentAdminRoleViaGraph).toHaveBeenCalledWith('delegated-access-token');
+    expect(mocks.probeMailbox).toHaveBeenCalled();
+    expect(mocks.bindVerifiedTenant).toHaveBeenCalled();
   });
 
   it('rejects replayed state before any identity or audit work', async () => {
