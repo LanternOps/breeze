@@ -351,10 +351,10 @@ export default function DeviceGroupsPage() {
 
   const fetchPolicies = useCallback(async () => {
     try {
-      const response = await fetchWithAuth("/policies");
+      const response = await fetchWithAuth("/configuration-policies?limit=100");
       if (response.ok) {
         const data = await response.json();
-        setPolicies(asList<Policy>(data, "policies"));
+        setPolicies(asList<Policy>(data, "policies", "data"));
       }
     } catch {
       // Policies are optional for this page.
@@ -813,16 +813,20 @@ export default function DeviceGroupsPage() {
     if (!bulkPolicyId || selectedGroupIds.size === 0) return;
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth("/device-groups/bulk", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "apply-policy",
-          policyId: bulkPolicyId,
-          groupIds: Array.from(selectedGroupIds),
-        }),
-      });
+      const results = await Promise.all(
+        Array.from(selectedGroupIds).map((groupId) =>
+          fetchWithAuth(`/configuration-policies/${bulkPolicyId}/assignments`, {
+            method: "POST",
+            body: JSON.stringify({
+              level: "device_group",
+              targetId: groupId,
+              priority: 0,
+            }),
+          }),
+        ),
+      );
 
-      if (!response.ok) {
+      if (results.some((r) => !r.ok)) {
         throw new Error("Failed to apply policy to groups");
       }
 
