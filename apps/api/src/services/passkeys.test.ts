@@ -299,6 +299,40 @@ describe('public key base64url round-trip', () => {
   });
 });
 
+describe('transports pass through unfiltered (registrationInfoToPasskeyFields)', () => {
+  const baseVerification = {
+    verified: true,
+    registrationInfo: {
+      credential: { id: 'cred-transports', publicKey: new Uint8Array([1, 2, 3]), counter: 0 },
+      credentialDeviceType: 'singleDevice',
+      credentialBackedUp: false,
+      aaguid: null,
+    },
+  } as never;
+
+  function fieldsFor(transports: string[] | undefined) {
+    return registrationInfoToPasskeyFields(baseVerification, {
+      response: { transports },
+    } as never).transports;
+  }
+
+  it('known transport values pass through unchanged', () => {
+    expect(fieldsFor(['usb', 'nfc'])).toEqual(['usb', 'nfc']);
+  });
+
+  it('an unrecognized transport value is preserved, not dropped', () => {
+    expect(fieldsFor(['usb', 'totally-new-transport'])).toEqual(['usb', 'totally-new-transport']);
+  });
+
+  it('an explicit empty array stays an empty array, not null', () => {
+    expect(fieldsFor([])).toEqual([]);
+  });
+
+  it('undefined transports (none reported) becomes null', () => {
+    expect(fieldsFor(undefined)).toBeNull();
+  });
+});
+
 describe('unverified responses are rejected', () => {
   it('registrationInfoToPasskeyFields throws when verified: false', () => {
     expect(() => registrationInfoToPasskeyFields({ verified: false } as never)).toThrow(
