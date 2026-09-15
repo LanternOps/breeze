@@ -7,6 +7,7 @@ import {
   actionIntentTaskContextSchema,
   type ActionIntentTaskContext,
   type AiAgentPolicySnapshot,
+  type AiSweepKind,
   type AssuranceLevel,
   type ScriptReviewerEvidence,
 } from '@breeze/shared';
@@ -626,6 +627,38 @@ interface CreationResult {
  * anything — an `'unattempted'` intent from a shadow-mode run degrades to
  * `human_required` there, it does not execute unattended.
  */
+/**
+ * #4442 W04 — everything CREATION knows about a sweep-minted proposal's act
+ * eligibility. Assembled by the CALLER from system state (the effective
+ * schedule and the run's own trusted evidence subject);
+ * `resolvePolicyDecisionState` only READS it, so the gate stays pure and
+ * directly unit-testable. Freshness and the live condition re-probe are
+ * decide-time concerns and deliberately not here — see
+ * `policyDecide.ts`'s `attemptPolicyDecision`.
+ */
+export interface SweepActEligibility {
+  /** The EFFECTIVE (partner baseline ∧ org override) act-mode value. */
+  scheduleActMode: boolean;
+  /** The SYSTEM's own subject for the evidence row this proposal cites. */
+  subject: { kind: AiSweepKind; key: string; observedAt: string };
+  /** Whether the intent's arguments name exactly that subject. */
+  argumentsMatchSubject: boolean;
+}
+
+/**
+ * @internal Exported ONLY for `policyDecide.sweepFlagOff.test.ts` and
+ * `intentService.sweepAct.test.ts` (#4442 W04). The eight-gate ladder below
+ * decides whether a Tier-3 intent may be authorized without a human, so it
+ * deserves a direct unit surface rather than being reachable only through
+ * `createActionIntent`'s full transaction. Not part of the module's public
+ * API — production callers go through `createActionIntent`.
+ */
+export function __resolvePolicyDecisionStateForTest(
+  args: Parameters<typeof resolvePolicyDecisionState>[0],
+): ActionIntentPolicyDecisionState {
+  return resolvePolicyDecisionState(args);
+}
+
 function resolvePolicyDecisionState(args: {
   guardrail: GuardrailCheck;
   approvalScope: ActionIntentApprovalScope;
@@ -651,6 +684,15 @@ function resolvePolicyDecisionState(args: {
    * from a device-less run. See the `hasScope` branch below.
    */
   hasScope: boolean;
+  /**
+   * #4442 W04: `action_intents.trigger_kind` (W01) for the intent being
+   * created. The sweep-act allowance below keys on THIS, not on "has a
+   * scope" — load-bearing, so a ticket scope, or a scope kind added later,
+   * cannot inherit the allowance by having a scope.
+   */
+  triggerKind?: string | null;
+  /** #4442 W04: system-assembled act eligibility; absent = not act-eligible. */
+  sweepAct?: SweepActEligibility;
 }): ActionIntentPolicyDecisionState {
   void args.toolName;
   void args.input;
