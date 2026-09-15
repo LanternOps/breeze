@@ -227,6 +227,32 @@ describe('DeviceList', () => {
       const postMount = screen.getByTestId('portal-device-d-1-last-online');
       expect(postMount.textContent).toContain('5 minutes ago');
     });
+
+    // `moreFacts` (the per-row disclosure) threads `mounted` independently
+    // from the "Last online" cell above — a regression there (e.g. a stale
+    // `mounted` capture) wouldn't be caught by the "Last online" assertions.
+    it('swaps Last patch / Last backup to relative time after mount too, not just Last online', () => {
+      vi.useFakeTimers().setSystemTime(new Date('2026-09-03T12:00:00Z'));
+      // Minutes-scale gaps so the expected text is a plain elapsed-time count
+      // (TZ-independent — no calendar-day bucketing involved either way).
+      const device: EnrichedPortalDevice = {
+        ...laptop,
+        lastPatchAt: 'Sep 3, 2026, 11:50 AM UTC',
+        lastBackupAt: 'Sep 3, 2026, 11:57 AM UTC',
+      };
+
+      const container = document.createElement('div');
+      container.innerHTML = renderToString(<DeviceList devices={[device]} />);
+      const preMount = container.querySelector('[data-testid="portal-device-d-1-more"]');
+      expect(preMount?.textContent).toContain('Sep 3, 2026, 11:50 AM UTC');
+      expect(preMount?.textContent).toContain('Sep 3, 2026, 11:57 AM UTC');
+      expect(preMount?.textContent).not.toContain('minutes ago');
+
+      render(<DeviceList devices={[device]} />);
+      const postMount = screen.getByTestId('portal-device-d-1-more');
+      expect(postMount.textContent).toContain('10 minutes ago');
+      expect(postMount.textContent).toContain('3 minutes ago');
+    });
   });
 
   describe('scroll-and-highlight from a #<deviceId> hash', () => {
