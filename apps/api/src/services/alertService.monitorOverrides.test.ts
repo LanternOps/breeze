@@ -162,18 +162,21 @@ beforeEach(() => {
 describe('getApplicableRules — invalid monitor override fallback (#5289)', () => {
   it('keeps the rule and falls back to the compiled, un-overridden condition when the override fails re-validation', async () => {
     pushHappyPathQueue();
-    resolveMonitorsForDeviceMock.mockResolvedValue([
-      {
-        monitorId: 'monitor-1',
-        enabled: true,
-        // value: 999 is out of the cpu schema's 0-100 range — applyOverrides
-        // must throw when re-validating the merged condition.
-        overrides: { value: 999 },
-        sourcePolicyId: 'policy-1',
-        sourceLevel: 'organization',
-        inheritedFromParent: false,
-      },
-    ]);
+    resolveMonitorsForDeviceMock.mockResolvedValue({
+      kind: 'resolved',
+      monitors: [
+        {
+          monitorId: 'monitor-1',
+          enabled: true,
+          // value: 999 is out of the cpu schema's 0-100 range — applyOverrides
+          // must throw when re-validating the merged condition.
+          overrides: { value: 999 },
+          sourcePolicyId: 'policy-1',
+          sourceLevel: 'organization',
+          inheritedFromParent: false,
+        },
+      ],
+    });
 
     const result = await getApplicableRules(DEVICE_ID);
 
@@ -189,16 +192,19 @@ describe('getApplicableRules — invalid monitor override fallback (#5289)', () 
 
   it('applies a VALID override into effectiveConditions', async () => {
     pushHappyPathQueue();
-    resolveMonitorsForDeviceMock.mockResolvedValue([
-      {
-        monitorId: 'monitor-1',
-        enabled: true,
-        overrides: { value: 55 },
-        sourcePolicyId: 'policy-1',
-        sourceLevel: 'organization',
-        inheritedFromParent: false,
-      },
-    ]);
+    resolveMonitorsForDeviceMock.mockResolvedValue({
+      kind: 'resolved',
+      monitors: [
+        {
+          monitorId: 'monitor-1',
+          enabled: true,
+          overrides: { value: 55 },
+          sourcePolicyId: 'policy-1',
+          sourceLevel: 'organization',
+          inheritedFromParent: false,
+        },
+      ],
+    });
 
     const result = await getApplicableRules(DEVICE_ID);
 

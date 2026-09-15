@@ -163,16 +163,19 @@ describe('processScriptMonitorTick', () => {
       targetSessionId: null,
     });
 
-    resolveMonitorsMock.mockResolvedValue([
-      {
-        monitorId: MONITOR_ID,
-        enabled: true,
-        overrides: null,
-        sourcePolicyId: 'policy-1',
-        sourceLevel: 'organization',
-        inheritedFromParent: false,
-      },
-    ]);
+    resolveMonitorsMock.mockResolvedValue({
+      kind: 'resolved',
+      monitors: [
+        {
+          monitorId: MONITOR_ID,
+          enabled: true,
+          overrides: null,
+          sourcePolicyId: 'policy-1',
+          sourceLevel: 'organization',
+          inheritedFromParent: false,
+        },
+      ],
+    });
   });
 
   afterEach(() => {
@@ -212,21 +215,41 @@ describe('processScriptMonitorTick', () => {
   });
 
   it('(c) does not dispatch when the resolver says this monitor is disabled for the device', async () => {
-    resolveMonitorsMock.mockResolvedValue([
-      {
-        monitorId: MONITOR_ID,
-        enabled: false,
-        overrides: null,
-        sourcePolicyId: 'policy-1',
-        sourceLevel: 'device',
-        inheritedFromParent: false,
-      },
-    ]);
+    resolveMonitorsMock.mockResolvedValue({
+      kind: 'resolved',
+      monitors: [
+        {
+          monitorId: MONITOR_ID,
+          enabled: false,
+          overrides: null,
+          sourcePolicyId: 'policy-1',
+          sourceLevel: 'device',
+          inheritedFromParent: false,
+        },
+      ],
+    });
     setupDb(
       new Map<TableRef, unknown[]>([
         [monitorDefinitions, [makeMonitorRow()]],
         [devices, [makeDeviceRow()]],
         // No execution history needed — disabled short-circuits before the throttle check.
+        [scriptExecutions, []],
+        [scripts, [makeScriptRow()]],
+      ]),
+    );
+
+    const result = await processScriptMonitorTick();
+
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ monitorsConsidered: 1, devicesConsidered: 1, dispatched: 0, skipped: 1 });
+  });
+
+  it('(c2) does not dispatch when the device raced a delete — resolver returns device_missing, not a fabricated "zero monitors" (#5677)', async () => {
+    resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
+    setupDb(
+      new Map<TableRef, unknown[]>([
+        [monitorDefinitions, [makeMonitorRow()]],
+        [devices, [makeDeviceRow()]],
         [scriptExecutions, []],
         [scripts, [makeScriptRow()]],
       ]),

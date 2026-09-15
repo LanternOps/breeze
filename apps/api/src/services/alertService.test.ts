@@ -66,7 +66,7 @@ vi.mock('drizzle-orm', () => ({
 // (monitorResolver.test.ts + monitorResolver.integration.test.ts); stubbing it
 // here keeps this suite's device fixtures from needing policy tables.
 vi.mock('./monitors/monitorResolver', () => ({
-  resolveMonitorsForDevice: vi.fn(() => Promise.resolve([])),
+  resolveMonitorsForDevice: vi.fn(() => Promise.resolve({ kind: 'resolved', monitors: [] })),
 }));
 
 vi.mock('../db', () => ({ db: dbMock }));

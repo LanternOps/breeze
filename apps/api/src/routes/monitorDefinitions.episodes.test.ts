@@ -71,7 +71,9 @@ vi.mock('../services/monitors/episodeReset', () => ({
 }));
 
 vi.mock('../services/monitors/monitorCompiler', () => ({ buildCompiledCondition: vi.fn() }));
-vi.mock('../services/monitors/monitorResolver', () => ({ resolveMonitorsForDevice: vi.fn(async () => []) }));
+vi.mock('../services/monitors/monitorResolver', () => ({
+  resolveMonitorsForDevice: vi.fn(async () => ({ kind: 'resolved', monitors: [] })),
+}));
 vi.mock('../services/alertConditions', () => ({ evaluateConditions: vi.fn() }));
 vi.mock('../services/configurationPolicy', () => ({
   addFeatureLink: vi.fn(),
@@ -210,9 +212,12 @@ describe('GET /monitor-definitions/:id/devices — activity projection', () => {
     selectMock.mockImplementation(() => chains[i++] ?? selectChain([]));
 
     const { resolveMonitorsForDevice } = await import('../services/monitors/monitorResolver');
-    (resolveMonitorsForDevice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: 'pol-1', sourceLevel: 'organization' },
-    ]);
+    (resolveMonitorsForDevice as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'resolved',
+      monitors: [
+        { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: 'pol-1', sourceLevel: 'organization' },
+      ],
+    });
 
     listMonitorDeviceActivityMock.mockResolvedValue([
       {

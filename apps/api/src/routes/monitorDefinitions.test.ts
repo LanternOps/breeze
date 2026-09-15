@@ -532,9 +532,12 @@ describe('site scope on device-reading monitor routes', () => {
   const DEVICE_IN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const DEVICE_IN_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const dialect = new PgDialect();
-  const resolvedMatch = [
-    { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: POLICY_ID, sourceLevel: 'organization' },
-  ];
+  const resolvedMatch = {
+    kind: 'resolved' as const,
+    monitors: [
+      { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: POLICY_ID, sourceLevel: 'organization' },
+    ],
+  };
 
   /** selectChain that records every `.where()` argument it receives. */
   function recordingChain<T>(rows: T, sink: unknown[]) {
