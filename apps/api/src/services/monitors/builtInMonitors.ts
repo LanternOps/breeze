@@ -1,17 +1,21 @@
 /**
- * Built-in default monitors — CPU, memory and disk usage.
+ * Built-in default monitors — CPU, memory, disk usage and patch compliance.
  *
- * Every partner is provisioned three PARTNER-WIDE monitor_definitions rows
+ * Every partner is provisioned four PARTNER-WIDE monitor_definitions rows
  * (tagged `builtin_key`). They are NOT attached to any policy: nothing is
  * evaluated until the MSP attaches them to a configuration policy (owner
  * decision 2026-09-13 — no monitoring assigned by default).
  *
  * The rows are ordinary partner-owned monitors: the MSP can retune, disable,
- * or delete them. Provisioning is a ONE-TIME
- * event per partner recorded in partners.settings.builtInMonitors, so a
- * deleted built-in never resurrects on the next boot. Threshold changes we
- * make later are explicit upgrades of DEFAULTS (new partners only) — they never
- * rewrite a partner's existing rows.
+ * or delete them. Provisioning is recorded per-partner in
+ * partners.settings.builtInMonitors as a VERSION marker (`version`), not a
+ * one-shot boolean: `BUILT_IN_MONITORS_VERSION` bumps whenever a NEW default
+ * is added, and `defaultsToProvision` inserts only the defaults introduced
+ * since the partner's stored version. Threshold changes to an EXISTING
+ * default are still one-time — they reach new partners only and never
+ * rewrite a partner's existing rows. A default a partner deleted never
+ * resurrects: `sinceVersion <= storedVersion` is skipped even if the row is
+ * gone.
  *
  * Runs in three places: createPartner() (inside its transaction), the
  * system-scope POST /orgs/partners route, and a detached post-listen backfill
@@ -25,16 +29,24 @@ import { compileMonitorInTx } from './monitorCompiler';
 import { getMonitorKindSpec } from './kinds';
 import type { MonitorKind } from '@breeze/shared';
 
-export const BUILT_IN_MONITORS_VERSION = 1;
+/**
+ * Bump this whenever a new entry is added to `BUILT_IN_MONITOR_DEFAULTS` (and
+ * give that entry the new `sinceVersion`). Existing partners are upgraded
+ * lazily — the next `ensureBuiltInMonitorsForPartner` call (route, boot
+ * backfill) inserts only the defaults newer than their stored marker.
+ */
+export const BUILT_IN_MONITORS_VERSION = 2;
 
 export interface BuiltInMonitorDefault {
-  key: 'cpu_high' | 'memory_high' | 'disk_full';
+  key: 'cpu_high' | 'memory_high' | 'disk_full' | 'patch_compliance_low';
   name: string;
   description: string;
   kind: MonitorKind;
-  condition: { operator: 'gt' | 'gte'; value: number; durationMinutes: number };
-  severity: 'critical' | 'high';
+  condition: { operator: 'gt' | 'gte' | 'lt' | 'lte'; value: number; durationMinutes?: number };
+  severity: 'critical' | 'high' | 'medium';
   cooldownMinutes: number;
+  /** The `BUILT_IN_MONITORS_VERSION` that introduced this default. */
+  sinceVersion: number;
 }
 
 /**
@@ -52,6 +64,7 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     condition: { operator: 'gt', value: 90, durationMinutes: 15 },
     severity: 'high',
     cooldownMinutes: 60,
+    sinceVersion: 1,
   },
   {
     key: 'memory_high',
@@ -61,6 +74,7 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     condition: { operator: 'gt', value: 90, durationMinutes: 15 },
     severity: 'high',
     cooldownMinutes: 60,
+    sinceVersion: 1,
   },
   {
     key: 'disk_full',
@@ -70,8 +84,29 @@ export const BUILT_IN_MONITOR_DEFAULTS: readonly BuiltInMonitorDefault[] = [
     condition: { operator: 'gte', value: 90, durationMinutes: 30 },
     severity: 'critical',
     cooldownMinutes: 240,
+    sinceVersion: 1,
+  },
+  {
+    key: 'patch_compliance_low',
+    name: 'Low patch compliance',
+    description: 'Patch compliance below 80%. Built-in default — edit the threshold to suit your fleet.',
+    kind: 'patch_compliance',
+    condition: { operator: 'lt', value: 80 },
+    severity: 'medium',
+    cooldownMinutes: 1440,
+    sinceVersion: 2,
   },
 ];
+
+/**
+ * Pure helper: which defaults still need provisioning for a partner whose
+ * `partners.settings.builtInMonitors.version` marker reads `storedVersion`
+ * (`null` when the partner was never provisioned at all).
+ */
+export function defaultsToProvision(storedVersion: number | null): BuiltInMonitorDefault[] {
+  const baseline = storedVersion ?? 0;
+  return BUILT_IN_MONITOR_DEFAULTS.filter((def) => def.sinceVersion > baseline);
+}
 
 type DbTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Executor = DbTx | typeof db;
@@ -85,19 +120,22 @@ function autoseedEnabled(): boolean {
   return (process.env.BREEZE_BUILTIN_MONITORS_AUTOSEED ?? 'true').trim().toLowerCase() !== 'false';
 }
 
-async function isProvisioned(exec: Executor, partnerId: string): Promise<boolean> {
+/** Reads the stored `builtInMonitors.version` marker; `null` when the partner was never provisioned. */
+async function readProvisionedVersion(exec: Executor, partnerId: string): Promise<number | null> {
   const [row] = await exec
-    .select({ marker: sql<unknown>`${partners.settings} -> 'builtInMonitors'` })
+    .select({ version: sql<number | null>`(${partners.settings} -> 'builtInMonitors' ->> 'version')::int` })
     .from(partners)
     .where(eq(partners.id, partnerId))
     .limit(1);
-  return !!row && row.marker !== null && row.marker !== undefined;
+  return row?.version ?? null;
 }
 
 /**
- * Provision the built-in monitors for ONE partner. Idempotent
- * via the partners.settings marker; a partner that was ever provisioned is
- * left alone even if it since deleted every built-in row.
+ * Provision the built-in monitors for ONE partner, VERSION-AWARE: only
+ * defaults newer than the partner's stored marker (`defaultsToProvision`) are
+ * inserted. A partner already at `BUILT_IN_MONITORS_VERSION` is left
+ * untouched. A default a partner deleted never resurrects, because its
+ * `sinceVersion` is already covered by the stored marker.
  *
  * Must run under a DB access context that can write partner-axis rows
  * (system context, or createPartner's own transaction).
@@ -107,12 +145,14 @@ export async function ensureBuiltInMonitorsForPartner(
   opts: { createdBy?: string | null; exec?: Executor } = {},
 ): Promise<EnsureBuiltInMonitorsResult> {
   const run = async (tx: DbTx): Promise<EnsureBuiltInMonitorsResult> => {
-    if (await isProvisioned(tx, partnerId)) {
+    const storedVersion = await readProvisionedVersion(tx, partnerId);
+    if (storedVersion !== null && storedVersion >= BUILT_IN_MONITORS_VERSION) {
       return { provisioned: false, monitorIds: [] };
     }
 
+    const toProvision = defaultsToProvision(storedVersion);
     const monitorIds: string[] = [];
-    for (const def of BUILT_IN_MONITOR_DEFAULTS) {
+    for (const def of toProvision) {
       // Fail loudly at provisioning time if a default ever drifts from its kind.
       const parsed = getMonitorKindSpec(def.kind).conditionSchema.safeParse(def.condition);
       if (!parsed.success) {
@@ -152,14 +192,21 @@ export async function ensureBuiltInMonitorsForPartner(
       monitorIds.push(created.id);
     }
 
+    // Preserve `provisionedAt` across an upgrade: only set it when the marker
+    // was absent, always bump `version`, and record `upgradedAt` on a
+    // version-only revisit so the history of when each wave landed survives.
     await tx
       .update(partners)
       .set({
-        settings: sql`COALESCE(${partners.settings}, '{}'::jsonb) || jsonb_build_object('builtInMonitors', jsonb_build_object('version', ${BUILT_IN_MONITORS_VERSION}::int, 'provisionedAt', ${new Date().toISOString()}::text))`,
+        settings: sql`COALESCE(${partners.settings}, '{}'::jsonb) || jsonb_build_object('builtInMonitors', jsonb_build_object(
+          'version', ${BUILT_IN_MONITORS_VERSION}::int,
+          'provisionedAt', COALESCE(${partners.settings} -> 'builtInMonitors' ->> 'provisionedAt', ${new Date().toISOString()}::text),
+          'upgradedAt', ${new Date().toISOString()}::text
+        ))`,
       })
       .where(eq(partners.id, partnerId));
 
-    return { provisioned: true, monitorIds };
+    return { provisioned: toProvision.length > 0, monitorIds };
   };
 
   if (opts.exec && opts.exec !== db) return run(opts.exec as DbTx);
@@ -167,9 +214,11 @@ export async function ensureBuiltInMonitorsForPartner(
 }
 
 /**
- * Boot-time backfill: provision every live partner that has never been
- * provisioned. Each partner runs in its OWN system context and therefore its
- * own top-level transaction (runOutsideDbContext + withSystemDbAccessContext),
+ * Boot-time backfill: provision every live partner that is behind the
+ * current `BUILT_IN_MONITORS_VERSION` — never provisioned at all (marker
+ * NULL), or provisioned at an older version (a new default shipped since).
+ * Each partner runs in its OWN system context and therefore its own
+ * top-level transaction (runOutsideDbContext + withSystemDbAccessContext),
  * so nothing here piggybacks on an ambient transaction: one failure never
  * blocks the rest, and a crash mid-loop keeps every partner already done.
  * Call it WITHOUT an enclosing DB context, after the HTTP listener is up.
@@ -186,7 +235,15 @@ export async function ensureBuiltInMonitorsForAllPartners(): Promise<{
       db
         .select({ id: partners.id })
         .from(partners)
-        .where(and(isNull(partners.deletedAt), sql`${partners.settings} -> 'builtInMonitors' IS NULL`)),
+        .where(
+          and(
+            isNull(partners.deletedAt),
+            sql`(
+              ${partners.settings} -> 'builtInMonitors' IS NULL
+              OR (${partners.settings} -> 'builtInMonitors' ->> 'version')::int < ${BUILT_IN_MONITORS_VERSION}
+            )`,
+          ),
+        ),
     ),
   );
 

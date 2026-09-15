@@ -70,6 +70,17 @@ export const PATCH_FAILURE_RETRYABLE_CLASSES: ReadonlySet<PatchFailureClass> = n
  */
 export const PATCH_CHASE_MAX_ATTEMPTS = 2;
 
+/**
+ * AI patch agent W04 (#5750) — the `alert_templates.category` every patch
+ * alert source carries: the built-in `patch_compliance` monitor's compiled
+ * template, the patch-job-failure template and the reboot-pending template.
+ * `classifyAlertAsPatchWork` (apps/api `services/aiAgents/patchWorkClassifier.ts`)
+ * reaches it through `alerts.rule_id → alert_rules.template_id`, and
+ * `AiAgentTriggers.alertCategories` matches against it. One spelling, shared,
+ * so a template and the classifier cannot drift apart.
+ */
+export const PATCH_ALERT_CATEGORY = 'patching' as const;
+
 /** Fleet posture the model reports at the top of the plan. */
 export interface PatchPlanPosture {
   /** 0-100. */

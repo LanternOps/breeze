@@ -46,6 +46,14 @@ export interface MonitorKindSpec<C = Record<string, unknown>> {
   titleTemplate: string;
   messageTemplate: string;
   /**
+   * The `alert_templates.category` the compiler stamps on this kind's compiled
+   * template (`monitorCompiler.ts`'s `buildCompiledTemplate`). Defaults to
+   * `'monitor'` when absent — most kinds don't set this. A kind whose alerts
+   * feed a downstream classifier (e.g. `patch_compliance` → the AI patch agent)
+   * sets it to that classifier's category constant instead.
+   */
+  alertCategory?: string;
+  /**
    * True when the handler type is delivered/evaluated by the agent itself
    * (service/process watches) rather than the server-side sweep. Kept on the
    * spec until the agent-delivered watch path (W4) exists so callers can branch

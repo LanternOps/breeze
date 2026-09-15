@@ -1,4 +1,4 @@
-import { monitorConditionSchemas } from '@breeze/shared';
+import { monitorConditionSchemas, PATCH_ALERT_CATEGORY } from '@breeze/shared';
 import type { MonitorKindSpec } from './types';
 
 type C = { operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'; value: number };
@@ -14,4 +14,8 @@ export const patchComplianceKind: MonitorKindSpec<C> = {
   titleTemplate: 'Patch Compliance on {{deviceName}}',
   messageTemplate: '{{ruleName}}: patch compliance {{actualValue}}% ({{operator}} {{threshold}}%)',
   toAlertCondition: (c) => ({ type: 'patch_compliance', operator: c.operator, value: c.value }),
+  // Stamped on the compiled alert template so the AI patch agent's failure
+  // classifier can recognise a patch-compliance alert without pattern-matching
+  // on kind/condition shape.
+  alertCategory: PATCH_ALERT_CATEGORY,
 };
