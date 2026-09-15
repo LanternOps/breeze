@@ -625,6 +625,27 @@ describe('site scope on device-reading monitor routes', () => {
       expect(body.data.map((d) => d.deviceId)).toEqual([DEVICE_IN_A, DEVICE_IN_B]);
       expect(dialect.sqlToQuery(wheres[0] as SQL).sql).not.toMatch(/"site_id"/);
     });
+
+    it('drops a device that raced a delete (resolver returns device_missing) from the listing, same as no match (#5677)', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      queueAttachmentLookups();
+      selectMock.mockReturnValueOnce(
+        selectChain([
+          { id: DEVICE_IN_A, hostname: 'a', displayName: null },
+          { id: DEVICE_IN_B, hostname: 'b', displayName: null },
+        ]),
+      );
+      // DEVICE_IN_A raced a delete; DEVICE_IN_B still resolves normally.
+      vi.mocked(resolveMonitorsForDeviceMock)
+        .mockResolvedValueOnce({ kind: 'device_missing' } as never)
+        .mockResolvedValueOnce(resolvedMatch as never);
+
+      const res = await jsonRequest(buildApp(), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { data: Array<{ deviceId: string }> };
+      expect(body.data.map((d) => d.deviceId)).toEqual([DEVICE_IN_B]);
+    });
   });
 
   describe('POST /monitor-definitions/:id/test', () => {

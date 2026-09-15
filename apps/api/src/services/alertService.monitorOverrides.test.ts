@@ -218,4 +218,16 @@ describe('getApplicableRules — invalid monitor override fallback (#5289)', () 
     });
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
+
+  it('a device that raced a delete (resolver returns device_missing) falls back to the un-overridden template condition, same as no override, without throwing (#5677)', async () => {
+    pushHappyPathQueue();
+    resolveMonitorsForDeviceMock.mockResolvedValue({ kind: 'device_missing' });
+
+    const result = await getApplicableRules(DEVICE_ID);
+
+    expect(result).toHaveLength(1);
+    const [applicable] = result;
+    expect(applicable?.effectiveConditions).toEqual(TEMPLATE_CONDITIONS);
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+  });
 });

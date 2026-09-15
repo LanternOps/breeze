@@ -2200,7 +2200,15 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
   // the monitoring update entirely this heartbeat instead, same as
   // `resolvePolicyMonitoringSettings` already does when its own device
   // lookup misses.
-  if (monitorResult.kind === 'device_missing') return null;
+  if (monitorResult.kind === 'device_missing') {
+    // Surface this: the device just authenticated the heartbeat that reached
+    // this code, so a vanish between then and here should be rare. Silently
+    // omitting the monitoring update is the right behavior (see above), but
+    // silent AND invisible would hide a real bug (e.g. a stale deviceId)
+    // behind "just a benign race" forever (#5677 review).
+    console.warn(`[monitoring] device vanished mid-resolution, omitting monitoring update for device ${deviceId}`);
+    return null;
+  }
   const monitorWatches = monitorResult.watches;
 
   // Null ONLY when both sources are empty AND no policy resolved. A policy that
