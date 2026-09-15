@@ -721,6 +721,11 @@ bmrRoutes.post(
       }
 
       const subject = await captureRecoveryAuthorizationSubject(auth, orgId, 'media');
+      // #5411: a rebuild must not carry the previous attempt's failure
+      // metadata forward — `error` (and its retirement below) is dropped so a
+      // rebuilt row never shows a stale error next to a fresh pending/ready
+      // status.
+      const { error: _staleError, ...metadataWithoutError } = asRecord(existing.metadata);
       const reset = await db.transaction(async (tx) => {
         const [row] = await tx.update(recoveryMediaArtifacts).set({
           status: 'pending',
@@ -732,7 +737,7 @@ bmrRoutes.post(
           signingKeyId: null,
           signedAt: null,
           metadata: {
-            ...asRecord(existing.metadata),
+            ...metadataWithoutError,
             restartedAt: new Date().toISOString(),
           },
           completedAt: null,
