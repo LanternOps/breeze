@@ -44,7 +44,7 @@ vi.mock('../jobs/toolSourceDiscoveryWorker', () => ({
 }));
 
 vi.mock('../services/toolSources/resolver', () => ({ resolveTenantToolByName: vi.fn() }));
-vi.mock('../services/toolSources/execute', () => ({ executeTenantTool: vi.fn() }));
+vi.mock('../services/toolSources/execute', () => ({ executeTenantToolDetailed: vi.fn() }));
 
 vi.mock('../services/toolSources/service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/toolSources/service')>();
@@ -71,7 +71,7 @@ import { authMiddleware } from '../middleware/auth';
 import { toolSourcesEnabled } from '../config/env';
 import { enqueueToolSourceDiscovery } from '../jobs/toolSourceDiscoveryWorker';
 import { resolveTenantToolByName } from '../services/toolSources/resolver';
-import { executeTenantTool } from '../services/toolSources/execute';
+import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import * as service from '../services/toolSources/service';
 
 // zod's `.uuid()` validates RFC4122 v4 shape specifically (version nibble `4`,
@@ -341,7 +341,7 @@ describe('toolSourcesRoutes', () => {
       });
 
       expect(res.status).toBe(403);
-      expect(vi.mocked(executeTenantTool)).not.toHaveBeenCalled();
+      expect(vi.mocked(executeTenantToolDetailed)).not.toHaveBeenCalled();
     });
 
     it('dispatches a tier-1 test call through executeTenantTool and returns its result', async () => {
@@ -352,7 +352,7 @@ describe('toolSourcesRoutes', () => {
       });
       const descriptor = { qualifiedName: 'hudu__get_asset' };
       vi.mocked(resolveTenantToolByName).mockResolvedValue(descriptor as any);
-      vi.mocked(executeTenantTool).mockResolvedValue('{"ok":true}');
+      vi.mocked(executeTenantToolDetailed).mockResolvedValue({ isError: false, text: '{"ok":true}' });
 
       const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
         method: 'POST',
@@ -364,12 +364,41 @@ describe('toolSourcesRoutes', () => {
       const body = await res.json();
       expect(body.data.result).toBe('{"ok":true}');
       expect(typeof body.data.durationMs).toBe('number');
-      expect(vi.mocked(executeTenantTool)).toHaveBeenCalledWith(
+      expect(vi.mocked(executeTenantToolDetailed)).toHaveBeenCalledWith(
         descriptor,
         { assetId: '1' },
         expect.anything(),
         { surface: 'test' },
       );
+    });
+
+    // A failed test call must not read as a success: the web client uses
+    // runAction, which only treats an HTTP-200 body carrying `success: false`
+    // as a failure. Returning 200 with the failure buried inside `result`
+    // would surface as "Test call succeeded" in the UI.
+    it('reports a failed test call as success:false with isError set', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow(),
+        tool: makeToolRow({ tier: 1 }),
+      });
+      vi.mocked(resolveTenantToolByName).mockResolvedValue({ qualifiedName: 'hudu__get_asset' } as any);
+      vi.mocked(executeTenantToolDetailed).mockResolvedValue({
+        isError: true,
+        text: 'Tool rate limit exceeded',
+      });
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.data.isError).toBe(true);
+      expect(body.data.result).toContain('Tool rate limit exceeded');
     });
   });
 

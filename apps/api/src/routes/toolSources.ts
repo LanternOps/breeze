@@ -29,7 +29,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../services/partnerWideAccess';
 import { enqueueToolSourceDiscovery } from '../jobs/toolSourceDiscoveryWorker';
 import { resolveTenantToolByName } from '../services/toolSources/resolver';
-import { executeTenantTool } from '../services/toolSources/execute';
+import { executeTenantToolDetailed } from '../services/toolSources/execute';
 import {
   bulkToolsAction,
   createToolSourceRow,
@@ -348,9 +348,17 @@ toolSourcesRoutes.post(
     if (!descriptor) return c.json({ error: 'Tool is not currently available' }, 404);
 
     const start = Date.now();
-    const result = await executeTenantTool(descriptor, input, auth, { surface: 'test' });
+    // Detailed form: a test call that FAILED must not read as a success. The
+    // web client uses `runAction`, which treats an HTTP-200 body carrying
+    // `success: false` as a failure (CLAUDE.md, "Web Mutation Handlers") — a
+    // bare 200 with the failure text buried in `result` would surface as
+    // "Test call succeeded" in the UI that lands in PR C.
+    const { isError, text } = await executeTenantToolDetailed(descriptor, input, auth, { surface: 'test' });
     const durationMs = Date.now() - start;
 
-    return c.json({ data: { result, durationMs } });
+    return c.json({
+      success: !isError,
+      data: { result: isError ? JSON.stringify({ error: text }) : text, isError, durationMs },
+    });
   },
 );
