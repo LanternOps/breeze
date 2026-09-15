@@ -23,7 +23,7 @@
  * the underlying condition clearing) — it cancels the watch instead.
  */
 import { and, asc, desc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
-import type { AgentRunVerdict, AiAgentMode } from '@breeze/shared';
+import type { AgentRunVerdict, AiAgentMode, AiSweepKind } from '@breeze/shared';
 import {
   db,
   getCurrentDbAccessContext,
@@ -346,6 +346,96 @@ export async function createIntentFixWatchRow(
     // exists (only a redelivery that also re-won a terminal CAS can get here,
     // which the release guard makes unreachable in practice). Report ITS id
     // so the null contract above stays literally true.
+    const [existing] = await database
+      .select({ id: aiAgentFixWatches.id })
+      .from(aiAgentFixWatches)
+      .where(and(eq(aiAgentFixWatches.intentId, input.intentId), eq(aiAgentFixWatches.orgId, input.orgId)))
+      .limit(1);
+    return existing?.id ?? null;
+  });
+}
+
+/** Everything a SUBJECT-anchored watch needs from a just-released
+ *  sweep-minted intent (#5751 W02, #5753). */
+export interface SweepIntentForWatch {
+  intentId: string;
+  orgId: string;
+  runId: string;
+  agentId: string;
+  /** The INTENT's `scope_device_id`. A sweep run is device-less by
+   *  construction, so the run's own `device_id` is null and must never be
+   *  consulted here. */
+  deviceId: string;
+  subjectKind: AiSweepKind;
+  subjectKey: string;
+  /** The colon key `canonicalPolicyKey` resolved for this intent. */
+  opKey: string;
+}
+
+/**
+ * The ALERT-LESS sibling of `createIntentFixWatchRow` (#5751 W02, #5753).
+ *
+ * A sweep run carries no triggering alert, so `loadWatchAnchor` — which reads
+ * `rule_id` / `device_id` / `config_item_name` off the alert row — returns
+ * null for every sweep intent, and the alert sibling could therefore never
+ * open a watch for one. That is the whole reason `watchReleasedIntent` used to
+ * fall through to an unconditional `verified` credit for the entire sweep
+ * lane. Here the anchor is a SUBJECT instead: `(subject_kind, subject_key)`,
+ * re-probed by `sweepSubjectProbe.ts` in both watch phases.
+ *
+ * Everything else is deliberately identical to the alert sibling:
+ *  - `source_kind: 'intent'`, so `recordWatchVerdictEvidence` keeps mapping
+ *    these to `namespace: 'policy_key'` — the namespace the graduation ladder
+ *    reads — with no change at all to that function;
+ *  - the same `insertIntentFixWatchRowQuery`, so the partial `intent_id`
+ *    UNIQUE arbiter and its repeated `WHERE intent_id IS NOT NULL` predicate
+ *    are written once (a partial unique index cannot be inferred as the
+ *    arbiter without its predicate — omitting it is a runtime 42P10 on
+ *    exactly the redelivery the clause exists for);
+ *  - the same partner fail-closed rule, and the same null contract.
+ *
+ * Returns null ONLY when no watch row exists for this intent afterwards (the
+ * org has no resolvable partner). A conflict returns the EXISTING row's id,
+ * because the caller reads null as "nothing will ever verify this operation".
+ */
+export async function createSweepFixWatchRow(
+  input: SweepIntentForWatch,
+  database: WatchDatabase = db,
+): Promise<string | null> {
+  return inSystemDbContext(async () => {
+    const [org] = await database
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, input.orgId))
+      .limit(1);
+    if (!org?.partnerId) {
+      console.warn('[fixWatch] run org has no resolvable partner — skipping sweep watch', {
+        intentId: input.intentId, runId: input.runId, orgId: input.orgId,
+      });
+      return null;
+    }
+
+    const [watch] = await insertIntentFixWatchRowQuery({
+      orgId: input.orgId,
+      partnerId: org.partnerId,
+      agentId: input.agentId,
+      runId: input.runId,
+      intentId: input.intentId,
+      // There is no alert and no rule behind a sweep finding. `config_item_name`
+      // stays null too: it exists to key a rule-LESS alert's recurrence query,
+      // and a subject watch's recurrence is a probe, not an alert lookup.
+      alertId: null,
+      ruleId: null,
+      configItemName: null,
+      deviceId: input.deviceId,
+      subjectKind: input.subjectKind,
+      subjectKey: input.subjectKey,
+      state: 'pending',
+      sourceKind: 'intent',
+      opKeys: [input.opKey],
+    }, database);
+    if (watch) return watch.id;
+
     const [existing] = await database
       .select({ id: aiAgentFixWatches.id })
       .from(aiAgentFixWatches)

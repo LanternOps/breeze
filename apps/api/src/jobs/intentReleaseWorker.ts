@@ -1,5 +1,5 @@
 import { Job, Worker } from 'bullmq';
-import type { AiAgentRecipients } from '@breeze/shared';
+import { parseSweepTriggerKey, type AiAgentRecipients } from '@breeze/shared';
 import { and, eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { actionIntents, type ActionIntent, type ActionIntentStatus } from '../db/schema/actionIntents';
@@ -26,7 +26,8 @@ import { resolveRecipientUserIds } from '../services/aiAgents/recipients';
 import { transitionIntent, type ActionIntentTransitionPatch } from '../services/actionIntents/intentService';
 import { canonicalPolicyKey } from '../services/actionIntents/canonicalPolicyKey';
 import { insertOpEvidence, intentEvidenceSourceId } from '../services/aiAgents/opEvidence';
-import { createIntentFixWatchRow } from '../services/aiAgents/fixWatch';
+import { createIntentFixWatchRow, createSweepFixWatchRow } from '../services/aiAgents/fixWatch';
+import { isActEligibleSweepKind } from '../services/aiAgents/sweepSubjectProbe';
 import {
   demoteSupervisedKey,
   notifyDemotion,
@@ -382,6 +383,21 @@ interface IntentEvidenceAnchor {
   sourceId: string;
   runId: string;
   /**
+   * #5751 W02 (#5753) — the sweep arm's inputs, read off the INTENT row the
+   * caller already holds (W01's `trigger_kind`/`trigger_key`, plus P2-2's
+   * `scope_device_id`). Carried on the anchor rather than re-read so
+   * `watchReleasedIntent` keeps needing no query of its own.
+   *
+   * `scopeDeviceId` is the device a subject watch probes. It is the INTENT's,
+   * never the run's: a sweep run is device-less by construction, and this
+   * column tombstones to NULL when the device is deleted or moved org — at
+   * which point there is no subject device left and the C4 fallback is the
+   * correct answer.
+   */
+  triggerKind: string | null;
+  triggerKey: string | null;
+  scopeDeviceId: string | null;
+  /**
    * The ORG agent row a key was actually revoked from by the auto-demote that
    * rode this evidence write (P2-5 Task 6), or null when nothing was revoked
    * — a successful outcome, a key held only by the partner ceiling, or an org
@@ -467,6 +483,9 @@ async function recordIntentTerminalEvidence(
         opKey: canonicalPolicyKey(intent.actionName, intent.arguments),
         sourceId: intentEvidenceSourceId(intent.id),
         runId,
+        triggerKind: intent.triggerKind ?? null,
+        triggerKey: intent.triggerKey ?? null,
+        scopeDeviceId: intent.scopeDeviceId ?? null,
         demotedOrgAgentId: null,
       };
 
@@ -545,12 +564,21 @@ async function recordIntentTerminalEvidence(
  * Three outcomes, and the difference between them is the whole point:
  *  - a watch row exists → return its id; the watch will grade this operation
  *    `verified` or `recurred` (Task 6), so nothing is credited now;
- *  - no watch is POSSIBLE (the run has no triggering alert, or that alert is
- *    no longer readable in this org) → credit `verified` on the same source
- *    id, in the same transaction. C4: an operation no watch will ever look at
- *    must not sit un-gradeable forever;
+ *  - no watch is POSSIBLE (the run has no triggering alert AND the intent
+ *    names no probeable sweep subject, or that alert is no longer readable in
+ *    this org) → credit `verified` on the same source id, in the same
+ *    transaction. C4: an operation no watch will ever look at must not sit
+ *    un-gradeable forever;
  *  - the attempt FAILED → credit nothing. An operation whose verification
  *    lane was lost is not "verified", and the ledger is immutable.
+ *
+ * #5751 W02 (#5753) NARROWED the middle branch. Its premise — "no watch is
+ * possible" — stopped being true for sweep-minted intents: a sweep run has no
+ * triggering alert, but a sweep FINDING has a subject, and a subject can be
+ * re-probed. Until the sweep arm below existed, every sweep-minted intent fell
+ * straight through to the `verified` credit, which made P2-5's graduation
+ * ladder a click-counter for the whole sweep lane (spec §1.1). The fallback is
+ * narrowed, NOT removed — it still stands for everything else.
  */
 async function watchReleasedIntent(
   intent: ActionIntent,
@@ -573,6 +601,40 @@ async function watchReleasedIntent(
           tx,
         );
         if (watchId) return watchId;
+      }
+
+      // #5751 W02 (#5753) — the sweep arm, deliberately BETWEEN the alert arm
+      // and the unconditional credit, so the fallback is narrowed rather than
+      // deleted. All four conditions are required and each has a real failure
+      // it excludes: a non-sweep trigger (nothing to probe), a tombstoned
+      // scope device (the target is gone, and the run has no device of its
+      // own to substitute), an unparseable or subject-less key (a half-record
+      // cannot be probed), and a kind with no registered probe (a watch that
+      // could only ever answer `unknown` would strand the operation — which is
+      // precisely what C4 exists to prevent).
+      const subject = anchor.triggerKind === 'sweep_finding'
+        ? parseSweepTriggerKey(anchor.triggerKey)
+        : null;
+      if (subject && anchor.scopeDeviceId && isActEligibleSweepKind(subject.kind)) {
+        const watchId = await createSweepFixWatchRow(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: anchor.runId,
+            agentId: anchor.agentId,
+            deviceId: anchor.scopeDeviceId,
+            subjectKind: subject.kind,
+            subjectKey: subject.subjectKey,
+            opKey: anchor.opKey,
+          },
+          tx,
+        );
+        if (watchId) return watchId;
+        // Creation failed for a sweep intent: credit NOTHING and return null.
+        // Falling through would write the very `verified` row this wave exists
+        // to prevent — a LOST verification lane is not a verification, and the
+        // ledger is immutable, so there is no undoing it later.
+        return null;
       }
 
       await insertOpEvidence(

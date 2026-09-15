@@ -128,6 +128,11 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     // verify the operation.
     fixWatchMock: {
       createIntentFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
+      // #5751 W02 (#5753) — the alert-less sibling. Same boundary, same
+      // reason: its own insert/conflict contract is pinned in
+      // services/aiAgents/fixWatch.test.ts; what THIS file proves is WHICH
+      // arm of watchReleasedIntent a given intent takes.
+      createSweepFixWatchRow: vi.fn(async () => 'watch-1' as string | null),
       enqueueFixWatchPhase1: vi.fn(async () => undefined),
     },
     // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary for
@@ -452,6 +457,7 @@ vi.mock('../services/actionIntents/canonicalPolicyKey', () => ({
 }));
 vi.mock('../services/aiAgents/fixWatch', () => ({
   createIntentFixWatchRow: fixWatchMock.createIntentFixWatchRow,
+  createSweepFixWatchRow: fixWatchMock.createSweepFixWatchRow,
 }));
 vi.mock('./fixWatchWorker', () => ({
   enqueueFixWatchPhase1: fixWatchMock.enqueueFixWatchPhase1,
@@ -1831,6 +1837,9 @@ describe('releaseApprovedIntent', () => {
      *  is anchored to (P2-5 Task 5). */
     const RUN_ALERT_ID = 'alert-1';
     const WATCH_ID = 'watch-1';
+    /** A sweep run is device-LESS, so a sweep-minted intent carries its target
+     *  in `scope_device_id` — the device a subject watch probes (#5753). */
+    const SCOPE_DEVICE_ID = 'device-scope-1';
 
     const agentAuth = {
       principal: { kind: 'ai_agent' as const, agentId: AGENT_ID, runId: AGENT_RUN_ID },
@@ -1893,6 +1902,8 @@ describe('releaseApprovedIntent', () => {
       canonicalKeyMock.canonicalPolicyKey.mockReturnValue(CANONICAL_OP_KEY);
       fixWatchMock.createIntentFixWatchRow.mockReset();
       fixWatchMock.createIntentFixWatchRow.mockResolvedValue(WATCH_ID);
+      fixWatchMock.createSweepFixWatchRow.mockReset();
+      fixWatchMock.createSweepFixWatchRow.mockResolvedValue(WATCH_ID);
       fixWatchMock.enqueueFixWatchPhase1.mockReset();
       fixWatchMock.enqueueFixWatchPhase1.mockResolvedValue(undefined);
       demoteMock.demoteSupervisedKey.mockReset();
@@ -2483,6 +2494,157 @@ describe('releaseApprovedIntent', () => {
         // able to roll back.
         expect(dbMock.transaction).toHaveBeenCalledTimes(2);
         expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      // ---------------------------------------------------------------------
+      // #5751 W02 (#5753) — the SWEEP arm, inserted between the alert arm and
+      // the unconditional credit. Before it existed, every sweep-minted
+      // intent fell straight through to `verified`, which made P2-5's
+      // graduation ladder a click-counter for the whole sweep lane.
+      // ---------------------------------------------------------------------
+      it('a sweep-minted intent opens a SUBJECT watch and writes NO verified row', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        // A sweep RUN carries no alert — that is the premise of the whole wave.
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).not.toHaveBeenCalled();
+        expect(fixWatchMock.createSweepFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createSweepFixWatchRow).toHaveBeenCalledWith(
+          {
+            intentId: intent.id,
+            orgId: intent.orgId,
+            runId: AGENT_RUN_ID,
+            agentId: AGENT_ID,
+            deviceId: SCOPE_DEVICE_ID,
+            subjectKind: 'service_down',
+            subjectKey: 'MSSQLSERVER',
+            opKey: CANONICAL_OP_KEY,
+          },
+          dbMock.executor,
+        );
+        // Only the `executed` row. THE assertion of this wave.
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).toHaveBeenCalledWith(WATCH_ID);
+      });
+
+      it('a sweep-minted intent whose sweep watch could NOT be created credits NOTHING — not verified', async () => {
+        // The failure mode that would otherwise reintroduce the bug through
+        // the back door: falling through to the credit below would write the
+        // very `verified` row this wave exists to prevent.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        fixWatchMock.createSweepFixWatchRow.mockResolvedValueOnce(null);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
+      it('a sweep intent whose kind has no probe is NOT act-eligible, so C4 still credits it verified', async () => {
+        // `failed_backups` has no probe: nothing will ever grade it, which is
+        // exactly the situation C4's fallback is for. Opening a watch that can
+        // only ever return `unknown` would strand the operation instead.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:failed_backups:nightly',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(2);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('a sweep intent whose scope device was tombstoned falls back to C4 rather than guessing a device', async () => {
+        // `scope_device_id` tombstones to NULL when the device is deleted or
+        // moved org. There is no subject device left to probe, and the run's
+        // own device_id is null for a sweep — inventing one would probe the
+        // wrong machine.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: null,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('a sweep intent with a subject-less trigger key falls back to C4 — a half-record cannot be probed', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[1]![0]).toEqual([
+          expect.objectContaining({ metric: 'verified' }),
+        ]);
+      });
+
+      it('an ALERT-anchored intent that ALSO carries a sweep trigger still takes the alert arm — the alert is the better anchor', async () => {
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        // Run HAS an alert (the default runRow).
+        primeAgentThroughRevalidation(intent);
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(fixWatchMock.createIntentFixWatchRow).toHaveBeenCalledTimes(1);
+        expect(fixWatchMock.createSweepFixWatchRow).not.toHaveBeenCalled();
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
       });
 
       it('an alert no longer readable in the org yields no watch — same `verified` credit', async () => {

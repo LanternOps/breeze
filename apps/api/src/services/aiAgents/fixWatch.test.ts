@@ -212,6 +212,7 @@ import {
   checkFixWatchPhase2,
   createFixWatchRow,
   createIntentFixWatchRow,
+  createSweepFixWatchRow,
   FIX_HOLD_MINUTES,
   listPendingWatchesForRecovery,
   RECOVERY_TIMEOUT_HOURS,
@@ -220,6 +221,7 @@ import {
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
   type IntentForWatch,
+  type SweepIntentForWatch,
 } from './fixWatch';
 // Type-only (erased at runtime, so no module cycle and no runLoop mock): the
 // structural `actOpKey` field `FixWatchOutcomeInput` snapshots must keep
@@ -615,6 +617,112 @@ describe('createIntentFixWatchRow', () => {
 
     expect(id).toBe(WATCH_ID);
     expect(executor.select).toHaveBeenCalledTimes(2);
+    expect(executor.insert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createSweepFixWatchRow — the ALERT-LESS sibling (#5751 W02, #5753)
+// ---------------------------------------------------------------------------
+describe('createSweepFixWatchRow', () => {
+  function sweepIntentForWatch(overrides: Partial<SweepIntentForWatch> = {}): SweepIntentForWatch {
+    return {
+      intentId: INTENT_ID,
+      orgId: ORG_ID,
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+      deviceId: DEVICE_ID,
+      subjectKind: 'service_down',
+      subjectKey: 'MSSQLSERVER',
+      opKey: OP_KEY,
+      ...overrides,
+    };
+  }
+
+  it('inserts alert_id NULL, rule_id NULL, source_kind intent, the subject pair and the scoped device', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]); // org lookup only — there is no alert to read
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+    expect(state.insertValues).toHaveLength(1);
+    expect(state.insertValues[0]).toMatchObject({
+      orgId: ORG_ID,
+      partnerId: PARTNER_ID,
+      agentId: AGENT_ID,
+      runId: RUN_ID,
+      intentId: INTENT_ID,
+      alertId: null,
+      ruleId: null,
+      configItemName: null,
+      // The INTENT's scope device, not the run's — a sweep run is device-less.
+      deviceId: DEVICE_ID,
+      subjectKind: 'service_down',
+      subjectKey: 'MSSQLSERVER',
+      state: 'pending',
+      // LOAD-BEARING: recordWatchVerdictEvidence maps 'intent' to namespace
+      // 'policy_key', the namespace the graduation ladder reads. A third
+      // source kind would silently move sweep evidence out of the ladder.
+      sourceKind: 'intent',
+      opKeys: [OP_KEY],
+    });
+  });
+
+  it('reads no alert at all — a sweep run has none, and loadWatchAnchor would return null for every sweep intent', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createSweepFixWatchRow(sweepIntentForWatch());
+
+    // Exactly ONE select: the partner lookup.
+    expect(state.selectCount).toBe(1);
+    expect(sqlText(state.selectWheres[0])).toContain('"organizations"."id"');
+  });
+
+  it('arbitrates on the partial intent_id UNIQUE, predicate repeated (a partial index cannot be inferred without it — 42P10)', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createSweepFixWatchRow(sweepIntentForWatch());
+
+    const clause = state.insertConflicts[0]!;
+    expect(sqlText(clause.where)).toContain('"intent_id" is not null');
+  });
+
+  it('returns the EXISTING watch id on redelivery — null must keep meaning "nothing will ever verify this"', async () => {
+    state.selectQueue.push(
+      [{ partnerId: PARTNER_ID }],
+      [{ id: WATCH_ID }], // the row the partial UNIQUE already holds
+    );
+    state.insertReturningQueue.push([]); // ON CONFLICT DO NOTHING — no row back
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+  });
+
+  it('returns null when the org has no resolvable partner — the same fail-closed rule as the alert sibling', async () => {
+    state.selectQueue.push([]); // org lookup — nothing found
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBeNull();
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('issues every statement through the SAVEPOINT executor it was handed, never the ambient db', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+    const executor = {
+      select: vi.fn((...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args)),
+      insert: vi.fn((...args: unknown[]) => (db.insert as (...a: unknown[]) => unknown)(...args)),
+    };
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch(), executor as never);
+
+    expect(id).toBe(WATCH_ID);
+    expect(executor.select).toHaveBeenCalledTimes(1);
     expect(executor.insert).toHaveBeenCalledTimes(1);
   });
 });
