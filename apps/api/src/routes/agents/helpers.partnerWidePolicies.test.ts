@@ -453,6 +453,15 @@ describe('partner-owned policies actually reach the agent payload', () => {
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [watchRow],
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      // This test only asserts systemEscapeMock, but leaving the queue
+      // short here would silently exercise the device_missing path instead
+      // of the intended "policy resolved, monitors resolved empty" one.
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     await buildMonitoringConfigUpdate(DEVICE_ID);
