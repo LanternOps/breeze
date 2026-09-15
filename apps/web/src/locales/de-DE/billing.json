@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Diese Vereinbarungsvorlage archivieren?",
         "message": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "messageUnknownUsage": "Es ließ sich nicht prüfen, wo diese Vorlage verwendet wird. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
         "confirm": "Vorlage archivieren"
       }
     },

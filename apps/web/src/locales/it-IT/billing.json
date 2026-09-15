@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Archiviare questo modello di accordo?",
         "message": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati. I preventivi già vincolati continuano a funzionare, ma non sarà possibile aggiungere nuove sezioni di accordo.",
+        "messageUnknownUsage": "Non è stato possibile verificare dove viene usato questo modello. I preventivi già vincolati continuano a funzionare, ma non sarà possibile aggiungere nuove sezioni di accordo.",
         "confirm": "Archivia modello"
       }
     },

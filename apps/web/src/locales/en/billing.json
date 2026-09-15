@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Archive this agreement template?",
         "message": "Used on {{quotes}} quotes · {{signed}} signed agreements. Quotes already pinned to it keep working, but no new agreement sections can be added.",
+        "messageUnknownUsage": "We couldn't check what this template is used by. Quotes already pinned to it keep working, but no new agreement sections can be added.",
         "confirm": "Archive template"
       }
     },

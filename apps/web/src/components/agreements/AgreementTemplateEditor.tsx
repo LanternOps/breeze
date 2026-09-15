@@ -65,6 +65,11 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
   // a wrong or em-dashed count in a header that also feeds an archive
   // confirmation is worse than no count.
   const [usage, setUsage] = useState<TemplateUsage | null>(null);
+  // `usage === null` means UNKNOWN — not yet back, or the fetch failed. The
+  // archive confirmation branches on it rather than defaulting to `?? 0`: that
+  // would turn "unknown" into a confident "0 quotes · 0 signed agreements"
+  // about a template that may be in heavy use, and archiveTemplate has no
+  // server-side usage check, so this dialog is the only signal a technician gets.
   // The body value we last seeded from the server. `body !== lastLoaded` means the
   // user has typed un-saved changes — used to guard the re-seed in load() and to
   // block Publish (which would publish the OLD stored draft while silently
@@ -481,10 +486,14 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
         onClose={() => setArchiveConfirmOpen(false)}
         onConfirm={() => void confirmArchive()}
         title={t('agreements.templateEditor.archiveConfirm.title')}
-        message={t('agreements.templateEditor.archiveConfirm.message', {
-          quotes: usage?.quoteCount ?? 0,
-          signed: usage?.signedCount ?? 0,
-        })}
+        message={
+          usage
+            ? t('agreements.templateEditor.archiveConfirm.message', {
+                quotes: usage.quoteCount,
+                signed: usage.signedCount,
+              })
+            : t('agreements.templateEditor.archiveConfirm.messageUnknownUsage')
+        }
         confirmLabel={t('agreements.templateEditor.archiveConfirm.confirm')}
         confirmTestId="agreement-template-archive-confirm"
         dialogTestId="agreement-template-archive-confirm-dialog"

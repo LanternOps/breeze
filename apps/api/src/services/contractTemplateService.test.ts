@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import type { AuthContext } from '../middleware/auth';
-import type { SQL } from 'drizzle-orm';
-import { PgDialect } from 'drizzle-orm/pg-core';
+import { inArray, type SQL } from 'drizzle-orm';
+import { PgDialect, type AnyPgColumn } from 'drizzle-orm/pg-core';
 
 /** A genuinely loadable minimal PDF (pdf-lib can create these). Uploaded contract
  *  PDFs are now validated with PDFDocument.load at write time, so the happy-path
@@ -536,6 +536,25 @@ describe('contractTemplateService.getTemplateUsage', () => {
     expect(wheres).toContain('contract_template_versions');
     // `->>` yields text, so the subquery must cast; comparing text to uuid is 42883.
     expect(wheres).toContain('id::text');
+  });
+
+  it('scopes BOTH aggregates to the caller org condition, so a partner-wide template reports only readable orgs', async () => {
+    queueResult([PARTNER_TEMPLATE]);      // getTemplateOr404 — partner-wide (orgId null)
+    queueResult([{ n: 0 }]);
+    queueResult([{ n: 0 }]);
+
+    // The default makeAuth() returns `orgCondition: () => undefined`, which
+    // skips both `if (…OrgCond)` pushes — so without this case the tenancy
+    // narrowing the function's docblock promises has no coverage at all.
+    const auth = makeAuth({ orgCondition: ((col: AnyPgColumn) => inArray(col, ['org-1'])) as AuthContext['orgCondition'] });
+    await svc.getTemplateUsage(auth, 'tmpl-partner-1');
+
+    const wheres = chain.where.mock.calls.map((c) => render(c[0]));
+    // Both the quote_blocks aggregate and the contract_documents aggregate.
+    const scoped = wheres.filter((w) => w.includes('"org_id" in ('));
+    expect(scoped).toHaveLength(2);
+    expect(scoped.some((w) => w.includes("->>'templateversionid'"))).toBe(true);
+    expect(scoped.some((w) => w.includes('template_id'))).toBe(true);
   });
 
   it('404s an invisible template before counting anything', async () => {

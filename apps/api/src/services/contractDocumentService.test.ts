@@ -398,6 +398,23 @@ describe('contractDocumentService.listContractDocuments predicates', () => {
     expect(all).not.toContain('is not null');
   });
 
+  it('keeps contractId winning over an explicit linked filter', async () => {
+    const sqlText = await whereSqlFor({ contractId: 'ct-1', linked: 'linked' });
+    expect(sqlText).toContain('"contract_id" = ');
+    // No link predicate at all: contractId already pins the rows.
+    expect(sqlText).not.toContain('is null');
+    expect(sqlText).not.toContain('is not null');
+  });
+
+  it('pins the service-level default for a caller that passes nothing', async () => {
+    // The route always supplies `linked` via its Zod default, so this is the
+    // contract for any FUTURE direct caller (a worker, an export job): no args
+    // means unlinked-only, matching the route rather than the old "no filter".
+    const sqlText = await whereSqlFor({});
+    expect(sqlText).toContain('is null');
+    expect(sqlText).not.toContain('is not null');
+  });
+
   it('ANDs orgId with the caller org condition rather than substituting for it', async () => {
     const sqlText = await whereSqlFor({ orgId: 'org-2', linked: 'all' });
     // both the access condition (in (...)) and the narrowing equality survive

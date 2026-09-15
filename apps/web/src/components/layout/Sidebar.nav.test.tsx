@@ -330,4 +330,17 @@ describe('sidebar i18n seed', () => {
     await i18n.changeLanguage('pt-BR');
     await waitFor(() => expect(screen.getByText('Painel')).toBeInTheDocument());
   });
+  // The Agreements nav item points at /agreements/templates, and /agreements/signed
+  // is a SIBLING route, not a child — prefix matching alone leaves the item dark
+  // there. pathAliases is what fixes it, and it is otherwise untested.
+  it('keeps the Agreements item active on the sibling /agreements/signed route', async () => {
+    const activeHrefIn = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('a.bg-primary')).map((a) => a.getAttribute('href'));
+
+    for (const path of ['/agreements/templates', '/agreements/templates/abc-123', '/agreements/signed']) {
+      const { container, unmount } = render(<Sidebar currentPath={path} />);
+      await waitFor(() => expect(activeHrefIn(container)).toContain('/agreements/templates'));
+      unmount();
+    }
+  });
 });

@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Bu anlaşma şablonu arşivlensin mi?",
         "message": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
+        "messageUnknownUsage": "Bu şablonun nerede kullanıldığı denetlenemedi. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
         "confirm": "Şablonu arşivle"
       }
     },

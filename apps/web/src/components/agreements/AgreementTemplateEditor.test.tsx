@@ -222,4 +222,18 @@ describe('AgreementTemplateEditor', () => {
     expect(dialog).toHaveTextContent('7');
     expect(dialog).toHaveTextContent(/keep working/i);
   });
+  // Regression: `?? 0` in the confirm message used to turn "usage unknown" into
+  // a confident "0 quotes · 0 signed agreements" about a template that may be
+  // in heavy use — archiveTemplate has no server-side usage check, so this
+  // dialog is the only signal the technician gets.
+  it('never claims zero usage in the archive confirmation when the usage fetch failed', async () => {
+    api.getTemplateUsage.mockResolvedValue(resp({ error: 'boom' }, 500));
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    fireEvent.click(await screen.findByTestId('agreement-template-archive'));
+    const dialog = await screen.findByTestId('agreement-template-archive-confirm-dialog');
+    expect(dialog).not.toHaveTextContent(/0 quotes/i);
+    expect(dialog).toHaveTextContent(/couldn.t check what this template is used by/i);
+    // The warning half of the sentence must survive the fallback.
+    expect(dialog).toHaveTextContent(/keep working/i);
+  });
 });

@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Arquivar este modelo de acordo?",
         "message": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "messageUnknownUsage": "Não foi possível verificar onde este modelo é usado. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
         "confirm": "Arquivar modelo"
       }
     },

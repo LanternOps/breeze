@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "Archiver ce modèle d'entente ?",
         "message": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
+        "messageUnknownUsage": "Impossible de vérifier où ce modèle est utilisé. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
         "confirm": "Archiver le modèle"
       }
     },

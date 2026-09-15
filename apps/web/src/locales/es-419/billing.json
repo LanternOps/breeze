@@ -622,6 +622,7 @@
       "archiveConfirm": {
         "title": "¿Archivar esta plantilla de acuerdo?",
         "message": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados. Las cotizaciones ya fijadas a ella siguen funcionando, pero no se podrán agregar nuevas secciones de acuerdo.",
+        "messageUnknownUsage": "No pudimos verificar en qué se usa esta plantilla. Las cotizaciones ya fijadas a ella siguen funcionando, pero no se podrán agregar nuevas secciones de acuerdo.",
         "confirm": "Archivar plantilla"
       }
     },
