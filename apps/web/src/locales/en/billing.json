@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Download agreement",
         "previewTitle": "{{name}} agreement",
-        "unavailable": "Contract file unavailable",
+        "unavailable": "Agreement file unavailable",
         "versionFooter": "{{name}} — v{{version}}"
       },
       "draft": "Draft",

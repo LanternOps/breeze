@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Anlaşmayı indirin",
         "previewTitle": "{{name}} anlaşması",
-        "unavailable": "Sözleşme dosyası mevcut değil",
+        "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
       "draft": "Taslak",

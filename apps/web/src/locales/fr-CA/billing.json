@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Télécharger l'entente",
         "previewTitle": "Entente {{name}}",
-        "unavailable": "Fichier du contrat indisponible",
+        "unavailable": "Fichier de l'entente indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
       "draft": "Brouillon",

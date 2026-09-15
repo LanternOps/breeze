@@ -675,6 +675,37 @@ describe('RunDetailPage narrative', () => {
     expect(screen.queryByTestId('narrative-delivery-summary')).not.toBeInTheDocument();
   });
 
+  // #5806 — a run whose narrative payload is null (e.g. outcome lost/{}) must
+  // still surface delivery evidence: it must not be gated behind run.narrative.
+  it('renders the delivery summary when narrative is null but deliveries exist', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: null,
+        narrativeDelivery: { total: 2, sent: 1, refused: 1, pending: 0, unknown: 0, recipientsUnresolved: false },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('narrative-delivery-sent')).toHaveTextContent('Emailed to 1 of 2 recipients');
+    expect(screen.queryByTestId('ai-agent-run-narrative')).not.toBeInTheDocument();
+  });
+
+  it('renders the recipient-lookup-failed line when narrative is null and the lookup failed', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: null,
+        narrativeDelivery: { total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: true },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('narrative-delivery-unresolved')).toBeInTheDocument();
+  });
+
   it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
     const snapshot = {
@@ -2107,6 +2138,8 @@ describe('RunDetailPage — patch plan', () => {
         detail: 'KB5000001, KB5000002 and KB5000003 have been outstanding for 41 days.',
         disposition: 'recorded' as const,
         reason: null,
+        intentId: null,
+        droppedPatchIds: [],
       },
       {
         index: 1,
@@ -2119,10 +2152,14 @@ describe('RunDetailPage — patch plan', () => {
         detail: 'A reboot is pending from last month.',
         disposition: 'refused' as const,
         reason: 'device_not_in_evidence' as const,
+        intentId: null,
+        droppedPatchIds: [],
       },
     ],
     recordedCount: 1,
     refusedCount: 1,
+    intentCreatedCount: 0,
+    suppressedCount: 0,
     evidenceTruncated: true,
   };
 
@@ -2215,5 +2252,149 @@ describe('RunDetailPage — patch plan', () => {
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-agent-run-patch-unconfirmed')).toBeNull();
     expect(screen.queryByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // AI patch agent W02 (#5748), Task 5 — install items can now mint a pending
+  // approval card, be suppressed against an existing/recent one, hit the run's
+  // action cap, or error while minting. Each disposition must render as ITSELF,
+  // never silently collapse into the W01 refused/recorded states.
+  // ---------------------------------------------------------------------------
+  const MINTED = {
+    ...PATCH,
+    items: [
+      {
+        ...PATCH.items[0],
+        disposition: 'intent_created' as const,
+        intentId: 'intent-abc123',
+      },
+      PATCH.items[1],
+    ],
+    intentCreatedCount: 1,
+    suppressedCount: 0,
+  };
+
+  it("links a minted install item to its approval card", async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: MINTED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const link = screen.getByTestId('ai-agent-run-patch-item-0-intent');
+    expect(link).toBeInTheDocument();
+    expect(link.getAttribute('href')).toContain('intent-abc123');
+  });
+
+  it('renders the dropped patches and their ineligibility reasons, not the raw patch id', async () => {
+    const DROPPED = {
+      ...PATCH,
+      items: [
+        {
+          ...PATCH.items[0],
+          disposition: 'intent_created' as const,
+          intentId: 'intent-abc123',
+          droppedPatchIds: [
+            { patchId: 'patch-kb5000002', reason: 'superseded' as const },
+            { patchId: 'patch-kb5000003', reason: 'held_by_deferral' as const },
+          ],
+        },
+        PATCH.items[1],
+      ],
+      intentCreatedCount: 1,
+      suppressedCount: 0,
+    };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: DROPPED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const dropped = screen.getByTestId('ai-agent-run-patch-item-0-dropped');
+    expect(dropped).toBeInTheDocument();
+    expect(dropped).toHaveTextContent('2 updates were left out of the card');
+    expect(dropped).toHaveTextContent('Superseded by a newer update');
+    expect(dropped).toHaveTextContent('Held by the deferral window');
+    expect(dropped).not.toHaveTextContent('patch-kb5000002');
+    expect(dropped).not.toHaveTextContent('patch-kb5000003');
+  });
+
+  it('flags an intent_created item whose card id is missing instead of rendering it as a plain success', async () => {
+    const DESYNC = {
+      ...PATCH,
+      items: [{ ...PATCH.items[0], disposition: 'intent_created' as const, intentId: null }, PATCH.items[1]],
+      intentCreatedCount: 1,
+      suppressedCount: 0,
+    };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: DESYNC } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-intent')).toBeNull();
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeInTheDocument();
+  });
+
+  it('renders a suppressed item with its suppression reason, not as a silent gap', async () => {
+    const SUPPRESSED = {
+      ...PATCH,
+      items: [
+        {
+          ...PATCH.items[0],
+          disposition: 'suppressed' as const,
+          reason: 'live_intent_exists' as const,
+        },
+        PATCH.items[1],
+      ],
+      intentCreatedCount: 0,
+      suppressedCount: 1,
+    };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: SUPPRESSED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const suppressed = screen.getByTestId('ai-agent-run-patch-item-0-suppressed');
+    expect(suppressed).toBeInTheDocument();
+    expect(suppressed).toHaveTextContent('Already proposed: An approval card for this update is already open');
+    expect(suppressed).not.toHaveTextContent('live_intent_exists');
+  });
+
+  it('renders an advisory item with no approve control at all', async () => {
+    const ADVISORY = {
+      ...PATCH,
+      items: [
+        {
+          index: 0,
+          class: 'approval_advisory' as const,
+          severity: 'medium' as const,
+          deviceId: null,
+          deviceHostname: null,
+          patchCount: 0,
+          title: 'Manual approval needed',
+          detail: 'A ring requires manual sign-off for this update.',
+          disposition: 'recorded' as const,
+          reason: null,
+          intentId: null,
+          droppedPatchIds: [],
+        },
+      ],
+    };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: ADVISORY } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-intent')).toBeNull();
+  });
+
+  it('shows the counts summary when items were minted or suppressed', async () => {
+    const COUNTS = { ...MINTED, suppressedCount: 2 };
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: COUNTS } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-counts')).toHaveTextContent('1 awaiting approval · 2 already proposed');
+  });
+
+  it('omits the counts summary when nothing was minted or suppressed', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-counts')).toBeNull();
   });
 });

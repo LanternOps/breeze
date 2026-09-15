@@ -1907,6 +1907,13 @@
         "refused": "Nicht erfasst: {{reason}}",
         "unconfirmed": "Dieser Plan wurde nie bestätigt — der Agent konnte seine Einträge nicht erneut mit den Belegen abgleichen, daher wurde nichts davon unten validiert.",
         "unconfirmedItem": "Nicht bestätigt — dieser Eintrag wurde nie erneut geprüft.",
+        "intentCreated": "Genehmigung ausstehend — Karte öffnen",
+        "suppressed": "Bereits vorgeschlagen: {{reason}}",
+        "capReached": "Nicht vorgeschlagen: {{reason}}",
+        "intentError": "Genehmigungskarte konnte nicht erstellt werden: {{reason}}",
+        "dropped": "{{count}} Update wurde nicht in die Karte aufgenommen",
+        "dropped_other": "{{count}} Updates wurden nicht in die Karte aufgenommen",
+        "counts": "{{created}} zur Genehmigung ausstehend · {{suppressed}} bereits vorgeschlagen",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Genehmigungsempfehlung",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
           "patch_not_in_evidence": "Update nicht in den Patch-Belegen",
           "window_not_resolved": "Wartungsfenster konnte nicht aufgelöst werden",
-          "job_result_not_in_evidence": "Patch-Job-Ergebnis nicht in den Belegen"
+          "job_result_not_in_evidence": "Patch-Job-Ergebnis nicht in den Belegen",
+          "no_eligible_patches": "Für dieses Gerät ist derzeit kein Update geeignet",
+          "not_allowlisted": "Der Agent darf keine Installationen vorschlagen",
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht",
+          "no_eligible_approvers": "Niemand kann diese Aktion genehmigen",
+          "intent_error": "Die Genehmigung konnte nicht erstellt werden",
+          "live_intent_exists": "Für dieses Update ist bereits eine Genehmigungskarte offen",
+          "recently_rejected": "Dieses Update wurde kürzlich abgelehnt",
+          "recently_cancelled": "Die Karte dieses Updates wurde kürzlich storniert",
+          "recently_completed": "Dieses Update wurde kürzlich installiert"
+        },
+        "ineligible": {
+          "not_outstanding": "Auf diesem Gerät nicht ausstehend",
+          "superseded": "Durch ein neueres Update ersetzt",
+          "blocked_by_source": "Durch die Update-Quellen der Richtlinie ausgeschlossen",
+          "held_by_deferral": "Durch das Aufschubfenster zurückgehalten",
+          "blocked_by_category": "Durch die Kategorieregeln des Rings ausgeschlossen",
+          "blocked_by_app_rule": "Durch eine App-Regel blockiert",
+          "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
+          "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
         }
       },
       "narrative": {

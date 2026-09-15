@@ -1907,6 +1907,13 @@
         "refused": "Non consigné : {{reason}}",
         "unconfirmed": "Ce plan n'a jamais été confirmé — l'agent n'a pas pu revérifier ses entrées par rapport aux éléments, donc rien ci-dessous n'a été validé.",
         "unconfirmedItem": "Non confirmé — cette entrée n'a jamais été revérifiée.",
+        "intentCreated": "En attente d'approbation — ouvrir la fiche",
+        "suppressed": "Déjà proposé : {{reason}}",
+        "capReached": "Non proposé : {{reason}}",
+        "intentError": "Impossible de créer la fiche d'approbation : {{reason}}",
+        "dropped": "{{count}} mise à jour a été exclue de la fiche",
+        "dropped_other": "{{count}} mises à jour ont été exclues de la fiche",
+        "counts": "{{created}} en attente d'approbation · {{suppressed}} déjà proposées",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Recommandation d'approbation",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "Appareil absent de cette organisation",
           "patch_not_in_evidence": "Mise à jour absente des éléments de correctifs",
           "window_not_resolved": "Impossible de résoudre la fenêtre de maintenance",
-          "job_result_not_in_evidence": "Résultat de la tâche de correctifs absent des éléments"
+          "job_result_not_in_evidence": "Résultat de la tâche de correctifs absent des éléments",
+          "no_eligible_patches": "Aucune mise à jour n'est actuellement admissible pour cet appareil",
+          "not_allowlisted": "L'agent n'est pas autorisé à proposer des installations",
+          "max_actions_per_run": "Limite d'actions atteinte pour cette exécution",
+          "no_eligible_approvers": "Personne ne peut approuver cette action",
+          "intent_error": "L'approbation n'a pas pu être créée",
+          "live_intent_exists": "Une fiche d'approbation pour cette mise à jour est déjà ouverte",
+          "recently_rejected": "Cette mise à jour a été rejetée récemment",
+          "recently_cancelled": "La fiche de cette mise à jour a été annulée récemment",
+          "recently_completed": "Cette mise à jour a été installée récemment"
+        },
+        "ineligible": {
+          "not_outstanding": "Non en attente sur cet appareil",
+          "superseded": "Remplacée par une mise à jour plus récente",
+          "blocked_by_source": "Exclue par les sources de mise à jour de la politique",
+          "held_by_deferral": "Retenue par la fenêtre de report",
+          "blocked_by_category": "Exclue par les règles de catégorie de l'anneau",
+          "blocked_by_app_rule": "Bloquée par une règle d'application",
+          "awaiting_manual_approval": "En attente d'approbation manuelle",
+          "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
+          "device_not_in_org": "Appareil absent de cette organisation"
         }
       },
       "narrative": {

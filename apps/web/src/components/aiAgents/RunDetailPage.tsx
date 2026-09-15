@@ -12,12 +12,14 @@ import { EmptyState } from '../shared/EmptyState';
 import {
   AI_SWEEP_KINDS,
   AI_SWEEP_SEVERITIES,
+  PATCH_INELIGIBLE_REASONS,
   PATCH_PLAN_ITEM_CLASSES,
   PATCH_PLAN_REFUSAL_REASONS,
 } from '@breeze/shared';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunLedgerEntryDto,
+  AiAgentRunNarrativeDeliveryDto,
   AiAgentRunPatchItemDto,
   AiAgentRunStatus,
   AiAgentRunSweepFindingDto,
@@ -28,6 +30,7 @@ import type {
   FleetDesignReportSummary,
   NarrativeSection,
   OrgNarrativeReportSummary,
+  PatchIneligibleReason,
   SweepProposalReason,
 } from '@breeze/shared';
 import { TicketProposalCard } from './TicketProposalCard';
@@ -604,6 +607,7 @@ function sweepReasonLabel(t: (key: string) => string, reason: SweepProposalReaso
 // ---------------------------------------------------------------------------
 const PATCH_ITEM_CLASS_TOKENS: readonly string[] = PATCH_PLAN_ITEM_CLASSES;
 const PATCH_REFUSAL_REASON_TOKENS: readonly string[] = PATCH_PLAN_REFUSAL_REASONS;
+const PATCH_INELIGIBLE_REASON_TOKENS: readonly string[] = PATCH_INELIGIBLE_REASONS;
 
 function patchItemClassLabel(t: (key: string) => string, itemClass: string): string {
   if (!PATCH_ITEM_CLASS_TOKENS.includes(itemClass)) return itemClass;
@@ -613,6 +617,16 @@ function patchItemClassLabel(t: (key: string) => string, itemClass: string): str
 function patchRefusalReasonLabel(t: (key: string) => string, reason: string): string {
   if (!PATCH_REFUSAL_REASON_TOKENS.includes(reason)) return reason;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.reasons.${reason}`);
+}
+
+/**
+ * W02 (#5748) — why `resolvePatchInstallEligibility` dropped one patch id
+ * from a minted install card. Same membership-checked dynamic `t()` contract
+ * as the two labels above.
+ */
+function patchIneligibleReasonLabel(t: (key: string) => string, reason: PatchIneligibleReason): string {
+  if (!PATCH_INELIGIBLE_REASON_TOKENS.includes(reason)) return reason;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.ineligible.${reason}`);
 }
 
 /**
@@ -630,6 +644,16 @@ function patchRefusalReasonLabel(t: (key: string) => string, reason: string): st
  * nothing about this item has been checked against the evidence or the
  * device's current org. Rendering it like a recorded item told the technician
  * the plan was confirmed when it was not — review finding on PR #5792.
+ *
+ * W02 (#5748) adds four more dispositions on top of the W01 three:
+ * `intent_created` — the item became a pending approval card, linked to it;
+ * `suppressed` — withheld because the same (device, patch) problem already
+ * has a live or recently-decided card, shown WITH its reason rather than as a
+ * silent gap; `cap_reached` — the run's action budget was already spent;
+ * `error` — an intent was attempted and did not end up pending. Any item, of
+ * any disposition, can also carry `droppedPatchIds` — patches the eligibility
+ * resolver dropped off the card, each with why (never the raw patch id as
+ * visible text).
  */
 function PatchPlanItem({
   item,
@@ -639,10 +663,18 @@ function PatchPlanItem({
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const refused = item.disposition === 'refused';
-  const unconfirmed = item.disposition === null;
+  const suppressed = item.disposition === 'suppressed';
+  const capReached = item.disposition === 'cap_reached';
+  const intentError = item.disposition === 'error';
+  const intentCreated = item.disposition === 'intent_created' && Boolean(item.intentId);
+  // No disposition at all, OR a "card created" record whose card id did not
+  // survive (projectPatch nulls a corrupt intentId): either way nothing here
+  // is confirmed, so it must not read as a plain success.
+  const unconfirmed = item.disposition === null || (item.disposition === 'intent_created' && !item.intentId);
+  const dimmed = refused || unconfirmed || suppressed || capReached || intentError;
   return (
     <li
-      className={`py-3 ${refused || unconfirmed ? 'opacity-70' : ''}`}
+      className={`py-3 ${dimmed ? 'opacity-70' : ''}`}
       data-testid={`ai-agent-run-patch-item-${item.index}`}
     >
       <div className="flex flex-wrap items-center gap-1.5">
@@ -673,6 +705,45 @@ function PatchPlanItem({
           })}
         </p>
       )}
+      {capReached && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.capReached', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {intentError && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.intentError', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {suppressed && (
+        <p
+          className="mt-1 text-xs text-muted-foreground"
+          data-testid={`ai-agent-run-patch-item-${item.index}-suppressed`}
+        >
+          {t('aiAgentsPage.runs.patch.suppressed', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {intentCreated && (
+        <a
+          href={`/approvals#intent-${item.intentId}`}
+          data-testid={`ai-agent-run-patch-item-${item.index}-intent`}
+          className="mt-1 inline-block text-xs font-medium text-primary hover:underline"
+        >
+          {t('aiAgentsPage.runs.patch.intentCreated')}
+        </a>
+      )}
       {unconfirmed && (
         <p
           className="mt-1 text-xs text-amber-700 dark:text-amber-400"
@@ -680,6 +751,20 @@ function PatchPlanItem({
         >
           {t('aiAgentsPage.runs.patch.unconfirmedItem')}
         </p>
+      )}
+      {item.droppedPatchIds.length > 0 && (
+        <div className="mt-1" data-testid={`ai-agent-run-patch-item-${item.index}-dropped`}>
+          <p className="text-xs text-muted-foreground">
+            {t('aiAgentsPage.runs.patch.dropped', { count: item.droppedPatchIds.length })}
+          </p>
+          <ul className="ml-4 list-disc text-xs text-muted-foreground">
+            {item.droppedPatchIds.map((dropped) => (
+              <li key={dropped.patchId} title={dropped.patchId}>
+                {patchIneligibleReasonLabel(t, dropped.reason)}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </li>
   );
@@ -1065,6 +1150,63 @@ function NarrativeSectionBlock({
             <li key={bulletIndex}>{bullet}</li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the reason
+ * CLASS only; the recipients are never named here (the refused count is
+ * already a small authority oracle, acceptable only because the reader
+ * holds ai_agents:read on this run).
+ *
+ * #5806 — this must NOT be gated on `run.narrative`: a run can have
+ * `narrativeDelivery.total > 0` (or a failed recipient lookup) while
+ * `narrative` itself is null (e.g. the outcome payload was lost or `{}`).
+ * The caller decides placement (inside the narrative section when one
+ * exists, or in its own standalone section otherwise) — this component only
+ * decides whether to render at all: whenever there are delivery rows OR the
+ * recipient lookup failed. A genuinely recipient-less org still renders
+ * nothing, which is correct: there was nobody to email, and that is not a
+ * failure.
+ */
+function NarrativeDeliverySummary({
+  delivery,
+  t,
+}: {
+  delivery: AiAgentRunNarrativeDeliveryDto;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  if (delivery.total === 0 && !delivery.recipientsUnresolved) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
+      {delivery.recipientsUnresolved ? (
+        <p className="text-destructive" data-testid="narrative-delivery-unresolved">
+          {t('aiAgentsPage.runs.narrative.delivery.recipientsUnresolved')}
+        </p>
+      ) : (
+        <p data-testid="narrative-delivery-sent">
+          {t('aiAgentsPage.runs.narrative.delivery.sent', { sent: delivery.sent, total: delivery.total })}
+        </p>
+      )}
+      {delivery.refused > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-refused">
+          {t('aiAgentsPage.runs.narrative.delivery.refused', { count: delivery.refused })}
+        </p>
+      )}
+      {delivery.pending > 0 && (
+        <p data-testid="narrative-delivery-pending">
+          {t('aiAgentsPage.runs.narrative.delivery.pending', { count: delivery.pending })}
+        </p>
+      )}
+      {delivery.unknown > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
+          {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: delivery.unknown })}
+        </p>
       )}
     </div>
   );
@@ -1743,6 +1885,18 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             </p>
           )}
 
+          {/* W02 (#5748) — a one-line rollup so an operator doesn't have to
+              count dispositions in the item list below to know how many
+              install proposals turned into a real approval card. */}
+          {(run.patch.intentCreatedCount > 0 || run.patch.suppressedCount > 0) && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-patch-counts">
+              {t('aiAgentsPage.runs.patch.counts', {
+                created: run.patch.intentCreatedCount,
+                suppressed: run.patch.suppressedCount,
+              })}
+            </p>
+          )}
+
           {run.patch.evidenceTruncated && (
             <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-patch-truncated">
               {t('aiAgentsPage.runs.patch.evidenceTruncated')}
@@ -1845,48 +1999,21 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             </p>
           )}
 
-          {/* #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the
-              reason CLASS only; the recipients are never named here (the
-              refused count is already a small authority oracle, acceptable
-              only because the reader holds ai_agents:read on this run).
-              Rendered whenever there are delivery rows OR the recipient
-              lookup failed — a run whose lookup threw has ZERO rows, and
-              hiding it would make "nobody was emailed" look identical to
-              "this org has no recipients". A genuinely recipient-less org
-              still renders nothing, which is correct: there was nobody to
-              email, and that is not a failure. */}
-          {run.narrativeDelivery
-            && (run.narrativeDelivery.total > 0 || run.narrativeDelivery.recipientsUnresolved) && (
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
-              {run.narrativeDelivery.recipientsUnresolved ? (
-                <p className="text-destructive" data-testid="narrative-delivery-unresolved">
-                  {t('aiAgentsPage.runs.narrative.delivery.recipientsUnresolved')}
-                </p>
-              ) : (
-                <p data-testid="narrative-delivery-sent">
-                  {t('aiAgentsPage.runs.narrative.delivery.sent', {
-                    sent: run.narrativeDelivery.sent,
-                    total: run.narrativeDelivery.total,
-                  })}
-                </p>
-              )}
-              {run.narrativeDelivery.refused > 0 && (
-                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-refused">
-                  {t('aiAgentsPage.runs.narrative.delivery.refused', { count: run.narrativeDelivery.refused })}
-                </p>
-              )}
-              {run.narrativeDelivery.pending > 0 && (
-                <p data-testid="narrative-delivery-pending">
-                  {t('aiAgentsPage.runs.narrative.delivery.pending', { count: run.narrativeDelivery.pending })}
-                </p>
-              )}
-              {run.narrativeDelivery.unknown > 0 && (
-                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
-                  {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: run.narrativeDelivery.unknown })}
-                </p>
-              )}
-            </div>
-          )}
+          {run.narrativeDelivery && <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />}
+        </section>
+      )}
+
+      {/* #5806 — the delivery summary must render even when `run.narrative`
+          itself is null (e.g. the outcome payload was lost or `{}`) as long
+          as there is delivery evidence to show. When a narrative section
+          exists it already renders the summary above; this is the fallback
+          standalone section for the narrative-less case. */}
+      {!run.narrative
+        && run.narrativeDelivery
+        && (run.narrativeDelivery.total > 0 || run.narrativeDelivery.recipientsUnresolved) && (
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.narrative.title')}</h2>
+          <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />
         </section>
       )}
 

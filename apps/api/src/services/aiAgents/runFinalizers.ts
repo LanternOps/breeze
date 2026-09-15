@@ -358,26 +358,47 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
  * the device's CURRENT org (`persistPatchPlan`) and writes the dispositions
  * onto `outcome.patchPlan`, which `finishRun` serializes into the run row.
  *
- * Writes NO other rows and mints NO action intents (W01 is findings-only), so
- * — unlike the sweep/narrative/design finalizers — there is no stall-reaper
- * re-read to take: the only durable write is the run row's own CAS in
- * `finishRun`, which already refuses a run that left `running`.
+ * W02 (#5748): `persistPatchPlan` now also mints one device-scoped Tier-3
+ * approval card per eligible `install` item, so — exactly like
+ * `finalizeSweep` — it takes the AGENT's effective allowlist and action cap,
+ * and its pending intent ids flow into `result.intentIds`. No stall-reaper
+ * re-read: the run row's own CAS in `finishRun` still refuses a run that left
+ * `running`, and an intent minted for a run that was reaped is a pending card
+ * a human still has to decide (the sweep finalizer accepts the same).
  *
  * `patch_plan_missing` mirrors `narrative_missing` / `design_missing`; a
- * failed membership read reports `patch_plan_persist_failed` and leaves the
- * items without a disposition rather than guessing one.
+ * failed membership/eligibility/suppression read reports
+ * `patch_plan_persist_failed` and leaves the items without a disposition
+ * rather than guessing one.
  */
 export async function finalizePatchPlan(ctx: RunContext, result: LoopResult): Promise<string | null> {
   if (!isPatchProfile(ctx.run)) return null;
   const { outcome } = result;
   if (!outcome.patchPlan || !ctx.patch) return 'patch_plan_missing';
   try {
-    const { dispositions } = await persistPatchPlan(
-      { id: ctx.run.id, orgId: ctx.run.orgId },
+    const { dispositions, intentIds } = await persistPatchPlan(
+      {
+        id: ctx.run.id,
+        orgId: ctx.run.orgId,
+        agentId: ctx.run.agentId,
+        scheduleId: ctx.run.scheduleId,
+        // The AGENT's effective allowlist off the already-loaded run row —
+        // the same authority `agentReleaseAuthority.ts` re-checks at release.
+        toolAllowlist: ctx.run.policySnapshot.effective.toolAllowlist,
+        // The AGENT's POST-RUN minting cap. NOT `patchLimits`' hard `0`, which
+        // governs what the run LOOP may execute (a patch run executes
+        // nothing) — the same split `finalizeSweep` documents. `??` tolerates
+        // a v1 policy snapshot, which predates the field entirely.
+        maxActionsPerRun:
+          ctx.run.policySnapshot.effective.limits.maxActionsPerRun
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
+      },
       outcome.patchPlan,
       patchEvidenceRefs(ctx.patch.evidence),
+      result.agentAuth,
     );
     outcome.patchPlan = { ...outcome.patchPlan, dispositions };
+    for (const intentId of intentIds) result.intentIds.push(intentId);
     return null;
   } catch (error) {
     console.error('[aiAgentRunLoop] patch plan re-validation failed', { runId: ctx.run.id, error });
