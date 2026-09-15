@@ -161,7 +161,11 @@
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
     "workspace": "KI-Assistent",
-    "aiAgentsFleetDesign": "Flottendesign"
+    "aiAgentsFleetDesign": "Flottendesign",
+    "agreementTemplates": "Vereinbarungsvorlagen",
+    "agreementTemplateDetail": "Vereinbarungsvorlage",
+    "agreementTemplateNew": "Neue Vereinbarungsvorlage",
+    "signedAgreements": "Unterzeichnete Vereinbarungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",
@@ -224,6 +228,10 @@
       "deliverableTemplates": {
         "title": "Leistungsvorlagen",
         "description": "Definieren Sie eine Servicestufe einmal und wenden Sie ihre Leistungen auf jeden Kunden an."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Ticket-Checklisten-Vorlagen",
+        "description": "Wiederverwendbare Schrittlisten, die Ihre Techniker auf jedes Ticket anwenden können."
       }
     }
   },

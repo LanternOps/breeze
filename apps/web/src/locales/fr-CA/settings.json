@@ -1543,7 +1543,8 @@
         "pending_reboots": "Redémarrages en attente",
         "failed_backups": "Sauvegardes en échec",
         "service_down": "Service arrêté",
-        "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        "unpatched_critical": "Vulnérabilités critiques non corrigées",
+        "expiring_certs": "Certificats qui expirent"
       },
       "toasts": {
         "saved": "Horaire enregistré",
@@ -1877,7 +1878,8 @@
           "pending_reboots": "Redémarrages en attente",
           "failed_backups": "Sauvegardes en échec",
           "service_down": "Service arrêté",
-          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+          "unpatched_critical": "Vulnérabilités critiques non corrigées",
+          "expiring_certs": "Certificats bientôt expirés"
         },
         "severities": {
           "critical": "Critique",
@@ -1914,6 +1916,12 @@
         "dropped": "{{count}} mise à jour a été exclue de la fiche",
         "dropped_other": "{{count}} mises à jour ont été exclues de la fiche",
         "counts": "{{created}} en attente d'approbation · {{suppressed}} déjà proposées",
+        "failureClass": "Classe d'échec : {{label}}",
+        "attempts": "{{count}} tentative échouée",
+        "attempts_other": "{{count}} tentatives échouées",
+        "escalation": "Nécessite une intervention humaine – aucune nouvelle tentative automatique.",
+        "escalations": "{{count}} escalade",
+        "escalations_other": "{{count}} escalades",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Recommandation d'approbation",
@@ -1935,7 +1943,12 @@
           "live_intent_exists": "Une fiche d'approbation pour cette mise à jour est déjà ouverte",
           "recently_rejected": "Cette mise à jour a été rejetée récemment",
           "recently_cancelled": "La fiche de cette mise à jour a été annulée récemment",
-          "recently_completed": "Cette mise à jour a été installée récemment"
+          "recently_completed": "Cette mise à jour a été installée récemment",
+          "failure_class_mismatch": "La classe d'échec citée ne correspond pas aux éléments de preuve",
+          "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
+          "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
+          "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable"
         },
         "ineligible": {
           "not_outstanding": "Non en attente sur cet appareil",
@@ -1947,6 +1960,14 @@
           "awaiting_manual_approval": "En attente d'approbation manuelle",
           "no_ring_resolved": "L'appareil n'a aucun anneau de mise à jour",
           "device_not_in_org": "Appareil absent de cette organisation"
+        },
+        "failureClasses": {
+          "transient": "Transitoire",
+          "needs_reboot": "Redémarrage requis",
+          "disk_space": "Espace disque",
+          "store_corrupt": "Magasin de mises à jour corrompu",
+          "permanent": "Permanent",
+          "unknown": "Inconnu"
         }
       },
       "narrative": {

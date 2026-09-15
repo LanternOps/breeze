@@ -119,8 +119,29 @@ export type RenewRevocationLeaseResult =
       hardDeadline: number;
       renewEverySec: number;
       graceSec: number;
+      /**
+       * SEC-038: the session's current `desktop_start_generation`, as a
+       * canonical decimal string (it is a bigint — it must never pass through
+       * a JS number). The agent's durable start fence resyncs from this, so a
+       * renewal answer doubles as the fence's authority on what the server
+       * currently considers the live start. Undefined only for a session row
+       * that could not be read.
+       */
+      startGeneration?: string;
+      /** The session's `termination_phase` at the same snapshot. */
+      terminationPhase?: 'none' | 'pending' | 'confirmed';
     }
-  | { status: 'revoked'; reason: RevocationReason }
+  | {
+      status: 'revoked';
+      reason: RevocationReason;
+      /**
+       * The generation at which the session was declared terminal, when it is
+       * known. Deliberately optional: the row may be missing, or the terminal
+       * bookkeeping may have failed while the revocation verdict still
+       * stands. The agent tombstones on the revocation itself, not on this.
+       */
+      terminalGeneration?: string;
+    }
   | { status: 'forbidden' }
   | { status: 'unavailable' };
 
@@ -136,6 +157,11 @@ export interface RevocationRecheckRow {
     startedAt: Date | null;
     createdAt: Date;
     permissionsEpochSnapshot: number | null;
+    /** SEC-038 monotonic start/terminal generation, bumped by both intents. */
+    desktopStartGeneration: bigint;
+    /** The generation at which the session was declared terminal. */
+    terminalGeneration: bigint | null;
+    terminationPhase: 'none' | 'pending' | 'confirmed';
   };
   device: {
     id: string;
@@ -305,6 +331,9 @@ export async function loadRevocationRecheckRow(
           sessionStartedAt: remoteSessions.startedAt,
           sessionCreatedAt: remoteSessions.createdAt,
           permissionsEpochSnapshot: remoteSessions.permissionsEpochSnapshot,
+          desktopStartGeneration: remoteSessions.desktopStartGeneration,
+          terminalGeneration: remoteSessions.terminalGeneration,
+          terminationPhase: remoteSessions.terminationPhase,
           deviceId: devices.id,
           deviceOrgId: devices.orgId,
           deviceSiteId: devices.siteId,
@@ -378,6 +407,15 @@ export async function loadRevocationRecheckRow(
             found.permissionsEpochSnapshot === undefined
               ? null
               : Number(found.permissionsEpochSnapshot),
+          // Generations stay bigint end to end — see the SEC-038 constraint:
+          // they are produced, transported and compared as canonical decimal
+          // strings and never as a JS number.
+          desktopStartGeneration: BigInt(found.desktopStartGeneration ?? 0n),
+          terminalGeneration:
+            found.terminalGeneration === null || found.terminalGeneration === undefined
+              ? null
+              : BigInt(found.terminalGeneration),
+          terminationPhase: found.terminationPhase ?? 'none',
         },
         device: {
           id: found.deviceId,
@@ -636,6 +674,13 @@ export async function renewRevocationLease(
       hardDeadline,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      // SEC-038 fence resync: this same row snapshot, not a second query.
+      ...(row
+        ? {
+            startGeneration: row.session.desktopStartGeneration.toString(),
+            terminationPhase: row.session.terminationPhase,
+          }
+        : {}),
     };
   }
 
@@ -656,7 +701,16 @@ export async function renewRevocationLease(
     );
   }
 
-  return { status: 'revoked', reason: verdict.reason };
+  return {
+    status: 'revoked',
+    reason: verdict.reason,
+    // Best effort: a revocation is authoritative with or without it. Reading
+    // the pre-revocation snapshot is enough for the agent — its tombstone is
+    // absolute, and the generation only raises its high-water mark.
+    ...(row?.session.terminalGeneration !== null && row?.session.terminalGeneration !== undefined
+      ? { terminalGeneration: row.session.terminalGeneration.toString() }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

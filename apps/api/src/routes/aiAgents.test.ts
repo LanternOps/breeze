@@ -1232,11 +1232,15 @@ const runDetailResponseSchema = z.object({
         // reason only, never a patch title or the raw `patchIds` list.
         intentId: z.string().nullable(),
         droppedPatchIds: z.array(z.object({ patchId: z.string(), reason: z.string() }).strict()),
+        // W03 (#5749): the class/attempt count the item quoted from the evidence.
+        failureClass: z.string().nullable(),
+        attemptCount: z.number().nullable(),
       }).strict()),
       recordedCount: z.number(),
       refusedCount: z.number(),
       intentCreatedCount: z.number(),
       suppressedCount: z.number(),
+      escalationCount: z.number(),
       evidenceTruncated: z.boolean(),
     }).strict().nullable(),
     // #4248 W03 (OD-7 B): per-run narrative email delivery counts. `null`

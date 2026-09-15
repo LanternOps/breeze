@@ -731,6 +731,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // the cascade walks this array explicitly and an unlisted org_id table fails
   // tenantCascade.integration.test.ts.
   'ticket_checklist_items',
+  // ticket_checklist_template_items before ticket_checklist_templates —
+  // children before parents. Both branch FKs (template_id, org_id) and
+  // (template_id, partner_id) are ON DELETE CASCADE, but the cascade list
+  // deletes explicitly, so the child must still come first. localeCompare
+  // already orders them that way ('_' < 's' at the diverging character, the
+  // same prefix-extension trap as contract_template_versions /
+  // contract_templates); verified with
+  // `node --eval "console.log('ticket_checklist_template_items'.localeCompare('ticket_checklist_templates'))"`
+  // => -1. Both sort after 'ticket_checklist_items' and before 'ticket_drafts'.
+  // Partner-wide rows carry org_id NULL, so an org erasure never touches them —
+  // only org-owned templates and their items.
+  'ticket_checklist_template_items',
+  'ticket_checklist_templates',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,

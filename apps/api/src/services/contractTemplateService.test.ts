@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import type { AuthContext } from '../middleware/auth';
+import { inArray, type SQL } from 'drizzle-orm';
+import { PgDialect, type AnyPgColumn } from 'drizzle-orm/pg-core';
 
 /** A genuinely loadable minimal PDF (pdf-lib can create these). Uploaded contract
  *  PDFs are now validated with PDFDocument.load at write time, so the happy-path
@@ -72,6 +74,8 @@ import { PartnerWideWriteDeniedError } from './partnerWideAccess';
 type Chain = {
   values: { mock: { calls: unknown[][] } };
   set: { mock: { calls: unknown[][] } };
+  where: { mock: { calls: unknown[][] } };
+  select: { mock: { calls: unknown[][] } };
 };
 const chain = db as unknown as Chain;
 
@@ -492,5 +496,74 @@ describe('listTemplates', () => {
     queueResult([]);
     const rows = await svc.listTemplates(auth);
     expect(rows).toEqual([]);
+  });
+});
+
+describe('contractTemplateService.getTemplateUsage', () => {
+  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+
+  /** Renders a recorded drizzle SQL tree to real SQL text — a stub that only
+   *  records "an object was passed" would pass no matter which query ran. */
+  const render = (arg: unknown) => new PgDialect().sqlToQuery(arg as SQL).sql.toLowerCase();
+
+  it('counts DISTINCT quotes, so one quote with two blocks on two versions counts once', async () => {
+    queueResult([ORG_TEMPLATE]);          // getTemplateOr404
+    queueResult([{ n: 1 }]);              // quote aggregate
+    queueResult([{ n: 2 }]);              // signed aggregate
+
+    const usage = await svc.getTemplateUsage(makeAuth(), 'tmpl-org-1');
+    expect(usage).toEqual({ quoteCount: 1, signedCount: 2 });
+
+    // The `distinct` is what stops the double count the live-stack check in the
+    // plan was meant to catch; dropping it is otherwise silent on a one-block quote.
+    const rendered = chain.select.mock.calls
+      .map((c) => {
+        const proj = c[0] as Record<string, unknown> | undefined;
+        return proj && 'n' in proj ? render(proj.n) : '';
+      })
+      .join(' | ');
+    expect(rendered).toContain('count(distinct');
+  });
+
+  it('resolves through the version table so ANY version of the template matches', async () => {
+    queueResult([ORG_TEMPLATE]);
+    queueResult([{ n: 0 }]);
+    queueResult([{ n: 0 }]);
+    await svc.getTemplateUsage(makeAuth(), 'tmpl-org-1');
+
+    const wheres = chain.where.mock.calls.map((c) => render(c[0])).join(' | ');
+    expect(wheres).toContain("->>'templateversionid'");
+    expect(wheres).toContain('contract_template_versions');
+    // `->>` yields text, so the subquery must cast; comparing text to uuid is 42883.
+    expect(wheres).toContain('id::text');
+  });
+
+  it('scopes BOTH aggregates to the caller org condition, so a partner-wide template reports only readable orgs', async () => {
+    queueResult([PARTNER_TEMPLATE]);      // getTemplateOr404 — partner-wide (orgId null)
+    queueResult([{ n: 0 }]);
+    queueResult([{ n: 0 }]);
+
+    // The default makeAuth() returns `orgCondition: () => undefined`, which
+    // skips both `if (…OrgCond)` pushes — so without this case the tenancy
+    // narrowing the function's docblock promises has no coverage at all.
+    const auth = makeAuth({ orgCondition: ((col: AnyPgColumn) => inArray(col, ['org-1'])) as AuthContext['orgCondition'] });
+    await svc.getTemplateUsage(auth, 'tmpl-partner-1');
+
+    const wheres = chain.where.mock.calls.map((c) => render(c[0]));
+    // Both the quote_blocks aggregate and the contract_documents aggregate.
+    const scoped = wheres.filter((w) => w.includes('"org_id" in ('));
+    expect(scoped).toHaveLength(2);
+    expect(scoped.some((w) => w.includes("->>'templateversionid'"))).toBe(true);
+    expect(scoped.some((w) => w.includes('template_id'))).toBe(true);
+  });
+
+  it('404s an invisible template before counting anything', async () => {
+    queueResult([]);                       // getTemplateOr404 finds nothing
+    await expect(svc.getTemplateUsage(makeAuth(), 'nope')).rejects.toMatchObject({ status: 404 });
+    // No aggregate ran, so the counts can never act as an existence oracle.
+    expect(chain.select.mock.calls.filter((c) => {
+      const proj = c[0] as Record<string, unknown> | undefined;
+      return !!proj && 'n' in proj;
+    })).toHaveLength(0);
   });
 });

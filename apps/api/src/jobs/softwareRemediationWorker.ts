@@ -71,7 +71,49 @@ type RemediateDeviceJobData = {
   manualRequestId?: string;
 };
 
-type SoftwareRemediationJobData = RemediateDeviceJobData;
+/**
+ * Install remediation (feature #5505). A SIBLING type, deliberately not a
+ * widened RemediateDeviceJobData:
+ *
+ *  - The uninstall auto path keys its BullMQ jobId on
+ *    `software-remediation-${policyId}-${deviceId}`. A device may legitimately
+ *    be queued for BOTH verbs in one compliance pass (spec §2) — removing an
+ *    unauthorised app and installing a required one are not in conflict — so a
+ *    shared key would silently dedupe one verb into the other.
+ *  - processRemediateDevice is uninstall-specific end to end: it consumes a
+ *    single-use manual-authorization row (#3553), selects `unauthorized`
+ *    violations and writes the remediation_status column. Install traffic must
+ *    not travel through that machinery, where a forged trigger:'manual' could
+ *    consume an uninstall authorization.
+ *
+ * W02 (#5507) DEFINES this payload and produces it; W03 (#5508) consumes it and
+ * replaces the parking branch in createSoftwareRemediationWorker below.
+ */
+export type InstallRemediateDeviceJobData = {
+  type: 'install-remediate-device';
+  policyId: string;
+  deviceId: string;
+  /**
+   * Catalog item ids to install, deduped, in rule order. NEVER empty —
+   * scheduleSoftwareInstallRemediation refuses a target that would produce an
+   * empty list, because a deployment with no install target cannot satisfy
+   * software_deployments_one_target_chk.
+   */
+  catalogIds: string[];
+  /**
+   * policy.approval_generation at enqueue time (site-ceiling gate contract §3).
+   * W03 re-reads the policy and skips a job whose premise was edited away.
+   */
+  generation: number;
+  /**
+   * 1-based consecutive attempt this job represents, for the audit trail.
+   * OBSERVABILITY ONLY: software_compliance_status.install_remediation_attempts,
+   * incremented in SQL by the compliance worker, is authoritative.
+   */
+  attempt: number;
+};
+
+type SoftwareRemediationJobData = RemediateDeviceJobData | InstallRemediateDeviceJobData;
 
 /**
  * Job data is untrusted input: BullMQ payloads live in Redis and carry no
@@ -603,6 +645,38 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
     SOFTWARE_REMEDIATION_QUEUE,
     async (job: Job<SoftwareRemediationJobData>) => {
       return runWithSystemDbAccess(async () => {
+        if (job.data.type === 'install-remediate-device') {
+          // W03 (#5508) installs the real install processor here.
+          //
+          // Until it lands this job is PARKED, never routed to
+          // processRemediateDevice: that function is uninstall-specific end to
+          // end (manual-authorization consumption, unauthorized-violation
+          // selection, remediation_status writes) and would misread install job
+          // data. Parking is the safe intermediate state, not a leak: the
+          // compliance row stays at 'pending', which
+          // shouldQueueAutoRemediation reads as in_progress, so the device is
+          // queued exactly ONCE and no reinstall loop can form. W03 replaces
+          // this branch and clears those rows on its first pass.
+          console.warn(
+            '[SoftwareRemediationWorker] install-remediate-device received but no processor is installed yet (feature #5505 W03) — parking',
+            { policyId: job.data.policyId, deviceId: job.data.deviceId, catalogIds: job.data.catalogIds }
+          );
+          // Sentry, not just a log line. A parked job reaching production means
+          // W02 was deployed ahead of W03 and some policy already has
+          // autoInstall armed — the device will sit at 'pending' until W03
+          // lands and reconciles it. That is a deploy-ordering signal someone
+          // has to see, and a console.warn in a worker is not seen.
+          captureException(
+            new Error('[SoftwareRemediationWorker] install-remediate-device parked: no processor until #5505 W03'),
+          );
+          recordSoftwareRemediationDecision('install_processor_unavailable');
+          return {
+            policyId: job.data.policyId,
+            deviceId: job.data.deviceId,
+            commandsQueued: 0,
+            errors: 0,
+          };
+        }
         return processRemediateDevice(job.data);
       });
     },
@@ -789,4 +863,93 @@ export async function scheduleSoftwareRemediation(
   }
 
   return queued;
+}
+
+export type InstallRemediationTarget = {
+  deviceId: string;
+  catalogIds: string[];
+  attempt: number;
+};
+
+/**
+ * Enqueue install remediation for a batch of devices under one policy.
+ *
+ * Returns THE DEVICE IDS ACTUALLY ENQUEUED, not a count. The uninstall sibling
+ * returns a count, and its caller (softwareComplianceWorker) then stamps
+ * remediationStatus:'pending' on every target whenever that count is > 0 —
+ * including devices that deduped and got no job. That inaccuracy predates this
+ * feature and is out of scope to fix here, but it must not be replicated: an
+ * install row wrongly left at 'pending' blocks its own next pass (pending reads
+ * as in_progress) and would strand the device.
+ */
+export async function scheduleSoftwareInstallRemediation(
+  policyId: string,
+  targets: InstallRemediationTarget[],
+  generation: number
+): Promise<string[]> {
+  const queue = getSoftwareRemediationQueue();
+  const enqueued: string[] = [];
+  const seenDeviceIds = new Set<string>();
+
+  for (const target of targets) {
+    if (typeof target.deviceId !== 'string' || target.deviceId.length === 0) continue;
+    if (seenDeviceIds.has(target.deviceId)) continue;
+    seenDeviceIds.add(target.deviceId);
+
+    const catalogIds: string[] = [];
+    for (const raw of target.catalogIds ?? []) {
+      if (typeof raw !== 'string') continue;
+      const catalogId = raw.trim();
+      if (catalogId.length === 0) continue;
+      if (!catalogIds.includes(catalogId)) catalogIds.push(catalogId);
+    }
+    // A target with nothing to install is a caller bug, not a queueable job:
+    // W03 would try to create a deployment with neither software_version_id nor
+    // install_method_id and abort on software_deployments_one_target_chk.
+    // Refuse it here rather than shipping an empty payload into Redis.
+    if (catalogIds.length === 0) {
+      console.warn('[SoftwareRemediationWorker] Install target has no usable catalogIds, skipping', {
+        policyId,
+        deviceId: target.deviceId,
+      });
+      recordSoftwareRemediationDecision('install_no_catalog_id');
+      continue;
+    }
+
+    // Its OWN jobId namespace — see InstallRemediateDeviceJobData's docstring.
+    const jobId = `software-install-remediation-${policyId}-${target.deviceId}`;
+    const existing = await queue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (isReusableState(state)) {
+        recordSoftwareRemediationDecision('install_job_deduped');
+        continue;
+      }
+      await existing.remove().catch((err) => {
+        console.warn('[SoftwareRemediationWorker] Failed to remove stale install job (non-fatal):', { jobId, error: err });
+      });
+    }
+
+    await queue.add(
+      'install-remediate-device',
+      {
+        type: 'install-remediate-device' as const,
+        policyId,
+        deviceId: target.deviceId,
+        catalogIds,
+        generation,
+        attempt: target.attempt,
+      },
+      {
+        jobId,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 200 },
+        attempts: 3,
+        backoff: { type: 'exponential' as const, delay: 5000 },
+      }
+    );
+    enqueued.push(target.deviceId);
+  }
+
+  return enqueued;
 }

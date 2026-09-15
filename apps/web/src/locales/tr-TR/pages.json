@@ -161,7 +161,11 @@
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
     "workspace": "Yapay Zeka Asistanı",
-    "aiAgentsFleetDesign": "Filo Tasarımı"
+    "aiAgentsFleetDesign": "Filo Tasarımı",
+    "agreementTemplates": "Anlaşma şablonları",
+    "agreementTemplateDetail": "Anlaşma şablonu",
+    "agreementTemplateNew": "Yeni anlaşma şablonu",
+    "signedAgreements": "İmzalı anlaşmalar"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",
@@ -224,6 +228,10 @@
       "deliverableTemplates": {
         "title": "Teslimat şablonları",
         "description": "Bir hizmet katmanını bir kez tanımlayın ve teslimatlarını istediğiniz müşteriye uygulayın."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Bilet kontrol listesi şablonları",
+        "description": "Teknisyenlerinizin herhangi bir bilete uygulayabileceği yeniden kullanılabilir adım listeleri."
       }
     }
   },

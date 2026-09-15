@@ -18,13 +18,15 @@ const api = vi.hoisted(() => ({
   uploadTemplateVersion: vi.fn(),
   publishTemplateVersion: vi.fn(),
   getTemplateVersion: vi.fn(),
+  getTemplateUsage: vi.fn(),
+  archiveContractTemplate: vi.fn(),
 }));
 vi.mock('../../lib/api/contractTemplates', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../lib/api/contractTemplates')>();
   return { ...orig, ...api };
 });
 
-import TemplateEditor from './TemplateEditor';
+import AgreementTemplateEditor from './AgreementTemplateEditor';
 
 const resp = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -65,17 +67,19 @@ function activeTemplate(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe('TemplateEditor', () => {
+describe('AgreementTemplateEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getContractTemplate.mockResolvedValue(resp({ data: activeTemplate() }));
     api.publishTemplateVersion.mockResolvedValue(resp({ data: { ...draftVersion, status: 'published' } }));
     api.createTemplateVersion.mockResolvedValue(resp({ data: { ...draftVersion, id: 'ver-2', versionNumber: 2 } }));
+    api.getTemplateUsage.mockResolvedValue(resp({ data: { quoteCount: 0, signedCount: 0 } }));
+    api.archiveContractTemplate.mockResolvedValue(resp({ data: { ok: true } }));
   });
 
   it('publishes a draft version via the API', async () => {
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const publishBtn = await screen.findByTestId('template-version-publish');
     fireEvent.click(publishBtn);
@@ -84,8 +88,8 @@ describe('TemplateEditor', () => {
   });
 
   it('blocks Publish while the body has un-saved edits and never destroys the typed text', async () => {
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: '<p>My unsaved contract text</p>' } });
@@ -112,8 +116,8 @@ describe('TemplateEditor', () => {
     api.getContractTemplate.mockResolvedValue(resp({ data: activeTemplate({ versions: [linkVersion] }) }));
     api.createTemplateVersion.mockResolvedValue(resp({ data: { ...linkVersion, id: 'ver-2', versionNumber: 2 } }));
 
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     // Seeded from the server-normalized body → not dirty → Publish enabled.
     expect(screen.getByTestId('template-version-publish')).not.toBeDisabled();
@@ -130,8 +134,8 @@ describe('TemplateEditor', () => {
   });
 
   it('confirms before New Version discards unsaved edits, and preserves the body on cancel', async () => {
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: '<p>Precious unsaved draft</p>' } });
@@ -156,8 +160,8 @@ describe('TemplateEditor', () => {
   });
 
   it('clears the body when New Version is confirmed', async () => {
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: '<p>Discard me</p>' } });
@@ -171,21 +175,65 @@ describe('TemplateEditor', () => {
   });
 
   it('lists manual variables detected live in the body', async () => {
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
     // invoice.custom_ref is not an AUTO variable → shown as a manual variable.
     expect(await screen.findByText('invoice.custom_ref')).toBeInTheDocument();
   });
 
   it('hides attach affordances when the template is archived', async () => {
     api.getContractTemplate.mockResolvedValue(resp({ data: activeTemplate({ status: 'archived' }) }));
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     expect(screen.queryByTestId('template-add-version-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('template-upload-btn')).not.toBeInTheDocument();
     // A draft can no longer be published on an archived template either.
     expect(screen.queryByTestId('template-version-publish')).not.toBeInTheDocument();
     expect(screen.getByTestId('template-archived-notice')).toBeInTheDocument();
+  });
+  it('shows the usage line from the usage endpoint', async () => {
+    api.getTemplateUsage.mockResolvedValue(resp({ data: { quoteCount: 3, signedCount: 7 } }));
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    const usage = await screen.findByTestId('agreement-template-usage');
+    expect(usage).toHaveTextContent('3');
+    expect(usage).toHaveTextContent('7');
+  });
+
+  it('renders the editor without a usage line when the usage call fails, never a broken count', async () => {
+    api.getTemplateUsage.mockResolvedValue(resp({ error: 'boom' }, 500));
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
+    expect(screen.queryByTestId('agreement-template-usage')).not.toBeInTheDocument();
+  });
+
+  it('links Back to the templates list', async () => {
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    expect(await screen.findByTestId('agreement-template-editor-back'))
+      .toHaveAttribute('href', '/agreements/templates');
+  });
+
+  it('shows the usage counts in the archive confirmation', async () => {
+    api.getTemplateUsage.mockResolvedValue(resp({ data: { quoteCount: 3, signedCount: 7 } }));
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    fireEvent.click(await screen.findByTestId('agreement-template-archive'));
+    const dialog = await screen.findByTestId('agreement-template-archive-confirm-dialog');
+    expect(dialog).toHaveTextContent('3');
+    expect(dialog).toHaveTextContent('7');
+    expect(dialog).toHaveTextContent(/keep working/i);
+  });
+  // Regression: `?? 0` in the confirm message used to turn "usage unknown" into
+  // a confident "0 quotes · 0 signed agreements" about a template that may be
+  // in heavy use — archiveTemplate has no server-side usage check, so this
+  // dialog is the only signal the technician gets.
+  it('never claims zero usage in the archive confirmation when the usage fetch failed', async () => {
+    api.getTemplateUsage.mockResolvedValue(resp({ error: 'boom' }, 500));
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    fireEvent.click(await screen.findByTestId('agreement-template-archive'));
+    const dialog = await screen.findByTestId('agreement-template-archive-confirm-dialog');
+    expect(dialog).not.toHaveTextContent(/0 quotes/i);
+    expect(dialog).toHaveTextContent(/couldn.t check what this template is used by/i);
+    // The warning half of the sentence must survive the fallback.
+    expect(dialog).toHaveTextContent(/keep working/i);
   });
 });

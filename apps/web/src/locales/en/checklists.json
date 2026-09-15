@@ -35,5 +35,39 @@
     "saveFailed": "Failed to save the checklist step.",
     "reorderFailed": "Failed to reorder the checklist.",
     "tickRequiresUser": "Ticking a step requires a signed-in user session."
+  },
+  "templates": {
+    "title": "Checklist templates",
+    "subtitle": "Reusable procedures your technicians can apply to any ticket.",
+    "allOrganizations": "All orgs",
+    "partnerWideHint": "Applies to every organization you manage, now and in future.",
+    "thisOrganizationOnly": "This organization only",
+    "scope": "Who can use this template",
+    "name": "Name",
+    "description": "Description",
+    "instructions": "Internal instructions",
+    "instructionsHint": "Internal — never shown to the customer.",
+    "isActive": "Active",
+    "inactiveHint": "Inactive templates stay linked where they are already used but stop appearing in pickers.",
+    "steps": "Steps",
+    "addStep": "Add a step",
+    "stepLabelPlaceholder": "Step label",
+    "empty": "No templates yet.",
+    "create": "New template",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "apply": "Apply template",
+    "applyCta": "Apply",
+    "choosePlaceholder": "Choose a template",
+    "applyMode": {
+      "append": "Add these steps to the existing checklist",
+      "replaceUnticked": "Replace the unticked steps (completed steps are kept)"
+    },
+    "errors": {
+      "loadFailed": "Failed to load checklist templates.",
+      "saveFailed": "Failed to save the checklist template.",
+      "applyFailed": "Failed to apply the checklist template."
+    }
   }
 }

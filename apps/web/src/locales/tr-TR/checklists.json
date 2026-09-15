@@ -35,5 +35,39 @@
     "saveFailed": "Kontrol listesi adımı kaydedilemedi.",
     "reorderFailed": "Kontrol listesi yeniden sıralanamadı.",
     "tickRequiresUser": "Bir adımı işaretlemek, oturum açmış bir kullanıcı oturumu gerektirir."
+  },
+  "templates": {
+    "title": "Kontrol listesi şablonları",
+    "subtitle": "Teknisyenlerinizin herhangi bir bilete uygulayabileceği yeniden kullanılabilir prosedürler.",
+    "allOrganizations": "Tüm kuruluşlar",
+    "partnerWideHint": "Yönettiğiniz her kuruluşa, şimdi ve gelecekte uygulanır.",
+    "thisOrganizationOnly": "Yalnızca bu kuruluş",
+    "scope": "Bu şablonu kim kullanabilir",
+    "name": "Ad",
+    "description": "Açıklama",
+    "instructions": "Dahili talimatlar",
+    "instructionsHint": "Dahili — müşteriye asla gösterilmez.",
+    "isActive": "Aktif",
+    "inactiveHint": "Etkin olmayan şablonlar zaten kullanıldıkları yerlerde bağlı kalır, ancak seçicilerde görünmeye devam etmez.",
+    "steps": "Adımlar",
+    "addStep": "Adım ekle",
+    "stepLabelPlaceholder": "Adım etiketi",
+    "empty": "Henüz şablon yok.",
+    "create": "Yeni şablon",
+    "save": "Kaydet",
+    "cancel": "Vazgeç",
+    "delete": "Sil",
+    "apply": "Şablonu uygula",
+    "applyCta": "Uygula",
+    "choosePlaceholder": "Bir şablon seçin",
+    "applyMode": {
+      "append": "Bu adımları mevcut kontrol listesine ekle",
+      "replaceUnticked": "İşaretlenmemiş adımları değiştir (tamamlanan adımlar korunur)"
+    },
+    "errors": {
+      "loadFailed": "Kontrol listesi şablonları yüklenemedi.",
+      "saveFailed": "Kontrol listesi şablonu kaydedilemedi.",
+      "applyFailed": "Kontrol listesi şablonu uygulanamadı."
+    }
   }
 }

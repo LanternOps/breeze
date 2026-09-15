@@ -26,7 +26,7 @@ import {
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate } from '../billing/invoiceTypes';
 import { usePermissions } from '../../lib/permissions';
-import ContractDocumentsSection from './ContractDocumentsSection';
+import SignedAgreementsPage from '../agreements/SignedAgreementsPage';
 import ContractDeliverablesSection from './ContractDeliverablesSection';
 import DeviceCoverageNotice, { formatUncoveredBreakdown } from './DeviceCoverageNotice';
 import { LINE_TYPE_LABELS } from './lineTypes';
@@ -488,8 +488,20 @@ export default function ContractDetail({ detail, onChanged }: Props) {
             </table>
           </div>
 
-          {/* Executed documents (Task 15's accept-time snapshots) */}
-          <ContractDocumentsSection contractId={contract.id} />
+          {/* Signed agreements filed against this contract. W03 replaced the
+              bespoke ContractDocumentsSection table with the shared list so the
+              contract page and /agreements/signed cannot drift. The
+              `contract-documents-section` testid and the `signed-agreements`
+              anchor (the header pill's target) both live on this wrapper. */}
+          <section id="signed-agreements" data-testid="contract-documents-section" className="rounded-lg border bg-card shadow-xs">
+            <h3 className="border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('contracts.contractDetail.documents.title')}
+            </h3>
+            <p className="px-3 py-1 text-xs text-muted-foreground">{t('contracts.contractDetail.documents.subtitle')}</p>
+            <div className="px-3 pb-3">
+              <SignedAgreementsPage lockedContractId={contract.id} />
+            </div>
+          </section>
           <ContractDeliverablesSection contractId={contract.id} orgId={contract.orgId} />
         </div>
 

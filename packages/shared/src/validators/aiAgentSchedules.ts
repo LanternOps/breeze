@@ -184,15 +184,16 @@ const createPartnerScheduleSchema = z.object({
   agentId: z.string().uuid(),
   cron: scheduleCronSchema,
   timezone: scheduleTimezoneSchema,
-  // .max(6): AI_SWEEP_KINDS has exactly 6 members, so a list longer than
-  // that can only be a duplicate — the sweeper still no-ops on dupes, but
-  // there is no legitimate 7th value to accept.
+  // The cap is AI_SWEEP_KINDS.length, not a literal (#5754): a list longer
+  // than the catalog can only be a duplicate — the sweeper still no-ops on
+  // dupes — but a hand-bumped number silently rejects a valid "select all"
+  // the first time a kind is added and nobody remembers this line.
   //
   // The `.min(1)` that used to live here moved into the superRefine below,
   // because it is a SWEEP-only rule: a narrative baseline legitimately
   // sweeps nothing. Defaulting to `[]` keeps "omitted" and "explicitly
   // empty" the same thing for a narrative create.
-  sweepKinds: z.array(sweepKindEnum).max(6).default([]),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length).default([]),
   enabled: z.boolean(),
 }).strict().superRefine((value, ctx) => {
   if (value.kind === 'patch') {
@@ -264,7 +265,7 @@ const createOrgScheduleSchema = z.object({
   orgId: z.string().uuid(),
   baselineScheduleId: z.string().uuid(),
   enabled: z.boolean(),
-  sweepKinds: z.array(sweepKindEnum).max(6),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length),
 }).strict();
 
 export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
@@ -280,6 +281,6 @@ export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
 export const updateAiAgentScheduleSchema = z.object({
   cron: scheduleCronSchema.optional(),
   timezone: scheduleTimezoneSchema.optional(),
-  sweepKinds: z.array(sweepKindEnum).max(6).optional(),
+  sweepKinds: z.array(sweepKindEnum).max(AI_SWEEP_KINDS.length).optional(),
   enabled: z.boolean().optional(),
 }).strict();

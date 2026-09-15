@@ -22,6 +22,7 @@ import {
 import {
   patches,
   patchApprovals,
+  patchPolicies,
   devicePatches,
   patchJobs,
   patchRollbacks,
@@ -97,7 +98,7 @@ import {
   type ReportExecutionAuthority,
   type UserReportExecutionAuthority,
 } from './siteScope';
-import { upsertPatchApproval, resolvePartnerIdForOrg } from '../routes/patches/helpers';
+import { upsertPatchApproval, resolvePartnerIdForOrg, declineAllRingApprovals } from '../routes/patches/helpers';
 import { sanitizeThrownToolError } from './aiToolErrors';
 import { listFleetFindings } from './fleetFindings/query';
 import {
@@ -661,20 +662,90 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
   // 3. manage_patches — Patch scanning, approval, installation
   // ============================================
 
+  // Resolves the patchId to act on: the caller's explicit patchId if given,
+  // otherwise a lookup by title/KB (external id) among patches actually
+  // present on this org's fleet (mirrors action:'list' scoping, so a name
+  // can't resolve to a patch this org has never seen). #5585: the AI could
+  // only decline by UUID, which the model has no way to know without reading
+  // page HTML — this closes that gap for approve/decline/defer.
+  async function resolveManagePatchesPatchId(
+    orgId: string,
+    input: Record<string, unknown>
+  ): Promise<{ patchId: string } | { error: string }> {
+    if (typeof input.patchId === 'string' && input.patchId) {
+      return { patchId: input.patchId };
+    }
+    const patchName = typeof input.patchName === 'string' ? input.patchName.trim() : '';
+    if (!patchName) {
+      return { error: 'patchId or patchName is required' };
+    }
+
+    const rows = await db
+      .selectDistinct({ id: patches.id, title: patches.title, externalId: patches.externalId })
+      .from(patches)
+      .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
+      .where(and(
+        eq(devicePatches.orgId, orgId),
+        or(
+          sql`${patches.title} ILIKE ${`%${patchName}%`}`,
+          eq(patches.externalId, patchName),
+        ),
+      ))
+      .orderBy(desc(patches.createdAt))
+      .limit(6);
+
+    if (rows.length === 0) {
+      return { error: `No patch found matching "${patchName}" on this organization's fleet` };
+    }
+    if (rows.length > 1) {
+      const exact = rows.filter((r) => r.title.toLowerCase() === patchName.toLowerCase() || r.externalId === patchName);
+      if (exact.length === 1) return { patchId: exact[0]!.id };
+      return {
+        error: `Ambiguous patch name "${patchName}" (${rows.length} matches: ${rows.map((r) => r.title).join('; ')}). Use patchId instead.`,
+      };
+    }
+    return { patchId: rows[0]!.id };
+  }
+
+  // Validates a ring UUID belongs to the resolved partner before it's used to
+  // scope an approve/decline/defer. Mirrors resolvePatchApprovalPartnerIdForRing's
+  // route-level check, but stays compatible with org-scoped AI callers (that
+  // helper hard-rejects auth.scope === 'organization', which manage_patches
+  // supports via resolvePartnerIdForOrg).
+  async function resolveManagePatchesRingId(
+    input: Record<string, unknown>,
+    partnerId: string
+  ): Promise<{ ringId: string | null } | { error: string }> {
+    const ringId = typeof input.ringId === 'string' && input.ringId ? input.ringId : null;
+    if (!ringId) return { ringId: null };
+
+    const [ring] = await db
+      .select({ partnerId: patchPolicies.partnerId })
+      .from(patchPolicies)
+      .where(eq(patchPolicies.id, ringId))
+      .limit(1);
+    if (!ring) return { error: 'Update ring not found' };
+    if (ring.partnerId !== partnerId) return { error: 'Access denied to this update ring' };
+    return { ringId };
+  }
+
   registerTool({
     tier: 1,
     deviceArgs: ['deviceIds', 'deviceId'],
     definition: {
       name: 'manage_patches',
-      description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. Required fields per action: install requires BOTH patchIds and deviceIds; scan requires deviceIds; bulk_approve requires patchIds; approve/decline/defer require patchId; rollback requires BOTH patchId and deviceIds; list/compliance require none. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
+      description: 'Manage patches: list patches present on the org\'s devices (optionally scoped to a single device via deviceId, which also returns per-device install status), check compliance, trigger scans, approve/decline/defer patches, bulk approve, install on targets, or rollback. Required fields per action: install requires BOTH patchIds and deviceIds; scan requires deviceIds; bulk_approve requires patchIds; approve/decline/defer require patchId OR patchName; rollback requires BOTH patchId and deviceIds; list/compliance require none. approve/decline/defer accept an optional ringId to scope the action to one update ring (omit for the partner-wide blanket); decline also accepts allRings to revoke the approval in every update ring at once, not just the current scope — use this to fully unapprove a patch a device might otherwise still install under a different ring. To configure patch schedules and auto-approval policies, use manage_policy_feature_link with featureType "patch".',
       input_schema: {
         type: 'object' as const,
         properties: {
-          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. Required inputs: install needs patchIds AND deviceIds; scan needs deviceIds; bulk_approve needs patchIds; approve/decline/defer need patchId; rollback needs patchId AND deviceIds. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
-          patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback.' },
+          action: { type: 'string', enum: ['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback'], description: 'The action to perform. Required inputs: install needs patchIds AND deviceIds; scan needs deviceIds; bulk_approve needs patchIds; approve/decline/defer need patchId or patchName; rollback needs patchId AND deviceIds. To configure patch policies/auto-approval, use manage_policy_feature_link with featureType "patch".' },
+          patchId: { type: 'string', description: 'Patch UUID. Required for approve/decline/defer/rollback unless patchName is given (rollback always needs the UUID).' },
+          patchName: { type: 'string', description: 'Patch title or KB/external ID to look up when the UUID is unknown (for approve/decline/defer only). Matched against patches present on this org\'s fleet; an ambiguous match returns the candidates instead of guessing.' },
           patchIds: { type: 'array', items: { type: 'string' }, description: 'Patch UUIDs. Required for bulk_approve and install.' },
           deviceIds: { type: 'array', items: { type: 'string' }, description: 'Device UUIDs. Required for scan, install, and rollback.' },
           deviceId: { type: 'string', description: 'Single device UUID to scope the patch list to one device (for list); returns per-device install status' },
+          ringId: { type: 'string', description: 'Update ring UUID to scope approve/decline/defer to one ring (for approve/decline/defer only; omit for the partner-wide blanket). Cannot be combined with allRings.' },
+          allRings: { type: 'boolean', description: 'Decline only: revoke this patch\'s approval in every update ring for the partner, not just the current/blanket scope — use to fully unapprove a patch that was approved in more than one ring. Cannot be combined with ringId.' },
           source: { type: 'string', enum: ['microsoft', 'apple', 'linux', 'third_party', 'custom'], description: 'Filter by source' },
           severity: { type: 'string', enum: ['critical', 'important', 'moderate', 'low', 'unknown'], description: 'Filter by severity' },
           status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'deferred'], description: 'Filter by approval status' },
@@ -832,45 +903,80 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'approve' || action === 'decline') {
-        if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        const resolvedPatch = await resolveManagePatchesPatchId(orgId, input);
+        if ('error' in resolvedPatch) return JSON.stringify({ error: resolvedPatch.error });
+        const patchId = resolvedPatch.patchId;
 
         const approveDeclinePartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
         if (!approveDeclinePartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
 
+        // #5585: allRings clears every ring-specific approval for the patch,
+        // not just the blanket/current-ring one — a blanket-only decline
+        // leaves previously-approved ring rows live (patchApprovalEvaluator
+        // matches either row). Only meaningful for decline.
+        if (action === 'decline' && input.allRings === true) {
+          const { ringIds, failedRingIds } = await declineAllRingApprovals(
+            approveDeclinePartnerId,
+            patchId,
+            (input.notes as string) ?? null,
+            auth,
+          );
+          const success = failedRingIds.length === 0;
+          return JSON.stringify({
+            success,
+            message: success
+              ? `Patch declined across all ${ringIds.length} approval scope(s) for this partner`
+              : `Patch declined for ${ringIds.length} of ${ringIds.length + failedRingIds.length} approval scope(s); ${failedRingIds.length} failed — retry to finish clearing the rest`,
+            patchId,
+            declinedRingIds: ringIds,
+            failedRingIds,
+          });
+        }
+
+        const resolvedRing = await resolveManagePatchesRingId(input, approveDeclinePartnerId);
+        if ('error' in resolvedRing) return JSON.stringify({ error: resolvedRing.error });
+
         const status = action === 'approve' ? 'approved' : 'rejected';
         await upsertPatchApproval({
           partnerId: approveDeclinePartnerId,
-          patchId: input.patchId as string,
-          ringId: null,
+          patchId,
+          ringId: resolvedRing.ringId,
           status,
           approvedBy: auth.user.id,
           approvedAt: new Date(),
           notes: (input.notes as string) ?? null,
         }, auth);
 
-        return JSON.stringify({ success: true, message: `Patch ${action}d` });
+        return JSON.stringify({ success: true, message: `Patch ${action}d`, patchId });
       }
 
       if (action === 'defer') {
-        if (!input.patchId) return JSON.stringify({ error: 'patchId is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
+
+        const resolvedPatch = await resolveManagePatchesPatchId(orgId, input);
+        if ('error' in resolvedPatch) return JSON.stringify({ error: resolvedPatch.error });
+        const patchId = resolvedPatch.patchId;
 
         const deferPartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
         if (!deferPartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
 
+        const resolvedRing = await resolveManagePatchesRingId(input, deferPartnerId);
+        if ('error' in resolvedRing) return JSON.stringify({ error: resolvedRing.error });
+
         const deferUntil = input.deferUntil ? new Date(input.deferUntil as string) : null;
         await upsertPatchApproval({
           partnerId: deferPartnerId,
-          patchId: input.patchId as string,
-          ringId: null,
+          patchId,
+          ringId: resolvedRing.ringId,
           status: 'deferred',
           approvedBy: auth.user.id,
           deferUntil,
           notes: (input.notes as string) ?? null,
         }, auth);
 
-        return JSON.stringify({ success: true, message: `Patch deferred${deferUntil ? ` until ${deferUntil.toISOString()}` : ''}` });
+        return JSON.stringify({ success: true, message: `Patch deferred${deferUntil ? ` until ${deferUntil.toISOString()}` : ''}`, patchId });
       }
 
       if (action === 'bulk_approve') {

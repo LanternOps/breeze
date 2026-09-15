@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PATCH_PLAN_ITEM_CLASSES } from '../types/aiPatchPlan';
+import { PATCH_CHASE_MAX_ATTEMPTS, PATCH_FAILURE_CLASSES, PATCH_PLAN_ITEM_CLASSES } from '../types/aiPatchPlan';
 import { PatchPlanReferenceError, patchPlanOutcomeFromSubmission, patchPlanSubmissionSchema, triggerPatchPlanRunSchema } from './aiPatchPlan';
 
 const DEV = '11111111-1111-4111-8111-111111111111';
@@ -55,6 +55,26 @@ describe('patchPlanSubmissionSchema', () => {
     const esc = item({ class: 'escalation', severity: 'low', deviceId: DEV });
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: Array.from({ length: 100 }, () => esc) }).success).toBe(true);
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: Array.from({ length: 101 }, () => esc) }).success).toBe(false);
+  });
+
+  // W03 (#5749): a chase/escalation item may CITE the class and attempt count
+  // the evidence computed. The persister refuses a citation that disagrees
+  // with the evidence; the schema only closes the vocabulary and the range.
+  it('accepts failureClass and attemptCount on chase and escalation items only', () => {
+    const chase = item({ class: 'chase', deviceId: DEV, patchIds: [DEV], jobResultIds: [DEV] });
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ ...chase, failureClass: 'transient', attemptCount: 1 })] }).success).toBe(true);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'escalation', deviceId: DEV, failureClass: 'permanent', attemptCount: 3 })] }).success).toBe(true);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'install', deviceId: DEV, patchIds: [DEV], failureClass: 'transient' })] }).success).toBe(false);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'approval_advisory', patchIds: [DEV], attemptCount: 1 })] }).success).toBe(false);
+  });
+
+  it('closes the failure class vocabulary and bounds attemptCount to a positive integer', () => {
+    expect([...PATCH_FAILURE_CLASSES]).toEqual(['transient', 'needs_reboot', 'disk_space', 'store_corrupt', 'permanent', 'unknown']);
+    const chase = item({ class: 'chase', deviceId: DEV, patchIds: [DEV], jobResultIds: [DEV] });
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ ...chase, failureClass: 'flaky' })] }).success).toBe(false);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ ...chase, attemptCount: 0 })] }).success).toBe(false);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ ...chase, attemptCount: 1.5 })] }).success).toBe(false);
+    expect(PATCH_CHASE_MAX_ATTEMPTS).toBe(2);
   });
 
   it('accepts a minimal well-formed plan and a null oldestOutstandingDays', () => {

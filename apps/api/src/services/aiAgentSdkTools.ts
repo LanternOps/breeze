@@ -1873,12 +1873,15 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
+        patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        ringId: uuid.optional(),
+        allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),

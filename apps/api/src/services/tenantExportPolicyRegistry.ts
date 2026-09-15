@@ -386,7 +386,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // #5291 W04 - append-only probe telemetry. org_id/device_id are the fan-out
   // axes; `details` is jsonb, so excludedOpen.
   "network_monitor_results": tablePolicy("org_id", {"included":["id","monitor_id","org_id","device_id","status","response_ms","status_code","error","timestamp"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
-  "network_monitors": tablePolicy("org_id", {"included":["id","org_id","partner_id","managed_by_monitor_id","asset_id","name","monitor_type","target","polling_interval","timeout","is_active","last_checked","last_status","last_response_ms","last_error","consecutive_failures","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
+  "network_monitors": tablePolicy("org_id", {"included":["id","org_id","partner_id","managed_by_monitor_id","asset_id","name","monitor_type","target","polling_interval","timeout","is_active","last_checked","last_status","last_response_ms","last_error","consecutive_failures","tls_not_after","tls_observed_host","tls_issuer","tls_observed_at","tls_state","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config"]}),
   "network_topology": tablePolicy("org_id", {"included":["id","org_id","site_id","source_type","source_id","target_type","target_id","connection_type","interface_name","vlan","bandwidth","latency","method","confidence","created_by","first_seen_at","last_verified_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "notification_channels": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","type","enabled","last_tested_at","last_test_status","last_test_error","throttle_max_per_window","throttle_window_seconds","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["config","templates"]}),
   "notification_routing_rules": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","priority","enabled","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["conditions","channel_ids"]}),
@@ -595,6 +595,15 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // export. No json/jsonb/bytea column, so excludedOpen is empty, and no column
   // name matches SUSPICIOUS_NAME_PARTS, so reviewedIncluded is empty.
   "ticket_checklist_items": tablePolicy("org_id", {"included":["id","org_id","ticket_id","label","detail","position","done_at","done_by_user_id","source","source_template_item_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ticket_checklist_template_items / ticket_checklist_templates (spec #5783
+  // §4.2, §4.3): the MSP's reusable procedure steps. Neither table has a
+  // json/jsonb/bytea column, so nothing lands in excludedOpen. `instructions`
+  // is internal MSP procedure prose, not a secret, and matches nothing in
+  // SUSPICIOUS_NAME_PARTS — the org's own export should carry the procedure
+  // that was run for them. Only org-owned rows are ever exported: partner-wide
+  // rows carry org_id NULL and are outside every org's tenant.
+  "ticket_checklist_template_items": tablePolicy("org_id", {"included":["id","template_id","org_id","partner_id","label","detail","sort_order","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_checklist_templates": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","instructions","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_drafts (P2-4, #4191): the reply/resolution-note text an agent
   // proposes for a ticket. content/kind/state are ordinary customer-facing
   // draft content and lifecycle state -> included, same treatment as

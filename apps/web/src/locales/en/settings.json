@@ -1543,7 +1543,8 @@
         "pending_reboots": "Pending reboots",
         "failed_backups": "Failed backups",
         "service_down": "Service down",
-        "unpatched_critical": "Unpatched critical vulnerabilities"
+        "unpatched_critical": "Unpatched critical vulnerabilities",
+        "expiring_certs": "Expiring certificates"
       },
       "toasts": {
         "saved": "Schedule saved",
@@ -1877,7 +1878,8 @@
           "pending_reboots": "Pending reboots",
           "failed_backups": "Failed backups",
           "service_down": "Service down",
-          "unpatched_critical": "Unpatched critical vulnerabilities"
+          "unpatched_critical": "Unpatched critical vulnerabilities",
+          "expiring_certs": "Expiring certificates"
         },
         "severities": {
           "critical": "Critical",
@@ -1914,6 +1916,12 @@
         "dropped": "{{count}} update was left out of the card",
         "dropped_other": "{{count}} updates were left out of the card",
         "counts": "{{created}} awaiting approval · {{suppressed}} already proposed",
+        "failureClass": "Failure class: {{label}}",
+        "attempts": "{{count}} failed attempt",
+        "attempts_other": "{{count}} failed attempts",
+        "escalation": "Needs a human — nothing will retry this automatically.",
+        "escalations": "{{count}} escalation",
+        "escalations_other": "{{count}} escalations",
         "classes": {
           "install": "Install",
           "approval_advisory": "Approval advice",
@@ -1935,7 +1943,12 @@
           "live_intent_exists": "An approval card for this update is already open",
           "recently_rejected": "This update was rejected recently",
           "recently_cancelled": "This update's card was cancelled recently",
-          "recently_completed": "This update was installed recently"
+          "recently_completed": "This update was installed recently",
+          "failure_class_mismatch": "The quoted failure class does not match the evidence",
+          "class_not_retryable": "This kind of failure is never retried automatically",
+          "chase_attempts_exhausted": "The retry limit for this update was reached — escalated instead",
+          "attempt_count_mismatch": "The quoted attempt count does not match the evidence",
+          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted"
         },
         "ineligible": {
           "not_outstanding": "Not outstanding on this device",
@@ -1947,6 +1960,14 @@
           "awaiting_manual_approval": "Awaiting manual approval",
           "no_ring_resolved": "The device has no update ring",
           "device_not_in_org": "Device not in this organization"
+        },
+        "failureClasses": {
+          "transient": "Transient",
+          "needs_reboot": "Needs reboot",
+          "disk_space": "Disk space",
+          "store_corrupt": "Update store corrupt",
+          "permanent": "Permanent",
+          "unknown": "Unknown"
         }
       },
       "narrative": {

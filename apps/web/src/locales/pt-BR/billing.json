@@ -318,6 +318,11 @@
       "estimateExcluded": "Exclui {{count}} contrato(s) cuja estimativa está indisponível"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos são faturados em uma moeda diferente da moeda da organização.",
+        "countPlus": "{{count}}+ contratos são faturados em uma moeda diferente da moeda da organização.",
+        "review": "Revisar"
+      },
       "title": "Contratos",
       "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",
       "newContract": "Novo contrato",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Salvo, mas foi removida formatação não suportada: {{tags}}. O corpo dos acordos oferece suporte a títulos, negrito, itálico, sublinhado, listas e links."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Modelos de acordo",
+      "signed": "Acordos assinados"
+    },
+    "signedPage": {
+      "title": "Acordos assinados",
+      "description": "Todos os acordos que seus clientes assinaram. Vincule um a um contrato para que apareça no contrato que ele rege.",
+      "unlinkedOnly": "Somente sem vínculo",
+      "empty": {
+        "title": "Nenhum acordo assinado ainda",
+        "description": "Um acordo é assinado quando o cliente aceita um orçamento que o contém."
+      },
+      "emptyUnlinked": {
+        "title": "Nenhum acordo assinado sem vínculo",
+        "description": "Todos os acordos assinados já estão arquivados em um contrato."
+      },
+      "columns": {
+        "contract": "Contrato"
+      },
+      "viewContract": "Ver contrato",
+      "notLinked": "Sem vínculo",
+      "rowSubtitle": "Aceito com o orçamento {{quoteNumber}} por {{signer}} em {{date}}",
+      "rowSubtitleNoQuote": "Assinado por {{signer}} em {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados",
+      "usageUnavailable": "Uso indisponível",
+      "backToTemplates": "Voltar aos modelos de acordo",
+      "archiveConfirm": {
+        "title": "Arquivar este modelo de acordo?",
+        "message": "Usado em {{quotes}} orçamentos · {{signed}} acordos assinados. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "messageUnknownUsage": "Não foi possível verificar onde este modelo é usado. Os orçamentos já fixados nele continuam funcionando, mas não será possível adicionar novas seções de acordo.",
+        "confirm": "Arquivar modelo"
+      }
+    },
+    "contractPill": {
+      "under": "Sob {{template}} v{{n}}"
     }
   },
   "quotes": {

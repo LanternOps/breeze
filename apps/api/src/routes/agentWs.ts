@@ -863,6 +863,13 @@ const backupProgressMessageSchema = z.object({
 const revocationLeaseRenewSchema = z.object({
   type: z.literal('revocation_lease_renew'),
   sessionId: z.string().uuid(),
+  /**
+   * SEC-038 W05: an opaque correlator the agent generates for a fence resync
+   * and echoes back on the answer, so a stalled answer to an EARLIER renewal
+   * can never satisfy a later resync. Optional — the watchdog's ordinary
+   * renewals send none, and older agents do not send it at all.
+   */
+  syncNonce: z.string().min(1).max(64).optional(),
 });
 
 const agentMessageSchema = z.discriminatedUnion('type', [
@@ -2663,7 +2670,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
             return;
           }
-          const { sessionId: leaseSessionId } = parsedRenew.data;
+          const { sessionId: leaseSessionId, syncNonce } = parsedRenew.data;
+          const nonceEcho = syncNonce ? { syncNonce } : {};
           // Bind the renew to the device this socket authenticated as: an agent
           // must never be able to renew (or learn about) another tenant's
           // session by guessing a session id.
@@ -2678,6 +2686,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hardDeadline: leaseResult.hardDeadline,
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
+              // SEC-038: the agent's durable start fence resyncs from these.
+              ...(leaseResult.startGeneration !== undefined
+                ? { startGeneration: leaseResult.startGeneration }
+                : {}),
+              ...(leaseResult.terminationPhase !== undefined
+                ? { terminationPhase: leaseResult.terminationPhase }
+                : {}),
+              ...nonceEcho,
             }));
           } else if (leaseResult.status === 'revoked' || leaseResult.status === 'forbidden') {
             // `forbidden` is reported as a revocation on purpose: from the
@@ -2687,6 +2703,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               type: 'revocation_lease_revoked',
               sessionId: leaseSessionId,
               reason: leaseResult.status === 'revoked' ? leaseResult.reason : 'not_authorized',
+              // `forbidden` never carries a generation: it must reveal nothing
+              // about a session belonging to another device.
+              ...(leaseResult.status === 'revoked' && leaseResult.terminalGeneration !== undefined
+                ? { terminalGeneration: leaseResult.terminalGeneration }
+                : {}),
+              ...nonceEcho,
             }));
           } else {
             // Infrastructure blip: say nothing conclusive and let the agent ride
@@ -2694,6 +2716,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             ws.send(JSON.stringify({
               type: 'revocation_lease_unavailable',
               sessionId: leaseSessionId,
+              ...nonceEcho,
             }));
           }
           return;

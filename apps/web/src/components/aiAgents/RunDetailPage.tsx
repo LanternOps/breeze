@@ -16,6 +16,7 @@ import { EmptyState } from '../shared/EmptyState';
 import {
   AI_SWEEP_KINDS,
   AI_SWEEP_SEVERITIES,
+  PATCH_FAILURE_CLASSES,
   PATCH_INELIGIBLE_REASONS,
   PATCH_PLAN_ITEM_CLASSES,
   PATCH_PLAN_REFUSAL_REASONS,
@@ -612,6 +613,8 @@ function sweepReasonLabel(t: (key: string) => string, reason: SweepProposalReaso
 const PATCH_ITEM_CLASS_TOKENS: readonly string[] = PATCH_PLAN_ITEM_CLASSES;
 const PATCH_REFUSAL_REASON_TOKENS: readonly string[] = PATCH_PLAN_REFUSAL_REASONS;
 const PATCH_INELIGIBLE_REASON_TOKENS: readonly string[] = PATCH_INELIGIBLE_REASONS;
+/** W03 (#5749): the six server-computed failure classes a chase/escalation quotes. */
+const PATCH_FAILURE_CLASS_TOKENS: readonly string[] = PATCH_FAILURE_CLASSES;
 
 function patchItemClassLabel(t: (key: string) => string, itemClass: string): string {
   if (!PATCH_ITEM_CLASS_TOKENS.includes(itemClass)) return itemClass;
@@ -631,6 +634,12 @@ function patchRefusalReasonLabel(t: (key: string) => string, reason: string): st
 function patchIneligibleReasonLabel(t: (key: string) => string, reason: PatchIneligibleReason): string {
   if (!PATCH_INELIGIBLE_REASON_TOKENS.includes(reason)) return reason;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.ineligible.${reason}`);
+}
+
+/** W03 (#5749) — same membership-checked dynamic `t()` contract as above. */
+function patchFailureClassLabel(t: (key: string) => string, failureClass: string): string {
+  if (!PATCH_FAILURE_CLASS_TOKENS.includes(failureClass)) return failureClass;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.failureClasses.${failureClass}`);
 }
 
 /**
@@ -658,6 +667,11 @@ function patchIneligibleReasonLabel(t: (key: string) => string, reason: PatchIne
  * any disposition, can also carry `droppedPatchIds` — patches the eligibility
  * resolver dropped off the card, each with why (never the raw patch id as
  * visible text).
+ *
+ * W03 (#5749): a `chase` or `escalation` item quotes the failure class and
+ * attempt count the EVIDENCE computed (the persister refused any quote that
+ * disagreed), rendered as a labelled line. An escalation carries an explicit
+ * "needs a human" line and never an approve control — it mints nothing.
  */
 function PatchPlanItem({
   item,
@@ -699,6 +713,28 @@ function PatchPlanItem({
       </div>
       <p className="mt-1 text-sm font-medium">{item.title}</p>
       <p className="mt-0.5 max-w-prose text-sm text-muted-foreground">{item.detail}</p>
+      {(item.failureClass != null || item.attemptCount != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.failureClass != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-class`}>
+              {t('aiAgentsPage.runs.patch.failureClass', { label: patchFailureClassLabel(t, item.failureClass) })}
+            </span>
+          )}
+          {item.attemptCount != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-attempts`}>
+              {t('aiAgentsPage.runs.patch.attempts', { count: item.attemptCount })}
+            </span>
+          )}
+        </p>
+      )}
+      {item.class === 'escalation' && item.disposition === 'recorded' && (
+        <p
+          className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-escalation`}
+        >
+          {t('aiAgentsPage.runs.patch.escalation')}
+        </p>
+      )}
       {refused && (
         <p
           className="mt-1 text-xs text-amber-700 dark:text-amber-400"
@@ -1914,12 +1950,17 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {/* W02 (#5748) — a one-line rollup so an operator doesn't have to
               count dispositions in the item list below to know how many
               install proposals turned into a real approval card. */}
-          {(run.patch.intentCreatedCount > 0 || run.patch.suppressedCount > 0) && (
+          {(run.patch.intentCreatedCount > 0 || run.patch.suppressedCount > 0 || run.patch.escalationCount > 0) && (
             <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-patch-counts">
               {t('aiAgentsPage.runs.patch.counts', {
                 created: run.patch.intentCreatedCount,
                 suppressed: run.patch.suppressedCount,
               })}
+              {/* W03 (#5749) — escalations are recorded, never minted, so they
+                  are counted separately from the approval-card rollup. */}
+              {run.patch.escalationCount > 0 && (
+                <> · {t('aiAgentsPage.runs.patch.escalations', { count: run.patch.escalationCount })}</>
+              )}
             </p>
           )}
 

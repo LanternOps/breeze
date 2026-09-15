@@ -135,6 +135,8 @@ describe('AiAgentSchedulesSection', () => {
     fireEvent.click(screen.getByTestId('ai-agent-schedule-kind-failed_backups'));
     fireEvent.click(screen.getByTestId('ai-agent-schedule-kind-service_down'));
     fireEvent.click(screen.getByTestId('ai-agent-schedule-kind-unpatched_critical'));
+    // #5754 added a seventh kind, which the default "all selected" now includes.
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-kind-expiring_certs'));
 
     fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
 
