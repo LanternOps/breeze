@@ -914,6 +914,52 @@ describe('latestPortalHardwareLifecycleRun', () => {
       latestPortalHardwareLifecycleRun(ORG_ID, 'UTC'),
     ).rejects.toBeInstanceOf(PortalReportNotFoundError);
   });
+
+  // #5880: LifecyclePlanTable links a device row's Computer cell to
+  // /portal/devices, but that route itself redirects home when the org's
+  // enable_self_service flag is off — so the portal page needs the flag to
+  // know whether the link is safe to render at all.
+  it("includes the org's enable_self_service flag in the DTO when it is on", async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: true }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+    expect(dto.enableSelfService).toBe(true);
+  });
+
+  it('reports enableSelfService as false when the org has self-service off', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true, enableSelfService: false }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+    expect(dto.enableSelfService).toBe(false);
+  });
+
+  it('fails closed on enableSelfService when the branding row has no such column value', async () => {
+    state.selected
+      .mockReset()
+      .mockResolvedValueOnce([{ enableLifecycle: true }])
+      .mockResolvedValue([{
+        id: RUN_ID,
+        result: { summary: {} },
+        completedAt: new Date('2026-09-02T18:00:00.000Z'),
+      }]);
+
+    const dto = await latestPortalHardwareLifecycleRun(ORG_ID, 'UTC');
+    expect(dto.enableSelfService).toBe(false);
+  });
 });
 
 describe('listPortalRuns', () => {
