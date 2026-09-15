@@ -116,6 +116,63 @@ describe('tlsObservationUpdate', () => {
     expect(update.tlsNotAfter).toBeNull();
   });
 
+  // The agent truncates its echo to 255 BYTES, so for a long URL the two sides
+  // of the provenance comparison are NOT the same string. Comparing them raw
+  // would drop every observation for such a monitor forever, even though it
+  // was never edited — a permanent silent outage of the whole feature for any
+  // endpoint with a long query string.
+  it('accepts a truncated echo of a URL longer than the agent can send', async () => {
+    const { tlsObservationUpdate } = await import('./tlsObservation');
+    const longUrl = `https://a.example/${'q'.repeat(400)}`;
+    const update = tlsObservationUpdate(
+      {
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=CA',
+        sslObservedHost: 'a.example',
+        sslRequestedUrl: Buffer.from(longUrl, 'utf8').subarray(0, 255).toString('utf8'),
+      },
+      new Date(),
+      { expectedRequestUrl: longUrl },
+    );
+    expect(update.tlsState).toBe('observed');
+  });
+
+  it('still rejects a SHORT echo that is merely a prefix of the current URL', async () => {
+    const { tlsObservationUpdate } = await import('./tlsObservation');
+    // The stale case: the monitor used to point at https://a.example and now
+    // points at https://a.example/x. A prefix rule applied unconditionally
+    // would wrongly accept this.
+    const update = tlsObservationUpdate(
+      {
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=CA',
+        sslObservedHost: 'a.example',
+        sslRequestedUrl: 'https://a.example',
+      },
+      new Date(),
+      { expectedRequestUrl: 'https://a.example/x' },
+    );
+    expect(update).toEqual({});
+  });
+
+  it('tolerates surrounding whitespace on either side rather than dropping forever', async () => {
+    const { tlsObservationUpdate } = await import('./tlsObservation');
+    const update = tlsObservationUpdate(
+      {
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=CA',
+        sslObservedHost: 'a.example',
+        sslRequestedUrl: ' https://a.example ',
+      },
+      new Date(),
+      { expectedRequestUrl: 'https://a.example' },
+    );
+    expect(update.tlsState).toBe('observed');
+  });
+
   it('writes a complete observed row when the agent supplied everything', async () => {
     const { tlsObservationUpdate } = await import('./tlsObservation');
     const now = new Date('2026-09-15T00:00:00Z');

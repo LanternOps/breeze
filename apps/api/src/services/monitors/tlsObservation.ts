@@ -96,7 +96,36 @@ export function readTlsObservation(
 export function monitorRequestUrl(monitor: { target: string; config: unknown }): string {
   const config = (monitor.config ?? {}) as Record<string, unknown>;
   const url = config['url'];
-  return typeof url === 'string' && url.trim() !== '' ? url : monitor.target;
+  // Trimmed, because the echoed side is trimmed too — an asymmetry here would
+  // make the comparison below fail forever for a value that happens to carry
+  // surrounding whitespace.
+  const chosen = typeof url === 'string' && url.trim() !== '' ? url : monitor.target;
+  return chosen.trim();
+}
+
+/**
+ * Does the URL the agent says it requested still describe where this monitor
+ * points?
+ *
+ * Not a plain `===`. The agent truncates its echo to 255 BYTES
+ * (`truncateObservation`), so for a longer URL — an authenticated status
+ * endpoint with a token or a long query string is an ordinary case, and
+ * neither `config.url` nor `target` (varchar(500)) is capped anywhere near
+ * 255 — the two sides are legitimately different strings. Comparing them raw
+ * would drop EVERY observation for such a monitor forever, with no edit ever
+ * having happened: a silent, permanent outage of the whole feature for that
+ * endpoint.
+ *
+ * So a prefix is accepted, but ONLY when the echo sits at the truncation
+ * boundary. Accepting any prefix would let a genuinely stale echo of
+ * `https://a.example` pass for a monitor now pointing at `https://a.example/x`
+ * — the exact misattribution this guard exists to stop.
+ */
+function requestUrlMatches(requested: string, expected: string): boolean {
+  if (requested === expected) return true;
+  // A rune-safe cut at 255 bytes can land up to 3 bytes short.
+  const echoedBytes = Buffer.byteLength(requested, 'utf8');
+  return echoedBytes >= MAX_TLS_TEXT - 3 && expected.startsWith(requested);
 }
 
 /**
@@ -147,7 +176,8 @@ export function tlsObservationUpdate(
 
   if (options.expectedRequestUrl !== undefined) {
     const requested = readText(details?.['sslRequestedUrl']);
-    if (requested === null || requested !== options.expectedRequestUrl) {
+    const expected = options.expectedRequestUrl;
+    if (requested === null || expected === null || !requestUrlMatches(requested, expected)) {
       console.warn(
         `[monitorTls] Dropping TLS observation for monitor ${options.monitorId ?? 'unknown'}: `
         + `result was produced against ${requested === null ? 'an unrecorded URL' : JSON.stringify(requested)}, `

@@ -180,6 +180,10 @@ func handleNetworkTcpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 // drops the whole observation.
 const maxTlsObservationLen = 255
 
+// maxRedirectHops mirrors net/http's own default redirect cap, which our
+// CheckRedirect replaces.
+const maxRedirectHops = 10
+
 // truncateObservation clips to maxTlsObservationLen bytes without splitting a
 // multi-byte rune — issuer DNs carry non-ASCII organisation names.
 func truncateObservation(s string) string {
@@ -227,9 +231,16 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 	// TLS state at all, the server leaves the stored observation untouched, and
 	// a stale `observed` row keeps reading as "fine" through a live failure.
 	var lastURL *neturl.URL
-	client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
 		if !followRedirects {
 			return http.ErrUseLastResponse
+		}
+		// Installing ANY CheckRedirect replaces net/http's default, which is
+		// what caps a chain at 10 hops. Restoring the cap explicitly is the
+		// only thing between a redirect LOOP and a check that runs hops for
+		// the whole timeout window on every polling interval.
+		if len(via) >= maxRedirectHops {
+			return fmt.Errorf("stopped after %d redirects", len(via))
 		}
 		lastURL = r.URL
 		return nil

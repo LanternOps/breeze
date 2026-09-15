@@ -204,6 +204,37 @@ func TestHandleNetworkHttpCheck_TLSObservation(t *testing.T) {
 	})
 }
 
+// Installing ANY CheckRedirect replaces net/http's default, which is what
+// caps a chain at 10 hops. Restoring the cap explicitly is the only thing
+// standing between a redirect LOOP and a check that runs hops for the whole
+// timeout window, every polling interval, from agent-shipped code.
+func TestHandleNetworkHttpCheck_RedirectLoopIsCapped(t *testing.T) {
+	var a, b *httptest.Server
+	a = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, b.URL, http.StatusFound)
+	}))
+	defer a.Close()
+	b = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, a.URL, http.StatusFound)
+	}))
+	defer b.Close()
+
+	out := runHttpCheck(t, map[string]any{
+		"monitorId":       "loop",
+		"url":             a.URL,
+		"followRedirects": true,
+		"timeout":         30, // long enough that only the hop cap can stop this
+	})
+
+	if got := out["status"]; got != "offline" {
+		t.Errorf("status = %v, want offline", got)
+	}
+	errText, _ := out["error"].(string)
+	if !strings.Contains(errText, "redirect") {
+		t.Errorf("error = %q, want it to name the redirect cap", errText)
+	}
+}
+
 // varchar(255) columns must never reject a writeback, so the agent truncates.
 func TestTruncateObservation(t *testing.T) {
 	long := strings.Repeat("a", 400)
