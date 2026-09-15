@@ -675,6 +675,37 @@ describe('RunDetailPage narrative', () => {
     expect(screen.queryByTestId('narrative-delivery-summary')).not.toBeInTheDocument();
   });
 
+  // #5806 — a run whose narrative payload is null (e.g. outcome lost/{}) must
+  // still surface delivery evidence: it must not be gated behind run.narrative.
+  it('renders the delivery summary when narrative is null but deliveries exist', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: null,
+        narrativeDelivery: { total: 2, sent: 1, refused: 1, pending: 0, unknown: 0, recipientsUnresolved: false },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('narrative-delivery-sent')).toHaveTextContent('Emailed to 1 of 2 recipients');
+    expect(screen.queryByTestId('ai-agent-run-narrative')).not.toBeInTheDocument();
+  });
+
+  it('renders the recipient-lookup-failed line when narrative is null and the lookup failed', async () => {
+    mockEndpoints({
+      detail: {
+        ...RUN_DETAIL,
+        narrative: null,
+        narrativeDelivery: { total: 0, sent: 0, refused: 0, pending: 0, unknown: 0, recipientsUnresolved: true },
+      },
+    });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('narrative-delivery-summary')).toBeInTheDocument());
+    expect(screen.getByTestId('narrative-delivery-unresolved')).toBeInTheDocument();
+  });
+
   it('fetches the stored snapshot and hands the narrative summary to exportReport', async () => {
     mockEndpoints({ detail: { ...RUN_DETAIL, narrative: NARRATIVE } });
     const snapshot = {

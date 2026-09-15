@@ -13,6 +13,7 @@ import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES } from '@breeze/shared';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunLedgerEntryDto,
+  AiAgentRunNarrativeDeliveryDto,
   AiAgentRunStatus,
   AiAgentRunSweepFindingDto,
   AiAgentRunTraceEntryDto,
@@ -935,6 +936,63 @@ function NarrativeSectionBlock({
   );
 }
 
+/**
+ * #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the reason
+ * CLASS only; the recipients are never named here (the refused count is
+ * already a small authority oracle, acceptable only because the reader
+ * holds ai_agents:read on this run).
+ *
+ * #5806 — this must NOT be gated on `run.narrative`: a run can have
+ * `narrativeDelivery.total > 0` (or a failed recipient lookup) while
+ * `narrative` itself is null (e.g. the outcome payload was lost or `{}`).
+ * The caller decides placement (inside the narrative section when one
+ * exists, or in its own standalone section otherwise) — this component only
+ * decides whether to render at all: whenever there are delivery rows OR the
+ * recipient lookup failed. A genuinely recipient-less org still renders
+ * nothing, which is correct: there was nobody to email, and that is not a
+ * failure.
+ */
+function NarrativeDeliverySummary({
+  delivery,
+  t,
+}: {
+  delivery: AiAgentRunNarrativeDeliveryDto;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  if (delivery.total === 0 && !delivery.recipientsUnresolved) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
+      {delivery.recipientsUnresolved ? (
+        <p className="text-destructive" data-testid="narrative-delivery-unresolved">
+          {t('aiAgentsPage.runs.narrative.delivery.recipientsUnresolved')}
+        </p>
+      ) : (
+        <p data-testid="narrative-delivery-sent">
+          {t('aiAgentsPage.runs.narrative.delivery.sent', { sent: delivery.sent, total: delivery.total })}
+        </p>
+      )}
+      {delivery.refused > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-refused">
+          {t('aiAgentsPage.runs.narrative.delivery.refused', { count: delivery.refused })}
+        </p>
+      )}
+      {delivery.pending > 0 && (
+        <p data-testid="narrative-delivery-pending">
+          {t('aiAgentsPage.runs.narrative.delivery.pending', { count: delivery.pending })}
+        </p>
+      )}
+      {delivery.unknown > 0 && (
+        <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
+          {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: delivery.unknown })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ExposureBudgetCard({ orgId, kind, t }: { orgId: string; kind: string; t: (key: string, opts?: Record<string, unknown>) => string }) {
   const [budget, setBudget] = useState<ExposureBudgetDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1655,48 +1713,21 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
             </p>
           )}
 
-          {/* #4248 W03 (OD-7 B) — how the email delivery went. COUNTS and the
-              reason CLASS only; the recipients are never named here (the
-              refused count is already a small authority oracle, acceptable
-              only because the reader holds ai_agents:read on this run).
-              Rendered whenever there are delivery rows OR the recipient
-              lookup failed — a run whose lookup threw has ZERO rows, and
-              hiding it would make "nobody was emailed" look identical to
-              "this org has no recipients". A genuinely recipient-less org
-              still renders nothing, which is correct: there was nobody to
-              email, and that is not a failure. */}
-          {run.narrativeDelivery
-            && (run.narrativeDelivery.total > 0 || run.narrativeDelivery.recipientsUnresolved) && (
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground" data-testid="narrative-delivery-summary">
-              {run.narrativeDelivery.recipientsUnresolved ? (
-                <p className="text-destructive" data-testid="narrative-delivery-unresolved">
-                  {t('aiAgentsPage.runs.narrative.delivery.recipientsUnresolved')}
-                </p>
-              ) : (
-                <p data-testid="narrative-delivery-sent">
-                  {t('aiAgentsPage.runs.narrative.delivery.sent', {
-                    sent: run.narrativeDelivery.sent,
-                    total: run.narrativeDelivery.total,
-                  })}
-                </p>
-              )}
-              {run.narrativeDelivery.refused > 0 && (
-                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-refused">
-                  {t('aiAgentsPage.runs.narrative.delivery.refused', { count: run.narrativeDelivery.refused })}
-                </p>
-              )}
-              {run.narrativeDelivery.pending > 0 && (
-                <p data-testid="narrative-delivery-pending">
-                  {t('aiAgentsPage.runs.narrative.delivery.pending', { count: run.narrativeDelivery.pending })}
-                </p>
-              )}
-              {run.narrativeDelivery.unknown > 0 && (
-                <p className="text-amber-700 dark:text-amber-400" data-testid="narrative-delivery-unknown">
-                  {t('aiAgentsPage.runs.narrative.delivery.unknown', { count: run.narrativeDelivery.unknown })}
-                </p>
-              )}
-            </div>
-          )}
+          {run.narrativeDelivery && <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />}
+        </section>
+      )}
+
+      {/* #5806 — the delivery summary must render even when `run.narrative`
+          itself is null (e.g. the outcome payload was lost or `{}`) as long
+          as there is delivery evidence to show. When a narrative section
+          exists it already renders the summary above; this is the fallback
+          standalone section for the narrative-less case. */}
+      {!run.narrative
+        && run.narrativeDelivery
+        && (run.narrativeDelivery.total > 0 || run.narrativeDelivery.recipientsUnresolved) && (
+        <section className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.narrative.title')}</h2>
+          <NarrativeDeliverySummary delivery={run.narrativeDelivery} t={t} />
         </section>
       )}
 
