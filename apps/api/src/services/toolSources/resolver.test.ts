@@ -8,6 +8,7 @@ vi.mock('../../config/env', () => ({ toolSourcesEnabled: vi.fn() }));
 import { toolSourcesEnabled } from '../../config/env';
 import {
   buildLoadTenantToolForExecutionQuery,
+  buildLoadTenantToolBindingStateQuery,
   buildResolveTenantToolsQuery,
   compileToolDescriptor,
   loadTenantToolForExecution,
@@ -139,6 +140,23 @@ describe('buildLoadTenantToolForExecutionQuery — dispatch-time owner predicate
     expect(text).not.toContain('"tool_source_tools"."org_id" is null');
     expect(text.match(/\bor\b/)).toBeNull();
     expect(params).toHaveLength(4);
+  });
+});
+
+describe('buildLoadTenantToolBindingStateQuery — release-revalidation classification read (DB-less, real db.toSQL())', () => {
+  it('reads the row by id with NO enabled/removed/status/owner filter — the revalidator classifies, the query must not pre-filter', () => {
+    const { sql: text, params } = buildLoadTenantToolBindingStateQuery('tool-1').toSQL();
+    expect(params).toEqual(['tool-1', 1]); // id + LIMIT 1
+    expect(text).toMatch(/"tool_source_tools"\."id" = \$1/);
+    // Every one of these would collapse a "why" into a silent no-row.
+    expect(text).not.toMatch(/"enabled" = /);
+    expect(text).not.toMatch(/"removed_at" is null/i);
+    expect(text).not.toMatch(/"status" = /);
+    expect(text).not.toMatch(/"org_id"|"partner_id"/);
+    // …but it does project everything the classifier compares.
+    for (const col of ['enabled', 'removed_at', 'revision', 'tier', 'status']) {
+      expect(text).toContain(`"${col}"`);
+    }
   });
 });
 

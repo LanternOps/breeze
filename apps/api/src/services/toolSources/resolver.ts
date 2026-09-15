@@ -332,6 +332,50 @@ export function buildLoadTenantToolForExecutionQuery(toolId: string, auth?: Auth
     .limit(1);
 }
 
+/**
+ * The live binding state of ONE tool row, by id, with NO enabled/removed/
+ * status/owner filters — the shape release revalidation needs to say WHY an
+ * approved external intent can no longer run (`external_tool_disabled` vs
+ * `external_tool_source_unavailable` vs `external_tool_drift`,
+ * services/actionIntents/revalidateRelease.ts). `loadTenantToolForExecution`
+ * below collapses every one of those into `null`, which is right for
+ * dispatch and useless for an audit `error_code`. Read-only, system
+ * context: the intent row already pins the org, and the actor-scoped owner
+ * check is `loadTenantToolForExecution(toolId, auth)`, which the revalidator
+ * runs AFTER this classification. `null` when no row exists at all.
+ */
+export function buildLoadTenantToolBindingStateQuery(toolId: string) {
+  return db
+    .select({
+      toolId: toolSourceTools.id,
+      enabled: toolSourceTools.enabled,
+      removedAt: toolSourceTools.removedAt,
+      revision: toolSourceTools.revision,
+      tier: toolSourceTools.tier,
+      sourceId: toolSources.id,
+      status: toolSources.status,
+    })
+    .from(toolSourceTools)
+    .innerJoin(toolSources, eq(toolSourceTools.sourceId, toolSources.id))
+    .where(eq(toolSourceTools.id, toolId))
+    .limit(1);
+}
+
+export async function loadTenantToolBindingState(toolId: string): Promise<{
+  tool: { id: string; enabled: boolean; removedAt: Date | null; revision: string; tier: number };
+  source: { id: string; status: string };
+} | null> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() => buildLoadTenantToolBindingStateQuery(toolId), 'loadTenantToolBindingState'),
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    tool: { id: row.toolId, enabled: row.enabled, removedAt: row.removedAt, revision: row.revision, tier: row.tier },
+    source: { id: row.sourceId, status: row.status },
+  };
+}
+
 export async function loadTenantToolForExecution(
   toolId: string,
   auth?: AuthContext,

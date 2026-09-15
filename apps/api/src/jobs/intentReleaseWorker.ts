@@ -43,6 +43,7 @@ import { readAiKillState } from '../services/aiKillState';
 import { computeEffectDigestForRelease, hasPinnedDigest } from '../services/actionIntents/effectDigest';
 import type { ToolExecutionContext } from '../services/toolExecutionContext';
 import { executeTool, requiresLiveSession } from '../services/aiTools';
+import { executeTenantTool } from '../services/toolSources/execute';
 import { withAuthDbAccessContext } from '../middleware/auth';
 import { getToolTimeout, withToolTimeout } from '../services/toolTimeouts';
 import {
@@ -1247,7 +1248,22 @@ export async function releaseApprovedIntent(intentId: string): Promise<void> {
       );
       rawResult = carrier.llmText;
     } else {
-      const invoke = isHeadlessGoogleTool(intent.actionName)
+      // Tool catalog W01 PR B (#5216): an EXTERNAL (BYO MCP) tool is
+      // dispatched through the tenant executor with the descriptor
+      // revalidation reloaded under the rebuilt actor — never `executeTool`,
+      // which knows nothing about `<slug>__<name>` names. The executor
+      // already re-applies the owner predicate + kill switch at call time
+      // and returns `JSON.stringify({ error })` on failure, which the
+      // `tool_returned_error` classification below reads as a failed release.
+      const tenantTool = revalidation.tenantTool;
+      const invoke = tenantTool
+        ? () =>
+            executeTenantTool(tenantTool, intent.arguments, auth, {
+              surface: 'chat',
+              orgId: intent.orgId,
+              actor: { kind: 'user', id: auth.user.id },
+            })
+        : isHeadlessGoogleTool(intent.actionName)
         ? () => executeGoogleToolHeadless(intent.actionName, intent.arguments, intent.orgId)
         : isHeadlessM365Tool(intent.actionName)
         ? () => executeM365ToolHeadless(intent.actionName, intent.arguments, intent.orgId, intent.id)

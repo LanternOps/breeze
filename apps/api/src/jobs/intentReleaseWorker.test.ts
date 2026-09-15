@@ -10,7 +10,7 @@ import type { AgentReleaseAuthority } from '../services/actionIntents/agentRelea
  *  THIS through to the evidence row rather than rebuilding a key itself. */
 const CANONICAL_OP_KEY = 'run_script:execute';
 
-const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
+const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStatusMock, aiToolsMock, aiGuardrailsMock, toolSourcesMock, agentReleaseAuthorityMock, authMock, auditMock, metricsMock, sentryMock, toolTimeoutsMock, googleHeadlessMock, m365HeadlessMock, effectDigestMock, notifyMock, recipientsMock, policyDecideMock, killStateMock, opEvidenceMock, canonicalKeyMock, fixWatchMock, demoteMock, dispatchClaimMock, operationServiceMock } = vi.hoisted(() => {
   const col = (name: string) => ({ name });
   const actionIntentsTbl = { id: col('id') };
   const approvalRequestsTbl = { id: col('id'), intentId: col('intent_id'), status: col('status') };
@@ -63,7 +63,16 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     actorContextMock: { buildAuthContextForIntent: vi.fn(), buildApproverAuthContextForIntent: vi.fn() },
     tenantStatusMock: { getActiveOrgTenant: vi.fn() },
     aiToolsMock: { getToolTier: vi.fn(), executeTool: vi.fn(), requiresLiveSession: vi.fn() },
-    aiGuardrailsMock: { checkToolPermission: vi.fn() },
+    aiGuardrailsMock: { checkToolPermission: vi.fn(), checkPermissionRequirements: vi.fn(async () => null) },
+    // Tool catalog W01 PR B (#5216): the external-tool release branch. The
+    // resolver/executor are mocked at the module boundary; the worker's own
+    // contract is "dispatch through executeTenantTool with the descriptor
+    // revalidation handed back, never through executeTool".
+    toolSourcesMock: {
+      loadTenantToolBindingState: vi.fn(async () => null as unknown),
+      loadTenantToolForExecution: vi.fn(async () => null as unknown),
+      executeTenantTool: vi.fn(async () => JSON.stringify({ ok: true })),
+    },
     // Wave-5A review fix (#3827): mocked at the module boundary so a
     // kill_switch_engaged veto can be driven WITHOUT constructing the agent
     // authority's own real DB chain (ai_agent_runs/ai_agents/organizations/
@@ -374,6 +383,17 @@ vi.mock('../services/aiTools', () => ({
 }));
 vi.mock('../services/aiGuardrails', () => ({
   checkToolPermission: aiGuardrailsMock.checkToolPermission,
+  checkPermissionRequirements: aiGuardrailsMock.checkPermissionRequirements,
+}));
+vi.mock('../services/toolSources/resolver', () => ({
+  loadTenantToolBindingState: toolSourcesMock.loadTenantToolBindingState,
+  loadTenantToolForExecution: toolSourcesMock.loadTenantToolForExecution,
+}));
+vi.mock('../services/toolSources/guardrails', () => ({
+  tenantToolPermissionRequirement: vi.fn(() => ({ resource: 'external_tools', action: 'write' })),
+}));
+vi.mock('../services/toolSources/execute', () => ({
+  executeTenantTool: toolSourcesMock.executeTenantTool,
 }));
 // See the hoisted `agentReleaseAuthorityMock` comment: real
 // `revalidateApprovedIntentForRelease` runs, only its `checkAgentReleaseAuthority`
@@ -841,6 +861,112 @@ describe('releaseApprovedIntent', () => {
       expect.objectContaining({ intentId: intent.id, outcome: 'executed' }),
     );
     expect(auditMock.writeAuditEvent).not.toHaveBeenCalled();
+  });
+
+  describe('external (tool-source) tools — tool catalog W01 PR B (#5216)', () => {
+    const TOOL_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const EXT_ARGS = { name: 'Printer 3', companyId: 42 };
+    const EXT_DIGEST = computeArgumentDigest(canonicalizeArguments(EXT_ARGS));
+    const descriptor = { id: TOOL_ID, qualifiedName: 'hudu__create_asset', tier: 3, revision: 'rev-7', sourceName: 'Hudu' };
+    const externalIntent = () => baseIntent({
+      actionName: 'hudu__create_asset',
+      arguments: EXT_ARGS,
+      argumentDigest: EXT_DIGEST,
+      approvalScope: 'supervised',
+      toolSourceToolId: TOOL_ID,
+      toolRevision: 'rev-7',
+    } as Partial<ActionIntent>);
+
+    // Deliberately NOT primeThroughRevalidation(): the external branch never
+    // consumes its queued checkToolPermission Once-value (and a drift stop
+    // returns before the actor/org loads), and a leftover Once leaks into the
+    // next test in this file.
+    function primeExternal(intent: ActionIntent, opts: { throughActor?: boolean } = { throughActor: true }) {
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // approved -> executing
+      dbState.selectActionIntentsResults.push([intent]);
+      dbState.selectApprovalRequestsResults.push([
+        { id: 'approval-1', status: 'approved', boundArgumentDigest: intent.argumentDigest },
+      ]);
+      if (opts.throughActor) {
+        actorContextMock.buildAuthContextForIntent.mockResolvedValueOnce(fakeAuth);
+        tenantStatusMock.getActiveOrgTenant.mockResolvedValueOnce({ orgId: intent.orgId, partnerId: 'partner-1' });
+      }
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(60_000);
+    }
+
+    beforeEach(() => {
+      toolSourcesMock.loadTenantToolBindingState.mockResolvedValue({
+        tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-7', tier: 3 },
+        source: { id: 'src-1', status: 'active' },
+      });
+      toolSourcesMock.loadTenantToolForExecution.mockResolvedValue({ descriptor, source: {} });
+      // Not a registered core tool: the registry answers undefined, which
+      // must NOT be consulted for an external release (it would read as
+      // tier_escalated).
+      aiToolsMock.getToolTier.mockReturnValue(undefined);
+      aiToolsMock.requiresLiveSession.mockReturnValue(false);
+    });
+
+    it('dispatches through executeTenantTool with the revalidated descriptor — never executeTool', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantTool.mockResolvedValueOnce(JSON.stringify({ id: 'asset-9' }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
+      expect(toolSourcesMock.executeTenantTool).toHaveBeenCalledWith(
+        descriptor,
+        EXT_ARGS,
+        fakeAuth,
+        { surface: 'chat', orgId: intent.orgId, actor: { kind: 'user', id: fakeAuth.user.id } },
+      );
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.objectContaining({ result: { id: 'asset-9' }, executedAt: expect.any(Date) }),
+      );
+    });
+
+    it('a returned {error} from the external tool fails the release as tool_returned_error', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantTool.mockResolvedValueOnce(JSON.stringify({ error: 'MCP call failed: 502' }));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'tool_returned_error', result: { error: 'MCP call failed: 502' } }),
+      );
+    });
+
+    it('external_tool_drift: the tool revision changed since approval — failed, nothing dispatched', async () => {
+      const intent = externalIntent();
+      primeExternal(intent, { throughActor: false });
+      toolSourcesMock.loadTenantToolBindingState.mockResolvedValueOnce({
+        tool: { id: TOOL_ID, enabled: true, removedAt: null, revision: 'rev-8', tier: 3 },
+        source: { id: 'src-1', status: 'active' },
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(toolSourcesMock.executeTenantTool).not.toHaveBeenCalled();
+      expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'external_tool_drift' }),
+      );
+    });
   });
 
   it('m365 reset: temporaryPassword is sealed before the completed transition', async () => {
