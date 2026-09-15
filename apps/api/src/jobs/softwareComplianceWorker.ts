@@ -1,7 +1,12 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { devices, softwareComplianceStatus, softwarePolicies } from '../db/schema';
+import {
+  devices,
+  softwareComplianceStatus,
+  softwarePolicies,
+  type SoftwarePolicyViolation,
+} from '../db/schema';
 import {
   recordSoftwarePolicyEvaluation,
   recordSoftwarePolicyViolation,
@@ -161,14 +166,27 @@ function readRemediationOptions(raw: unknown): {
   };
 }
 
-export function readEarliestUnauthorizedDetection(violations: unknown): Date | null {
+/**
+ * Earliest detection timestamp among violations of ONE type (contract D10).
+ *
+ * This used to be readEarliestUnauthorizedDetection, which hard-filtered
+ * `type !== 'unauthorized'`, so a `missing` violation contributed nothing to
+ * grace. With two remediation verbs each having their own grace clock, the
+ * type is a REQUIRED argument rather than a default: the compiler then has to
+ * point at every call site instead of letting one silently keep uninstall
+ * semantics. Behaviour for 'unauthorized' is unchanged, byte for byte.
+ */
+export function readEarliestViolationDetection(
+  violations: unknown,
+  violationType: SoftwarePolicyViolation['type']
+): Date | null {
   if (!Array.isArray(violations)) return null;
   let earliest: Date | null = null;
 
   for (const violation of violations) {
     if (!violation || typeof violation !== 'object') continue;
     const typed = violation as { type?: unknown; detectedAt?: unknown };
-    if (typed.type !== 'unauthorized' || typeof typed.detectedAt !== 'string') {
+    if (typed.type !== violationType || typeof typed.detectedAt !== 'string') {
       continue;
     }
     const detectedAt = new Date(typed.detectedAt);
@@ -181,22 +199,30 @@ export function readEarliestUnauthorizedDetection(violations: unknown): Date | n
   return earliest;
 }
 
+/**
+ * The only reasons this function ever defers. Narrowed from `string` so the
+ * install decision can widen it into its own union without a cast.
+ */
+export type AutoRemediationDeferralReason = 'in_progress' | 'grace_period' | 'cooldown';
+
 export function shouldQueueAutoRemediation(input: {
   violations: unknown;
+  /** Which violation type's clock the grace window is measured against (D10). */
+  violationType: SoftwarePolicyViolation['type'];
   previousRemediationStatus: string | null;
   lastRemediationAttempt: Date | null;
   now: Date;
   gracePeriodHours: number;
   cooldownMinutes: number;
-}): { queue: boolean; reason?: string } {
+}): { queue: boolean; reason?: AutoRemediationDeferralReason } {
   if (input.previousRemediationStatus === 'pending' || input.previousRemediationStatus === 'in_progress') {
     return { queue: false, reason: 'in_progress' };
   }
 
-  const earliestUnauthorizedAt = readEarliestUnauthorizedDetection(input.violations);
-  if (input.gracePeriodHours > 0 && earliestUnauthorizedAt) {
+  const earliestDetectedAt = readEarliestViolationDetection(input.violations, input.violationType);
+  if (input.gracePeriodHours > 0 && earliestDetectedAt) {
     const graceMs = input.gracePeriodHours * 60 * 60 * 1000;
-    if ((input.now.getTime() - earliestUnauthorizedAt.getTime()) < graceMs) {
+    if ((input.now.getTime() - earliestDetectedAt.getTime()) < graceMs) {
       return { queue: false, reason: 'grace_period' };
     }
   }
@@ -428,6 +454,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         ) {
           const remediationDecision = shouldQueueAutoRemediation({
             violations: violationsWithStableTimestamps,
+            violationType: 'unauthorized',
             previousRemediationStatus: existing?.remediationStatus ?? null,
             lastRemediationAttempt: existing?.lastRemediationAttempt ?? null,
             now,
