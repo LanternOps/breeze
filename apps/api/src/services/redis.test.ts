@@ -175,3 +175,40 @@ describe('resolveRedisUrl', () => {
     }
   });
 });
+
+describe('RESP2 protocol pin', () => {
+  const originalRedisUrl = process.env.REDIS_URL;
+
+  afterEach(() => {
+    if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = originalRedisUrl;
+    vi.doUnmock('ioredis');
+  });
+
+  it('constructs every client with the RESP2 protocol pin', async () => {
+    // `redis.ts` caches its clients as module-scope singletons, and
+    // `resolveRedisUrl()` needs a REDIS_URL so `getRedis()`/`getRedisConnection()`
+    // don't take an unrelated failure path — both trap conditions this test
+    // must account for (redis.test.ts RESP2 pin resolution notes).
+    process.env.REDIS_URL = 'redis://localhost:6379';
+    vi.resetModules();
+    const ctor = vi.fn();
+    vi.doMock('ioredis', () => ({
+      default: class {
+        constructor(...a: unknown[]) {
+          ctor(...a);
+        }
+        on() {}
+      },
+    }));
+
+    const mod = await import('./redis');
+    mod.getRedis();
+    mod.getBullMQConnection();
+
+    expect(ctor.mock.calls.length).toBeGreaterThan(0);
+    for (const call of ctor.mock.calls) {
+      expect(call[1]).toMatchObject({ protocol: 2 });
+    }
+  });
+});
