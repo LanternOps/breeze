@@ -76,7 +76,8 @@ const namespaceDuplicateBaselines = {
     // literal format token/example key, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
     // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
-    'deliverables.json': 2,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     'devices.json': 175,
     'discovery.json': 17,
@@ -203,7 +204,8 @@ const namespaceDuplicateBaselines = {
     // format tokens, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
-    'deliverables.json': 1,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     'devices.json': 126,
     'discovery.json': 17,
@@ -333,7 +335,8 @@ const namespaceDuplicateBaselines = {
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Audit" and "Date" are identical cognates in fr-FR.
-    'deliverables.json': 6,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
     'devices.json': 152,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -474,7 +477,8 @@ const namespaceDuplicateBaselines = {
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Date" and "Notes" are identical cognates in fr-CA.
-    'deliverables.json': 6,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
     'devices.json': 152,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -627,7 +631,8 @@ const namespaceDuplicateBaselines = {
     // in German.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
     // #5573 W01 (service deliverables): "Status", "Portal", "Name" and "Audit" are identical cognates in de-DE.
-    'deliverables.json': 4,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 5,
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
@@ -736,7 +741,8 @@ const namespaceDuplicateBaselines = {
     // widget's own copy.
     'common.json': 107, // +1 W06: lists.separator ", " is punctuation
     // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
-    'deliverables.json': 2,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
     'devices.json': 144,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -826,7 +832,8 @@ const namespaceDuplicateBaselines = {
     // "field_key" — literal format tokens/example keys, not wording.
     // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in tr-TR.
-    'deliverables.json': 1,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
     'devices.json': 88,
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending

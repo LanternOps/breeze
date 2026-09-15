@@ -92,6 +92,8 @@ function deliverable(overrides: Partial<Deliverable> = {}): Deliverable {
     autoEvidenceReportId: null,
     ownerUserId: null,
     ticketCategoryId: null,
+    instructions: null,
+    checklistTemplateId: null,
     portalVisible: false,
     active: true,
     sortOrder: 0,
