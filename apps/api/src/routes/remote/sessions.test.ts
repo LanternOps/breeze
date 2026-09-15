@@ -992,6 +992,28 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(res.status).toBe(200);
       expect((await res.json()).id).toBe(SESSION_ID);
     });
+
+    // SEC-038 W06 (#5537): the web ConnectDesktopButton polls this route and
+    // must never read a session whose teardown is still pending at the
+    // endpoint as "connected", so the phase has to be on the wire.
+    it.each(['none', 'pending', 'confirmed'] as const)('surfaces terminationPhase=%s so the viewer/UI can tell a pending teardown from a live session', async (terminationPhase) => {
+      getSessionWithOrgCheck.mockResolvedValue({
+        session: { id: SESSION_ID, userId: 'user-1', type: 'desktop', status: terminationPhase === 'none' ? 'active' : 'disconnected', deviceId: DEVICE_IN_ALLOWED, webrtcOffer: 'v=0', webrtcAnswer: null, iceCandidates: [], startedAt: null, endedAt: null, durationSeconds: null, bytesTransferred: null, recordingUrl: null, errorMessage: null, createdAt: new Date('2026-01-01T00:00:00Z'), terminationPhase },
+        device: { id: DEVICE_IN_ALLOWED, orgId: ORG_ID, siteId: ALLOWED_SITE, agentId: 'agent-1', hostname: 'h', osType: 'linux', status: 'online' },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ name: 'Test User', email: 'test@example.com' }]) }),
+        }),
+      } as never);
+
+      const res = await app.request(`/remote/sessions/${SESSION_ID}`, {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).terminationPhase).toBe(terminationPhase);
+    });
   });
 
   describe('POST /sessions/:id/offer', () => {

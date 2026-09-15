@@ -471,6 +471,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -496,6 +497,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -625,6 +627,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -651,6 +654,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -725,6 +729,10 @@ sessionRoutes.get(
       userId: session.userId,
       type: session.type,
       status: session.status,
+      // SEC-038 W06: 'pending' = a terminal decision committed server-side but
+      // the agent has not yet acknowledged the stop. The web UI must not
+      // render such a session as connected.
+      terminationPhase: session.terminationPhase ?? 'none',
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
       iceCandidates: session.iceCandidates,
