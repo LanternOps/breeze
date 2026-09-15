@@ -61,6 +61,11 @@ test.describe.serial('portal hardware lifecycle', () => {
     // negative case for the Devices nav entry).
     const planTable = lifecycle.planTable('workstations');
     await expect(planTable).toBeVisible();
+    // Prove a device row actually rendered first — otherwise the "no link"
+    // assertion below would pass vacuously against an empty table.
+    await expect(
+      planTable.getByTestId(/^lifecycle-plan-row-(?!link-)/).first(),
+    ).toBeVisible();
     await expect(
       planTable.getByTestId(/^lifecycle-plan-row-link-/),
     ).toHaveCount(0);
