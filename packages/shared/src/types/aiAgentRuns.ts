@@ -1,6 +1,7 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
 import type { AiAgentRunFleetDesignDto } from './fleetDesign';
 import type { AiAgentRunPatchDto } from './aiPatchPlan';
+import type { AiRunArtifactDto } from './aiArtifacts';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -539,6 +540,45 @@ export interface AiAgentRunProgressEntryDto {
   at: string;
 }
 
+/**
+ * One `workspace_run` step, off `ai_run_workspaces.steps` (execution-plane spec
+ * §5.8). This is the audit trail a technician needs to trust a finding: the
+ * handles name the `step_script` and `step_stdout` artifacts, so the run page
+ * can show EXACTLY what code ran and what it printed. A handle is null when the
+ * artifact has since expired (30-day TTL) — render "expired", never a dead link.
+ */
+export interface AiAgentRunWorkspaceStepDto {
+  ordinal: number;
+  language: 'bash' | 'python' | 'node';
+  scriptArtifactHandle: string | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdoutArtifactHandle: string | null;
+}
+
+/**
+ * The sandbox this run used, projected off `ai_run_workspaces` (spec §6.2).
+ * `provider_ref` is deliberately NOT projected — it is a vendor handle the
+ * reaper needs and nothing outside the API has any use for.
+ */
+export interface AiAgentRunWorkspaceDto {
+  backend: string;
+  region: 'eu' | 'us';
+  status: string;
+  bootstrapHash: string | null;
+  createdAt: string;
+  readyAt: string | null;
+  destroyedAt: string | null;
+  cpuMs: number | null;
+  wallMs: number | null;
+  memAllocatedMb: number | null;
+  stagedBytes: number;
+  artifactBytes: number;
+  stepCount: number;
+  steps: AiAgentRunWorkspaceStepDto[];
+}
+
 export interface AiAgentRunDetailDto {
   schemaVersion: 1;
   id: string;
@@ -689,6 +729,21 @@ export interface AiAgentRunDetailDto {
    * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
    */
   narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null;
+  /**
+   * Execution plane W05 (spec §5.8) — artifacts this run produced or captured,
+   * newest first. Empty for every run that produced none. The previews are RAW
+   * customer bytes: text-escape before rendering, never
+   * `dangerouslySetInnerHTML` (spec §8).
+   * Additive and ALWAYS PRESENT — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  artifacts: AiRunArtifactDto[];
+  /**
+   * Execution plane W05 (spec §5.8, §6.2) — the sandbox and its step
+   * transcript, or null when the run never created one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`.
+   */
+  workspace: AiAgentRunWorkspaceDto | null;
 }
 
 /** See `AiAgentRunDetailDto.narrativeDelivery`. */
