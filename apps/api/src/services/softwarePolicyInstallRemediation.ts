@@ -27,7 +27,14 @@ export type PolicyInstallSkipReason =
   /** The catalogId does not resolve to an item this device's tenant may use. */
   | 'catalog_item_not_reachable'
   /** Reachable item, but nothing installable on this device's OS. */
-  | 'no_install_target_for_platform';
+  | 'no_install_target_for_platform'
+  /**
+   * The job's payload named this catalog item, but the compliance row no
+   * longer reports it missing — the job is stale, or it was forged. Recorded
+   * rather than dropped: the audit row is the only durable place a technician
+   * can see that a requested install was not attempted, and why.
+   */
+  | 'not_currently_missing';
 
 export type PolicyInstallTarget =
   | { kind: 'install_method'; catalogId: string; installMethodId: string }

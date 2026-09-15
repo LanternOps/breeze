@@ -803,4 +803,24 @@ describe('processCheckPolicy — orphaned-install reconcile sweep (#5505 W03)', 
     // off a stale 'completed', NOT a reconcile: the counter is left untouched.
     expect(upsertedRows()[0]?.installRemediationAttempts).toBeUndefined();
   });
+
+  it('prefetches for the LIVE devices only, not the whole pass', async () => {
+    // The all-or-nothing case (0 live -> no prefetch) is covered above; this
+    // pins the filter itself, which that case cannot discriminate.
+    resolveDeviceIdsMock.mockResolvedValue(['device-1', 'device-2']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [
+        { id: 'device-1', orgId: 'org-1' },
+        { id: 'device-2', orgId: 'org-1' },
+      ],
+      [PARKED_ROW, { ...PARKED_ROW, deviceId: 'device-2', installRemediationStatus: 'completed' }],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', []], ['device-2', []]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(latestPolicyOwnedInstallMock).toHaveBeenCalledTimes(1);
+    expect(latestPolicyOwnedInstallMock).toHaveBeenCalledWith(POLICY_ID, ['device-1']);
+  });
 });

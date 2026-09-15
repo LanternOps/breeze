@@ -723,6 +723,11 @@ export async function processRemediateDeviceInstall(
       '[SoftwareRemediationWorker] Policy not found or inactive, skipping install remediation',
       { policyId: data.policyId, deviceId: data.deviceId }
     );
+    // Metric, not just a log line: this return does not throw, so it never
+    // reaches attachWorkerObservability's Sentry hook either. Without the
+    // counter a policy deleted mid-pass drops every one of its install jobs
+    // with no signal anywhere.
+    recordSoftwareRemediationDecision('install_policy_not_found');
     return nothing;
   }
 
@@ -735,6 +740,23 @@ export async function processRemediateDeviceInstall(
       `[SoftwareRemediationWorker] Policy ${data.policyId} generation mismatch (job=${data.generation}, current=${policy.approvalGeneration}) — skipping superseded install job`
     );
     recordSoftwareRemediationDecision('install_generation_mismatch');
+    // The counter is fleet-wide; a per-device investigation reads
+    // software_policy_audit, so the superseded job has to leave a row there
+    // too or it is invisible exactly where someone would look for it.
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.skipped,
+      actor: 'system',
+      details: {
+        policyName: policy.name,
+        reason: 'generation_mismatch',
+        jobGeneration: data.generation,
+        currentGeneration: policy.approvalGeneration,
+      },
+    });
     return nothing;
   }
 
@@ -752,6 +774,16 @@ export async function processRemediateDeviceInstall(
   // machine borrowed for one ~20-minute session. Installing software on it
   // would be strictly worse than the uninstall this same guard already blocks.
   if (!deviceRow || deviceRow.isEphemeral) {
+    // This guard is defence-in-depth — the compliance evaluator already
+    // excludes ephemeral devices — which makes a hit here a signal that the
+    // upstream filter regressed. Silent absorption would hide that forever.
+    console.warn(
+      '[SoftwareRemediationWorker] Skipping install remediation for a missing or ephemeral device',
+      { policyId: data.policyId, deviceId: data.deviceId, missing: !deviceRow }
+    );
+    recordSoftwareRemediationDecision(
+      deviceRow ? 'install_ephemeral_device' : 'install_device_not_found'
+    );
     return nothing;
   }
 
@@ -775,6 +807,9 @@ export async function processRemediateDeviceInstall(
       '[SoftwareRemediationWorker] Compliance record not found for install remediation',
       { policyId: data.policyId, deviceId: data.deviceId }
     );
+    // The row W02 wrote when it enqueued this job is gone. That is an anomaly,
+    // not an expected skip, and it deserves a counter someone can alert on.
+    recordSoftwareRemediationDecision('install_compliance_row_missing');
     return nothing;
   }
 
@@ -859,17 +894,25 @@ export async function processRemediateDeviceInstall(
     }
 
     const requested: Array<{ catalogId: string; ruleName: string }> = [];
+    const droppedByIntersection: string[] = [];
     const seenRequested = new Set<string>();
     for (const raw of Array.isArray(data.catalogIds) ? data.catalogIds : []) {
       if (typeof raw !== 'string') continue;
       const catalogId = raw.trim();
+      // Deduped: the producer already dedupes, but the payload is untrusted.
       if (catalogId.length === 0 || seenRequested.has(catalogId)) continue;
+      seenRequested.add(catalogId);
       const ruleName = missingByCatalogId.get(catalogId);
       // The intersection. A payload id the compliance row no longer reports
-      // missing is dropped without a deployment and without an error: either
-      // the job is stale, or it was forged.
-      if (ruleName === undefined) continue;
-      seenRequested.add(catalogId);
+      // missing produces no deployment — either the job is stale, or it was
+      // forged. RECORDED, never dropped silently: an implicit gap between
+      // requestedCatalogIds and resolvedCatalogIds is not something a
+      // technician can be expected to set-diff by eye, and it carries no
+      // reason. This is the same promise the no-catalogId branch above keeps.
+      if (ruleName === undefined) {
+        droppedByIntersection.push(catalogId);
+        continue;
+      }
       requested.push({ catalogId, ruleName });
     }
 
@@ -892,6 +935,9 @@ export async function processRemediateDeviceInstall(
     // deployment. Surfaced as an explicit skip so a technician can read WHY.
     for (let i = 0; i < missingWithoutCatalogId; i += 1) {
       skips.push({ rule: '(rule without catalogId)', reason: 'no_catalog_id' });
+    }
+    for (const catalogId of droppedByIntersection) {
+      skips.push({ rule: '(not in current violations)', catalogId, reason: 'not_currently_missing' });
     }
 
     for (const entry of requested) {
@@ -946,10 +992,16 @@ export async function processRemediateDeviceInstall(
       partnerId: policy.partnerId,
       policyId: policy.id,
       deviceId: data.deviceId,
+      // Three outcomes, three actions. Collapsing the created-nothing case
+      // onto `queued` put "an install was queued for this device" in the
+      // durable trail for a pass that queued nothing — `action` is what a
+      // technician filters on, so that read as a false positive.
       action:
-        errors.length > 0 && deploymentIds.length === 0
-          ? SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.failed
-          : SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.queued,
+        deploymentIds.length > 0
+          ? SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.queued
+          : errors.length > 0
+            ? SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.failed
+            : SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.skipped,
       actor: 'system',
       details: {
         policyName: policy.name,

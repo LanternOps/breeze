@@ -110,6 +110,7 @@ import {
 } from '../../db/schema';
 import {
   hasUnfinishedPolicyOwnedInstall,
+  POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES,
   readLatestPolicyOwnedInstallByDevice,
   resolvePolicyInstallTarget,
 } from '../../services/softwarePolicyInstallRemediation';
@@ -935,6 +936,86 @@ describe('software_deployments.software_policy_id — policy origin (#5505 W03)'
     await expect(
       withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
     ).resolves.toBe(false);
+  }, 60_000);
+
+
+  it('stops counting an unfinished result once the deployment ages past the lookback', async () => {
+    // POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES exists precisely so ONE
+    // permanently wedged deployment_results row cannot suppress every future
+    // install for a (policy, device) pair forever. Nothing proved that: the
+    // mocked unit tests discard the WHERE clause, and the live case above only
+    // covers the unexpired side. Drop the `gte(createdAt, cutoff)` term and
+    // this is the test that goes red.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const site = await createSite({ orgId: org.id });
+    const catalog = await seedCatalog(org.id);
+    const method = await seedMethod(catalog.id, 'windows', 'winget', 'Google.Chrome');
+    const policy = await seedPolicy({ partnerId: partner.id }, catalog.id);
+    const device = await seedDevice(org.id, site.id);
+
+    const wedged = await seedPolicyOwnedDeployment(org.id, method.id, policy.id);
+    await getTestDb()
+      .insert(deploymentResults)
+      .values({ deploymentId: wedged.id, deviceId: device.id, status: 'installing' });
+
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(true);
+
+    // Age the deployment past the horizon. The result row stays non-terminal.
+    await getTestDb()
+      .update(softwareDeployments)
+      .set({
+        createdAt: new Date(
+          Date.now() - (POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES + 60) * 60 * 1000
+        ),
+      })
+      .where(eq(softwareDeployments.id, wedged.id));
+
+    await expect(
+      withSystemDbAccessContext(() => hasUnfinishedPolicyOwnedInstall(policy.id, device.id))
+    ).resolves.toBe(false);
+  }, 60_000);
+
+  it('the install-method query really filters on enabled AND platform', async () => {
+    // The mocked unit tests drive resolvePolicyInstallTarget purely off primed
+    // return values and ignore `.where()` arguments entirely, so dropping
+    // either predicate from the real query would not fail any of them. This
+    // seeds exactly the two rows those predicates must exclude and asserts the
+    // resolver falls through to the version path instead of picking either.
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const catalog = await seedCatalog(org.id);
+
+    const disabledWindows = await seedMethod(catalog.id, 'windows', 'winget', 'Disabled.App');
+    await getTestDb()
+      .update(softwareInstallMethods)
+      .set({ enabled: false })
+      .where(eq(softwareInstallMethods.id, disabledWindows.id));
+    // Right catalog item, wrong platform for the device below.
+    await seedMethod(catalog.id, 'macos', 'homebrew_cask', 'Wrong.Platform');
+
+    const [version] = await getTestDb()
+      .insert(softwareVersions)
+      .values({
+        catalogId: catalog.id,
+        version: '1.0.0',
+        isLatest: true,
+        supportedOs: ['windows'],
+      })
+      .returning();
+
+    const resolution = await resolveInWorkerContext({
+      catalogId: catalog.id,
+      deviceOrgId: org.id,
+      deviceOsType: 'windows',
+    });
+
+    expect(resolution).toEqual({
+      ok: true,
+      target: { kind: 'version', catalogId: catalog.id, softwareVersionId: version!.id },
+    });
   }, 60_000);
 
   it('the reconcile reader reports the LATEST policy-owned deployment per device', async () => {

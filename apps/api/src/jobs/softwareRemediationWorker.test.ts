@@ -517,7 +517,7 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
   /** db.select() order for the install processor: policy -> device -> compliance. */
   function primeInstallDb(policy: unknown, compliance: unknown = MISSING_COMPLIANCE) {
     const results = [
-      [policy],
+      policy === null ? [] : [policy],
       [{ orgId: ORG_ID, osType: 'windows', isEphemeral: false }],
       [compliance],
     ];
@@ -692,6 +692,152 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
     for (const call of setSpy.mock.calls) {
       expect(call[0]).not.toHaveProperty('installRemediationAttempts');
     }
+  });
+
+
+  it('audits an all-skipped pass as install_skipped, never install_queued', async () => {
+    // Review finding (silent-failure-hunter, CRITICAL): the audit `action` is
+    // the queryable dimension a technician filters on to answer "did Breeze
+    // actually try to install anything here?". Reporting install_queued for a
+    // pass that created zero deployments is a durable lie in the forensic
+    // trail — the contradiction is buried in details.deploymentsCreated.
+    resolveTargetMock.mockResolvedValue({ ok: false, reason: 'catalog_item_not_reachable' });
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(policyAuditActions()).toContain('install_skipped');
+    expect(policyAuditActions()).not.toContain('install_queued');
+  });
+
+  it('audits install_failed and writes failed when every deployment creation throws', async () => {
+    createPolicyDeploymentMock.mockRejectedValue(new Error('boom'));
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(result.errors).toBe(1);
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('failed');
+    expect(policyAuditActions()).toContain('install_failed');
+    expect(recordDecisionMock).toHaveBeenCalledWith('command_failed');
+    const audit = recordPolicyAuditMock.mock.calls.at(-1)![0] as any;
+    expect(JSON.stringify(audit.details)).toContain('boom');
+  });
+
+  it('a PARTIAL failure still reports pending and install_queued — one real install did happen', async () => {
+    createPolicyDeploymentMock
+      .mockResolvedValueOnce({ deploymentId: 'dep-ok', status: 'pending' })
+      .mockRejectedValueOnce(new Error('second one failed'));
+    resolveTargetMock
+      .mockResolvedValueOnce({
+        ok: true,
+        target: { kind: 'install_method', catalogId: 'cat-1', installMethodId: 'im-1' },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        target: { kind: 'install_method', catalogId: 'cat-2', installMethodId: 'im-2' },
+      });
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }), {
+      ...MISSING_COMPLIANCE,
+      violations: [
+        { type: 'missing', rule: { name: 'Chrome', catalogId: 'cat-1' }, severity: 'high' },
+        { type: 'missing', rule: { name: 'Slack', catalogId: 'cat-2' }, severity: 'high' },
+      ],
+    });
+
+    const result = await processRemediateDeviceInstall(installJob({ catalogIds: ['cat-1', 'cat-2'] }));
+
+    expect(result.deploymentsCreated).toBe(1);
+    expect(result.errors).toBe(1);
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('pending');
+    expect(policyAuditActions()).toContain('install_queued');
+  });
+
+  it('names a dropped payload catalogId in the audit instead of discarding it silently', async () => {
+    // Review finding (HIGH): the intersection used to `continue` with no record
+    // at all, so a stale or forged id left the trail only as an implicit gap
+    // between requestedCatalogIds and resolvedCatalogIds — with no reason.
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(
+      installJob({ catalogIds: ['cat-1', 'cat-99'] })
+    );
+
+    expect(result.skipped).toBe(1);
+    const audit = recordPolicyAuditMock.mock.calls.at(-1)![0] as any;
+    const details = JSON.stringify(audit.details);
+    expect(details).toContain('not_currently_missing');
+    expect(details).toContain('cat-99');
+  });
+
+  it('settles a converged device to completed, not skipped — a discriminating assertion', async () => {
+    // Without asserting the status/decision this case is satisfied identically
+    // by the fall-through 'skipped' outcome, so deleting the convergence branch
+    // would not fail it.
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }), {
+      ...MISSING_COMPLIANCE,
+      violations: [{ type: 'unauthorized', software: { name: 'Unwanted App', version: '1.0' } }],
+    });
+
+    await processRemediateDeviceInstall(installJob());
+
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('completed');
+    expect(recordDecisionMock).toHaveBeenCalledWith('no_violations');
+  });
+
+  it('rethrows an unexpected error after resetting the row to failed, so BullMQ retries', async () => {
+    resolveTargetMock.mockRejectedValue(new Error('pg exploded'));
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    await expect(processRemediateDeviceInstall(installJob())).rejects.toThrow('pg exploded');
+    // Swallowing it would complete the job, drop the device, and never retry.
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('failed');
+  });
+
+  it('records a metric for every invisible early return', async () => {
+    // Review finding (HIGH): these three returns produced no metric and no
+    // audit row, and because they do not throw they never reach the worker's
+    // Sentry safety net either — a job dropped here was invisible everywhere.
+    primeInstallDb(null);
+    await processRemediateDeviceInstall(installJob());
+    expect(recordDecisionMock).toHaveBeenCalledWith('install_policy_not_found');
+
+    vi.clearAllMocks();
+    const ephemeral = [
+      [policyRow({ mode: 'allowlist', ...INSTALL_ARMED })],
+      [{ orgId: ORG_ID, osType: 'windows', isEphemeral: true }],
+    ];
+    let call = 0;
+    selectMock.mockImplementation(() => chain(ephemeral[Math.min(call++, ephemeral.length - 1)]));
+    await processRemediateDeviceInstall(installJob());
+    expect(recordDecisionMock).toHaveBeenCalledWith('install_ephemeral_device');
+
+    vi.clearAllMocks();
+    const noCompliance = [
+      [policyRow({ mode: 'allowlist', ...INSTALL_ARMED })],
+      [{ orgId: ORG_ID, osType: 'windows', isEphemeral: false }],
+      [],
+    ];
+    call = 0;
+    selectMock.mockImplementation(() =>
+      chain(noCompliance[Math.min(call++, noCompliance.length - 1)])
+    );
+    await processRemediateDeviceInstall(installJob());
+    expect(recordDecisionMock).toHaveBeenCalledWith('install_compliance_row_missing');
+  });
+
+  it('leaves a per-device audit trail for a superseded job, not just a fleet-wide counter', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', approvalGeneration: 9, ...INSTALL_ARMED }));
+
+    await processRemediateDeviceInstall(installJob({ generation: 7 }));
+
+    const audit = recordPolicyAuditMock.mock.calls.at(-1)?.[0] as any;
+    expect(audit).toBeDefined();
+    expect(audit.deviceId).toBe(DEVICE_ID);
+    expect(JSON.stringify(audit.details)).toContain('generation');
   });
 
   it('routes install-remediate-device to the install processor and leaves uninstall alone', async () => {
