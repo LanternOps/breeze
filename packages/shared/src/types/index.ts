@@ -884,3 +884,9 @@ export * from './tickets';
 // ============================================
 
 export * from './aiArtifacts';
+
+// ============================================
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+// ============================================
+
+export * from './toolSources';
