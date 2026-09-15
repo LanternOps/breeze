@@ -173,6 +173,7 @@ function windowRow(overrides: Record<string, unknown> = {}) {
     verified: 0,
     // #4442 W05 — the sweep-lane subset of `verified`.
     sweepVerified: 0,
+    sweepExecuted: 0,
     failed: 0,
     recurred: 0,
     firstVerifiedAt: null,
@@ -229,6 +230,7 @@ function eligibleWindow(now: Date, overrides: Record<string, unknown> = {}) {
     executed: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
     verified: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
     sweepVerified: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
+    sweepExecuted: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
     firstVerifiedAt: new Date(now.getTime() - AI_AGENT_GRADUATION_MIN_AGE_DAYS * DAY_MS),
     ...overrides,
   });
@@ -282,6 +284,7 @@ describe('evaluateEligibility — the pure ladder', () => {
       // #4442 W05 — cleared by default so this suite keeps testing the
       // ladder's OTHER rungs; the sweep bar has its own describe below.
       sweepVerified: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
+      sweepExecuted: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
       failed: 0,
       recurred: 0,
       firstVerifiedAt: new Date(now.getTime() - AI_AGENT_GRADUATION_MIN_AGE_DAYS * DAY_MS).toISOString(),
@@ -460,7 +463,7 @@ describe('evaluateGraduation', () => {
       opKey: OP_KEY,
       state: 'tracking',
       blockedReason: 'needs_partner_baseline',
-      window: { executed: 0, verified: 0, sweepVerified: 0, failed: 0, recurred: 0, firstVerifiedAt: null },
+      window: { executed: 0, verified: 0, sweepVerified: 0, sweepExecuted: 0, failed: 0, recurred: 0, firstVerifiedAt: null },
     });
     expect(state.selectCount).toBe(4);
   });
@@ -543,6 +546,7 @@ describe('evaluateGraduation', () => {
       executed: 4,
       verified: 3,
       sweepVerified: 0,
+      sweepExecuted: 0,
       failed: 1,
       recurred: 2,
       firstVerifiedAt: firstVerifiedAt.toISOString(),
@@ -889,6 +893,7 @@ describe('evaluateEligibility — the sweep lane (#4442 W05)', () => {
       executed: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
       verified: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
       sweepVerified: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
+      sweepExecuted: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
       failed: 0,
       recurred: 0,
       firstVerifiedAt: new Date(now.getTime() - AI_AGENT_GRADUATION_MIN_AGE_DAYS * DAY_MS).toISOString(),
@@ -963,6 +968,49 @@ describe('evaluateEligibility — the sweep lane (#4442 W05)', () => {
       }).blockedReason,
     ).toBe('has_failures');
   });
+
+  // CI repair (r2) — the sweep bar is scoped to keys the sweep lane has
+  // actually acted through. An alert-lane key has `sweepExecuted: 0`, and
+  // the P2-5 ladder it earned must be untouched: gating it would leave every
+  // alert-lane key at `below_sweep_threshold` forever, since nothing in that
+  // lane can ever mint sweep-provenance evidence.
+  describe('scoped to sweep-lane exposure', () => {
+    const alertLane = {
+      ...base,
+      window: { ...base.window, sweepVerified: 0, sweepExecuted: 0 },
+    };
+
+    it('a key with NO sweep exposure and fresh evidence reports too_recent, not below_sweep_threshold', () => {
+      expect(
+        evaluateEligibility({
+          ...alertLane,
+          window: { ...alertLane.window, firstVerifiedAt: new Date(now.getTime() - 60_000).toISOString() },
+        }),
+      ).toEqual({ state: 'tracking', blockedReason: 'too_recent' });
+    });
+
+    it('a key with NO sweep exposure that met the ordinary ladder is eligible', () => {
+      expect(evaluateEligibility(alertLane)).toEqual({ state: 'eligible', blockedReason: null });
+    });
+
+    it('a key with sweep exposure below the sweep bar still reports below_sweep_threshold', () => {
+      expect(
+        evaluateEligibility({
+          ...base,
+          window: { ...base.window, sweepExecuted: 1, sweepVerified: 1 },
+        }),
+      ).toEqual({ state: 'tracking', blockedReason: 'below_sweep_threshold' });
+    });
+
+    it('a single sweep execution is enough exposure to apply the bar', () => {
+      expect(
+        evaluateEligibility({
+          ...base,
+          window: { ...base.window, sweepExecuted: 1, sweepVerified: 0 },
+        }).blockedReason,
+      ).toBe('below_sweep_threshold');
+    });
+  });
 });
 
 // #4442 W05 — the shape of the sweep-lane counter's SQL. The BEHAVIOUR (which
@@ -1018,5 +1066,19 @@ describe('the sweepVerified window counter (#4442 W05)', () => {
     await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
 
     expect(windowSelectSql()).toContain("= 'verified'");
+  });
+
+  it('sweepExecuted shares the SAME provenance arms and org pins, over `executed` rows', async () => {
+    queueEvaluation({});
+    await evaluateGraduation(ORG_ID, AGENT_ID, OP_KEY);
+
+    const fields = state.selectFields[4] as Record<string, unknown>;
+    const text = sqlText(fields.sweepExecuted).replace(/\s+/g, ' ');
+    expect(text).toContain("= 'executed'");
+    expect(text).toContain("trigger_kind = 'sweep_finding'");
+    expect(text).toContain('subject_kind IS NOT NULL');
+    expect(text.match(/\^\[0-9a-fA-F-\]\{36\}\$/g)).toHaveLength(2);
+    expect(text).toContain('i.org_id = "ai_agent_op_evidence"."org_id"');
+    expect(text).toContain('w.org_id = "ai_agent_op_evidence"."org_id"');
   });
 });

@@ -58,7 +58,7 @@ function row(overrides: Partial<AiAgentGraduationRowDto> = {}): AiAgentGraduatio
     namespace: 'policy_key',
     state: 'eligible',
     window: {
-      executed: 41, verified: 22, sweepVerified: 11, failed: 3, recurred: 7,
+      executed: 41, verified: 22, sweepVerified: 11, sweepExecuted: 14, failed: 3, recurred: 7,
       firstVerifiedAt: '2026-07-04T09:15:00.000Z',
     },
     blockedReason: null,

@@ -887,7 +887,7 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     namespace: 'policy_key',
     state,
     window: {
-      executed: 12, verified: 9, sweepVerified: 9, failed: 0, recurred: 0,
+      executed: 12, verified: 9, sweepVerified: 9, sweepExecuted: 9, failed: 0, recurred: 0,
       firstVerifiedAt: '2026-08-01T00:00:00.000Z',
     },
     blockedReason: state === 'eligible' ? null : 'below_threshold',

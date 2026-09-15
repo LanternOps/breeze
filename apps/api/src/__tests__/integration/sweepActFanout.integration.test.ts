@@ -21,7 +21,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 
-import { AI_AGENT_LIMIT_DEFAULTS, type SweepFindingsOutcome } from '@breeze/shared';
+import {
+  AI_AGENT_GRADUATION_MIN_AGE_DAYS,
+  AI_AGENT_LIMIT_DEFAULTS,
+  type SweepFindingsOutcome,
+} from '@breeze/shared';
 import { db, withSystemDbAccessContext } from '../../db';
 import { getTestDb } from './setup';
 import {
@@ -35,7 +39,7 @@ import {
   devices,
 } from '../../db/schema';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
-import { evaluateGraduation } from '../../services/aiAgents/graduationService';
+import { evaluateEligibility, evaluateGraduation } from '../../services/aiAgents/graduationService';
 import { persistSweepFindings } from '../../services/aiAgents/sweepFindings';
 import { sweepSubjectIndexKey, type SweepEvidenceSubject } from '../../services/aiAgents/sweepEvidence';
 import { PERMISSIONS } from '../../services/permissions';
@@ -584,5 +588,51 @@ describe('#4442 W05 — the sweep-lane graduation counter against live rows', ()
     // …and the other org's ladder does see them, so the zero above is
     // isolation, not a query that counts nothing at all.
     expect(await sweepVerifiedFor(other)).toBe(2);
+  });
+
+  // CI repair (r2) — the sweep bar is scoped to keys with sweep-lane
+  // EXPOSURE (`sweepExecuted > 0`). `aiAgentGraduation.integration.test.ts`
+  // proves the other half live: an alert-lane key (no sweep provenance at
+  // all) walks the ordinary P2-5 ladder to `promoted` untouched by this bar.
+  it('a sweep-lane key with live provenance is EXPOSED, and stays below_sweep_threshold until the sweep bar is met', async () => {
+    const s = await seedScenario();
+    const device = s.deviceIds[0]!;
+    const intentId = await mintOneSweepIntent(s, device);
+    await seedEvidence(s, { sourceKind: 'intent', sourceId: intentId, metric: 'executed' });
+    // An alert-lane `executed` row (no sweep provenance) — must not count as
+    // exposure, exactly as it does not count as sweep-verified.
+    await seedEvidence(s, { sourceKind: 'intent', sourceId: randomUUID(), metric: 'executed' });
+
+    const evaluation = await withSystemDbAccessContext(
+      () => evaluateGraduation(s.orgId, s.agentId, OP_KEY),
+    );
+    expect(evaluation.window.executed).toBe(2);
+    expect(evaluation.window.sweepExecuted).toBe(1);
+    expect(evaluation.window.sweepVerified).toBe(0);
+
+    // The pure ladder over the LIVE window: with every ordinary rung met, the
+    // one sweep execution above is what keeps the key at the sweep bar.
+    const now = new Date();
+    const ordinaryBarsMet = {
+      opKey: OP_KEY,
+      window: {
+        ...evaluation.window,
+        verified: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+        firstVerifiedAt: new Date(
+          now.getTime() - (AI_AGENT_GRADUATION_MIN_AGE_DAYS + 1) * 24 * 60 * 60 * 1000,
+        ).toISOString(),
+      },
+      partnerCeilingKeys: [OP_KEY],
+      orgGrantedKeys: [],
+      promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+      sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
+      storedState: null,
+      now,
+    };
+    expect(evaluateEligibility(ordinaryBarsMet).blockedReason).toBe('below_sweep_threshold');
+    expect(evaluateEligibility({
+      ...ordinaryBarsMet,
+      window: { ...ordinaryBarsMet.window, sweepExecuted: 0 },
+    }).blockedReason).toBeNull();
   });
 });

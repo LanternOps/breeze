@@ -84,6 +84,16 @@ export interface AiAgentGraduationWindow {
    * wrote the row. Always `<= verified`. Gated by `sweepPromoteThreshold`.
    */
   sweepVerified: number;
+  /**
+   * #4442 W05 — the subset of `executed` with the same sweep provenance (arm
+   * A only in practice: `executed` is written on the intent's own row). It is
+   * the key's SWEEP-LANE EXPOSURE: `sweepPromoteThreshold` is applied only
+   * when this is `> 0`. A key the sweep lane has never acted through (an
+   * alert-lane key) keeps the ordinary P2-5 ladder — otherwise no such key
+   * could ever graduate, and every alert-lane key that met the ordinary bar
+   * would sit at `below_sweep_threshold` forever.
+   */
+  sweepExecuted: number;
   failed: number;
   recurred: number;
   /** ISO timestamp of the window's earliest `verified` row, or null if none. */
