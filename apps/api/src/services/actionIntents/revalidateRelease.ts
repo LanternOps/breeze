@@ -10,6 +10,7 @@ import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
+import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -202,6 +203,22 @@ export async function revalidateApprovedIntentForRelease(
     : null;
   if (laneEvidence && !laneEvidence.ok) {
     return { ok: false, errorCode: 'lane_revoked', details: { reason: laneEvidence.reason } };
+  }
+
+  // #4442 W04 §3.6 — the ORDINARY brake. The release checks above cover the
+  // policy flag, the registry entry and the key authorization but know nothing
+  // of SCHEDULES, so flipping `act_mode` off could not revoke an intent that
+  // is already `approved`. Narrowly scoped, on purpose:
+  //   - `trigger_kind === 'sweep_finding'` — no other lane has a schedule;
+  //   - `decidedVia === 'policy'` — a sweep card a HUMAN approved is a human
+  //     decision, not policy autonomy, and must not be revoked by this.
+  // The brake also re-checks the sub-flag itself, for the same reason
+  // `checkPolicyDecisionEvidence` re-checks `policyDecideEnabled()` above.
+  const sweepBrake = intent.triggerKind === 'sweep_finding' && intent.decidedVia === 'policy'
+    ? await checkSweepScheduleBrake(intent)
+    : null;
+  if (sweepBrake && !sweepBrake.ok) {
+    return { ok: false, errorCode: 'agent_policy_denied', details: { reason: sweepBrake.reason } };
   }
 
   const noApprovalRowRequired = !winningApproval
