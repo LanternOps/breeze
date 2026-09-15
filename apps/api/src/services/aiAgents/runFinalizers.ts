@@ -397,7 +397,9 @@ export async function finalizePatchPlan(ctx: RunContext, result: LoopResult): Pr
       patchEvidenceRefs(ctx.patch.evidence),
       result.agentAuth,
     );
-    outcome.patchPlan = { ...outcome.patchPlan, dispositions };
+    // W03 (#5749): the queued-offline coverage note travels with the plan so
+    // the digest can state it without re-reading the evidence.
+    outcome.patchPlan = { ...outcome.patchPlan, dispositions, queuedOffline: ctx.patch.evidence.queuedOffline };
     for (const intentId of intentIds) result.intentIds.push(intentId);
     return null;
   } catch (error) {

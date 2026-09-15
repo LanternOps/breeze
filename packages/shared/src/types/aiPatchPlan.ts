@@ -219,6 +219,12 @@ export interface PatchPlanOutcome {
   /** Copied from the evidence bundle: some section hit a row or byte cap. */
   evidenceTruncated: boolean;
   generatedAt: string;
+  /**
+   * W03: copied from the evidence by the finalizer — installs waiting for an
+   * OFFLINE device (a coverage note the digest states, never failed work).
+   * `null` = not measured; absent on a pre-W03 row.
+   */
+  queuedOffline?: number | null;
 }
 
 /** What the in-tool referential gate checks a submission against. */
