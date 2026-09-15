@@ -43,6 +43,13 @@ import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
 import { aiAgentSchedules, aiAgents, organizations, partners, type AiAgentRow, type AiAgentScheduleRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
+import { effectiveSchedule } from './scheduleMerge';
+
+// Re-exported so every existing importer (`aiAgentSweepScheduler.ts`, the
+// tests) keeps its path; the function itself moved to `scheduleMerge.ts` so
+// a leaf module (`sweepActMode.ts`, reached from the release path) can use it
+// without dragging this service's whole import graph behind it.
+export { effectiveSchedule };
 
 export type CreateAiAgentScheduleInput = z.infer<typeof createAiAgentScheduleSchema>;
 export type UpdateAiAgentScheduleInput = z.infer<typeof updateAiAgentScheduleSchema>;
@@ -121,30 +128,6 @@ export class ScheduleValidationError extends Error {
 
 /** Exported: Task 9's sweeper names it when consuming `resolveEffectiveSchedulesForPartner`. */
 export type ScheduleOverrideSummary = { id: string; enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean | null };
-
-/**
- * The org-facing merge, and the reason a stale override can never widen a
- * sweep: kinds are INTERSECTED, and either side may disable. Pure by design —
- * the sweeper (Task 9) calls it per (baseline, org) pair with no db access.
- */
-export function effectiveSchedule(
-  baseline: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode?: boolean | null },
-  override: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode?: boolean | null } | null,
-): { enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean } {
-  return {
-    enabled: baseline.enabled && (override?.enabled ?? true),
-    sweepKinds: override
-      ? baseline.sweepKinds.filter((kind) => override.sweepKinds.includes(kind))
-      : [...baseline.sweepKinds],
-    // #4442 W04 — act mode is THREE-VALUED and fails closed on both arms.
-    // Deliberately NOT the `baseline && (override ?? true)` shape used by
-    // `enabled` above: this column is nullable with no default, so on an
-    // override `null` has to mean "inherit" while `false` means "disarm" —
-    // and on a baseline anything that is not exactly `true` is "not armed".
-    // Hence the explicit `=== true` / `!== false` rather than truthiness.
-    actMode: baseline.actMode === true && override?.actMode !== false,
-  };
-}
 
 /**
  * `isStructurallyValidCron` tolerates the optional leading SECONDS field for

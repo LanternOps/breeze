@@ -32,7 +32,7 @@ import {
 } from '../../db';
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { aiAgentSchedules } from '../../db/schema/aiAgentSchedules';
-import { effectiveSchedule } from './scheduleService';
+import { effectiveSchedule } from './scheduleMerge';
 import { isActEligibleSweepKind, probeSweepSubject } from './sweepSubjectProbe';
 
 /** Same skip-if-already-system shape as the rest of this directory. */
