@@ -5237,6 +5237,16 @@
       "title": "Noch keine Variablen",
       "description": "Legen Sie eine an, damit Sie dasselbe Token nicht mehr in die Skripte jedes Kunden kopieren müssen."
     },
+    "filters": {
+      "searchLabel": "Variablen durchsuchen",
+      "searchPlaceholder": "Nach Schlüssel oder Beschreibung suchen",
+      "scopeGroupLabel": "Nach Geltungsbereich filtern",
+      "scopeAll": "Alle Geltungsbereiche"
+    },
+    "noMatches": {
+      "title": "Keine Variablen entsprechen Ihren Filtern",
+      "description": "Versuchen Sie einen anderen Suchbegriff oder entfernen Sie den Geltungsbereichsfilter."
+    },
     "errors": {
       "load": "Variablen konnten nicht geladen werden."
     },

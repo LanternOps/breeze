@@ -5237,6 +5237,16 @@
       "title": "Ancora nessuna variabile",
       "description": "Creane una per smettere di incollare lo stesso token negli script di ogni cliente."
     },
+    "filters": {
+      "searchLabel": "Cerca variabili",
+      "searchPlaceholder": "Cerca per chiave o descrizione",
+      "scopeGroupLabel": "Filtra per ambito",
+      "scopeAll": "Tutti gli ambiti"
+    },
+    "noMatches": {
+      "title": "Nessuna variabile corrisponde ai filtri",
+      "description": "Prova un altro termine di ricerca o rimuovi il filtro per ambito."
+    },
     "errors": {
       "load": "Impossibile caricare le variabili."
     },
