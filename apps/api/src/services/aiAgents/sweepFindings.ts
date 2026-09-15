@@ -359,10 +359,23 @@ export async function persistSweepFindings(
       continue;
     }
 
-    // The SYSTEM's subject for this proposal, matched in the pre-DB pass
-    // above (gate 1b). Always present here: a candidate with no subject was
-    // refused with `subject_not_in_evidence` and returned by the branch above.
-    const subject = subjects.get(index)!;
+    // The SYSTEM's subject for this proposal, matched in the pre-DB pass above
+    // (gate 1b). Expected to be present — a candidate with no subject was
+    // recorded in `refusals` and returned by the branch above — but the
+    // invariant spans two loops and two maps, so it is CHECKED rather than
+    // asserted: if a later edit to gate 1b's `continue` ever breaks the
+    // pairing, this must refuse the proposal (the same refusal gate 1b would
+    // have made), never throw a TypeError deep inside intent creation and
+    // never fall through to an intent carrying no trusted subject at all.
+    const subject = subjects.get(index);
+    if (!subject) {
+      console.warn('[sweepFindings] proposal refused — no matched subject survived the gate pass (invariant)', {
+        runId: run.id, agentId: run.agentId, findingIndex: index, kind: finding.kind, deviceId,
+      });
+      record.reason = 'subject_not_in_evidence';
+      proposals.push(record);
+      continue;
+    }
     record.subject = { kind: subject.kind, key: subject.key, observedAt: subject.observedAt };
 
     if (!inOrg.has(deviceId)) {

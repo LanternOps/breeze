@@ -473,6 +473,19 @@ describe('attemptPolicyDecision — the sweep lane (#4442 W04)', () => {
     expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
   });
 
+  it('a PARSEABLE key naming a kind with no probe degrades without probing — defense against a kind added without one', async () => {
+    // `disk_pressure` parses fine and is a real sweep kind, but
+    // `isActEligibleSweepKind` has no probe for it, so its condition can never
+    // be re-verified. Distinct from the unparseable case above.
+    pushRows('action_intents', [sweepIntent({ triggerKey: 'sweep:disk_pressure:C:' })]);
+    queueRunAndAgent();
+
+    await attemptPolicyDecision(INTENT_ID);
+
+    expect(probeMock.probeSweepSubject).not.toHaveBeenCalled();
+    expect(intentServiceMock.runDeferredHumanFanout).toHaveBeenCalledWith(INTENT_ID);
+  });
+
   it('a sweep intent with no scope device degrades — the probe is per (device, subject)', async () => {
     pushRows('action_intents', [sweepIntent({ scopeDeviceId: null, scopeKind: null })]);
     queueRunAndAgent();

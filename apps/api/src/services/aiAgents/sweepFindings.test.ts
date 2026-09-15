@@ -289,6 +289,16 @@ describe('persistSweepFindings', () => {
       trigger: { kind: 'sweep_finding', refId: RUN_ID, key: `sweep:unpatched_critical:${dvId}` },
     }));
     expect(result.proposals[0]).toMatchObject({ tool: 'remediate_vulnerability', action: null });
+    // #4442 W04 — the act descriptor is computed from the REAL arguments at
+    // this call site, not hand-set: `remediate_vulnerability` is not the one
+    // op key act mode covers in v1, so the intent it mints can never be
+    // policy-decided even though gate 1b matched its subject. Asserting the
+    // FALSE direction here is what proves the call site is wired at all —
+    // every other case in this suite matches, so a hardcoded `true` would
+    // otherwise survive.
+    expect(createActionIntent.mock.calls[0]![1]).toMatchObject({
+      sweepAct: expect.objectContaining({ argumentsMatchSubject: false }),
+    });
   });
 
   // (b)

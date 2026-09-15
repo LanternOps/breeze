@@ -40,6 +40,10 @@ import { createActionIntent } from '../../services/actionIntents/intentService';
 import { attemptPolicyDecision } from '../../services/actionIntents/policyDecide';
 import { demoteSupervisedKey } from '../../services/aiAgents/supervisedKeyDemote';
 import {
+  checkSweepScheduleBrake,
+  resolveEffectiveScheduleActMode,
+} from '../../services/aiAgents/sweepActMode';
+import {
   createOrganization,
   createPartner,
   createSite,
@@ -366,6 +370,81 @@ describe('sweep act path — the gates that are specific to this wave', () => {
 
     expect((await intentDecision(intentId)).policyDecisionState).toBe('human_required');
     expect(await exposureRowsFor(intentId)).toBe(0);
+  });
+});
+
+// The two act-mode resolvers are the only things standing between "an operator
+// turned this off" and an unattended Tier-3 execution, and both are pure DB
+// reads. Their unit suite drives a SCRIPTED select queue, which proves the
+// branching but not the SQL — a wrong column, a broken join or an RLS surprise
+// on `ai_agent_schedules` / `ai_agent_runs` would survive it. These cases run
+// them against the real rows the rest of this file seeds.
+describe('sweep act path — the schedule resolvers against real Postgres', () => {
+  it('resolves ARMED for a partner baseline with no org override', async () => {
+    const s = await seedScenario([OP_KEY], [OP_KEY]);
+
+    await expect(resolveEffectiveScheduleActMode(s.scheduleId, s.orgId)).resolves.toBe(true);
+  });
+
+  it('an ORG OVERRIDE row disarms the same baseline — the live join, not a mock', async () => {
+    const s = await seedScenario([OP_KEY], [OP_KEY]);
+    await withSystemDbAccessContext(() => db
+      .insert(aiAgentSchedules)
+      .values({
+        orgId: s.orgId,
+        partnerId: null,
+        agentId: s.agentId,
+        baselineScheduleId: s.scheduleId,
+        kind: 'sweep',
+        cron: '0 * * * *',
+        timezone: 'UTC',
+        sweepKinds: ['service_down'],
+        enabled: true,
+        actMode: false,
+        createdBy: s.creatorId,
+      }));
+
+    await expect(resolveEffectiveScheduleActMode(s.scheduleId, s.orgId)).resolves.toBe(false);
+  });
+
+  it('an UNARMED baseline resolves false, and a deleted one does too', async () => {
+    const unarmed = await seedScenario([OP_KEY], [OP_KEY], { actMode: null });
+    await expect(resolveEffectiveScheduleActMode(unarmed.scheduleId, unarmed.orgId)).resolves.toBe(false);
+
+    const armed = await seedScenario([OP_KEY], [OP_KEY]);
+    await withSystemDbAccessContext(() => db
+      .delete(aiAgentSchedules)
+      .where(eq(aiAgentSchedules.id, armed.scheduleId)));
+    await expect(resolveEffectiveScheduleActMode(armed.scheduleId, armed.orgId)).resolves.toBe(false);
+  });
+
+  it('the RELEASE brake resolves a real run to its schedule and releases while armed', async () => {
+    const s = await seedScenario([OP_KEY], [OP_KEY]);
+    const runId = await seedSweepRun(s, [OP_KEY]);
+
+    await expect(checkSweepScheduleBrake({ requestingAgentRunId: runId, orgId: s.orgId }))
+      .resolves.toEqual({ ok: true });
+  });
+
+  it('the RELEASE brake refuses once the partner turns act mode off between decide and release', async () => {
+    const s = await seedScenario([OP_KEY], [OP_KEY]);
+    const runId = await seedSweepRun(s, [OP_KEY]);
+    await withSystemDbAccessContext(() => db
+      .update(aiAgentSchedules)
+      .set({ actMode: false })
+      .where(eq(aiAgentSchedules.id, s.scheduleId)));
+
+    await expect(checkSweepScheduleBrake({ requestingAgentRunId: runId, orgId: s.orgId }))
+      .resolves.toMatchObject({ ok: false });
+  });
+
+  it('the RELEASE brake refuses a run that belongs to a DIFFERENT org', async () => {
+    const s = await seedScenario([OP_KEY], [OP_KEY]);
+    const other = await seedScenario([OP_KEY], [OP_KEY]);
+    const runId = await seedSweepRun(s, [OP_KEY]);
+
+    await expect(checkSweepScheduleBrake({ requestingAgentRunId: runId, orgId: other.orgId }))
+      .resolves.toMatchObject({ ok: false });
   });
 });
 
