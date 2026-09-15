@@ -28,6 +28,8 @@ import { evaluateSoftwarePolicyArming, normalizeSoftwarePolicyRules } from './so
 import {
   auditSoftwarePolicyToolEvent,
   summarizeEnforcementChange,
+  AI_AUTO_INSTALL_REFUSAL_MESSAGE,
+  remediationOptionsArmsAutoInstall,
 } from './aiToolsSoftwarePolicyAudit';
 import { canManagePartnerWidePolicies } from './partnerWideAccess';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
@@ -200,7 +202,7 @@ registerTool({
         priority: { type: 'number', description: 'Policy priority (0-100)' },
         enforceMode: { type: 'boolean', description: 'Auto-remediate violations' },
         isActive: { type: 'boolean', description: 'Enable/disable policy' },
-        remediationOptions: { type: 'object', description: 'Remediation behavior options' },
+        remediationOptions: { type: 'object', description: 'Remediation behavior options: { autoUninstall?: boolean, notifyUser?: boolean, gracePeriod?: number, cooldownMinutes?: number, maintenanceWindowOnly?: boolean }. autoInstall is NOT settable here — arming software installation requires a human operator with devices.execute and MFA.' },
         limit: { type: 'number', description: 'List limit (default 50)' },
       },
       required: ['action'],
@@ -275,6 +277,11 @@ registerTool({
         return JSON.stringify({ error: 'At least one software rule is required' });
       }
 
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
+      }
+
       const [policy] = await db
         .insert(softwarePolicies)
         .values({
@@ -340,6 +347,11 @@ registerTool({
       // capability (same gate as the HTTP route).
       if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
         return JSON.stringify({ error: 'Modifying a partner-wide software policy requires full partner org access (orgAccess must be "all")' });
+      }
+
+      // Contract-A D4: AI callers may never arm software installation.
+      if (remediationOptionsArmsAutoInstall(input.remediationOptions)) {
+        return JSON.stringify({ error: AI_AUTO_INSTALL_REFUSAL_MESSAGE });
       }
 
       const updates: Omit<Partial<typeof softwarePolicies.$inferInsert>, 'approvalGeneration'> & { approvalGeneration?: SQL } = {
