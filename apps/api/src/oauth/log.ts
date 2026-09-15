@@ -88,9 +88,14 @@ export function logOauthDebug(args: {
 
 /**
  * Warn-level counterpart to logOauthError for advisory failures — work that is
- * bookkeeping only and must never fail the request it rides along with. Stays
- * out of Sentry on purpose: these are expected-under-load, non-actionable
- * per-occurrence, and would drown the OAuth error signal.
+ * bookkeeping only and must never fail the request it rides along with.
+ *
+ * Still Sentry-visible, at `warning` level rather than `error`: an advisory
+ * write that fails *once* is noise, but one that fails on every request is a
+ * real outage that nothing else would surface (same reasoning as the fail-
+ * closed catch in partnerScopePolicy.ts). Sentry groups by the `errorId` tag,
+ * so a sustained failure stays one issue rather than drowning the OAuth error
+ * signal, and the `warning` level keeps it out of error alerting.
  */
 export function logOauthWarn(args: {
   errorId: OAuthErrorId;
@@ -102,6 +107,16 @@ export function logOauthWarn(args: {
   // eslint-disable-next-line no-console
   console.warn(`[oauth] ${errorId} ${message}`, {
     ...(context ?? {}),
-    error: err instanceof Error ? { name: err.name, message: err.message } : err,
+    error: err instanceof Error ? { name: err.name, message: err.message, stack: err.stack } : err,
   });
+  if (isSentryEnabled()) {
+    const captured = err instanceof Error ? err : new Error(message);
+    Sentry.withScope((scope) => {
+      scope.setLevel('warning');
+      scope.setTag('errorId', errorId);
+      scope.setTag('component', 'oauth');
+      if (context) scope.setContext('oauth', context);
+      captureException(captured);
+    });
+  }
 }
