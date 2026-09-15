@@ -788,6 +788,48 @@ describe('processSweepOccurrence', () => {
     expect(summary).toMatchObject({ runsAdmitted: 2, runsSkipped: 0, skipReasons: {} });
   });
 
+  // -------------------------------------------------------------------------
+  // patch — one patch plan run per org (AI patch agent W01)
+  // -------------------------------------------------------------------------
+  const patchBaselineFields = { kind: 'patch', sweepKinds: [] as string[], cron: '0 2 * * *' };
+
+  it('fans out one device-less patch-profile run per org on a patch agent, namespaced dedupe key', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledTimes(2);
+    expect(createAndEnqueueAgentRun).toHaveBeenCalledWith({
+      orgId: ORG_A,
+      kind: 'patch',
+      triggerKind: 'schedule',
+      deviceId: null,
+      profile: 'patch',
+      scheduleId: SCHEDULE_ID,
+      triggerRef: { scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY, kind: 'patch' },
+      dedupeKey: `patch-${SCHEDULE_ID}-${ORG_A}-${OCCURRENCE_KEY}`,
+    });
+    for (const [call] of createAndEnqueueAgentRun.mock.calls) {
+      expect((call as { dedupeKey: string }).dedupeKey.startsWith('patch-')).toBe(true);
+      expect((call as { triggerRef: Record<string, unknown> }).triggerRef).not.toHaveProperty('sweepKinds');
+    }
+    expect(summary).toMatchObject({ orgsTotal: 2, runsAdmitted: 2, runsSkipped: 0, skipReasons: {} });
+  });
+
+  it('does not apply the empty-sweepKinds skip to a patch baseline', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(summary.skipReasons).not.toHaveProperty('override_disabled');
+    expect(summary).toMatchObject({ runsAdmitted: 2, runsSkipped: 0 });
+  });
+
+  it('counts a declined patch admission under its own skip reason', async () => {
+    seedFanout({ baseline: patchBaselineFields });
+    createAndEnqueueAgentRun.mockResolvedValue({ created: false, skipped: 'patch_rate' } as never);
+    const summary = await processSweepOccurrence({ scheduleId: SCHEDULE_ID, occurrenceKey: OCCURRENCE_KEY });
+    expect(summary).toMatchObject({ runsAdmitted: 0, runsSkipped: 2, skipReasons: { patch_rate: 2 } });
+  });
+
   it('orders the org enumeration deterministically, so the capped slice is stable', async () => {
     const captured = { orderBy: null as unknown };
     const baseline = baselineRow();

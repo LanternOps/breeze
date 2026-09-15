@@ -1,3 +1,4 @@
+import { remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -154,6 +155,8 @@ export class ActionIntentAuthorizationError extends ActionIntentError {
 // ---------------------------------------------------------------------------
 
 export interface CreateActionIntentInput {
+  /** Creation-time cause; absent for legacy callers. Validated before DB access. */
+  trigger?: RemediationTrigger;
   toolName: string;
   input: Record<string, unknown>;
   /** Audit justification (an agent's sweep summary, a ticket-triage rationale). */
@@ -1006,6 +1009,7 @@ export async function createActionIntent(
   auth: AuthContext,
   input: CreateActionIntentInput,
 ): Promise<ActionIntentSnapshot> {
+  const trigger = input.trigger === undefined ? undefined : remediationTriggerSchema.parse(input.trigger);
   // Mutual source/principal consistency (wave 3b): an ai_agent principal may
   // ONLY write source='ai_agent' rows, and nothing else may claim that
   // source. The requester-less attribution facts (requestedByUserId NULL +
@@ -1706,6 +1710,9 @@ export async function createActionIntent(
       const [inserted] = await db
         .insert(actionIntents)
         .values({
+          triggerKind: trigger?.kind ?? null,
+          triggerRefId: trigger?.refId ?? null,
+          triggerKey: trigger?.key ?? null,
           orgId,
           partnerId: auth.partnerId ?? null,
           // Agent intents are requester-less by design (wave 3b): the run is
@@ -2139,9 +2146,14 @@ export async function createActionIntent(
   const auditActor = agentRun
     ? { actorType: 'ai_agent' as const }
     : { actorId: requesterId };
-  const agentAuditDetails = agentRun && agentRow
-    ? { agentId: agentRow.id, agentRunId: agentRun.id }
-    : {};
+  const agentAuditDetails = {
+    ...(agentRun && agentRow ? { agentId: agentRow.id, agentRunId: agentRun.id } : {}),
+    ...(trigger ? {
+      triggerKind: trigger.kind,
+      triggerRefId: trigger.refId ?? null,
+      triggerKey: trigger.key ?? null,
+    } : {}),
+  };
 
   if (creation.isNew && creation.effectDigestOutcome.kind === 'unresolved') {
     recordActionIntentEvent({
@@ -2197,6 +2209,7 @@ export async function createActionIntent(
   if (creation.isNew && creation.intent.decidedVia === 'script_reviewer') {
     const evidence = creation.intent.scriptReviewerEvidence as ScriptReviewerEvidence | null;
     void createAuditLogAsync({
+      trigger,
       orgId,
       actorType: agentRun ? 'ai_agent' : 'system',
       actorId: agentRun?.agentId ?? requesterId ?? 'ai-script-lane',

@@ -126,6 +126,14 @@ export type TerminalClassification = 'increment' | 'reset' | 'neutral';
  */
 const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
   'verdict', 'sweep', 'narrative', 'triage', 'design',
+  // AI patch agent (W01): a patch run returns a plan — advice a human must
+  // accept — built from a system-assembled evidence bundle, and executes
+  // nothing. Its clean completion says nothing about whether the org's
+  // remediation is working, so it never resets (or increments) the streak.
+  // `failed` stays profile-independent, as for every member here. Added BY
+  // HAND: nothing fails to compile if this line is missing (see the note on
+  // `classifyTerminal`); agentCircuit.test.ts's per-profile row is the guard.
+  'patch',
 ]);
 
 /**

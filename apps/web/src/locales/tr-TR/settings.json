@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Tarama",
         "narrative": "Haftalık rapor",
-        "design": "Filo tasarımı"
+        "design": "Filo tasarımı",
+        "patch": "Yama planı"
       },
       "kindsLabel": "Çalıştırılacak denetimler",
       "kind": "Zamanlama türü",
       "weeklyOnlyHint": "Haftalık rapor haftada tam olarak bir kez çalışır: sabit dakika ve saat, ayın-günü ve ay için * ve 0-6 arasında tek bir haftanın günü. Örneğin 0 7 * * 1 her pazartesi 07:00'de çalışır.",
       "monthlyOrRarerHint": "Filo tasarımı ayda en fazla bir kez çalışır: sabit dakika, saat ve ayın-günü (1-28), ay için * veya virgülle ayrılmış sabit aylar listesi, ve haftanın günü için *. Örneğin 0 6 1 1,4,7,10 * her çeyrekte 1'inde saat 06:00'da çalışır.",
+      "dailyOrRarerHint": "Yama planı günde en fazla bir kez çalışır: sabit dakika ve saat, ayın-günü, ay ve haftanın günü için ise * veya sabit bir liste. Örneğin 0 2 * * * her gece saat 02:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
       "override": "Bu kuruluş için geçersiz kıl",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Tarama zamanlamaları iş ortağı genelinde bir aracı gerektirir.",
         "agentKindNotTriage": "Yalnızca bir triyaj aracısı zamanlanabilir.",
         "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
+        "agentKindNotPatch": "Bir yama planı zamanlaması bir Yama aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
         "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
       }
@@ -1622,6 +1625,8 @@
       "never": "Hiç çalıştırılmadı",
       "at": "Son çalıştırma {{at}}"
     },
+    "nextOccurrence": "Sonraki çalışma {{at}}",
+    "runNowNoOrg": "Bir yama planı çalıştırmak için bir kuruluş seçin.",
     "disableDialog": {
       "title": "{{name}} devre dışı bırakılsın mı?",
       "message": "Gelecekteki çalıştırmalar durur, bağlı zamanlamalar tetiklenmez ve bu aracının kuruluş geçersiz kılmaları uygulanmaz. Hâlihazırda süren bir çalıştırma, süre sınırına kadar devam eder.",
@@ -1653,6 +1658,7 @@
       "invalidSupervisedActionKeys": "Seçilen işlemlerden biri veya birkaçı politika tarafından yetkilendirilemez.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Bu aracı zaten etkin.",
+      "noPatchAgent": "Bu kuruluş için geçerli bir yama aracısı yok.",
       "actRecipientsUnreachable": "Seçilen bildirim rollerinin etkin üyesi yok, bu nedenle kimseye sorulamaz. Uygula modunu etkinleştirmeden önce üyesi olan bir rol seçin.",
       "invalidScriptIds": "Bir veya daha fazla betik bu aracı için yetkilendirilemiyor.",
       "scriptRejected": "Betik {{id}}: {{reason}}",
@@ -1670,7 +1676,8 @@
       "disable": "Devre dışı bırak",
       "confirmDisable": "Devre dışı bırakmayı onayla",
       "reenable": "Yeniden etkinleştir",
-      "runs": "Çalıştırmalar"
+      "runs": "Çalıştırmalar",
+      "runNow": "Şimdi çalıştır"
     },
     "toasts": {
       "saved": "Aracı kaydedildi",
@@ -1678,7 +1685,9 @@
       "disabled": "Aracı devre dışı bırakıldı",
       "disableFailed": "Aracı devre dışı bırakılamadı.",
       "reenabled": "Aracı yeniden etkinleştirildi",
-      "reenableFailed": "Aracı yeniden etkinleştirilemedi."
+      "reenableFailed": "Aracı yeniden etkinleştirilemedi.",
+      "runNowQueued": "Yama planı çalıştırması kuyruğa alındı",
+      "runNowFailed": "Yama planı çalıştırması başlatılamadı."
     },
     "issues": {
       "name": "Aracıya bir ad verin.",
@@ -1883,7 +1892,34 @@
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",
           "intent_error": "Onay oluşturulamadı",
-          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı"
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı",
+          "intent_invalid_provenance": "Onay doğrulanamadı (dahili hata)"
+        }
+      },
+      "patch": {
+        "title": "Yama planı",
+        "empty": "Aracı herhangi bir yama işi önermedi.",
+        "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
+        "posture": "{{compliance}}% uyumlu · {{count}} cihaz risk altında",
+        "posture_other": "{{compliance}}% uyumlu · {{count}} cihaz risk altında",
+        "patchCount": "{{count}} güncelleme",
+        "patchCount_other": "{{count}} güncelleme",
+        "refused": "Kaydedilmedi: {{reason}}",
+        "unconfirmed": "Bu plan hiçbir zaman onaylanmadı — aracı öğelerini kanıtlarla yeniden karşılaştıramadı, bu nedenle aşağıdakilerin hiçbiri doğrulanmadı.",
+        "unconfirmedItem": "Onaylanmadı — bu öğe hiçbir zaman yeniden kontrol edilmedi.",
+        "classes": {
+          "install": "Kurulum",
+          "approval_advisory": "Onay tavsiyesi",
+          "reboot_plan": "Yeniden başlatma planı",
+          "chase": "Hata takibi",
+          "escalation": "Yükseltme"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Cihaz yama kanıtlarında yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil",
+          "patch_not_in_evidence": "Güncelleme yama kanıtlarında yok",
+          "window_not_resolved": "Bakım penceresi çözülemedi",
+          "job_result_not_in_evidence": "Yama işi sonucu kanıtlarda yok"
         }
       },
       "narrative": {
@@ -2185,6 +2221,29 @@
         },
         "weightRowLabel": "{{label}} (kredilendirilen dakika)",
         "neverRebuilt": "Hiç yeniden oluşturulmadı"
+      },
+      "measured": {
+        "heading": "Ölçülen (korelasyonel)",
+        "caption": "Aynı türden ve aynı dönemdeki, yapay zekânın dokunduğu işler ile dokunmadıklarının karşılaştırması. Önce/sonra karşılaştırması değildir ve nedensellik iddiası taşımaz — yapay zekâ genellikle önce daha kolay işlere ulaşır.",
+        "alertResolution": "Uyarı çözümü, kurala göre",
+        "ticketFirstResponse": "Talebe ilk yanıt, önceliğe ve kategoriye göre",
+        "technicianMinutes": "Kaydedilen teknisyen dakikaları",
+        "armAiTouched": "Yapay zekânın dokunduğu",
+        "armUntouched": "Dokunulmamış",
+        "withinHorizonAlerts": "24 saat içinde çözülen",
+        "withinHorizonTickets": "4 saat içinde ilk yanıt",
+        "cohortSize": "Kohortta {n}",
+        "recordedMinutesValue": "{minutes} dk ortanca",
+        "loggingCoverage": "Yapay zekânın dokunduğu taleplerin {ai} kadarında, diğerlerinin {untouched} kadarında süre kaydı var. Kısmen kaydedilmiş talepler üzerinden alınan ortanca, emeğin ortancası değildir.",
+        "censoredNote": "Gösterilen her yüzdelik sağdan sansürlüdür: hâlâ açık olan işler elenmek yerine tamamlanmamış sayılır.",
+        "loading": "Ölçülen karşılaştırma yükleniyor…",
+        "error": "Ölçülen karşılaştırma yüklenemedi.",
+        "omitted": {
+          "insufficientData": "Yeterli veri yok: karşılaştırılabilir hiçbir iş grubunda her iki tarafta en az 20 kayıt bulunmuyor.",
+          "insufficientFollowup": "Bu dönem, yeterli sayıda kaydın sonucunu gözlemek için çok kısa. Daha uzun bir dönem deneyin.",
+          "insufficientAuthority": "Kaydedilen teknisyen dakikalarını görmek için gereken süre kaydı iznine sahip değilsiniz.",
+          "siteRestricted": "Siteye kısıtlı erişimde ölçülen karşılaştırma gösterilmez, çünkü tüm bir organizasyonu toplar."
+        }
       }
     },
     "graduation": {

@@ -9,10 +9,16 @@ import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
-import { AI_SWEEP_KINDS, AI_SWEEP_SEVERITIES } from '@breeze/shared';
+import {
+  AI_SWEEP_KINDS,
+  AI_SWEEP_SEVERITIES,
+  PATCH_PLAN_ITEM_CLASSES,
+  PATCH_PLAN_REFUSAL_REASONS,
+} from '@breeze/shared';
 import type {
   AiAgentRunDetailDto,
   AiAgentRunLedgerEntryDto,
+  AiAgentRunPatchItemDto,
   AiAgentRunStatus,
   AiAgentRunSweepFindingDto,
   AiAgentRunTraceEntryDto,
@@ -554,6 +560,7 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   no_eligible_approvers: true,
   intent_error: true,
   max_actions_per_run: true,
+  intent_invalid_provenance: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**
@@ -586,6 +593,96 @@ function sweepReasonLabel(t: (key: string) => string, reason: SweepProposalReaso
   if (!reason) return '—';
   if (!SWEEP_PROPOSAL_REASONS.includes(reason)) return reason;
   return t(/* i18n-dynamic */ `aiAgentsPage.runs.sweep.reasons.${reason}`);
+}
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747) — the patch-plan surfaces.
+//
+// Same membership-checked dynamic `t()` contract as the sweep labels above: an
+// item class or refusal reason this build's registry does not know renders as
+// its raw token, never as a visible `aiAgentsPage.runs.patch.*` key path.
+// ---------------------------------------------------------------------------
+const PATCH_ITEM_CLASS_TOKENS: readonly string[] = PATCH_PLAN_ITEM_CLASSES;
+const PATCH_REFUSAL_REASON_TOKENS: readonly string[] = PATCH_PLAN_REFUSAL_REASONS;
+
+function patchItemClassLabel(t: (key: string) => string, itemClass: string): string {
+  if (!PATCH_ITEM_CLASS_TOKENS.includes(itemClass)) return itemClass;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.classes.${itemClass}`);
+}
+
+function patchRefusalReasonLabel(t: (key: string) => string, reason: string): string {
+  if (!PATCH_REFUSAL_REASON_TOKENS.includes(reason)) return reason;
+  return t(/* i18n-dynamic */ `aiAgentsPage.runs.patch.reasons.${reason}`);
+}
+
+/**
+ * One plan item. A stacked card rather than a table row on purpose: the
+ * detail is a full sentence (up to 1000 chars), which a six-column table
+ * degrades into a horizontal scrollbar at every viewport below `lg` — the
+ * exact UI-critique finding the sweep table had to grow a mobile list for.
+ *
+ * A REFUSED item is rendered, dimmed, with its reason. W01 mints no intents,
+ * so nothing here is an action — an item the persister would not record is
+ * still what the agent proposed, and hiding it would misreport the run.
+ *
+ * An item with NO disposition is a THIRD state, not a recorded one: the
+ * finalizer's re-validation never completed (`patch_plan_persist_failed`), so
+ * nothing about this item has been checked against the evidence or the
+ * device's current org. Rendering it like a recorded item told the technician
+ * the plan was confirmed when it was not — review finding on PR #5792.
+ */
+function PatchPlanItem({
+  item,
+  t,
+}: {
+  item: AiAgentRunPatchItemDto;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const refused = item.disposition === 'refused';
+  const unconfirmed = item.disposition === null;
+  return (
+    <li
+      className={`py-3 ${refused || unconfirmed ? 'opacity-70' : ''}`}
+      data-testid={`ai-agent-run-patch-item-${item.index}`}
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={badgeClass(item.severity === 'critical' ? 'danger' : 'neutral', { size: 'sm' })}>
+          {sweepSeverityLabel(t, item.severity)}
+        </span>
+        <span className="text-xs text-muted-foreground">{patchItemClassLabel(t, item.class)}</span>
+        {item.deviceHostname && (
+          <span className="text-xs font-medium" data-testid={`ai-agent-run-patch-item-${item.index}-device`}>
+            {item.deviceHostname}
+          </span>
+        )}
+        {item.patchCount > 0 && (
+          <span className="text-xs text-muted-foreground">
+            {t('aiAgentsPage.runs.patch.patchCount', { count: item.patchCount })}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-sm font-medium">{item.title}</p>
+      <p className="mt-0.5 max-w-prose text-sm text-muted-foreground">{item.detail}</p>
+      {refused && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-reason`}
+        >
+          {t('aiAgentsPage.runs.patch.refused', {
+            reason: item.reason ? patchRefusalReasonLabel(t, item.reason) : '—',
+          })}
+        </p>
+      )}
+      {unconfirmed && (
+        <p
+          className="mt-1 text-xs text-amber-700 dark:text-amber-400"
+          data-testid={`ai-agent-run-patch-item-${item.index}-unconfirmed`}
+        >
+          {t('aiAgentsPage.runs.patch.unconfirmedItem')}
+        </p>
+      )}
+    </li>
+  );
 }
 
 /**
@@ -1622,6 +1719,61 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
                 </table>
               </div>
             </>
+          )}
+        </section>
+      )}
+
+      {/* AI patch agent W01 (#5747) — a `patch`-profile run's plan. Null for
+          every other profile and for a patch run that produced none, so the
+          whole section is absent rather than empty for them. */}
+      {run.patch && (
+        <section data-testid="ai-agent-run-patch" className="rounded-lg border bg-card p-4">
+          <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.patch.title')}</h2>
+
+          <p className="mt-2 max-w-prose text-sm" data-testid="ai-agent-run-patch-summary">
+            {run.patch.summary}
+          </p>
+
+          {run.patch.posture && (
+            <p className="mt-1 text-xs text-muted-foreground" data-testid="ai-agent-run-patch-posture">
+              {t('aiAgentsPage.runs.patch.posture', {
+                compliance: formatNumber(run.patch.posture.compliancePct),
+                count: run.patch.posture.devicesAtRisk,
+              })}
+            </p>
+          )}
+
+          {run.patch.evidenceTruncated && (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-patch-truncated">
+              {t('aiAgentsPage.runs.patch.evidenceTruncated')}
+            </p>
+          )}
+
+          {/* The finalizer's re-validation never completed, so NOTHING below
+              has been checked against the evidence or the devices' current
+              orgs. Driven off the items themselves rather than off
+              `errorCode`, so a plan that is unconfirmed for any future reason
+              still says so. Review finding on PR #5792: without this, a
+              failed persist rendered as a fully recorded plan. */}
+          {run.patch.items.length > 0 && run.patch.items.every((item) => item.disposition === null) && (
+            <p
+              className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-400"
+              data-testid="ai-agent-run-patch-unconfirmed"
+            >
+              {t('aiAgentsPage.runs.patch.unconfirmed')}
+            </p>
+          )}
+
+          {run.patch.items.length === 0 ? (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-patch-empty">
+              {t('aiAgentsPage.runs.patch.empty')}
+            </p>
+          ) : (
+            <ul className="mt-2 divide-y" data-testid="ai-agent-run-patch-items">
+              {run.patch.items.map((item) => (
+                <PatchPlanItem key={item.index} item={item} t={t} />
+              ))}
+            </ul>
           )}
         </section>
       )}

@@ -29,6 +29,9 @@ import { computeDrift } from '../fleetDesign/drift';
 import { fileFleetDesignDocument } from '../fleetDesign/documents';
 import { captureException } from '../sentry';
 import { isNarrativeProfile } from './narrativeProfile';
+import { patchEvidenceRefs } from './patchEvidence';
+import { persistPatchPlan } from './patchPlan';
+import { isPatchProfile } from './patchProfile';
 import { NarrativePersistConflictError, persistNarrativeReport } from './narrativeReport';
 import { resolveRecipientUserIds } from './recipients';
 import { persistSweepFindings } from './sweepFindings';
@@ -349,6 +352,40 @@ export async function finalizeNarrative(ctx: RunContext, result: LoopResult): Pr
  * does. There is no `design_no_schedule` error code because there is nothing
  * that condition would ever refuse.
  */
+/**
+ * AI patch agent W01 (#5747) — the patch sibling of the finalizers above.
+ * Re-validates every submitted item against the run's ASSEMBLED evidence and
+ * the device's CURRENT org (`persistPatchPlan`) and writes the dispositions
+ * onto `outcome.patchPlan`, which `finishRun` serializes into the run row.
+ *
+ * Writes NO other rows and mints NO action intents (W01 is findings-only), so
+ * — unlike the sweep/narrative/design finalizers — there is no stall-reaper
+ * re-read to take: the only durable write is the run row's own CAS in
+ * `finishRun`, which already refuses a run that left `running`.
+ *
+ * `patch_plan_missing` mirrors `narrative_missing` / `design_missing`; a
+ * failed membership read reports `patch_plan_persist_failed` and leaves the
+ * items without a disposition rather than guessing one.
+ */
+export async function finalizePatchPlan(ctx: RunContext, result: LoopResult): Promise<string | null> {
+  if (!isPatchProfile(ctx.run)) return null;
+  const { outcome } = result;
+  if (!outcome.patchPlan || !ctx.patch) return 'patch_plan_missing';
+  try {
+    const { dispositions } = await persistPatchPlan(
+      { id: ctx.run.id, orgId: ctx.run.orgId },
+      outcome.patchPlan,
+      patchEvidenceRefs(ctx.patch.evidence),
+    );
+    outcome.patchPlan = { ...outcome.patchPlan, dispositions };
+    return null;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] patch plan re-validation failed', { runId: ctx.run.id, error });
+    captureException(error, undefined, { service: 'aiAgents', operation: 'finalizePatchPlan', runId: ctx.run.id });
+    return 'patch_plan_persist_failed';
+  }
+}
+
 export async function finalizeFleetDesign(ctx: RunContext, result: LoopResult): Promise<string | null> {
   if (!isDesignProfile(ctx.run)) return null;
   const { outcome } = result;

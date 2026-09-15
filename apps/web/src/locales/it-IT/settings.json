@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Scansione",
         "narrative": "Report settimanale",
-        "design": "Progettazione della flotta"
+        "design": "Progettazione della flotta",
+        "patch": "Piano patch"
       },
       "kindsLabel": "Controlli da eseguire",
       "kind": "Tipo di pianificazione",
       "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
       "monthlyOrRarerHint": "Una progettazione della flotta viene attivata al massimo una volta al mese: minuto, ora e giorno-del-mese (1-28) letterali, mese come * o un elenco separato da virgole di mesi letterali, e * per il giorno della settimana. Ad esempio, 0 6 1 1,4,7,10 * viene eseguito trimestralmente il giorno 1 alle 06:00.",
+      "dailyOrRarerHint": "Un piano patch viene attivato al massimo una volta al giorno: minuto e ora letterali, e * o un elenco letterale per giorno-del-mese, mese e giorno della settimana. Ad esempio, 0 2 * * * viene eseguito ogni notte alle 02:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
       "override": "Personalizza per questa organizzazione",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
         "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
         "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
+        "agentKindNotPatch": "Una pianificazione di piano patch deve avere come destinazione un agente Patch.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
         "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
       }
@@ -1622,6 +1625,8 @@
       "never": "Mai eseguito",
       "at": "Ultima esecuzione {{at}}"
     },
+    "nextOccurrence": "Prossima esecuzione {{at}}",
+    "runNowNoOrg": "Seleziona un'organizzazione per eseguire un piano patch.",
     "disableDialog": {
       "title": "Disattivare {{name}}?",
       "message": "Le esecuzioni future si fermano, le pianificazioni collegate smettono di attivarsi e le sostituzioni dell’organizzazione per questo agente smettono di applicarsi. Un’esecuzione già in corso prosegue fino al suo limite di tempo.",
@@ -1653,6 +1658,7 @@
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Questo agente è già attivo.",
+      "noPatchAgent": "Nessun agente patch si applica a questa organizzazione.",
       "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire.",
       "invalidScriptIds": "Uno o più script non possono essere autorizzati per questo agente.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1670,7 +1676,8 @@
       "disable": "Disattiva",
       "confirmDisable": "Conferma disattivazione",
       "reenable": "Riattiva",
-      "runs": "Esecuzioni"
+      "runs": "Esecuzioni",
+      "runNow": "Esegui ora"
     },
     "toasts": {
       "saved": "Agente salvato",
@@ -1678,7 +1685,9 @@
       "disabled": "Agente disattivato",
       "disableFailed": "Impossibile disattivare l’agente.",
       "reenabled": "Agente riattivato",
-      "reenableFailed": "Impossibile riattivare l’agente."
+      "reenableFailed": "Impossibile riattivare l’agente.",
+      "runNowQueued": "Esecuzione del piano patch in coda",
+      "runNowFailed": "Impossibile avviare un'esecuzione del piano patch."
     },
     "issues": {
       "name": "Assegna un nome all’agente.",
@@ -1883,7 +1892,34 @@
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",
           "intent_error": "Impossibile creare l’approvazione",
-          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "intent_invalid_provenance": "Impossibile convalidare l’approvazione (errore interno)"
+        }
+      },
+      "patch": {
+        "title": "Piano patch",
+        "empty": "L'agente non ha proposto alcun lavoro di patch.",
+        "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all'agente.",
+        "posture": "{{compliance}}% conforme · {{count}} dispositivo a rischio",
+        "posture_other": "{{compliance}}% conforme · {{count}} dispositivi a rischio",
+        "patchCount": "{{count}} aggiornamento",
+        "patchCount_other": "{{count}} aggiornamenti",
+        "refused": "Non registrato: {{reason}}",
+        "unconfirmed": "Questo piano non è mai stato confermato — l'agente non ha potuto riverificare le sue voci rispetto alle evidenze, quindi nulla di quanto segue è stato convalidato.",
+        "unconfirmedItem": "Non confermato — questa voce non è mai stata riverificata.",
+        "classes": {
+          "install": "Installazione",
+          "approval_advisory": "Consiglio di approvazione",
+          "reboot_plan": "Piano di riavvio",
+          "chase": "Sollecito per errore",
+          "escalation": "Inoltro urgente"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo assente nelle evidenze delle patch",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
+          "patch_not_in_evidence": "Aggiornamento assente dalle evidenze delle patch",
+          "window_not_resolved": "Impossibile risolvere la finestra di manutenzione",
+          "job_result_not_in_evidence": "Risultato del lavoro di patch assente dalle evidenze"
         }
       },
       "narrative": {
@@ -2185,6 +2221,29 @@
         },
         "weightRowLabel": "{{label}} (minuti accreditati)",
         "neverRebuilt": "Mai ricostruito"
+      },
+      "measured": {
+        "heading": "Misurato (correlazionale)",
+        "caption": "Lavoro toccato dall'IA rispetto a lavoro non toccato, dello stesso tipo e nella stessa finestra. Non è un confronto prima/dopo né un'affermazione causale: l'IA di solito arriva prima ai casi più semplici.",
+        "alertResolution": "Risoluzione degli avvisi, per regola",
+        "ticketFirstResponse": "Prima risposta al ticket, per priorità e categoria",
+        "technicianMinutes": "Minuti tecnico registrati",
+        "armAiTouched": "Toccato dall'IA",
+        "armUntouched": "Non toccato",
+        "withinHorizonAlerts": "Risolti entro 24 h",
+        "withinHorizonTickets": "Prima risposta entro 4 h",
+        "cohortSize": "{n} nella coorte",
+        "recordedMinutesValue": "{minutes} min (mediana)",
+        "loggingCoverage": "Tempo registrato sul {ai} dei ticket toccati dall'IA e sul {untouched} degli altri. Una mediana su ticket registrati solo in parte non è una mediana del lavoro.",
+        "censoredNote": "Ogni percentile mostrato è censurato a destra: i casi ancora aperti contano come non conclusi invece di essere scartati.",
+        "loading": "Caricamento del confronto misurato…",
+        "error": "Impossibile caricare il confronto misurato.",
+        "omitted": {
+          "insufficientData": "Dati insufficienti: nessun gruppo di lavoro confrontabile ha almeno 20 casi per ciascun lato.",
+          "insufficientFollowup": "Questa finestra è troppo breve per osservare l'esito di un numero sufficiente di casi. Prova una finestra più lunga.",
+          "insufficientAuthority": "Non disponi dell'autorizzazione sulle registrazioni di tempo necessaria per vedere i minuti tecnico registrati.",
+          "siteRestricted": "Il confronto misurato non viene mostrato con accesso limitato per sede, perché aggrega dati di un'intera organizzazione."
+        }
       }
     },
     "graduation": {

@@ -284,7 +284,20 @@
     "couldnTLoadMore": "Daha fazlası yüklenemedi.",
     "viewAllActivity2": "Tüm etkinlikleri görüntüle",
     "text": "→",
-    "viewProposal": "Öneriyi görüntüle"
+    "viewProposal": "Öneriyi görüntüle",
+    "trigger": {
+      "manual": "Elle başlatma",
+      "schedule": "Zamanlama",
+      "sweep_finding": "Tarama bulgusu",
+      "alert": "Uyarı",
+      "monitor": "İzleme",
+      "fleet_finding": "Cihaz filosu bulgusu",
+      "policy": "İlke",
+      "automation": "Otomasyon",
+      "ticket": "Destek talebi",
+      "anomaly": "Anormallik",
+      "api": "API çağrısı"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Uyarı geçmişi getirilemedi",

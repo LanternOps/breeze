@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Barrido",
         "narrative": "Informe semanal",
-        "design": "Diseño de flota"
+        "design": "Diseño de flota",
+        "patch": "Plan de parches"
       },
       "kindsLabel": "Comprobaciones a ejecutar",
       "kind": "Tipo de programación",
       "weeklyOnlyHint": "Un informe semanal se dispara exactamente una vez por semana: minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana de 0 a 6. Por ejemplo, 0 7 * * 1 se ejecuta todos los lunes a las 07:00.",
       "monthlyOrRarerHint": "Un diseño de flota se dispara como máximo una vez al mes: minuto, hora y día-del-mes (1-28) literales, mes como * o una lista separada por comas de meses literales, y * para el día de la semana. Por ejemplo, 0 6 1 1,4,7,10 * se ejecuta trimestralmente el día 1 a las 06:00.",
+      "dailyOrRarerHint": "Un plan de parches se dispara como máximo una vez al día: minuto y hora literales, y * o una lista literal para día-del-mes, mes y día de la semana. Por ejemplo, 0 2 * * * se ejecuta todas las noches a las 02:00.",
       "kindsRequired": "Selecciona al menos una comprobación.",
       "enabled": "Habilitado",
       "override": "Anular para esta organización",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Las programaciones de barrido requieren un agente de todo el partner.",
         "agentKindNotTriage": "Solo se puede programar un agente de triaje.",
         "agentKindNotDesigner": "Una programación de diseño de flota debe dirigirse a un agente Diseñador de flota.",
+        "agentKindNotPatch": "Una programación de plan de parches debe dirigirse a un agente de Parches.",
         "kindsNotEmpty": "Una programación de informe semanal no ejecuta comprobaciones. Quita las comprobaciones seleccionadas antes de guardar.",
         "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana."
       }
@@ -1622,6 +1625,8 @@
       "never": "Nunca se ejecutó",
       "at": "Última ejecución {{at}}"
     },
+    "nextOccurrence": "Próxima ejecución {{at}}",
+    "runNowNoOrg": "Seleccione una organización para ejecutar un plan de parches.",
     "disableDialog": {
       "title": "¿Deshabilitar {{name}}?",
       "message": "Las ejecuciones futuras se detienen, las programaciones asociadas dejan de dispararse y las anulaciones de organización de este agente dejan de aplicarse. Una ejecución en curso continúa hasta su límite de tiempo.",
@@ -1653,6 +1658,7 @@
       "invalidSupervisedActionKeys": "Una o más acciones seleccionadas no se pueden autorizar mediante la política.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Ese agente ya está activo.",
+      "noPatchAgent": "Ningún agente de parches se aplica a esta organización.",
       "actRecipientsUnreachable": "Los roles de notificación seleccionados no tienen miembros activos, por lo que no se podría consultar a nadie. Elija un rol con miembros antes de habilitar el modo Actuar.",
       "invalidScriptIds": "Uno o más scripts no se pueden autorizar para este agente.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1670,7 +1676,8 @@
       "disable": "Deshabilitar",
       "confirmDisable": "Confirmar deshabilitación",
       "reenable": "Volver a habilitar",
-      "runs": "Ejecuciones"
+      "runs": "Ejecuciones",
+      "runNow": "Ejecutar ahora"
     },
     "toasts": {
       "saved": "Agente guardado",
@@ -1678,7 +1685,9 @@
       "disabled": "Agente deshabilitado",
       "disableFailed": "No se pudo deshabilitar el agente.",
       "reenabled": "Agente habilitado de nuevo",
-      "reenableFailed": "No se pudo volver a habilitar el agente."
+      "reenableFailed": "No se pudo volver a habilitar el agente.",
+      "runNowQueued": "Ejecución del plan de parches en cola",
+      "runNowFailed": "No se pudo iniciar una ejecución del plan de parches."
     },
     "issues": {
       "name": "Asigne un nombre al agente.",
@@ -1883,7 +1892,34 @@
           "not_allowlisted": "Herramienta no permitida para este agente",
           "no_eligible_approvers": "Sin aprobadores elegibles",
           "intent_error": "No se pudo crear la aprobación",
-          "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución"
+          "max_actions_per_run": "Se alcanzó el límite de acciones de esta ejecución",
+          "intent_invalid_provenance": "No se pudo validar la aprobación (error interno)"
+        }
+      },
+      "patch": {
+        "title": "Plan de parches",
+        "empty": "El agente no propuso trabajo de parches.",
+        "evidenceTruncated": "La evidencia se truncó: no se le mostraron al agente todas las filas coincidentes.",
+        "posture": "{{compliance}}% conforme · {{count}} dispositivo en riesgo",
+        "posture_other": "{{compliance}}% conforme · {{count}} dispositivos en riesgo",
+        "patchCount": "{{count}} actualización",
+        "patchCount_other": "{{count}} actualizaciones",
+        "refused": "No se registró: {{reason}}",
+        "unconfirmed": "Este plan nunca se confirmó — el agente no pudo volver a verificar sus elementos con la evidencia, por lo que nada de lo siguiente se validó.",
+        "unconfirmedItem": "No confirmado — este elemento nunca se volvió a verificar.",
+        "classes": {
+          "install": "Instalación",
+          "approval_advisory": "Recomendación de aprobación",
+          "reboot_plan": "Plan de reinicio",
+          "chase": "Seguimiento de fallo",
+          "escalation": "Escalamiento"
+        },
+        "reasons": {
+          "device_not_in_evidence": "El dispositivo no aparece en la evidencia de parches",
+          "device_not_in_org": "El dispositivo no pertenece a esta organización",
+          "patch_not_in_evidence": "La actualización no aparece en la evidencia de parches",
+          "window_not_resolved": "No se pudo resolver la ventana de mantenimiento",
+          "job_result_not_in_evidence": "El resultado del trabajo de parches no aparece en la evidencia"
         }
       },
       "narrative": {
@@ -2185,6 +2221,29 @@
         },
         "weightRowLabel": "{{label}} (minutos acreditados)",
         "neverRebuilt": "Nunca reconstruido"
+      },
+      "measured": {
+        "heading": "Medido (correlacional)",
+        "caption": "Trabajo con intervención de la IA frente a trabajo sin ella, del mismo tipo y en la misma ventana. No es una comparación antes/después ni una afirmación causal: la IA suele atender primero los casos más fáciles.",
+        "alertResolution": "Resolución de alertas, por regla",
+        "ticketFirstResponse": "Primera respuesta del ticket, por prioridad y categoría",
+        "technicianMinutes": "Minutos de técnico registrados",
+        "armAiTouched": "Con intervención de IA",
+        "armUntouched": "Sin intervención",
+        "withinHorizonAlerts": "Resueltas en 24 h",
+        "withinHorizonTickets": "Primera respuesta en 4 h",
+        "cohortSize": "{n} en la cohorte",
+        "recordedMinutesValue": "{minutes} min de mediana",
+        "loggingCoverage": "Tiempo registrado en {ai} de los tickets con intervención de IA y {untouched} de los demás. Una mediana sobre tickets registrados a medias no es una mediana del trabajo.",
+        "censoredNote": "Todo percentil mostrado está censurado por la derecha: los casos aún abiertos cuentan como sin terminar en vez de descartarse.",
+        "loading": "Cargando la comparación medida…",
+        "error": "No se pudo cargar la comparación medida.",
+        "omitted": {
+          "insufficientData": "Datos insuficientes: ningún grupo de trabajo comparable tiene al menos 20 casos en cada lado.",
+          "insufficientFollowup": "Esta ventana es demasiado corta para observar el resultado de suficientes casos. Prueba con una ventana más larga.",
+          "insufficientAuthority": "No tienes el permiso de registro de tiempo necesario para ver los minutos de técnico registrados.",
+          "siteRestricted": "La comparación medida no se muestra con acceso restringido por sede, porque agrega datos de toda una organización."
+        }
       }
     },
     "graduation": {

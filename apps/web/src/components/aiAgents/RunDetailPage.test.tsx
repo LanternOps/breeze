@@ -2083,3 +2083,137 @@ describe('RunDetailPage live progress', () => {
     expect(screen.queryByTestId('run-detail-progress')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747), Task 12 — the patch-plan section. W01 mints no
+// intents, so every item is a PROPOSAL; an item the persister refused is still
+// shown, with the reason, rather than quietly dropped.
+// ---------------------------------------------------------------------------
+describe('RunDetailPage — patch plan', () => {
+  const PATCH = {
+    scheduleId: 'sched-2',
+    occurrenceKey: '2026-09-15T02:00',
+    summary: 'Two servers are behind on critical updates.',
+    posture: { compliancePct: 82, devicesAtRisk: 2, oldestOutstandingDays: 41 },
+    items: [
+      {
+        index: 0,
+        class: 'install' as const,
+        severity: 'critical' as const,
+        deviceId: 'd1',
+        deviceHostname: 'WKS-01',
+        patchCount: 3,
+        title: 'Install three critical updates',
+        detail: 'KB5000001, KB5000002 and KB5000003 have been outstanding for 41 days.',
+        disposition: 'recorded' as const,
+        reason: null,
+      },
+      {
+        index: 1,
+        class: 'reboot_plan' as const,
+        severity: 'high' as const,
+        deviceId: 'd2',
+        deviceHostname: null,
+        patchCount: 0,
+        title: 'Schedule a reboot',
+        detail: 'A reboot is pending from last month.',
+        disposition: 'refused' as const,
+        reason: 'device_not_in_evidence' as const,
+      },
+    ],
+    recordedCount: 1,
+    refusedCount: 1,
+    evidenceTruncated: true,
+  };
+
+  const PATCH_RUN = { ...RUN_DETAIL, agentKind: 'patch' as const, sweep: null, patch: PATCH };
+
+  it('renders every plan item with its class, severity, device and detail', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-summary')).toHaveTextContent('Two servers are behind');
+
+    const first = screen.getByTestId('ai-agent-run-patch-item-0');
+    expect(first).toHaveTextContent('Install three critical updates');
+    expect(first).toHaveTextContent('WKS-01');
+    expect(first).toHaveTextContent('KB5000001');
+  });
+
+  it('shows the refusal reason for a refused item instead of dropping it', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const refused = screen.getByTestId('ai-agent-run-patch-item-1');
+    // The token itself must never reach the operator.
+    expect(refused).not.toHaveTextContent('device_not_in_evidence');
+    expect(screen.getByTestId('ai-agent-run-patch-item-1-reason')).toBeInTheDocument();
+  });
+
+  it('flags truncated evidence', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-truncated')).toBeInTheDocument();
+  });
+
+  it('renders an empty-plan sentence rather than an empty list', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items: [], recordedCount: 0, refusedCount: 0 } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0')).toBeNull();
+    expect(screen.getByTestId('ai-agent-run-patch-empty')).toBeInTheDocument();
+  });
+
+  it('omits the whole section for a run that produced no plan', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, patch: null } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('run-detail-header')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch')).toBeNull();
+  });
+
+  // Review finding (silent-failure hunter, PR #5792): when the finalizer's
+  // membership read throws, the run still finishes `completed` carrying
+  // `errorCode: 'patch_plan_persist_failed'` and a plan whose items have NO
+  // disposition. Rendering those identically to a recorded item told the
+  // technician the plan was confirmed when nothing had been re-validated.
+  const UNCONFIRMED = {
+    ...PATCH,
+    items: PATCH.items.map((item) => ({ ...item, disposition: null, reason: null })),
+    recordedCount: 0,
+    refusedCount: 0,
+  };
+
+  it('warns that the plan was never confirmed when persistence failed', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, errorCode: 'patch_plan_persist_failed', patch: UNCONFIRMED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-unconfirmed')).toBeInTheDocument();
+  });
+
+  it('marks an item with no disposition as unconfirmed, never as recorded', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, errorCode: 'patch_plan_persist_failed', patch: UNCONFIRMED } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeInTheDocument();
+    // A confirmed plan must NOT grow the warning — otherwise the banner is
+    // decoration rather than a signal.
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-reason')).toBeNull();
+  });
+
+  it('shows no unconfirmed warning for a normally persisted plan', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-unconfirmed')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-unconfirmed')).toBeNull();
+  });
+});

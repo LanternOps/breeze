@@ -2356,3 +2356,83 @@ describe('createAndEnqueueAgentRun design-profile admission (Fleet Designer W01)
     expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
   });
 });
+
+describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)', () => {
+  // Same read order as the design arm: a non-full profile skips the cooldown
+  // probe, so only [reap, concurrency, per-window, daily spend] are read.
+  function seedPatchAdmissionReads(options: {
+    concurrent?: number;
+    perWindow?: number;
+    dailyCents?: number | null;
+    agentKind?: string;
+  } = {}): void {
+    const { concurrent = 0, perWindow = 0, dailyCents = 0, agentKind = 'patch' } = options;
+    seedAdmissionReads({ concurrent, perHour: perWindow, dailyCents, deviceInOrg: true, agentKind });
+    dbMockState.rowQueues.ai_agent_runs = [
+      [],
+      [{ value: concurrent }],
+      [{ value: perWindow }],
+      [{ totalCostCents: dailyCents }],
+    ];
+  }
+
+  function patchInput(over: Partial<CreateAgentRunInput> = {}): CreateAgentRunInput {
+    return input({ kind: 'patch', profile: 'patch', deviceId: null, ...over });
+  }
+
+  it('admits a device-less patch run on a patch agent and writes profile=patch', async () => {
+    seedPatchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p1', scheduleId: SCHEDULE_ID }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'patch', scheduleId: SCHEDULE_ID, deviceId: null });
+  });
+
+  it('max_concurrent_patch_runs when queued+running patch runs reach the patch-only cap', async () => {
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p2' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_patch_runs' });
+  });
+
+  it('rate-limits patch runs on maxPatchRunsPerDay with skip patch_rate', async () => {
+    seedPatchAdmissionReads({ perWindow: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p3' }));
+    expect(result).toEqual({ created: false, skipped: 'patch_rate' });
+    const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
+    expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  it('falls back to the v11 defaults on a pre-v11 snapshot with no patch caps at all', async () => {
+    const { maxConcurrentPatchRuns: _c, maxPatchRunsPerDay: _d, ...preV11 } = AI_AGENT_LIMIT_DEFAULTS;
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ limits: preV11 as typeof AI_AGENT_LIMIT_DEFAULTS }));
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p4' }));
+    expect(result).toEqual({ created: false, skipped: 'max_concurrent_patch_runs' });
+  });
+
+  it('does not publish max_concurrent_patch_runs or patch_rate — volume guards, not policy events', async () => {
+    seedPatchAdmissionReads({ concurrent: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns });
+    await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p5' }));
+    expect(publishEvent).not.toHaveBeenCalled();
+  });
+
+  it('ownership_mismatch when a patch run targets a non-patch agent', async () => {
+    for (const agentKind of ['triage', 'helpdesk']) {
+      seedPatchAdmissionReads({ agentKind });
+      const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: `patch:p6:${agentKind}` }));
+      expect(result, agentKind).toEqual({ created: false, skipped: 'ownership_mismatch' });
+    }
+  });
+
+  it('ownership_mismatch when a patch run carries a deviceId', async () => {
+    seedPatchAdmissionReads();
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:p7', deviceId: DEVICE_ID }));
+    expect(result).toEqual({ created: false, skipped: 'ownership_mismatch' });
+  });
+
+  it('still admits a patch agent on the device lane with the full profile — no reverse pin', async () => {
+    seedAdmissionReads({ agentKind: 'patch' });
+    const result = await createAndEnqueueAgentRun(input({ kind: 'patch', dedupeKey: 'patch:p8' }));
+    expect(result).toMatchObject({ created: true });
+    expect(dbMockState.insertValues[0]).toMatchObject({ profile: 'full', deviceId: DEVICE_ID });
+  });
+});

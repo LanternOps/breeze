@@ -1,11 +1,12 @@
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import type { AuditResult } from '@breeze/shared';
+import type { AuditResult, RemediationTrigger } from '@breeze/shared';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
 
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
 
 export interface CreateAuditLogParams {
+  trigger?: RemediationTrigger;
   orgId?: string | null;
   actorType?: 'user' | 'api_key' | 'agent' | 'system' | 'ai_agent';
   actorId: string;
@@ -72,8 +73,17 @@ async function persistAuditLog(params: CreateAuditLogParams): Promise<void> {
   // transaction on its own pooled connection.
   return runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
-      const { actorType = 'user', ...rest } = params;
-      await db.insert(auditLogs).values({ actorType, ...rest });
+      const { actorType = 'user', trigger, ...rest } = params;
+      // Audit writes commit independently and async retries can exhaust after
+      // three attempts. The feed is a convenience view; reports read typed
+      // execution columns. Never rewrite historical checksum-chain rows.
+      const details = trigger ? {
+        ...rest.details,
+        triggerKind: trigger.kind,
+        triggerRefId: trigger.refId ?? null,
+        triggerKey: trigger.key ?? null,
+      } : rest.details;
+      await db.insert(auditLogs).values({ actorType, ...rest, ...(trigger ? { details } : {}) });
     })
   );
 }

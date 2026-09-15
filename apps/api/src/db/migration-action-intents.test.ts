@@ -139,6 +139,9 @@ describe('Action intents migration', () => {
     // status/decided_via; a release that could rewrite it could relax the
     // very invariants it records.
     'script_reviewer_evidence',
+    'trigger_kind',
+    'trigger_ref_id',
+    'trigger_key',
   ] as const;
 
   // Deliberately MUTABLE. release_by is written by the approve fan-in

@@ -15,17 +15,20 @@
  *   - ORG override: `org_id` set, `partner_id` NULL, `baseline_schedule_id` →
  *     the baseline it tightens. TIGHTEN-ONLY — see `effectiveSchedule`.
  */
-import { and, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 import {
   canonicalizeTimezone,
   createAiAgentScheduleSchema,
+  isDailyOrRarerLiteralCron,
   isHourlyFloorCron,
   isMonthlyOrRarerLiteralCron,
   isStructurallyValidCron,
   isWeeklyLiteralCron,
+  PATCH_DEFAULT_CRON,
   updateAiAgentScheduleSchema,
   type AiAgentEffectiveScheduleDto,
+  type AiAgentKind,
   type AiAgentScheduleDto,
   type AiAgentScheduleKind,
   type AiSweepKind,
@@ -37,7 +40,7 @@ import {
   withSystemDbAccessContext,
 } from '../../db';
 import { readWithPartnerAxisVisibility } from '../../db/partnerAxisRead';
-import { aiAgentSchedules, aiAgents, organizations, type AiAgentScheduleRow } from '../../db/schema';
+import { aiAgentSchedules, aiAgents, organizations, partners, type AiAgentRow, type AiAgentScheduleRow } from '../../db/schema';
 import type { AuthContext } from '../../middleware/auth';
 import { AgentAccessDeniedError, assertAgentWriteAllowed } from './access';
 
@@ -62,12 +65,46 @@ export type ScheduleValidationCode =
   // Fleet Designer (W01), the mirror of `agent_kind_not_triage` for a
   // `design` schedule: it must target a `designer` agent.
   | 'agent_kind_not_designer'
+  // AI patch agent (W01), the same mirror for a `patch` schedule: it must
+  // target a `patch` agent.
+  | 'agent_kind_not_patch'
   | 'invalid_cron'
   // P2-3: structurally fine and inside the hourly floor, but wrong for THIS
   // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
   // cron" from "not a WEEKLY cron" without parsing the message.
   | 'invalid_cron_for_kind'
   | 'invalid_timezone';
+
+/**
+ * Which `ai_agents.kind` each schedule kind runs. `Record<AiAgentScheduleKind,
+ * …>` is the exhaustiveness guard: a fifth schedule kind does not compile
+ * without a decision here (AI patch agent W01 replaced a designer-or-triage
+ * ternary that would have silently routed `patch` to `triage`).
+ */
+const REQUIRED_AGENT_KIND: Readonly<Record<AiAgentScheduleKind, AiAgentKind>> = {
+  sweep: 'triage',
+  narrative: 'triage',
+  design: 'designer',
+  patch: 'patch',
+};
+
+/** The 422 code for "wrong agent kind", keyed by the kind that was required. */
+const AGENT_KIND_MISMATCH: Readonly<Record<AiAgentKind, { code: ScheduleValidationCode; message: string }>> = {
+  triage: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
+  designer: { code: 'agent_kind_not_designer', message: 'A design schedule must target a designer agent' },
+  patch: { code: 'agent_kind_not_patch', message: 'A patch schedule must target a patch agent' },
+  // helpdesk has no schedule kind, so it is never the REQUIRED kind; the
+  // entry exists only because the Record is keyed on every AiAgentKind.
+  helpdesk: { code: 'agent_kind_not_triage', message: 'Only a triage agent can be scheduled' },
+};
+
+/**
+ * The agent kinds that own schedules — derived from `REQUIRED_AGENT_KIND` so
+ * the org-listing predicate below cannot drift from the create/update gate.
+ * A CLOSED literal list (never "any kind"): it is the only filter inside the
+ * partner-axis escape an org caller's baseline read goes through.
+ */
+const SCHEDULABLE_AGENT_KINDS: readonly AiAgentKind[] = [...new Set(Object.values(REQUIRED_AGENT_KIND))];
 
 /** Routes map this to 422 `{ error: code }`. The code IS the client contract. */
 export class ScheduleValidationError extends Error {
@@ -144,6 +181,16 @@ function assertValidCron(cron: string, kind: AiAgentScheduleKind): void {
       `a design schedule fires at most once a month — literal minute, hour and day-of-month (or a divisor-of-12 month step), \`*\` day-of-week: ${cron}`,
     );
   }
+  // AI patch agent (W01). One occurrence is one LLM-spending patch run per
+  // live org, and patch posture moves on the order of a day, so a patch
+  // schedule fires at most daily. Same ordering rationale as the two checks
+  // above: it only decides which code a client sees.
+  if (kind === 'patch' && !isDailyOrRarerLiteralCron(cron)) {
+    throw new ScheduleValidationError(
+      'invalid_cron_for_kind',
+      `a patch schedule fires at most once a day — a single literal minute and a single literal hour: ${cron}`,
+    );
+  }
 }
 
 /**
@@ -163,7 +210,9 @@ function assertPartnerKindsForScheduleKind(kind: AiAgentScheduleKind, sweepKinds
   // Fleet Designer (W01) behaves exactly like `narrative` here: a design run
   // evaluates no sweep kinds either — its whole input is the system-assembled
   // evidence bundle, not a sweep-kind-scoped finding pass.
-  if (kind === 'narrative' || kind === 'design') {
+  // AI patch agent (W01): `patch` likewise sweeps nothing — its input is the
+  // system-assembled patch evidence bundle.
+  if (kind === 'narrative' || kind === 'design' || kind === 'patch') {
     if (sweepKinds.length > 0) {
       throw new ScheduleValidationError(
         'kinds_not_empty',
@@ -366,12 +415,10 @@ async function assertPartnerWideScheduledAgent(
       'Schedules require a partner-wide agent belonging to this partner',
     );
   }
-  const required = kind === 'design' ? 'designer' : 'triage';
+  const required = REQUIRED_AGENT_KIND[kind];
   if (agent.kind !== required) {
-    throw new ScheduleValidationError(
-      required === 'designer' ? 'agent_kind_not_designer' : 'agent_kind_not_triage',
-      required === 'designer' ? 'A design schedule must target a designer agent' : 'Only a triage agent can be scheduled',
-    );
+    const mismatch = AGENT_KIND_MISMATCH[required];
+    throw new ScheduleValidationError(mismatch.code, mismatch.message);
   }
 }
 
@@ -684,7 +731,11 @@ export async function listSchedules(
   // Org-scoped callers cannot see partner-axis rows at all (#2822), so the
   // baselines are read through the escape — where the app predicate is the ONLY
   // filter and therefore has to be maximally narrow: this partner's rows, for
-  // this partner's own partner-wide triage agents, and nothing else.
+  // this partner's own partner-wide SCHEDULABLE agents, and nothing else.
+  // `SCHEDULABLE_AGENT_KINDS` is a closed list derived from the create gate
+  // (triage/designer/patch); before AI patch agent W01 it was `'triage'`
+  // alone, which hid every design and patch baseline from an org token.
+  // `helpdesk` has no schedule kind and is excluded.
   const baselines = await readWithPartnerAxisVisibility(async () => {
     const agentIds = await db
       .select({ id: aiAgents.id })
@@ -692,7 +743,7 @@ export async function listSchedules(
       .where(and(
         isNull(aiAgents.orgId),
         eq(aiAgents.partnerId, orgPartnerId),
-        eq(aiAgents.kind, 'triage'),
+        inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
         // Same predicate as assertPartnerWideScheduledAgent: a soft-deleted agent
         // can no longer be scheduled, so its baselines are not offered either.
         isNull(aiAgents.disabledAt),
@@ -713,6 +764,86 @@ export async function listSchedules(
   const overrides = await overridesFor(orgId, baselines.map((b) => b.id));
   const byBaseline = new Map(overrides.map((o) => [o.baselineScheduleId as string, o]));
   return baselines.map((baseline) => toEffectiveDto(baseline, byBaseline.get(baseline.id), false));
+}
+
+/** One enabled baseline's cadence — everything the next-occurrence column needs
+ *  and nothing else. Deliberately NOT the whole row: `last_run_summary`
+ *  aggregates every org under the partner and must never reach an org caller
+ *  (see `listSchedules`), so it is not selected here at all. */
+export interface BaselineCadence {
+  agentId: string;
+  cron: string;
+  timezone: string;
+}
+
+/**
+ * AI patch agent W01 (#5747) — every ENABLED baseline cadence for a page of
+ * agents, in ONE query.
+ *
+ * The agents list route turns these into each card's `nextOccurrenceAt`. It is
+ * a page-wide batched read for the same reason `loadLastRuns` is: a per-row
+ * query would be one round trip per agent.
+ *
+ * Tenancy is `listSchedules`'s, restated for a read that returns no row
+ * contents: a PARTNER caller reads its own baselines under its own RLS
+ * (`breeze_has_partner_access` passes), while an ORG caller is blind to the
+ * partner axis (#2822) and reads them through `readWithPartnerAxisVisibility`
+ * with a maximally narrow app predicate — this partner's rows, for this
+ * partner's own partner-wide schedulable agents. A caller with neither axis
+ * (no partnerId) gets nothing rather than an unpinned read.
+ *
+ * Overrides are deliberately ignored: an org override carries no cadence of
+ * its own (it may only disable or tighten), so the BASELINE's cron is when the
+ * agent next fires — exactly what `toEffectiveDto` renders in the drawer.
+ */
+export async function loadEnabledBaselineCadences(
+  auth: AuthContext,
+  agentIds: string[],
+): Promise<BaselineCadence[]> {
+  if (agentIds.length === 0) return [];
+  const columns = {
+    agentId: aiAgentSchedules.agentId,
+    cron: aiAgentSchedules.cron,
+    timezone: aiAgentSchedules.timezone,
+  };
+
+  if (auth.scope === 'partner' && auth.partnerId) {
+    return db
+      .select(columns)
+      .from(aiAgentSchedules)
+      .where(and(
+        isNull(aiAgentSchedules.orgId),
+        eq(aiAgentSchedules.partnerId, auth.partnerId),
+        eq(aiAgentSchedules.enabled, true),
+        inArray(aiAgentSchedules.agentId, agentIds),
+      ));
+  }
+
+  if (!auth.partnerId) return [];
+  const partnerId = auth.partnerId;
+
+  return readWithPartnerAxisVisibility(async () => {
+    const partnerWideAgentIds = await db
+      .select({ id: aiAgents.id })
+      .from(aiAgents)
+      .where(and(
+        isNull(aiAgents.orgId),
+        eq(aiAgents.partnerId, partnerId),
+        inArray(aiAgents.kind, [...SCHEDULABLE_AGENT_KINDS]),
+        isNull(aiAgents.disabledAt),
+        inArray(aiAgents.id, agentIds),
+      ));
+    if (partnerWideAgentIds.length === 0) return [];
+    return db
+      .select(columns)
+      .from(aiAgentSchedules)
+      .where(and(
+        isNull(aiAgentSchedules.orgId),
+        eq(aiAgentSchedules.partnerId, partnerId),
+        eq(aiAgentSchedules.enabled, true),
+        inArray(aiAgentSchedules.agentId, partnerWideAgentIds.map((a) => a.id)),
+      ));
+  });
 }
 
 /**
@@ -751,4 +882,86 @@ export async function resolveEffectiveSchedulesForPartner(
   // pooled connection — same skip branch as resolveEffectiveAgentSystem.
   if (getCurrentDbAccessContext()?.scope === 'system') return inner();
   return runOutsideDbContext(() => withSystemDbAccessContext(inner));
+}
+
+/**
+ * AI patch agent W01 (#5747, OD-9 A) — the default cadence. A partner-wide
+ * patch agent that is enabled gets ONE partner baseline `0 2 * * *` (02:00 in
+ * the partner's timezone, UTC fallback), so enabling Patching actually starts
+ * it working (#5382 — an enabled agent with no schedule never ran).
+ *
+ * Called from `agentService` on create-enabled and on the enabled false→true
+ * transition, and from the one-shot boot backfill for agents that were
+ * already enabled before this shipped. Every caller runs it inside a
+ * SAVEPOINT (`db.transaction(tx => ensureDefaultPatchSchedule(row, tx))`) and
+ * passes that `tx` as the executor: postgres-js rethrows a failed statement
+ * when the enclosing scope ends even if the caller caught it, so a statement
+ * issued through the ambient `db` could fail the enable itself.
+ *
+ * Idempotent: a per-agent `pg_advisory_xact_lock` serialises concurrent
+ * callers (two API replicas booting the backfill, or an enable racing it),
+ * then any existing `kind = 'patch'` baseline for the agent means nothing is
+ * created. Never creates for an org-owned, non-patch, disabled or
+ * soft-deleted agent. `createdBy` is null — a system-created row.
+ */
+export type EnsureDefaultPatchScheduleResult =
+  | { created: true }
+  | { created: false; reason: 'not_applicable' | 'exists' };
+
+type ScheduleExecutor = Pick<typeof db, 'select' | 'insert' | 'execute'>;
+
+export async function ensureDefaultPatchSchedule(
+  agent: Pick<AiAgentRow, 'id' | 'kind' | 'orgId' | 'partnerId' | 'enabled' | 'disabledAt'>,
+  executor: ScheduleExecutor,
+): Promise<EnsureDefaultPatchScheduleResult> {
+  if (
+    agent.kind !== 'patch'
+    || agent.orgId !== null
+    || !agent.partnerId
+    || !agent.enabled
+    || agent.disabledAt !== null
+  ) {
+    return { created: false, reason: 'not_applicable' };
+  }
+  const partnerId = agent.partnerId;
+
+  await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`ai-patch-default-schedule:${agent.id}`}, 0))`);
+
+  const [existing] = await executor
+    .select({ id: aiAgentSchedules.id })
+    .from(aiAgentSchedules)
+    .where(and(
+      eq(aiAgentSchedules.agentId, agent.id),
+      eq(aiAgentSchedules.kind, 'patch'),
+      isNull(aiAgentSchedules.orgId),
+    ))
+    .limit(1);
+  if (existing) return { created: false, reason: 'exists' };
+
+  const [partner] = await executor
+    .select({ timezone: partners.timezone })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  const timezone = canonicalizeTimezone(partner?.timezone ?? '') ?? 'UTC';
+  if (!partner?.timezone || timezone !== canonicalizeTimezone(partner.timezone)) {
+    console.warn('[aiAgentSchedules] default patch schedule falls back to UTC — partner timezone missing or invalid', {
+      agentId: agent.id, partnerId,
+    });
+  }
+
+  await executor.insert(aiAgentSchedules).values({
+    orgId: null,
+    partnerId,
+    agentId: agent.id,
+    baselineScheduleId: null,
+    kind: 'patch',
+    cron: PATCH_DEFAULT_CRON,
+    timezone,
+    sweepKinds: [],
+    enabled: true,
+    createdBy: null,
+    updatedAt: new Date(),
+  });
+  return { created: true };
 }

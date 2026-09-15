@@ -614,6 +614,97 @@ describe('AiAgentSchedulesSection', () => {
     expect(body).not.toHaveProperty('sweepKinds');
   });
 
+  // ── AI patch agent W01 (#5747) — the `patch` schedule kind ─────────────
+  //
+  // A patch schedule targets a partner-wide PATCH agent (the API refuses
+  // every other kind with `agent_kind_not_patch`) and must fire at most once
+  // a day — the server's `isDailyOrRarerLiteralCron` floor, restated here so
+  // this form never authors a body the API then refuses.
+
+  const patchProps = { ...partnerProps, agentKind: 'patch' as const };
+
+  const PATCH_BASELINE: AiAgentEffectiveScheduleDto = {
+    ...BASELINE,
+    id: 'p-1',
+    kind: 'patch',
+    cron: '0 2 * * *',
+    sweepKinds: [],
+    effective: { enabled: true, sweepKinds: [] },
+  };
+
+  it('offers only patch for a patch agent and defaults to the 02:00 daily cron', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...patchProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    expect(screen.getByTestId('ai-agent-schedule-kind')).toHaveValue('patch');
+    expect(within(screen.getByTestId('ai-agent-schedule-kind')).queryAllByRole('option')).toHaveLength(1);
+    expect(screen.getByTestId('ai-agent-schedule-cron')).toHaveValue('0 2 * * *');
+    // A patch schedule evaluates no sweep kinds — the whole block is absent.
+    expect(screen.queryByTestId('ai-agent-schedule-kinds')).toBeNull();
+    expect(screen.getByTestId('ai-agent-schedule-daily-hint')).toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('refuses a patch cron that fires more than once a day', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...patchProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+
+    // Structurally valid, but HOURLY — the exact body the server answers
+    // `invalid_cron_for_kind` for.
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '0 * * * *' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).toBeDisabled();
+    expect(screen.getByTestId('ai-agent-schedule-cron-invalid')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-cron'), { target: { value: '30 4 * * 1' } });
+    expect(screen.getByTestId('ai-agent-schedule-save')).not.toBeDisabled();
+  });
+
+  it('posts a patch baseline carrying kind and NO sweepKinds, targeting the patch agent', async () => {
+    mockList([], () => json({ data: PATCH_BASELINE }, true, 201));
+    render(<AiAgentSchedulesSection {...patchProps} agentId="patch-agent-1" />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+    fireEvent.change(screen.getByTestId('ai-agent-schedule-timezone'), {
+      target: { value: 'Europe/Paris' },
+    });
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { url, method, body } = lastMutation();
+    expect(url).toBe('/ai/agents/schedules');
+    expect(method).toBe('POST');
+    expect(body).toEqual({
+      ownerScope: 'partner',
+      kind: 'patch',
+      agentId: 'patch-agent-1',
+      cron: '0 2 * * *',
+      timezone: 'Europe/Paris',
+      enabled: true,
+    });
+    expect(body).not.toHaveProperty('sweepKinds');
+  });
+
+  it('badges a patch row and translates agent_kind_not_patch instead of the raw token', async () => {
+    mockList([PATCH_BASELINE], () =>
+      json({ error: 'agent_kind_not_patch', message: 'wrong kind' }, false, 422),
+    );
+    render(<AiAgentSchedulesSection {...patchProps} />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-schedule-p-1')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-schedule-kind-badge-p-1')).toHaveTextContent('Patch plan');
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-add'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const toasted = showToast.mock.calls.map(([arg]) => (arg as { message: string }).message).join('\n');
+    expect(toasted).not.toContain('agent_kind_not_patch');
+    expect(toasted).toContain('Patch agent');
+  });
+
   it('badges a design row and translates agent_kind_not_designer instead of the raw token', async () => {
     mockList([DESIGN_BASELINE], () =>
       json({ error: 'agent_kind_not_designer', message: 'wrong kind' }, false, 422),

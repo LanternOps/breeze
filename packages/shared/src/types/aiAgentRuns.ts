@@ -1,5 +1,6 @@
 import type { AiApprovalScope, AiToolStatus } from './ai';
 import type { AiAgentRunFleetDesignDto } from './fleetDesign';
+import type { AiAgentRunPatchDto } from './aiPatchPlan';
 import type {
   ActExecutionVerdict,
   ActVerificationVerdict,
@@ -404,13 +405,22 @@ export type AlertVerdictSuggestionDisposition = 'intent_created' | 'not_created'
  * verdict that lost the race. See `alertVerdicts.ts`'s write-ordering
  * docstring for the full mechanism (deferred self-FK + 23505 handling).
  */
+/**
+ * `'intent_invalid_provenance'` — `createActionIntent`'s
+ * `remediationTriggerSchema.parse(...)` rejected the `trigger` this file
+ * built (a `ZodError`). That is a code defect in the caller, never a
+ * business-outcome denial, so it is reported to Sentry and kept distinct
+ * from `'intent_error'` (a genuinely-thrown business error, e.g.
+ * `org_resolution_failed`).
+ */
 export type AlertVerdictSuggestionReason =
   | 'low_confidence' | 'target_mismatch' | 'alert_not_found' | 'no_eligible_approvers' | 'intent_error'
   | 'not_allowlisted' | 'superseded_concurrently'
   // #5290 — the target is a recurrence-escalation alert. The verdict is still
   // recorded (advisory analysis is wanted), but the suggested mutation is
   // refused: a requires-human alert is closed by a person, never by the machine.
-  | 'requires_human';
+  | 'requires_human'
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-1 (alert verdicts) — the safe projection of one
@@ -453,7 +463,12 @@ export type SweepProposalReason =
   | 'not_allowlisted'
   | 'no_eligible_approvers'
   | 'intent_error'
-  | 'max_actions_per_run';
+  | 'max_actions_per_run'
+  // `createActionIntent`'s `remediationTriggerSchema.parse(...)` rejected the
+  // `trigger` this file built (a `ZodError`) — a code defect, not a
+  // business-outcome denial. Reported to Sentry; see
+  // `AlertVerdictSuggestionReason`'s matching member for the full rationale.
+  | 'intent_invalid_provenance';
 
 /**
  * Phase 2 wave P2-2 (scheduled sweeps) — the safe projection of one
@@ -611,6 +626,14 @@ export interface AiAgentRunDetailDto {
    * (same rule as `alertVerdict`/`sweep`/`narrative` above).
    */
   fleetDesign: AiAgentRunFleetDesignDto | null;
+  /**
+   * AI patch agent (W01) — the patch plan this run produced, for a
+   * `patch`-profile run that reached a `submit_patch_plan` outcome. Null for
+   * every non-patch run and for a patch run that has not produced one.
+   * Additive nullable field — does NOT bump `AI_AGENT_RUN_DTO_SCHEMA_VERSION`
+   * (same rule as `alertVerdict`/`sweep`/`narrative`/`fleetDesign` above).
+   */
+  patch: AiAgentRunPatchDto | null;
   /**
    * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
    * went, for a `narrative`-profile run that materialised an artifact. Null

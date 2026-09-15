@@ -327,10 +327,14 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
     'disk_cleanup:execute',
     'run_script',
   ],
+  // AI patch agent (W01): `manage_deployments:start` dropped — it is the
+  // software-rollout engine, not patch jobs. This is the create-time default
+  // for the DEVICE lane only; existing agents keep their stored allowlists,
+  // and a `patch`-profile run ignores this entirely (patchToolAllowlist is a
+  // floor, not an intersection).
   patch: [
     'manage_patches:approve',
     'manage_patches:install',
-    'manage_deployments:start',
     'manage_services:restart',
   ],
   helpdesk: ['manage_services:restart', 'disk_cleanup:execute', 'run_script'],

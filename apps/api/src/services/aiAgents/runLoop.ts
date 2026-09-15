@@ -135,14 +135,18 @@ import {
   OUTCOME_MCP_TOOL_NAMES,
   outcomeToolsForRun,
   validateOutcomeToolInput,
+  type PatchPlanToolRefs,
 } from './outcomeTools';
 import { isVerdictProfile, verdictLimits, verdictToolAllowlist } from './verdictProfile';
 import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile';
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
 import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
+import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
+import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeFleetDesign,
+  finalizePatchPlan,
   finalizeNarrative,
   finalizeSweep,
   finalizeTicketTriage,
@@ -484,6 +488,31 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       };
     }
 
+    // AI patch agent W01 (#5747). Runs INSIDE this same system context, like
+    // the sweep/narrative/design loads above — `loadPatchEvidence` manages no
+    // context of its own, so the `org_id` predicate every one of its
+    // statements carries is the only tenant boundary. A patch run fails here
+    // only when the compliance rollup itself is unavailable (nothing to plan
+    // for); every other section degrades to "(not measured)".
+    let patch: RunContext['patch'] = null;
+    if (isPatchProfile(run as RunRow)) {
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown };
+      let evidence;
+      try {
+        evidence = await loadPatchEvidence(run.orgId, org.partnerId ?? null);
+      } catch (error) {
+        if (error instanceof PatchEvidenceUnavailableError) {
+          throw new AgentRunError('patch_evidence_unavailable', `patch compliance rollup was unavailable for org ${run.orgId}`);
+        }
+        throw error;
+      }
+      patch = {
+        scheduleId: run.scheduleId ?? null,
+        occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : null,
+        evidence,
+      };
+    }
+
     return {
       run: run as RunRow,
       agent: agent as AgentRow,
@@ -496,6 +525,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       sweep,
       narrative,
       design,
+      patch,
       sessionId: null,
     };
   });
@@ -518,7 +548,7 @@ export function createAgentRunPreToolUse(args: {
   // `submit_task_step` (via `outcomeToolsForRun`) and switches the tool fence
   // below on; `taskStepKey`/`taskAttemptOrdinal` are the operation identity a
   // Tier-3 proposal reserves under.
-  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'>;
+  run: Pick<RunRow, 'id' | 'orgId' | 'agentId' | 'profile' | 'taskId' | 'taskStepKey' | 'taskAttemptOrdinal'> & Partial<Pick<RunRow, 'triggerKind' | 'alertId' | 'scheduleId' | 'ticketId'>>;
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
@@ -573,10 +603,17 @@ export function createAgentRunPreToolUse(args: {
   /** Bytes this run may still stage into artifacts (W03/R4) — see
    *  `ToolExecutionContext.stagedBytesRemaining`. */
   stagedBytesRemaining: number;
+  /**
+   * AI patch agent W01 — the SAME refs the SDK tool handler and the post-hook
+   * receive, for the same reason as `design` above: the pre-hook's
+   * validate-only check must not deny every `submit_patch_plan`. `undefined`
+   * on every non-patch run.
+   */
+  patch?: PatchPlanToolRefs;
 }): PreToolUseCallback {
   const {
     run, agentName, agentAuth, agentKind, guardrailPolicy, outcome, intentIds, allowedPending,
-    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design,
+    sessionId, executionIdPending, actPinPending, actReservation, deadlineMs, design, patch,
     runTargets, stagedBytesRemaining,
   } = args;
 
@@ -819,7 +856,7 @@ export function createAgentRunPreToolUse(args: {
         return { allowed: false, error: 'not available on this run' };
       }
       try {
-        validateOutcomeToolInput(toolName, input, design);
+        validateOutcomeToolInput(toolName, input, toolName === 'submit_patch_plan' ? patch : design);
       } catch (e) {
         return { allowed: false, error: `invalid ${toolName} input: ${(e as Error).message}` };
       }
@@ -883,7 +920,7 @@ export function createAgentRunPreToolUse(args: {
     // output channel is `submit_fleet_design`, handled above this branch.
     if (
       (isVerdictProfile(run) || isSweepProfile(run) || isNarrativeProfile(run) || isTriageProfile(run)
-        || isDesignProfile(run))
+        || isDesignProfile(run) || isPatchProfile(run))
       && check.disposition !== 'allow'
     ) {
       const reason = `${run.profile} runs are read-only`;
@@ -996,6 +1033,7 @@ export function createAgentRunPreToolUse(args: {
         const durationMs = Date.now() - dispatchStartedAt;
 
         outcome.executedActions.push({
+          ...executedActionTrigger(run),
           tool: toolName,
           executionId: '(inline)',
           result: result.execution === 'succeeded' ? 'ok' : 'failed',
@@ -1046,6 +1084,10 @@ export function createAgentRunPostToolUse(args: {
     id: string; orgId: string; agentId: string; deviceId: string | null; profile: AiAgentRunProfile;
     /** #5205 W06 — selects `submit_task_step` for capture (`outcomeToolsForRun`). */
     taskId?: string | null;
+    triggerKind?: RunRow['triggerKind'];
+    alertId?: string | null;
+    scheduleId?: string | null;
+    ticketId?: string | null;
   };
   /** For `verifyActExecution`'s `executeCommand` calls — attribution only. */
   agentUserId: string;
@@ -1058,8 +1100,10 @@ export function createAgentRunPostToolUse(args: {
    * same run.
    */
   design?: FleetDesignOutcomeRefs;
+  /** AI patch agent W01 — see the pre-hook's `patch` param. */
+  patch?: PatchPlanToolRefs;
 }): PostToolUseCallback {
-  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design } = args;
+  const { outcome, allowedPending, executionIdPending, actPinPending, run, agentUserId, design, patch } = args;
 
   return async (toolName, input, output, isError, durationMs) => {
     // Outcome tools (Phase 2 wave P2-1): never went through
@@ -1115,6 +1159,13 @@ export function createAgentRunPostToolUse(args: {
             if (!design) throw new Error('[aiAgentRunLoop] submit_fleet_design captured with no design refs');
             outcome.fleetDesign = validateOutcomeToolInput(toolName, input, design);
             break;
+          // AI patch agent W01 — the SERVER-BUILT plan (in-tool referential
+          // gate passed). `finalizePatchPlan` re-validates and records a
+          // disposition per item; nothing here executes or mints an intent.
+          case 'submit_patch_plan':
+            if (!patch) throw new Error('[aiAgentRunLoop] submit_patch_plan captured with no patch refs');
+            outcome.patchPlan = validateOutcomeToolInput(toolName, input, patch);
+            break;
           default: {
             const exhaustive: never = toolName;
             throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
@@ -1151,6 +1202,7 @@ export function createAgentRunPostToolUse(args: {
 
     const action = readToolAction(toolName, input);
     const entry: OutcomeExecutedAction = {
+      ...executedActionTrigger(run),
       tool: toolName,
       ...(action ? { action } : {}),
       executionId: executionId ?? '(inline)',
@@ -1435,6 +1487,20 @@ function designOutcomeRefs(ctx: RunContext): FleetDesignOutcomeRefs | undefined 
   };
 }
 
+/**
+ * AI patch agent W01 — the refs `submit_patch_plan` validates against,
+ * computed ONCE per run from the assembled evidence (never a second query) so
+ * the pre-hook, the SDK handler and the post-hook capture agree.
+ */
+function patchOutcomeRefs(ctx: RunContext): PatchPlanToolRefs | undefined {
+  if (!ctx.patch) return undefined;
+  return {
+    refs: patchEvidenceRefs(ctx.patch.evidence),
+    evidenceTruncated: ctx.patch.evidence.truncated,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
@@ -1451,6 +1517,9 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     sweep: ctx.sweep ? sweepPromptContext(ctx.sweep) : null,
     narrative: ctx.narrative ? narrativePromptContext(ctx.narrative) : null,
     design: ctx.design ? designPromptContext(ctx.design) : null,
+    patch: ctx.patch
+      ? { trigger: ctx.patch.scheduleId ? 'schedule' : 'manual', occurrenceKey: ctx.patch.occurrenceKey, evidence: ctx.patch.evidence }
+      : null,
   };
 }
 
@@ -1503,6 +1572,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // still zeroes `maxActionsPerRun`: a design run is read-only by
   // construction (Global Constraints), never just by convention.
   const design = isDesignProfile(run);
+  // AI patch agent W01 (#5747) — the seventh arm: a small read-only
+  // drill-down floor plus `submit_patch_plan`; `patchLimits` zeroes
+  // `maxActionsPerRun`.
+  const patchRun = isPatchProfile(run);
   const runLimits = verdict
     ? verdictLimits(limits)
     : sweep
@@ -1513,7 +1586,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
           ? triageLimits(limits)
           : design
             ? designLimits(limits)
-            : limits;
+            : patchRun
+              ? patchLimits(limits)
+              : limits;
   const profileAllowlist = verdict
     ? verdictToolAllowlist(effective.toolAllowlist)
     : sweep
@@ -1524,7 +1599,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
           ? triageToolAllowlist(effective.toolAllowlist)
           : design
             ? designToolAllowlist(effective.toolAllowlist)
-            : null;
+            : patchRun
+              ? patchToolAllowlist(effective.toolAllowlist)
+              : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
@@ -1639,10 +1716,11 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // never see two different device-id sets or two different `generatedAt`
   // timestamps for the same run.
   const designRefs = designOutcomeRefs(ctx);
+  const patchRefs = patchOutcomeRefs(ctx);
   const preToolUse = createAgentRunPreToolUse({
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
-    actReservation, deadlineMs, design: designRefs,
+    actReservation, deadlineMs, design: designRefs, patch: patchRefs,
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
     // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
@@ -1656,9 +1734,11 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     run: {
       id: run.id, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
       profile: run.profile, taskId: run.taskId,
+      triggerKind: run.triggerKind, alertId: run.alertId, scheduleId: run.scheduleId, ticketId: run.ticketId,
     },
     agentUserId: agentAuth.user.id,
     design: designRefs,
+    patch: patchRefs,
   });
 
   // `exposedNames` governs SDK-level tool EXPOSURE for a verdict run, not a
@@ -1699,7 +1779,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // registers one on the MCP server, let alone exposes it via
   // `allowedTools`.
   const mcpServer = createBreezeMcpServer(() => agentAuth, preToolUse, postToolUse, undefined,
-    buildOutcomeSdkTools(outcomeToolsForRun(run), designRefs ? { design: designRefs } : undefined),
+    buildOutcomeSdkTools(
+      outcomeToolsForRun(run),
+      designRefs || patchRefs ? { design: designRefs, patch: patchRefs } : undefined,
+    ),
     onlyTools ? { onlyTools } : undefined);
 
   const prompt = promptContext(ctx, effective);
@@ -2000,6 +2083,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // narrative / triage / design, so at most one of the five error codes
     // below is ever non-null.
     const fleetDesignErrorCode = await finalizeFleetDesign(ctx, result);
+    // AI patch agent W01 (#5747) — sixth in the same row. It only re-validates
+    // the plan and records dispositions (no rows, no intents), so ordering
+    // against the awaiting_approval decision is moot, but it must run before
+    // `finishRun` serializes the outcome. At most one of the six codes below
+    // is ever non-null.
+    const patchPlanErrorCode = await finalizePatchPlan(ctx, result);
 
     // The loop threw after spending: record what it cost and what it managed to
     // do, then fail. `finishRun` writes cost/turns/outcome on every terminal
@@ -2055,6 +2144,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
       // agent's circuit breaker (which, per Global Constraints, treats a
       // design run's success as circuit-neutral anyway — see `agentCircuit.ts`).
       || outcome.fleetDesign !== undefined
+      // AI patch agent W01 — same rule for a patch run's ONE job.
+      || outcome.patchPlan !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2085,7 +2176,8 @@ export async function executeAgentRun(runId: string): Promise<void> {
     await finishRun(
       ctx,
       classifyIntentAwaitingApproval(intentIds, result.decidedIntentIds) ? 'awaiting_approval' : 'completed',
-      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode,
+      verdictErrorCode ?? sweepErrorCode ?? narrativeErrorCode ?? ticketTriageErrorCode ?? fleetDesignErrorCode
+        ?? patchPlanErrorCode,
       result,
     );
   } catch (error) {
@@ -2320,7 +2412,10 @@ async function finishRun(
   // `notifies` is unaffected: a design run is not excluded (only `verdict`
   // is), so it already falls on the "does notify" side.
   const watches = !isVerdictProfile(ctx.run) && !isSweepProfile(ctx.run) && !isNarrativeProfile(ctx.run)
-    && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run);
+    && !isTriageProfile(ctx.run) && !isDesignProfile(ctx.run)
+    // AI patch agent W01: a patch run executes nothing, so there is no fix
+    // whose regression a fix-watch could watch for.
+    && !isPatchProfile(ctx.run);
 
   if (notifies) {
     try {
@@ -2449,4 +2544,18 @@ async function isStoppedBeforeStart(
     console.error('[aiAgentRunLoop] could not re-resolve the effective policy', { orgId, kind, error });
     return true;
   }
+}
+
+
+/** Derive cause from the run, never from model tool arguments. */
+function executedActionTrigger(run: {
+  triggerKind?: OutcomeExecutedAction['triggerKind'];
+  alertId?: string | null;
+  scheduleId?: string | null;
+  ticketId?: string | null;
+}): Pick<OutcomeExecutedAction, 'triggerKind' | 'triggerRefId'> {
+  const refId = run.triggerKind === 'alert' ? run.alertId
+    : run.triggerKind === 'schedule' ? run.scheduleId
+    : run.triggerKind === 'ticket' ? run.ticketId : null;
+  return { triggerKind: run.triggerKind, ...(refId ? { triggerRefId: refId } : {}) };
 }

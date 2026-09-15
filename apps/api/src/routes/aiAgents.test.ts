@@ -35,6 +35,7 @@ import { ModeNotAllowedForKindError } from '../services/aiAgents/agentService';
 const {
   selectMock,
   hasPermMock,
+  loadMeasuredImpactMock,
   authOkMock,
   mfaOkMock,
   getAgentMock,
@@ -91,6 +92,10 @@ const {
   // exercise only routing/auth/validation, the same convention as
   // createAndEnqueueAgentRun/getAgent/recordVerdictFeedback above.
   loadImpactSummaryMock: vi.fn(),
+  // W04 (#5761) — GET /impact/measured. Same convention as loadImpactSummary:
+  // the service has its own full unit coverage (impactMeasured.test.ts), so
+  // these route tests exercise only routing/auth/validation.
+  loadMeasuredImpactMock: vi.fn(),
   enqueueImpactRollupForOrgsMock: vi.fn(),
   saveImpactWeightsMock: vi.fn(),
   resolveImpactPartnerIdMock: vi.fn(),
@@ -281,6 +286,10 @@ vi.mock('../services/aiAgents/impactQuery', () => ({
   loadImpactSummary: loadImpactSummaryMock,
 }));
 
+vi.mock('../services/aiAgents/impactMeasured', () => ({
+  loadMeasuredImpact: loadMeasuredImpactMock,
+}));
+
 const { ImpactPartnerUnresolvedError, ImpactPartnerNotFoundError } = vi.hoisted(() => ({
   ImpactPartnerUnresolvedError: class ImpactPartnerUnresolvedError extends Error {
     constructor(message = 'Unable to resolve a single partner for this impact request') {
@@ -386,6 +395,15 @@ vi.mock('../services/aiAgents/graduationService', () => ({
 const demoteSupervisedKeyMock = vi.hoisted(() => vi.fn());
 vi.mock('../services/aiAgents/supervisedKeyDemote', () => ({
   demoteSupervisedKey: demoteSupervisedKeyMock,
+}));
+
+// AI patch agent W01 (#5747): the list route's next-occurrence column reads
+// baseline cadences through the schedule service, which has its own full unit
+// suite (scheduleService.test.ts) covering the two-branch tenancy posture.
+// Mocked here so these tests exercise the projection, not that read.
+const loadEnabledBaselineCadencesMock = vi.hoisted(() => vi.fn());
+vi.mock('../services/aiAgents/scheduleService', () => ({
+  loadEnabledBaselineCadences: loadEnabledBaselineCadencesMock,
 }));
 
 const envMock = vi.hoisted(() => ({ policyDecideEnabled: vi.fn(() => true) }));
@@ -523,6 +541,7 @@ function trigger(app: Hono, body: unknown = { deviceId: DEVICE_ID }, id = AGENT_
 beforeEach(() => {
   vi.clearAllMocks();
   hasPermMock.mockReturnValue(true);
+  loadMeasuredImpactMock.mockResolvedValue({ schemaVersion: 1, window: 30 });
   authOkMock.mockReturnValue(true);
   mfaOkMock.mockReturnValue(true);
   getAgentMock.mockResolvedValue(agent());
@@ -1188,6 +1207,31 @@ const runDetailResponseSchema = z.object({
       ruleCount: z.number(),
       evidenceTruncated: z.boolean(),
     }).strict().nullable(),
+    // AI patch agent W01 (#5747): `null` for every non-patch run. No raw
+    // patch-id / job-result-id lists — only a per-item count.
+    patch: z.object({
+      scheduleId: z.string().nullable(),
+      occurrenceKey: z.string().nullable(),
+      summary: z.string(),
+      posture: z.object({
+        compliancePct: z.number(), devicesAtRisk: z.number(), oldestOutstandingDays: z.number().nullable(),
+      }).strict().nullable(),
+      items: z.array(z.object({
+        index: z.number(),
+        class: z.string(),
+        severity: z.string(),
+        deviceId: z.string().nullable(),
+        deviceHostname: z.string().nullable(),
+        patchCount: z.number(),
+        title: z.string(),
+        detail: z.string(),
+        disposition: z.enum(['recorded', 'refused']).nullable(),
+        reason: z.string().nullable(),
+      }).strict()),
+      recordedCount: z.number(),
+      refusedCount: z.number(),
+      evidenceTruncated: z.boolean(),
+    }).strict().nullable(),
     // #4248 W03 (OD-7 B): per-run narrative email delivery counts. `null`
     // for every run that produced no narrative artifact. COUNTS ONLY — never
     // a recipient id, name or address.
@@ -1415,6 +1459,38 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
+  it('resolves patch plan item hostnames through the same ONE batched, org-pinned read (AI patch agent W01)', async () => {
+    let hostnameWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null, intentIds: [], deviceId: null, deviceHostname: null,
+        triggerKind: 'schedule', profile: 'patch', scheduleId: null, triggerRef: {},
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          patchPlan: {
+            schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+            items: [{ class: 'install', severity: 'high', deviceId: DEVICE_ID, patchIds: ['p1'], title: 'Install KB1', detail: 'why', evidenceRef: 'e' }],
+            dispositions: [{ index: 0, class: 'install', deviceId: DEVICE_ID, disposition: 'recorded' }],
+            evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+          },
+        },
+      })]))
+      .mockReturnValueOnce(selectChain(
+        [{ id: DEVICE_ID, hostname: 'WKS-042' }],
+        (predicate) => { hostnameWhere = predicate; },
+      ));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    const params = sqlParams(hostnameWhere);
+    expect(params).toContain(ORG_ID);
+    expect(params).toContain(DEVICE_ID);
+    expect(runDetailResponseSchema.parse(body).data.patch!.items[0]).toMatchObject({ deviceHostname: 'WKS-042', disposition: 'recorded', patchCount: 1 });
+    expect(JSON.stringify(body)).not.toContain('"patchIds"');
+  });
+
   it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
     const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
     let hostnameWhere: unknown;
@@ -2763,6 +2839,86 @@ describe('GET /ai-agents/impact', () => {
   });
 });
 
+// W04 (#5761, refs #4182) — the MEASURED band's own endpoint. Registered beside
+// GET /impact and ahead of GET /:id for the same reason: a literal path segment
+// must not fall into the `:id` param route.
+describe('GET /ai-agents/impact/measured', () => {
+  it('returns the measured DTO for a partner-scope caller', async () => {
+    const app = buildApp(false, { scope: 'partner', partnerId: PARTNER_ID });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ schemaVersion: 1, window: 30 });
+    // 2nd arg is the resolved permission set. The requirePermission mock in this
+    // file does not populate `c.get('permissions')`, so it arrives undefined
+    // here -- which the service treats as "no time-entry authority" and omits
+    // that arm, the fail-closed behaviour asserted in impactMeasured.test.ts.
+    expect(loadMeasuredImpactMock).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      { window: 30, orgId: undefined },
+    );
+  });
+
+  it('resolves the measured handler, not GET /:id', async () => {
+    const app = buildApp();
+
+    await app.request('/ai-agents/impact/measured?window=7');
+
+    expect(loadMeasuredImpactMock).toHaveBeenCalledTimes(1);
+    expect(getAgentMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unsupported window', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=180');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a client-supplied through -- the server owns the last complete UTC day', async () => {
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30&through=2026-01-01');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('requires an orgId for a system-scoped caller, like /impact does', async () => {
+    const app = buildApp(false, { scope: 'system', partnerId: null });
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(400);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an inaccessible orgId with 403', async () => {
+    const app = buildApp(false, { canAccessOrg: () => false });
+
+    const res = await app.request(`/ai-agents/impact/measured?window=30&orgId=${OTHER_ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+
+  it('403s a caller without ai_agents:read', async () => {
+    hasPermMock.mockImplementation((resource: string, action: string) => (
+      !(resource === 'ai_agents' && action === 'read')
+    ));
+    const app = buildApp();
+
+    const res = await app.request('/ai-agents/impact/measured?window=30');
+
+    expect(res.status).toBe(403);
+    expect(loadMeasuredImpactMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /ai-agents/impact/rebuild', () => {
   it('answers 409 too_many_orgs when the accessible set exceeds the cap', async () => {
     const orgIds = Array.from({ length: AI_AGENT_IMPACT_REBUILD_MAX_ORGS + 1 }, (_, i) => `org-${i}`);
@@ -3632,6 +3788,7 @@ describe('GET /ai-agents', () => {
   beforeEach(() => {
     listAgentsMock.mockResolvedValue([agentRow({ disabledAt: null })]);
     selectDistinctOnMock.mockReturnValue(distinctChain([]));
+    loadEnabledBaselineCadencesMock.mockResolvedValue([]);
   });
 
   it('selects the latest site-visible run rather than the latest org-visible run', async () => {
@@ -3696,6 +3853,55 @@ describe('GET /ai-agents', () => {
       lastRunFindingsToReview: 6,
     });
     expect(selectDistinctOnMock).toHaveBeenCalledTimes(1);
+  });
+
+  // AI patch agent W01 (#5747), Task 10 — the next-occurrence column. The
+  // cadence read is batched for the whole page, and the occurrence itself is
+  // computed by the SAME shared helper the schedules drawer uses, so the card
+  // and the drawer cannot disagree.
+  it('returns nextOccurrenceAt for an agent with an enabled baseline, from ONE batched read', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-15T02:00:00.000Z');
+    expect(loadEnabledBaselineCadencesMock).toHaveBeenCalledTimes(1);
+    expect(loadEnabledBaselineCadencesMock.mock.calls[0]![1]).toEqual([AGENT_ID]);
+    vi.useRealTimers();
+  });
+
+  it('reports the SOONEST occurrence when an agent has several enabled baselines', async () => {
+    vi.setSystemTime(new Date('2026-09-14T12:00:00.000Z'));
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: '0 2 * * *', timezone: 'UTC' },
+      { agentId: AGENT_ID, cron: '0 20 * * *', timezone: 'UTC' },
+    ]);
+
+    const body = await (await buildApp().request('/ai-agents')).json();
+
+    expect(body.data[0].nextOccurrenceAt).toBe('2026-09-14T20:00:00.000Z');
+    vi.useRealTimers();
+  });
+
+  it('returns null when the agent has no enabled baseline', async () => {
+    const body = await (await buildApp().request('/ai-agents')).json();
+    expect(body.data[0].nextOccurrenceAt).toBeNull();
+  });
+
+  it('returns null — never throws — when the stored cron cannot be evaluated', async () => {
+    loadEnabledBaselineCadencesMock.mockResolvedValueOnce([
+      { agentId: AGENT_ID, cron: 'every night', timezone: 'UTC' },
+    ]);
+
+    const res = await buildApp().request('/ai-agents');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).data[0].nextOccurrenceAt).toBeNull();
   });
 
   it('reports 0 — not null — for a last run that left nothing to review', async () => {

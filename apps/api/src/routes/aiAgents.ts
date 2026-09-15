@@ -19,9 +19,11 @@ import {
   type AiAgentsSystemStatusDto,
   type ExposureBudgetDto,
   createAiAgentSchema,
+  impactMeasuredQuerySchema,
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  nextCronOccurrenceAt,
   previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
@@ -49,6 +51,7 @@ import { readAgentRunSkipSummary } from '../services/aiAgents/skipVisibility';
 import { AI_AGENTS_ENV_FLAG_NAME, aiAgentsEnvFlagEnabled } from '../services/aiAgents/subsystemState';
 import { enqueueImpactRollupForOrgs } from '../jobs/aiAgentImpactRollup';
 import { loadImpactSummary } from '../services/aiAgents/impactQuery';
+import { loadMeasuredImpact } from '../services/aiAgents/impactMeasured';
 import { lastCompleteUtcDay, shiftUtcDay } from '../services/aiAgents/impactRollup';
 import {
   ImpactPartnerNotFoundError,
@@ -84,6 +87,8 @@ import { findingsToReviewSql, summaryExcerpt } from '../services/aiAgents/runFin
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { patchPlanDeviceIds } from '../services/aiAgents/patchPlan';
+import { loadEnabledBaselineCadences } from '../services/aiAgents/scheduleService';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import { summarizeDeliveries } from '../services/reportRunDelivery';
 import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
@@ -94,7 +99,7 @@ import {
 import { verifyDeviceAccess } from '../services/aiTools';
 import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
 import { writeRouteAudit } from '../services/auditEvents';
-import { PERMISSIONS } from '../services/permissions';
+import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
 import { resolveOrgId } from './networkShared';
 
@@ -362,6 +367,33 @@ type LastRunProjection = {
   lastRunFindingsToReview: number;
 };
 
+/**
+ * AI patch agent W01 (#5747) — each agent's next scheduled occurrence, for the
+ * whole page in ONE cadence read (never one per row, same rule as
+ * `loadLastRuns` above).
+ *
+ * The occurrence itself is computed by `nextCronOccurrenceAt` from
+ * `@breeze/shared` — the SAME evaluator the schedules drawer renders its
+ * next-run hint with, so the card and the drawer can never disagree about when
+ * an agent fires. An agent with several enabled baselines reports the SOONEST;
+ * an unparseable or never-firing cron contributes nothing rather than throwing,
+ * because one bad stored pattern must not blank the whole settings page.
+ */
+async function loadNextOccurrences(
+  auth: AuthContext,
+  agentIds: string[],
+): Promise<Map<string, string>> {
+  const cadences = await loadEnabledBaselineCadences(auth, agentIds);
+  const soonest = new Map<string, string>();
+  for (const cadence of cadences) {
+    const at = nextCronOccurrenceAt(cadence.cron, cadence.timezone);
+    if (!at) continue;
+    const current = soonest.get(cadence.agentId);
+    if (current === undefined || at < current) soonest.set(cadence.agentId, at);
+  }
+  return soonest;
+}
+
 /** Only the piece of the auth context `loadLastRuns` needs. */
 type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
   orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
@@ -418,7 +450,11 @@ aiAgentsRoutes.get(
     });
     // Batched, never per row: the settings page renders every agent this
     // caller owns, and a per-row query would be one round trip per agent.
-    const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    const agentIds = rows.map((row) => row.id);
+    const lastRuns = await loadLastRuns(auth, agentIds);
+    // AI patch agent W01 (#5747): the card's "next occurrence", batched the
+    // same way — one cadence read for the page.
+    const nextOccurrences = await loadNextOccurrences(auth, agentIds);
     // #4170: one query for the whole page, same convention as loadLastRuns
     // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
     // so the list can flag an org row the resolver would treat as inert) and
@@ -442,6 +478,7 @@ aiAgentsRoutes.get(
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
+          nextOccurrenceAt: nextOccurrences.get(row.id) ?? null,
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),
@@ -1413,7 +1450,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // run.orgId)` pins the read to the run's OWN org, and the auth condition
   // stays as defence-in-depth beside RLS (matching the two reads above). A
   // device that fails either simply projects a null hostname.
-  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  // AI patch agent W01 (#5747): a patch plan's item devices ride the SAME
+  // batched, run-org-pinned read — model-authored ids, same threat model.
+  const sweepDeviceIds = [...new Set([
+    ...sweepFindingDeviceIds(run.outcome),
+    ...patchPlanDeviceIds(run.outcome),
+  ])];
   const hostnameRows = sweepDeviceIds.length > 0
     ? await db
       .select({ id: devices.id, hostname: devices.hostname })
@@ -1675,6 +1717,54 @@ aiAgentsRoutes.get(
     }
 
     const data = await loadImpactSummary(auth, query);
+    return c.json({ data });
+  },
+);
+
+/**
+ * AI Scorecard W04 (#5761, refs #4182) —
+ * `GET /ai/agents/impact/measured?window=7|30|90[&orgId]`.
+ *
+ * A SEPARATE endpoint rather than a widening of `/impact`: the measured queries
+ * are heavier and have different authorization outcomes *per signal*, so folding
+ * them in would make the estimate band's latency hostage to the measured band's
+ * and force the estimate DTO to grow an `omitted` vocabulary it does not need.
+ *
+ * Same `scopes` + `requireAiRead` gate as `/impact` — the measured band's EXTRA
+ * requirements (unrestricted site scope; the time-entry permission for the
+ * technician-minutes arm) are enforced inside `loadMeasuredImpact` as
+ * **omissions, not 403s**: a partner admin should see two of three signals, not
+ * an error page. A system-scope caller must name one org, exactly as above.
+ *
+ * `impactMeasuredQuerySchema` is `.strict()`, so a client-supplied `through` is
+ * a 400 rather than a silently-ignored key — `through` is always the last
+ * complete UTC day, computed server-side.
+ */
+aiAgentsRoutes.get(
+  '/impact/measured',
+  scopes,
+  requireAiRead,
+  zValidator('query', impactMeasuredQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const query = c.req.valid('query');
+
+    if (query.orgId !== undefined) {
+      if (!auth.canAccessOrg(query.orgId)) {
+        return c.json({ error: 'Access to this organization denied' }, 403);
+      }
+    } else if (auth.scope === 'system') {
+      return c.json({
+        error: 'org_id_required',
+        message: 'A system-scoped impact query must name one organization — one weight set belongs to one partner.',
+      }, 400);
+    }
+
+    // Fails CLOSED when the middleware did not resolve a permission set: the
+    // technician-minutes arm omits itself rather than being published to a
+    // caller whose authority we could not establish.
+    const permissions = c.get('permissions') as UserPermissions | undefined;
+    const data = await loadMeasuredImpact(auth, permissions, query);
     return c.json({ data });
   },
 );

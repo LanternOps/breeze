@@ -218,7 +218,17 @@ Publishing a version scans its body for `{{variable}}` tokens and classifies eac
 
 ## Permissions
 
-Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. The same permissions gate the agreement template library and service deliverables. Attaching evidence to a deliverable additionally needs the **Documents: write** permission (`documents:write`), because evidence is filed in the organization's document library. Assign these through **Settings → Users & Roles**.
+Contract access is governed by role permissions: viewing requires contract read access, creating and editing requires contract write access, and lifecycle actions (activate, pause, resume, cancel) require contract management access. Service deliverables ride on the same contract permissions, and attaching evidence to a deliverable additionally needs the **Documents: write** permission (`documents:write`), because evidence is filed in the organization's document library.
+
+The agreement template library and signed agreements have their **own** permissions, separate from contracts: **Agreements: read** (`agreements:read`) to view agreement templates and signed agreements, and **Agreements: write** (`agreements:write`) to create, edit, publish and archive templates and to link a signed agreement to a contract. There is no separate "manage" level — publishing and archiving are write actions.
+
+Splitting them lets you grant one without the other: a technician who needs to pull up a customer's signed MSA does not need contract billing authority, and a billing clerk who runs recurring contracts does not need to author legal terms.
+
+<Aside type="note" title="Upgrading">
+  Nothing is taken away on upgrade. Any role that already held contract write access gains **Agreements: write** and **Agreements: read**; any role that held contract read access gains **Agreements: read** — including roles you created yourself. The built-in **Partner Billing** role gets both, **Partner Billing Viewer** gets read, and **Partner Admin** is unaffected (it holds everything). Review the split under **Settings → Users & Roles** if you want to tighten it.
+</Aside>
+
+Assign these through **Settings → Users & Roles**.
 
 ## Related
 

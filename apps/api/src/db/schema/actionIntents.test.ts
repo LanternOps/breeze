@@ -270,6 +270,9 @@ describe('action_intents schema', () => {
     const cols = Object.keys(getTableColumns(actionIntents)).sort();
     expect(cols).toEqual(
       [
+        'triggerKind',
+        'triggerRefId',
+        'triggerKey',
         'id',
         'orgId',
         'partnerId',
