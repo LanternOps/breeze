@@ -186,6 +186,12 @@ const createActionIntent = vi.hoisted(() =>
   vi.fn<(auth: unknown, input: Record<string, unknown>) => Promise<{ id: string; status: string }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
 
+// W02 (#5748): the minting branch's two reads, seamed so this loop-level suite
+// stays about the loop (patchPlan.test.ts pins their semantics).
+const w02 = vi.hoisted(() => ({ resolveEligibility: vi.fn(), findIntents: vi.fn() }));
+vi.mock('../patchEligibility', () => ({ resolvePatchInstallEligibility: w02.resolveEligibility }));
+vi.mock('../actionIntents/intentQuery', () => ({ findIntentsByIdempotencyKey: w02.findIntents }));
+
 const persistAlertVerdict = vi.hoisted(() =>
   vi.fn<(run: unknown, verdict: unknown, agentAuth: unknown) => Promise<{
     verdictId: string; intentId: string | null; suggestionDisposition: 'intent_created' | 'not_created';
@@ -608,7 +614,13 @@ describe('patch plan capture', () => {
 });
 
 describe('finalizePatchPlan (finish-time re-validation)', () => {
-  it('records a disposition per item and keeps intentIds empty', async () => {
+  beforeEach(() => {
+    w02.resolveEligibility.mockReset();
+    w02.findIntents.mockReset();
+    w02.findIntents.mockResolvedValue([]);
+  });
+
+  it('records a disposition per item; an install item is refused as not_allowlisted when the agent cannot install (W02)', async () => {
     seedRows();
     dbMockState.rowQueues.devices = [[{ id: D1 }]];
     const withReboot = {
@@ -622,12 +634,40 @@ describe('finalizePatchPlan (finish-time re-validation)', () => {
     const final = finalTransition()!;
     const outcome = final.patch.outcome as AgentRunOutcome;
     expect(outcome.patchPlan!.dispositions).toEqual([
-      { index: 0, class: 'install', deviceId: D1, disposition: 'recorded' },
+      { index: 0, class: 'install', deviceId: D1, disposition: 'refused', reason: 'not_allowlisted' },
       { index: 1, class: 'escalation', deviceId: D2, disposition: 'refused', reason: 'device_not_in_org' },
     ]);
     expect(final.to).toBe('completed');
     expect(final.patch.intentIds ?? []).toEqual([]);
     expect(createActionIntent).not.toHaveBeenCalled();
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+  });
+
+  it('W02: with manage_patches:install allowlisted, an eligible install item mints ONE device-scoped card under the AGENT cap, not patchLimits\' 0', async () => {
+    seedRows({ effective: policy({ toolAllowlist: ['manage_patches:install'], limits: { ...AI_AGENT_LIMIT_DEFAULTS, maxActionsPerRun: 3 } }) });
+    dbMockState.rowQueues.devices = [[{ id: D1 }]];
+    w02.resolveEligibility.mockResolvedValue({
+      eligible: [{ patchId: P1, devicePatchId: 'dp', externalId: 'KB', title: 't', category: null, severity: null, requiresReboot: false, approvalReason: 'manual' }],
+      ineligible: [], ringId: null, resolvedAt: 'x',
+    });
+    createActionIntent.mockResolvedValue({ id: 'intent-77', status: 'pending_approval' });
+    scriptQuery({ toolCalls: [{ tool: 'submit_patch_plan', input: VALID_PATCH_PLAN }], assistantText: 'Plan complete.' });
+
+    await executeAgentRun(RUN_ID);
+
+    const final = finalTransition()!;
+    const outcome = final.patch.outcome as AgentRunOutcome;
+    // A run that left a pending card behind waits on the human, like a sweep.
+    expect(final.to).toBe('awaiting_approval');
+    expect(createActionIntent).toHaveBeenCalledTimes(1);
+    expect(createActionIntent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      toolName: 'manage_patches',
+      input: { action: 'install', deviceIds: [D1], patchIds: [P1] },
+      idempotencyKey: `patch:${ORG_ID}:${D1}:${P1}`,
+      scope: { deviceId: D1 },
+    }));
+    expect(outcome.patchPlan!.dispositions[0]).toMatchObject({ disposition: 'intent_created', intentId: 'intent-77' });
+    expect(final.patch.intentIds).toEqual(['intent-77']);
   });
 
   it('reports patch_plan_missing when the run finished without a submission', async () => {

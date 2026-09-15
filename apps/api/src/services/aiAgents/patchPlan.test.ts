@@ -1,8 +1,9 @@
 /**
  * AI patch agent W01 — the patch plan membership gate, persistence and safe
- * projection. W01 mints ZERO action intents: `patchPlan.ts` does not import
- * `createActionIntent` at all (asserted on the source below, not only on a
- * mock that could be bypassed).
+ * projection — and W02 (#5748), the minting branch after those gates: an
+ * `install` item becomes ONE device-scoped Tier-3 supervised approval card
+ * carrying only currently-eligible patch ids, under a problem-derived
+ * idempotency key and a cross-occurrence suppression read.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -48,6 +49,16 @@ vi.mock('../../db', () => ({
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
+const w02 = vi.hoisted(() => ({
+  createActionIntent: vi.fn(),
+  resolveEligibility: vi.fn(),
+  findIntents: vi.fn(),
+}));
+vi.mock('../actionIntents/intentService', () => ({ createActionIntent: w02.createActionIntent }));
+vi.mock('../patchEligibility', () => ({ resolvePatchInstallEligibility: w02.resolveEligibility }));
+vi.mock('../actionIntents/intentQuery', () => ({ findIntentsByIdempotencyKey: w02.findIntents }));
+
+import type { AuthContext } from '../../middleware/auth';
 import { patchPlanDeviceIds, persistPatchPlan, projectPatch } from './patchPlan';
 
 const ORG = '00000000-0000-4000-8000-0000000000a1';
@@ -78,8 +89,15 @@ function plan(items: PatchPlanOutcome['items']): PatchPlanOutcome {
   };
 }
 const base = { severity: 'high' as const, title: 't', detail: 'd', evidenceRef: 'e' };
-const run = { id: 'run-1', orgId: ORG };
+const RUN_ID = '00000000-0000-4000-8000-00000000ab01';
+const agentAuth = { user: { id: 'agent-user' } } as unknown as AuthContext;
+// W01 shape plus the W02 fields the finalizer threads (sweepFindings precedent).
+const run = { id: RUN_ID, orgId: ORG, agentId: 'agent-1', scheduleId: null, toolAllowlist: ['manage_patches:install'], maxActionsPerRun: 5 };
 const dialect = new PgDialect();
+
+const eligible = (ids: string[]) => ids.map((patchId) => ({
+  patchId, devicePatchId: `dp-${patchId}`, externalId: 'KB', title: 't', category: null, severity: null, requiresReboot: false, approvalReason: 'manual' as const,
+}));
 
 beforeEach(() => {
   state.rows = [];
@@ -88,18 +106,24 @@ beforeEach(() => {
   state.fail = null;
   state.scopes = [];
   state.ambient = undefined;
+  w02.createActionIntent.mockReset();
+  w02.resolveEligibility.mockReset();
+  w02.findIntents.mockReset();
+  w02.createActionIntent.mockResolvedValue({ id: 'intent-1', status: 'pending_approval' });
+  w02.resolveEligibility.mockResolvedValue({ eligible: eligible([P1]), ineligible: [], ringId: 'ring-1', resolvedAt: '2026-09-14T02:00:00.000Z' });
+  w02.findIntents.mockResolvedValue([]);
 });
 
 describe('persistPatchPlan', () => {
   it('refuses a device absent from the evidence BEFORE any DB work', async () => {
-    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'install', deviceId: GHOST, patchIds: [P1] }]), refs);
+    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'install', deviceId: GHOST, patchIds: [P1] }]), refs, agentAuth);
     expect(dispositions).toEqual([{ index: 0, class: 'install', deviceId: GHOST, disposition: 'refused', reason: 'device_not_in_evidence' }]);
     expect(state.selects).toBe(0);
   });
 
   it('refuses a patch that is not outstanding on that device in the evidence', async () => {
     state.rows = [[{ id: D1 }]];
-    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'install', deviceId: D1, patchIds: [P9] }]), refs);
+    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'install', deviceId: D1, patchIds: [P9] }]), refs, agentAuth);
     expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'patch_not_in_evidence' });
   });
 
@@ -108,7 +132,7 @@ describe('persistPatchPlan', () => {
     const { dispositions } = await persistPatchPlan(run, plan([
       { ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN },
       { ...base, class: 'chase', deviceId: D1, patchIds: [P1], jobResultIds: [JR] },
-    ]), refs);
+    ]), refs, agentAuth);
     expect(dispositions.map((d) => d.reason)).toEqual(['window_not_resolved', 'job_result_not_in_evidence']);
   });
 
@@ -118,8 +142,8 @@ describe('persistPatchPlan', () => {
       { ...base, class: 'install', deviceId: D1, patchIds: [P1] },
       { ...base, class: 'escalation', deviceId: D2 },
       { ...base, class: 'approval_advisory', patchIds: [P1] },
-    ]), refs);
-    expect(dispositions.map((d) => d.disposition)).toEqual(['recorded', 'recorded', 'recorded']);
+    ]), refs, agentAuth);
+    expect(dispositions.map((d) => d.disposition)).toEqual(['intent_created', 'recorded', 'recorded']);
     expect(state.selects).toBe(1);
     expect(state.scopes).toEqual(['system']);
     const compiled = dialect.sqlToQuery(state.wheres[0] as SQL);
@@ -133,18 +157,172 @@ describe('persistPatchPlan', () => {
     const { dispositions } = await persistPatchPlan(run, plan([
       { ...base, class: 'install', deviceId: D1, patchIds: [P1] },
       { ...base, class: 'escalation', deviceId: D2 },
-    ]), refs);
+    ]), refs, agentAuth);
     expect(dispositions[1]).toMatchObject({ disposition: 'refused', reason: 'device_not_in_org' });
   });
 
   it('propagates a membership-read failure so the finalizer can report it', async () => {
     state.fail = new Error('db down');
-    await expect(persistPatchPlan(run, plan([{ ...base, class: 'escalation', deviceId: D1 }]), refs)).rejects.toThrow('db down');
+    await expect(persistPatchPlan(run, plan([{ ...base, class: 'escalation', deviceId: D1 }]), refs, agentAuth)).rejects.toThrow('db down');
   });
 
-  it('mints ZERO action intents — the module does not even import the intent service', () => {
-    const src = readFileSync(join(__dirname, 'patchPlan.ts'), 'utf8');
-    expect(src).not.toMatch(/createActionIntent|intentService|action_intents|actionIntents/);
+  it('never calls manage_patches:approve — approvals stay advisory (OD-3 A), asserted on the source', () => {
+    // Code only — the header documents these invariants by name.
+    const src = readFileSync(join(__dirname, 'patchPlan.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(src).not.toMatch(/['"]approve['"]|bulk_approve|patchApprovals|patch_approvals/);
+    // The ONLY minted action is install; rollback is never proposed.
+    expect(src).not.toMatch(/rollback/);
+    expect(src).toMatch(/action: 'install'/);
+  });
+});
+
+describe('persistPatchPlan — W02 minting branch', () => {
+  const install = (deviceId: string, patchIds: string[], title = 'Install 2 critical updates on WS-014') =>
+    ({ ...base, class: 'install' as const, deviceId, patchIds, title });
+  const refs2: PatchPlanOutcomeRefs = { ...refs, patchIdsByDevice: new Map([[D1, new Set([P1, P9])], [D2, new Set([P1])]]) };
+
+  it('mints ONE device-scoped Tier-3 intent per eligible install item', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.resolveEligibility.mockResolvedValue({ eligible: eligible([P1, P9]), ineligible: [], ringId: 'ring-1', resolvedAt: 'x' });
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([install(D1, [P1, P9])]), refs2, agentAuth);
+    expect(w02.createActionIntent).toHaveBeenCalledTimes(1);
+    expect(w02.createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      toolName: 'manage_patches',
+      // The tool's install action takes `deviceIds` (one, equal to the scope) and `patchIds`.
+      input: { action: 'install', deviceIds: [D1], patchIds: [P1, P9] },
+      source: 'ai_agent',
+      orgId: ORG,
+      reason: 'Install 2 critical updates on WS-014',
+      idempotencyKey: `patch:${ORG}:${D1}:${P1}`,
+      scope: { deviceId: D1 },
+      trigger: expect.objectContaining({ refId: RUN_ID }),
+    }));
+    expect(intentIds).toEqual(['intent-1']);
+    expect(dispositions[0]).toEqual({
+      index: 0, class: 'install', deviceId: D1, disposition: 'intent_created', intentId: 'intent-1', mintedPatchIds: [P1, P9],
+    });
+  });
+
+  it('drops ineligible patchIds from the card and records why, instead of refusing the whole item', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.resolveEligibility.mockResolvedValue({ eligible: eligible([P1]), ineligible: [{ patchId: P9, reason: 'held_by_deferral' }], ringId: 'ring-1', resolvedAt: 'x' });
+    const { dispositions } = await persistPatchPlan(run, plan([install(D1, [P1, P9])]), refs2, agentAuth);
+    const minted = w02.createActionIntent.mock.calls[0]![1] as { input: { patchIds: string[] } };
+    expect(minted.input.patchIds).toEqual([P1]);
+    expect(dispositions[0]).toMatchObject({ disposition: 'intent_created', droppedPatchIds: [{ patchId: P9, reason: 'held_by_deferral' }], mintedPatchIds: [P1] });
+  });
+
+  it('refuses the item entirely when NOTHING is eligible', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.resolveEligibility.mockResolvedValue({ eligible: [], ineligible: [{ patchId: P1, reason: 'superseded' }], ringId: null, resolvedAt: 'x' });
+    const { dispositions } = await persistPatchPlan(run, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+    expect(w02.findIntents).not.toHaveBeenCalled();
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'no_eligible_patches', droppedPatchIds: [{ patchId: P1, reason: 'superseded' }] });
+  });
+
+  it('suppresses a repeat proposal for the same (device, patch) on the next occurrence', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.findIntents.mockResolvedValue([{ idempotencyKey: `patch:${ORG}:${D1}:${P1}`, status: 'pending_approval', createdAt: new Date(), decidedAt: null }]);
+    const { dispositions } = await persistPatchPlan(run, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'suppressed', reason: 'live_intent_exists' });
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('does ONE suppression read for the whole run, keyed by every surviving patch id', async () => {
+    state.rows = [[{ id: D1 }, { id: D2 }]];
+    w02.resolveEligibility
+      .mockResolvedValueOnce({ eligible: eligible([P1, P9]), ineligible: [], ringId: 'r', resolvedAt: 'x' })
+      .mockResolvedValueOnce({ eligible: eligible([P1]), ineligible: [], ringId: 'r', resolvedAt: 'x' });
+    await persistPatchPlan(run, plan([install(D1, [P1, P9]), install(D2, [P1])]), refs2, agentAuth);
+    expect(w02.findIntents).toHaveBeenCalledTimes(1);
+    const call = w02.findIntents.mock.calls[0]![0] as { orgId: string; keys: string[]; since: Date };
+    expect(call.orgId).toBe(ORG);
+    expect(new Set(call.keys)).toEqual(new Set([`patch:${ORG}:${D1}:${P1}`, `patch:${ORG}:${D1}:${P9}`, `patch:${ORG}:${D2}:${P1}`]));
+    expect(call.since).toBeInstanceOf(Date);
+    // A live card on a BUNDLED id (P9, not the card's own key) still suppresses the whole card.
+    w02.findIntents.mockResolvedValue([{ idempotencyKey: `patch:${ORG}:${D1}:${P9}`, status: 'approved', createdAt: new Date(), decidedAt: null }]);
+    w02.resolveEligibility.mockResolvedValue({ eligible: eligible([P1, P9]), ineligible: [], ringId: 'r', resolvedAt: 'x' });
+    state.rows = [[{ id: D1 }]];
+    w02.createActionIntent.mockClear();
+    const { dispositions } = await persistPatchPlan(run, plan([install(D1, [P1, P9])]), refs2, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'suppressed', reason: 'live_intent_exists' });
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('stops at the run action cap and records cap_reached', async () => {
+    state.rows = [[{ id: D1 }, { id: D2 }]];
+    w02.createActionIntent
+      .mockResolvedValueOnce({ id: 'intent-1', status: 'pending_approval' })
+      .mockResolvedValueOnce({ id: 'intent-2', status: 'pending_approval' });
+    const { dispositions, intentIds } = await persistPatchPlan(
+      { ...run, maxActionsPerRun: 1 }, plan([install(D1, [P1]), install(D2, [P1])]), refs2, agentAuth,
+    );
+    expect(w02.createActionIntent).toHaveBeenCalledTimes(1);
+    expect(intentIds).toEqual(['intent-1']);
+    expect(dispositions[1]).toMatchObject({ disposition: 'cap_reached', reason: 'max_actions_per_run' });
+  });
+
+  it('refuses without any eligibility read when manage_patches:install is not in the agent allowlist', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan({ ...run, toolAllowlist: ['manage_patches:list'] }, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'not_allowlisted' });
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('a bare `manage_patches` allowlist entry admits install (isToolAllowlisted semantics)', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan({ ...run, toolAllowlist: ['manage_patches'] }, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'intent_created' });
+  });
+
+  it('never mints for an approval_advisory item (OD-3 A) nor for any other class', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'approval_advisory', patchIds: [P1] },
+      { ...base, class: 'escalation', deviceId: D1 },
+    ]), refs2, agentAuth);
+    expect(dispositions.map((d) => d.disposition)).toEqual(['recorded', 'recorded']);
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+  });
+
+  it('never links a cancelled snapshot', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.createActionIntent.mockResolvedValue({ id: 'i1', status: 'cancelled', errorCode: 'no_eligible_approvers' });
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(intentIds).toEqual([]);
+    expect(dispositions[0]).toMatchObject({ disposition: 'error', reason: 'no_eligible_approvers' });
+    expect(dispositions[0]!.intentId).toBeUndefined();
+  });
+
+  it('logs but never persists an intent error message', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.createActionIntent.mockRejectedValue(new Error('agent_policy_denied: secret device name'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([install(D1, [P1])]), refs2, agentAuth);
+    expect(intentIds).toEqual([]);
+    expect(dispositions[0]).toMatchObject({ disposition: 'error', reason: 'intent_error' });
+    expect(JSON.stringify(dispositions)).not.toContain('secret device name');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('resolves eligibility ONCE per device, not once per patch or per item', async () => {
+    state.rows = [[{ id: D1 }]];
+    await persistPatchPlan(run, plan([install(D1, [P1]), install(D1, [P9])]), refs2, agentAuth);
+    expect(w02.resolveEligibility).toHaveBeenCalledTimes(1);
+    expect(w02.resolveEligibility).toHaveBeenCalledWith({ deviceId: D1, orgId: ORG, patchIds: [P1, P9] });
+  });
+
+  it('runs the eligibility resolution AFTER the W01 membership gates', async () => {
+    state.rows = [[]];
+    const { dispositions } = await persistPatchPlan(run, plan([install(D1, [P1]), install(GHOST, [P1])]), refs2, agentAuth);
+    expect(dispositions.map((d) => d.reason)).toEqual(['device_not_in_org', 'device_not_in_evidence']);
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
   });
 });
 

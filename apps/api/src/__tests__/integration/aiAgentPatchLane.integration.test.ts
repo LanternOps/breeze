@@ -341,8 +341,11 @@ describe('persistPatchPlan re-validation', () => {
     const refs = patchEvidenceRefs(evidence);
 
     const strangerDeviceId = randomUUID();
+    // W02: an EMPTY agent allowlist keeps this a gate-1/gate-2 test — the
+    // surviving install item is then refused as not_allowlisted before any
+    // eligibility read (aiAgentPatchInstall.integration.test.ts covers minting).
     const { dispositions } = await persistPatchPlan(
-      { id: randomUUID(), orgId: org.id },
+      { id: randomUUID(), orgId: org.id, agentId: randomUUID(), scheduleId: null, toolAllowlist: [], maxActionsPerRun: 0 },
       planWith([
         {
           class: 'install', severity: 'critical', deviceId: device.id, patchIds: [patch.id],
@@ -354,9 +357,10 @@ describe('persistPatchPlan re-validation', () => {
         },
       ]),
       refs,
+      partnerAuth({ partnerId: partner.id, userId: randomUUID() }),
     );
 
-    expect(dispositions[0]).toMatchObject({ index: 0, disposition: 'recorded' });
+    expect(dispositions[0]).toMatchObject({ index: 0, disposition: 'refused', reason: 'not_allowlisted' });
     expect(dispositions[1]).toMatchObject({ index: 1, disposition: 'refused', reason: 'device_not_in_evidence' });
   });
 
@@ -382,12 +386,13 @@ describe('persistPatchPlan re-validation', () => {
     };
 
     const { dispositions } = await persistPatchPlan(
-      { id: randomUUID(), orgId: orgA.id },
+      { id: randomUUID(), orgId: orgA.id, agentId: randomUUID(), scheduleId: null, toolAllowlist: [], maxActionsPerRun: 0 },
       planWith([{
         class: 'install', severity: 'critical', deviceId: deviceB.id, patchIds: [patchA.id],
         title: 'Cross-tenant install', detail: 'd', evidenceRef: 'topNonCompliant:0',
       }]),
       forged,
+      partnerAuth({ partnerId: partner.id, userId: randomUUID() }),
     );
 
     expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'device_not_in_org' });
