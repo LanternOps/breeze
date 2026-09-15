@@ -59,7 +59,12 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-import { processRemediateDevice, scheduleSoftwareRemediation } from './softwareRemediationWorker';
+import { isReusableState } from '../services/bullmqUtils';
+import {
+  processRemediateDevice,
+  scheduleSoftwareInstallRemediation,
+  scheduleSoftwareRemediation,
+} from './softwareRemediationWorker';
 
 const POLICY_ID = 'pol-1';
 const DEVICE_ID = 'dev-1';
@@ -352,5 +357,97 @@ describe('scheduleSoftwareRemediation — trigger propagation (#3543)', () => {
     await scheduleSoftwareRemediation(POLICY_ID, [DEVICE_ID], { trigger: 'auto', requestedByUserId: 'admin-9' });
 
     expect(addMock.mock.calls[0]![1]).toMatchObject({ trigger: 'auto', requestedByUserId: null });
+  });
+});
+
+describe('scheduleSoftwareInstallRemediation (feature #5505 W02)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getJobMock.mockResolvedValue(null);
+    vi.mocked(isReusableState).mockReturnValue(false);
+  });
+
+  it('enqueues one job per target with the full payload and returns the enqueued deviceIds', async () => {
+    const enqueued = await scheduleSoftwareInstallRemediation(
+      'policy-1',
+      [
+        { deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 },
+        { deviceId: 'device-2', catalogIds: ['catalog-abc', 'catalog-def'], attempt: 2 },
+      ],
+      7,
+    );
+
+    expect(enqueued).toEqual(['device-1', 'device-2']);
+    expect(addMock).toHaveBeenCalledTimes(2);
+    expect(addMock.mock.calls[1]![0]).toBe('install-remediate-device');
+    expect(addMock.mock.calls[1]![1]).toEqual({
+      type: 'install-remediate-device',
+      policyId: 'policy-1',
+      deviceId: 'device-2',
+      catalogIds: ['catalog-abc', 'catalog-def'],
+      generation: 7,
+      attempt: 2,
+    });
+  });
+
+  /**
+   * The reason this is a sibling type and not a widened RemediateDeviceJobData:
+   * a device may legitimately be queued for BOTH verbs in one compliance pass
+   * (spec §2), and a shared jobId would make one silently dedupe into the other.
+   */
+  it('uses a jobId namespace disjoint from the uninstall path', async () => {
+    await scheduleSoftwareInstallRemediation(
+      'policy-1',
+      [{ deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 }],
+      1,
+    );
+
+    const installJobId = (addMock.mock.calls[0]![2] as { jobId: string }).jobId;
+    expect(installJobId).toBe('software-install-remediation-policy-1-device-1');
+    expect(installJobId).not.toBe('software-remediation-policy-1-device-1');
+  });
+
+  it('dedupes against a reusable in-flight job instead of enqueuing a second', async () => {
+    getJobMock.mockResolvedValue({ getState: async () => 'waiting', remove: vi.fn() } as never);
+    vi.mocked(isReusableState).mockReturnValue(true);
+
+    const enqueued = await scheduleSoftwareInstallRemediation(
+      'policy-1',
+      [{ deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 }],
+      1,
+    );
+
+    expect(enqueued).toEqual([]);
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a target with no usable catalogIds rather than shipping an empty payload', async () => {
+    const enqueued = await scheduleSoftwareInstallRemediation(
+      'policy-1',
+      [
+        { deviceId: 'device-1', catalogIds: [], attempt: 1 },
+        { deviceId: 'device-2', catalogIds: ['  '], attempt: 1 },
+        { deviceId: '', catalogIds: ['catalog-abc'], attempt: 1 },
+      ],
+      1,
+    );
+
+    expect(enqueued).toEqual([]);
+    expect(addMock).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates repeated deviceIds and repeated catalogIds', async () => {
+    const enqueued = await scheduleSoftwareInstallRemediation(
+      'policy-1',
+      [
+        { deviceId: 'device-1', catalogIds: ['catalog-abc', 'catalog-abc'], attempt: 1 },
+        { deviceId: 'device-1', catalogIds: ['catalog-def'], attempt: 1 },
+      ],
+      1,
+    );
+
+    expect(enqueued).toEqual(['device-1']);
+    expect(addMock).toHaveBeenCalledTimes(1);
+    expect((addMock.mock.calls[0]![1] as { catalogIds: string[] }).catalogIds).toEqual(['catalog-abc']);
   });
 });
