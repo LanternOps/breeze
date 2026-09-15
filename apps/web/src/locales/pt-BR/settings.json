@@ -5237,6 +5237,16 @@
       "title": "Nenhuma variável ainda",
       "description": "Crie uma para parar de colar o mesmo token nos scripts de cada cliente."
     },
+    "filters": {
+      "searchLabel": "Pesquisar variáveis",
+      "searchPlaceholder": "Pesquisar por chave ou descrição",
+      "scopeGroupLabel": "Filtrar por escopo",
+      "scopeAll": "Todos os escopos"
+    },
+    "noMatches": {
+      "title": "Nenhuma variável corresponde aos seus filtros",
+      "description": "Tente um termo de pesquisa diferente ou limpe o filtro de escopo."
+    },
     "errors": {
       "load": "Não foi possível carregar as variáveis."
     },

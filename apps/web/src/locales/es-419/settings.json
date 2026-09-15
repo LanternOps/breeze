@@ -5237,6 +5237,16 @@
       "title": "Aún no hay variables",
       "description": "Crea una para dejar de pegar el mismo token en los scripts de cada cliente."
     },
+    "filters": {
+      "searchLabel": "Buscar variables",
+      "searchPlaceholder": "Buscar por clave o descripción",
+      "scopeGroupLabel": "Filtrar por alcance",
+      "scopeAll": "Todos los alcances"
+    },
+    "noMatches": {
+      "title": "Ninguna variable coincide con tus filtros",
+      "description": "Prueba con otro término de búsqueda o borra el filtro de alcance."
+    },
     "errors": {
       "load": "No se pudieron cargar las variables."
     },

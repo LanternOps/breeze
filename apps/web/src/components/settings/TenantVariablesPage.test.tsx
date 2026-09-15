@@ -208,6 +208,86 @@ describe('TenantVariablesPage', () => {
     });
   });
 
+  it('filters the list by a key substring', async () => {
+    render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+
+    fireEvent.change(screen.getByTestId('tenant-variable-search'), { target: { value: 'syslog' } });
+
+    expect(screen.getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variable-row-s1_site_token')).toBeNull();
+  });
+
+  it('filters the list by a description substring', async () => {
+    render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+
+    fireEvent.change(screen.getByTestId('tenant-variable-search'), { target: { value: 'SentinelOne' } });
+
+    expect(screen.getByTestId('tenant-variable-row-s1_site_token')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+  });
+
+  it('shows a no-matches state when the search excludes every row', async () => {
+    render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+
+    fireEvent.change(screen.getByTestId('tenant-variable-search'), { target: { value: 'no-such-key' } });
+
+    expect(await screen.findByTestId('tenant-variables-no-matches')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+  });
+
+  it('filters the list to organization-scoped rows only', async () => {
+    render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+
+    fireEvent.click(screen.getByTestId('tenant-variable-filter-scope-organization'));
+
+    expect(screen.getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variable-row-s1_site_token')).toBeNull();
+  });
+
+  it('filters the list to partner-wide rows only', async () => {
+    render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+
+    fireEvent.click(screen.getByTestId('tenant-variable-filter-scope-partner'));
+
+    expect(screen.getByTestId('tenant-variable-row-s1_site_token')).toBeTruthy();
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+  });
+
+  it('refetches when the org switcher changes, and replaces the displayed rows', async () => {
+    const ORG_B_VAR = { ...ORG_VAR, id: 'v-9', key: 'repo_url', description: 'Org B package repo', orgId: 'org-b' };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables' && (!init || !init.method)) {
+        return makeJsonResponse({ data: scopeState.orgId === 'org-b' ? [ORG_B_VAR] : [ORG_VAR, SECRET_VAR] });
+      }
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+
+    const { rerender } = render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    const getCalls = () =>
+      fetchMock.mock.calls.filter((call) => call[0] === '/tenant-variables' && !(call[1] as RequestInit | undefined)?.method);
+    expect(getCalls()).toHaveLength(1);
+
+    scopeState.orgId = 'org-b';
+    rerender(<TenantVariablesPage />);
+
+    await waitFor(() => expect(getCalls()).toHaveLength(2));
+    // The previous org's rows are gone, not just appended to — a stale list
+    // left on screen after switching orgs is exactly the #5354 regression.
+    await waitFor(() => expect(screen.getByTestId('tenant-variable-row-repo_url')).toBeTruthy());
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
+  });
+
   it('surfaces a failed save as an error toast', async () => {
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);

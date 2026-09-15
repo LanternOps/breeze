@@ -5237,6 +5237,16 @@
       "title": "Henüz değişken yok",
       "description": "Aynı jetonu her müşterinin komut dosyalarına yapıştırmayı durdurmak için bir tane oluşturun."
     },
+    "filters": {
+      "searchLabel": "Değişkenleri ara",
+      "searchPlaceholder": "Anahtar veya açıklamaya göre ara",
+      "scopeGroupLabel": "Kapsama göre filtrele",
+      "scopeAll": "Tüm kapsamlar"
+    },
+    "noMatches": {
+      "title": "Filtrelerinize uyan değişken yok",
+      "description": "Farklı bir arama terimi deneyin veya kapsam filtresini temizleyin."
+    },
     "errors": {
       "load": "Değişkenler yüklenemedi."
     },

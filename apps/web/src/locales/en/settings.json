@@ -5237,6 +5237,16 @@
       "title": "No variables yet",
       "description": "Create one to stop pasting the same token into every customer's scripts."
     },
+    "filters": {
+      "searchLabel": "Search variables",
+      "searchPlaceholder": "Search by key or description",
+      "scopeGroupLabel": "Filter by scope",
+      "scopeAll": "All scopes"
+    },
+    "noMatches": {
+      "title": "No variables match your filters",
+      "description": "Try a different search term or clear the scope filter."
+    },
     "errors": {
       "load": "Could not load variables."
     },

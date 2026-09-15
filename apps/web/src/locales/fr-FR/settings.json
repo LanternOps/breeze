@@ -5237,6 +5237,16 @@
       "title": "Aucune variable pour l'instant",
       "description": "Créez-en une pour ne plus coller le même jeton dans les scripts de chaque client."
     },
+    "filters": {
+      "searchLabel": "Rechercher des variables",
+      "searchPlaceholder": "Rechercher par clé ou description",
+      "scopeGroupLabel": "Filtrer par portée",
+      "scopeAll": "Toutes les portées"
+    },
+    "noMatches": {
+      "title": "Aucune variable ne correspond à vos filtres",
+      "description": "Essayez un autre terme de recherche ou effacez le filtre de portée."
+    },
     "errors": {
       "load": "Impossible de charger les variables."
     },
