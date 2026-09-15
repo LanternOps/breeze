@@ -349,7 +349,26 @@ const softwareInventoryAdapter: DatasetAdapter = {
  *  advance to the next slice of devices. `(device_id, timestamp)` is the
  *  table's own primary key, so timestamps are unique per device and the `lt`
  *  cursor can't skip or double-count a row at the boundary. `verifyDeviceAccess`
- *  runs once per device (at batch entry), not once per page. */
+ *  runs once per device (at batch entry), not once per page.
+ *
+ *  TWO ACCEPTED TRADEOFFS from running potentially many rounds per device
+ *  instead of one:
+ *  (1) The site axis (`allowedSiteIds`/`canAccessSite` — RLS does NOT enforce
+ *      it, see this file's own header) is checked once at batch entry and NOT
+ *      re-verified on later rounds for that same device. A device whose site
+ *      access is revoked mid-export keeps paging until exhausted rather than
+ *      stopping immediately. Accepted because a re-check per round would add a
+ *      DB round trip per page for no observed threat model change, and the
+ *      window is still bounded by `hoursBack` (≤168h) and the writer's own
+ *      120s wall cap.
+ *  (2) A long run of access-denied devices is scanned to the end of
+ *      `deviceIds` within ONE `pager()` call (the inner `for(;;)` only returns
+ *      once it has rows or has exhausted every device), so the writer's
+ *      wall-clock check can't interrupt mid-scan the way it could when every
+ *      batch used to return control after one query. Accepted because the
+ *      practical device-count bound (`analysisMaxInputDevicesPerRun`) keeps a
+ *      denied-only run cheap; a future caller without that bound should
+ *      revisit this. */
 const metricsAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: true,
