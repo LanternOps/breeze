@@ -2046,7 +2046,9 @@
           "startedAt": "Iniciado",
           "finishedAt": "Finalizado",
           "turnCount": "Turnos",
-          "summary": "Resumen"
+          "summary": "Resumen",
+          "computeCost": "Cómputo",
+          "computeEstimated": "(estimado)"
         },
         "flags": {
           "budgetExceeded": "Presupuesto excedido",
@@ -2078,6 +2080,29 @@
             "skipped": "Verificación omitida"
           },
           "viewApproval": "Revisar en Aprobaciones"
+        },
+        "artifacts": {
+          "title": "Archivos generados por esta ejecución",
+          "download": "Descargar",
+          "preview": "Vista previa",
+          "attachToTicket": "Adjuntar a un ticket",
+          "attach": "Adjuntar {{name}}",
+          "ticketIdPlaceholder": "ID del ticket",
+          "attachedToTicket": "Adjuntado al ticket",
+          "attachFailed": "No se pudo adjuntar el archivo a ese ticket"
+        },
+        "workspace": {
+          "title": "Lo que se ejecutó en el entorno aislado",
+          "region": "Región",
+          "status": "Entorno aislado",
+          "cpu": "Tiempo de CPU",
+          "steps": "Pasos",
+          "script": "Script",
+          "stdout": "Salida",
+          "exitCode": "salida",
+          "timedOut": "tiempo agotado",
+          "noExitCode": "sin código de salida",
+          "artifactExpired": "expirado"
         },
         "progress": {
           "title": "Progreso"
@@ -4313,6 +4338,12 @@
       "organizationId": "Organización ID",
       "copyOrganizationId": "Copiar organización ID",
       "organizationIdHelp": "Utilice este ID cuando invite a usuarios o configure integraciones."
+    },
+    "ai": {
+      "externalProcessing": "Permitir análisis de IA en entorno aislado",
+      "externalProcessingDescription": "Permite que las ejecuciones de análisis de IA ejecuten código para esta organización en un entorno aislado sin acceso a la red, alojado en la región de esta organización. Desactivado de forma predeterminada.",
+      "externalProcessingSaved": "Guardado",
+      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración"
     },
     "breadcrumbs": {
       "settings": "Configuración",

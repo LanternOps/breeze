@@ -32,6 +32,7 @@ import OrgDefaultsEditor from './OrgDefaultsEditor';
 import type { PinnableVersions, AgentVersionPinsValue } from './AgentVersionPinSelectors';
 import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
+import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
@@ -124,6 +125,12 @@ type OrgDetails = {
   // Since #4166 it also covers an org mid-archive-drain, so it is NOT the same
   // test as `status === 'archived'` — see `isArchiveLifecycleOrg`.
   archived?: boolean;
+  /**
+   * Execution plane W05 (#5716) — per-org consent for sandboxed AI analysis.
+   * Absent on an older API response; `?? false` at the call site keeps the
+   * opt-in default honest.
+   */
+  aiExternalProcessing?: boolean;
   purgeAt?: string | null;
   type?: string;
   maxDevices?: number;
@@ -605,13 +612,28 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         );
       case 'security':
         return (
-          <OrgSecuritySettings
-            security={orgDetails?.settings?.security}
-            mtls={orgDetails?.settings?.mtls}
-            onDirty={handleDirty}
-            onSave={(data) => handleSave('security', data)}
-            locked={locked}
-          />
+          <>
+            <OrgSecuritySettings
+              security={orgDetails?.settings?.security}
+              mtls={orgDetails?.settings?.mtls}
+              onDirty={handleDirty}
+              onSave={(data) => handleSave('security', data)}
+              locked={locked}
+            />
+            {/* Execution plane W05 (#5716, spec §8, §11). Lives under Security
+                rather than a tab of its own: it is a consent decision about
+                where this customer's data may be processed, not an AI feature
+                setting. Saves itself through runAction — deliberately NOT part
+                of the surrounding form's dirty/save cycle, so consent is never
+                flipped as a side effect of saving an unrelated field. */}
+            <div className="mt-4">
+              <OrgAiProcessingToggle
+                orgId={effectiveOrgId}
+                value={orgDetails?.aiExternalProcessing ?? false}
+                onSaved={() => void fetchOrgDetails()}
+              />
+            </div>
+          </>
         );
       case 'approval-security':
         return <OrgApprovalSecurityTab />;

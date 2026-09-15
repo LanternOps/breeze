@@ -579,8 +579,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // storage_key is an opaque `ticket-attachments/<id>` path (precedent:
   // ai_screenshots.storage_key, included); sha256 is a content digest, not a
   // credential, and matches nothing in SUSPICIOUS_NAME_PARTS.
+  // artifact_id (execution plane W05): a uuid pointing at an ai_run_artifacts
+  // row in the SAME org — a tenant identifier, exactly like ticket_id and
+  // comment_id beside it. The artifact's own bytes are classified on that
+  // table, not here.
   "ticket_attachments": tablePolicy("org_id", {
-    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at"],
+    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at", "artifact_id"],
     reviewedIncluded: [],
     excludedSensitive: [],
     excludedOpen: ["data"],
