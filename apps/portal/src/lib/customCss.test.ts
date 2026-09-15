@@ -18,6 +18,25 @@ describe('escapeStyleElementContent', () => {
   it('is case-insensitive', () => {
     expect(escapeStyleElementContent('</STYLE>')).not.toMatch(/<\/style/i);
   });
+
+  it.each(['</StYle>', '</Style >', '</style\n>', '</style foo="bar">'])(
+    'breaks %j regardless of trailing whitespace/attributes/case, matching how the HTML tokenizer ends a raw-text element',
+    (v) => {
+      expect(escapeStyleElementContent(v)).not.toMatch(/<\/style/i);
+    }
+  );
+
+  it('breaks every occurrence, not just the first', () => {
+    const css = '</style>a</style>b</style>';
+    const escaped = escapeStyleElementContent(css);
+    expect(escaped).not.toMatch(/<\/style/i);
+    expect(escaped.match(/<\\\/style/gi)).toHaveLength(3);
+  });
+
+  it('leaves legitimate angle brackets that are not part of </style untouched', () => {
+    const css = '.a[data-x="<"]::before { content: "<div>"; }';
+    expect(escapeStyleElementContent(css)).toBe(css);
+  });
 });
 
 describe('buildPortalCustomCss', () => {
