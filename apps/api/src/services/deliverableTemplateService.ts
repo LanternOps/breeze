@@ -17,6 +17,7 @@ import { firstAnchorAfter, type Cadence } from './recurrence';
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
 import { assertChecklistTemplateUsableByTemplateItemOwner } from './checklistTemplateReference';
+import { ticketChecklistTemplates } from '../db/schema';
 
 /**
  * Deliverable template sets and items (spec #5573 §4.6, D9). Dual ownership per
@@ -337,6 +338,36 @@ export async function applyTemplateSet(
     .where(eq(deliverableTemplateItems.setId, set.id))
     .orderBy(asc(deliverableTemplateItems.sortOrder), asc(deliverableTemplateItems.name));
 
+  // #5808 W03 — cross-org apply guard (spec §4.4). loadSetOr404 authorizes the
+  // SOURCE set and requireOrgAccess the TARGET org, independently, so an actor
+  // holding both may apply org A's set to org B. Copying org A's PRIVATE
+  // checklist template into an org-B deliverable would create a cross-org
+  // pointer that RLS hides from org B while the system-context sweep still
+  // reads it and seeds from it. A PARTNER-WIDE template is fine: it is visible
+  // to both orgs by construction, and that is exactly what it is for.
+  //
+  // This runs BEFORE the transaction, so a refusal writes nothing.
+  const referenced = [...new Set(items.map((i) => i.checklistTemplateId).filter((v): v is string => !!v))];
+  if (referenced.length > 0) {
+    const owners = await db
+      .select({ id: ticketChecklistTemplates.id, orgId: ticketChecklistTemplates.orgId, partnerId: ticketChecklistTemplates.partnerId })
+      .from(ticketChecklistTemplates)
+      .where(inArray(ticketChecklistTemplates.id, referenced));
+    const bad = owners.filter((o) => o.orgId !== null && o.orgId !== orgId).map((o) => o.id);
+    // A referenced id that resolved to no row is already broken. Treat it as
+    // bad rather than silently applying a dangling pointer that would produce
+    // an empty checklist forever after, with no error anywhere.
+    const missing = referenced.filter((id) => !owners.some((o) => o.id === id));
+    if (bad.length > 0 || missing.length > 0) {
+      throw new TemplateServiceError(
+        'This template set references a checklist template that does not belong to the target organization',
+        409,
+        'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG',
+        { templateIds: [...bad, ...missing] },
+      );
+    }
+  }
+
   const contractId = opts.contractId ?? null;
   let contractStart: string | null = null;
   if (contractId) {
@@ -391,6 +422,8 @@ export async function applyTemplateSet(
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           ownerUserId: opts.ownerUserId ?? undefined,
+          instructions: item.instructions ?? undefined,
+          checklistTemplateId: item.checklistTemplateId ?? undefined,
           portalVisible: true,
           sortOrder: item.sortOrder,
         }, deliverableActor, tx);
