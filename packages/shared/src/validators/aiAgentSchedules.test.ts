@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { AI_SWEEP_KINDS } from '../types/aiAgentSchedules';
 import { createAiAgentScheduleSchema, updateAiAgentScheduleSchema, sweepFindingsOutcomeSchema, sweepProposedActionSchema, isWeeklyLiteralCron, isMonthlyOrRarerLiteralCron, isDailyOrRarerLiteralCron } from './aiAgentSchedules';
 
 const uuid = '11111111-1111-4111-8111-111111111111';
@@ -10,8 +11,33 @@ describe('createAiAgentScheduleSchema', () => {
     const base = { ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC', sweepKinds: ['disk_pressure'], enabled: true };
     expect(createAiAgentScheduleSchema.safeParse({ ...base, cron: '0 0 6 * * *' }).success).toBe(false);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, timezone: 'Mars/Olympus' }).success).toBe(false);
-    expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: ['expiring_certs'] }).success).toBe(false);
+    // #5754 promoted `expiring_certs` into the catalog, so the unknown-kind
+    // case needs a value that is genuinely not a kind.
+    expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: ['not_a_sweep_kind'] }).success).toBe(false);
     expect(createAiAgentScheduleSchema.safeParse({ ...base, sweepKinds: [] }).success).toBe(false);
+  });
+  // #5751 W03 (#5754): the seventh kind. The cap is the value that silently
+  // drifts — a hardcoded literal accepts one fewer kind than the catalog
+  // offers, and the failure is a 400 on a perfectly valid "select all".
+  it('accepts every kind in AI_SWEEP_KINDS on a partner baseline', () => {
+    const result = createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: [...AI_SWEEP_KINDS], enabled: true,
+    });
+    expect(JSON.stringify(result.error?.issues ?? null)).toBe('null');
+    expect(result.success).toBe(true);
+  });
+  it('rejects a list longer than AI_SWEEP_KINDS — the cap tracks the catalog', () => {
+    expect(createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: [...AI_SWEEP_KINDS, AI_SWEEP_KINDS[0]], enabled: true,
+    }).success).toBe(false);
+  });
+  it('accepts expiring_certs, which is finding-only and proposes no action', () => {
+    expect(createAiAgentScheduleSchema.safeParse({
+      ownerScope: 'partner', agentId: uuid, cron: '0 6 * * 1-5', timezone: 'UTC',
+      sweepKinds: ['expiring_certs'], enabled: true,
+    }).success).toBe(true);
   });
   it('an org override carries baselineScheduleId and no cron', () => {
     expect(createAiAgentScheduleSchema.safeParse({ ownerScope: 'organization', orgId: uuid, baselineScheduleId: uuid, enabled: false, sweepKinds: [] }).success).toBe(true);

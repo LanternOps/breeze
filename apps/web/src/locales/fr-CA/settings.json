@@ -1543,7 +1543,8 @@
         "pending_reboots": "Redémarrages en attente",
         "failed_backups": "Sauvegardes en échec",
         "service_down": "Service arrêté",
-        "unpatched_critical": "Vulnérabilités critiques non corrigées"
+        "unpatched_critical": "Vulnérabilités critiques non corrigées",
+        "expiring_certs": "Certificats qui expirent"
       },
       "toasts": {
         "saved": "Horaire enregistré",
@@ -1877,7 +1878,8 @@
           "pending_reboots": "Redémarrages en attente",
           "failed_backups": "Sauvegardes en échec",
           "service_down": "Service arrêté",
-          "unpatched_critical": "Vulnérabilités critiques non corrigées"
+          "unpatched_critical": "Vulnérabilités critiques non corrigées",
+          "expiring_certs": "Certificats bientôt expirés"
         },
         "severities": {
           "critical": "Critique",

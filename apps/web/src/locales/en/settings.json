@@ -1543,7 +1543,8 @@
         "pending_reboots": "Pending reboots",
         "failed_backups": "Failed backups",
         "service_down": "Service down",
-        "unpatched_critical": "Unpatched critical vulnerabilities"
+        "unpatched_critical": "Unpatched critical vulnerabilities",
+        "expiring_certs": "Expiring certificates"
       },
       "toasts": {
         "saved": "Schedule saved",
@@ -1877,7 +1878,8 @@
           "pending_reboots": "Pending reboots",
           "failed_backups": "Failed backups",
           "service_down": "Service down",
-          "unpatched_critical": "Unpatched critical vulnerabilities"
+          "unpatched_critical": "Unpatched critical vulnerabilities",
+          "expiring_certs": "Expiring certificates"
         },
         "severities": {
           "critical": "Critical",

@@ -1543,7 +1543,8 @@
         "pending_reboots": "Reinicializações pendentes",
         "failed_backups": "Backups com falha",
         "service_down": "Serviço parado",
-        "unpatched_critical": "Vulnerabilidades críticas sem correção"
+        "unpatched_critical": "Vulnerabilidades críticas sem correção",
+        "expiring_certs": "Certificados a expirar"
       },
       "toasts": {
         "saved": "Agendamento salvo",
@@ -1877,7 +1878,8 @@
           "pending_reboots": "Reinicializações pendentes",
           "failed_backups": "Backups com falha",
           "service_down": "Serviço parado",
-          "unpatched_critical": "Vulnerabilidades críticas sem correção"
+          "unpatched_critical": "Vulnerabilidades críticas sem correção",
+          "expiring_certs": "Certificados expirando"
         },
         "severities": {
           "critical": "Crítica",
