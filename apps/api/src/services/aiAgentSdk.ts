@@ -772,16 +772,6 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
       return { allowed: false, error: 'Unable to verify rate limits. Please try again.' };
     }
 
-    // Tier 3 external tools: action-intent-backed approval ships in PR B.
-    // Until then, deny outright rather than falling into the tier>=2 branch
-    // below, which assumes a core tool's createActionIntent shape.
-    if (tenant && guardrailCheck.tier === 3) {
-      return {
-        allowed: false,
-        error: 'This external tool requires approval; approval support for external tools ships in the next release.',
-      };
-    }
-
     // Tier 2+: Requires user approval (mutating and destructive tools)
     // NOTE: This callback runs inside the background processor which operates
     // outside the request's AsyncLocalStorage DB context (via runOutsideDbContext).
@@ -1241,6 +1231,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               reason: riskSummary,
               actionLabel: riskSummary,
               orgId: session.orgId,
+              // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
+              // the intent to the exact tool row + revision this session
+              // resolved, so release revalidation reloads THAT row and fails
+              // closed on drift/disable. createActionIntent skips the core
+              // classifier for a bound intent — it would answer "unknown
+              // tool" for a qualified name. Absent for every core tool.
+              ...(tenant
+                ? {
+                    externalTool: {
+                      toolSourceToolId: tenant.id,
+                      revision: tenant.revision,
+                      sourceName: tenant.sourceName,
+                    },
+                  }
+                : {}),
             });
           } catch (err) {
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);
