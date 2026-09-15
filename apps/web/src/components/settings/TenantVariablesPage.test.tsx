@@ -262,7 +262,16 @@ describe('TenantVariablesPage', () => {
     expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
   });
 
-  it('refetches when the org switcher changes', async () => {
+  it('refetches when the org switcher changes, and replaces the displayed rows', async () => {
+    const ORG_B_VAR = { ...ORG_VAR, id: 'v-9', key: 'repo_url', description: 'Org B package repo', orgId: 'org-b' };
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables' && (!init || !init.method)) {
+        return makeJsonResponse({ data: scopeState.orgId === 'org-b' ? [ORG_B_VAR] : [ORG_VAR, SECRET_VAR] });
+      }
+      return makeJsonResponse({ error: 'unexpected' }, false, 404);
+    });
+
     const { rerender } = render(<TenantVariablesPage />);
     await screen.findByTestId('tenant-variable-row-syslog_host');
     const getCalls = () =>
@@ -273,6 +282,10 @@ describe('TenantVariablesPage', () => {
     rerender(<TenantVariablesPage />);
 
     await waitFor(() => expect(getCalls()).toHaveLength(2));
+    // The previous org's rows are gone, not just appended to — a stale list
+    // left on screen after switching orgs is exactly the #5354 regression.
+    await waitFor(() => expect(screen.getByTestId('tenant-variable-row-repo_url')).toBeTruthy());
+    expect(screen.queryByTestId('tenant-variable-row-syslog_host')).toBeNull();
   });
 
   it('surfaces a failed save as an error toast', async () => {
