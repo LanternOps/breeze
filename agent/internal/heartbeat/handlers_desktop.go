@@ -485,7 +485,12 @@ func handleStopDesktop(h *Heartbeat, cmd Command) tools.CommandResult {
 	// populated by the helper start path, so this is safe on every platform.
 	if h.sessionBroker != nil {
 		if session := h.desktopOwnerSession(sessionID); session != nil {
+			// Forward the terminal generation so the helper's own fence
+			// records the same tombstone this one just installed.
 			req := ipc.DesktopStopRequest{SessionID: sessionID}
+			if stopInput.HasGeneration {
+				req.TerminalGeneration = strconv.FormatInt(stopInput.Generation, 10)
+			}
 			_, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second)
 			if err != nil {
 				return tools.NewErrorResult(fmt.Errorf("IPC desktop_stop: %w", err), time.Since(start).Milliseconds())

@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/sessionbroker"
 	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
@@ -165,6 +167,96 @@ func (h *Heartbeat) enqueueDesktopFenceAnswer(msg websocket.RevocationLeaseMessa
 		log.Warn("desktop fence answer queue full; dropping the answer",
 			"sessionId", msg.SessionID)
 	}
+}
+
+// desktopFenceSnapshotForHelper renders the fence for a helper seed. Only
+// sessions the fence actually knows something about are included: a session
+// with no high-water mark and no tombstone carries no knowledge, and shipping
+// it would only grow the message.
+func (h *Heartbeat) desktopFenceSnapshotForHelper() ipc.DesktopFenceSync {
+	out := ipc.DesktopFenceSync{Sessions: map[string]ipc.DesktopFenceEntry{}}
+	for id, entry := range h.desktopStartFence.snapshot() {
+		// The floor is the highest generation this service knows about from
+		// either source: a start it admitted, or one the control plane echoed.
+		floor := entry.HighWater
+		hasFloor := entry.HasHighWater
+		if entry.SyncedGeneration > floor || (!hasFloor && entry.SyncedGeneration > 0) {
+			floor = entry.SyncedGeneration
+			hasFloor = true
+		}
+		if !hasFloor && !entry.Terminal {
+			// Nothing to tell the helper about this session.
+			continue
+		}
+		e := ipc.DesktopFenceEntry{Terminal: entry.Terminal}
+		if hasFloor {
+			e.HighWater = strconv.FormatInt(floor, 10)
+		}
+		out.Sessions[id] = e
+	}
+	return out
+}
+
+// helperFenceSyncTimeout bounds the seed round trip. It is a small JSON
+// message against a helper that just answered its auth handshake; a helper
+// that cannot answer this cannot be trusted to run a fenced start either.
+const helperFenceSyncTimeout = 10 * time.Second
+
+// ensureHelperFenceSynced seeds a helper session with this service's fence,
+// once per helper session. A failure is returned, never swallowed: the caller
+// refuses the start rather than running it against an unfenced helper.
+func (h *Heartbeat) ensureHelperFenceSynced(session *sessionbroker.Session) error {
+	if session == nil {
+		return errors.New("no helper session")
+	}
+	h.mu.Lock()
+	if h.helperFenceSynced == nil {
+		h.helperFenceSynced = make(map[string]bool)
+	}
+	already := h.helperFenceSynced[session.SessionID]
+	h.mu.Unlock()
+	if already {
+		return nil
+	}
+
+	snapshot := h.desktopFenceSnapshotForHelper()
+	resp, err := session.SendCommand("desk-fence-"+session.SessionID, ipc.TypeDesktopFenceSync, snapshot, helperFenceSyncTimeout)
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+
+	h.mu.Lock()
+	h.helperFenceSynced[session.SessionID] = true
+	h.mu.Unlock()
+	log.Info("seeded the desktop start fence on a helper session",
+		"helperSession", session.SessionID, "sessions", len(snapshot.Sessions))
+	return nil
+}
+
+// forgetHelperFenceSync drops the seeded marker when a helper session ends, so
+// its successor is seeded again rather than inheriting the claim.
+func (h *Heartbeat) forgetHelperFenceSync(helperSessionID string) {
+	h.mu.Lock()
+	delete(h.helperFenceSynced, helperSessionID)
+	h.mu.Unlock()
+}
+
+// desktopStartGenerationForHelper pulls the canonical decimal generation out
+// of a start_desktop payload for forwarding over IPC. Anything that is not a
+// canonical decimal string yields "" — such a start was already refused by the
+// service fence, and a value we could not parse must never travel as if we had.
+func desktopStartGenerationForHelper(payload map[string]any) string {
+	raw, _ := payload["startGeneration"].(string)
+	if raw == "" {
+		return ""
+	}
+	if _, _, err := parseDesktopGenerationField(payload, "startGeneration"); err != nil {
+		return ""
+	}
+	return raw
 }
 
 // desktopSessionTerminalAfterStart tears a session down when a terminal

@@ -473,6 +473,10 @@ type Heartbeat struct {
 	// hook must not block, and a fence write touches the disk.
 	desktopFenceQueue      chan websocket.RevocationLeaseMessage
 	desktopFenceWorkerOnce sync.Once
+	// helperFenceSynced records which helper sessions have acknowledged a
+	// fence seed, so the seed costs one round trip per helper rather than one
+	// per start. Cleared when the helper session ends.
+	helperFenceSynced map[string]bool
 
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
