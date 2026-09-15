@@ -5,6 +5,7 @@ import {
   serviceDeliverables,
   deliverableTemplateItems,
 } from '../db/schema';
+import type { DbExecutor } from './ticketChecklistService';
 
 /**
  * The single source of the checklist-template REFERENCE rules (#5808 W03,
@@ -17,6 +18,11 @@ import {
  * match a partner-wide template (`org_id` NULL vs `service_deliverables.org_id`
  * NOT NULL). The full argument lives in the header of migration
  * `2026-10-16-192300-deliverable-checklist-wiring.sql`.
+ *
+ * Every function takes an optional executor so a caller already inside a
+ * transaction passes its own handle rather than checking out a SECOND pooled
+ * connection under an open transaction — the hang-at-concurrency shape
+ * CLAUDE.md warns about.
  *
  * Errors carry `status` + `code` structurally. Every route error mapper that
  * can see them (`handleDeliverableError`, `handleTemplateError`,
@@ -44,8 +50,11 @@ const notFound = () => new ChecklistReferenceError('Checklist template not found
 
 type TemplateOwner = { orgId: string | null; partnerId: string | null };
 
-async function loadTemplateOwner(templateId: string): Promise<TemplateOwner | undefined> {
-  const [row] = (await db
+async function loadTemplateOwner(
+  templateId: string,
+  exec: DbExecutor = db,
+): Promise<TemplateOwner | undefined> {
+  const [row] = (await exec
     .select({
       orgId: ticketChecklistTemplates.orgId,
       partnerId: ticketChecklistTemplates.partnerId,
@@ -64,8 +73,9 @@ export async function assertChecklistTemplateUsableByOrg(
   templateId: string,
   orgId: string,
   partnerId: string | null,
+  exec: DbExecutor = db,
 ): Promise<void> {
-  const t = await loadTemplateOwner(templateId);
+  const t = await loadTemplateOwner(templateId, exec);
   if (!t) throw notFound();
   if (t.orgId !== null) {
     if (t.orgId !== orgId) throw notFound();
@@ -85,11 +95,12 @@ export async function assertChecklistTemplateUsableByOrg(
 export async function assertChecklistTemplateUsableByTemplateItemOwner(
   templateId: string,
   owner: TemplateOwner,
+  exec: DbExecutor = db,
 ): Promise<void> {
   if (owner.orgId !== null) {
-    return assertChecklistTemplateUsableByOrg(templateId, owner.orgId, owner.partnerId);
+    return assertChecklistTemplateUsableByOrg(templateId, owner.orgId, owner.partnerId, exec);
   }
-  const t = await loadTemplateOwner(templateId);
+  const t = await loadTemplateOwner(templateId, exec);
   if (!t) throw notFound();
   if (t.orgId !== null) throw notFound(); // org-owned: refused for a partner-wide item
   if (owner.partnerId === null || t.partnerId !== owner.partnerId) throw notFound();

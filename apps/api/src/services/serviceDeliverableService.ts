@@ -20,6 +20,7 @@ import { addDaysISO } from './contractMath';
 import { createPlannedWorkTicket } from './plannedWorkTicket';
 import { captureException } from './sentry';
 import { isPgUniqueViolation } from '../utils/pgErrors';
+import { assertChecklistTemplateUsableByOrg } from './checklistTemplateReference';
 
 /**
  * Spec #5573 §5–§7, §12. Every read and write filters by `orgId` in addition to
@@ -154,7 +155,7 @@ async function loadSummaries(orgId: string, filters: { id?: string; contractId?:
 // Reference validation (create / update)
 // ---------------------------------------------------------------------------
 
-type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'ticketCategoryId' | 'autoEvidenceReportId'>;
+type RefInput = Pick<UpdateDeliverableInput, 'contractId' | 'ownerUserId' | 'ticketCategoryId' | 'autoEvidenceReportId' | 'checklistTemplateId'>;
 
 /** Only keys PRESENT on the input are validated, so a PATCH that omits a
  *  reference never re-validates it (and a null clears it without a lookup). */
@@ -164,7 +165,7 @@ async function validateReferences(orgId: string, input: RefInput, executor: DbEx
       .where(and(eq(contracts.id, input.contractId), eq(contracts.orgId, orgId))).limit(1);
     if (!c) throw new DeliverableServiceError('Contract does not belong to this organization', 400, 'CONTRACT_NOT_IN_ORG');
   }
-  if (input.ownerUserId != null || input.ticketCategoryId != null) {
+  if (input.ownerUserId != null || input.ticketCategoryId != null || input.checklistTemplateId != null) {
     const [org] = await executor.select({ partnerId: organizations.partnerId }).from(organizations)
       .where(eq(organizations.id, orgId)).limit(1);
     if (!org) throw notFound();
@@ -177,6 +178,15 @@ async function validateReferences(orgId: string, input: RefInput, executor: DbEx
       const [cat] = await executor.select({ id: ticketCategories.id }).from(ticketCategories)
         .where(and(eq(ticketCategories.id, input.ticketCategoryId), eq(ticketCategories.partnerId, org.partnerId))).limit(1);
       if (!cat) throw new DeliverableServiceError('Ticket category must belong to the organization\'s partner', 400, 'CATEGORY_NOT_ALLOWED');
+    }
+    if (input.checklistTemplateId != null) {
+      // #5808 W03. The FK is single-column on purpose (a composite one could
+      // never match a partner-wide template), so this app-layer check IS the
+      // constraint. Validated against the ORG'S partner rather than the actor's:
+      // the deliverable's org is what the sweep will later fan the template out
+      // to, and requireOrgAccess has already established the actor may write
+      // here. A refusal is 404, never 403.
+      await assertChecklistTemplateUsableByOrg(input.checklistTemplateId, orgId, org.partnerId, executor);
     }
   }
   if (input.autoEvidenceReportId != null) {
@@ -273,6 +283,8 @@ export async function createDeliverable(orgId: string, input: CreateDeliverableI
       autoEvidenceReportId: input.autoEvidenceReportId ?? null,
       ownerUserId: input.ownerUserId ?? null,
       ticketCategoryId: input.ticketCategoryId ?? null,
+      instructions: input.instructions ?? null,
+      checklistTemplateId: input.checklistTemplateId ?? null,
       portalVisible: input.portalVisible,
       sortOrder: input.sortOrder,
       createdBy: actor.userId,

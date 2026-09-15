@@ -26,6 +26,12 @@ export const createDeliverableSchema = z
     autoEvidenceReportId: z.string().guid().nullable().optional(),
     ownerUserId: z.string().guid().nullable().optional(),
     ticketCategoryId: z.string().guid().nullable().optional(),
+    // #5808 W03. Internal runbook prose for the technician — NEVER shown to the
+    // customer (spec §5). The pointer is a live reference: editing the template
+    // improves every FUTURE occurrence, and already-opened ones keep the rows
+    // they were seeded with.
+    instructions: z.string().max(10000).nullable().optional(),
+    checklistTemplateId: z.string().guid().nullable().optional(),
     portalVisible: z.boolean().default(true),
     sortOrder: z.number().int().min(0).default(0),
   })
@@ -48,6 +54,12 @@ export const updateDeliverableSchema = z
     autoEvidenceReportId: z.string().guid().nullable().optional(),
     ownerUserId: z.string().guid().nullable().optional(),
     ticketCategoryId: z.string().guid().nullable().optional(),
+    // #5808 W03. Internal runbook prose for the technician — NEVER shown to the
+    // customer (spec §5). The pointer is a live reference: editing the template
+    // improves every FUTURE occurrence, and already-opened ones keep the rows
+    // they were seeded with.
+    instructions: z.string().max(10000).nullable().optional(),
+    checklistTemplateId: z.string().guid().nullable().optional(),
     portalVisible: z.boolean().optional(),
     sortOrder: z.number().int().min(0).optional(),
     active: z.boolean().optional(),

@@ -30,6 +30,12 @@ vi.mock('../db', () => {
   };
 });
 
+// #5808 W03 — the owner-axis RULES have their own suite
+// (checklistTemplateReference.test.ts). Mocked here so these cases assert that
+// this service validates BEFORE writing, and against the org's own partner.
+const refMocks = vi.hoisted(() => ({ assertChecklistTemplateUsableByOrg: vi.fn() }));
+vi.mock('./checklistTemplateReference', () => refMocks);
+
 const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./ticketService', () => ({ createTicket: createTicketMock }));
@@ -87,7 +93,11 @@ const occ = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('serviceDeliverableService', () => {
-  beforeEach(() => { results.length = 0; vi.clearAllMocks(); });
+  beforeEach(() => {
+    results.length = 0;
+    vi.clearAllMocks();
+    refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+  });
 
   describe('org access', () => {
     it('404s a foreign org without touching the db', async () => {
@@ -160,6 +170,51 @@ describe('serviceDeliverableService', () => {
       expect(chain.transaction.mock.calls).toHaveLength(1);
       expect(lastValues()).toMatchObject({ orgId: 'org1', name: base.name, createdBy: 'u1', cadence: 'monthly' });
       expect(out).toMatchObject({ id: 'd1', name: base.name, contractName: 'Best plan', nextDue: '2999-01-01', openCount: 1, status: 'on_track', lastDelivered: null });
+    });
+
+    // ── #5808 W03: instructions + the checklist-template pointer ──────────
+    it('validates the checklist template reference BEFORE writing anything', async () => {
+      queueResult([{ partnerId: 'p1' }]); // org lookup inside validateReferences
+      refMocks.assertChecklistTemplateUsableByOrg.mockRejectedValueOnce(
+        Object.assign(new Error('nf'), { status: 404, code: 'NOT_FOUND' }),
+      );
+      await expect(createDeliverable('org1', { ...base, checklistTemplateId: '66666666-6666-4666-8666-666666666666' }, actor))
+        .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+      expect(chain.insert.mock.calls).toHaveLength(0);
+    });
+
+    it('validates against the ORG’S partner, not the actor’s', async () => {
+      // The org's partner is what the sweep will later fan a partner-wide
+      // template out to, so it is the authority — not whatever partner the
+      // caller's token happens to carry.
+      queueResult([{ partnerId: 'p-ORG' }]);
+      queueResult([]); // name pre-check
+      queueResult([{ id: 'd1', orgId: 'org1', ...base }]);
+      queueResult([summaryRow()]);
+      queueResult([]);
+      await createDeliverable('org1', { ...base, checklistTemplateId: '66666666-6666-4666-8666-666666666666' }, actor);
+      expect(refMocks.assertChecklistTemplateUsableByOrg)
+        .toHaveBeenCalledWith('66666666-6666-4666-8666-666666666666', 'org1', 'p-ORG', expect.anything());
+    });
+
+    it('writes instructions and checklistTemplateId onto the row', async () => {
+      queueResult([{ partnerId: 'p1' }]);
+      queueResult([]);
+      queueResult([{ id: 'd1', orgId: 'org1', ...base }]);
+      queueResult([summaryRow()]);
+      queueResult([]);
+      await createDeliverable('org1', { ...base, instructions: 'Check X before Y', checklistTemplateId: '66666666-6666-4666-8666-666666666666' }, actor);
+      expect(lastValues()).toMatchObject({ instructions: 'Check X before Y', checklistTemplateId: '66666666-6666-4666-8666-666666666666' });
+    });
+
+    it('stores NULL for both when absent, and does not validate', async () => {
+      queueResult([]);
+      queueResult([{ id: 'd1', orgId: 'org1', ...base }]);
+      queueResult([summaryRow()]);
+      queueResult([]);
+      await createDeliverable('org1', base, actor);
+      expect(lastValues()).toMatchObject({ instructions: null, checklistTemplateId: null });
+      expect(refMocks.assertChecklistTemplateUsableByOrg).not.toHaveBeenCalled();
     });
 
     it('500s RELOAD_FAILED if the row cannot be re-read after insert', async () => {

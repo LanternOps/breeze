@@ -16,6 +16,7 @@ import { createDeliverable, DeliverableServiceError } from './serviceDeliverable
 import { firstAnchorAfter, type Cadence } from './recurrence';
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
+import { assertChecklistTemplateUsableByTemplateItemOwner } from './checklistTemplateReference';
 
 /**
  * Deliverable template sets and items (spec #5573 §4.6, D9). Dual ownership per
@@ -242,6 +243,13 @@ export async function deleteTemplateSet(setId: string, actor: TemplateActor): Pr
 export async function addTemplateItem(setId: string, input: CreateTemplateItemInput, actor: TemplateActor): Promise<TemplateItemView> {
   const set = await loadSetOr404(setId, actor);
   requireWritable(set, actor);
+  // #5808 W03. The SET'S owner axis, never the caller's org: a partner-wide
+  // item that pointed at an org-owned checklist template would be invisible to
+  // every other org the set is applied to, and the apply would silently produce
+  // an empty checklist. A null needs no lookup — it clears the pointer.
+  if (input.checklistTemplateId != null) {
+    await assertChecklistTemplateUsableByTemplateItemOwner(input.checklistTemplateId, { orgId: set.orgId, partnerId: set.partnerId });
+  }
   try {
     const [row] = await db.transaction(async (tx) => tx.insert(deliverableTemplateItems).values({
       setId: set.id,
@@ -254,6 +262,8 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
       graceDays: input.graceDays,
       artifactRequired: input.artifactRequired,
       completionMode: input.completionMode,
+      instructions: input.instructions ?? null,
+      checklistTemplateId: input.checklistTemplateId ?? null,
       sortOrder: input.sortOrder,
     }).returning());
     if (!row) throw new TemplateServiceError('Insert returned no row', 500, 'INSERT_FAILED');
@@ -266,6 +276,9 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
 export async function updateTemplateItem(setId: string, itemId: string, patch: UpdateTemplateItemInput, actor: TemplateActor): Promise<TemplateItemView> {
   const set = await loadSetOr404(setId, actor);
   requireWritable(set, actor);
+  if (patch.checklistTemplateId != null) {
+    await assertChecklistTemplateUsableByTemplateItemOwner(patch.checklistTemplateId, { orgId: set.orgId, partnerId: set.partnerId });
+  }
   try {
     const [row] = await db.transaction(async (tx) => tx.update(deliverableTemplateItems)
       .set({
@@ -276,6 +289,8 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
         ...(patch.graceDays !== undefined ? { graceDays: patch.graceDays } : {}),
         ...(patch.artifactRequired !== undefined ? { artifactRequired: patch.artifactRequired } : {}),
         ...(patch.completionMode !== undefined ? { completionMode: patch.completionMode } : {}),
+        ...(patch.instructions !== undefined ? { instructions: patch.instructions ?? null } : {}),
+        ...(patch.checklistTemplateId !== undefined ? { checklistTemplateId: patch.checklistTemplateId ?? null } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
         updatedAt: new Date(),
       })
