@@ -28,7 +28,7 @@
 import './setup';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, like } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 const h = vi.hoisted(() => ({
@@ -51,10 +51,17 @@ import {
   alerts,
   approvalRequests,
   devices,
+  serviceProcessCheckResults,
 } from '../../db/schema';
 import { buildAgentAuthContext } from '../../services/aiAgents/agentAuthContext';
 import { createActionIntent } from '../../services/actionIntents/intentService';
 import { releaseApprovedIntent } from '../../jobs/intentReleaseWorker';
+import {
+  checkFixWatchPhase1,
+  checkFixWatchPhase2,
+  createSweepFixWatchRow,
+} from '../../services/aiAgents/fixWatch';
+import { SWEEP_PROBE_FRESHNESS_MS } from '../../services/aiAgents/sweepSubjectProbe';
 import { approvalRoutes } from '../../routes/approvals';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import {
@@ -341,5 +348,166 @@ describe('sweep-minted intents open a verification episode (#5753)', () => {
 
     expect(await metricsFor(intentId)).toEqual(['executed', 'verified']);
     expect(await watchFor(intentId)).toBeUndefined();
+  });
+
+  it('two createSweepFixWatchRow calls for the same intent leave exactly ONE row (the partial intent_id UNIQUE really arbitrates)', async () => {
+    // A compiled-SQL test proves the ON CONFLICT clause was WRITTEN; only a
+    // real partial index proves it ARBITRATES — and a partial unique index
+    // cannot be inferred as the arbiter without its predicate repeated
+    // (42P10), which is precisely what a mock cannot catch.
+    const runId = await seedRun(s, { deviceId: null, alertId: null, triggerKind: 'schedule', profile: 'sweep' });
+    const intentId = await createApproveAndRelease(s, runId, {
+      runDeviceId: null,
+      trigger: { kind: 'sweep_finding', refId: runId, key: sweepTriggerKey('service_down', SERVICE_NAME) },
+    });
+    const first = await watchFor(intentId);
+    expect(first).toBeDefined();
+
+    const second = await withSystemDbAccessContext(() => createSweepFixWatchRow({
+      intentId,
+      orgId: s.orgId,
+      runId,
+      agentId: s.agentId,
+      deviceId: s.deviceId,
+      subjectKind: 'service_down',
+      subjectKey: SERVICE_NAME,
+      opKey: 'manage_services:restart',
+    }));
+
+    // The EXISTING row's id, never null — the caller reads null as "nothing
+    // will ever verify this" and credits `verified` on the spot.
+    expect(second).toBe(first!.id);
+    const all = await withSystemDbAccessContext(() => db
+      .select({ id: aiAgentFixWatches.id })
+      .from(aiAgentFixWatches)
+      .where(eq(aiAgentFixWatches.intentId, intentId)));
+    expect(all).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The full verification episode, against real Postgres: phase 1 and phase 2
+// driven by REAL check-result rows, not a mocked probe.
+// ---------------------------------------------------------------------------
+describe('a subject watch is graded by re-probing the real condition (#5753)', () => {
+  /** A service/process check result for the fixture device, `ageMs` old. */
+  async function seedCheckResult(status: 'running' | 'stopped', ageMs = 0): Promise<void> {
+    await withSystemDbAccessContext(() => db
+      .insert(serviceProcessCheckResults)
+      .values({
+        orgId: s.orgId,
+        deviceId: s.deviceId,
+        watchType: 'service',
+        name: SERVICE_NAME,
+        status,
+        timestamp: new Date(Date.now() - ageMs),
+      }));
+  }
+
+  /** Release a sweep intent and return its (pending) watch. */
+  async function releasedSweepWatch(): Promise<{ intentId: string; watchId: string }> {
+    const runId = await seedRun(s, { deviceId: null, alertId: null, triggerKind: 'schedule', profile: 'sweep' });
+    const intentId = await createApproveAndRelease(s, runId, {
+      runDeviceId: null,
+      trigger: { kind: 'sweep_finding', refId: runId, key: sweepTriggerKey('service_down', SERVICE_NAME) },
+    });
+    const watch = await watchFor(intentId);
+    expect(watch!.state).toBe('pending');
+    return { intentId, watchId: watch!.id };
+  }
+
+  async function watchStateOf(watchId: string): Promise<string> {
+    const [row] = await withSystemDbAccessContext(() => db
+      .select({ state: aiAgentFixWatches.state })
+      .from(aiAgentFixWatches)
+      .where(eq(aiAgentFixWatches.id, watchId))
+      .limit(1));
+    return row!.state;
+  }
+
+  /** Every watch-sourced evidence row for this watch. */
+  async function watchEvidence(watchId: string) {
+    return withSystemDbAccessContext(() => db
+      .select({
+        namespace: aiAgentOpEvidence.namespace,
+        metric: aiAgentOpEvidence.metric,
+        sourceKind: aiAgentOpEvidence.sourceKind,
+        opKey: aiAgentOpEvidence.opKey,
+      })
+      .from(aiAgentOpEvidence)
+      .where(like(aiAgentOpEvidence.sourceId, `${watchId}%`))
+      .orderBy(asc(aiAgentOpEvidence.metric)));
+  }
+
+  it('a fresh `running` result clears the condition: phase 1 moves the watch to watching', async () => {
+    const { watchId } = await releasedSweepWatch();
+    await seedCheckResult('running');
+
+    await expect(checkFixWatchPhase1(watchId)).resolves.toEqual({ action: 'recovered' });
+    expect(await watchStateOf(watchId)).toBe('watching');
+    // Phase 1 grades nothing.
+    expect(await watchEvidence(watchId)).toEqual([]);
+  });
+
+  it('a still-`stopped` result keeps phase 1 waiting, and a STALE result is unknown — never a clear', async () => {
+    const stillDown = await releasedSweepWatch();
+    await seedCheckResult('stopped');
+    await expect(checkFixWatchPhase1(stillDown.watchId)).resolves.toEqual({ action: 'still_pending' });
+    expect(await watchStateOf(stillDown.watchId)).toBe('pending');
+
+    // A device that stopped reporting: its newest row is `running`, but far
+    // outside the freshness window. Reading that as recovery would credit
+    // `verified` for a machine that has said nothing since.
+    const stale = await releasedSweepWatch();
+    await seedCheckResult('running', SWEEP_PROBE_FRESHNESS_MS * 4);
+    await expect(checkFixWatchPhase1(stale.watchId)).resolves.toEqual({ action: 'still_pending' });
+    expect(await watchStateOf(stale.watchId)).toBe('pending');
+  });
+
+  it('phase 2 with the condition still cleared -> held_qualified and exactly ONE `verified` row on policy_key', async () => {
+    const { watchId } = await releasedSweepWatch();
+    await seedCheckResult('running');
+    await checkFixWatchPhase1(watchId);
+
+    await expect(checkFixWatchPhase2(watchId)).resolves.toEqual({ action: 'held_qualified' });
+    expect(await watchStateOf(watchId)).toBe('held_qualified');
+    expect(await watchEvidence(watchId)).toEqual([
+      { namespace: 'policy_key', metric: 'verified', sourceKind: 'watch', opKey: 'manage_services:restart' },
+    ]);
+  });
+
+  it('phase 2 with the condition back -> recurred, one `recurred` row, and the colon key is auto-demoted', async () => {
+    const { watchId } = await releasedSweepWatch();
+    await seedCheckResult('running');
+    await checkFixWatchPhase1(watchId);
+    // The condition returns inside the hold window.
+    await seedCheckResult('stopped');
+
+    await expect(checkFixWatchPhase2(watchId)).resolves.toEqual({ action: 'recurred' });
+    expect(await watchStateOf(watchId)).toBe('recurred');
+    expect(await watchEvidence(watchId)).toEqual([
+      { namespace: 'policy_key', metric: 'recurred', sourceKind: 'watch', opKey: 'manage_services:restart' },
+    ]);
+    // The operator-facing attention alert names the condition that returned.
+    const [raised] = await withSystemDbAccessContext(() => db
+      .select({ message: alerts.message })
+      .from(alerts)
+      .where(and(eq(alerts.orgId, s.orgId), eq(alerts.configItemName, 'ai_agent_fix_watch')))
+      .limit(1));
+    expect(raised!.message).toContain(`service_down:${SERVICE_NAME}`);
+  });
+
+  it('phase 2 that cannot answer -> inconclusive, with NO evidence row at all — never `failed`', async () => {
+    const { watchId } = await releasedSweepWatch();
+    await seedCheckResult('running');
+    await checkFixWatchPhase1(watchId);
+    // Wipe the observations: the device has gone silent since recovery.
+    await withSystemDbAccessContext(() => db
+      .delete(serviceProcessCheckResults)
+      .where(eq(serviceProcessCheckResults.deviceId, s.deviceId)));
+
+    await expect(checkFixWatchPhase2(watchId)).resolves.toEqual({ action: 'inconclusive' });
+    expect(await watchStateOf(watchId)).toBe('inconclusive');
+    expect(await watchEvidence(watchId)).toEqual([]);
   });
 });
