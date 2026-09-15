@@ -83,6 +83,25 @@ describe('SessionHistoryPage', () => {
     expect(screen.queryByRole('link', { name: 'View Recording' })).toBeNull();
   });
 
+  // SEC-038 W06 (#5537): the detail panel flags a teardown the device has not
+  // yet acknowledged, and says nothing for a confirmed end.
+  it('labels a pending teardown in the detail panel', () => {
+    sessionState.session = { ...sessionState.session, terminationPhase: 'pending' };
+    render(<SessionHistoryPage />);
+    fireEvent.click(screen.getByText('Open details'));
+
+    expect(screen.getByText('Awaiting device confirmation')).toBeInTheDocument();
+    sessionState.session = { ...sessionState.session, terminationPhase: 'confirmed' };
+  });
+
+  it('does not show the teardown-pending label for a confirmed end', () => {
+    sessionState.session = { ...sessionState.session, terminationPhase: 'confirmed' };
+    render(<SessionHistoryPage />);
+    fireEvent.click(screen.getByText('Open details'));
+
+    expect(screen.queryByText('Awaiting device confirmation')).toBeNull();
+  });
+
   it('renders safe same-origin recording URLs', () => {
     sessionState.recordingUrl = '/recording.mp4';
 

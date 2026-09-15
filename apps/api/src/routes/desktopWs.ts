@@ -1809,6 +1809,7 @@ export function createDesktopWsRoutes(
       const terminationPhase = access.session.terminationPhase ?? 'none';
       const answerWithheld = access.session.status === 'failed'
         || access.session.status === 'disconnected'
+        || access.session.status === 'denied'
         || terminationPhase !== 'none';
       return c.json({
         id: access.session.id,

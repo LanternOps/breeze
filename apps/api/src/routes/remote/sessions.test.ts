@@ -284,6 +284,7 @@ function makeRemoteSessionRow(deviceId: string) {
     userId: 'user-1',
     type: 'desktop',
     status: 'active',
+    terminationPhase: undefined as 'none' | 'pending' | 'confirmed' | undefined,
     startedAt: new Date('2026-01-01T00:00:00Z'),
     endedAt: null,
     durationSeconds: null,
@@ -564,6 +565,23 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(countWhere).toHaveBeenCalledTimes(1);
       expect(listWhere).toHaveBeenCalledTimes(1);
     });
+
+    // SEC-038 W06 (#5537): the list serializer carries terminationPhase
+    // through from the row and defaults a missing value to 'none'.
+    it('serializes terminationPhase on every list row', async () => {
+      rigListSessionsUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', terminationPhase: 'pending' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2' },
+      ]);
+
+      const res = await app.request('/remote/sessions', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'none']);
+    });
   });
 
   describe('GET /sessions/history', () => {
@@ -686,6 +704,24 @@ describe('remote sessions — site-scope enforcement', () => {
       expect(db.select).toHaveBeenCalledTimes(2);
       expect(statsWhere).toHaveBeenCalledTimes(1);
       expect(listWhere).toHaveBeenCalledTimes(1);
+    });
+
+    // SEC-038 W06 (#5537): this is the endpoint SessionHistory.tsx renders, so
+    // a pending teardown must reach the wire distinctly from a confirmed end.
+    it('serializes terminationPhase on every history row', async () => {
+      rigSessionHistoryUnrestricted([
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), status: 'disconnected', terminationPhase: 'pending' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-2', status: 'disconnected', terminationPhase: 'confirmed' },
+        { ...makeRemoteSessionRow(DEVICE_IN_ALLOWED), id: 'sess-3', status: 'failed' },
+      ]);
+
+      const res = await app.request('/remote/sessions/history', {
+        headers: { Authorization: 'Bearer t' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.map((s: { terminationPhase: string }) => s.terminationPhase)).toEqual(['pending', 'confirmed', 'none']);
     });
   });
 

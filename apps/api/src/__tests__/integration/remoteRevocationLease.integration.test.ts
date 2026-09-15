@@ -36,6 +36,7 @@ import {
   REVOCATION_LEASE_HARD_CAP_MS,
   REVOCATION_LEASE_TTL_MS,
   loadRevocationRecheckRow,
+  isDesktopStartCapable,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
@@ -330,6 +331,23 @@ describe('revocation lease against live Postgres', () => {
       const f = await buildFixture();
       const result = await prepareRevocationLeaseForStart(f.session.id);
       expect(result.ok).toBe(true);
+    });
+
+    // The session-create fail-fast probe reads the real columns too.
+    it('isDesktopStartCapable mirrors the gate against the device row', async () => {
+      const fenced = await buildFixture();
+      const unfenced = await buildFixture({ fenceCapable: false });
+      const noLease = await buildFixture({ leaseCapable: false });
+
+      delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(noLease.device.id)).resolves.toBe(false);
+
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(false);
+      await expect(isDesktopStartCapable('00000000-0000-0000-0000-000000000000')).resolves.toBe(false);
     });
   });
 
