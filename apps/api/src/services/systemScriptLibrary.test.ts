@@ -197,6 +197,10 @@ describe('ensureSystemLibraryScripts', () => {
     expect(inserted.orgId).toBeNull();
     expect(inserted.partnerId).toBeNull();
     expect(inserted.name).toBe(SYSTEM_LIBRARY_SCRIPTS[0]!.name);
+    // #5671: the insert must not fall through to the schema default
+    // ('human') — it would contradict the origin='system' the very same
+    // transaction writes onto the version row via cutScriptVersion below.
+    expect(inserted.origin).toBe('system');
   });
 
   it('no-ops when the stored row already matches the definition', async () => {
