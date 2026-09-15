@@ -144,22 +144,14 @@ describe('ImpactMeasuredBand', () => {
     expect(await screen.findByTestId('measured-censored-note')).toBeInTheDocument();
   });
 
-  it('renders the censored p50/p90 minutes per arm (#5879)', async () => {
-    mockMeasured(dto());
-
-    render(<ImpactMeasuredBand window={90} />);
-
-    const cohortEl = await screen.findByTestId('measured-cohort-rule-a');
-    // arm(40, 0.8) / arm(60, 0.5) both carry censoredP50Minutes: 42, censoredP90Minutes: 300.
-    expect(cohortEl).toHaveTextContent('42');
-    expect(cohortEl).toHaveTextContent('300');
-  });
-
-  it('omits a percentile the DTO reported as null, without dropping the other one', async () => {
+  it('renders the censored p50/p90 minutes per arm, independently for each arm (#5879)', async () => {
+    // Deliberately DIFFERENT values per arm so a bug that mixed up which arm's
+    // percentiles landed in which ArmFigure would fail this test.
     mockMeasured(dto({
       alertResolution: {
         cohorts: [cohort({
-          aiTouched: { n: 40, proportionWithinHorizon: 0.8, censoredP50Minutes: 42, censoredP90Minutes: null },
+          aiTouched: { n: 40, proportionWithinHorizon: 0.8, censoredP50Minutes: 42, censoredP90Minutes: 300 },
+          untouched: { n: 60, proportionWithinHorizon: 0.5, censoredP50Minutes: 900, censoredP90Minutes: 1080 },
         })],
         omitted: null,
         exposureAgeMinutes: 15,
@@ -169,8 +161,45 @@ describe('ImpactMeasuredBand', () => {
 
     render(<ImpactMeasuredBand window={90} />);
 
-    const cohortEl = await screen.findByTestId('measured-cohort-rule-a');
-    expect(cohortEl).toHaveTextContent('42');
+    await screen.findByTestId('measured-cohort-rule-a');
+    const aiTouchedEl = screen.getByTestId('measured-percentiles-ai-touched');
+    expect(aiTouchedEl).toHaveTextContent('42');
+    expect(aiTouchedEl).toHaveTextContent('300');
+    expect(aiTouchedEl).not.toHaveTextContent('900');
+    expect(aiTouchedEl).not.toHaveTextContent('1,080');
+
+    const untouchedEl = screen.getByTestId('measured-percentiles-untouched');
+    expect(untouchedEl).toHaveTextContent('900');
+    expect(untouchedEl).toHaveTextContent('1,080');
+    expect(untouchedEl).not.toHaveTextContent('42');
+    expect(untouchedEl).not.toHaveTextContent('300');
+  });
+
+  it('omits a percentile the DTO reported as null, without dropping the other one, and without leaking the OTHER arm', async () => {
+    mockMeasured(dto({
+      alertResolution: {
+        cohorts: [cohort({
+          aiTouched: { n: 40, proportionWithinHorizon: 0.8, censoredP50Minutes: 42, censoredP90Minutes: null },
+          // A distinct, non-overlapping value: if the aiTouched assertion below
+          // were satisfied by a bug that rendered the UNTOUCHED arm's numbers
+          // instead, this would catch it.
+          untouched: { n: 60, proportionWithinHorizon: 0.5, censoredP50Minutes: 900, censoredP90Minutes: 1080 },
+        })],
+        omitted: null,
+        exposureAgeMinutes: 15,
+        horizonHours: 24,
+      },
+    }));
+
+    render(<ImpactMeasuredBand window={90} />);
+
+    await screen.findByTestId('measured-cohort-rule-a');
+    const aiTouchedEl = screen.getByTestId('measured-percentiles-ai-touched');
+    // p50 survives; p90 (null in the DTO) must not appear as a stray "null" or
+    // fall back to the untouched arm's p90.
+    expect(aiTouchedEl).toHaveTextContent('42');
+    expect(aiTouchedEl).not.toHaveTextContent('1,080');
+    expect(aiTouchedEl).not.toHaveTextContent('null');
   });
 
   it('hides the censored note when no arm has a percentile to show', async () => {

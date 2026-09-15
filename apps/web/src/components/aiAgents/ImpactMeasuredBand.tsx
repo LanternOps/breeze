@@ -83,19 +83,22 @@ function ArmFigure({
   proportion,
   cohortSizeLabel,
   percentileText,
+  armTestId,
 }: {
   label: string;
   n: number;
   proportion: number;
   cohortSizeLabel: string;
   percentileText: string | null;
+  /** Distinguishes the two arms' otherwise-identical `data-testid`s (one per cohort row). */
+  armTestId: 'ai-touched' | 'untouched';
 }) {
   return (
     <div className="flex-1">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="text-lg font-semibold">{formatPercent(proportion)}</p>
       {percentileText !== null && (
-        <p data-testid="measured-percentiles" className="text-xs text-muted-foreground">
+        <p data-testid={`measured-percentiles-${armTestId}`} className="text-xs text-muted-foreground">
           {percentileText}
         </p>
       )}
@@ -121,6 +124,7 @@ function CohortRow({ cohort, t }: { cohort: MeasuredCohort; t: (key: string) => 
           proportion={cohort.aiTouched.proportionWithinHorizon}
           cohortSizeLabel={cohortSizeLabel}
           percentileText={formatPercentiles(cohort.aiTouched, t)}
+          armTestId="ai-touched"
         />
         <ArmFigure
           label={t('aiAgentsPage.impact.measured.armUntouched')}
@@ -128,6 +132,7 @@ function CohortRow({ cohort, t }: { cohort: MeasuredCohort; t: (key: string) => 
           proportion={cohort.untouched.proportionWithinHorizon}
           cohortSizeLabel={cohortSizeLabel}
           percentileText={formatPercentiles(cohort.untouched, t)}
+          armTestId="untouched"
         />
       </div>
     </div>
