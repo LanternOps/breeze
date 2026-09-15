@@ -71,6 +71,7 @@ import { SIDEBAR_CYCLE_MODE_EVENT } from '../../lib/keyboard/useGlobalShortcuts'
 import type { PermissionGrant } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { SERVICE_MANAGEMENT_MODES, useOrgStore, type ServiceManagementMode } from '../../stores/orgStore';
+import { useToolSourcesGate } from '../../stores/featuresStore';
 import { hasPermission } from '../../lib/permissions';
 import { WEB_VERSION } from '../../lib/version';
 import { semverCompare } from '@breeze/shared';
@@ -166,6 +167,8 @@ type NavItem = {
   // Shown only when the current partner has AI for Office enabled (runtime flag
   // from /orgs/partners/me). Undefined means not gated on the partner flag.
   requiresAiForOffice?: boolean;
+  /** #5216 W01: gated on the SERVER's TOOL_SOURCES_ENABLED via /config. */
+  requiresToolSources?: boolean;
   // Hidden unless the user holds this permission (e.g. billing nav gated on
   // invoices:read). UX only — the route still enforces it server-side. While
   // the permission set is still loading, the item stays hidden. Typed as the
@@ -251,6 +254,7 @@ export const navSections: NavSection[] = [
       { name: 'Fleet Design', labelKey: 'nav.fleetDesign', href: '/ai-agents/fleet-design', icon: DraftingCompass, requiredPermission: { resource: 'ai_agents', action: 'read' } },
       { name: 'AI Usage & Budget', labelKey: 'nav.aiUsageBudget', href: '/settings/ai-usage', icon: BrainCircuit, partnerScopeOnly: true },
       { name: 'Script authoring', labelKey: 'nav.scriptAuthoring', href: '/settings/ai-script-authoring', icon: FileCode, requiredPermission: { resource: 'ai_agents', action: 'read' } },
+      { name: 'Tool Sources', labelKey: 'nav.toolSources', href: '/settings/tool-sources', icon: Plug, requiresToolSources: true, requiredPermission: { resource: 'tool_sources', action: 'read' } },
       { name: 'AI for Office', labelKey: 'nav.aiForOffice', href: '/ai-for-office', icon: FileSpreadsheet, partnerScopeOnly: true, requiresAiForOffice: true },
     ],
   },
@@ -600,6 +604,9 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const [brandName, setBrandName] = useState<string | null>(null);
   const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
   const [aiForOfficeEnabled, setAiForOfficeEnabled] = useState(false);
+  // #5216 W01 — the server kill switch, read from /config through the shared
+  // features store (the same one registration/aiOperatorTasks use).
+  const { enabled: toolSourcesEnabled } = useToolSourcesGate();
   // #5075 W04 — persisted, so the first paint after a reload already has the
   // right sections; the /orgs/partners/me effect below refreshes it.
   const serviceManagementMode = useOrgStore((state) => state.serviceManagementMode);
@@ -804,6 +811,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   const isNavItemVisible = (item: NavItem): boolean => {
     if (item.requiresModule === 'service_management' && serviceManagementMode !== 'native') return false;
     if (item.requiresAiForOffice && !aiForOfficeEnabled) return false;
+    if (item.requiresToolSources && !toolSourcesEnabled) return false;
     if (item.platformAdminOnly && !isPlatformAdmin) return false;
     if (item.partnerScopeOnly) {
       const { scope } = getJwtClaims();
