@@ -73,7 +73,18 @@ function compile(fragment: unknown): { sql: string; params: unknown[] } {
  * statically here — `vi.mock` is hoisted above imports — and never crosses an
  * await boundary.
  */
-const dbMock = mockedDb as unknown as Record<string, ReturnType<typeof vi.fn>>;
+type ChainMock = Record<string, ReturnType<typeof vi.fn>>;
+const dbMock = mockedDb as unknown as ChainMock;
+/** Non-optional accessors: the chain mock defines every method in its factory. */
+const spy = (name: string): ReturnType<typeof vi.fn> => dbMock[name]!;
+const db = {
+  values: spy('values'),
+  where: spy('where'),
+  orderBy: spy('orderBy'),
+  insert: spy('insert'),
+  delete: spy('delete'),
+  transaction: spy('transaction'),
+};
 
 /**
  * Clear CALL HISTORY only. `vi.clearAllMocks()` would strip the chain methods'
@@ -126,7 +137,6 @@ describe('partner-wide write gating', () => {
   });
 
   it('a partner admin may create a partner-wide template', async () => {
-    const db = dbMock;
     dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1', name: 'X', isActive: true }]);
     await createChecklistTemplate({ ownerScope: 'partner', name: 'X', items: [] }, PARTNER_ADMIN);
     expect(db.values).toHaveBeenCalledWith(
@@ -135,7 +145,6 @@ describe('partner-wide write gating', () => {
   });
 
   it('a partner tech with orgAccess=selected may NOT create a partner-wide template', async () => {
-    const db = dbMock;
     await expect(
       createChecklistTemplate({ ownerScope: 'partner', name: 'X', items: [] }, PARTNER_TECH),
     ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
@@ -149,7 +158,6 @@ describe('partner-wide write gating', () => {
   });
 
   it('404s an org the actor cannot access, without touching the db', async () => {
-    const db = dbMock;
     await expect(
       createChecklistTemplate(
         { ownerScope: 'organization', orgId: 'o-9', name: 'X', items: [] },
@@ -198,7 +206,6 @@ describe('listChecklistTemplates', () => {
     // The web fetchWithAuth wrapper pins orgId on EVERY request once an org is
     // open, so a bare `org_id = $1` would hide every partner-wide template the
     // moment a technician opens a ticket (#5675).
-    const db = dbMock;
     dbMocks.rows.push([]);
     await listChecklistTemplates(PARTNER_ADMIN, { orgId: 'o-1' });
     const { sql, params } = compile(db.where.mock.calls.at(-1)?.[0]);
@@ -208,7 +215,6 @@ describe('listChecklistTemplates', () => {
   });
 
   it('hides inactive templates unless includeInactive is set', async () => {
-    const db = dbMock;
     dbMocks.rows.push([]);
     await listChecklistTemplates(PARTNER_ADMIN, {});
     const activeOnly = compile(db.where.mock.calls.at(-1)?.[0]);
@@ -243,7 +249,6 @@ describe('applyChecklistTemplateToTicket', () => {
   }
 
   it('stamps copied rows with the TICKET’s org even for a partner-wide template', async () => {
-    const db = dbMock;
     queueApply({ id: 't-1', orgId: null, partnerId: 'p-1' }, [
       { id: 'ti-1', label: 'Step A', detail: null, sortOrder: 0 },
       { id: 'ti-2', label: 'Step B', detail: 'note', sortOrder: 1 },
@@ -263,7 +268,6 @@ describe('applyChecklistTemplateToTicket', () => {
   });
 
   it('preserves the template order and appends after the existing items', async () => {
-    const db = dbMock;
     // Ordering is Postgres's job (ORDER BY sort_order, label) and the chain
     // mock cannot model it, so the queued rows arrive already ordered as the
     // database would return them. The ORDER BY itself is asserted below, and
@@ -293,7 +297,6 @@ describe('applyChecklistTemplateToTicket', () => {
   });
 
   it('replace_unticked deletes only unticked rows, in the SAME transaction', async () => {
-    const db = dbMock;
     queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, [
       { id: 'ti-1', label: 'A', detail: null, sortOrder: 0 },
     ]);
@@ -319,7 +322,6 @@ describe('applyChecklistTemplateToTicket', () => {
   });
 
   it('append does NOT delete anything', async () => {
-    const db = dbMock;
     queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, [
       { id: 'ti-1', label: 'A', detail: null, sortOrder: 0 },
     ]);
@@ -371,7 +373,6 @@ describe('applyChecklistTemplateToTicket', () => {
   });
 
   it('inserts nothing when the template has no items', async () => {
-    const db = dbMock;
     queueApply({ id: 't-1', orgId: 'o-1', partnerId: null }, []);
     await applyChecklistTemplateToTicket(
       { id: 'tk-1', orgId: 'o-1' },
