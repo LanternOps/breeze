@@ -540,9 +540,20 @@ softwarePoliciesRoutes.get(
 // missing software on ~N device(s)" warning (spec Risks §2, "Fleet-wide first
 // run"). Read-only: same auth gate and site-ceiling narrowing as its GET
 // siblings, arms nothing, needs no MFA and no canMutateOrgWideGovernance
-// (those gates exist only on writes). Response contract is exactly
-// `{ eligibleDeviceCount: number }` — W04's PolicyForm.tsx already codes
-// against it and treats any non-finite value as "unavailable".
+// (those gates exist only on writes).
+//
+// Response contract is exactly `{ eligibleDeviceCount: number }` and must stay
+// that way: W04 (#5509) is specified to consume that shape and degrade any
+// non-2xx to "unavailable". That UI has NOT landed — as of this wave nothing
+// under apps/web references install-preview — so the contract is owed to W04's
+// plan, not to shipped code.
+//
+// Known limitation the bare number cannot express: the count reflects
+// violations the compliance worker recorded on its last pass, and policy
+// create/update only ENQUEUE a recheck. A never-evaluated policy therefore
+// previews as 0. The service logs that case rather than returning a
+// distinguishable value; giving the operator an explicit "not measured yet"
+// state is W04's call, because it would change this contract.
 softwarePoliciesRoutes.get(
   '/:id/install-preview',
   requireSoftwarePolicyRead,
