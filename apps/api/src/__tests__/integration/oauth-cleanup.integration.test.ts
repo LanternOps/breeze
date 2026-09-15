@@ -99,6 +99,37 @@ describe('OAuth cleanup raw-sql Date binding', () => {
     expect(stale).toHaveLength(0);
   });
 
+  // #5610: before this, the age test was `last_used_at IS NULL` only, so a DCR
+  // client that authenticated once and was then abandoned could never be
+  // garbage-collected — it kept its client_id forever with no grants, tokens
+  // or partner binding.
+  it('cleanupStaleOauthClients ages out an abandoned once-used client but keeps a recently-used one', async () => {
+    const veryOld = new Date(Date.now() - DCR_STALE_CLIENT_TTL_MS - 24 * 60 * 60 * 1000);
+    const recently = new Date(Date.now() - 60 * 60 * 1000);
+
+    await getTestDb().insert(oauthClients).values([
+      {
+        id: 'abandoned-once-used',
+        partnerId: null,
+        metadata: { client_name: 'used once, then abandoned' },
+        createdAt: veryOld,
+        lastUsedAt: veryOld,
+      },
+      {
+        id: 'recently-used',
+        partnerId: null,
+        metadata: { client_name: 'old registration, still in use' },
+        createdAt: veryOld,
+        lastUsedAt: recently,
+      },
+    ]);
+
+    await withSystemDbAccessContext(() => cleanupStaleOauthClients());
+
+    const remaining = await getTestDb().select({ id: oauthClients.id }).from(oauthClients);
+    expect(remaining.map((c) => c.id).sort()).toEqual(['recently-used']);
+  });
+
   it('cleanupExpiredOauthLifecycleRows runs without ERR_INVALID_ARG_TYPE on real postgres-js', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

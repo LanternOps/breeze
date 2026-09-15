@@ -46,6 +46,7 @@ export const ERROR_IDS = {
   OAUTH_SCOPE_POLICY_LOOKUP_FAILED: 'OAUTH_SCOPE_POLICY_LOOKUP_FAILED',
   OAUTH_RESOURCE_ALIAS_NORMALIZED: 'OAUTH_RESOURCE_ALIAS_NORMALIZED',
   OAUTH_GRANT_TENANCY_MISSING: 'OAUTH_GRANT_TENANCY_MISSING',
+  OAUTH_CLIENT_LAST_USED_STAMP_FAILED: 'OAUTH_CLIENT_LAST_USED_STAMP_FAILED',
 } as const;
 
 export type OAuthErrorId = typeof ERROR_IDS[keyof typeof ERROR_IDS];
@@ -83,4 +84,24 @@ export function logOauthDebug(args: {
     // eslint-disable-next-line no-console
     console.debug(`[oauth] ${args.errorId} ${args.message}`, args.context ?? {});
   }
+}
+
+/**
+ * Warn-level counterpart to logOauthError for advisory failures — work that is
+ * bookkeeping only and must never fail the request it rides along with. Stays
+ * out of Sentry on purpose: these are expected-under-load, non-actionable
+ * per-occurrence, and would drown the OAuth error signal.
+ */
+export function logOauthWarn(args: {
+  errorId: OAuthErrorId;
+  message: string;
+  err?: unknown;
+  context?: Record<string, unknown>;
+}): void {
+  const { errorId, message, err, context } = args;
+  // eslint-disable-next-line no-console
+  console.warn(`[oauth] ${errorId} ${message}`, {
+    ...(context ?? {}),
+    error: err instanceof Error ? { name: err.name, message: err.message } : err,
+  });
 }
