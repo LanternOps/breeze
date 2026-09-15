@@ -29,7 +29,13 @@ import type { TicketAttachmentMeta } from '@breeze/shared';
 import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
 import { openBytes } from '../../services/ticketAttachmentStorage';
 import { captureException } from '../../services/sentry';
-import { contentDispositionFor } from '../tickets/attachments';
+// `contentDispositionFor` lives in services/attachmentFilename.ts. It used to be
+// imported from routes/tickets/attachments.ts, which merely RE-EXPORTS it —
+// that pulled the whole technician ticket route surface into this module's
+// graph and put it in an import cycle, so under Vite's SSR transform the
+// re-exported binding could still be uninitialised when this handler ran
+// (TypeError: contentDispositionFor is not a function). Import the source.
+import { contentDispositionFor } from '../../services/attachmentFilename';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';

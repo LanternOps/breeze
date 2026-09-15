@@ -116,3 +116,86 @@ describe('ticketAttachmentStorage (W08 #3902)', () => {
     expect(deleteObjects).toHaveBeenCalledWith(['a', 'b']);
   });
 });
+
+describe('artifact-backed attachments (execution-plane spec §6.3)', () => {
+  const ORG = '11111111-1111-4111-8111-111111111111';
+  const ART = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  /**
+   * `artifactService` is mocked per-test rather than at module scope: the suite
+   * above imports `./ticketAttachmentStorage` dynamically after setting env, and
+   * a module-scope mock of a module it only transitively reaches would apply to
+   * those tests too.
+   */
+  async function loadWithArtifactService(overrides: {
+    resolveArtifact?: ReturnType<typeof vi.fn>;
+    openArtifactStream?: ReturnType<typeof vi.fn>;
+  }) {
+    const resolveArtifact = overrides.resolveArtifact ?? vi.fn();
+    const openArtifactStream = overrides.openArtifactStream ?? vi.fn();
+    vi.doMock('./artifacts/artifactService', () => ({ resolveArtifact, openArtifactStream }));
+    const mod = await import('./ticketAttachmentStorage');
+    return { ...mod, resolveArtifact, openArtifactStream };
+  }
+
+  it('streams the artifact when the row points at one', async () => {
+    const stream = { pipe: () => {} };
+    const { openBytes, resolveArtifact, openArtifactStream } = await loadWithArtifactService({
+      resolveArtifact: vi.fn(async () => ({ id: ART, orgId: ORG, bytes: 8, blobKey: 'eu/a' })),
+      openArtifactStream: vi.fn(async () => stream),
+    });
+
+    const opened = await openBytes(
+      { storageBackend: 'artifact', storageKey: null, data: null, artifactId: ART },
+      { orgId: ORG },
+    );
+
+    expect(resolveArtifact).toHaveBeenCalledWith(ART, { orgId: ORG });
+    expect(opened.contentLength).toBe(8);
+    expect(opened.body).toBe(stream);
+    expect(openArtifactStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('raises a 410 when the artifact has expired out from under the row', async () => {
+    // ON DELETE SET NULL nulled the pointer: the attachment row survives, the
+    // bytes do not. This must be distinguishable from "no such attachment".
+    const { openBytes } = await loadWithArtifactService({});
+    await expect(
+      openBytes(
+        { storageBackend: 'artifact', storageKey: null, data: null, artifactId: null },
+        { orgId: ORG },
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_EXPIRED', status: 410 });
+  });
+
+  it('raises a 410 when no org scope is supplied — never resolves a handle unscoped', async () => {
+    const { openBytes, resolveArtifact } = await loadWithArtifactService({});
+    await expect(
+      openBytes({ storageBackend: 'artifact', storageKey: null, data: null, artifactId: ART }),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_EXPIRED', status: 410 });
+    expect(resolveArtifact).not.toHaveBeenCalled();
+  });
+
+  it('raises a 410 when the pointer is set but the artifact no longer resolves in this org', async () => {
+    const { openBytes } = await loadWithArtifactService({
+      resolveArtifact: vi.fn(async () => null),
+    });
+    await expect(
+      openBytes(
+        { storageBackend: 'artifact', storageKey: null, data: null, artifactId: ART },
+        { orgId: ORG },
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_EXPIRED', status: 410 });
+  });
+
+  it('deletes nothing of its own for an artifact row — the artifact owns the blob', async () => {
+    const { deleteBytes } = await loadWithArtifactService({});
+    await deleteBytes({ storageBackend: 'artifact', storageKey: null, data: null, artifactId: ART });
+    expect(deleteObjects).not.toHaveBeenCalled();
+  });
+});

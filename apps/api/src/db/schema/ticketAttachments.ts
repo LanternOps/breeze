@@ -19,13 +19,27 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   ticketId: uuid('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   commentId: uuid('comment_id').references(() => ticketComments.id, { onDelete: 'cascade' }),
   uploadedByUserId: uuid('uploaded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  storageBackend: varchar('storage_backend', { length: 8 }).$type<'s3' | 'db'>().notNull(),
+  storageBackend: varchar('storage_backend', { length: 8 })
+    .$type<'s3' | 'db' | 'artifact'>().notNull(),
   storageKey: text('storage_key'),
   data: bytea('data'),
   contentType: varchar('content_type', { length: 64 }).notNull(),
   byteSize: integer('byte_size').notNull(),
   originalFilename: varchar('original_filename', { length: 255 }).notNull(),
   sha256: char('sha256', { length: 64 }).notNull(),
+  /**
+   * The `ai_run_artifacts` row that owns this attachment's bytes, for a
+   * `storage_backend = 'artifact'` row (execution-plane spec §6.3). NULL for
+   * every uploaded attachment — and ALSO null on an artifact-backed row whose
+   * artifact has since expired (ON DELETE SET NULL), which the content route
+   * answers 410 for. Never dereference it without handling that.
+   *
+   * The FK is created in SQL only (2026-10-16-191700-artifact-attachments.sql),
+   * not declared with `.references()`: `aiWorkspace` -> `aiAgents` -> `portal`
+   * reaches back here, and a `.references()` would close a schema import cycle
+   * that `tsc` reports as TS7022. Same technique as `contracts.ts`.
+   */
+  artifactId: uuid('artifact_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   attachedAt: timestamp('attached_at', { withTimezone: true }),
 }, (t) => [
@@ -36,6 +50,7 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   index('ticket_attachments_comment_idx').on(t.commentId).where(sql`${t.commentId} IS NOT NULL`),
   index('ticket_attachments_pending_idx').on(t.uploadedByUserId, t.createdAt).where(sql`${t.commentId} IS NULL`),
   index('ticket_attachments_org_idx').on(t.orgId),
+  index('ticket_attachments_artifact_idx').on(t.artifactId).where(sql`${t.artifactId} IS NOT NULL`),
 ]);
 
 export type TicketAttachmentRow = typeof ticketAttachments.$inferSelect;
