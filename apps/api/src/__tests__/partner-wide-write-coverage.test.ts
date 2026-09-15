@@ -83,6 +83,15 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // no caller-supplied partner id, never reachable with a partner token's choice
   // of target.
   'services/monitors/builtInMonitors.ts': 'one-time per-partner provisioning of the partner\'s own built-in rows; callers are createPartner(), a requireScope(system) route, and the boot backfill',
+  // --- tool_sources / tool_source_tools became dual-axis in #5216 -----------
+  // Discovery is a BullMQ job, not a caller-facing write: it loads the source
+  // row by id, copies that row's OWN owner axis onto the tools it upserts (the
+  // constraint trigger tool_source_tools_owner_guard_trg rejects anything
+  // else), and never reads an owner from a request. Enqueueing it is what a
+  // caller can do, and every enqueue site (POST /tool-sources, PATCH
+  // /tool-sources/:id, POST /tool-sources/:id/discover) runs the capability
+  // gate in routes/toolSources.ts first.
+  'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; the caller-facing enqueue sites in routes/toolSources.ts run canManagePartnerWidePolicies()',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
   // hash, MFA secret, passkeys, phone, email verification, last-login), never
