@@ -17,9 +17,11 @@ import type { AiSweepSeverity } from './aiAgentSchedules';
  *   reboot_plan        device-scoped: reboot inside an EXISTING resolved
  *                      maintenance window. Never a synthesised time. W01
  *                      evidence resolves no windows, so every one is refused.
- *   chase              device-scoped: failed patch work to retry. W03 fills
- *                      the failure evidence; W01 refuses every one.
- *   escalation         something a human must look at.
+ *   chase              device-scoped: failed patch work to retry — an install
+ *                      WITH A HISTORY. W03 (#5749) fills the failure evidence
+ *                      and mints it through the same path as `install`, bounded
+ *                      by class and `PATCH_CHASE_MAX_ATTEMPTS`.
+ *   escalation         something a human must look at. Never mints.
  */
 export const PATCH_PLAN_ITEM_CLASSES = ['install', 'approval_advisory', 'reboot_plan', 'chase', 'escalation'] as const;
 export type PatchPlanItemClass = (typeof PATCH_PLAN_ITEM_CLASSES)[number];
@@ -140,6 +142,8 @@ export const PATCH_PLAN_REFUSAL_REASONS = [
   'class_not_retryable',
   /** The evidence already counts `PATCH_CHASE_MAX_ATTEMPTS` failed attempts — escalate instead. */
   'chase_attempts_exhausted',
+  /** The cited `attemptCount` is not what the evidence computed for that group. */
+  'attempt_count_mismatch',
 ] as const;
 export type PatchPlanRefusalReason = (typeof PATCH_PLAN_REFUSAL_REASONS)[number];
 

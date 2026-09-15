@@ -60,13 +60,36 @@
  * `approval_advisory` items mint nothing, ever (OD-3 A): `patch_approvals`
  * is partner/ring-scoped, and this program never calls the approve action.
  * `rollback` is never proposed.
+ *
+ * **W03 (#5749) — chase and escalation.** A `chase` is an install WITH A
+ * HISTORY: it goes down the identical minting path above (same eligibility
+ * intersection, same episode key, same suppression, same cap), and the only
+ * difference is the intent `reason`, which carries `attempt N of M` and the
+ * class. Before it reaches gate 3 it clears three extra pure gates in
+ * `gateOne`, all against the failedWork evidence (`refs.failedWorkByJobResult`):
+ *
+ *  a. every cited `jobResultId` is in the evidence AND all of them belong to
+ *     ONE group for this item's device and patch (`job_result_not_in_evidence`);
+ *  b. the cited `failureClass` / `attemptCount` equal what the evidence
+ *     computed — the model may QUOTE a class, never assign one
+ *     (`failure_class_mismatch` / `attempt_count_mismatch`);
+ *  c. the group's class is retryable (`class_not_retryable`) and its attempt
+ *     count is below `PATCH_CHASE_MAX_ATTEMPTS` (`chase_attempts_exhausted`).
+ *
+ * `escalation` items never mint. One that quotes a class or attempt count
+ * must cite the job results that prove it (gate b applies); one that quotes
+ * nothing is recorded as-is. `queued` results are the delivery clock and
+ * never appear in the failedWork section, so no chase can cite one.
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { ZodError } from 'zod';
 import {
+  PATCH_CHASE_MAX_ATTEMPTS,
+  PATCH_FAILURE_RETRYABLE_CLASSES,
   buildTriggerKey,
   type AiAgentRunPatchDto,
   type AiAgentRunPatchItemDto,
+  type PatchFailedWorkRef,
   type PatchIneligibleReason,
   type PatchPlanItem,
   type PatchPlanItemRecord,
@@ -95,15 +118,67 @@ function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   return runOutsideDbContext(() => withSystemDbAccessContext(fn));
 }
 
-/** Gate 1 for one item — pure, evidence-only. `null` = cleared. */
-function gateOne(item: PatchPlanItem, refs: PatchPlanOutcomeRefs, allPatchIds: ReadonlySet<string>): PatchPlanRefusalReason | null {
-  const deviceId = item.deviceId ?? null;
-  if (deviceId !== null && !refs.deviceIds.has(deviceId)) return 'device_not_in_evidence';
-  const scope = deviceId !== null ? refs.patchIdsByDevice.get(deviceId) ?? new Set<string>() : allPatchIds;
-  if ((item.patchIds ?? []).some((p) => !scope.has(p))) return 'patch_not_in_evidence';
-  if (item.windowId != null && !refs.windowIds.has(item.windowId)) return 'window_not_resolved';
-  if ((item.jobResultIds ?? []).some((j) => !refs.jobResultIds.has(j))) return 'job_result_not_in_evidence';
+/**
+ * W03: resolve the ONE failedWork group an item's cited job results name.
+ * `null` when they name none, several, or a group for another device/patch.
+ */
+function citedFailedWorkGroup(item: PatchPlanItem, refs: PatchPlanOutcomeRefs): PatchFailedWorkRef | null {
+  const ids = item.jobResultIds ?? [];
+  if (ids.length === 0) return null;
+  const byJob = refs.failedWorkByJobResult;
+  if (!byJob) return null;
+  let group: PatchFailedWorkRef | null = null;
+  for (const id of ids) {
+    const g = byJob.get(id);
+    if (!g) return null;
+    if (group && g !== group) return null;
+    group = g;
+  }
+  if (!group) return null;
+  if (item.deviceId !== group.deviceId) return null;
+  const patchIds = item.patchIds ?? [];
+  if (patchIds.length > 0 && patchIds.some((p) => p !== group!.patchId)) return null;
+  return group;
+}
+
+/** W03 gate b — a quoted class / attempt count must be what the evidence computed. */
+function quoteMismatch(item: PatchPlanItem, group: PatchFailedWorkRef | null): PatchPlanRefusalReason | null {
+  if (item.failureClass === undefined && item.attemptCount === undefined) return null;
+  if (!group) return 'failure_class_mismatch';
+  if (item.failureClass !== group.failureClass) return 'failure_class_mismatch';
+  if (item.attemptCount !== undefined && item.attemptCount !== group.attemptCount) return 'attempt_count_mismatch';
   return null;
+}
+
+/** Gate 1 for one item — pure, evidence-only. `null` = cleared. */
+function gateOne(
+  item: PatchPlanItem, refs: PatchPlanOutcomeRefs, allPatchIds: ReadonlySet<string>,
+): { reason: PatchPlanRefusalReason | null; group: PatchFailedWorkRef | null } {
+  const deviceId = item.deviceId ?? null;
+  if (deviceId !== null && !refs.deviceIds.has(deviceId)) return { reason: 'device_not_in_evidence', group: null };
+  const scope = deviceId !== null ? refs.patchIdsByDevice.get(deviceId) ?? new Set<string>() : allPatchIds;
+  if ((item.patchIds ?? []).some((p) => !scope.has(p))) return { reason: 'patch_not_in_evidence', group: null };
+  if (item.windowId != null && !refs.windowIds.has(item.windowId)) return { reason: 'window_not_resolved', group: null };
+  if ((item.jobResultIds ?? []).some((j) => !refs.jobResultIds.has(j))) return { reason: 'job_result_not_in_evidence', group: null };
+
+  // W03 — the chase gates (a, b, c in the header).
+  const group = citedFailedWorkGroup(item, refs);
+  if (item.class === 'chase') {
+    if (!group) return { reason: 'job_result_not_in_evidence', group: null };
+    // A chase MUST quote the class it is retrying: it is the one field a
+    // technician reads on the card, and an unquoted class is unverifiable.
+    if (item.failureClass === undefined) return { reason: 'failure_class_mismatch', group };
+    const mismatch = quoteMismatch(item, group);
+    if (mismatch) return { reason: mismatch, group };
+    if (!PATCH_FAILURE_RETRYABLE_CLASSES.has(group.failureClass)) return { reason: 'class_not_retryable', group };
+    if (group.attemptCount >= PATCH_CHASE_MAX_ATTEMPTS) return { reason: 'chase_attempts_exhausted', group };
+    return { reason: null, group };
+  }
+  if (item.class === 'escalation') {
+    const mismatch = quoteMismatch(item, group);
+    if (mismatch) return { reason: mismatch, group };
+  }
+  return { reason: null, group };
 }
 
 export interface PatchPersistRunInput {
@@ -140,9 +215,11 @@ export async function persistPatchPlan(
   for (const ids of refs.patchIdsByDevice.values()) for (const id of ids) allPatchIds.add(id);
 
   const refusals = new Map<number, PatchPlanRefusalReason>();
+  const groups = new Map<number, PatchFailedWorkRef>();
   items.forEach((item, index) => {
-    const reason = gateOne(item, refs, allPatchIds);
+    const { reason, group } = gateOne(item, refs, allPatchIds);
     if (reason) refusals.set(index, reason);
+    else if (group) groups.set(index, group);
   });
 
   const toCheck = [...new Set(items
@@ -178,19 +255,31 @@ export async function persistPatchPlan(
     };
   });
 
-  const intentIds = await mintInstallIntents(run, items, dispositions, agentAuth);
+  const intentIds = await mintInstallIntents(run, items, dispositions, groups, agentAuth);
   return { dispositions, intentIds };
 }
 
-/** Gates 3-7 of the header, over the `install` items that cleared 1 and 2. */
+/**
+ * W03: the one thing that differs between an install card and a chase card
+ * — the justification a technician reads. The attempt history is the
+ * evidence's, not the model's (gate b already proved they agree).
+ */
+export function chaseIntentReason(title: string, group: PatchFailedWorkRef): string {
+  return `${title} — retry attempt ${group.attemptCount + 1} of ${PATCH_CHASE_MAX_ATTEMPTS} after ${group.attemptCount} ${group.failureClass} failure(s)`;
+}
+
+/** Gates 3-7 of the header, over the `install` AND `chase` (W03) items that cleared 1 and 2. */
 async function mintInstallIntents(
   run: PatchPersistRunInput,
   items: PatchPlanItem[],
   dispositions: PatchPlanItemRecord[],
+  groups: ReadonlyMap<number, PatchFailedWorkRef>,
   agentAuth: AuthContext,
 ): Promise<string[]> {
   const candidates = dispositions.filter((record) =>
-    record.disposition === 'recorded' && record.class === 'install' && typeof record.deviceId === 'string');
+    record.disposition === 'recorded'
+    && (record.class === 'install' || record.class === 'chase')
+    && typeof record.deviceId === 'string');
   if (candidates.length === 0) return [];
 
   // Gate 3 — allowlist, before any read.
@@ -307,7 +396,10 @@ async function mintInstallIntents(
         orgId: run.orgId,
         // The item TITLE, not its detail: the one field the schema bounds to a
         // single short line, and what the approval card shows as justification.
-        reason: item.title,
+        // A chase (W03) appends the evidence's attempt history.
+        reason: item.class === 'chase' && groups.has(record.index)
+          ? chaseIntentReason(item.title, groups.get(record.index)!)
+          : item.title,
         // Problem-derived (OD-4 A), stored verbatim (an explicit key wins over
         // the sha256 derivation in intentService), which is what makes the
         // suppression read above possible. First surviving id's key.

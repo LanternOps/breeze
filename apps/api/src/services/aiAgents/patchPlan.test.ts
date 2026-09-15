@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import type { PatchPlanOutcome, PatchPlanOutcomeRefs } from '@breeze/shared';
+import { PATCH_CHASE_MAX_ATTEMPTS, type PatchFailedWorkRef, type PatchPlanOutcome, type PatchPlanOutcomeRefs } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
@@ -326,6 +326,150 @@ describe('persistPatchPlan — W02 minting branch', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// W03 (#5749) — chase proposals and escalation items
+// ---------------------------------------------------------------------------
+describe('persistPatchPlan — W03 chase gates', () => {
+  const JR2 = '00000000-0000-4000-8000-0000000000f3';
+  const JR3 = '00000000-0000-4000-8000-0000000000f4';
+  const group = (over: Partial<PatchFailedWorkRef> = {}): PatchFailedWorkRef =>
+    ({ deviceId: D1, patchId: P1, failureClass: 'transient', attemptCount: 1, jobResultIds: [JR], ...over });
+  const refsWith = (...groups: PatchFailedWorkRef[]): PatchPlanOutcomeRefs => {
+    const byJob = new Map<string, PatchFailedWorkRef>();
+    for (const g of groups) for (const id of g.jobResultIds) byJob.set(id, g);
+    return {
+      deviceIds: new Set([D1, D2]),
+      patchIdsByDevice: new Map([[D1, new Set([P1, P9])], [D2, new Set([P1])]]),
+      windowIds: new Set(),
+      jobResultIds: new Set(byJob.keys()),
+      failedWorkByJobResult: byJob,
+    };
+  };
+  const chase = (over: Record<string, unknown> = {}) => ({
+    ...base, class: 'chase' as const, deviceId: D1, patchIds: [P1], jobResultIds: [JR], failureClass: 'transient' as const, attemptCount: 1,
+    title: 'Retry KB1 on WS-01', ...over,
+  });
+
+  it('a chase item flows through the SAME eligibility intersection and episode suppression as an install', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([chase()]), refsWith(group()), agentAuth);
+    // one path, not two — a chase that skipped the eligibility gate would
+    // install a patch the ring no longer approves
+    expect(w02.resolveEligibility).toHaveBeenCalledWith({ deviceId: D1, orgId: ORG, patchIds: [P1] });
+    expect(w02.findIntents).toHaveBeenCalledTimes(1);
+    expect(w02.createActionIntent).toHaveBeenCalledWith(agentAuth, expect.objectContaining({
+      toolName: 'manage_patches',
+      input: { action: 'install', deviceIds: [D1], patchIds: [P1] },
+      idempotencyKey: `patch:${ORG}:${D1}:${P1}`,
+      scope: { deviceId: D1 },
+    }));
+    expect(intentIds).toEqual(['intent-1']);
+    expect(dispositions[0]).toMatchObject({ class: 'chase', disposition: 'intent_created', intentId: 'intent-1', mintedPatchIds: [P1] });
+  });
+
+  it('carries the attempt history and the class into the intent reason', async () => {
+    state.rows = [[{ id: D1 }]];
+    await persistPatchPlan(run, plan([chase()]), refsWith(group()), agentAuth);
+    const minted = w02.createActionIntent.mock.calls[0]![1] as { reason: string };
+    expect(minted.reason).toMatch(/attempt 2 of 2/);
+    expect(minted.reason).toContain('transient');
+    expect(minted.reason).toContain('Retry KB1 on WS-01');
+  });
+
+  it('refuses a chase whose jobResultIds are not in the evidence', async () => {
+    const { dispositions } = await persistPatchPlan(run, plan([chase({ jobResultIds: [JR2] })]), refsWith(group()), agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'job_result_not_in_evidence' });
+    expect(state.selects).toBe(0);
+  });
+
+  it('refuses a chase whose job results belong to a different device or patch than the item names', async () => {
+    const other = group({ deviceId: D2, jobResultIds: [JR2] });
+    const { dispositions } = await persistPatchPlan(run, plan([
+      chase({ jobResultIds: [JR2] }),                  // D2's result on a D1 item
+      chase({ patchIds: [P9] }),                       // P1's result on a P9 item
+      chase({ jobResultIds: [JR, JR2] }),              // two different groups
+    ]), refsWith(group(), other), agentAuth);
+    expect(dispositions.map((d) => d.reason)).toEqual(['job_result_not_in_evidence', 'job_result_not_in_evidence', 'job_result_not_in_evidence']);
+  });
+
+  it('refuses a chase whose cited failureClass disagrees with the evidence — the model may quote a class, never assign one', async () => {
+    const { dispositions } = await persistPatchPlan(run, plan([
+      chase({ failureClass: 'disk_space' }),
+      chase({ failureClass: undefined }),
+    ]), refsWith(group()), agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'failure_class_mismatch' });
+    expect(dispositions[1]).toMatchObject({ disposition: 'refused', reason: 'failure_class_mismatch' });
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('refuses a chase whose cited attemptCount disagrees with the evidence', async () => {
+    const { dispositions } = await persistPatchPlan(run, plan([chase({ attemptCount: 5 })]), refsWith(group()), agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'attempt_count_mismatch' });
+  });
+
+  it('refuses a chase on a non-retryable class', async () => {
+    for (const cls of ['needs_reboot', 'permanent', 'unknown'] as const) {
+      w02.createActionIntent.mockClear();
+      const { dispositions } = await persistPatchPlan(run, plan([chase({ failureClass: cls })]), refsWith(group({ failureClass: cls })), agentAuth);
+      expect(dispositions[0], cls).toMatchObject({ disposition: 'refused', reason: 'class_not_retryable' });
+      expect(w02.createActionIntent).not.toHaveBeenCalled();
+    }
+  });
+
+  it('refuses a chase once attemptCount >= PATCH_CHASE_MAX_ATTEMPTS and expects an escalation instead', async () => {
+    expect(PATCH_CHASE_MAX_ATTEMPTS).toBe(2);
+    const { dispositions } = await persistPatchPlan(run, plan([
+      chase({ attemptCount: 2, jobResultIds: [JR, JR2] }),
+    ]), refsWith(group({ attemptCount: 2, jobResultIds: [JR, JR2] })), agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'chase_attempts_exhausted' });
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('runs the chase gates BEFORE the W02 gates — a refused chase never costs an eligibility read', async () => {
+    const { dispositions } = await persistPatchPlan(run, plan([chase({ failureClass: 'disk_space' })]), refsWith(group()), agentAuth);
+    expect(dispositions[0]!.disposition).toBe('refused');
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+    expect(w02.findIntents).not.toHaveBeenCalled();
+  });
+
+  it('a chase is suppressed on the next occurrence like any other install (same episode key)', async () => {
+    state.rows = [[{ id: D1 }]];
+    w02.findIntents.mockResolvedValue([{ idempotencyKey: `patch:${ORG}:${D1}:${P1}`, status: 'pending_approval', createdAt: new Date(), decidedAt: null }]);
+    const { dispositions } = await persistPatchPlan(run, plan([chase()]), refsWith(group()), agentAuth);
+    expect(dispositions[0]).toMatchObject({ class: 'chase', disposition: 'suppressed', reason: 'live_intent_exists' });
+  });
+
+  it('never mints for an escalation item — recorded only', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([
+      { ...base, class: 'escalation', deviceId: D1, patchIds: [P1], jobResultIds: [JR, JR2, JR3], failureClass: 'permanent', attemptCount: 3 },
+      { ...base, class: 'escalation', deviceId: null },
+    ]), refsWith(group({ failureClass: 'permanent', attemptCount: 3, jobResultIds: [JR, JR2, JR3] })), agentAuth);
+    expect(dispositions.map((d) => d.disposition)).toEqual(['recorded', 'recorded']);
+    expect(intentIds).toEqual([]);
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+  });
+
+  it('refuses an escalation whose quoted class/attempts cannot be checked against cited job results, or disagree with them', async () => {
+    state.rows = [[{ id: D1 }]];
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'escalation', deviceId: D1, failureClass: 'permanent' },                                   // no jobResultIds to check against
+      { ...base, class: 'escalation', deviceId: D1, jobResultIds: [JR], failureClass: 'permanent', attemptCount: 1 }, // evidence says transient
+      { ...base, class: 'escalation', deviceId: D1, jobResultIds: [JR], failureClass: 'transient', attemptCount: 9 },
+    ]), refsWith(group()), agentAuth);
+    expect(dispositions.map((d) => d.reason)).toEqual(['failure_class_mismatch', 'failure_class_mismatch', 'attempt_count_mismatch']);
+  });
+
+  it('never chases a queued-offline install — there is no failure evidence row to cite', async () => {
+    // queuedOffline is a rollup scalar, not a failedWork row: nothing to key
+    // a chase on, so the only possible citation is out of evidence.
+    const { dispositions } = await persistPatchPlan(run, plan([chase()]), { ...refs, failedWorkByJobResult: new Map() }, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'job_result_not_in_evidence' });
+  });
+});
+
 describe('projectPatch', () => {
   it('returns null when there is no patchPlan at all', () => {
     expect(projectPatch({ scheduleId: null, triggerRef: {} }, {}, new Map())).toBeNull();
@@ -335,6 +479,29 @@ describe('projectPatch', () => {
   it('tolerates a maximally corrupt outcome', () => {
     const out = projectPatch({ scheduleId: null, triggerRef: {} }, { patchPlan: { items: 7, summary: 3, dispositions: 'x' } } as never, new Map());
     expect(out).toMatchObject({ summary: '', items: [], posture: null, recordedCount: 0, refusedCount: 0 });
+  });
+
+  it('projects the quoted failure class / attempt count and counts recorded escalations (W03)', () => {
+    const outcome = {
+      patchPlan: {
+        items: [
+          { class: 'chase', severity: 'high', deviceId: D1, patchIds: [P1], jobResultIds: [JR], failureClass: 'transient', attemptCount: 1, title: 't', detail: 'd', evidenceRef: 'e' },
+          { class: 'escalation', severity: 'high', deviceId: D1, failureClass: 'permanent', attemptCount: 3, title: 't', detail: 'd', evidenceRef: 'e' },
+          { class: 'escalation', severity: 'low', title: 't', detail: 'd', evidenceRef: 'e' },
+        ],
+        dispositions: [
+          { index: 0, class: 'chase', deviceId: D1, disposition: 'intent_created', intentId: 'i' },
+          { index: 1, class: 'escalation', deviceId: D1, disposition: 'recorded' },
+          { index: 2, class: 'escalation', deviceId: null, disposition: 'refused', reason: 'device_not_in_evidence' },
+        ],
+      },
+    };
+    const dto = projectPatch({ scheduleId: null, triggerRef: null }, outcome, new Map())!;
+    expect(dto.items[0]).toMatchObject({ failureClass: 'transient', attemptCount: 1 });
+    expect(dto.items[1]).toMatchObject({ failureClass: 'permanent', attemptCount: 3 });
+    expect(dto.items[2]).toMatchObject({ failureClass: null, attemptCount: null });
+    expect(dto.escalationCount).toBe(1);
+    expect(JSON.stringify(dto)).not.toContain(JR);
   });
 
   it('projects items with hostname, disposition and refusal reason — never the raw ids list', () => {
