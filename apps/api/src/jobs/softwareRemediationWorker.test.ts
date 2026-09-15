@@ -40,13 +40,27 @@ vi.mock('../services/sentry', () => ({ captureException: vi.fn() }));
 vi.mock('../services/bullmqUtils', () => ({ isReusableState: vi.fn(() => false) }));
 vi.mock('../services/softwarePolicyService', async (orig) => {
   // Keep the REAL arming evaluator — the whole point of the suite is that the
-  // gate itself is correct, not that a stubbed gate was consulted.
+  // gate itself is correct, not that a stubbed gate was consulted. The audit
+  // action constants are likewise the REAL ones (#5505 W01's D6 set), so a
+  // renamed member fails here rather than silently asserting a stale literal.
   const actual = await orig<typeof import('../services/softwarePolicyService')>();
   return {
     evaluateSoftwarePolicyArming: actual.evaluateSoftwarePolicyArming,
+    SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS: actual.SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
     recordSoftwarePolicyAudit: recordPolicyAuditMock,
   };
 });
+
+const { resolveTargetMock, hasUnfinishedMock, createPolicyDeploymentMock } = vi.hoisted(() => ({
+  resolveTargetMock: vi.fn(),
+  hasUnfinishedMock: vi.fn(async () => false),
+  createPolicyDeploymentMock: vi.fn(async () => ({ deploymentId: 'dep-1', status: 'pending' as const })),
+}));
+vi.mock('../services/softwarePolicyInstallRemediation', () => ({
+  resolvePolicyInstallTarget: resolveTargetMock,
+  hasUnfinishedPolicyOwnedInstall: hasUnfinishedMock,
+  createPolicyOwnedInstallDeployment: createPolicyDeploymentMock,
+}));
 
 const { selectMock, updateMock, insertMock } = vi.hoisted(() => ({
   selectMock: vi.fn(),
@@ -62,6 +76,7 @@ vi.mock('../db', () => ({
 import { isReusableState } from '../services/bullmqUtils';
 import {
   processRemediateDevice,
+  processRemediateDeviceInstall,
   scheduleSoftwareInstallRemediation,
   scheduleSoftwareRemediation,
 } from './softwareRemediationWorker';
@@ -89,6 +104,7 @@ function policyRow(overrides: Record<string, unknown> = {}) {
     mode: 'blocklist',
     enforceMode: false,
     remediationOptions: null,
+    approvalGeneration: 7,
     ...overrides,
   };
 }
@@ -449,5 +465,231 @@ describe('scheduleSoftwareInstallRemediation (feature #5505 W02)', () => {
     expect(enqueued).toEqual(['device-1']);
     expect(addMock).toHaveBeenCalledTimes(1);
     expect((addMock.mock.calls[0]![1] as { catalogIds: string[] }).catalogIds).toEqual(['catalog-abc']);
+  });
+});
+
+/**
+ * #5505 W03 — processRemediateDeviceInstall.
+ *
+ * W02 (#5917) landed a RICHER payload than W03's plan anticipated:
+ * `{ policyId, deviceId, catalogIds, generation, attempt }` rather than
+ * `{ policyId, deviceId }`. The catalogIds are already derived from the
+ * device's `missing` violations and deduped by the producer, and `generation`
+ * carries an explicit W03 obligation ("W03 re-reads the policy and skips a job
+ * whose premise was edited away").
+ *
+ * The processor therefore does NOT simply trust `data.catalogIds`. BullMQ
+ * payloads live in Redis and carry no authentication of their own (the same
+ * reasoning as `readTrigger`), so a forged or replayed job could name an
+ * in-tenant catalog item the policy never asked for. The processor intersects
+ * the payload with the catalogIds the compliance row says are STILL missing —
+ * which simultaneously closes that gap and makes a stale job install only what
+ * the policy currently still wants.
+ */
+describe('processRemediateDeviceInstall — #5505 W03', () => {
+  const INSTALL_ARMED = {
+    enforceMode: true,
+    remediationOptions: { autoUninstall: false, autoInstall: true },
+  };
+
+  const MISSING_COMPLIANCE = {
+    id: 'cs-1',
+    policyId: POLICY_ID,
+    deviceId: DEVICE_ID,
+    lastInstallRemediationAttempt: null,
+    violations: [{ type: 'missing', rule: { name: 'Chrome', catalogId: 'cat-1' }, severity: 'high' }],
+    installRemediationStatus: 'pending',
+  };
+
+  function installJob(overrides: Record<string, unknown> = {}) {
+    return {
+      type: 'install-remediate-device' as const,
+      policyId: POLICY_ID,
+      deviceId: DEVICE_ID,
+      catalogIds: ['cat-1'],
+      generation: 7,
+      attempt: 1,
+      ...overrides,
+    };
+  }
+
+  /** db.select() order for the install processor: policy -> device -> compliance. */
+  function primeInstallDb(policy: unknown, compliance: unknown = MISSING_COMPLIANCE) {
+    const results = [
+      [policy],
+      [{ orgId: ORG_ID, osType: 'windows', isEphemeral: false }],
+      [compliance],
+    ];
+    let call = 0;
+    selectMock.mockImplementation(() => chain(results[Math.min(call++, results.length - 1)]));
+    setSpy = vi.fn(() => chain([]));
+    updateMock.mockImplementation(() => ({ set: setSpy }));
+  }
+
+  beforeEach(() => {
+    hasUnfinishedMock.mockResolvedValue(false);
+    resolveTargetMock.mockResolvedValue({
+      ok: true,
+      target: { kind: 'install_method', catalogId: 'cat-1', installMethodId: 'im-1' },
+    });
+    createPolicyDeploymentMock.mockResolvedValue({ deploymentId: 'dep-1', status: 'pending' });
+  });
+
+  it('creates a policy-owned deployment for an armed policy and a missing violation', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(1);
+    expect(createPolicyDeploymentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ policyId: POLICY_ID, deviceId: DEVICE_ID, orgId: ORG_ID })
+    );
+    expect(policyAuditActions()).toContain('install_queued');
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('pending');
+  });
+
+  it('refuses a policy that is armed for uninstall but NOT for install', async () => {
+    primeInstallDb(
+      policyRow({ mode: 'allowlist', enforceMode: true, remediationOptions: { autoUninstall: true } })
+    );
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(policyAuditActions()).toContain('remediation_skipped_unarmed');
+    // The refusal must land on the INSTALL column, never on the uninstall one —
+    // a shared column would make a refused install look like a refused uninstall.
+    const written = setSpy.mock.calls[0]![0];
+    expect(written.installRemediationStatus).toBe('failed');
+    expect(written.remediationStatus).toBeUndefined();
+  });
+
+  it('skips a job whose generation no longer matches the policy — the superseded-premise gate', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', approvalGeneration: 9, ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob({ generation: 7 }));
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(recordDecisionMock).toHaveBeenCalledWith('install_generation_mismatch');
+  });
+
+  it('records skipped, not failed, for a rule with no catalogId', async () => {
+    resolveTargetMock.mockResolvedValue({ ok: false, reason: 'no_catalog_id' });
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(result.skipped).toBe(1);
+    const written = setSpy.mock.calls.at(-1)![0];
+    expect(written.installRemediationStatus).toBe('skipped');
+    // "Never fail silently": the reason has to be greppable in the audit trail.
+    const audit = recordPolicyAuditMock.mock.calls.at(-1)![0] as any;
+    expect(JSON.stringify(audit.details)).toContain('no_catalog_id');
+  });
+
+  it('skips a platform mismatch instead of creating a guaranteed-failing deployment', async () => {
+    resolveTargetMock.mockResolvedValue({ ok: false, reason: 'no_install_target_for_platform' });
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('skipped');
+  });
+
+  it('does not queue a second deployment while one is unfinished', async () => {
+    hasUnfinishedMock.mockResolvedValue(true);
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(recordDecisionMock).toHaveBeenCalledWith('command_deduped');
+  });
+
+  it('never installs onto an ephemeral Quick Support device', async () => {
+    const results = [
+      [policyRow({ mode: 'allowlist', ...INSTALL_ARMED })],
+      [{ orgId: ORG_ID, osType: 'windows', isEphemeral: true }],
+    ];
+    let call = 0;
+    selectMock.mockImplementation(() => chain(results[Math.min(call++, results.length - 1)]));
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates two rules that name the same catalogId into one deployment', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }), {
+      ...MISSING_COMPLIANCE,
+      violations: [
+        { type: 'missing', rule: { name: 'Chrome', catalogId: 'cat-1' }, severity: 'high' },
+        { type: 'missing', rule: { name: 'Chrome (alias)', catalogId: 'cat-1' }, severity: 'high' },
+      ],
+    });
+
+    const result = await processRemediateDeviceInstall(installJob({ catalogIds: ['cat-1', 'cat-1'] }));
+
+    expect(result.deploymentsCreated).toBe(1);
+    expect(createPolicyDeploymentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores unauthorized violations entirely — the install verb never uninstalls', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }), {
+      ...MISSING_COMPLIANCE,
+      violations: [{ type: 'unauthorized', software: { name: 'Unwanted App', version: '1.0' } }],
+    });
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+  });
+
+  it('installs ONLY the intersection of the payload and the still-missing catalogIds', async () => {
+    // A replayed or forged job naming an in-tenant catalog item the policy
+    // never asked for must install nothing for that item. The tenancy guard in
+    // resolvePolicyInstallTarget cannot see this: cat-99 may be perfectly
+    // reachable from the device's own org.
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    const result = await processRemediateDeviceInstall(
+      installJob({ catalogIds: ['cat-1', 'cat-99'] })
+    );
+
+    expect(result.deploymentsCreated).toBe(1);
+    expect(resolveTargetMock).toHaveBeenCalledTimes(1);
+    expect(resolveTargetMock).toHaveBeenCalledWith(expect.objectContaining({ catalogId: 'cat-1' }));
+  });
+
+  it('skips when the compliance row no longer reports any of the payload catalogIds missing', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }), {
+      ...MISSING_COMPLIANCE,
+      violations: [{ type: 'missing', rule: { name: 'Firefox', catalogId: 'cat-other' }, severity: 'high' }],
+    });
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result.deploymentsCreated).toBe(0);
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('skipped');
+  });
+
+  it('never touches installRemediationAttempts — that counter belongs to the compliance worker', async () => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+
+    await processRemediateDeviceInstall(installJob());
+
+    for (const call of setSpy.mock.calls) {
+      expect(call[0]).not.toHaveProperty('installRemediationAttempts');
+    }
   });
 });
