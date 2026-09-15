@@ -18,6 +18,7 @@ import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
 import { assertChecklistTemplateUsableByTemplateItemOwner } from './checklistTemplateReference';
 import { ticketChecklistTemplates } from '../db/schema';
+import { organizations } from '../db/schema/orgs';
 
 /**
  * Deliverable template sets and items (spec #5573 §4.6, D9). Dual ownership per
@@ -349,11 +350,26 @@ export async function applyTemplateSet(
   // This runs BEFORE the transaction, so a refusal writes nothing.
   const referenced = [...new Set(items.map((i) => i.checklistTemplateId).filter((v): v is string => !!v))];
   if (referenced.length > 0) {
+    // The TARGET org's partner, not the actor's and not the source set's: it is
+    // what decides which partner-wide templates the copied deliverable will be
+    // able to reach once it exists.
+    const [targetOrg] = await db.select({ partnerId: organizations.partnerId })
+      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
     const owners = await db
       .select({ id: ticketChecklistTemplates.id, orgId: ticketChecklistTemplates.orgId, partnerId: ticketChecklistTemplates.partnerId })
       .from(ticketChecklistTemplates)
       .where(inArray(ticketChecklistTemplates.id, referenced));
-    const bad = owners.filter((o) => o.orgId !== null && o.orgId !== orgId).map((o) => o.id);
+    const bad = owners.filter((o) => (
+      o.orgId !== null
+        // An ORG-owned template: usable only if that org IS the target.
+        ? o.orgId !== orgId
+        // A PARTNER-WIDE template is "visible to both by construction" ONLY
+        // when it belongs to the target org's own partner. One owned by a
+        // DIFFERENT MSP is exactly as unreachable as a foreign org's private
+        // template, so it is refused here rather than being left to
+        // createDeliverable's second-layer 404 mid-transaction.
+        : targetOrg?.partnerId == null || o.partnerId !== targetOrg.partnerId
+    )).map((o) => o.id);
     // A referenced id that resolved to no row is already broken. Treat it as
     // bad rather than silently applying a dangling pointer that would produce
     // an empty checklist forever after, with no error anywhere.

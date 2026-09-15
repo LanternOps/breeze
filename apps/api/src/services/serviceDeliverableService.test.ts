@@ -1104,13 +1104,37 @@ describe('serviceDeliverableService', () => {
       expect(checklistRows()).toBeUndefined();
     });
 
-    it('seeds nothing when the referenced template has no items', async () => {
+    it('seeds nothing when the referenced template has no items, and WARNS rather than failing silently', async () => {
+      // A referenced-but-empty template is indistinguishable downstream from
+      // "no checklist configured": the ticket opens, `checklist` reads null,
+      // and nothing says a checklist was meant to be here. The warning is the
+      // only signal that exists, so it is pinned.
       seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: 'tcl-empty' });
       createTicketMock.mockResolvedValue({ id: 't1' });
       queueResult([]);
       queueResult([]);                                       // template items: none
-      await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
-      expect(checklistRows()).toBeUndefined();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
+        expect(checklistRows()).toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('checklist template with no items'),
+          'orgId=org1', 'deliverableId=d1', 'checklistTemplateId=tcl-empty',
+        );
+      } finally { warn.mockRestore(); }
+    });
+
+    it('does NOT warn when the deliverable simply has no checklist template', async () => {
+      // The warning must mean "something is misconfigured", not "this
+      // deliverable has no checklist" — otherwise it is noise and gets ignored.
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: null });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
+        expect(warn).not.toHaveBeenCalled();
+      } finally { warn.mockRestore(); }
     });
 
     it('a ticketless occurrence (Service Management off) seeds NOTHING and does not throw', async () => {

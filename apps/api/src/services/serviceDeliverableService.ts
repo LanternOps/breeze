@@ -925,7 +925,20 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
       .from(ticketChecklistTemplateItems)
       .where(eq(ticketChecklistTemplateItems.templateId, cfg.checklistTemplateId))
       .orderBy(asc(ticketChecklistTemplateItems.sortOrder), asc(ticketChecklistTemplateItems.label));
-    if (steps.length > 0) {
+    if (steps.length === 0) {
+      // A referenced template with NO items is indistinguishable, downstream,
+      // from a deliverable that was never given a checklist at all: the ticket
+      // opens, `checklist` reads null, and nothing anywhere says a checklist
+      // was supposed to be here. That is the exact silent-empty failure the
+      // delete guard exists to prevent, arriving by a different route (an admin
+      // removed every step from a template a live deliverable still points at).
+      // Warn so it is visible in logs and Sentry rather than only in a customer
+      // complaint weeks later. Matches the service_management_off branch above.
+      console.warn(
+        '[deliverables] a deliverable references a checklist template with no items — its ticket opened with an empty checklist',
+        `orgId=${d.orgId}`, `deliverableId=${d.id}`, `checklistTemplateId=${cfg.checklistTemplateId}`,
+      );
+    } else {
       await db.insert(ticketChecklistItems).values(steps.map((step, index) => ({
         // The DELIVERABLE's org. NEVER the template's, which is NULL for a
         // partner-wide template — a partner-wide template produces org-scoped

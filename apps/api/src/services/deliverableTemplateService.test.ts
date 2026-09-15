@@ -293,7 +293,7 @@ describe('applyTemplateSet', () => {
   ];
 
   it('copies instructions and checklistTemplateId onto the new deliverable', async () => {
-    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
+    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ partnerId: 'p1' }], [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
     await applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] });
     expect(createdCalls[0]!.input).toMatchObject({
       instructions: 'Runbook prose',
@@ -302,7 +302,7 @@ describe('applyTemplateSet', () => {
   });
 
   it('409s CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG for org A’s PRIVATE template applied to org B', async () => {
-    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ id: 'tcl-A', orgId: 'org1', partnerId: null }]);
+    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ partnerId: 'p1' }], [{ id: 'tcl-A', orgId: 'org1', partnerId: null }]);
     await expect(applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] }))
       .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-A'] } });
     // Nothing is written: the check runs BEFORE the transaction.
@@ -311,20 +311,32 @@ describe('applyTemplateSet', () => {
 
   it('ALLOWS a PARTNER-WIDE checklist template across orgs of the same partner', async () => {
     // This is the whole point of partner-wide: one procedure, every customer.
-    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
+    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ partnerId: 'p1' }], [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
     await expect(applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] }))
       .resolves.toBeDefined();
   });
 
   it('ALLOWS an org-owned checklist template when the target IS that org', async () => {
-    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ id: 'tcl-A', orgId: 'org1', partnerId: null }], []);
+    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ partnerId: 'p1' }], [{ id: 'tcl-A', orgId: 'org1', partnerId: null }], []);
     await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin)).resolves.toBeDefined();
   });
 
   it('409s a DANGLING pointer rather than applying it silently', async () => {
-    dbMocks.rows.push([set], withChecklist('tcl-GONE'), []);   // owner lookup resolves nothing
+    dbMocks.rows.push([set], withChecklist('tcl-GONE'), [{ partnerId: 'p1' }], []);   // owner lookup resolves nothing
     await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin))
       .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-GONE'] } });
+  });
+
+  it('409s a FOREIGN partner’s partner-wide template too, not just a foreign org’s', async () => {
+    // A partner-wide template is only "visible to both orgs by construction"
+    // when it belongs to the TARGET ORG'S OWN partner. One owned by a different
+    // MSP is exactly as unreachable as a foreign org's private template, so the
+    // guard must reject it here rather than leaning on createDeliverable's
+    // second-layer 404 mid-transaction.
+    dbMocks.rows.push([set], withChecklist('tcl-FOREIGN'), [{ partnerId: 'p-TARGET' }], [{ id: 'tcl-FOREIGN', orgId: null, partnerId: 'p-OTHER' }]);
+    await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-FOREIGN'] } });
+    expect(createdCalls).toEqual([]);
   });
 
   it('does not query template owners at all when no item carries one', async () => {

@@ -395,6 +395,99 @@ describe('deliverable -> checklist seeding (#5808 W03)', () => {
     expect(ok.checklistTemplateId).toBe(partnerWideTemplate);
   });
 
+  describe('applyTemplateSet cross-org guard on real Postgres', () => {
+    // The mocked unit tests cover this too, but this rule IS the app-layer
+    // substitute for a composite FK that structurally cannot exist here — and
+    // CLAUDE.md's own lesson is that this class of contract is exactly what
+    // mocked tests miss (cascade lists: contract tests 5/5, review 0/5). So it
+    // gets a real-database proof as well.
+    async function seedSetReferencing(
+      partnerId: string,
+      checklistTemplateId: string,
+    ): Promise<string> {
+      const setId = await seedSet({ partnerId, name: uniqueName('Cross-org set') });
+      await seedSetItem(setId, { partnerId }, {
+        name: uniqueName('Cross-org deliverable'), cadence: 'monthly', checklistTemplateId,
+      });
+      return setId;
+    }
+
+    it('409s CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG when org A’s PRIVATE template is applied to org B, writing nothing', async () => {
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+
+      const privateToA = await seedTemplate({ orgId: orgA.id, name: uniqueName('Org A private') });
+      await seedTemplateItem(privateToA, { orgId: orgA.id }, 'A-only step', 0);
+      const setId = await seedSetReferencing(partner.id, privateToA);
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partner.id, partnerOrgAccess: 'all',
+        accessibleOrgIds: [orgA.id, orgB.id],
+      };
+      await expect(
+        withDbAccessContext(partnerContext(partner.id, [orgA.id, orgB.id]), () =>
+          applyTemplateSet(orgB.id, setId, { effectiveFrom: '2026-10-01' }, actor)),
+      ).rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG' });
+
+      // The refusal runs before the transaction: org B gained no deliverable.
+      const orgBDeliverables = await getTestDb()
+        .select({ id: serviceDeliverables.id })
+        .from(serviceDeliverables)
+        .where(eq(serviceDeliverables.orgId, orgB.id));
+      expect(orgBDeliverables).toHaveLength(0);
+    });
+
+    it('ALLOWS the same set when its checklist template is PARTNER-WIDE, across both orgs', async () => {
+      // The positive half. Without it the case above could pass because apply
+      // is broken outright rather than because the guard discriminates.
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+
+      const shared = await seedTemplate({ partnerId: partner.id, name: uniqueName('Shared runbook') });
+      await seedTemplateItem(shared, { partnerId: partner.id }, 'Shared step', 0);
+      const setId = await seedSetReferencing(partner.id, shared);
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partner.id, partnerOrgAccess: 'all',
+        accessibleOrgIds: [orgA.id, orgB.id],
+      };
+      for (const org of [orgA, orgB]) {
+        const applied = await withDbAccessContext(partnerContext(partner.id, [orgA.id, orgB.id]), () =>
+          applyTemplateSet(org.id, setId, { effectiveFrom: '2026-10-01' }, actor));
+        expect(applied.created).toHaveLength(1);
+      }
+
+      const rows = await getTestDb()
+        .select({ orgId: serviceDeliverables.orgId, checklistTemplateId: serviceDeliverables.checklistTemplateId })
+        .from(serviceDeliverables);
+      expect(rows.filter((r) => r.checklistTemplateId === shared).map((r) => r.orgId).sort())
+        .toEqual([orgA.id, orgB.id].sort());
+    });
+
+    it('409s a partner-wide template belonging to a DIFFERENT partner', async () => {
+      // Partner-wide is only "visible to both by construction" when it is the
+      // TARGET org's own partner's template.
+      const partnerA = await createPartner();
+      const partnerB = await createPartner();
+      const orgA = await createOrganization({ partnerId: partnerA.id });
+
+      const foreignShared = await seedTemplate({ partnerId: partnerB.id, name: uniqueName('Other MSP shared') });
+      await seedTemplateItem(foreignShared, { partnerId: partnerB.id }, 'Foreign step', 0);
+      const setId = await seedSetReferencing(partnerA.id, foreignShared);
+
+      const actor: TemplateActor = {
+        userId: null, scope: 'partner', partnerId: partnerA.id, partnerOrgAccess: 'all',
+        accessibleOrgIds: [orgA.id],
+      };
+      await expect(
+        withDbAccessContext(partnerContext(partnerA.id, [orgA.id]), () =>
+          applyTemplateSet(orgA.id, setId, { effectiveFrom: '2026-10-01' }, actor)),
+      ).rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG' });
+    });
+  });
+
   describe('delete guard', () => {
     it('refuses to delete a checklist template a deliverable still references (409), but deactivating it succeeds and the reference keeps working', async () => {
       const partner = await createPartner();

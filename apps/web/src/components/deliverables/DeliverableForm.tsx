@@ -138,7 +138,14 @@ export default function DeliverableForm({
       .then((rows) => {
         if (!cancelled) setTemplates(rows.filter((tpl) => tpl.isActive));
       })
-      .catch(() => {
+      .catch((err) => {
+        // A failed fetch is NOT "this MSP has no checklist templates", and the
+        // picker cannot tell the two apart on its own. console.error is the
+        // only trace this path can leave — the web app has no client-side
+        // Sentry — so log it even though the degrade itself is correct
+        // (blocking deliverable creation over an optional picker would be
+        // worse). Same precedent as TicketChecklistCard.tsx.
+        console.error('[DeliverableForm] failed to load checklist templates', err);
         if (!cancelled) setTemplates([]);
       });
     return () => {

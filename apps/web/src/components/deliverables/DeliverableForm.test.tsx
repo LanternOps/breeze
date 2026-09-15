@@ -225,10 +225,21 @@ describe('DeliverableForm checklist fields (#5808 W03)', () => {
     render(
       <DeliverableForm fetcher={makeFetcherWithTemplates('fail')} orgId="org-1" contractId="ct-1" onSaved={vi.fn()} onCancel={vi.fn()} />,
     );
-    const select = (await screen.findByTestId('deliverable-checklist-template')) as HTMLSelectElement;
-    await waitFor(() => expect(select.options.length).toBe(1));
-    expect(select.options[0]!.textContent).toBe('None');
-    expect(showToast).not.toHaveBeenCalled();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const select = (await screen.findByTestId('deliverable-checklist-template')) as HTMLSelectElement;
+      await waitFor(() => expect(select.options.length).toBe(1));
+      expect(select.options[0]!.textContent).toBe('None');
+      expect(showToast).not.toHaveBeenCalled();
+      // ...but it must not be SILENT either. A failed fetch is not "this MSP
+      // has no templates", and console.error is the only trace available (the
+      // web app has no client-side Sentry). Same precedent as
+      // TicketChecklistCard.tsx.
+      await waitFor(() => expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('failed to load checklist templates'),
+        expect.anything(),
+      ));
+    } finally { errSpy.mockRestore(); }
   });
 
   it('surfaces a 404 on submit through the existing runClientAction error path', async () => {
