@@ -268,6 +268,58 @@ describe('dataset adapters', () => {
     expect(page.nextCursor).toBeNull(); // the one device fits in the first EXPORT_DEVICE_CONCURRENCY batch
   });
 
+  // NOTE: `mockMetricsSelect` above returns the SAME page from every
+  // `db.select()` call — fine for the single-page tests, but a per-device
+  // pagination test needs a DIFFERENT page per call, so it builds its own
+  // sequenced select mock rather than reusing that helper.
+  function mockMetricsPagedSelect(pages: Array<Array<Record<string, unknown>>>) {
+    let call = 0;
+    const limit = vi.fn().mockImplementation(async () => {
+      const page = pages[Math.min(call, pages.length - 1)];
+      call += 1;
+      return page;
+    });
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    dbSelect.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+    return { where };
+  }
+
+  it('metrics paginates WITHIN a device via a timestamp cursor instead of hard-capping at pageSize (#5775)', async () => {
+    const { where } = mockMetricsPagedSelect([
+      [
+        { timestamp: new Date('2026-02-15T10:02:00.000Z'), cpuPercent: 3, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+        { timestamp: new Date('2026-02-15T10:01:00.000Z'), cpuPercent: 2, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+      [
+        { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+    ]);
+    const pager = await DATASET_ADAPTERS.metrics.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
+    });
+
+    // First call comes back FULL (2 of 2) — more samples may exist for this
+    // device, so the pager must NOT report done via a null nextCursor.
+    const first = await pager(null);
+    expect(first.rows.map((r) => r.cpuPercent)).toEqual([3, 2]);
+    expect(first.nextCursor).not.toBeNull();
+
+    // Second call re-queries the SAME device (not the next one — there is no
+    // next device) using a timestamp cursor older than the last row seen.
+    const second = await pager(first.nextCursor);
+    expect(second.rows.map((r) => r.cpuPercent)).toEqual([1]);
+    expect(second.nextCursor).toBeNull(); // short page: device exhausted, no more devices queued
+
+    // The device gate runs once per device, not once per page.
+    expect(verifyDeviceAccess).toHaveBeenCalledTimes(1);
+
+    expect(where).toHaveBeenCalledTimes(2);
+    const dialect = new PgDialect();
+    const secondWhereSql = dialect.sqlToQuery(where.mock.calls[1]![0] as SQL).sql;
+    expect(secondWhereSql).toContain('"timestamp" <');
+  });
+
   it('metrics excludes a device verifyDeviceAccess denies, without failing the whole export', async () => {
     verifyDeviceAccess.mockImplementationOnce(async () => ({ error: 'not found' }));
     mockMetricsSelect([{ timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1 }]);
