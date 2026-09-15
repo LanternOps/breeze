@@ -76,7 +76,12 @@ const intersectOptional = (a?: string[], b?: string[]): string[] | undefined =>
 // key becomes promote-eligible must not be undercut by an org row asking for
 // 5. Named here, not inline, so a future limit that needs the same exception
 // is one addition to this set instead of a special case buried in the loop.
-const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold']);
+// `sweepPromoteThreshold` (#4442 W05) is the second member, for the same
+// reason: it is a BAR on how much sweep-chosen-target evidence a key needs
+// before act mode graduates. `maxUnattendedDevicesPerSweep` is deliberately
+// NOT here — it is a budget, and max-merging it would let an org WIDEN how
+// many machines a sweep may touch unattended, a real safety inversion.
+const MAX_MERGED_LIMIT_KEYS: ReadonlySet<keyof AiAgentLimits> = new Set(['promoteThreshold', 'sweepPromoteThreshold']);
 
 function mergeLimits(partnerLimits: AiAgentLimits, orgLimits: AiAgentLimits): AiAgentLimits {
   const partner = partnerLimits as unknown as Record<keyof AiAgentLimits, number | boolean>;
