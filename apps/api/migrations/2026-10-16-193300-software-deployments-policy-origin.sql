@@ -1,4 +1,4 @@
--- apps/api/migrations/2026-10-16-193100-software-deployments-policy-origin.sql
+-- apps/api/migrations/2026-10-16-193300-software-deployments-policy-origin.sql
 --
 -- Feature #5505 (desired-state software install) W03 / #5508, cross-wave
 -- contract D7. Marks a software_deployments row as created BY a software
