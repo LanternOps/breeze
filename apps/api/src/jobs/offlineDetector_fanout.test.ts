@@ -282,15 +282,29 @@ describe('offlineDetector.processDetectOffline cursor fan-out', () => {
       .toBe(`offline-continuation-${createHash('sha256').update(`sweep-1\0${deviceId}`).digest('hex')}`);
   });
 
-  it('rejects invalid UUIDs and timestamps before queue publication', async () => {
+  it('rejects invalid UUIDs and timestamps at the transition-id helper level', () => {
     expect(() => offlineTransitionId('not-a-uuid', 'also-bad', 'not-a-date')).toThrow();
-    fleetState.fleet = [{
-      ...buildFleet(1)[0]!,
-      orgId: 'not-a-uuid',
-    }];
+  });
 
-    await expect(processDetectOffline({ type: 'detect-offline' })).rejects.toThrow('Invalid orgId');
-    expect(addBulkMock).not.toHaveBeenCalled();
+  it('skips a device row with a non-v4 orgId and logs instead of failing the whole sweep (#5867)', async () => {
+    const errorSpy = vi.fn();
+    vi.spyOn(console, 'error').mockImplementation(errorSpy);
+    const [badDevice] = buildFleet(1);
+    const goodDevice = { ...buildFleet(1)[0]!, id: '00000000-0000-4000-8000-000000000099' };
+    fleetState.fleet = [{ ...badDevice!, orgId: 'not-a-uuid' }, goodDevice];
+
+    await expect(processDetectOffline({ type: 'detect-offline' })).resolves.toMatchObject({
+      detected: 1,
+    });
+
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+    const [jobs] = addBulkMock.mock.calls[0]! as [Array<{ data: { deviceId: string } }>];
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.data.deviceId).toBe(goodDevice.id);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`Skipping device ${badDevice!.id}`),
+      expect.any(Error),
+    );
   });
 
   it('treats cap=0 as unlimited', async () => {

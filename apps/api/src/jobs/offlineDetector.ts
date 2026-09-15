@@ -332,33 +332,50 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
     if (chunk.length === 0) break;
 
-    const jobs = chunk.map(device => {
-      const observedLastSeenAt = canonicalTimestamp(
-        device.lastSeenAt?.toISOString() || '',
-        'observedLastSeenAt',
-      );
-      const transitionId = offlineTransitionId(device.orgId, device.id, observedLastSeenAt);
-      return {
-        name: 'mark-offline',
-        data: {
-          type: 'mark-offline' as const,
-          transitionId,
-          deviceId: device.id,
-          orgId: device.orgId,
-          observedLastSeenAt,
-        },
-        opts: {
-          jobId: transitionId,
-          removeOnComplete: { count: 10_000 },
-          // Failed deterministic IDs must not block the next sweep forever.
-          // Brief retries absorb transient DB errors; exhausted jobs release
-          // their ID so an unchanged stale observation can be admitted again.
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1_000 },
-          removeOnFail: true,
-        },
-      };
-    });
+    // A single malformed row (e.g. a non-v4 UUID inserted outside the API,
+    // which only ever mints v4) must not abort the whole page: requireUuid /
+    // canonicalTimestamp throwing inside a bare .map() would lose every OTHER
+    // device in this chunk too, and since the job retries from the same
+    // cursor, the bad row would fail the sweep every 30s forever (#5867).
+    // Skip-and-log the offending row instead so its siblings still get
+    // enqueued.
+    const jobs = chunk
+      .map(device => {
+        try {
+          const observedLastSeenAt = canonicalTimestamp(
+            device.lastSeenAt?.toISOString() || '',
+            'observedLastSeenAt',
+          );
+          const transitionId = offlineTransitionId(device.orgId, device.id, observedLastSeenAt);
+          return {
+            name: 'mark-offline',
+            data: {
+              type: 'mark-offline' as const,
+              transitionId,
+              deviceId: device.id,
+              orgId: device.orgId,
+              observedLastSeenAt,
+            },
+            opts: {
+              jobId: transitionId,
+              removeOnComplete: { count: 10_000 },
+              // Failed deterministic IDs must not block the next sweep forever.
+              // Brief retries absorb transient DB errors; exhausted jobs release
+              // their ID so an unchanged stale observation can be admitted again.
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 1_000 },
+              removeOnFail: true,
+            },
+          };
+        } catch (error) {
+          console.error(
+            `[OfflineDetector] Skipping device ${device.id} (org ${device.orgId}) — invalid identifiers or lastSeenAt:`,
+            error,
+          );
+          return null;
+        }
+      })
+      .filter((job): job is NonNullable<typeof job> => job !== null);
 
     await queue.addBulk(jobs);
     totalDetected += jobs.length;
