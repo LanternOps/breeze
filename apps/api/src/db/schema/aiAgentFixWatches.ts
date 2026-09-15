@@ -1,6 +1,7 @@
 // apps/api/src/db/schema/aiAgentFixWatches.ts
 import { sql } from 'drizzle-orm';
 import { foreignKey, index, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from 'drizzle-orm/pg-core';
+import type { AiSweepKind } from '@breeze/shared';
 import { actionIntents } from './actionIntents';
 import { aiAgents, aiAgentRuns } from './aiAgents';
 import { alerts } from './alerts';
@@ -77,6 +78,35 @@ export const aiAgentFixWatches = pgTable('ai_agent_fix_watches', {
   intentId: uuid('intent_id'),
   sourceKind: text('source_kind').$type<AiAgentFixWatchSourceKind>().notNull().default('act_run'),
   opKeys: text('op_keys').array().notNull().default(sql`'{}'::text[]`),
+  /**
+   * #5751 W02 (#5753, `2026-10-16-190300-sweep-condition-fix-watches.sql`):
+   * the SUBJECT a sweep-minted watch re-probes in place of an alert it
+   * watches. Three facts this pair encodes, each of which has a wrong reading
+   * that looks reasonable:
+   *
+   *  - `subject_kind IS NULL` IS the predicate for "this is an alert-anchored
+   *    watch". Every pre-W02 row is therefore already correctly classified,
+   *    which is why the migration ships pure DDL with no backfill.
+   *  - `alert_id` was ALREADY nullable before this wave and is left exactly as
+   *    it was; a subject watch simply stores NULL in it. Nothing was relaxed.
+   *  - `device_id` (NOT NULL, above) is the subject's device — for these rows
+   *    the intent's `scope_device_id`. There is deliberately NO second device
+   *    column: two of them with no precedence rule is how the wrong one gets
+   *    read.
+   *
+   * `sourceKind` stays `'intent'` for a subject watch. That is load-bearing:
+   * `recordWatchVerdictEvidence` maps `'intent'` to `namespace: 'policy_key'`,
+   * the namespace the graduation ladder reads, so a third source kind would
+   * silently move sweep evidence out of the ladder.
+   *
+   * The CHECKs (`ai_agent_fix_watches_subject_kind_chk`, mirroring
+   * `AI_SWEEP_KINDS`, and `ai_agent_fix_watches_subject_shape_chk`, the
+   * both-or-neither rule) live in the migration only — same convention as the
+   * `intent_shape_chk` note above, since drizzle-orm's builders don't model
+   * cross-column CHECKs cleanly here either.
+   */
+  subjectKind: text('subject_kind').$type<AiSweepKind>(),
+  subjectKey: varchar('subject_key', { length: 200 }),
 }, (t) => [
   foreignKey({
     columns: [t.intentId, t.orgId],

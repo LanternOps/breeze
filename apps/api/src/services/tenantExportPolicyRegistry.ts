@@ -50,7 +50,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // even though it is a plain timestamp (when the triggering alert was
   // observed to have resolved), not credential material — reviewedIncluded,
   // same treatment as action_intents.policy_authorization_key.
-  "ai_agent_fix_watches": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","alert_id","rule_id","device_id","config_item_name","state","due_at","evaluated_at","recurrence_alert_id","notified_at","created_at","intent_id","source_kind","op_keys"],"reviewedIncluded":["recovery_observed_at"],"excludedSensitive":[],"excludedOpen":[]}),
+  //
+  // subject_kind / subject_key (#5751 W02, #5753): the sweep condition a
+  // subject-anchored watch re-probes — a closed catalog value and a plain
+  // subject name (a service name, a mount point). Both are scalars, neither
+  // is an open container, so `included`.
+  "ai_agent_fix_watches": tablePolicy("org_id", {"included":["id","org_id","partner_id","agent_id","run_id","alert_id","rule_id","device_id","config_item_name","state","due_at","evaluated_at","recurrence_alert_id","notified_at","created_at","intent_id","source_kind","op_keys","subject_kind","subject_key"],"reviewedIncluded":["recovery_observed_at"],"excludedSensitive":[],"excludedOpen":[]}),
   // ai_agent_graduation (P2-5, #4192): plain identifiers, states, and
   // timestamps tracking one colon-key's promotion journey — no open
   // containers, no credential-shaped columns.
