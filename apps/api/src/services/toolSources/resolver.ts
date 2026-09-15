@@ -246,11 +246,17 @@ function dedupeByQualifiedName(descriptors: TenantToolDescriptor[]): TenantToolD
 export async function resolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
   if (!toolSourcesEnabled()) return [];
 
-  const query = buildResolveTenantToolsQuery(auth);
-  if (!query) return [];
-
+  // The query MUST be built inside the system context, not outside it. `db` is
+  // a proxy that binds to whatever transaction is active at PROPERTY-ACCESS
+  // time, so a builder constructed outside the context stays bound to the bare
+  // pool and executes with `breeze.scope` unset — every row then denies and the
+  // resolver silently returns nothing (caught by the A11 integration suite;
+  // a mocked unit test cannot see it).
   const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(async () => query, 'resolveTenantTools'),
+    withSystemDbAccessContext(async () => {
+      const query = buildResolveTenantToolsQuery(auth);
+      return query ? await query : [];
+    }, 'resolveTenantTools'),
   );
 
   const ajv = newAjv();
