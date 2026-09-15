@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "CSS personalizzato (avanzato)",
-      "description": "Usa stili personalizzati per rifinire spaziatura, tipografia o layout."
+      "description": "Usa stili personalizzati per rifinire spaziatura, tipografia o layout.",
+      "saveError": "Impossibile salvare il CSS personalizzato."
     },
     "preview": {
       "action": "Anteprima",

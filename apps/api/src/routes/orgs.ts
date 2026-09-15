@@ -722,12 +722,17 @@ const partnerSettingsSchema = z.object({
     // rejected.
     ...enrollmentDefaultsSchema.shape,
   }).optional(),
+  // customCss deliberately NOT accepted here (#5952): it used to be writable
+  // with no length cap or sanitization and nothing ever read it back
+  // (settings.branding.customCss was dead — only logoUrl/primaryColor/
+  // secondaryColor feed reportBranding.ts / Sidebar.tsx / reportExport.ts).
+  // orgPortalSettings.ts (portal_branding.custom_css) is now the sole,
+  // sanitized write path — see updatePortalSettingsSchema in @breeze/shared.
   branding: z.object({
     logoUrl: z.string().max(400_000, 'Logo data exceeds maximum size (400 KB)').optional(),
     primaryColor: z.string().optional(),
     secondaryColor: z.string().optional(),
     theme: z.enum(['light', 'dark', 'system']).optional(),
-    customCss: z.string().optional(),
   }).optional(),
   aiBudgets: z.object({
     enabled: z.boolean().optional(),

@@ -4,18 +4,28 @@ import '@/lib/i18n';
 import { Eye, Globe, Image, Palette, Save, Wand2, X } from 'lucide-react';
 import { sanitizeImageSrc } from '../../lib/safeImageSrc';
 import { resolveUiColorToken, sanitizeHexColor } from '@/lib/utils';
+import { fetchWithAuth } from '../../stores/auth';
+import { navigateTo } from '@/lib/navigation';
+import { runAction, ActionError } from '@/lib/runAction';
 
+// customCss is intentionally NOT part of BrandingData: as of #5952 it is
+// persisted via portal_branding (orgPortalSettings.ts), not
+// organizations.settings.branding — this component loads/saves it through a
+// dedicated PATCH /orgs/organizations/:id/portal-settings call so the two
+// writes (this section's other branding fields vs. customCss) stay decoupled.
 type BrandingData = {
   logoUrl?: string;
   primaryColor?: string;
   secondaryColor?: string;
   theme?: 'light' | 'dark' | 'system';
-  customCss?: string;
   portalSubdomain?: string;
 };
 
 type OrgBrandingEditorProps = {
   organizationName: string;
+  /** Required to load/save customCss via portal-settings. Absent only in
+   *  isolated tests that don't exercise the customCss round-trip. */
+  orgId?: string;
   branding?: BrandingData;
   onDirty?: () => void;
   onSave?: (data: BrandingData) => void;
@@ -27,9 +37,10 @@ const defaultBranding: BrandingData = {
   primaryColor: '#2563eb',
   secondaryColor: '#14b8a6',
   theme: 'system',
-  customCss: '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}',
   portalSubdomain: ''
 };
+
+const DEFAULT_CUSTOM_CSS = '/* Add custom portal styling here */\n.portal-header {\n  letter-spacing: 0.04em;\n}';
 
 const themeOptions = [
   { value: 'light', labelKey: 'orgBrandingEditor.theme.options.light' },
@@ -46,7 +57,7 @@ const portalDomain = (() => {
   }
 })();
 
-export default function OrgBrandingEditor({ organizationName, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
+export default function OrgBrandingEditor({ organizationName, orgId, branding, onDirty, onSave, locked }: OrgBrandingEditorProps) {
   const { t } = useTranslation('settings');
   const isLocked = (field: string) => locked?.includes(`branding.${field}`) ?? false;
   const initialData = { ...defaultBranding, ...branding };
@@ -55,7 +66,8 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
   const [primaryColor, setPrimaryColor] = useState(initialData.primaryColor || defaultBranding.primaryColor || '#2563eb');
   const [secondaryColor, setSecondaryColor] = useState(initialData.secondaryColor || defaultBranding.secondaryColor || '#14b8a6');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(initialData.theme || 'system');
-  const [customCss, setCustomCss] = useState(initialData.customCss || '');
+  const [customCss, setCustomCss] = useState(DEFAULT_CUSTOM_CSS);
+  const [savingCustomCss, setSavingCustomCss] = useState(false);
   const [portalSubdomain, setPortalSubdomain] = useState(initialData.portalSubdomain || '');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -73,6 +85,33 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
       URL.revokeObjectURL(logoPreview);
     };
   }, [logoPreview]);
+
+  // customCss lives in portal_branding (#5952), not organizations.settings —
+  // load its current persisted value independently of the `branding` prop.
+  // A missing/null value keeps the seeded placeholder rather than blanking
+  // the textarea, matching the pre-#5952 first-run UX.
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`);
+        if (res.status === 401) {
+          void navigateTo('/login', { replace: true });
+          return;
+        }
+        if (!res.ok) return;
+        const body = await res.json().catch(() => null);
+        const loaded = body?.data?.customCss;
+        if (!cancelled && typeof loaded === 'string') {
+          setCustomCss(loaded);
+        }
+      } catch (err) {
+        console.warn('[OrgBrandingEditor] failed to load portal custom CSS', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [orgId]);
 
   const markDirty = () => {
     onDirty?.();
@@ -93,17 +132,43 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
     setIsPreviewOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const data: BrandingData = {
       logoUrl: logoPreview,
       primaryColor: resolvedPrimaryColor,
       secondaryColor: resolvedSecondaryColor,
       theme,
-      customCss,
       portalSubdomain
     };
-    setStatusMessage(t('orgBrandingEditor.saved'));
     onSave?.(data);
+
+    // customCss (#5952): canonical write path is portal_branding via
+    // orgPortalSettings, not organizations.settings.branding — saved here as
+    // a separate, sanitised-server-side call so a rejection (disallowed CSS
+    // pattern, over the length cap) surfaces as its own toast rather than
+    // getting silently absorbed into the branding-fields save above.
+    if (!orgId) {
+      setStatusMessage(t('orgBrandingEditor.saved'));
+      return;
+    }
+
+    setSavingCustomCss(true);
+    try {
+      await runAction({
+        request: () => fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`, {
+          method: 'PATCH',
+          body: JSON.stringify({ customCss: customCss.trim() ? customCss : null })
+        }),
+        successMessage: t('orgBrandingEditor.saved'),
+        errorFallback: t('orgBrandingEditor.customCss.saveError'),
+        onUnauthorized: () => void navigateTo('/login', { replace: true })
+      });
+      setStatusMessage(t('orgBrandingEditor.saved'));
+    } catch (err) {
+      if (!(err instanceof ActionError)) throw err;
+    } finally {
+      setSavingCustomCss(false);
+    }
   };
 
   const previewUrl = `https://${portalSubdomain || 'your-org'}.${portalDomain}`;
@@ -130,8 +195,9 @@ export default function OrgBrandingEditor({ organizationName, branding, onDirty,
           </button>
           <button
             type="button"
-            onClick={handleSave}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            onClick={() => void handleSave()}
+            disabled={savingCustomCss}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
             <Save className="h-4 w-4" />
             {t('orgBrandingEditor.save')}

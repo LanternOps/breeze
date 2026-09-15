@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "Custom CSS (advanced)",
-      "description": "Use custom styles to fine tune spacing, typography, or layout."
+      "description": "Use custom styles to fine tune spacing, typography, or layout.",
+      "saveError": "Failed to save custom CSS."
     },
     "preview": {
       "action": "Preview",

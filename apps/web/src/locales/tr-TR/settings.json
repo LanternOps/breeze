@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
-      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın."
+      "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
+      "saveError": "Özel CSS kaydedilemedi."
     },
     "preview": {
       "action": "Önizleme",

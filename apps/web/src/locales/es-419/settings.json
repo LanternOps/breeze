@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "Personalizado CSS (avanzado)",
-      "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño."
+      "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño.",
+      "saveError": "No se pudo guardar el CSS personalizado."
     },
     "preview": {
       "action": "Vista previa",

@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
-      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page."
+      "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
+      "saveError": "Échec de l’enregistrement du CSS personnalisé."
     },
     "preview": {
       "action": "Prévisualiser",

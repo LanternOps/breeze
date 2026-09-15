@@ -896,7 +896,8 @@
     },
     "customCss": {
       "title": "Benutzerdefiniertes CSS (erweitert)",
-      "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren."
+      "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren.",
+      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden."
     },
     "preview": {
       "action": "Vorschau",
