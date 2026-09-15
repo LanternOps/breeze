@@ -20,10 +20,14 @@ const {
     reason?: string;
     message?: string;
   }),
-  upsertMock: vi.fn(async () => undefined),
+  upsertMock: vi.fn(async (_inputs: Array<Record<string, unknown>>) => undefined),
   inventoryMock: vi.fn(async () => new Map<string, unknown[]>([['device-1', []]])),
-  scheduleUninstallMock: vi.fn(async () => 0),
-  scheduleInstallMock: vi.fn(async () => [] as string[]),
+  scheduleUninstallMock: vi.fn(async (..._args: unknown[]) => 0),
+  scheduleInstallMock: vi.fn(async (
+    _policyId: string,
+    _targets: Array<{ deviceId: string; catalogIds: string[]; attempt: number }>,
+    _generation: number,
+  ) => [] as string[]),
 }));
 
 vi.mock('bullmq', () => ({
@@ -306,5 +310,141 @@ describe('installStatusForSkip', () => {
     expect(installStatusForSkip('grace_period')).toBeUndefined();
     expect(installStatusForSkip('cooldown')).toBeUndefined();
     expect(installStatusForSkip('no_missing_violations')).toBeUndefined();
+  });
+});
+
+describe('processCheckPolicy — install remediation wiring', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    armingMock.mockReturnValue({ armed: true });
+    scheduleUninstallMock.mockResolvedValue(0);
+    scheduleInstallMock.mockResolvedValue([]);
+    delete process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_PER_PASS;
+    delete process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS;
+  });
+
+  function primePass(deviceIds: string[], existingRows: Record<string, unknown>[]) {
+    resolveDeviceIdsMock.mockResolvedValueOnce(deviceIds);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      deviceIds.map((id) => ({ id, orgId: 'org-1' })),
+      existingRows,
+    ]);
+    // Inventory is EMPTY for every device, so the allowlist rule
+    // { name: 'Google Chrome', catalogId: 'catalog-abc' } produces exactly one
+    // `missing` violation per device.
+    inventoryMock.mockResolvedValueOnce(new Map(deviceIds.map((id) => [id, []])));
+  }
+
+  function upsertedRows(): Array<Record<string, unknown>> {
+    const call = upsertMock.mock.calls[0];
+    if (!call) throw new Error('upsertSoftwareComplianceStatuses was never called');
+    return call[0] as unknown as Array<Record<string, unknown>>;
+  }
+
+  it('queues an install for a device whose allowlist rule is missing', async () => {
+    primePass(['device-1'], []);
+    scheduleInstallMock.mockResolvedValueOnce(['device-1']);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(result.installRemediationQueued).toBe(1);
+    expect(scheduleInstallMock).toHaveBeenCalledWith(
+      POLICY_ID,
+      [{ deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 }],
+      1,
+    );
+    // and it must stamp only the devices that actually got a job
+    expect(dbUpdateMock).toHaveBeenCalled();
+  });
+
+  it('does not queue an install when only the install verb is unarmed', async () => {
+    armingMock.mockImplementation((_policy: unknown, verb: string) => (
+      verb === 'install'
+        ? { armed: false, reason: 'auto_install_off', message: 'unarmed' }
+        : { armed: true }
+    ));
+    primePass(['device-1'], []);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(result.installRemediationQueued).toBe(0);
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  it('caps installs per pass and records the overflow devices as skipped', async () => {
+    process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_PER_PASS = '2';
+    primePass(['device-1', 'device-2', 'device-3'], []);
+    scheduleInstallMock.mockResolvedValueOnce(['device-1', 'device-2']);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(scheduleInstallMock.mock.calls[0]?.[1]).toHaveLength(2);
+    const third = upsertedRows().find((row) => row.deviceId === 'device-3');
+    expect(third?.installRemediationStatus).toBe('skipped');
+  });
+
+  it('gives up on a device whose consecutive attempts are exhausted', async () => {
+    process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS = '3';
+    primePass(['device-1'], [{
+      deviceId: 'device-1',
+      status: 'violation',
+      violations: [],
+      remediationStatus: null,
+      lastRemediationAttempt: null,
+      installRemediationStatus: 'failed',
+      lastInstallRemediationAttempt: null,
+      installRemediationAttempts: 3,
+    }]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    expect(upsertedRows()[0]?.installRemediationStatus).toBe('gave_up');
+  });
+
+  it('resets the consecutive counter once the device has no missing violation left', async () => {
+    resolveDeviceIdsMock.mockResolvedValueOnce(['device-1']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [{
+        deviceId: 'device-1',
+        status: 'violation',
+        violations: [],
+        remediationStatus: null,
+        lastRemediationAttempt: null,
+        installRemediationStatus: 'pending',
+        lastInstallRemediationAttempt: null,
+        installRemediationAttempts: 2,
+      }],
+    ]);
+    // Chrome is now installed, so the allowlist rule matches and nothing is missing.
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', [
+      { name: 'Google Chrome', version: '121.0', vendor: 'Google', catalogId: 'catalog-abc' },
+    ]]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upsertedRows()[0]?.installRemediationAttempts).toBe(0);
+    expect(upsertedRows()[0]?.installRemediationStatus).toBe('completed');
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+
+  it('says nothing about the install columns for a device with no missing violation and no install history', async () => {
+    resolveDeviceIdsMock.mockResolvedValueOnce(['device-1']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', [
+      { name: 'Google Chrome', version: '121.0', vendor: 'Google', catalogId: 'catalog-abc' },
+    ]]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(upsertedRows()[0]?.installRemediationStatus).toBeUndefined();
+    expect(upsertedRows()[0]?.installRemediationAttempts).toBeUndefined();
   });
 });

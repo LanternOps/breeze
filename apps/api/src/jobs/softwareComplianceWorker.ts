@@ -1,5 +1,5 @@
 import { Job, Queue, Worker } from 'bullmq';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import {
   devices,
@@ -20,13 +20,22 @@ import {
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
   upsertSoftwareComplianceStatuses,
+  SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS,
   withStableViolationTimestamps,
   type SoftwarePolicyComplianceStatus,
   type SoftwarePolicyInstallRemediationStatus,
   type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
-import { scheduleSoftwareRemediation } from './softwareRemediationWorker';
+import {
+  scheduleSoftwareInstallRemediation,
+  scheduleSoftwareRemediation,
+  type InstallRemediationTarget,
+} from './softwareRemediationWorker';
+import {
+  resolveInstallRemediationMaxAttempts,
+  resolveInstallRemediationMaxPerPass,
+} from '../services/softwareInstallRemediationKnobs';
 import { captureException } from '../services/sentry';
 import { attachWorkerObservability } from './workerObservability';
 
@@ -77,6 +86,10 @@ type ExistingComplianceState = {
   violations: unknown;
   remediationStatus: SoftwarePolicyRemediationStatus | null;
   lastRemediationAttempt: Date | null;
+  // Feature #5505 W02: the install verb's parallel axis.
+  installRemediationStatus: SoftwarePolicyInstallRemediationStatus | null;
+  lastInstallRemediationAttempt: Date | null;
+  installRemediationAttempts: number;
 };
 
 function parseComplianceStatus(value: unknown): SoftwarePolicyComplianceStatus {
@@ -99,6 +112,18 @@ function parseRemediationStatus(value: unknown): SoftwarePolicyRemediationStatus
   return null;
 }
 
+/** Superset of parseRemediationStatus: the install axis adds two terminal states. */
+function parseInstallRemediationStatus(value: unknown): SoftwarePolicyInstallRemediationStatus | null {
+  if (value === 'gave_up' || value === 'skipped') return value;
+  return parseRemediationStatus(value);
+}
+
+/** A NULL or garbage counter reads as 0 — never NaN into a `>=` comparison. */
+function parseAttemptCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
 async function readComplianceStateByDevice(
   policyId: string,
   deviceIds: string[]
@@ -119,6 +144,9 @@ async function readComplianceStateByDevice(
         violations: softwareComplianceStatus.violations,
         remediationStatus: softwareComplianceStatus.remediationStatus,
         lastRemediationAttempt: softwareComplianceStatus.lastRemediationAttempt,
+        installRemediationStatus: softwareComplianceStatus.installRemediationStatus,
+        lastInstallRemediationAttempt: softwareComplianceStatus.lastInstallRemediationAttempt,
+        installRemediationAttempts: softwareComplianceStatus.installRemediationAttempts,
       })
       .from(softwareComplianceStatus)
       .where(and(
@@ -133,6 +161,9 @@ async function readComplianceStateByDevice(
         violations: row.violations,
         remediationStatus: parseRemediationStatus(row.remediationStatus),
         lastRemediationAttempt: row.lastRemediationAttempt,
+        installRemediationStatus: parseInstallRemediationStatus(row.installRemediationStatus),
+        lastInstallRemediationAttempt: row.lastInstallRemediationAttempt,
+        installRemediationAttempts: parseAttemptCount(row.installRemediationAttempts),
       });
     }
   }
@@ -425,6 +456,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   devicesEvaluated: number;
   violations: number;
   remediationQueued: number;
+  installRemediationQueued: number;
 }> {
   const [policy] = await db
     .select()
@@ -444,6 +476,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       devicesEvaluated: 0,
       violations: 0,
       remediationQueued: 0,
+      installRemediationQueued: 0,
     };
   }
 
@@ -460,6 +493,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       devicesEvaluated: 0,
       violations: 0,
       remediationQueued: 0,
+      installRemediationQueued: 0,
     };
   }
 
@@ -498,6 +532,7 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       devicesEvaluated: 0,
       violations: 0,
       remediationQueued: 0,
+      installRemediationQueued: 0,
     };
   }
 
@@ -514,6 +549,11 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   let violations = 0;
   const remediationTargets = new Set<string>();
+  // Feature #5505 W02. Knobs are read ONCE PER PASS — per call, never module
+  // load (contract D5); the cap is per policy per pass by definition.
+  const installMaxPerPass = resolveInstallRemediationMaxPerPass();
+  const installMaxAttempts = resolveInstallRemediationMaxAttempts();
+  const installTargets: InstallRemediationTarget[] = [];
   const complianceUpserts: Parameters<typeof upsertSoftwareComplianceStatuses>[0] = [];
   const now = new Date();
 
@@ -542,6 +582,87 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         remediationStatus = 'none';
       }
 
+      // ---- Feature #5505 W02: the install verb -------------------------------
+      // Keyed on "does this device have a `missing` violation", NOT on the
+      // overall compliance status: a device can be in `violation` purely
+      // because of unauthorized software while having nothing missing, and the
+      // two verbs must not read each other's condition.
+      const hasMissingViolation = violationsWithStableTimestamps.some((v) => v.type === 'missing');
+
+      let installRemediationStatus: SoftwarePolicyInstallRemediationStatus | undefined;
+      let installRemediationAttempts: number | undefined;
+      if (!hasMissingViolation) {
+        // Desired state reached. Mirrors the uninstall transition above: a
+        // working status settles to 'completed', and the CONSECUTIVE counter
+        // resets so a future recurrence starts with a full attempt budget.
+        // 'gave_up' also settles to 'completed' — the software is present now,
+        // however it got there, and leaving a permanent tombstone on a healthy
+        // device would be a lie.
+        if (
+          existing?.installRemediationStatus
+          && existing.installRemediationStatus !== 'none'
+          && existing.installRemediationStatus !== 'completed'
+        ) {
+          installRemediationStatus = 'completed';
+        }
+        if ((existing?.installRemediationAttempts ?? 0) > 0) {
+          installRemediationAttempts = 0;
+        }
+      } else if (existing?.installRemediationStatus === 'completed') {
+        // It came back. Clear the stale success so the next decision is not read
+        // against a status describing a previous cycle.
+        installRemediationStatus = 'none';
+      }
+
+      if (hasMissingViolation && installArming.armed) {
+        const installDecision = decideInstallRemediation({
+          violations: violationsWithStableTimestamps,
+          previousInstallStatus: existing?.installRemediationStatus ?? null,
+          lastInstallAttempt: existing?.lastInstallRemediationAttempt ?? null,
+          attempts: existing?.installRemediationAttempts ?? 0,
+          now,
+          gracePeriodHours: remediationOptions.gracePeriodHours,
+          cooldownMinutes: remediationOptions.cooldownMinutes,
+          maxAttempts: installMaxAttempts,
+          // Cap is measured against what THIS pass has already committed to.
+          capRemaining: installMaxPerPass - installTargets.length,
+        });
+
+        if (installDecision.queue) {
+          installTargets.push({
+            deviceId,
+            catalogIds: installDecision.catalogIds,
+            attempt: installDecision.attempt,
+          });
+          recordSoftwareRemediationDecision('install_queued');
+        } else {
+          recordSoftwareRemediationDecision(`install_${installDecision.reason}`);
+          const skipStatus = installStatusForSkip(installDecision.reason);
+          if (skipStatus) {
+            installRemediationStatus = skipStatus;
+          }
+          // Audit the give-up ONCE, on the transition. Firing it every pass
+          // would put one row per device per 15 minutes into
+          // software_policy_audit for as long as the policy stays armed.
+          if (skipStatus === 'gave_up' && existing?.installRemediationStatus !== 'gave_up') {
+            fireAudit({
+              orgId: policy.orgId ?? orgByDevice.get(deviceId) ?? null,
+              partnerId: policy.partnerId,
+              policyId: policy.id,
+              deviceId,
+              action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.gaveUp,
+              actor: 'system',
+              details: {
+                policyName: policy.name,
+                attempts: existing?.installRemediationAttempts ?? 0,
+                maxAttempts: installMaxAttempts,
+              },
+            });
+          }
+        }
+      }
+      // ---- end install verb -------------------------------------------------
+
       complianceUpserts.push({
         deviceId,
         policyId: policy.id,
@@ -549,6 +670,8 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
         violations: violationsWithStableTimestamps,
         checkedAt: now,
         remediationStatus,
+        installRemediationStatus,
+        installRemediationAttempts,
       });
       recordSoftwarePolicyEvaluation(policy.mode, status, Date.now() - startedAt, 'evaluated');
 
@@ -667,11 +790,62 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
     recordSoftwareRemediationDecision('scheduled', remediationQueued);
   }
 
+  let installRemediationQueued = 0;
+  if (installTargets.length > 0) {
+    // Placed AFTER the upsertSoftwareComplianceStatuses flush above, so every
+    // row this block is about to UPDATE is guaranteed to exist.
+    const enqueuedDeviceIds = await scheduleSoftwareInstallRemediation(
+      policy.id,
+      installTargets,
+      policy.approvalGeneration,
+    );
+    installRemediationQueued = enqueuedDeviceIds.length;
+
+    if (enqueuedDeviceIds.length > 0) {
+      const attemptedAt = new Date();
+      for (const chunk of chunkArray(enqueuedDeviceIds)) {
+        await db
+          .update(softwareComplianceStatus)
+          .set({
+            installRemediationStatus: 'pending',
+            lastInstallRemediationAttempt: attemptedAt,
+            // Incremented in SQL, not from the value read at the top of the
+            // pass: this is the authoritative counter, and doing the arithmetic
+            // in the statement keeps it correct even if a concurrent pass or the
+            // W03 processor touched the row in between.
+            installRemediationAttempts: sql`${softwareComplianceStatus.installRemediationAttempts} + 1`,
+          })
+          .where(and(
+            eq(softwareComplianceStatus.policyId, policy.id),
+            inArray(softwareComplianceStatus.deviceId, chunk),
+          ));
+      }
+    }
+
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.queued,
+      actor: 'system',
+      details: {
+        targetCount: installTargets.length,
+        queuedCount: installRemediationQueued,
+        deferredCount: Math.max(0, installTargets.length - installRemediationQueued),
+        maxPerPass: installMaxPerPass,
+        maxAttempts: installMaxAttempts,
+      },
+    });
+
+    recordSoftwareRemediationDecision('install_scheduled', installRemediationQueued);
+  }
+
   return {
     policyId: policy.id,
     devicesEvaluated: deviceIds.length,
     violations,
     remediationQueued,
+    installRemediationQueued,
   };
 }
 
