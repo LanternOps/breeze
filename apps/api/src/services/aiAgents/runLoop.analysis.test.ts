@@ -381,6 +381,8 @@ function seedRows(options: {
 const hooks: Hooks = {};
 let lastQueryOptions: Record<string, unknown> | undefined;
 const closeMock = vi.fn();
+/** Deep snapshots of every `transitionRunStatus` patch, taken at call time. */
+const persistedPatches: Array<Record<string, unknown>> = [];
 
 function resultMessage(overrides: Record<string, unknown> = {}) {
   return {
@@ -437,7 +439,16 @@ beforeEach(() => {
   dbMockState.selects.length = 0;
   dbMockState.ambientContext = undefined;
   lastQueryOptions = undefined;
-  transitionRunStatus.mockResolvedValue(true);
+  // Snapshot the patch AT CALL TIME. `finishRun` hands the live outcome object
+  // to `transitionRunStatus`, and in production that is when it is serialized
+  // to jsonb — a plain `mock.calls` read would observe LATER mutations (the
+  // `finally`'s) through the same reference and make the teardown-before-
+  // finishRun ordering untestable.
+  persistedPatches.length = 0;
+  transitionRunStatus.mockImplementation(async (_runId, _from, _to, patch) => {
+    persistedPatches.push(JSON.parse(JSON.stringify(patch ?? {})));
+    return true;
+  });
   let execCounter = 0;
   createAgentRunSession.mockResolvedValue('session-1');
   startToolExecution.mockImplementation(async () => `exec-${++execCounter}`);
@@ -548,6 +559,14 @@ describe('sandbox lifecycle + compute settlement (execution plane W04)', () => {
 
     expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'platform');
     expect(settleComputeCents).not.toHaveBeenCalledWith(ORG_ID, RUN_ID, 0, 'platform');
+
+    // …and the flag reaches the PERSISTED outcome, not a throwaway object:
+    // the run-detail DTO reads `computeUsageEstimated` off this jsonb to tell
+    // a worst-case 25¢ from a measured one. Teardown therefore has to run
+    // BEFORE `finishRun` serializes the outcome, on the same object.
+    const persisted = persistedPatches.at(-1) as { outcome?: Record<string, unknown> } | undefined;
+    expect(persisted?.outcome?.computeUsageEstimated).toBe(true);
+    expect(persisted?.outcome?.computeCents).toBe(25);
   });
 
   it('settles at $0 when no sandbox was ever created (the model concluded from datasets alone)', async () => {

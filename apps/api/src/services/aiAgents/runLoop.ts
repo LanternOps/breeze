@@ -2116,8 +2116,12 @@ export async function executeAgentRun(runId: string): Promise<void> {
   // so assigning it here (rather than reading `result.outcome`, which does not
   // exist on the throw path) gives the `finally` something to write to
   // whichever way the run ends.
-  // Only reached when `driveSdkLoop` threw before its own outcome existed —
-  // the normal path finalizes the REAL outcome inside the try below.
+  // The loop's REAL outcome, once it exists. The `finally` below needs
+  // something to stamp compute onto on the throw path, where `result` never
+  // existed — but on every other path it must be the same object `finishRun`
+  // serialized, or `computeUsageEstimated` would land on a throwaway and the
+  // run-detail DTO would never see it.
+  let loopOutcome: AgentRunOutcome | null = null;
   const orphanWorkspaceOutcome: AgentRunOutcome = {
     proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
   };
@@ -2125,6 +2129,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   try {
     const result = await driveSdkLoop(ctx, effective);
     const { outcome, intentIds } = result;
+    loopOutcome = outcome;
     // Computed once here so every terminal path below (failure, ceiling, or
     // normal finish) carries the same rollup — `finishRun` serializes
     // `result.outcome` verbatim into the DB row.
@@ -2324,7 +2329,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // `!moved` early return inside `finishRun`. A SIGKILLed process is the one
     // path this cannot cover; `jobs/workspaceReaper.ts` (W02) destroys by
     // `provider_ref` for that one.
-    await finalizeWorkspaceForRun(ctx, orphanWorkspaceOutcome);
+    await finalizeWorkspaceForRun(ctx, loopOutcome ?? orphanWorkspaceOutcome);
     await cleanupExecutionLedger(ctx, ledgerOutcome);
   }
 }
