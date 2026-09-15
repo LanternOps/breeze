@@ -190,7 +190,7 @@ func TestIsDevBuildVersion(t *testing.T) {
 }
 
 func TestDesktopHelperUnavailableWarning_IsActionable(t *testing.T) {
-	msg := desktopHelperUnavailableWarning(os.ErrNotExist, "0.109.0", "darwin", "arm64")
+	msg := desktopHelperUnavailableWarning(os.ErrNotExist, "0.109.0", "darwin", "arm64", "")
 	for _, want := range []string{
 		"desktop helper not installed",
 		"agent service is installed",
