@@ -246,6 +246,12 @@ function dedupeByQualifiedName(descriptors: TenantToolDescriptor[]): TenantToolD
 export async function resolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
   if (!toolSourcesEnabled()) return [];
 
+  // Short-circuit BEFORE opening a DB context: a system-scoped caller (and any
+  // scope missing its owner id) has no tenant to resolve against, and must not
+  // cost a connection. `ownerPredicate` only builds SQL fragments — it never
+  // touches the `db` proxy.
+  if (!ownerPredicate(auth)) return [];
+
   // The query MUST be built inside the system context, not outside it. `db` is
   // a proxy that binds to whatever transaction is active at PROPERTY-ACCESS
   // time, so a builder constructed outside the context stays bound to the bare
