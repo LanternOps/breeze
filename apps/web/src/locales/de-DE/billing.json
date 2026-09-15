@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Vereinbarung herunterladen",
         "previewTitle": "Vereinbarung {{name}}",
-        "unavailable": "Vertragsdatei nicht verfügbar",
+        "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
       "draft": "Entwurf",

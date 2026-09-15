@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Descargar acuerdo",
         "previewTitle": "Acuerdo {{name}}",
-        "unavailable": "Archivo del contrato no disponible",
+        "unavailable": "Archivo del acuerdo no disponible",
         "versionFooter": "{{name}} — versión {{version}}"
       },
       "draft": "Borrador",

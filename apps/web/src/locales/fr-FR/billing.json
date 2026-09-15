@@ -1297,7 +1297,7 @@
       "contract": {
         "download": "Télécharger la convention",
         "previewTitle": "Convention {{name}}",
-        "unavailable": "Fichier du contrat indisponible",
+        "unavailable": "Fichier de la convention indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
       "draft": "Brouillon",
