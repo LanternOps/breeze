@@ -68,15 +68,21 @@ type PortalReportProvisionArgs = {
   createdBy: string;
 };
 
-export function portalReportDefinitionsInsertQuery(
-  executor: PortalReportInsertExecutor,
-  args: PortalReportProvisionArgs,
-) {
-  const scope = {
-    version: 1,
-    kind: 'unrestricted',
-    orgId: args.orgId,
-  } as const;
+/**
+ * Build ONE portal-self-service report definition row. Extracted from
+ * `portalReportDefinitionsInsertQuery` so #5784's managed-evidence provisioning
+ * can insert a single type on demand, under a caller-supplied executor, without
+ * re-inserting the whole PORTAL_DEFINITIONS array. There is exactly one
+ * row-shape definition; both callers go through it.
+ */
+export function portalReportDefinitionRow(args: {
+  orgId: string;
+  createdBy: string;
+  type: (typeof reports.$inferInsert)['type'];
+  name: string;
+  config: Record<string, unknown>;
+}) {
+  const scope = { version: 1, kind: 'unrestricted', orgId: args.orgId } as const;
   const authority: UserReportExecutionAuthority = {
     principalKind: 'user',
     principalUserId: args.createdBy,
@@ -84,20 +90,31 @@ export function portalReportDefinitionsInsertQuery(
     capturedAt: new Date(),
     fingerprint: siteScopeFingerprint(scope),
   };
-  const scopeValues = persistedSiteScopeValues(authority);
+  return {
+    orgId: args.orgId,
+    name: args.name,
+    type: args.type,
+    config: args.config,
+    schedule: 'one_time' as const,
+    format: 'pdf' as const,
+    portalSelfService: true,
+    createdBy: args.createdBy,
+    ...persistedSiteScopeValues(authority),
+  };
+}
 
+export function portalReportDefinitionsInsertQuery(
+  executor: PortalReportInsertExecutor,
+  args: PortalReportProvisionArgs,
+) {
   return executor
     .insert(reports)
-    .values(PORTAL_DEFINITIONS.map((definition) => ({
+    .values(PORTAL_DEFINITIONS.map((definition) => portalReportDefinitionRow({
       orgId: args.orgId,
-      name: definition.name,
-      type: definition.type,
-      config: definition.config,
-      schedule: 'one_time' as const,
-      format: 'pdf' as const,
-      portalSelfService: true,
       createdBy: args.createdBy,
-      ...scopeValues,
+      type: definition.type,
+      name: definition.name,
+      config: definition.config,
     })))
     .onConflictDoNothing({
       target: [reports.orgId, reports.type],
@@ -269,6 +286,36 @@ function lifecycleExclusion(lifecycleEnabled: boolean) {
   return lifecycleEnabled ? undefined : ne(reports.type, 'hardware_lifecycle');
 }
 
+/**
+ * OD-12 (#5784): a managed evidence run becomes customer-visible on DELIVERY,
+ * not on generation. Without this, `portalRunListPredicate` — which filters only
+ * on org, portal_self_service and status — would show a security artifact at
+ * 05:18 on the due day, before the technician reviewed it.
+ *
+ * Derived, not stamped: the occurrence already carries `delivered_at`,
+ * `delivered_by_user_id` and `delivered_via`, so a `published_at` column would
+ * only add a second copy of the truth that could drift when a delivery is
+ * reverted or the occurrence is waived.
+ *
+ * Runs no deliverable references (ordinary portal self-service) are unaffected.
+ * Fail-closed: a run referenced only by non-delivered occurrences is hidden.
+ * `sd_evidence_report_run_idx` (report_run_id) serves both sub-queries.
+ */
+export function deliveredEvidenceOnly() {
+  return sql`(
+    NOT EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      WHERE e.report_run_id = ${reportRuns.id}
+    )
+    OR EXISTS (
+      SELECT 1 FROM service_deliverable_evidence e
+      JOIN service_deliverable_occurrences o ON o.id = e.occurrence_id
+      WHERE e.report_run_id = ${reportRuns.id}
+        AND o.status = 'delivered'
+    )
+  )`;
+}
+
 export function portalRunPredicate(
   runId: string,
   orgId: string,
@@ -279,6 +326,7 @@ export function portalRunPredicate(
     eq(reports.orgId, orgId),
     eq(reports.portalSelfService, true),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
@@ -291,6 +339,7 @@ export function portalRunListPredicate(
     eq(reports.portalSelfService, true),
     eq(reportRuns.status, 'completed'),
     lifecycleExclusion(lifecycleEnabled),
+    deliveredEvidenceOnly(),
   )!;
 }
 
@@ -572,6 +621,11 @@ export async function latestPortalHardwareLifecycleRun(
       eq(reports.type, 'hardware_lifecycle'),
       eq(reports.portalSelfService, true),
       eq(reportRuns.status, 'completed'),
+      // OD-12 (#5784): this dedicated reader is a third portal path to a run.
+      // A deliverable may name the canonical lifecycle definition as its
+      // auto-evidence, so the delivery gate applies here exactly as in
+      // portalRunPredicate — or "latest" leaks an unreviewed run.
+      deliveredEvidenceOnly(),
     ))
     .orderBy(desc(reportRuns.completedAt), desc(reportRuns.id))
     .limit(1);

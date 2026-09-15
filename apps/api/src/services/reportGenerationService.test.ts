@@ -274,3 +274,44 @@ describe('stored-artifact-only report types (P2-3)', () => {
       .toEqual([...reportTypeEnum.enumValues].sort());
   });
 });
+
+describe('managed evidence system execution path (#5784 OD-5 = B)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReturnValue(selectChain([]));
+  });
+
+  it('refuses a system authority for a type outside the managed evidence registry, before any query', async () => {
+    const { generateManagedEvidenceReport } = await import('./reportGenerationService');
+    await expect(
+      generateManagedEvidenceReport('device_inventory' as never, ORG_ID, {}, undefined),
+    ).rejects.toThrow(/not a managed evidence type/i);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('refuses a system authority whose scope is not org-wide unrestricted', () => {
+    expect(() => assertReportExecutionPreflight(ORG_ID, {}, {
+      principalKind: 'system',
+      // A restricted scope can never be stamped on an org-wide managed result.
+      scope: { version: 1, kind: 'restricted', orgId: ORG_ID, siteIds: [] },
+      fingerprint: 'x',
+      capturedAt: new Date(),
+    } as never, 'device_inventory')).toThrow(/unrestricted/i);
+  });
+
+  it('mints a system authority that is org-wide unrestricted with a matching fingerprint', async () => {
+    const { systemReportAuthorityFor, siteScopeFingerprint } = await import('./siteScope');
+    const got = systemReportAuthorityFor(ORG_ID);
+    expect(got.principalKind).toBe('system');
+    expect(got.scope).toEqual({ version: 1, kind: 'unrestricted', orgId: ORG_ID });
+    expect(got.fingerprint).toBe(siteScopeFingerprint(got.scope));
+    // The preflight accepts exactly this shape.
+    expect(() => assertReportExecutionPreflight(ORG_ID, {}, got as never, 'device_inventory')).not.toThrow();
+  });
+
+  it('leaves the ordinary user path unchanged: a user authority with an empty restricted scope still reaches the zero-safe shape', async () => {
+    const result = await generateReport('device_inventory', ORG_ID, {}, authority('restricted', []));
+    expect(result.rowCount).toBe(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+});

@@ -16,6 +16,7 @@ import type {
   ApplyTemplateSetInput,
   CreateTemplateItemInput,
   CreateTemplateSetInput,
+  ManagedEvidenceReportType,
   UpdateTemplateItemInput,
   UpdateTemplateSetInput,
 } from '@breeze/shared';
@@ -34,6 +35,7 @@ export interface TemplateItem {
   artifactRequired: boolean;
   completionMode: 'explicit' | 'on_ticket_resolve';
   sortOrder: number;
+  autoEvidenceReportType: ManagedEvidenceReportType | null;
 }
 
 export interface TemplateSet {

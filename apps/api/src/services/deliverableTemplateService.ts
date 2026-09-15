@@ -13,6 +13,8 @@ import type {
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createDeliverable, DeliverableServiceError } from './serviceDeliverableService';
+import { resolveManagedEvidenceDefinition } from './managedEvidenceDefinitions';
+import type { ManagedEvidenceType } from './managedEvidenceRegistry';
 import { firstAnchorAfter, type Cadence } from './recurrence';
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
@@ -199,6 +201,7 @@ export async function createTemplateSet(input: CreateTemplateSetInput, actor: Te
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           sortOrder: item.sortOrder,
+          autoEvidenceReportType: item.autoEvidenceReportType ?? null,
         }).returning();
         if (itemRow) items.push(itemRow);
       }
@@ -255,6 +258,7 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
       artifactRequired: input.artifactRequired,
       completionMode: input.completionMode,
       sortOrder: input.sortOrder,
+      autoEvidenceReportType: input.autoEvidenceReportType ?? null,
     }).returning());
     if (!row) throw new TemplateServiceError('Insert returned no row', 500, 'INSERT_FAILED');
     return row;
@@ -277,6 +281,7 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
         ...(patch.artifactRequired !== undefined ? { artifactRequired: patch.artifactRequired } : {}),
         ...(patch.completionMode !== undefined ? { completionMode: patch.completionMode } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+        ...(patch.autoEvidenceReportType !== undefined ? { autoEvidenceReportType: patch.autoEvidenceReportType } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(deliverableTemplateItems.id, itemId), eq(deliverableTemplateItems.setId, set.id)))
@@ -364,6 +369,34 @@ export async function applyTemplateSet(
       const out: AppliedTemplateResult['created'] = [];
       for (const item of toCreate) {
         const anchorDueDate = firstAnchorAfter(effectiveFrom, item.cadence as Cadence);
+        // #5784 OD-6 = A. Resolve the partner-wide TYPE to THIS org's managed
+        // definition, inside the same all-or-nothing transaction and on the
+        // SAME tx handle — the ambient `db` proxy would resolve to the request
+        // transaction (serviceDeliverableService.ts:52) and escape the rollback.
+        // A provisioning failure aborts the whole apply with an error the
+        // technician sees, rather than a 05:18 console.warn. This only
+        // provisions a definition and links a deliverable: it never generates
+        // and never publishes — the OD-12 delivery gate sits downstream.
+        let autoEvidenceReportId: string | undefined;
+        if (item.autoEvidenceReportType) {
+          // A managed definition carries USER provenance (its created_by is the
+          // principal the ordinary edit/reauthorize surface works on), so a
+          // session with no user (API key, system) must name an owner.
+          const definitionOwner = opts.ownerUserId ?? actor.userId;
+          if (!definitionOwner) {
+            throw new TemplateServiceError(
+              'Applying an item with an auto-evidence report type requires ownerUserId when the caller has no user',
+              400, 'EVIDENCE_OWNER_REQUIRED',
+            );
+          }
+          const managed = await resolveManagedEvidenceDefinition(
+            orgId,
+            item.autoEvidenceReportType as ManagedEvidenceType,
+            definitionOwner,
+            tx,
+          );
+          autoEvidenceReportId = managed.id;
+        }
         const row = await createDeliverable(orgId, {
           contractId: contractId ?? undefined,
           name: item.name,
@@ -376,6 +409,7 @@ export async function applyTemplateSet(
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           ownerUserId: opts.ownerUserId ?? undefined,
+          autoEvidenceReportId,
           portalVisible: true,
           sortOrder: item.sortOrder,
         }, deliverableActor, tx);
