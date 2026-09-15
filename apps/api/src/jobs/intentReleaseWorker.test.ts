@@ -2563,6 +2563,33 @@ describe('releaseApprovedIntent', () => {
         expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
       });
 
+      it('a sweep watch insert that THROWS credits nothing either — same as the alert sibling', async () => {
+        // Review finding, PR #5889: the resolved-null case was covered but the
+        // thrown case was only inferred from the shared outer try/catch. A
+        // constraint violation must not become a `verified` row any more than
+        // a null return does.
+        const intent = agentIntent({
+          triggerKind: 'sweep_finding',
+          triggerKey: 'sweep:service_down:MSSQLSERVER',
+          scopeKind: 'device',
+          scopeDeviceId: SCOPE_DEVICE_ID,
+        } as Partial<ActionIntent>);
+        primeAgentThroughRevalidation(intent, { runRow: [{ agentId: AGENT_ID, alertId: null }] });
+        fixWatchMock.createSweepFixWatchRow.mockRejectedValueOnce(
+          Object.assign(new Error('insert or update violates foreign key constraint'), { code: '23503' }),
+        );
+        aiToolsMock.executeTool.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+        intentServiceMock.transitionIntent.mockResolvedValueOnce(true);
+
+        await releaseApprovedIntent(intent.id);
+
+        expect(opEvidenceMock.insertOpEvidence).toHaveBeenCalledTimes(1);
+        expect(opEvidenceMock.insertOpEvidence.mock.calls[0]![0]).toEqual([
+          expect.objectContaining({ metric: 'executed' }),
+        ]);
+        expect(fixWatchMock.enqueueFixWatchPhase1).not.toHaveBeenCalled();
+      });
+
       it('a sweep intent whose kind has no probe is NOT act-eligible, so C4 still credits it verified', async () => {
         // `failed_backups` has no probe: nothing will ever grade it, which is
         // exactly the situation C4's fallback is for. Opening a watch that can

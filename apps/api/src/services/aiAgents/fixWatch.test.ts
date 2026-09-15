@@ -1012,13 +1012,21 @@ describe('checkFixWatchPhase1 — subject watch', () => {
     expect(state.insertCount).toBe(0);
   });
 
-  it('has NO cancel path — there is no human to dismiss a condition', async () => {
-    // Every probe verdict is exercised; none of them can reach 'cancelled'.
+  it('consults the probe on every verdict and never reaches the cancel path', async () => {
+    // Review finding, PR #5889: asserting only `!== 'cancelled'` would pass
+    // with this whole branch reverted, since a subject watch has a null
+    // alert_id and the alert branch's `dismissed -> cancelled` transition
+    // needs a readable alert row. The discriminating half is that the probe
+    // WAS consulted — reverted code never calls it at all.
     for (const verdict of ['present', 'cleared', 'unknown'] as const) {
       resetDbState();
+      probeSweepSubjectMock.mockClear();
       state.selectQueue.push([subjectWatchRow({ createdAt: new Date() })]);
       probeSweepSubjectMock.mockResolvedValueOnce(verdict);
+
       const result = await checkFixWatchPhase1(WATCH_ID);
+
+      expect(probeSweepSubjectMock).toHaveBeenCalledTimes(1);
       expect(result.action).not.toBe('cancelled');
     }
   });

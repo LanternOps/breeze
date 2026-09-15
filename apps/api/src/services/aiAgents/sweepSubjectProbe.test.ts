@@ -35,8 +35,10 @@ import { AI_SWEEP_KINDS } from '@breeze/shared';
 import {
   isActEligibleSweepKind,
   probeSweepSubject,
+  SERVICE_DOWN_STATUSES,
   SWEEP_PROBE_FRESHNESS_MS,
 } from './sweepSubjectProbe';
+import { loadSweepEvidence } from './sweepEvidence';
 
 // --- compiled-SQL helpers (same shape as sweepEvidence.test.ts) ------------
 function sqlText(node: unknown): string {
@@ -163,6 +165,31 @@ describe('probeSweepSubject — kinds with no probe', () => {
     for (const kind of AI_SWEEP_KINDS.filter((k) => k !== 'service_down')) {
       await expect(probeSweepSubject(kind, ORG, DEV, 'x')).resolves.toBe('unknown');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The finding and its verification must agree on what "down" means. Review
+// finding, PR #5889: these are two independently-maintained literals in two
+// files, and a drift between them reproduces EXACTLY the defect this wave
+// exists to close — a still-broken condition read as `cleared`, crediting a
+// wrong `verified` into an immutable ledger.
+// ---------------------------------------------------------------------------
+describe('SERVICE_DOWN_STATUSES agrees with loadServiceDown', () => {
+  it('names exactly the statuses the sweep raises a service_down finding on', async () => {
+    // Drive the REAL loader through the same mocked db and read its compiled
+    // SQL, rather than restating the list a third time here — a hardcoded copy
+    // in the test would drift right alongside the ones it is meant to guard.
+    results = [[]];
+    await loadSweepEvidence(ORG, ['service_down']);
+    expect(executed, 'loadSweepEvidence issued no query — the arrange is wrong, not the contract').toHaveLength(1);
+
+    const sql = text(0);
+    const inList = sql.match(/latest\.status in \(([^)]*)\)/);
+    expect(inList, 'loadServiceDown no longer filters on a literal status IN list — update this contract test').not.toBeNull();
+    const loaderStatuses = [...inList![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+
+    expect(new Set(loaderStatuses)).toEqual(new Set(SERVICE_DOWN_STATUSES));
   });
 });
 

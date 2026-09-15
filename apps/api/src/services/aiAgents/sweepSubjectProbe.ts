@@ -75,10 +75,18 @@ type SweepSubjectProbe = (
   subjectKey: string,
 ) => Promise<SweepSubjectVerdict>;
 
-/** Statuses `loadServiceDown` treats as a live `service_down` finding. The two
- *  must agree, or a sweep could raise a finding this probe then reads as
- *  already cleared. */
-const SERVICE_DOWN_STATUSES: ReadonlySet<string> = new Set(['stopped', 'not_found', 'error']);
+/**
+ * Statuses `loadServiceDown` (`sweepEvidence.ts`) treats as a live
+ * `service_down` finding. The two MUST agree: if the sweep raises a finding on
+ * a status this probe does not consider `present`, the probe reads the
+ * still-broken condition as `cleared` and credits a wrong `verified` into an
+ * immutable ledger — the very defect class this wave exists to close.
+ *
+ * Exported solely so `sweepSubjectProbe.test.ts` can compile `loadServiceDown`'s
+ * real SQL and assert set equality in both directions. That contract test is
+ * the enforcement; this comment is only the reason.
+ */
+export const SERVICE_DOWN_STATUSES: ReadonlySet<string> = new Set(['stopped', 'not_found', 'error']);
 
 type ProbeRow = {
   status: string | null;
