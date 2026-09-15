@@ -19,10 +19,6 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 )
 
-const (
-	backupHelperIdleTimeout = 30 * time.Minute
-)
-
 // backupHelperSpawnTimeout bounds how long spawnBackupHelper waits for a
 // freshly started helper to connect back over IPC before killing it. Package
 // var, not a const, so tests can shrink it; production leaves it at 15s.
@@ -97,9 +93,20 @@ type backupHelper struct {
 	// cmd is the exec.Cmd that started process, retained solely so the
 	// helper can be reaped after a kill: os.Process alone exposes Wait, but
 	// exec.Cmd.Wait additionally releases the Cmd's own resources. Nil for a
-	// helper adopted from elsewhere (tests), in which case reapKilledHelper
-	// falls back to process.Wait.
-	cmd        *exec.Cmd
+	// helper adopted from elsewhere (tests), in which case killAndReap falls
+	// back to process.Wait.
+	cmd *exec.Cmd
+	// reapOnce makes the kill-and-reap of THIS child single-owner. Two kill
+	// sites can legitimately reach the same process: spawnBackupHelper's
+	// connect-timeout path holds its own cmd reference for the whole 15s
+	// wait, during which an agent shutdown (StopBackupHelper) or a binary
+	// swap (StopBackupHelperIfIdle) may kill and reap it and clear the
+	// fields below. Without a shared once both paths would call Wait on the
+	// same exec.Cmd concurrently, which is a data race inside os/exec, not
+	// merely a redundant call. Created per spawned process; the spawning
+	// goroutine keeps its own reference so it still reaps exactly once after
+	// the fields have been cleared out from under it.
+	reapOnce   *sync.Once
 	binaryPath string
 
 	// spawnDone is non-nil exactly while a spawn attempt for this helper is
@@ -280,6 +287,8 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 	bh.mu.Lock()
 	bh.process = cmd.Process
 	bh.cmd = cmd
+	reapOnce := &sync.Once{}
+	bh.reapOnce = reapOnce
 	reservation.pid = uint32(cmd.Process.Pid)
 	reservation.published = true
 	close(reservation.ready)
@@ -298,14 +307,18 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 		time.Sleep(200 * time.Millisecond)
 	}
 
+	log.Warn("backup helper did not connect, killing it", "pid", cmd.Process.Pid, "timeout", backupHelperSpawnTimeout)
 	bh.mu.Lock()
-	if bh.process == cmd.Process {
-		bh.killAndReapLocked()
-	} else {
-		// A newer spawn already owns bh.process; reap only our own child.
-		_ = cmd.Process.Kill()
-		reapKilledHelper(cmd, cmd.Process)
+	if bh.process != cmd.Process {
+		// A Stop path already cleared (and very likely already reaped) this
+		// child while we were waiting. reapOnce is the one shared with that
+		// path, so this call is a no-op rather than a second concurrent
+		// Wait on the same exec.Cmd.
+		bh.mu.Unlock()
+		killAndReap(reapOnce, cmd, cmd.Process)
+		return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
 	}
+	bh.killAndReapLocked()
 	bh.mu.Unlock()
 	return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
 }
@@ -461,39 +474,65 @@ func (b *Broker) StopBackupHelper() {
 }
 
 // killAndReapLocked kills the resident backup helper process and reaps it,
-// then clears the process/cmd fields. The caller must hold bh.mu.
+// then clears the process/cmd/reapOnce fields. The caller must hold bh.mu.
 func (bh *backupHelper) killAndReapLocked() {
-	proc, cmd := bh.process, bh.cmd
+	proc, cmd, once := bh.process, bh.cmd, bh.reapOnce
 	bh.process = nil
 	bh.cmd = nil
-	if proc == nil {
-		return
+	bh.reapOnce = nil
+	if once == nil {
+		// Helper adopted without going through spawnBackupHelper (tests):
+		// nothing else can hold a reference to it, so a fresh once is
+		// equivalent to the spawned case.
+		once = &sync.Once{}
 	}
-	_ = proc.Kill()
-	reapKilledHelper(cmd, proc)
+	killAndReap(once, cmd, proc)
 }
 
-// reapKilledHelper waits on a just-killed backup helper in the background so
-// the OS releases its process-table entry. Without it the killed child stays
-// a zombie for the whole lifetime of the (long-running) agent on POSIX, and
-// repeated spawn-timeout / binary-swap / shutdown cycles leak PID-table
-// entries (#5420). The wait runs in its own goroutine because Kill is
-// asynchronous: callers hold bh.mu (StopBackupHelperIfIdle holds it for the
-// whole call) and must not block on the child's exit.
-func reapKilledHelper(cmd *exec.Cmd, proc *os.Process) {
-	if cmd == nil && proc == nil {
+// killAndReap kills a backup helper child and waits on it in the background
+// so the OS releases its process-table entry. Without the wait the killed
+// child stays a zombie for the whole lifetime of the (long-running) agent on
+// POSIX, and repeated spawn-timeout / binary-swap / shutdown cycles leak
+// PID-table entries (#5420).
+//
+// once makes this single-owner: whichever kill site gets there first kills
+// and reaps, and any other site holding the same child is a no-op (see
+// backupHelper.reapOnce -- a second concurrent exec.Cmd.Wait is a data race,
+// not just a redundant call). The wait itself runs in its own goroutine
+// because Kill is asynchronous and callers hold bh.mu (StopBackupHelperIfIdle
+// holds it for its whole body), so they must not block on the child's exit.
+func killAndReap(once *sync.Once, cmd *exec.Cmd, proc *os.Process) {
+	if once == nil || proc == nil {
 		return
 	}
-	go func() {
-		if cmd != nil {
-			_ = cmd.Wait()
-		} else {
-			_, _ = proc.Wait()
+	once.Do(func() {
+		// A kill that fails for any reason other than "already exited" means
+		// the helper may still be running and holding the backup IPC socket:
+		// the wait below then blocks until it eventually exits, so this log
+		// line is the only signal an operator gets.
+		if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Warn("failed to kill backup helper", "pid", proc.Pid, "error", err.Error())
 		}
-		if hook := backupHelperReapedHook.Load(); hook != nil {
-			(*hook)(cmd, proc)
-		}
-	}()
+		go func() {
+			var err error
+			if cmd != nil {
+				err = cmd.Wait()
+			} else {
+				_, err = proc.Wait()
+			}
+			// A killed child always reports a non-zero exit (*exec.ExitError,
+			// "signal: killed") -- that one is expected. Anything else means
+			// the reap itself failed and the zombie #5420 is about may still
+			// be there, so it must not be swallowed.
+			var exitErr *exec.ExitError
+			if err != nil && !errors.As(err, &exitErr) {
+				log.Warn("failed to reap killed backup helper", "pid", proc.Pid, "error", err.Error())
+			}
+			if hook := backupHelperReapedHook.Load(); hook != nil {
+				(*hook)(cmd, proc)
+			}
+		}()
+	})
 }
 
 // backupHelperReapedHook is a test-only observation point. It fires from the

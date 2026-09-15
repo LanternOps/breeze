@@ -3,6 +3,7 @@ package sessionbroker
 import (
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 )
@@ -59,7 +60,10 @@ func newReapTestBroker(cmd *exec.Cmd, sessionID string) *Broker {
 		backup: &backupHelper{
 			process: cmd.Process,
 			cmd:     cmd,
-			session: &Session{SessionID: sessionID},
+			// Mirrors what spawnBackupHelper publishes: the once that makes
+			// this child's reap single-owner.
+			reapOnce: &sync.Once{},
+			session:  &Session{SessionID: sessionID},
 		},
 	}
 }
@@ -94,6 +98,35 @@ func TestStopBackupHelperIfIdle_ReapsKilledProcess(t *testing.T) {
 		t.Fatalf("expected process/cmd to be cleared, got %+v / %+v", b.backup.process, b.backup.cmd)
 	}
 	awaitReap(t, reaped, "StopBackupHelperIfIdle")
+}
+
+// TestKillAndReap_IsSingleOwner covers the race between two kill sites that
+// legitimately hold the same child: spawnBackupHelper keeps its own cmd
+// reference across the whole connect wait, and a shutdown or binary swap can
+// kill and reap that child in the meantime. A second exec.Cmd.Wait on the
+// same command is a data race inside os/exec, not a harmless duplicate, so
+// the shared reapOnce must make the loser a no-op — exactly one reap for one
+// child.
+func TestKillAndReap_IsSingleOwner(t *testing.T) {
+	reaped := observeBackupHelperReap(t)
+	cmd := startReapTestHelper(t)
+
+	b := newReapTestBroker(cmd, "backup-reap-single-owner")
+	once := b.backup.reapOnce
+
+	// The Stop path wins and reaps.
+	b.StopBackupHelper()
+	awaitReap(t, reaped, "StopBackupHelper")
+
+	// The spawn-timeout path, still holding its own cmd + the shared once,
+	// now loses. It must not Wait again.
+	killAndReap(once, cmd, cmd.Process)
+
+	select {
+	case <-reaped:
+		t.Fatal("killAndReap reaped the same child twice — concurrent exec.Cmd.Wait is a data race")
+	case <-time.After(500 * time.Millisecond):
+	}
 }
 
 // TestSpawnBackupHelper_ConnectTimeout_ReapsKilledProcess covers the third
