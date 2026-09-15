@@ -240,6 +240,25 @@ describe('generateHardwareLifecycleReport', () => {
     expect(row.warrantyLookupFailed).toBe(false);
   });
 
+  it('warrantyLookupFailed is derived for a manual asset too, not just agent devices', async () => {
+    const failedLookupAsset = manualAssetRow({
+      id: 'a0000000-0000-4000-8000-000000000006',
+      warrantyEndDate: null,
+      warrantyStatus: 'unknown',
+      warrantyLastSyncError: 'Lenovo API: expired API key',
+    });
+    queueSelects(ORG_ROW, [], [failedLookupAsset]);
+
+    const result = await generateHardwareLifecycleReport(
+      ORG_ID,
+      { includeManualAssets: true, includeOtherEquipment: false },
+      authority('unrestricted'),
+    );
+
+    const row = summaryOf(result).rows.find((r) => r.id === failedLookupAsset.id)!;
+    expect(row.warrantyLookupFailed).toBe(true);
+  });
+
   it('a device with no purchase date and no warranty is kept with replacement: "unknown", not dropped', async () => {
     const unknownDevice = deviceRow({
       id: 'd0000000-0000-4000-8000-000000000004',
