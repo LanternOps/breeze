@@ -15,7 +15,7 @@
  *     src/__tests__/integration/remoteRevocationLease.integration.test.ts
  */
 import './setup';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 
 // The teardown side effect (viewer-token revoke + durable stop_desktop relay) is
@@ -36,6 +36,7 @@ import {
   REVOCATION_LEASE_HARD_CAP_MS,
   REVOCATION_LEASE_TTL_MS,
   loadRevocationRecheckRow,
+  isDesktopStartCapable,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
@@ -49,7 +50,7 @@ import {
 } from './db-utils';
 import { getTestDb } from './setup';
 
-async function buildFixture(options: { leaseCapable?: boolean } = {}) {
+async function buildFixture(options: { leaseCapable?: boolean; fenceCapable?: boolean } = {}) {
   const db = getTestDb();
   const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -83,6 +84,7 @@ async function buildFixture(options: { leaseCapable?: boolean } = {}) {
       agentVersion: '0.0.0-test',
       status: 'online',
       revocationLeaseProtocolVersion: options.leaseCapable === false ? 0 : 1,
+      desktopFenceProtocolVersion: options.fenceCapable === false ? 0 : 1,
     })
     .returning();
 
@@ -126,6 +128,7 @@ describe('revocation lease against live Postgres', () => {
     expect(row!.session.permissionsEpochSnapshot).toBeTypeOf('number');
     expect(row!.device.siteId).toBe(f.site.id);
     expect(row!.device.revocationLeaseProtocolVersion).toBe(1);
+    expect(row!.device.desktopFenceProtocolVersion).toBe(1);
     expect(row!.user.status).toBe('active');
     expect(row!.orgMembership?.roleId).toBe(f.role.id);
     // An org-scoped user has no partner membership on this axis.
@@ -296,6 +299,55 @@ describe('revocation lease against live Postgres', () => {
     await expect(prepareRevocationLeaseForStart(f.session.id)).resolves.toEqual({
       ok: false,
       reason: 'agent_upgrade_required',
+    });
+  });
+
+  // SEC-038 W06 (#5537): the desktop-fence gate against the real column.
+  describe('desktop fence capability gate (REMOTE_DESKTOP_FENCE_REQUIRED)', () => {
+    const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    afterEach(() => {
+      if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
+    });
+
+    it('gate off: admits an unfenced agent', async () => {
+      delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      const f = await buildFixture({ fenceCapable: false });
+      const result = await prepareRevocationLeaseForStart(f.session.id);
+      expect(result.ok).toBe(true);
+    });
+
+    it('gate on: refuses an unfenced agent with agent_upgrade_required', async () => {
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      const f = await buildFixture({ fenceCapable: false });
+      await expect(prepareRevocationLeaseForStart(f.session.id)).resolves.toEqual({
+        ok: false,
+        reason: 'agent_upgrade_required',
+      });
+    });
+
+    it('gate on: admits a fenced agent', async () => {
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      const f = await buildFixture();
+      const result = await prepareRevocationLeaseForStart(f.session.id);
+      expect(result.ok).toBe(true);
+    });
+
+    // The session-create fail-fast probe reads the real columns too.
+    it('isDesktopStartCapable mirrors the gate against the device row', async () => {
+      const fenced = await buildFixture();
+      const unfenced = await buildFixture({ fenceCapable: false });
+      const noLease = await buildFixture({ leaseCapable: false });
+
+      delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(noLease.device.id)).resolves.toBe(false);
+
+      process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+      await expect(isDesktopStartCapable(fenced.device.id)).resolves.toBe(true);
+      await expect(isDesktopStartCapable(unfenced.device.id)).resolves.toBe(false);
+      await expect(isDesktopStartCapable('00000000-0000-0000-0000-000000000000')).resolves.toBe(false);
     });
   });
 

@@ -112,6 +112,29 @@ describe('hardware lifecycle PDF', () => {
     expect(text).not.toContain('We plan to replace a server 4 years after purchase');
   });
 
+  it('footnotes a row whose warranty lookup failed, distinct from a confirmed "no warranty" row (#5764)', () => {
+    const failedLookupRow = row({
+      name: 'FAILED-SYNC-PC',
+      purchaseDate: '2019-01-01',
+      purchaseDateSource: 'manual',
+      warrantyEndDate: null,
+      warrantyLookupFailed: true,
+      ageYears: 7,
+      replaceBy: '2023-01-01',
+      replacement: 'replace',
+    });
+    const doc = buildReportPdf([], { ...opts, summary: { ...summary, rows: [failedLookupRow] } });
+    const text = pdfText(doc);
+    expect(text).toContain('Unable to verify †');
+    expect(text).toContain('† Warranty status could not be verified during the last sync attempt.');
+  });
+
+  it('does not footnote warranty when no row has a failed lookup', () => {
+    const doc = buildReportPdf([], { ...opts, summary });
+    const text = pdfText(doc);
+    expect(text).not.toContain('could not be verified');
+  });
+
   it('renders an empty snapshot without throwing', () => {
     const doc = buildReportPdf([], { ...opts, summary: { rows: [], other: [], recommendations: ['Nothing needs your attention right now.'] } });
     const text = pdfText(doc);

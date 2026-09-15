@@ -151,9 +151,15 @@ function cellText(row: HardwareLifecycleDeviceRow, key: string, today: string): 
   switch (key) {
     case 'ageYears': return ageCell(row);
     case 'purchaseDate': return row.purchaseDate ? `${monthYear(row.purchaseDate)}${row.purchaseDateSource === 'vendor' ? ' *' : ''}` : EM_DASH;
-    case 'warrantyEndDate':
-      if (!row.warrantyEndDate) return EM_DASH;
-      return row.warrantyEndDate < today ? `Expired ${monthYear(row.warrantyEndDate)}` : monthYear(row.warrantyEndDate);
+    case 'warrantyEndDate': {
+      // #5764 — a failed vendor lookup (network/expired key/quota) and a
+      // genuine "no coverage" result both land here with warrantyEndDate
+      // null; flag the former rather than let it read as confirmed.
+      const marker = row.warrantyLookupFailed ? ' †' : '';
+      if (!row.warrantyEndDate) return row.warrantyLookupFailed ? `Unable to verify${marker}` : EM_DASH;
+      const label = row.warrantyEndDate < today ? `Expired ${monthYear(row.warrantyEndDate)}` : monthYear(row.warrantyEndDate);
+      return `${label}${marker}`;
+    }
     case 'replaceBy':
     // Drawn by hand in didDrawCell; the cell keeps its text for extraction and
     // screen readers but paints nothing itself.
@@ -544,12 +550,22 @@ export function renderHardwareLifecycleReport(
   // Heading, rule, table head and at least four rows stay together; a table
   // that would open with two orphan rows starts on the next page instead.
   const footnote = (tableRows: HardwareLifecycleDeviceRow[], at: number): number => {
-    if (!tableRows.some((r) => r.purchaseDateSource === 'vendor')) return at;
+    const hasVendorDate = tableRows.some((r) => r.purchaseDateSource === 'vendor');
+    const hasFailedLookup = tableRows.some((r) => r.warrantyLookupFailed);
+    if (!hasVendorDate && !hasFailedLookup) return at;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     ink(doc, C.faint);
-    doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, at + 3.8);
-    return at + 4.5;
+    let y = at;
+    if (hasVendorDate) {
+      doc.text("* Purchase date taken from the manufacturer's ship record.", PAGE.mx, y + 3.8);
+      y += 4.5;
+    }
+    if (hasFailedLookup) {
+      doc.text('† Warranty status could not be verified during the last sync attempt.', PAGE.mx, y + 3.8);
+      y += 4.5;
+    }
+    return y;
   };
   const minTableBlock = 26 + 7 + ROW_MIN_H * Math.min(3, Math.max(1, workstations.length));
   y = ensureSpace(doc, chrome, y + 6, minTableBlock);

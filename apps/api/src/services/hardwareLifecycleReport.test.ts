@@ -179,6 +179,86 @@ describe('generateHardwareLifecycleReport', () => {
     expect(row.warrantyExtended).toBe(false);
   });
 
+  it('warrantyLookupFailed is true when the last warranty sync errored (status unknown + lastSyncError set)', async () => {
+    const failedLookupDevice = deviceRow({
+      id: 'd0000000-0000-4000-8000-000000000006',
+      purchaseDate: '2020-01-01', // old enough to land in "replace" purely off age
+      warrantyEndDate: null,
+      warrantyStatus: 'unknown',
+      warrantyLastSyncError: 'Dell API: 503 Service Unavailable',
+    });
+    queueSelects(ORG_ROW, [failedLookupDevice], []);
+
+    const result = await generateHardwareLifecycleReport(
+      ORG_ID,
+      { replaceAgeYears: 4, includeOtherEquipment: false },
+      authority('unrestricted'),
+    );
+
+    const row = summaryOf(result).rows.find((r) => r.id === failedLookupDevice.id)!;
+    expect(row.warrantyLookupFailed).toBe(true);
+    // Still classified off the purchase-date rule — this flags the
+    // uncertainty rather than silently reclassifying the row.
+    expect(row.replacement).toBe('replace');
+  });
+
+  it('warrantyLookupFailed is false when the vendor genuinely reports no coverage (status unknown, no error)', async () => {
+    const noWarrantyDevice = deviceRow({
+      id: 'd0000000-0000-4000-8000-000000000007',
+      warrantyEndDate: null,
+      warrantyStatus: 'unknown',
+      warrantyLastSyncError: null,
+    });
+    queueSelects(ORG_ROW, [noWarrantyDevice], []);
+
+    const result = await generateHardwareLifecycleReport(
+      ORG_ID,
+      { includeOtherEquipment: false },
+      authority('unrestricted'),
+    );
+
+    const row = summaryOf(result).rows.find((r) => r.id === noWarrantyDevice.id)!;
+    expect(row.warrantyLookupFailed).toBe(false);
+  });
+
+  it('warrantyLookupFailed is false with no device_warranty row at all (never synced)', async () => {
+    const neverSyncedDevice = deviceRow({
+      id: 'd0000000-0000-4000-8000-000000000008',
+      warrantyEndDate: null,
+      warrantyStatus: null,
+      warrantyLastSyncError: null,
+    });
+    queueSelects(ORG_ROW, [neverSyncedDevice], []);
+
+    const result = await generateHardwareLifecycleReport(
+      ORG_ID,
+      { includeOtherEquipment: false },
+      authority('unrestricted'),
+    );
+
+    const row = summaryOf(result).rows.find((r) => r.id === neverSyncedDevice.id)!;
+    expect(row.warrantyLookupFailed).toBe(false);
+  });
+
+  it('warrantyLookupFailed is derived for a manual asset too, not just agent devices', async () => {
+    const failedLookupAsset = manualAssetRow({
+      id: 'a0000000-0000-4000-8000-000000000006',
+      warrantyEndDate: null,
+      warrantyStatus: 'unknown',
+      warrantyLastSyncError: 'Lenovo API: expired API key',
+    });
+    queueSelects(ORG_ROW, [], [failedLookupAsset]);
+
+    const result = await generateHardwareLifecycleReport(
+      ORG_ID,
+      { includeManualAssets: true, includeOtherEquipment: false },
+      authority('unrestricted'),
+    );
+
+    const row = summaryOf(result).rows.find((r) => r.id === failedLookupAsset.id)!;
+    expect(row.warrantyLookupFailed).toBe(true);
+  });
+
   it('a device with no purchase date and no warranty is kept with replacement: "unknown", not dropped', async () => {
     const unknownDevice = deviceRow({
       id: 'd0000000-0000-4000-8000-000000000004',

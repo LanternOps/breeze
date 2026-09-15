@@ -1876,6 +1876,20 @@
         "empty": "Bildirilen bulgu yok.",
         "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
         "proposalCreated": "Onay istendi",
+        "actSummary": "{{proposed}} cihazdan {{acted}} tanesinde gözetimsiz işlem yapıldı; kalanlar onay bekliyor.",
+        "outcomes": {
+          "auto_executing": "Gözetimsiz çalışıyor",
+          "executed": "Tamamlandı",
+          "failed": "Başarısız",
+          "declined": "Reddedildi",
+          "expired": "Süresi doldu",
+          "unknown": "Sonuç bilinmiyor"
+        },
+        "stoppedBy": {
+          "fleet_cap": "günlük filo sınırına ulaşıldı",
+          "day_cap": "günlük işlem sınırına ulaşıldı",
+          "occurrence_cap": "tarama başına cihaz sınırına ulaşıldı"
+        },
         "columns": {
           "kind": "Kontrol",
           "severity": "Önem düzeyi",
@@ -2394,7 +2408,8 @@
         "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
         "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
         "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
-        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez.",
+        "below_sweep_threshold": "Hedefi zamanlanmış bir taramanın seçtiği daha fazla doğrulanmış düzeltme gerekiyor."
       },
       "confirm": {
         "title": "Ön yetki isteği oluştur",

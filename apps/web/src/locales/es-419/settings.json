@@ -1876,6 +1876,20 @@
         "empty": "No se reportaron hallazgos.",
         "evidenceTruncated": "La evidencia se truncó: no se le mostraron al agente todas las filas coincidentes.",
         "proposalCreated": "Aprobación solicitada",
+        "actSummary": "Se actuó sin supervisión en {{acted}} de {{proposed}} dispositivos; el resto espera aprobación.",
+        "outcomes": {
+          "auto_executing": "Ejecutándose sin supervisión",
+          "executed": "Completado",
+          "failed": "Falló",
+          "declined": "Rechazado",
+          "expired": "Vencido",
+          "unknown": "Resultado desconocido"
+        },
+        "stoppedBy": {
+          "fleet_cap": "se alcanzó el límite diario de la flota",
+          "day_cap": "se alcanzó el límite diario de acciones",
+          "occurrence_cap": "se alcanzó el tope de dispositivos por barrido"
+        },
         "columns": {
           "kind": "Comprobación",
           "severity": "Gravedad",
@@ -2394,7 +2408,8 @@
         "below_threshold": "Aún no hay suficientes ejecuciones verificadas.",
         "too_recent": "La primera ejecución verificada es demasiado reciente.",
         "has_failures": "En esta ventana se registró una falla o una reincidencia.",
-        "not_policy_decidable": "Esta operación nunca puede preautorizarse."
+        "not_policy_decidable": "Esta operación nunca puede preautorizarse.",
+        "below_sweep_threshold": "Faltan más correcciones verificadas en las que un barrido programado eligió el objetivo."
       },
       "confirm": {
         "title": "Solicitar preautorización",
