@@ -68,6 +68,11 @@ export type ScheduleValidationCode =
   // AI patch agent (W01), the same mirror for a `patch` schedule: it must
   // target a `patch` agent.
   | 'agent_kind_not_patch'
+  // #4442 W04: an org override may DISARM act mode or inherit, never arm it.
+  // Its own code, and a refusal rather than a silent coercion to `null`: a
+  // caller that believes it armed unattended execution and did not is a
+  // worse outcome than a 422.
+  | 'act_mode_org_cannot_arm'
   | 'invalid_cron'
   // P2-3: structurally fine and inside the hourly floor, but wrong for THIS
   // schedule's kind. Distinct from `invalid_cron` so a client can tell "not a
@@ -115,7 +120,7 @@ export class ScheduleValidationError extends Error {
 }
 
 /** Exported: Task 9's sweeper names it when consuming `resolveEffectiveSchedulesForPartner`. */
-export type ScheduleOverrideSummary = { id: string; enabled: boolean; sweepKinds: AiSweepKind[] };
+export type ScheduleOverrideSummary = { id: string; enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean | null };
 
 /**
  * The org-facing merge, and the reason a stale override can never widen a
@@ -123,14 +128,21 @@ export type ScheduleOverrideSummary = { id: string; enabled: boolean; sweepKinds
  * the sweeper (Task 9) calls it per (baseline, org) pair with no db access.
  */
 export function effectiveSchedule(
-  baseline: { enabled: boolean; sweepKinds: AiSweepKind[] },
-  override: { enabled: boolean; sweepKinds: AiSweepKind[] } | null,
-): { enabled: boolean; sweepKinds: AiSweepKind[] } {
+  baseline: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode?: boolean | null },
+  override: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode?: boolean | null } | null,
+): { enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean } {
   return {
     enabled: baseline.enabled && (override?.enabled ?? true),
     sweepKinds: override
       ? baseline.sweepKinds.filter((kind) => override.sweepKinds.includes(kind))
       : [...baseline.sweepKinds],
+    // #4442 W04 — act mode is THREE-VALUED and fails closed on both arms.
+    // Deliberately NOT the `baseline && (override ?? true)` shape used by
+    // `enabled` above: this column is nullable with no default, so on an
+    // override `null` has to mean "inherit" while `false` means "disarm" —
+    // and on a baseline anything that is not exactly `true` is "not armed".
+    // Hence the explicit `=== true` / `!== false` rather than truthiness.
+    actMode: baseline.actMode === true && override?.actMode !== false,
   };
 }
 
@@ -252,6 +264,9 @@ function toScheduleDto(row: AiAgentScheduleRow, includeRunSummary: boolean): AiA
     timezone: row.timezone,
     sweepKinds: row.sweepKinds,
     enabled: row.enabled,
+    // Raw, not the effective merge: the UI needs to tell "inherit" (null)
+    // from "explicitly off" (false) on an override row.
+    actMode: row.actMode,
     lastEnqueuedAt: row.lastEnqueuedAt?.toISOString() ?? null,
     lastOccurrenceKey: row.lastOccurrenceKey,
     // `last_run_summary` aggregates every org under the partner (orgsTotal /
@@ -264,7 +279,7 @@ function toScheduleDto(row: AiAgentScheduleRow, includeRunSummary: boolean): AiA
 }
 
 function overrideSummary(row: AiAgentScheduleRow): ScheduleOverrideSummary {
-  return { id: row.id, enabled: row.enabled, sweepKinds: row.sweepKinds };
+  return { id: row.id, enabled: row.enabled, sweepKinds: row.sweepKinds, actMode: row.actMode };
 }
 
 function toEffectiveDto(
@@ -461,6 +476,20 @@ async function loadScheduleForWrite(auth: AuthContext, id: string): Promise<AiAg
   return row;
 }
 
+/**
+ * #4442 W04 — the tighten-only half of act mode on the WRITE path. An org
+ * override may disarm (`false`) or inherit (`null`/omitted); arming is a
+ * partner-wide decision. Refused, never coerced.
+ */
+function assertOrgActModeNotArming(actMode: boolean | null | undefined): void {
+  if (actMode === true) {
+    throw new ScheduleValidationError(
+      'act_mode_org_cannot_arm',
+      'Act mode is armed on the partner baseline; an organization override may only disable it',
+    );
+  }
+}
+
 export async function createSchedule(
   auth: AuthContext,
   input: CreateAiAgentScheduleInput,
@@ -496,6 +525,11 @@ export async function createSchedule(
         timezone,
         sweepKinds: input.sweepKinds,
         enabled: input.enabled,
+        // #4442 W04. `assertAgentWriteAllowed` above already refused any
+        // caller without `canManagePartnerWidePolicies`, so reaching here is
+        // the partner-wide write gate; `?? null` keeps "omitted" and
+        // "explicitly null" the same stored value (= not armed).
+        actMode: input.actMode ?? null,
         createdBy: auth.user.id,
         updatedAt: new Date(),
       })
@@ -505,6 +539,7 @@ export async function createSchedule(
   }
 
   assertAgentWriteAllowed(auth, { orgId: input.orgId, partnerId: null });
+  assertOrgActModeNotArming(input.actMode);
   const orgPartnerId = await requireOrgPartnerId(input.orgId);
   const baseline = await loadBaselineForOverride(input.orgId, orgPartnerId, input.baselineScheduleId);
   assertBaselineUsable(baseline, { orgPartnerId });
@@ -530,6 +565,9 @@ export async function createSchedule(
       timezone: baseline.timezone,
       sweepKinds: input.sweepKinds,
       enabled: input.enabled,
+      // Only `false` (disarm) or `null` (inherit) can reach here —
+      // `assertOrgActModeNotArming` refused `true` above.
+      actMode: input.actMode ?? null,
       createdBy: auth.user.id,
       updatedAt: new Date(),
     })
@@ -575,6 +613,10 @@ export async function updateSchedule(
       assertPartnerKindsForScheduleKind(existing.kind, input.sweepKinds);
       patch.sweepKinds = input.sweepKinds;
     }
+    // #4442 W04. `assertAgentWriteAllowed` above already gated this whole
+    // branch on `canManagePartnerWidePolicies` (the row is partner-wide), so
+    // arming needs no second check here.
+    if (input.actMode !== undefined) patch.actMode = input.actMode ?? null;
   } else {
     // An override has no cadence of its own — cron/timezone on its row are a
     // copy of the baseline's. Accepting them here would persist a lie rather
@@ -602,6 +644,10 @@ export async function updateSchedule(
       assertBaselineUsable(baseline, { orgPartnerId, agentId: existing.agentId });
       assertKindsSubset(baseline, input.sweepKinds);
       patch.sweepKinds = input.sweepKinds;
+    }
+    if (input.actMode !== undefined) {
+      assertOrgActModeNotArming(input.actMode);
+      patch.actMode = input.actMode ?? null;
     }
   }
 

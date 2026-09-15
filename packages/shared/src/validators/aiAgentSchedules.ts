@@ -194,6 +194,12 @@ const createPartnerScheduleSchema = z.object({
   // empty" the same thing for a narrative create.
   sweepKinds: z.array(sweepKindEnum).max(6).default([]),
   enabled: z.boolean(),
+  // #4442 W04. Nullish, never defaulted to `false`: on a baseline `true` is
+  // the only armed value, so "absent" and "false" already mean the same
+  // thing here, and keeping the column NULL lets the org-override arm look
+  // identical on the wire. Arming is additionally gated on
+  // `canManagePartnerWidePolicies` in the service.
+  actMode: z.boolean().nullish(),
 }).strict().superRefine((value, ctx) => {
   if (value.kind === 'patch') {
     if (value.sweepKinds.length > 0) {
@@ -265,6 +271,11 @@ const createOrgScheduleSchema = z.object({
   baselineScheduleId: z.string().uuid(),
   enabled: z.boolean(),
   sweepKinds: z.array(sweepKindEnum).max(6),
+  // #4442 W04 — an org override may only DISARM (`false`) or inherit
+  // (`null`/absent). `true` is rejected by the service with
+  // `act_mode_org_cannot_arm` rather than silently coerced: a caller that
+  // thinks it armed something and did not is worse than a 422.
+  actMode: z.boolean().nullish(),
 }).strict();
 
 export const createAiAgentScheduleSchema = z.discriminatedUnion('ownerScope', [
@@ -282,4 +293,8 @@ export const updateAiAgentScheduleSchema = z.object({
   timezone: scheduleTimezoneSchema.optional(),
   sweepKinds: z.array(sweepKindEnum).max(6).optional(),
   enabled: z.boolean().optional(),
+  // #4442 W04. `.nullish()` because NULL is a meaningful value on this column
+  // (an org override clearing its disarm back to "inherit"), so it must be
+  // distinguishable from "field omitted".
+  actMode: z.boolean().nullish(),
 }).strict();
