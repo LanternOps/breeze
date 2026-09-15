@@ -277,10 +277,19 @@ func (h *Heartbeat) desktopSessionTerminalAfterStart(sessionID string) bool {
 		if session := h.desktopOwnerSession(sessionID); session != nil {
 			req := ipc.DesktopStopRequest{SessionID: sessionID}
 			if _, err := session.SendCommand("desk-stop-"+sessionID, ipc.TypeDesktopStop, req, 10*time.Second); err != nil {
-				log.Warn("failed to stop a session tombstoned during its start",
+				// KEEP the owner mapping. It is the only thing that can route a
+				// later stop (an operator retry, a revocation-lease answer
+				// forwarded by forwardRevocationLeaseToHelper) back to the
+				// helper that may still be capturing. Forgetting it here would
+				// permanently foreclose IPC to that helper for this session id,
+				// for a session the fence has already decided must not exist —
+				// the same reasoning handleStopDesktop applies on its own IPC
+				// failure.
+				log.Warn("failed to stop a session tombstoned during its start; keeping the helper owner mapping so a later stop can retry",
 					"sessionId", sessionID, "error", err.Error())
+			} else {
+				h.forgetDesktopOwner(sessionID)
 			}
-			h.forgetDesktopOwner(sessionID)
 		}
 	}
 	h.desktopMgr.StopSession(sessionID)

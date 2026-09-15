@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/ipc"
+	"github.com/breeze-rmm/agent/internal/remote/desktop"
 	"github.com/breeze-rmm/agent/internal/sessionbroker"
 )
 
@@ -176,5 +177,45 @@ func TestHelperSessionCloseForcesAReseed(t *testing.T) {
 	}
 	if got := second.nextType(t); got != ipc.TypeDesktopFenceSync {
 		t.Fatalf("a helper session that replaced a closed one must be reseeded; it received %q first", got)
+	}
+}
+
+// A terminal decision landing while a helper start is in flight triggers a
+// compensating stop. If that stop's IPC fails, the owner mapping must SURVIVE:
+// it is the only route a later stop (an operator retry, a forwarded
+// revocation-lease answer) has back to a helper that may still be capturing.
+func TestTerminalAfterStartKeepsTheOwnerMappingWhenTheStopFails(t *testing.T) {
+	serverConn, clientConn := createTestSocketPair(t)
+	clientIPC := ipc.NewConn(clientConn)
+	session := sessionbroker.NewSession(ipc.NewConn(serverConn), 1000, "1000", "alice", "quartz", "helper-stuck", []string{"desktop"})
+	session.Capabilities = &ipc.Capabilities{CanCapture: true}
+	session.HelperRole = ipc.HelperRoleSystem
+	t.Cleanup(func() {
+		_ = session.Close()
+		_ = clientIPC.Close()
+	})
+	go session.RecvLoop(func(*sessionbroker.Session, *ipc.Envelope) {})
+	// A helper that reads but never answers: the compensating stop times out.
+	go func() {
+		for {
+			_ = clientIPC.SetReadDeadline(time.Now().Add(20 * time.Second))
+			if _, err := clientIPC.Recv(); err != nil {
+				return
+			}
+		}
+	}()
+
+	h := &Heartbeat{
+		sessionBroker: newTestBrokerWithSessions(t, session),
+		desktopMgr:    desktop.NewSessionManager(),
+	}
+	h.desktopStartFence.noteStop("desktop-1", desktopStopFenceInput{Generation: 5, HasGeneration: true})
+	h.rememberDesktopOwner("desktop-1", session.SessionID)
+
+	if !h.desktopSessionTerminalAfterStart("desktop-1") {
+		t.Fatal("a tombstoned session must be reported as terminal after its start")
+	}
+	if got := h.desktopOwnerSession("desktop-1"); got == nil {
+		t.Fatal("a failed compensating stop must keep the owner mapping so a later stop can still reach the helper")
 	}
 }
