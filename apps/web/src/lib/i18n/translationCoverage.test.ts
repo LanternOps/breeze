@@ -412,7 +412,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // French.
-    'settings.json': 173,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in French (same acceptance as scriptRejected).
+    'settings.json': 174,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -555,7 +557,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // Canadian French.
-    'settings.json': 179,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in Canadian French too.
+    'settings.json': 180,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
