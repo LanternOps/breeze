@@ -15,7 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -392,6 +392,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       // Site is an app-layer authz axis only (RLS does not cover it) — join
       // devices and narrow by siteId for a site-restricted caller.
       if (isSiteRestricted) conditions.push(inArray(devices.siteId, auth.allowedSiteIds!));
+      // W04 (#5715): the device-LESS analysis run's frozen set — it has no site
+      // axis, so the narrowing above does nothing for it.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       // The per-device fold runs in Postgres, not here. Selecting raw rollup
       // rows materialized (org devices) x (buckets in window) — a 168h window

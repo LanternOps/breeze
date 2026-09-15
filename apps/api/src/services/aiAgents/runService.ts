@@ -38,6 +38,7 @@ import { isWorkspaceBreakerOpen } from '../workspace/workspaceBreaker';
 import { isToolAllowlisted } from './toolAllowlist';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';
 import { publishEvent } from '../eventBus';
+import { captureException } from '../sentry';
 import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
 import { isCircuitOpen, isTerminalRunStatus, recordRunTerminal } from './agentCircuit';
 import {
@@ -1142,6 +1143,30 @@ export async function createAndEnqueueAgentRun(
       hashtext(${`${resolved.agentId}:${orgId}`})
     )`);
 
+    // 4b2. Execution plane W04 (#5715) — a SECOND lock, keyed on the ORG
+    //      alone, for analysis admissions only.
+    //
+    //      The lock above is keyed on (agent, org) because every counter below
+    //      is. The compute ceiling at step 7b is NOT: it is an org-wide daily
+    //      pot (`ai_budgets.max_compute_cents_per_day`) summed across every
+    //      agent's runs. An org may hold several agents (one per kind), so two
+    //      admissions for different agents in the same org take DIFFERENT
+    //      (agent, org) locks, both read `settled + reserved` before either
+    //      commits its reservation, and both admit — the exact over-admission
+    //      shape the reservation exists to prevent, just on the agent axis
+    //      rather than the request axis.
+    //
+    //      Taken only for `analysis` (the one profile with a reservation), so
+    //      no other profile's admission queues behind an unrelated org-mate,
+    //      and always AFTER the (agent, org) lock so every taker orders the
+    //      two the same way and no pair can deadlock.
+    if (analysisProfileRequested) {
+      await db.execute(sql`select pg_advisory_xact_lock(
+        ${AGENT_RUN_ADMISSION_LOCK_NAMESPACE}::int4,
+        hashtext(${`analysis-compute:${orgId}`})
+      )`);
+    }
+
     const now = Date.now();
 
     // Scoping note for 5/6/7: every count is pinned to (agentId, orgId), not
@@ -1604,6 +1629,7 @@ export async function createAndEnqueueAgentRun(
         console.error('[aiAgentRunService] failed to release a compute reservation', {
           runId: run.id, error: settleError,
         });
+        captureException(settleError instanceof Error ? settleError : new Error(String(settleError)));
       }
     }
     return { created: true, run: failed ?? { ...run, status: 'failed', errorCode: 'enqueue_failed' } };
@@ -1672,6 +1698,10 @@ export async function transitionRunStatus(
         outcome: aiAgentRuns.outcome,
         profile: aiAgentRuns.profile,
         taskId: aiAgentRuns.taskId,
+        // Execution plane W04 — an outstanding compute reservation, released
+        // below on any terminal transition. Returned from the CAS itself so
+        // the release reads the value the transition actually observed.
+        computeReservedCents: aiAgentRuns.computeReservedCents,
       });
     const row = rows[0] ?? null;
 
@@ -1732,6 +1762,37 @@ export async function transitionRunStatus(
   // but is safe by construction: its only errorCode ('stalled') always
   // classifies `neutral` (agentCircuit.ts), so `recordRunTerminal` returns
   // before issuing any SQL at all in that path.
+  // Execution plane W04 (#5715) — release an outstanding compute reservation
+  // on EVERY terminal transition, in the same chokepoint the circuit
+  // bookkeeping uses and for the same reason: the two hand-picked release
+  // sites (the run loop's `finalizeWorkspaceForRun`, admission's
+  // enqueue-failure path) only cover runs that got that far. A worker killed
+  // mid-run, or a run stopped at the pre-start policy gate, reaches a terminal
+  // status through `reapStalledAgentRuns` / `transitionRunStatus` alone — and
+  // left its reservation standing, which (a) counts against the org's daily
+  // compute ceiling until UTC midnight, refusing that org's later analyses
+  // with `compute_budget_exceeded`, and (b) never bills the compute the
+  // provider really did run.
+  //
+  // Settled at the RESERVATION, not at zero: spec §9's "usage unavailable ⇒
+  // settle at the reservation, never $0" — a run we lost track of is exactly
+  // the case where the measured number is gone. A normally finished run has
+  // already settled (which NULLs the column), so this is a no-op for it, and
+  // `settleComputeCents` is idempotent against a cleared reservation.
+  const outstandingReservation = moved.computeReservedCents ?? 0;
+  if (isTerminalRunStatus(to) && outstandingReservation > 0) {
+    try {
+      await settleComputeCents(
+        moved.orgId, moved.id, outstandingReservation, await getLlmBillingSourceForOrg(moved.orgId),
+      );
+    } catch (error) {
+      console.error('[aiAgentRunService] compute reservation release failed; the org keeps a held reservation', {
+        runId, orgId: moved.orgId, reservedCents: outstandingReservation, error,
+      });
+      captureException(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
   if (isTerminalRunStatus(to)) {
     try {
       const runVerdict: AgentRunVerdict | null =

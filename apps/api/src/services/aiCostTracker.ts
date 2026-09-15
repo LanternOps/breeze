@@ -529,8 +529,14 @@ export async function settleComputeCents(
         }));
     } catch (err) {
       // Same posture as the token rollup above: a failed aggregate must not
-      // fail the run, and the authoritative number is on the run row.
+      // fail the run, and the authoritative number is on the run row
+      // (`ai_agent_runs.compute_cents`, written above and outside this catch)
+      // — admission's daily ceiling reads THAT, not this column. Paged anyway:
+      // nothing reconciles a dropped rollup, so the drift is permanent, and
+      // silent permanent drift in a spend column is how an invoice built on it
+      // later comes out wrong with no record of why.
       console.error(`[AI] Failed to roll up ${period} compute for org=${orgId}, run=${runId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
 

@@ -147,7 +147,16 @@ const resolveEffectiveAgentSystem = vi.hoisted(() => vi.fn());
 vi.mock('./effectivePolicy', () => ({ resolveEffectiveAgentSystem }));
 
 const checkBudget = vi.hoisted(() => vi.fn());
-vi.mock('../aiCostTracker', () => ({ checkBudget }));
+// Execution plane W04 (#5715): admission reserves compute, and the
+// terminalization chokepoint releases an outstanding reservation. Both live in
+// aiCostTracker, so the module mock has to carry them or any run that holds a
+// reservation dies on "not a function" instead of exercising the release.
+const checkComputeCredits = vi.hoisted(() => vi.fn(async () => null));
+const reserveComputeCents = vi.hoisted(() => vi.fn(async () => undefined));
+const settleComputeCents = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../aiCostTracker', () => ({
+  checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
+}));
 
 const getLlmBillingSourceForOrg = vi.hoisted(() => vi.fn());
 vi.mock('../llm/llmConfigResolver', () => ({ getLlmBillingSourceForOrg }));
@@ -1587,6 +1596,66 @@ describe('createAndEnqueueAgentRun — cross-kind enqueue_failed reclaim guard (
     expect(enqueueAgentRunJob).toHaveBeenCalledWith(RUN_ID);
     const where = compiled(dbMockState.updateWheres.at(-1) as SQL);
     expect(where).toContain('"trigger_kind"');
+  });
+});
+
+describe('transitionRunStatus — compute reservation release (execution plane W04)', () => {
+  // The gap this closes: the two hand-picked release sites (the run loop's
+  // finally, admission's enqueue-failure path) only cover runs that got that
+  // far. A worker killed mid-run reaches `failed` through the stalled-run
+  // reaper alone, and its reservation used to stand until UTC midnight —
+  // counting against the org's daily compute ceiling (refusing that org's
+  // later analyses) and never billing the compute the provider really ran.
+  it('releases an outstanding reservation at the RESERVATION on a terminal transition', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    expect(await transitionRunStatus(RUN_ID, ['queued', 'running'], 'failed', {
+      errorCode: 'stalled',
+    })).toBe(true);
+    // Settled at the reservation, never at 0: a run we lost track of is
+    // precisely the case where the measured number is gone (spec §9).
+    expect(settleComputeCents).toHaveBeenCalledWith(ORG_ID, RUN_ID, 25, 'platform');
+  });
+
+  it('does NOT settle on a non-terminal transition', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    await transitionRunStatus(RUN_ID, 'queued', 'running');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('does NOT settle twice for a run that already released its reservation', async () => {
+    // The normal path settles inside the run loop, which NULLs the column
+    // before `finishRun` transitions — so the chokepoint must be a no-op, or
+    // the additive ai_cost_usage rollup double-counts the day.
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'analysis', computeReservedCents: null,
+    }];
+    await transitionRunStatus(RUN_ID, 'running', 'completed');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('does not settle for a non-analysis run, which never holds a reservation', async () => {
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: null, outcome: {},
+      profile: 'triage', computeReservedCents: null,
+    }];
+    await transitionRunStatus(RUN_ID, 'running', 'completed');
+    expect(settleComputeCents).not.toHaveBeenCalled();
+  });
+
+  it('a failed release does not fail the transition — the status write still wins', async () => {
+    settleComputeCents.mockRejectedValueOnce(new Error('billing down'));
+    dbMockState.updateRows = [{
+      id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, errorCode: 'stalled', outcome: {},
+      profile: 'analysis', computeReservedCents: 25,
+    }];
+    expect(await transitionRunStatus(RUN_ID, 'running', 'failed', { errorCode: 'stalled' })).toBe(true);
   });
 });
 

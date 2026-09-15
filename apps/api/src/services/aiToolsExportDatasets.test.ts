@@ -308,3 +308,61 @@ describe('dataset adapters', () => {
     expect(page.rows).toEqual([]);
   });
 });
+
+// --- run frame: the FROZEN device set of an analysis run (W04, #5715) -------
+// `aiToolsExport.ts` refuses a model-supplied `deviceIds` list that strays
+// outside `runTargets` — which bounds nothing when the model supplies no list
+// at all. These pin the adapter-side half: with a run frame present, an
+// unfiltered export is bounded to the frame rather than to the whole org.
+
+describe('dataset adapters — analysis run frame', () => {
+  beforeEach(() => {
+    searchFleetLogs.mockReset();
+    resolveSiteAllowedDeviceIds.mockReset();
+    resolveSiteAllowedDeviceIds.mockResolvedValue(null);
+  });
+
+  it('event_logs with NO deviceIds filter is bounded to the run frame', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1', 'd2'],
+      siteId: null, pageSize: 500,
+    } as never);
+    await pager(null);
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d1', 'd2'] });
+  });
+
+  it('event_logs intersects the run frame with the site axis rather than replacing it', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue(['d2', 'd3']);
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1', 'd2'],
+      siteId: null, pageSize: 500,
+    } as never);
+    await pager(null);
+    // d1 is in the frame but outside the caller's sites; d3 is in the sites but
+    // outside the frame. Only d2 satisfies both.
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: ['d2'] });
+  });
+
+  it('event_logs exports nothing when the frame and the site axis do not overlap', async () => {
+    resolveSiteAllowedDeviceIds.mockResolvedValue(['d9']);
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth: siteAuth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'],
+      siteId: null, pageSize: 500,
+    } as never);
+    expect(await pager(null)).toEqual({ rows: [], nextCursor: null });
+    expect(searchFleetLogs).not.toHaveBeenCalled();
+  });
+
+  it('event_logs is unrestricted when there is no run frame (direct chat / MCP)', async () => {
+    searchFleetLogs.mockResolvedValue({ results: [], nextCursor: null, hasMore: false });
+    const pager = await DATASET_ADAPTERS.event_logs.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: null, siteId: null, pageSize: 500,
+    } as never);
+    await pager(null);
+    // An absent frame means "no run", NOT "no devices" — the pre-W04 behaviour
+    // for every chat-path export has to be preserved exactly.
+    expect(searchFleetLogs.mock.calls[0]![1]).toMatchObject({ allowedDeviceIds: null });
+  });
+});

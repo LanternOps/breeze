@@ -271,9 +271,14 @@ export class WorkspaceService {
     await this.backend.exec(handle, ['mkdir', '-p', WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR], {
       timeoutMs: 10_000, maxStdoutBytes: 4096,
     });
+    // `important`: this patch is the ONLY thing that replaces the
+    // `(creating)` placeholder with the real provider ref. If it is lost, the
+    // reaper — the sole path that can destroy this sandbox after a worker
+    // crash — calls `destroy()` with the placeholder, never finds the box, and
+    // the vendor bills it indefinitely. Every other patch here self-heals.
     await this.patchRow({
       providerRef: handle.providerRef, status: 'ready', readyAt: this.readyAt,
-    });
+    }, { important: true });
   }
 
   /**
@@ -408,9 +413,27 @@ export class WorkspaceService {
     this.steps = ordinal;
     this.computeMsUsed += result.durationMs;
 
-    const scriptArtifact = await this.persistArtifact(
-      'step_script', `step-${ordinal}.${STEP_EXTENSION[input.language]}`, 'text/plain', scriptBytes, 'workspace_run',
-    );
+    let scriptArtifact: { id: string };
+    try {
+      scriptArtifact = await this.persistArtifact(
+        'step_script', `step-${ordinal}.${STEP_EXTENSION[input.language]}`, 'text/plain', scriptBytes,
+        'workspace_run',
+      );
+    } catch (error) {
+      // The step ALREADY RAN and already spent step-cap and compute-cap
+      // budget. An artifact-store outage must not also erase it from the
+      // transcript — an engineer reading "what did this sandbox execute"
+      // would see a hole at this ordinal with nothing saying why.
+      await this.appendStep({
+        ordinal,
+        language: input.language,
+        scriptArtifactHandle: '',
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+      });
+      throw error;
+    }
     let stdoutHandle: string | null = null;
     if (result.stdout.length > MAX_TOOL_RESULT_CHARS) {
       stdoutHandle = (await this.persistArtifact(
@@ -689,7 +712,10 @@ export class WorkspaceService {
   }
 
   /** Best-effort row patch: bookkeeping must never fail a run. */
-  private async patchRow(values: Record<string, unknown>): Promise<void> {
+  private async patchRow(
+    values: Record<string, unknown>,
+    opts: { important?: boolean } = {},
+  ): Promise<void> {
     if (!this.rowId) return;
     const rowId = this.rowId;
     try {
@@ -701,6 +727,13 @@ export class WorkspaceService {
       console.error('[workspaceService] failed to update ai_run_workspaces (non-fatal)', {
         runId: this.ctx.runId, error,
       });
+      // Most patches here are bookkeeping the next one overwrites. The ones
+      // marked `important` are not: losing them costs money with no second
+      // chance, so they page rather than only log (same posture as
+      // `destroyHandle`).
+      if (opts.important) {
+        captureException(error instanceof Error ? error : new Error(String(error)));
+      }
     }
   }
 }
