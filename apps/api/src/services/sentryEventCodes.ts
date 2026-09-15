@@ -44,6 +44,14 @@ export const SENTRY_EVENT_CODES = [
    * incident #5283 fixed — invisible until Postgres was inspected by hand.
    */
   'metric_anomaly_stage_stalled',
+  /**
+   * offlineDetector's detect-offline sweep skipped a device row whose id/orgId
+   * failed the v4 UUID check (or whose lastSeenAt was unparseable) instead of
+   * failing the whole sweep. Unreachable through the API (routes only mint v4
+   * UUIDs), but the row is skipped again every ~30s until fixed by hand — a
+   * silent, indefinite gap in offline detection for that one device (#5867).
+   */
+  'offline_detector_invalid_device_row',
 
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */
