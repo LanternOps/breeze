@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -77,13 +79,27 @@ func TestHelperLogDir(t *testing.T) {
 	}
 }
 
-func TestHelperLogPathJoinsFileName(t *testing.T) {
-	got := HelperLogPath("desktop-helper.log")
-	want := filepath.Join(HelperLogDir(), "desktop-helper.log")
-	if got != want {
-		t.Fatalf("HelperLogPath = %q, want %q", got, want)
+// TestHelperLogDirOnThisHost pins HelperLogDir against an expectation
+// derived from the host independently of the production expression, so a
+// bug in HelperLogDir shows up here rather than cancelling out on both
+// sides of the comparison.
+func TestHelperLogDirOnThisHost(t *testing.T) {
+	var want string
+	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			t.Skip("no resolvable home directory on this host")
+		}
+		want = home + "/Library/Logs/Breeze/desktop-helper.log"
+	} else {
+		want = filepath.Join(LogDir(), "desktop-helper.log")
 	}
-	if filepath.Base(got) != "desktop-helper.log" {
-		t.Fatalf("HelperLogPath base = %q, want desktop-helper.log", filepath.Base(got))
+
+	dir, homeErr := HelperLogDir()
+	if homeErr != nil {
+		t.Skipf("home directory unresolvable on this host: %v", homeErr)
+	}
+	if got := filepath.Join(dir, "desktop-helper.log"); got != want {
+		t.Fatalf("helper log path = %q, want %q", got, want)
 	}
 }

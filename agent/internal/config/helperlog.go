@@ -27,17 +27,17 @@ var helperLogDirBase = filepath.Join("Library", "Logs", "Breeze")
 // log directory: Linux and Windows helpers, and any macOS helper that does
 // run as root (the login-window desktop-helper), where the shared
 // directory is writable.
-func HelperLogDir() string {
+// The returned homeErr is diagnostic only: the directory is always
+// usable-as-returned, but on darwin an unresolvable home directory means
+// the caller falls back to the shared directory it cannot write. Callers
+// log homeErr so that failure is attributed to "HOME could not be
+// resolved" rather than looking like a plain permissions problem.
+func HelperLogDir() (dir string, homeErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	return helperLogDir(runtime.GOOS, os.Geteuid(), home, LogDir())
-}
-
-// HelperLogPath returns the full path a helper should write fileName to.
-func HelperLogPath(fileName string) string {
-	return filepath.Join(HelperLogDir(), fileName)
+	return helperLogDir(runtime.GOOS, os.Geteuid(), home, LogDir()), err
 }
 
 // helperLogDir is the pure core of HelperLogDir, parameterised so the

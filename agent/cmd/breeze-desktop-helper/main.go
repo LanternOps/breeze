@@ -60,7 +60,7 @@ func runDesktopHelper() {
 	// On macOS this resolves to ~/Library/Logs/Breeze, not the root-owned
 	// 0700 shared agent log directory the user-session LaunchAgent cannot
 	// write (#5877). Other platforms keep the shared directory.
-	logDir := config.HelperLogDir()
+	logDir, homeErr := config.HelperLogDir()
 	mkdirErr := os.MkdirAll(logDir, 0700)
 	logPath := filepath.Join(logDir, "desktop-helper.log")
 	var output io.Writer = os.Stdout
@@ -69,18 +69,6 @@ func runDesktopHelper() {
 		output = f
 	}
 	logging.Init("text", "info", output)
-	// Always record where diagnostics are going. The pre-#5877 code fell
-	// back to stdout silently, which under launchd means the log simply
-	// looked empty with no explanation anywhere.
-	if openErr != nil {
-		attrs := []any{"path", logPath, "error", openErr}
-		if mkdirErr != nil {
-			attrs = append(attrs, "mkdirError", mkdirErr)
-		}
-		log.Warn("helper log file unavailable; logging to stdout only", attrs...)
-	} else {
-		log.Info("helper log file opened", "path", logPath)
-	}
 
 	// Use LoadHelperConfig, NOT Load: on macOS the desktop-helper runs as the
 	// logged-in user (Aqua LaunchAgent), and Load() unconditionally reads
@@ -121,6 +109,14 @@ func runDesktopHelper() {
 		})
 		defer logging.StopShipper()
 	}
+
+	// Always record where diagnostics are going. The pre-#5877 code fell
+	// back to stdout silently, and this LaunchAgent's plist points stdout
+	// and stderr at /dev/null, so an unwritable log directory looked like
+	// an empty log with no explanation anywhere. Emitted after the shipper
+	// is up so the warn reaches Agent Logs even when nothing local can be
+	// written.
+	logging.EmitLogFileOutcome(log, logPath, openErr, mkdirErr, homeErr)
 
 	startupProbe := collectProbeOutput(false, true)
 	attrs := []any{
