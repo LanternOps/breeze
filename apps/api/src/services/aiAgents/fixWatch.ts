@@ -46,6 +46,7 @@ import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import { resolveRecipientUserIds } from './recipients';
 import { insertOpEvidence, watchEvidenceSourceId } from './opEvidence';
+import { probeSweepSubject } from './sweepSubjectProbe';
 import {
   demoteSupervisedKey,
   notifyDemotion,
@@ -545,6 +546,20 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
     if (watch.state === 'watching' && watch.recoveryObservedAt) return { action: 'recovered' };
     if (watch.state !== 'pending') return { action: 'not_found' };
 
+    // #5751 W02 (#5753) — a SUBJECT watch has no alert to read. Re-probe the
+    // condition instead. `cleared` is the only recovery signal; `present` and
+    // `unknown` both keep waiting, and there is deliberately NO cancel path —
+    // a condition has no human to dismiss it, and `unknown` is not a
+    // dismissal. The 24-hour ceiling below still applies unchanged, which is
+    // what stops a permanently-unanswerable probe from waiting forever.
+    if (watch.subjectKind) {
+      const verdict = await probeSweepSubject(
+        watch.subjectKind, watch.orgId, watch.deviceId, watch.subjectKey ?? '',
+      );
+      if (verdict === 'cleared') return moveToWatching(watchId);
+      return giveUpIfTimedOut(watch, watchId);
+    }
+
     let alertStatus: string | null = null;
     if (watch.alertId) {
       const [alertRow] = await db
@@ -555,20 +570,7 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
       alertStatus = alertRow?.status ?? null;
     }
 
-    if (alertStatus === 'resolved') {
-      const recoveryObservedAt = new Date();
-      const dueAt = new Date(recoveryObservedAt.getTime() + FIX_HOLD_MINUTES * 60_000);
-      const [moved] = await db
-        .update(aiAgentFixWatches)
-        .set({ state: 'watching', recoveryObservedAt, dueAt })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
-        .returning({ id: aiAgentFixWatches.id });
-      // Lost the CAS race (a concurrent delivery already moved this row out
-      // of 'pending') — that other call owns the outcome now; this one has
-      // nothing more to do.
-      if (!moved) return { action: 'not_found' };
-      return { action: 'recovered' };
-    }
+    if (alertStatus === 'resolved') return moveToWatching(watchId);
 
     if (alertStatus === 'dismissed') {
       const [moved] = await db
@@ -582,29 +584,69 @@ export async function checkFixWatchPhase1(watchId: string): Promise<FixWatchPhas
 
     // active / acknowledged / suppressed / the alert row is gone entirely —
     // still open, unless the 24h ceiling has passed.
-    const ageMs = Date.now() - watch.createdAt.getTime();
-    if (ageMs >= RECOVERY_TIMEOUT_HOURS * 60 * 60 * 1000) {
-      const [moved] = await db
-        .update(aiAgentFixWatches)
-        .set({ state: 'inconclusive', evaluatedAt: new Date() })
-        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
-        .returning({ id: aiAgentFixWatches.id });
-      if (!moved) return { action: 'not_found' };
-      return { action: 'timed_out' };
-    }
-
-    return { action: 'still_pending' };
+    return giveUpIfTimedOut(watch, watchId);
   });
+}
+
+/**
+ * Recovery observed: `pending -> watching`, with the phase-2 hold window
+ * stamped. Shared verbatim by both phase-1 branches (#5751 W02, #5753) — an
+ * alert reading `resolved` and a probe reading `cleared` are the same
+ * transition, and writing it twice is how the two would drift.
+ *
+ * Callers are already inside `inSystemDbContext`.
+ */
+async function moveToWatching(watchId: string): Promise<FixWatchPhase1Outcome> {
+  const recoveryObservedAt = new Date();
+  const dueAt = new Date(recoveryObservedAt.getTime() + FIX_HOLD_MINUTES * 60_000);
+  const [moved] = await db
+    .update(aiAgentFixWatches)
+    .set({ state: 'watching', recoveryObservedAt, dueAt })
+    .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
+    .returning({ id: aiAgentFixWatches.id });
+  // Lost the CAS race (a concurrent delivery already moved this row out of
+  // 'pending') — that other call owns the outcome now; this one has nothing
+  // more to do.
+  if (!moved) return { action: 'not_found' };
+  return { action: 'recovered' };
+}
+
+/**
+ * The 24-hour ceiling, shared by both phase-1 branches. Absence of resolution
+ * is not proof of anything either way, so this writes `inconclusive` and NO
+ * evidence row — for a subject watch it is also what stops a permanently
+ * unanswerable probe (a decommissioned device) from waiting forever.
+ */
+async function giveUpIfTimedOut(
+  watch: Pick<AiAgentFixWatch, 'createdAt'>,
+  watchId: string,
+): Promise<FixWatchPhase1Outcome> {
+  const ageMs = Date.now() - watch.createdAt.getTime();
+  if (ageMs < RECOVERY_TIMEOUT_HOURS * 60 * 60 * 1000) return { action: 'still_pending' };
+
+  const [moved] = await db
+    .update(aiAgentFixWatches)
+    .set({ state: 'inconclusive', evaluatedAt: new Date() })
+    .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'pending')))
+    .returning({ id: aiAgentFixWatches.id });
+  if (!moved) return { action: 'not_found' };
+  return { action: 'timed_out' };
 }
 
 export type FixWatchPhase2Outcome =
   | { action: 'recurred' }
   | { action: 'held_qualified' }
+  /** #5751 W02 (#5753): a SUBJECT watch whose probe could not answer. Phase 2
+   *  is terminal either way and `processFixWatchJob` discards the result, so
+   *  this member needs no worker change. */
+  | { action: 'inconclusive' }
   | { action: 'not_found' };
 
 interface RecurrenceDetected {
   watch: AiAgentFixWatch;
-  recurrenceAlertId: string;
+  /** null for a SUBJECT recurrence — the condition came back, and there is no
+   *  recurrence ALERT row behind it to point at. */
+  recurrenceAlertId: string | null;
   /** One entry per key the recurrence actually revoked — see
    *  `demoteRecurredKeys`. Empty is the normal case. */
   demotions: NotifyDemotionInput[];
@@ -760,6 +802,27 @@ function recurrenceEpisodeDedupeKey(runId: string, recurrenceAlertId: string): s
 }
 
 /**
+ * The same key for a SUBJECT recurrence (#5751 W02, #5753). There is no
+ * recurrence alert id to key on — the condition came back, and no alert row
+ * was created for it — so the episode is identified by the WATCH instead.
+ *
+ * That is not a weaker key here: the N-siblings-per-run collapse the alert
+ * version exists for cannot arise for subject watches, because N sweep
+ * intents of one run carry N DIFFERENT subjects and each is genuinely its own
+ * event. Collapsing them on the run would suppress real, distinct recurrences.
+ */
+function subjectRecurrenceEpisodeDedupeKey(runId: string, watchId: string): string {
+  return `fix-watch-${runId}-${watchId}-recurred`;
+}
+
+/** `"service_down:MSSQLSERVER"` — which condition came back, for the operator.
+ *  Both halves are our own values (a catalog kind and a subject read off a
+ *  named column), never model-authored prose. */
+function watchSubjectLabel(watch: AiAgentFixWatch): string {
+  return `${watch.subjectKind}:${watch.subjectKey}`;
+}
+
+/**
  * Sends the recurrence notification + rule-less attention alert. Deliberately
  * a SEPARATE `inSystemDbContext` call from `checkFixWatchPhase2`'s own
  * detection/write transaction (same pattern as `agentCircuit.ts`'s
@@ -781,7 +844,10 @@ function recurrenceEpisodeDedupeKey(runId: string, recurrenceAlertId: string): s
  * stand-down at `checkFixWatchPhase2` exists to prevent, re-opened through a
  * different door.
  */
-async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAlertId: string): Promise<void> {
+async function sendRecurrenceNotifications(
+  watch: AiAgentFixWatch,
+  recurrenceAlertId: string | null,
+): Promise<void> {
   await inSystemDbContext(async () => {
     const [agentRow] = await db
       .select({ name: aiAgents.name, orgId: aiAgents.orgId, partnerId: aiAgents.partnerId })
@@ -813,9 +879,11 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
         orgId: watch.orgId,
         type: 'ai',
         title: `Fix did not hold: ${agentRow.name}`,
-        message:
-          `${agentRow.name}'s remediation appeared to fix the triggering alert, but it recurred within `
-          + `${FIX_HOLD_MINUTES} minutes of recovery.`,
+        message: watch.subjectKind
+          ? `${agentRow.name}'s remediation appeared to clear the condition `
+            + `${watchSubjectLabel(watch)}, but it returned within ${FIX_HOLD_MINUTES} minutes.`
+          : `${agentRow.name}'s remediation appeared to fix the triggering alert, but it recurred within `
+            + `${FIX_HOLD_MINUTES} minutes of recovery.`,
         link: `/ai-agents/runs/${watch.runId}`,
         priority: 'high',
         metadata: {
@@ -826,7 +894,9 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
         // present this identical key, so `createNotification`'s
         // (user_id, dedupe_key) partial unique index collapses them into the
         // one notification the recipient should actually get.
-        dedupeKey: recurrenceEpisodeDedupeKey(watch.runId, recurrenceAlertId),
+        dedupeKey: recurrenceAlertId
+          ? recurrenceEpisodeDedupeKey(watch.runId, recurrenceAlertId)
+          : subjectRecurrenceEpisodeDedupeKey(watch.runId, watch.id),
       });
     }
 
@@ -853,7 +923,11 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
         eq(alerts.deviceId, watch.deviceId),
         eq(alerts.configItemName, FIX_WATCH_ALERT_CONFIG_ITEM),
         sql`${alerts.context}->>'runId' = ${watch.runId}`,
-        sql`${alerts.context}->>'recurrenceAlertId' = ${recurrenceAlertId}`,
+        // A subject recurrence has no recurrence alert id, so the episode is
+        // keyed on the WATCH instead — see subjectRecurrenceEpisodeDedupeKey.
+        recurrenceAlertId
+          ? sql`${alerts.context}->>'recurrenceAlertId' = ${recurrenceAlertId}`
+          : sql`${alerts.context}->>'watchId' = ${watch.id}`,
       ))
       .limit(1);
     if (alreadyRaised) return;
@@ -870,9 +944,11 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
       configItemName: FIX_WATCH_ALERT_CONFIG_ITEM,
       severity: 'high',
       title: `Agent fix did not hold: ${agentRow.name}`,
-      message:
-        'An unattended agent action appeared to remediate the triggering alert, but it recurred within '
-        + `${FIX_HOLD_MINUTES} minutes.`,
+      message: watch.subjectKind
+        ? 'An unattended agent action appeared to clear the condition '
+          + `${watchSubjectLabel(watch)}, but it returned within ${FIX_HOLD_MINUTES} minutes.`
+        : 'An unattended agent action appeared to remediate the triggering alert, but it recurred within '
+          + `${FIX_HOLD_MINUTES} minutes.`,
       context: {
         source: 'ai_agent_fix_watch',
         watchId: watch.id,
@@ -902,9 +978,55 @@ async function sendRecurrenceNotifications(watch: AiAgentFixWatch, recurrenceAle
  * must not act further either way.
  */
 export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhase2Outcome> {
-  const detected = await inSystemDbContext(async (): Promise<RecurrenceDetected | 'held_qualified' | null> => {
+  const detected = await inSystemDbContext(async (): Promise<
+    RecurrenceDetected | 'held_qualified' | 'inconclusive' | null
+  > => {
     const [watch] = await db.select().from(aiAgentFixWatches).where(eq(aiAgentFixWatches.id, watchId)).limit(1);
+    // Unchanged invariant: a subject watch reaches `watching` only through
+    // phase 1's `cleared` branch, which sets `recoveryObservedAt`.
     if (!watch || watch.state !== 'watching' || !watch.recoveryObservedAt) return null;
+
+    // #5751 W02 (#5753) — a SUBJECT watch's recurrence is a re-probe, not an
+    // alert lookup. Three outcomes, not two: `unknown` is `inconclusive` with
+    // NO evidence row. A device that is offline, or a probe that cannot
+    // answer, is not a failed remediation, and it is not a verified one
+    // either — the ledger is immutable, so a guess here is permanent.
+    if (watch.subjectKind) {
+      const verdict = await probeSweepSubject(
+        watch.subjectKind, watch.orgId, watch.deviceId, watch.subjectKey ?? '',
+      );
+
+      if (verdict === 'unknown') {
+        const [moved] = await db
+          .update(aiAgentFixWatches)
+          .set({ state: 'inconclusive', evaluatedAt: new Date() })
+          .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
+          .returning({ id: aiAgentFixWatches.id });
+        if (!moved) return null;
+        return 'inconclusive';
+      }
+
+      if (verdict === 'present') {
+        const [moved] = await db
+          .update(aiAgentFixWatches)
+          .set({ state: 'recurred', evaluatedAt: new Date(), notifiedAt: new Date() })
+          .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
+          .returning({ id: aiAgentFixWatches.id });
+        // Same CAS-loser stand-down as the alert branch below.
+        if (!moved) return null;
+        await recordWatchVerdictEvidence(watch, 'recurred');
+        return { watch, recurrenceAlertId: null, demotions: await demoteRecurredKeys(watch) };
+      }
+
+      const [moved] = await db
+        .update(aiAgentFixWatches)
+        .set({ state: 'held_qualified', evaluatedAt: new Date() })
+        .where(and(eq(aiAgentFixWatches.id, watchId), eq(aiAgentFixWatches.state, 'watching')))
+        .returning({ id: aiAgentFixWatches.id });
+      if (!moved) return null;
+      await recordWatchVerdictEvidence(watch, 'verified');
+      return 'held_qualified';
+    }
 
     const recurrenceWhere = watch.ruleId
       ? and(
@@ -963,6 +1085,8 @@ export async function checkFixWatchPhase2(watchId: string): Promise<FixWatchPhas
 
   if (detected === null) return { action: 'not_found' };
   if (detected === 'held_qualified') return { action: 'held_qualified' };
+  // Nothing to announce: no verdict was rendered and no evidence was written.
+  if (detected === 'inconclusive') return { action: 'inconclusive' };
 
   try {
     await sendRecurrenceNotifications(detected.watch, detected.recurrenceAlertId);
