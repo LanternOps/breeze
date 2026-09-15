@@ -256,6 +256,52 @@ describe('partner-wide network_monitors read visibility (#5866)', () => {
       expect(leaves).not.toContain('networkMonitors.partnerId');
       expect(leaves).not.toContain(PARTNER_ID);
     });
+
+    it('does NOT add a partner branch for an org token that CARRIES a partnerId', async () => {
+      // The load-bearing half of the guard. A real org-scoped session can carry
+      // a non-null partnerId, and the table's RLS SELECT-only branch keys on
+      // `partner_id = breeze_current_partner_id()` alone — so `scope ===
+      // 'partner'` is the ONLY thing standing between an org user and every
+      // partner-wide check. Pin it separately from the `!auth.partnerId` half,
+      // or a "simplification" to `if (!auth.partnerId) return undefined` leaks
+      // the lot with the suite still green.
+      setAuth({ partnerId: PARTNER_ID });
+      const capture: { where?: unknown } = {};
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockListSelect([], capture))
+        .mockReturnValueOnce(mockCountSelect(0));
+
+      const res = await app.request('/monitors');
+      expect(res.status).toBe(200);
+
+      const leaves = collectSqlLeafStrings(capture.where);
+      expect(leaves).toContain('networkMonitors.orgId');
+      expect(leaves).not.toContain('networkMonitors.partnerId');
+      expect(leaves).not.toContain(PARTNER_ID);
+    });
+
+    it('filters partner-wide rows out for a site-restricted user', async () => {
+      // A partner-wide row owns no org and therefore no site, so the site gate
+      // answers "no site" and denies. Pinning the vacuous-false: flipping it to
+      // true would hand every site-scoped tech every partner-wide check.
+      partnerAuth();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockListSelect([partnerWideRow], {}))
+        .mockReturnValueOnce(mockCountSelect(1));
+
+      const app2 = new Hono();
+      app2.use('*', async (c, next) => {
+        c.set('permissions', { allowedSiteIds: ['site-a'] } as any);
+        await next();
+      });
+      app2.route('/monitors', monitorRoutes);
+
+      const res = await app2.request(`/monitors?orgId=${ORG_ID}`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(0);
+      expect(body.total).toBe(0);
+    });
   });
 
   describe('GET /dashboard (status rollup)', () => {
@@ -360,10 +406,43 @@ describe('partner-wide network_monitors read visibility (#5866)', () => {
     });
   });
 
+  describe('GET /:monitorId/alerts', () => {
+    it('returns the alert rules of a partner-wide monitor to its owning partner', async () => {
+      partnerAuth();
+      vi.mocked(db.select)
+        .mockReturnValueOnce(mockRowSelect([partnerWideRow]))
+        .mockReturnValueOnce(mockRowSelect([partnerWideRow]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 'rule-1', monitorId: MONITOR_ID }]),
+          }),
+        } as any);
+
+      const res = await app.request(`/monitors/${MONITOR_ID}/alerts`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toHaveLength(1);
+    });
+
+    it('404s the alert rules of a partner-wide monitor for an org token', async () => {
+      setAuth({ partnerId: PARTNER_ID });
+      vi.mocked(db.select).mockReturnValue(mockRowSelect([]));
+
+      const res = await app.request(`/monitors/${MONITOR_ID}/alerts`);
+      expect(res.status).toBe(404);
+    });
+  });
+
   describe('writes stay org-axis only', () => {
+    // Deliberately UNMANAGED: a managed row is refused a second time by
+    // managedRowGuard with a 409, which would let an accidental widening of the
+    // write path still look like a refusal. With managedByMonitorId null, the
+    // 404 can only come from the org-axis guard itself.
+    const unmanagedPartnerWideRow = { ...partnerWideRow, managedByMonitorId: null };
+
     it('PATCH /:id still refuses a partner-wide row for its own partner', async () => {
       partnerAuth();
-      vi.mocked(db.select).mockReturnValue(mockRowSelect([partnerWideRow]));
+      vi.mocked(db.select).mockReturnValue(mockRowSelect([unmanagedPartnerWideRow]));
 
       const res = await app.request(`/monitors/${MONITOR_ID}`, {
         method: 'PATCH',
@@ -372,15 +451,27 @@ describe('partner-wide network_monitors read visibility (#5866)', () => {
       });
       expect(res.status).toBe(404);
       expect(db.update).not.toHaveBeenCalled();
+      // The write path must not even attempt the partner-wide fallback lookup.
+      expect(vi.mocked(db.select).mock.calls).toHaveLength(1);
     });
 
     it('DELETE /:id still refuses a partner-wide row for its own partner', async () => {
       partnerAuth();
-      vi.mocked(db.select).mockReturnValue(mockRowSelect([partnerWideRow]));
+      vi.mocked(db.select).mockReturnValue(mockRowSelect([unmanagedPartnerWideRow]));
 
       const res = await app.request(`/monitors/${MONITOR_ID}`, { method: 'DELETE' });
       expect(res.status).toBe(404);
       expect(db.delete).not.toHaveBeenCalled();
+      expect(vi.mocked(db.select).mock.calls).toHaveLength(1);
+    });
+
+    it('POST /:id/check still refuses a partner-wide row for its own partner', async () => {
+      partnerAuth();
+      vi.mocked(db.select).mockReturnValue(mockRowSelect([unmanagedPartnerWideRow]));
+
+      const res = await app.request(`/monitors/${MONITOR_ID}/check`, { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(vi.mocked(db.select).mock.calls).toHaveLength(1);
     });
   });
 });
