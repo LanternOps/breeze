@@ -7,7 +7,13 @@ import {
   checklistItemCreateSchema,
   checklistItemPatchSchema,
   checklistReorderSchema,
+  applyChecklistTemplateSchema,
 } from '@breeze/shared';
+import { applyChecklistTemplateToTicket } from '../../services/ticketChecklistTemplateService';
+import {
+  templateActorFrom,
+  handleChecklistTemplateError,
+} from '../ticketChecklistTemplates';
 import {
   addChecklistItem,
   deleteChecklistItem,
@@ -139,6 +145,37 @@ ticketChecklistRoutes.post(
       return c.json({ data: item }, 201);
     } catch (err) {
       return handleServiceError(c, err);
+    }
+  },
+);
+
+// Registered ABOVE the bare `/:id/checklist` POST so the longer literal suffix
+// is matched first.
+ticketChecklistRoutes.post(
+  '/:id/checklist/apply-template',
+  scopes,
+  writePerm,
+  zValidator('param', idParam),
+  zValidator('json', applyChecklistTemplateSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const ticket = await getScopedTicketOr404(auth, c.req.valid('param').id);
+    if (!ticket) return c.json({ error: 'Ticket not found' }, 404);
+    try {
+      // Deliberately NOT gated on isInteractiveUserSession: applying a template
+      // creates UNTICKED steps and asserts nothing about work performed. Only
+      // the `done` branch of PATCH is a human attestation.
+      const summary = await applyChecklistTemplateToTicket(
+        { id: ticket.id, orgId: ticket.orgId },
+        c.req.valid('json'),
+        templateActorFrom(c),
+      );
+      return c.json({ data: summary });
+    } catch (err) {
+      // The templates handler, not handleServiceError: apply can also raise
+      // PartnerWideWriteDeniedError-shaped errors from the template service,
+      // and its match is structural so it covers ChecklistServiceError too.
+      return handleChecklistTemplateError(c, err);
     }
   },
 );

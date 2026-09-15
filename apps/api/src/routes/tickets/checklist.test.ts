@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { authRef, getScopedTicketOr404Mock, checklistMocks } = vi.hoisted(() => ({
+const { authRef, getScopedTicketOr404Mock, checklistMocks, templateMocks } = vi.hoisted(() => ({
+  templateMocks: {
+    applyChecklistTemplateToTicket: vi.fn(),
+  },
   authRef: {
     current: {
       scope: 'partner' as string,
@@ -102,6 +105,13 @@ vi.mock('../../services/ticketChecklistService', async () => {
     '../../services/ticketChecklistService',
   );
   return { ...actual, ...checklistMocks };
+});
+
+vi.mock('../../services/ticketChecklistTemplateService', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../services/ticketChecklistTemplateService')
+  >('../../services/ticketChecklistTemplateService');
+  return { ...actual, ...templateMocks };
 });
 
 vi.mock('../../services/sensitiveReadAudit', () => ({
@@ -306,5 +316,70 @@ describe('checklist routes', () => {
     const res = await ticketsRoutes.request(`/checklist/${ITEM_ID}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
     expect(checklistMocks.deleteChecklistItem).toHaveBeenCalledWith(ITEM_ID);
+  });
+
+  // ── apply-template (#5783 W02) ────────────────────────────────────────────
+
+  const TEMPLATE_ID = '55556666-7777-4888-9999-aaaabbbbcccc';
+  const applyTemplate = (body: unknown) =>
+    ticketsRoutes.request(`/${TICKET_ID}/checklist/apply-template`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    });
+
+  it('apply-template 404s a ticket out of scope, without touching the service', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue(null);
+    const res = await applyTemplate({ templateId: TEMPLATE_ID });
+    expect(res.status).toBe(404);
+    expect(templateMocks.applyChecklistTemplateToTicket).not.toHaveBeenCalled();
+  });
+
+  it('apply-template 404s a template the caller cannot see', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.applyChecklistTemplateToTicket.mockRejectedValue(
+      new ChecklistServiceError('Not found', 404, 'NOT_FOUND'),
+    );
+    const res = await applyTemplate({ templateId: TEMPLATE_ID });
+    expect(res.status).toBe(404);
+  });
+
+  it('apply-template passes the TICKET through to the service, not just its id', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.applyChecklistTemplateToTicket.mockResolvedValue({ items: [], done: 0, total: 0 });
+    await applyTemplate({ templateId: TEMPLATE_ID, mode: 'replace_unticked' });
+    expect(templateMocks.applyChecklistTemplateToTicket).toHaveBeenCalledWith(
+      { id: TICKET_ID, orgId: 'o-1' },
+      { templateId: TEMPLATE_ID, mode: 'replace_unticked' },
+      expect.objectContaining({ userId: 'u-1' }),
+    );
+  });
+
+  it('apply-template defaults the mode to append', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.applyChecklistTemplateToTicket.mockResolvedValue({ items: [], done: 0, total: 0 });
+    await applyTemplate({ templateId: TEMPLATE_ID });
+    expect(templateMocks.applyChecklistTemplateToTicket).toHaveBeenCalledWith(
+      expect.anything(),
+      { templateId: TEMPLATE_ID, mode: 'append' },
+      expect.anything(),
+    );
+  });
+
+  it('apply-template 400s an unknown mode', async () => {
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    const res = await applyTemplate({ templateId: TEMPLATE_ID, mode: 'replace_all' });
+    expect(res.status).toBe(400);
+    expect(templateMocks.applyChecklistTemplateToTicket).not.toHaveBeenCalled();
+  });
+
+  it('apply-template is NOT gated on an interactive session — only ticking is', async () => {
+    // Applying a template creates UNTICKED steps. It asserts nothing about work
+    // performed, so an automation may legitimately do it.
+    authRef.current.principal = { kind: 'api_key', apiKeyId: 'k-1' };
+    getScopedTicketOr404Mock.mockResolvedValue({ id: TICKET_ID, orgId: 'o-1' });
+    templateMocks.applyChecklistTemplateToTicket.mockResolvedValue({ items: [], done: 0, total: 0 });
+    const res = await applyTemplate({ templateId: TEMPLATE_ID });
+    expect(res.status).toBe(200);
   });
 });
