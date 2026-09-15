@@ -313,6 +313,8 @@ const EXPECTED_NAMES = [
   'mfaEnrollmentNoticeWorker',
   'monitorEpisodeRetention',
   'reportRunDeliveryReconciler',
+  // Tool Catalog W1 (#5215 / #5216), Task A6.
+  'toolSourceDiscoveryWorker',
 ];
 
 // ---------------------------------------------------------------------------
