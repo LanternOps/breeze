@@ -382,6 +382,13 @@ describe('evaluateAgentTriggerFilters', () => {
     ['matching alertRuleIds', triggers({ alertRuleIds: [RULE_B, RULE_A] }), ctx, true],
     ['non-matching alertRuleIds', triggers({ alertRuleIds: [RULE_B] }), ctx, false],
     ['alertRuleIds set but ruleId null', triggers({ alertRuleIds: [RULE_A] }), { ...ctx, ruleId: null }, false],
+    // AI patch agent W04 (#5750) — alertCategories, undefined = unrestricted.
+    ['absent alertCategories = all categories (category unknown)', triggers(), ctx, true],
+    ['absent alertCategories = all categories (category present)', triggers(), { ...ctx, category: 'patching' }, true],
+    ['matching alertCategories', triggers({ alertCategories: ['patching'] }), { ...ctx, category: 'patching' }, true],
+    ['non-matching alertCategories', triggers({ alertCategories: ['patching'] }), { ...ctx, category: 'monitor' }, false],
+    ['alertCategories set but category unresolved', triggers({ alertCategories: ['patching'] }), ctx, false],
+    ['alertCategories set but category null', triggers({ alertCategories: ['patching'] }), { ...ctx, category: null }, false],
     ['empty siteIds = all sites', triggers({ siteIds: [] }), ctx, true],
     ['matching siteIds', triggers({ siteIds: [SITE_A] }), ctx, true],
     ['non-matching siteIds', triggers({ siteIds: [SITE_B] }), ctx, false],
@@ -449,6 +456,18 @@ describe('evaluateAgentTriggerFilters', () => {
         await evaluateAgentTriggerFilters(triggers({ deviceGroupIds: [GROUP_A] }), ctx, null, ORG_ID),
       ).toBe(false);
       expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(false);
+    });
+
+    // AI patch agent W04 (#5750): a reactive patch run is device-less with a
+    // focus hint; the group filter judges the FOCUS device, not "no device".
+    it('deviceId null with ctx.focusDeviceId checks the focus device', async () => {
+      dbMockState.rowQueues.device_group_memberships = [[{ groupId: GROUP_A }]];
+      expect(
+        await evaluateAgentTriggerFilters(
+          triggers({ deviceGroupIds: [GROUP_A] }), { ...ctx, focusDeviceId: DEVICE_ID }, null, ORG_ID,
+        ),
+      ).toBe(true);
+      expect(dbMockState.selects.some((s) => s.table === 'device_group_memberships')).toBe(true);
     });
 
     it('is org-pinned: the membership query filters by device_id AND org_id', async () => {
@@ -2468,6 +2487,15 @@ describe('createAndEnqueueAgentRun patch-profile admission (AI patch agent W01)'
     expect(result).toEqual({ created: false, skipped: 'patch_rate' });
     const runSelects = dbMockState.selects.filter((s) => s.table === 'ai_agent_runs');
     expect(compiled(runSelects[2]?.where)).toContain('"profile"');
+  });
+
+  // AI patch agent W04 (#5750) — the capacity decision: reactive alert runs
+  // share the daily patch budget, so a day holding the manual run plus four
+  // reactive alerts (5 in the window) must still admit the nightly occurrence.
+  it('admits the scheduled occurrence after a manual run plus four reactive alert runs the same day', async () => {
+    seedPatchAdmissionReads({ perWindow: 5 });
+    const result = await createAndEnqueueAgentRun(patchInput({ dedupeKey: 'patch:sched', scheduleId: SCHEDULE_ID }));
+    expect(result).toMatchObject({ created: true });
   });
 
   it('falls back to the v11 defaults on a pre-v11 snapshot with no patch caps at all', async () => {

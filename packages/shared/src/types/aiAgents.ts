@@ -146,9 +146,14 @@ export interface AiAgentLimits {
    * AI patch agent (W01) — patch-profile admission caps, counted on their
    * own like every other profile. A patch run is scheduled once a day per
    * org (`0 2 * * *` default) plus the occasional manual "Run now", so
-   * `maxPatchRunsPerDay` (2) is enforced at admission rule 6b over the same
-   * rolling 24-hour window the design profile uses, not per hour. Anything
-   * above a couple a day for one org is a re-fire, not load.
+   * `maxPatchRunsPerDay` is enforced at admission rule 6b over the same
+   * rolling 24-hour window the design profile uses, not per hour. W04
+   * (#5750) routes patch-classified ALERTS into the same budget (one
+   * device-less reactive run per alert), so the default is 6 rather than the
+   * original 2: one nightly occurrence, one manual run, and four reactive
+   * alerts in a day still admit the occurrence. No snapshot version bump —
+   * the field already exists at v11 and only agents without an explicit
+   * value pick the new default up.
    * `patchMaxTurns` (20) covers one read of the pre-assembled evidence, a
    * small read-only drill-down floor, and one `submit_patch_plan` call —
    * see `patchProfile.ts`. Snapshot v11.
@@ -233,7 +238,7 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   // Patch-profile admission caps (AI patch agent W01) — see
   // AiAgentLimits.maxConcurrentPatchRuns's docstring.
   maxConcurrentPatchRuns: 1,
-  maxPatchRunsPerDay: 2,
+  maxPatchRunsPerDay: 6,
   patchBudgetCentsPerRun: 60,
   patchMaxTurns: 20,
   // Analysis-profile caps (execution plane W04, spec §5.4 table) — see
@@ -255,6 +260,18 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
 export interface AiAgentTriggers {
   alertSeverities: Array<'critical' | 'high' | 'medium' | 'low' | 'info'>;
   alertRuleIds?: string[];
+  /**
+   * AI patch agent W04 (#5750) — narrowing filter on the triggering alert's
+   * TEMPLATE category (`alert_templates.category`, reached through
+   * `alerts.rule_id → alert_rules.template_id`; `PATCH_ALERT_CATEGORY` is the
+   * one every patch source carries). Same `undefined`-means-unrestricted /
+   * `.min(1)` convention as `ticketCategories` below — never `[]`. Enforced
+   * beside `alertRuleIds` by `runService.ts`'s `evaluateAgentTriggerFilters`;
+   * an alert whose category could not be resolved (no rule, or a rule whose
+   * template has no category) fails a non-empty filter, exactly as a
+   * `ruleId === null` alert fails a non-empty `alertRuleIds`.
+   */
+  alertCategories?: string[];
   siteIds?: string[];
   deviceGroupIds?: string[];
   deviceTags?: string[];

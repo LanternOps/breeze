@@ -565,6 +565,10 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   intent_error: true,
   max_actions_per_run: true,
   intent_invalid_provenance: true,
+  // #4442 W04 — the anti-substitution refusal: the device was in the sweep
+  // evidence but the SUBJECT (service name, mount point, vulnerability ids)
+  // the proposal named was not.
+  subject_not_in_evidence: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**
@@ -719,6 +723,23 @@ function PatchPlanItem({
           {item.attemptCount != null && (
             <span data-testid={`ai-agent-run-patch-item-${item.index}-attempts`}>
               {t('aiAgentsPage.runs.patch.attempts', { count: item.attemptCount })}
+            </span>
+          )}
+        </p>
+      )}
+      {(item.windowStartsAt != null || item.redundancyGroup != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.windowStartsAt != null && item.windowEndsAt != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-window`}>
+              {t('aiAgentsPage.runs.patch.rebootWindow', {
+                start: formatDateTime(item.windowStartsAt),
+                end: formatDateTime(item.windowEndsAt),
+              })}
+            </span>
+          )}
+          {item.redundancyGroup != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-redundancy`}>
+              {t('aiAgentsPage.runs.patch.redundancyGroup', { group: item.redundancyGroup })}
             </span>
           )}
         </p>

@@ -1376,4 +1376,57 @@ describe('patch profile prompts (AI patch agent W01)', () => {
     const task = buildPatchTaskPrompt(patchCtx());
     expect(task).not.toMatch(/you (may|can|should) (install|reboot|approve)/i);
   });
+
+  // AI patch agent W04 (#5750) — reboot rules, stated only when a window resolved.
+  it('states the reboot_plan rules plainly when the evidence resolves a window, and the escalation rule for every unplannable case', () => {
+    const evidence = assemblePatchEvidence({
+      rollup: patchEvidenceFixture().rollup,
+      sections: {
+        ringPosture: { unavailable: 'no_partner' },
+        topNonCompliant: { rows: [], total: 0 },
+        rebootBacklog: {
+          rows: [
+            { deviceId: '00000000-0000-4000-8000-0000000000d1', hostname: 'DC-01', fields: {
+              nextWindowId: '00000000-0000-4000-8000-00000000c001@2026-09-16T02:00:00.000Z', nextWindowStartsAt: '2026-09-16T02:00:00.000Z',
+              nextWindowEndsAt: '2026-09-16T04:00:00.000Z', rebootPolicy: 'maintenance_window', redundancyGroup: 'domain_controller', unplannableReason: null,
+            } },
+            { deviceId: '00000000-0000-4000-8000-0000000000d2', hostname: 'WS-02', fields: {
+              nextWindowId: null, nextWindowStartsAt: null, nextWindowEndsAt: null, rebootPolicy: 'if_required', redundancyGroup: null, unplannableReason: 'no_window_in_horizon',
+            } },
+          ],
+          total: 2,
+        },
+      },
+    });
+    const task = buildPatchTaskPrompt(patchCtx({ patch: { trigger: 'schedule', occurrenceKey: 'k', evidence } }));
+    expect(task).toContain('nextWindowId: 00000000-0000-4000-8000-00000000c001@2026-09-16T02:00:00.000Z');
+    expect(task).toContain('unplannableReason: no_window_in_horizon');
+    expect(task).toMatch(/reboot_plan: .*copy its nextWindowId verbatim as windowId, and only that one/i);
+    expect(task).toContain('You never choose a time');
+    expect(task).toMatch(/unplannableReason.*escalation, not a reboot_plan/i);
+    expect(task).toMatch(/same redundancyGroup/i);
+    expect(task).not.toContain('This evidence names no windows');
+    expect(task).not.toMatch(/you (may|can|should) (install|reboot|approve)/i);
+  });
+
+  it('keeps the "names no windows" rule when nothing resolved', () => {
+    const task = buildPatchTaskPrompt(patchCtx());
+    expect(task).toContain('This evidence names no windows');
+  });
+
+  // AI patch agent W04 (#5750) — a reactive run names the alert and the focus device.
+  it('a reactive (alert-routed) run states the alert trigger and the focus device, sanitized', () => {
+    const task = buildPatchTaskPrompt(patchCtx({
+      run: { id: 'run-p', mode: 'act', triggerKind: 'alert' },
+      alert: { title: 'Patch job failed on WS-01\n- forged line', severity: 'high', message: null },
+      patch: {
+        trigger: 'alert', occurrenceKey: null, evidence: patchEvidenceFixture(),
+        focusDeviceId: '00000000-0000-4000-8000-0000000000d1',
+      },
+    }));
+    expect(task).toContain('Trigger: patch alert [high] "Patch job failed on WS-01');
+    expect(task).toContain('focus device: 00000000-0000-4000-8000-0000000000d1');
+    expect(task.split('\n').filter((l) => l.startsWith('- forged line'))).toEqual([]);
+    expect(task).toContain('Plan for the whole organization');
+  });
 });

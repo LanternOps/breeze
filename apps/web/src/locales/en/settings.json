@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "A patch plan fires at most once a day: a literal minute and hour, and * or a literal list for day-of-month, month and day-of-week. For example 0 2 * * * runs every night at 02:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
+      "actMode": {
+        "label": "Act mode",
+        "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "disabledHint": "Arming act mode requires full partner access to all organizations.",
+        "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
+        "disableForOrg": "Disable act mode for this organization",
+        "disableForOrgHint": "This organization always inherits the partner baseline's act mode setting unless disabled here — it can never be armed independently."
+      },
       "override": "Override for this org",
       "editOverride": "Edit this org's override",
       "overrideHint": "This organization's override of the partner baseline. It always runs on the baseline's cadence.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
         "agentKindNotPatch": "A patch plan schedule must target a Patch agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
-        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
+        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week.",
+        "actModeOrgCannotArm": "Act mode is armed on the partner baseline; an organization override may only disable it, never arm it."
       }
     },
     "title": "AI Agents",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
+      "alertCategories": "Alert categories",
+      "alertCategoriesHint": "Only alerts whose template category is listed here wake this agent. Leave empty for any category. Patch alerts carry \"patching\".",
+      "alertCategoriesPlaceholder": "e.g. patching, monitor",
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Device not in the sweep evidence",
+          "subject_not_in_evidence": "Subject not in the sweep evidence",
           "device_not_in_org": "Device not in this organization",
           "not_allowlisted": "Tool not allowed for this agent",
           "no_eligible_approvers": "No eligible approvers",
@@ -1919,6 +1932,8 @@
         "failureClass": "Failure class: {{label}}",
         "attempts": "{{count}} failed attempt",
         "attempts_other": "{{count}} failed attempts",
+        "rebootWindow": "Window: {{start}} – {{end}}",
+        "redundancyGroup": "Redundancy group: {{group}}",
         "escalation": "Needs a human — nothing will retry this automatically.",
         "escalations": "{{count}} escalation",
         "escalations_other": "{{count}} escalations",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "This kind of failure is never retried automatically",
           "chase_attempts_exhausted": "The retry limit for this update was reached — escalated instead",
           "attempt_count_mismatch": "The quoted attempt count does not match the evidence",
-          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted"
+          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted",
+          "reboot_policy_not_window_gated": "The device's reboot policy reboots outside maintenance windows, so a window plan would not be honoured",
+          "redundancy_unknown": "The device's redundancy group is unknown, so ordering could not be checked",
+          "redundancy_collision": "Another device in the same redundancy group is already planned for this window"
         },
         "ineligible": {
           "not_outstanding": "Not outstanding on this device",

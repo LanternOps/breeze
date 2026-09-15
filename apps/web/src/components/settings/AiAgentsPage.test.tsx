@@ -1,7 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', () => ({
+  fetchWithAuth: vi.fn(),
+  // #4442 W04: AiAgentSchedulesSection now reads the partner-wide capability
+  // off the auth store to gate the act-mode arm switch, so this mock has to
+  // carry it too. `undefined` user = the absent-means-capable default the
+  // component (and CustomFieldsPage) already assume; the server gates for real.
+  useAuthStore: (selector: (s: { user: undefined }) => unknown) => selector({ user: undefined }),
+}));
 
 // Partner scope comes from the JWT claims and the org context from the org
 // store — the same pair `useDefaultOwnerScope` reads (#1724 / #2126).

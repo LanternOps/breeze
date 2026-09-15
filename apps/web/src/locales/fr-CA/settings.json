@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Un plan de correctifs se déclenche au plus une fois par jour : une minute et une heure littérales, et * ou une liste littérale pour le jour-du-mois, le mois et le jour de la semaine. Par exemple, 0 2 * * * s'exécute chaque nuit à 2 h.",
       "kindsRequired": "Sélectionnez au moins un contrôle.",
       "enabled": "Activé",
+      "actMode": {
+        "label": "Mode d'action",
+        "hint": "Une fois activé, ce planning peut appliquer certains correctifs automatiquement au lieu d'attendre une approbation.",
+        "disabledHint": "L'activation du mode d'action nécessite un accès partenaire complet à toutes les organisations.",
+        "scopeNote": "Les correctifs non supervisés se limitent au redémarrage d'un service arrêté, uniquement sur les appareils dont l'organisation dispose déjà de l'autorisation manage_services:restart. Tout le reste continue d'attendre une approbation.",
+        "disableForOrg": "Désactiver le mode d'action pour cette organisation",
+        "disableForOrgHint": "Cette organisation hérite toujours du réglage du mode d'action de la référence partenaire, sauf désactivation ici — elle ne peut jamais l'activer de façon indépendante."
+      },
       "override": "Déroger pour cette organisation",
       "editOverride": "Modifier la dérogation de cette organisation",
       "overrideHint": "La dérogation de cette organisation à la référence du partenaire. Elle suit toujours la cadence de la référence.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Une planification de conception du parc doit cibler un agent Concepteur du parc.",
         "agentKindNotPatch": "Une planification de plan de correctifs doit cibler un agent Correctifs.",
         "kindsNotEmpty": "Une planification de rapport hebdomadaire n'exécute aucun contrôle. Retirez les contrôles sélectionnés avant d'enregistrer.",
-        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine."
+        "invalidCronForKind": "Un rapport hebdomadaire doit se déclencher exactement une fois par semaine. Utilisez une minute et une heure littérales, * pour le jour-du-mois et le mois, et un seul jour de la semaine.",
+        "actModeOrgCannotArm": "Le mode d'action est activé sur la référence partenaire ; une dérogation d'organisation ne peut que le désactiver, jamais l'activer."
       }
     },
     "title": "Agents IA",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
+      "alertCategories": "Catégories d'alertes",
+      "alertCategoriesHint": "Seules les alertes dont la catégorie de modèle est listée ici réveillent cet agent. Laisser vide pour toute catégorie. Les alertes de correctifs portent « patching ».",
+      "alertCategoriesPlaceholder": "p. ex. patching, monitor",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "subject_not_in_evidence": "Élément absent des éléments du balayage",
           "device_not_in_org": "Appareil absent de cette organisation",
           "not_allowlisted": "Outil non autorisé pour cet agent",
           "no_eligible_approvers": "Aucun approbateur éligible",
@@ -1919,6 +1932,8 @@
         "failureClass": "Classe d'échec : {{label}}",
         "attempts": "{{count}} tentative échouée",
         "attempts_other": "{{count}} tentatives échouées",
+        "rebootWindow": "Fenêtre : {{start}} – {{end}}",
+        "redundancyGroup": "Groupe de redondance : {{group}}",
         "escalation": "Nécessite une intervention humaine – aucune nouvelle tentative automatique.",
         "escalations": "{{count}} escalade",
         "escalations_other": "{{count}} escalades",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
           "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
           "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
-          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable"
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable",
+          "reboot_policy_not_window_gated": "La politique de redémarrage de l'appareil redémarre en dehors des fenêtres de maintenance, un plan de fenêtre ne serait donc pas respecté",
+          "redundancy_unknown": "Le groupe de redondance de l'appareil est inconnu, l'ordre n'a donc pas pu être vérifié",
+          "redundancy_collision": "Un autre appareil du même groupe de redondance est déjà planifié pour cette fenêtre"
         },
         "ineligible": {
           "not_outstanding": "Non en attente sur cet appareil",

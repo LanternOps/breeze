@@ -2500,4 +2500,65 @@ describe('RunDetailPage — patch plan', () => {
       expect(el.textContent, reason).toMatch(/Not recorded: \S/);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // W04 (#5750), Task 6 — reboot_plan items carry the resolved window and
+  // redundancy group the evidence attached to them.
+  // ---------------------------------------------------------------------------
+  it('renders a reboot plan item with its window and redundancy group', async () => {
+    const items = [
+      {
+        ...PATCH.items[1],
+        index: 0,
+        disposition: 'recorded' as const,
+        reason: null,
+        windowId: 'mw-1@2026-09-20T02:00:00.000Z',
+        windowStartsAt: '2026-09-20T02:00:00.000Z',
+        windowEndsAt: '2026-09-20T04:00:00.000Z',
+        redundancyGroup: 'domain-controller',
+      },
+    ];
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 1, refusedCount: 0 } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const windowLine = screen.getByTestId('ai-agent-run-patch-item-0-window');
+    expect(windowLine).toHaveTextContent('Window:');
+    const redundancyLine = screen.getByTestId('ai-agent-run-patch-item-0-redundancy');
+    expect(redundancyLine).toHaveTextContent('domain-controller');
+  });
+
+  it('renders nothing for the window/redundancy lines when the item carries neither', async () => {
+    const items = [{ ...PATCH.items[1], index: 0, disposition: 'recorded' as const, reason: null }];
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 1, refusedCount: 0 } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-window')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-redundancy')).toBeNull();
+  });
+
+  it('renders each reboot refusal reason as real copy', async () => {
+    const REBOOT_REASONS = ['reboot_policy_not_window_gated', 'redundancy_unknown', 'redundancy_collision'] as const;
+    const COPY: Record<(typeof REBOOT_REASONS)[number], string> = {
+      reboot_policy_not_window_gated:
+        "The device's reboot policy reboots outside maintenance windows, so a window plan would not be honoured",
+      redundancy_unknown: "The device's redundancy group is unknown, so ordering could not be checked",
+      redundancy_collision: 'Another device in the same redundancy group is already planned for this window',
+    };
+    const items = REBOOT_REASONS.map((reason, index) => ({
+      ...PATCH.items[1],
+      index,
+      disposition: 'refused' as const,
+      reason,
+    }));
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 0, refusedCount: items.length } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    for (const [index, reason] of REBOOT_REASONS.entries()) {
+      const el = screen.getByTestId(`ai-agent-run-patch-item-${index}-reason`);
+      expect(el.textContent, reason).toContain(COPY[reason]);
+    }
+  });
 });

@@ -508,7 +508,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
     // for); every other section degrades to "(not measured)".
     let patch: RunContext['patch'] = null;
     if (isPatchProfile(run as RunRow)) {
-      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown };
+      const ref = (run.triggerRef ?? {}) as { occurrenceKey?: unknown; focusDeviceId?: unknown };
       let evidence;
       try {
         evidence = await loadPatchEvidence(run.orgId, org.partnerId ?? null);
@@ -522,6 +522,8 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         scheduleId: run.scheduleId ?? null,
         occurrenceKey: typeof ref.occurrenceKey === 'string' ? ref.occurrenceKey : null,
         evidence,
+        // W04 (#5750): a reactive run's focus hint, read defensively like the rest.
+        focusDeviceId: typeof ref.focusDeviceId === 'string' ? ref.focusDeviceId : null,
       };
     }
 
@@ -1538,7 +1540,13 @@ function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromp
     narrative: ctx.narrative ? narrativePromptContext(ctx.narrative) : null,
     design: ctx.design ? designPromptContext(ctx.design) : null,
     patch: ctx.patch
-      ? { trigger: ctx.patch.scheduleId ? 'schedule' : 'manual', occurrenceKey: ctx.patch.occurrenceKey, evidence: ctx.patch.evidence }
+      ? {
+          // W04 (#5750): an alert-routed run is 'alert'; the schedule/manual split is unchanged.
+          trigger: ctx.run.alertId ? 'alert' : ctx.patch.scheduleId ? 'schedule' : 'manual',
+          occurrenceKey: ctx.patch.occurrenceKey,
+          evidence: ctx.patch.evidence,
+          focusDeviceId: ctx.patch.focusDeviceId ?? null,
+        }
       : null,
   };
 }

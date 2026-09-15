@@ -118,6 +118,10 @@ export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
 const triggersFields = z.object({
   alertSeverities: z.array(z.enum(ALERT_SEVERITIES)).min(1),
   alertRuleIds: z.array(z.string().guid()).min(1).max(200),
+  // AI patch agent W04 (#5750) — alert TEMPLATE category filter, same
+  // undefined-means-unrestricted / .min(1) convention as ticketCategories
+  // below. Free text capped to alert_templates.category's varchar(100).
+  alertCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(50),
   siteIds: z.array(z.string().guid()).min(1).max(500),
   deviceGroupIds: z.array(z.string().guid()).min(1).max(500),
   deviceTags: z.array(z.string().trim().min(1).max(64)).min(1).max(100),
@@ -159,6 +163,17 @@ const triggersFields = z.object({
   ticketAutonomousWrites: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
+/**
+ * AI patch agent W04 (#5750) — the UPDATE shape of the trigger filters. The
+ * PATCH merge is shallow (`{ ...stored.triggers, ...input.triggers }`), so an
+ * absent key keeps the stored list and `[]` is rejected by `.min(1)`;
+ * `alertCategories: null` is the one representable "clear back to
+ * unrestricted" — `agentService` deletes the key when it sees it. Update-only:
+ * a stored row never carries a null.
+ */
+export const aiAgentTriggersUpdateSchema = aiAgentTriggersPatchSchema.extend({
+  alertCategories: triggersFields.shape.alertCategories.nullable().optional(),
+});
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
@@ -271,7 +286,7 @@ export const updateAiAgentSchema = z.object({
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
   protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),
   limits: aiAgentLimitsPatchSchema.optional(),
-  triggers: aiAgentTriggersPatchSchema.optional(),
+  triggers: aiAgentTriggersUpdateSchema.optional(),
   recipients: aiAgentRecipientsPatchSchema.optional(),
   actAssets: aiAgentActAssetsPatchSchema.optional(),
   instructions: z.string().max(2000).nullable().optional(),

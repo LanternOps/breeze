@@ -40,6 +40,11 @@ import {
   resolveRebootPlan,
   type RebootDeferralSettings,
 } from '../services/patchRebootHandler';
+import {
+  REBOOT_PENDING_ALERT_THRESHOLD_DAYS,
+  emitRebootPendingAlert,
+  loadOldestRebootRequiredSince,
+} from '../services/patchAlerts';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -65,6 +70,8 @@ export type RebootCandidate = {
   id: string;
   orgId: string;
   osType: 'windows' | 'macos' | 'linux';
+  hostname: string | null;
+  uptimeSeconds: number | null;
 };
 
 type WindowsRebootPayload = {
@@ -177,7 +184,13 @@ export function decideRebootCommand(params: {
  */
 export async function getRebootCandidates(): Promise<RebootCandidate[]> {
   const rows = await db
-    .select({ id: devices.id, orgId: devices.orgId, osType: devices.osType })
+    .select({
+      id: devices.id,
+      orgId: devices.orgId,
+      osType: devices.osType,
+      hostname: devices.hostname,
+      uptimeSeconds: devices.uptimeSeconds,
+    })
     .from(devices)
     .where(
       and(
@@ -263,13 +276,44 @@ export async function processRebootCandidate(
 // ── Sweep ────────────────────────────────────────────────────────────────────
 
 export async function runMaintenanceRebootSweep(
-  deps = { getRebootCandidates, processRebootCandidate },
+  deps = {
+    getRebootCandidates,
+    processRebootCandidate,
+    emitRebootPendingAlert,
+    loadOldestRebootRequiredSince,
+  },
 ): Promise<{ issued: number; checked: number }> {
   const candidates = await runWithSystemDbAccess(() => deps.getRebootCandidates());
   let issued = 0;
   for (const device of candidates) {
     try {
-      const res = await runWithSystemDbAccess(() => deps.processRebootCandidate(device));
+      const res = await runWithSystemDbAccess(async () => {
+        const outcome = await deps.processRebootCandidate(device);
+        // Not issued this tick — either nothing warranted a reboot, or one was
+        // warranted and got deferred (dedup, offline, no policy). Either way,
+        // if the device has genuinely been waiting a long time, raise the
+        // alert. This never dispatches anything new — see patchAlerts.ts.
+        if (!outcome.issued) {
+          // `rebootPendingSince` can never be earlier than the last boot, so a
+          // device up for less than the threshold cannot alert — skip the
+          // patch-history read for it (this loop walks every pending-reboot
+          // device every ten minutes).
+          const upLongEnough =
+            device.uptimeSeconds !== null
+            && device.uptimeSeconds >= REBOOT_PENDING_ALERT_THRESHOLD_DAYS * 24 * 60 * 60;
+          const oldestRebootRequiredSince = upLongEnough
+            ? await deps.loadOldestRebootRequiredSince(device.id, device.orgId)
+            : null;
+          await deps.emitRebootPendingAlert({
+            orgId: device.orgId,
+            deviceId: device.id,
+            hostname: device.hostname,
+            uptimeSeconds: device.uptimeSeconds,
+            oldestRebootRequiredSince,
+          });
+        }
+        return outcome;
+      });
       if (res.issued) issued++;
     } catch (err) {
       console.error(`[MaintenanceReboot] error processing device ${device.id}:`, err);

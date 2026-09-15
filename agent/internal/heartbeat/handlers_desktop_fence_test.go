@@ -3,8 +3,10 @@ package heartbeat
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/remote/desktop"
+	"github.com/breeze-rmm/agent/internal/websocket"
 )
 
 const (
@@ -27,8 +29,22 @@ func fenceStartCommand(commandID string, payload map[string]any) Command {
 	return Command{ID: commandID, Type: "start_desktop", Payload: full}
 }
 
+// newFenceHeartbeat builds a heartbeat whose fence is already synced for the
+// test session, so these W04 ordering assertions are not also exercising the
+// W05 resync round trip (which has its own suite in
+// handlers_desktop_fence_sync_test.go). The control plane answers "live, no
+// generation" — the weakest answer that still certifies a session.
 func newFenceHeartbeat() *Heartbeat {
-	return &Heartbeat{desktopMgr: desktop.NewSessionManager()}
+	h := &Heartbeat{desktopMgr: desktop.NewSessionManager()}
+	h.desktopFenceSyncTimeout = 5 * time.Second
+	h.leaseSyncRequester = func(sessionID, nonce string) error {
+		go h.applyRevocationLeaseAnswer(websocket.RevocationLeaseMessage{
+			SessionID: sessionID,
+			SyncNonce: nonce,
+		})
+		return nil
+	}
+	return h
 }
 
 // The reorder case, end to end through the handlers: stop_desktop arrives for

@@ -41,6 +41,7 @@ function baseDraft(overrides: Partial<Draft> = {}): Draft {
     supervisedActionKeys: [],
     scriptIds: [],
     ticketAutonomousWrites: false,
+    alertCategories: [],
     ...overrides,
   };
 }
@@ -86,6 +87,19 @@ describe('draftFrom', () => {
     expect(draft.enabled).toBe(false);
     expect(draft.severities).toEqual(['critical', 'high']);
     expect(draft.cooldownSeconds).toBe(900);
+  });
+
+  it('reads a stored alertCategories list into the draft (AI patch agent W04, #5750)', () => {
+    const draft = draftFrom(
+      { kind: 'patch', ownerScope: 'partner', orgId: null, triggers: { alertCategories: ['patching'] } } as never,
+      { ownerScope: 'partner', kind: 'patch' },
+    );
+    expect(draft.alertCategories).toEqual(['patching']);
+  });
+
+  it('defaults alertCategories to [] when the agent has none stored', () => {
+    const draft = draftFrom(null, { ownerScope: 'partner', kind: 'patch' });
+    expect(draft.alertCategories).toEqual([]);
   });
 
   it('drops a stored severity the shared ALERT_SEVERITIES no longer recognises, rather than crashing', () => {
@@ -168,10 +182,56 @@ describe('buildAgentSaveBody', () => {
   });
 
   it('omits triggers.alertSeverities for a kind that never reads it (ALERT_SEVERITY_KINDS)', () => {
-    expect(ALERT_SEVERITY_KINDS.has('patch')).toBe(false);
-    const draft = baseDraft({ kind: 'patch', ownerScope: 'partner' });
+    expect(ALERT_SEVERITY_KINDS.has('helpdesk')).toBe(false);
+    const draft = baseDraft({ kind: 'helpdesk', ownerScope: 'partner' });
     const body = buildAgentSaveBody(draft, { isCreate: true, orgId: null });
     expect(body.triggers).not.toHaveProperty('alertSeverities');
+  });
+
+  // AI patch agent W04 (#5750) — since W04, patch-classified alerts route to
+  // the patch agent whose admission reads triggers.alertSeverities like
+  // triage's, so 'patch' joined ALERT_SEVERITY_KINDS.
+  it('includes triggers.alertSeverities for a patch draft (ALERT_SEVERITY_KINDS since W04)', () => {
+    expect(ALERT_SEVERITY_KINDS.has('patch')).toBe(true);
+    const draft = baseDraft({ kind: 'patch', ownerScope: 'partner', severities: ['critical'] });
+    const body = buildAgentSaveBody(draft, { isCreate: true, orgId: null });
+    expect((body.triggers as Record<string, unknown>).alertSeverities).toEqual(['critical']);
+  });
+
+  // AI patch agent W04 (#5750), Task 6 — triggers.alertCategories is an
+  // undefined-means-unrestricted, `.min(1)` list (same convention as
+  // siteIds/deviceGroupIds/ticketCategories — see aiAgents.ts validator).
+  // The server's PATCH merge is a shallow `{ ...stored.triggers,
+  // ...input.triggers }` (agentService.ts updatePolicyColumns): a key
+  // literally absent from the parsed body leaves the stored value alone, and
+  // `[]` is rejected by `.min(1)`. There is no representable "clear" value in
+  // the current schema, so the only safe send is: the concrete list when
+  // non-empty, and the key OMITTED (never `[]`, never `undefined` as a
+  // present key — JSON.stringify would drop it anyway) when empty. Clearing
+  // an already-set filter therefore does NOT work over a plain PATCH today —
+  // see this file's header comment / the task report for the flagged gap.
+  it('sends the alert-category filter only for a patch draft, and only when non-empty', () => {
+    const draft = baseDraft({ kind: 'patch', alertCategories: ['patching'] });
+    const body = buildAgentSaveBody(draft, { isCreate: false, orgId: 'org-1' });
+    expect((body.triggers as Record<string, unknown>).alertCategories).toEqual(['patching']);
+  });
+
+  it('sends null (never []) when the category filter is cleared on an UPDATE, and omits it on create', () => {
+    // `null` is the API's one representable "clear to unrestricted" over the
+    // shallow PATCH merge (packages/shared updateAiAgentSchema); `[]` is a 400
+    // and an absent key keeps the stored list.
+    const draft = baseDraft({ kind: 'patch', alertCategories: [] });
+    const body = buildAgentSaveBody(draft, { isCreate: false, orgId: 'org-1' });
+    expect((body.triggers as Record<string, unknown>).alertCategories).toBeNull();
+    expect(JSON.parse(JSON.stringify(body)).triggers.alertCategories).toBeNull();
+    const created = buildAgentSaveBody(draft, { isCreate: true, orgId: 'org-1' });
+    expect(created.triggers).not.toHaveProperty('alertCategories');
+  });
+
+  it('never sends triggers.alertCategories for a non-patch kind, even when the draft carries a stale value', () => {
+    const draft = baseDraft({ kind: 'triage', alertCategories: ['patching'] });
+    const body = buildAgentSaveBody(draft, { isCreate: false, orgId: 'org-1' });
+    expect(body.triggers).not.toHaveProperty('alertCategories');
   });
 
   it('sends actAssets.supervisedActionKeys as [] on a partner draft not in act mode, even if the draft holds a stale selection', () => {

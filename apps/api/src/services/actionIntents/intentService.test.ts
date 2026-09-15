@@ -113,7 +113,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     // Wave 5 Part B (#3827): defaults OFF, matching the real flag's default —
     // most of this suite must stay behaviorally identical whether or not
     // policyDecideEnabled is even imported, proving flag-off inertness.
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     // The dynamic import() inside triggerPolicyDecisionAttempt resolves
     // through this mock exactly like a static import would — vi.mock
     // intercepts both. A no-op async fn by default so a triggered attempt
@@ -282,6 +282,8 @@ vi.mock('./effectDigest', () => ({
 
 vi.mock('../../config/env', () => ({
   policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
 }));
 
 vi.mock('./policyDecide', () => ({

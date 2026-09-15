@@ -179,12 +179,19 @@ type Client struct {
 	OnResultWriteFailed func(CommandResult)
 
 	// OnRevocationLease, if set, is invoked from the read pump when the server
-	// answers a revocation-lease renewal. `revoked` is true for a
-	// `revocation_lease_revoked` frame (stop the session NOW); an
-	// `unavailable` answer is deliberately NOT delivered here — silence is what
-	// the agent's grace window is for, so the caller keeps streaming until the
-	// lease lapses past its grace. Must not block: it runs inline on the read
-	// pump. Set once at construction time, before Start().
+	// answers a revocation-lease renewal. `Revoked` is true for a
+	// `revocation_lease_revoked` frame (stop the session NOW).
+	//
+	// An `unavailable` answer IS delivered, as Unavailable=true (SEC-038 W05).
+	// It used to be swallowed on the theory that silence is what the grace
+	// window is for — true for an established session, and still how the
+	// caller treats it, but a session whose FIRST renewal cannot be served has
+	// never been confirmed by the control plane and must stop instead of
+	// riding the grace (owner decision 2). The caller makes that distinction;
+	// this hook only has to deliver the answer.
+	//
+	// Must not block: it runs inline on the read pump. Set once at
+	// construction time, before Start().
 	OnRevocationLease func(msg RevocationLeaseMessage)
 }
 
@@ -192,9 +199,24 @@ type Client struct {
 type RevocationLeaseMessage struct {
 	SessionID          string
 	Revoked            bool
+	Unavailable        bool
 	Reason             string
 	ExpiresAtUnixMs    int64
 	HardDeadlineUnixMs int64
+	// StartGeneration is the session's current desktop_start_generation as a
+	// canonical decimal string (SEC-038), empty from a pre-W05 API. The
+	// agent's durable start fence resyncs from it.
+	StartGeneration string
+	// TerminationPhase is 'none' | 'pending' | 'confirmed', empty from a
+	// pre-W05 API. Anything other than 'none' is a terminal session.
+	TerminationPhase string
+	// TerminalGeneration accompanies a revoked answer when the server knows
+	// it; the tombstone does not depend on it.
+	TerminalGeneration string
+	// SyncNonce echoes the correlator the agent sent with a fence-resync
+	// renewal, so a stalled answer to an earlier attempt cannot satisfy a
+	// later one. Empty for ordinary watchdog renewals.
+	SyncNonce string
 }
 
 // New creates a new WebSocket client
@@ -474,15 +496,9 @@ func (c *Client) readPump() {
 
 		// Revocation-lease answers carry no id, so they must be handled BEFORE
 		// the id-less skip below (the same trap #3001 hit for server errors).
-		if msg.Type == "revocation_lease" || msg.Type == "revocation_lease_revoked" {
+		if msg.Type == "revocation_lease" || msg.Type == "revocation_lease_revoked" ||
+			msg.Type == "revocation_lease_unavailable" {
 			c.handleRevocationLeaseMessage(msg.Type, message)
-			continue
-		}
-		// An `unavailable` answer is intentionally inert: the agent must keep
-		// streaming and let the grace window decide, so there is nothing to do
-		// but note it.
-		if msg.Type == "revocation_lease_unavailable" {
-			log.Debug("revocation lease renewal unavailable; riding grace window")
 			continue
 		}
 
@@ -1124,6 +1140,12 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 		Reason       string  `json:"reason"`
 		ExpiresAt    float64 `json:"expiresAt"`
 		HardDeadline float64 `json:"hardDeadline"`
+		// SEC-038 fence fields. Generations are STRINGS on the wire: they are
+		// bigint on the server and would round above 2^53 through a float.
+		StartGeneration    string `json:"startGeneration"`
+		TerminationPhase   string `json:"terminationPhase"`
+		TerminalGeneration string `json:"terminalGeneration"`
+		SyncNonce          string `json:"syncNonce"`
 	}
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.SessionID == "" {
 		log.Warn("failed to parse revocation lease frame", "type", msgType)
@@ -1135,9 +1157,14 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 	c.OnRevocationLease(RevocationLeaseMessage{
 		SessionID:          frame.SessionID,
 		Revoked:            msgType == "revocation_lease_revoked",
+		Unavailable:        msgType == "revocation_lease_unavailable",
 		Reason:             frame.Reason,
 		ExpiresAtUnixMs:    int64(frame.ExpiresAt),
 		HardDeadlineUnixMs: int64(frame.HardDeadline),
+		StartGeneration:    frame.StartGeneration,
+		TerminationPhase:   frame.TerminationPhase,
+		TerminalGeneration: frame.TerminalGeneration,
+		SyncNonce:          frame.SyncNonce,
 	})
 }
 
@@ -1146,10 +1173,21 @@ func (c *Client) handleRevocationLeaseMessage(msgType string, raw []byte) {
 // request, which is safe — the next tick asks again, and a control plane that
 // stays unreachable is exactly what the grace window covers.
 func (c *Client) SendRevocationLeaseRenew(sessionID string) error {
-	data, err := json.Marshal(map[string]any{
+	return c.SendRevocationLeaseRenewWithNonce(sessionID, "")
+}
+
+// SendRevocationLeaseRenewWithNonce is the same request carrying a correlator
+// the server echoes on its answer. Used by the SEC-038 fence resync, where an
+// answer to an EARLIER renewal must not be mistaken for this one's.
+func (c *Client) SendRevocationLeaseRenewWithNonce(sessionID, nonce string) error {
+	payload := map[string]any{
 		"type":      "revocation_lease_renew",
 		"sessionId": sessionID,
-	})
+	}
+	if nonce != "" {
+		payload["syncNonce"] = nonce
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal revocation_lease_renew: %w", err)
 	}

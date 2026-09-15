@@ -8,9 +8,22 @@ import (
 // The fence is the endpoint half of SEC-038: the agent refuses any desktop
 // start that is not strictly newer than everything it has already seen, and
 // refuses every start after a terminal.
+//
+// Since W05 a session the fence has never seen is not admitted on the payload
+// alone (sync-on-unknown, see desktop_fence_durable_test.go). These W04 tests
+// therefore mark the session synced first — a legacy sync (no generation) is
+// the control plane saying "live", which is the W04 starting state.
+
+func syncedFence(sessions ...string) *desktopFence {
+	f := &desktopFence{}
+	for _, s := range sessions {
+		syncTest(f, s, desktopFenceSyncInput{})
+	}
+	return f
+}
 
 func TestDesktopFenceAdmitsFirstGeneration(t *testing.T) {
-	var f desktopFence
+	f := syncedFence("s1")
 	d := f.admitStart("s1", desktopStartFenceInput{Generation: 7, HasGeneration: true, CommandID: "c1"})
 	if !d.Admitted {
 		t.Fatalf("first generation must be admitted, got %#v", d)
@@ -18,7 +31,7 @@ func TestDesktopFenceAdmitsFirstGeneration(t *testing.T) {
 }
 
 func TestDesktopFenceRefusesGenerationAtOrBelowHighWater(t *testing.T) {
-	var f desktopFence
+	f := syncedFence("s1")
 	if d := f.admitStart("s1", desktopStartFenceInput{Generation: 9, HasGeneration: true, CommandID: "c9"}); !d.Admitted {
 		t.Fatalf("setup start refused: %#v", d)
 	}
@@ -40,7 +53,7 @@ func TestDesktopFenceRefusesGenerationAtOrBelowHighWater(t *testing.T) {
 // response arrives twice with the SAME command id and generation. That must
 // still reach joinOrRunDesktopStart, not be refused as a replay.
 func TestDesktopFenceIdenticalCommandIDAndGenerationRejoins(t *testing.T) {
-	var f desktopFence
+	f := syncedFence("s1")
 	in := desktopStartFenceInput{Generation: 4, HasGeneration: true, CommandID: "cmd-a"}
 	if d := f.admitStart("s1", in); !d.Admitted {
 		t.Fatalf("leader refused: %#v", d)
@@ -56,10 +69,12 @@ func TestDesktopFenceIdenticalCommandIDAndGenerationRejoins(t *testing.T) {
 
 func TestDesktopFenceAdmitsStartWithoutGeneration(t *testing.T) {
 	var f desktopFence
+	// No sync needed: a generationless start has nothing to order against.
 	d := f.admitStart("s1", desktopStartFenceInput{CommandID: "c1"})
 	if !d.Admitted {
 		t.Fatalf("a start with no generation (old server) must be admitted, got %#v", d)
 	}
+	syncTest(&f, "s1", desktopFenceSyncInput{})
 	// ...and it must not move the high-water mark, so a real generation still lands.
 	if d := f.admitStart("s1", desktopStartFenceInput{Generation: 1, HasGeneration: true, CommandID: "c2"}); !d.Admitted {
 		t.Fatalf("generation 1 after a generationless start must be admitted, got %#v", d)
@@ -99,7 +114,7 @@ func TestDesktopFenceStopWithoutGenerationStillTombstones(t *testing.T) {
 }
 
 func TestDesktopFenceTombstoneIsPerSession(t *testing.T) {
-	var f desktopFence
+	f := syncedFence("s2")
 	f.noteStop("s1", desktopStopFenceInput{})
 	if d := f.admitStart("s2", desktopStartFenceInput{Generation: 1, HasGeneration: true, CommandID: "c"}); !d.Admitted {
 		t.Fatalf("tombstoning s1 must not fence s2, got %#v", d)
@@ -109,7 +124,7 @@ func TestDesktopFenceTombstoneIsPerSession(t *testing.T) {
 // Start-then-stop (the ordinary case) and stop-then-start (the reorder case)
 // must converge on the same endpoint state: refused.
 func TestDesktopFenceReorderConvergesOnRefused(t *testing.T) {
-	inOrder := &desktopFence{}
+	inOrder := syncedFence("s1")
 	if d := inOrder.admitStart("s1", desktopStartFenceInput{Generation: 2, HasGeneration: true, CommandID: "start"}); !d.Admitted {
 		t.Fatalf("in-order start refused: %#v", d)
 	}
@@ -130,7 +145,7 @@ func TestDesktopFenceReorderConvergesOnRefused(t *testing.T) {
 
 // The high-water mark never rolls back, under concurrency.
 func TestDesktopFenceHighWaterNeverRollsBackUnderRace(t *testing.T) {
-	var f desktopFence
+	f := syncedFence("s1")
 	var wg sync.WaitGroup
 	for i := 0; i < 64; i++ {
 		wg.Add(1)

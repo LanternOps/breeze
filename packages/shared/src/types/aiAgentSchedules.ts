@@ -136,6 +136,14 @@ export interface AiAgentScheduleDto {
   timezone: string;
   sweepKinds: AiSweepKind[];
   enabled: boolean;
+  /**
+   * #4442 W04 — unattended ("act mode") sweep execution. THREE-VALUED and
+   * deliberately raw so a UI can tell "inherit" from "explicitly off":
+   *   on a partner BASELINE: `true` = armed, `false`/`null` = not armed;
+   *   on an org OVERRIDE:    `false` = explicitly disarmed, `true`/`null` = inherit.
+   * The effective value is `AiAgentEffectiveScheduleDto.effective.actMode`.
+   */
+  actMode: boolean | null;
   lastEnqueuedAt: string | null;
   lastOccurrenceKey: string | null;
   lastRunSummary: AiAgentScheduleRunSummary | null;
@@ -151,6 +159,6 @@ export interface AiAgentScheduleDto {
  * (see `AiAgentPolicyProvenance`).
  */
 export interface AiAgentEffectiveScheduleDto extends AiAgentScheduleDto {
-  effective: { enabled: boolean; sweepKinds: AiSweepKind[] };
-  override: { id: string; enabled: boolean; sweepKinds: AiSweepKind[] } | null;
+  effective: { enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean };
+  override: { id: string; enabled: boolean; sweepKinds: AiSweepKind[]; actMode: boolean | null } | null;
 }

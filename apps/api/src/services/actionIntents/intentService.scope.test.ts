@@ -85,7 +85,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
   };
 });
@@ -194,7 +194,12 @@ vi.mock('../expoPush', () => ({
 vi.mock('../userNotifications', () => ({ createNotification: notifyState.createNotification }));
 vi.mock('./metrics', () => ({ recordActionIntentEvent: metricsMock.recordActionIntentEvent }));
 vi.mock('./effectDigest', () => ({ computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome }));
-vi.mock('../../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+vi.mock('../../config/env', () => ({
+  policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04's sub-flag, default OFF here so this suite keeps asserting the
+  // pre-wave behaviour of a scoped intent unless a case arms it explicitly.
+  sweepActEnabled: envMock.sweepActEnabled,
+}));
 vi.mock('./policyDecide', () => ({ attemptPolicyDecision: policyDecideMock.attemptPolicyDecision }));
 
 vi.mock('drizzle-orm', () => ({
@@ -345,6 +350,7 @@ beforeEach(() => {
   notifyState.createNotification.mockResolvedValue('notif-1');
   effectDigestState.computeEffectDigestOutcome.mockResolvedValue({ kind: 'not_applicable' });
   envMock.policyDecideEnabled.mockReturnValue(false);
+  envMock.sweepActEnabled.mockReturnValue(false);
   policyDecideMock.attemptPolicyDecision.mockResolvedValue(undefined);
 });
 
@@ -611,6 +617,46 @@ describe('createActionIntent — a scoped (sweep) intent is never policy-decided
     // Human fan-out is the point: it ran, so the proposal really is an inbox
     // card and not a silently unrouted row.
     expect(dbState.insertedApprovalRequestsValues.length).toBeGreaterThan(0);
+  });
+
+  it('#4442 W04: with the sweep sub-flag ARMED and a matching subject, the same scoped intent IS policy-decided', async () => {
+    envMock.sweepActEnabled.mockReturnValue(true);
+    queueSweepContext({ run: actModeRun() });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), {
+      ...sweepInput(),
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
+      sweepAct: {
+        scheduleActMode: true,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T09:30:00.000Z' },
+        argumentsMatchSubject: true,
+      },
+    });
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('unattempted');
+    expect(policyDecideMock.attemptPolicyDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('#4442 W04: armed, but the schedule is NOT — still human_required', async () => {
+    envMock.sweepActEnabled.mockReturnValue(true);
+    queueSweepContext({ run: actModeRun() });
+    dbState.insertActionIntentsResults.push(echoInsertedIntent());
+
+    await createActionIntent(makeAgentAuth(), {
+      ...sweepInput(),
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
+      sweepAct: {
+        scheduleActMode: false,
+        subject: { kind: 'service_down', key: 'Spooler', observedAt: null },
+        argumentsMatchSubject: true,
+      },
+    });
+    await flush();
+
+    expect(dbState.insertedActionIntentValues[0]?.policyDecisionState).toBe('human_required');
+    expect(policyDecideMock.attemptPolicyDecision).not.toHaveBeenCalled();
   });
 
   it('CONTROL: the same run without a scope still reaches the policy-decide path', async () => {

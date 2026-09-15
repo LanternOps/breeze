@@ -475,6 +475,12 @@ export interface AiAgentRunAlertVerdictDto {
  */
 export type SweepProposalReason =
   | 'device_not_in_evidence'
+  // #4442 W04 — the ANTI-SUBSTITUTION refusal. The device was in the evidence
+  // set, but the SUBJECT the proposal names (a service name, a mount point, a
+  // set of vulnerability ids) matches no row the system actually loaded.
+  // Distinct from `device_not_in_evidence` because it is a different claim:
+  // evidence about service A does not authorize acting on service B.
+  | 'subject_not_in_evidence'
   | 'device_not_in_org'
   | 'not_allowlisted'
   | 'no_eligible_approvers'

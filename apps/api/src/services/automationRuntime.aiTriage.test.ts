@@ -29,6 +29,13 @@ vi.mock('./aiAgents/runService', () => ({
   createAndEnqueueAgentRun: createAndEnqueueAgentRunMock,
 }));
 
+// AI patch agent W04 (#5750): the routing classifier answers "not patch work"
+// here; the patch route itself is covered by automationRuntime.patchRouting.test.ts.
+vi.mock('./aiAgents/patchWorkClassifier', () => ({
+  resolveAlertCategory: vi.fn().mockResolvedValue({ category: null, monitorKind: null, isPatchWork: false }),
+  classifyAlertAsPatchWork: vi.fn().mockResolvedValue(false),
+}));
+
 import { __testOnly, type AutomationTriggerContext } from './automationRuntime';
 
 // Expected terminal action outcome per skip reason — the INVERSE of the
@@ -174,12 +181,15 @@ describe('executeAiTriageAction', () => {
         automationRunId: 'run-1',
         alertRuleId: 'rule-1',
         managedByAgentId: 'agent-1',
+        // W04 (#5750): why triage kept the alert.
+        patchWorkFallbackReason: 'not_patch_work',
       },
       alertContext: {
         severity: 'high',
         ruleId: 'rule-1',
         siteId: 'site-1',
         deviceTags: [],
+        category: null,
       },
       dedupeKey: 'alert:alert-1',
     });
@@ -192,7 +202,8 @@ describe('executeAiTriageAction', () => {
       message: 'ai_triage queued agent run',
     });
     expect(result.log.message).toBe('ai_triage queued agent run');
-    expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
+    // W04 (#5750): the lane that produced the run is on the log details.
+    expect(result.log.details).toEqual({ agentRunId: 'agent-run-1', routedTo: 'triage' });
   });
 
   it('passes the device org — not the automation owner — as the run org', async () => {
@@ -311,6 +322,7 @@ describe('executeAiTriageAction', () => {
     expect(result.log.message).not.toContain('queued agent run');
     expect(result.log.details).toEqual({
       agentRunId: 'agent-run-1',
+      routedTo: 'triage',
       errorCode: 'enqueue_failed',
     });
   });
@@ -419,6 +431,7 @@ describe('executeAiTriageAction', () => {
       ruleId: 'rule-1',
       siteId: 'site-1',
       deviceTags: ['prod', 'db'],
+      category: null,
     });
 
     mockDeviceTags([]);
@@ -430,6 +443,7 @@ describe('executeAiTriageAction', () => {
       ruleId: 'rule-1',
       siteId: 'site-1',
       deviceTags: [],
+      category: null,
     });
   });
 

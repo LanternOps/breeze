@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Um plano de correções é disparado no máximo uma vez por dia: minuto e hora literais, e * ou uma lista literal para dia-do-mês, mês e dia da semana. Por exemplo, 0 2 * * * é executado toda noite às 02:00.",
       "kindsRequired": "Selecione pelo menos uma verificação.",
       "enabled": "Ativado",
+      "actMode": {
+        "label": "Modo de ação",
+        "hint": "Quando ativado, este agendamento pode aplicar certas correções automaticamente em vez de aguardar aprovação.",
+        "disabledHint": "Ativar o modo de ação exige acesso total do parceiro a todas as organizações.",
+        "scopeNote": "As correções não supervisionadas se limitam a reiniciar um serviço parado, e somente em dispositivos cuja organização já recebeu a permissão manage_services:restart. Todo o resto continua aguardando aprovação.",
+        "disableForOrg": "Desativar o modo de ação para esta organização",
+        "disableForOrgHint": "Esta organização sempre herda a configuração de modo de ação da linha de base do parceiro, a menos que seja desativada aqui — ela nunca pode ser ativada de forma independente."
+      },
       "override": "Substituir para esta organização",
       "editOverride": "Editar a exceção desta organização",
       "overrideHint": "A exceção desta organização à linha de base do parceiro. Ela sempre segue a cadência da linha de base.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Um agendamento de projeto de frota deve ter como destino um agente Projetista de frota.",
         "agentKindNotPatch": "Um agendamento de plano de correções deve ter como destino um agente de Correções.",
         "kindsNotEmpty": "Um agendamento de relatório semanal não executa verificações. Limpe as verificações selecionadas antes de salvar.",
-        "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana."
+        "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana.",
+        "actModeOrgCannotArm": "O modo de ação está ativado na linha de base do parceiro; uma exceção da organização só pode desativá-lo, nunca ativá-lo."
       }
     },
     "title": "Agentes de IA",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Não foi possível carregar a lista de ações decidíveis por política, então a autorização não supervisionada não pode ser alterada agora.",
       "ticketAutonomousWrites": "Gravações autônomas de chamados",
       "ticketAutonomousWritesHint": "Somente substituição da organização — gravações autônomas de chamados exigem o modo de ação e a ativação neste nível de organização",
+      "alertCategories": "Categorias de alertas",
+      "alertCategoriesHint": "Somente alertas cuja categoria de modelo esteja listada aqui acionam este agente. Deixe vazio para qualquer categoria. Alertas de correção trazem \"patching\".",
+      "alertCategoriesPlaceholder": "ex.: patching, monitor",
       "enabledHint": "«Ativado» e o modo são chaves separadas e uma execução precisa das duas: com isto desligado nada roda, seja qual for o modo, e no modo Desligado nada roda mesmo com isto ligado.",
       "enabledCreateHint": "Novos agentes são criados desligados. Revise a lista de ferramentas permitidas e os limites abaixo e depois ligue isto quando quiser que o agente comece a rodar.",
       "actKeysCleared": "As permissões do modo de ação são mantidas, mas não serão salvas a menos que este agente volte ao modo de ação.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Dispositivo ausente nas evidências da varredura",
+          "subject_not_in_evidence": "Item não consta nas evidências da varredura",
           "device_not_in_org": "O dispositivo não pertence a esta organização",
           "not_allowlisted": "Ferramenta não permitida para este agente",
           "no_eligible_approvers": "Sem aprovadores elegíveis",
@@ -1919,6 +1932,8 @@
         "failureClass": "Classe de falha: {{label}}",
         "attempts": "{{count}} tentativa com falha",
         "attempts_other": "{{count}} tentativas com falha",
+        "rebootWindow": "Janela: {{start}} – {{end}}",
+        "redundancyGroup": "Grupo de redundância: {{group}}",
         "escalation": "Precisa de uma pessoa — isso não será repetido automaticamente.",
         "escalations": "{{count}} escalonamento",
         "escalations_other": "{{count}} escalonamentos",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Esse tipo de falha nunca é repetido automaticamente",
           "chase_attempts_exhausted": "O limite de novas tentativas desta atualização foi atingido — escalonado em vez disso",
           "attempt_count_mismatch": "O número de tentativas citado não corresponde às evidências",
-          "failure_history_truncated": "O histórico de falhas estava incompleto, portanto a contagem de tentativas não era confiável"
+          "failure_history_truncated": "O histórico de falhas estava incompleto, portanto a contagem de tentativas não era confiável",
+          "reboot_policy_not_window_gated": "A política de reinicialização do dispositivo reinicia fora das janelas de manutenção, então um plano de janela não seria respeitado",
+          "redundancy_unknown": "O grupo de redundância do dispositivo é desconhecido, então a ordem não pôde ser verificada",
+          "redundancy_collision": "Outro dispositivo do mesmo grupo de redundância já está planejado para esta janela"
         },
         "ineligible": {
           "not_outstanding": "Não pendente neste dispositivo",

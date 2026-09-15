@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Un piano patch viene attivato al massimo una volta al giorno: minuto e ora letterali, e * o un elenco letterale per giorno-del-mese, mese e giorno della settimana. Ad esempio, 0 2 * * * viene eseguito ogni notte alle 02:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
+      "actMode": {
+        "label": "Modalità azione",
+        "hint": "Se attivata, questa pianificazione può applicare automaticamente alcune correzioni invece di attendere l'approvazione.",
+        "disabledHint": "Per attivare la modalità azione è necessario l'accesso completo del partner a tutte le organizzazioni.",
+        "scopeNote": "Le correzioni non supervisionate si limitano al riavvio di un servizio arrestato, e solo sui dispositivi la cui organizzazione ha già ricevuto l'autorizzazione manage_services:restart. Tutto il resto attende ancora l'approvazione.",
+        "disableForOrg": "Disattiva la modalità azione per questa organizzazione",
+        "disableForOrgHint": "Questa organizzazione eredita sempre l'impostazione della modalità azione della baseline del partner, a meno che non venga disattivata qui — non può mai essere attivata in modo indipendente."
+      },
       "override": "Personalizza per questa organizzazione",
       "editOverride": "Modifica l'eccezione di questa organizzazione",
       "overrideHint": "L'eccezione di questa organizzazione rispetto alla baseline del partner. Segue sempre la cadenza della baseline.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
         "agentKindNotPatch": "Una pianificazione di piano patch deve avere come destinazione un agente Patch.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
-        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
+        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana.",
+        "actModeOrgCannotArm": "La modalità azione è attiva sulla baseline del partner; un'eccezione dell'organizzazione può solo disattivarla, mai attivarla."
       }
     },
     "title": "Agenti AI",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
+      "alertCategories": "Categorie di avvisi",
+      "alertCategoriesHint": "Solo gli avvisi la cui categoria di modello è elencata qui attivano questo agente. Lasciare vuoto per qualsiasi categoria. Gli avvisi di patch portano \"patching\".",
+      "alertCategoriesPlaceholder": "es. patching, monitor",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Dispositivo assente nelle evidenze della scansione",
+          "subject_not_in_evidence": "Elemento non presente nelle evidenze della scansione",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",
@@ -1919,6 +1932,8 @@
         "failureClass": "Classe di errore: {{label}}",
         "attempts": "{{count}} tentativo non riuscito",
         "attempts_other": "{{count}} tentativi non riusciti",
+        "rebootWindow": "Finestra: {{start}} – {{end}}",
+        "redundancyGroup": "Gruppo di ridondanza: {{group}}",
         "escalation": "Richiede una persona: non verrà ritentato automaticamente.",
         "escalations": "{{count}} inoltro urgente",
         "escalations_other": "{{count}} inoltri urgenti",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
           "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
           "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
-          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile"
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile",
+          "reboot_policy_not_window_gated": "La politica di riavvio del dispositivo riavvia al di fuori delle finestre di manutenzione, quindi un piano a finestra non verrebbe rispettato",
+          "redundancy_unknown": "Il gruppo di ridondanza del dispositivo è sconosciuto, quindi non è stato possibile verificare l'ordine",
+          "redundancy_collision": "Un altro dispositivo dello stesso gruppo di ridondanza è già pianificato per questa finestra"
         },
         "ineligible": {
           "not_outstanding": "Non in sospeso su questo dispositivo",

@@ -10,6 +10,35 @@ import {
 } from '../types/aiPatchPlan';
 
 const uuid = z.string().uuid();
+
+/**
+ * AI patch agent W04 (#5750) — the resolved-window id grammar:
+ * `<uuid>@<ISO-8601 instant>` where the uuid is the source row
+ * (`config_policy_maintenance_settings.id` for a config-policy recurrence,
+ * `maintenance_windows.id` for a legacy standalone window) and the instant is
+ * `Date#toISOString()` of the occurrence start. A bare uuid is NOT a window:
+ * a settings row recurs, and the occurrence is part of the identity. W05 and
+ * Operator P4-3 parse this with `parsePatchWindowId`.
+ */
+const PATCH_WINDOW_ID_PATTERN =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z)$/i;
+
+export function isPatchWindowId(value: string): boolean {
+  return PATCH_WINDOW_ID_PATTERN.test(value) && !Number.isNaN(Date.parse(value.slice(value.indexOf('@') + 1)));
+}
+
+/** `{ sourceId, startsAt }` for a well-formed window id, else null. */
+export function parsePatchWindowId(value: string): { sourceId: string; startsAt: Date } | null {
+  const match = PATCH_WINDOW_ID_PATTERN.exec(value);
+  if (!match) return null;
+  const startsAt = new Date(match[2]!);
+  if (Number.isNaN(startsAt.getTime())) return null;
+  return { sourceId: match[1]!.toLowerCase(), startsAt };
+}
+
+const patchWindowId = z.string().max(80).refine(isPatchWindowId, {
+  message: 'windowId must be <uuid>@<ISO start> — a window the evidence resolved',
+});
 // Strip every Unicode control/format char except the newline a multi-line
 // detail legitimately carries. Model output is rendered verbatim on the run
 // trace and in the digest.
@@ -54,7 +83,7 @@ const patchPlanItemSchema = z.object({
   deviceId: uuid.nullable().optional(),
   patchIds: z.array(uuid).max(PATCH_PLAN_MAX_PATCH_IDS_PER_ITEM).optional(),
   jobResultIds: z.array(uuid).max(PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM).optional(),
-  windowId: uuid.nullable().optional(),
+  windowId: patchWindowId.nullable().optional(),
   title: z.string().trim().min(1).max(PATCH_PLAN_TITLE_MAX_CHARS)
     .refine((s) => !/[\r\n]/.test(s), { message: 'title must be a single line' })
     .transform((s) => s.replace(/\p{C}/gu, '')),

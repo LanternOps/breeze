@@ -29,9 +29,17 @@ vi.mock('../../db', () => ({
 
 const resolveMaintenanceConfigForDevice = vi.fn();
 const isInMaintenanceWindow = vi.fn();
+const resolvePatchConfigForDevice = vi.fn();
 vi.mock('../featureConfigResolver', () => ({
   resolveMaintenanceConfigForDevice: (...args: unknown[]) => resolveMaintenanceConfigForDevice(...args),
   isInMaintenanceWindow: (...args: unknown[]) => isInMaintenanceWindow(...args),
+  resolvePatchConfigForDevice: (...args: unknown[]) => resolvePatchConfigForDevice(...args),
+}));
+
+// W04 (#5750): the next-window projector has its own suite; here it is a seam.
+const resolveNextMaintenanceWindows = vi.fn();
+vi.mock('../maintenanceWindowProjection', () => ({
+  resolveNextMaintenanceWindows: (...args: unknown[]) => resolveNextMaintenanceWindows(...args),
 }));
 
 vi.mock('../sentry', () => ({ captureException: vi.fn() }));
@@ -218,6 +226,8 @@ describe('loadPatchEvidence', () => {
     results = [];
     resolveMaintenanceConfigForDevice.mockReset().mockResolvedValue(null);
     isInMaintenanceWindow.mockReset().mockReturnValue({ active: false });
+    resolvePatchConfigForDevice.mockReset().mockResolvedValue(null);
+    resolveNextMaintenanceWindows.mockReset().mockResolvedValue(new Map());
   });
 
   /** The statements, in the order the loader issues them. */
@@ -452,5 +462,95 @@ describe('loadPatchEvidence', () => {
   it('throws PatchEvidenceUnavailableError when the rollup statement fails', async () => {
     results = [new Error('db down')];
     await expect(loadPatchEvidence(ORG, PARTNER)).rejects.toBeInstanceOf(PatchEvidenceUnavailableError);
+  });
+
+  // ---- W04 (#5750): reboot backlog enrichment ------------------------------
+
+  const WINDOW = {
+    windowId: '00000000-0000-4000-8000-00000000c001@2026-09-16T02:00:00.000Z',
+    source: 'config_policy' as const,
+    startsAt: new Date('2026-09-16T02:00:00.000Z'),
+    endsAt: new Date('2026-09-16T04:00:00.000Z'),
+    rebootIfPending: true,
+  };
+
+  it('carries the next window id/start/end, the resolved reboot policy and a redundancy group for each pending-reboot device', async () => {
+    seedHappyPath();
+    results.push([{ id: DEV2, tags: ['role:dc'], function_key: 'domain_controller', confidence: '0.91', source: 'ai' }]);
+    resolveNextMaintenanceWindows.mockResolvedValue(new Map([[DEV2, WINDOW]]));
+    resolvePatchConfigForDevice.mockResolvedValue({ rebootPolicy: 'maintenance_window' });
+    const e = await loadPatchEvidence(ORG, PARTNER);
+    expect(resolveNextMaintenanceWindows).toHaveBeenCalledWith([DEV2], ORG);
+    expect(e.sections.rebootBacklog.rows[0]!.fields).toMatchObject({
+      nextWindowId: WINDOW.windowId,
+      nextWindowStartsAt: '2026-09-16T02:00:00.000Z',
+      nextWindowEndsAt: '2026-09-16T04:00:00.000Z',
+      rebootPolicy: 'maintenance_window',
+      redundancyGroup: 'domain_controller',
+      unplannableReason: null,
+    });
+    // The redundancy read is org-pinned and names both sources.
+    const last = executed[executed.length - 1];
+    expect(sqlText(last)).toContain('device_function_assessments');
+    expect(boundParams(last)).toContain(ORG);
+  });
+
+  it('falls back to a role: tag when the assessment is not confident, and to null (redundancy_unknown) when neither exists', async () => {
+    seedHappyPath();
+    results[7] = [
+      { device_id: DEV1, hostname: 'ws-01', os_type: 'windows', last_seen_at: null, total_count: 2 },
+      { device_id: DEV2, hostname: 'ws-02', os_type: 'windows', last_seen_at: null, total_count: 2 },
+    ];
+    results.push([
+      { id: DEV1, tags: ['role:sql', 'prod'], function_key: 'file_server', confidence: '0.40', source: 'ai' },
+      { id: DEV2, tags: ['prod'], function_key: null, confidence: null, source: null },
+    ]);
+    resolveNextMaintenanceWindows.mockResolvedValue(new Map([[DEV1, WINDOW], [DEV2, WINDOW]]));
+    resolvePatchConfigForDevice.mockResolvedValue({ rebootPolicy: 'maintenance_window' });
+    const e = await loadPatchEvidence(ORG, PARTNER);
+    const [r1, r2] = e.sections.rebootBacklog.rows;
+    expect(r1!.fields).toMatchObject({ redundancyGroup: 'sql', unplannableReason: null });
+    expect(r2!.fields).toMatchObject({ redundancyGroup: null, unplannableReason: 'redundancy_unknown' });
+  });
+
+  it('marks a device with no window in the horizon, or a non-window-gated policy, as unplannable with the reason', async () => {
+    seedHappyPath();
+    results[7] = [
+      { device_id: DEV1, hostname: 'ws-01', os_type: 'windows', last_seen_at: null, total_count: 2 },
+      { device_id: DEV2, hostname: 'ws-02', os_type: 'windows', last_seen_at: null, total_count: 2 },
+    ];
+    results.push([
+      { id: DEV1, tags: [], function_key: 'domain_controller', confidence: null, source: 'manual' },
+      { id: DEV2, tags: [], function_key: 'domain_controller', confidence: null, source: 'manual' },
+    ]);
+    resolveNextMaintenanceWindows.mockResolvedValue(new Map([[DEV2, WINDOW]]));
+    resolvePatchConfigForDevice.mockImplementation(async (id: string) => ({ rebootPolicy: id === DEV2 ? 'if_required' : 'maintenance_window' }));
+    const e = await loadPatchEvidence(ORG, PARTNER);
+    const [r1, r2] = e.sections.rebootBacklog.rows;
+    expect(r1!.fields).toMatchObject({ nextWindowId: null, redundancyGroup: 'domain_controller', unplannableReason: 'no_window_in_horizon' });
+    expect(r2!.fields).toMatchObject({ nextWindowId: WINDOW.windowId, rebootPolicy: 'if_required', unplannableReason: 'reboot_policy_not_window_gated' });
+  });
+
+  it('defaults an unresolved patch policy to if_required (what patchRebootHandler does), and survives a projector failure', async () => {
+    seedHappyPath();
+    results.push([{ id: DEV2, tags: [], function_key: null, confidence: null, source: null }]);
+    resolveNextMaintenanceWindows.mockRejectedValue(new Error('projector exploded'));
+    const e = await loadPatchEvidence(ORG, PARTNER);
+    expect(e.sections.rebootBacklog.available).toBe(true);
+    expect(e.sections.rebootBacklog.rows[0]!.fields).toMatchObject({ nextWindowId: null, rebootPolicy: 'if_required' });
+  });
+
+  it('refs: windowIds and rebootPlanByDevice come from the reboot backlog rows', () => {
+    const reboot = { rows: [
+      { deviceId: DEV1, hostname: 'h1', fields: { nextWindowId: WINDOW.windowId, nextWindowStartsAt: '2026-09-16T02:00:00.000Z', nextWindowEndsAt: '2026-09-16T04:00:00.000Z', rebootPolicy: 'maintenance_window', redundancyGroup: 'dc', unplannableReason: null } },
+      { deviceId: DEV2, hostname: 'h2', fields: { nextWindowId: WINDOW.windowId, nextWindowStartsAt: '2026-09-16T02:00:00.000Z', nextWindowEndsAt: '2026-09-16T04:00:00.000Z', rebootPolicy: 'if_required', redundancyGroup: 'dc', unplannableReason: 'reboot_policy_not_window_gated' } },
+    ], total: 2 };
+    const refs = patchEvidenceRefs(assemblePatchEvidence(raw({ rebootBacklog: reboot })));
+    expect([...refs.windowIds]).toEqual([WINDOW.windowId]);
+    expect(refs.rebootPlanByDevice?.get(DEV1)).toEqual({
+      deviceId: DEV1, windowId: WINDOW.windowId, windowStartsAt: '2026-09-16T02:00:00.000Z', windowEndsAt: '2026-09-16T04:00:00.000Z',
+      rebootPolicy: 'maintenance_window', redundancyGroup: 'dc', unplannableReason: null,
+    });
+    expect(refs.rebootPlanByDevice?.get(DEV2)?.unplannableReason).toBe('reboot_policy_not_window_gated');
   });
 });

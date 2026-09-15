@@ -188,6 +188,22 @@ export interface CreateAgentRunInput {
     ruleId: string | null;
     siteId: string | null;
     deviceTags: string[];
+    /**
+     * AI patch agent W04 (#5750) — the alert's TEMPLATE category, resolved
+     * by the caller (`classifyAlertAsPatchWork`), evaluated against
+     * `triggers.alertCategories`. `null`/absent = could not be resolved,
+     * which fails a non-empty filter (same as `ruleId: null` vs
+     * `alertRuleIds`).
+     */
+    category?: string | null;
+    /**
+     * AI patch agent W04 (#5750) — for a DEVICE-LESS reactive patch run
+     * (`deviceId: null`, rule 8a), the alert's device, so `deviceGroupIds`
+     * judges the device the alert is about instead of failing on "no
+     * device". Never used for pinning, ownership or maintenance checks —
+     * those stay keyed on `deviceId`.
+     */
+    focusDeviceId?: string | null;
   };
   /**
    * The triggering ticket for `triggerKind: 'ticket'` runs (wave 6 PR 3,
@@ -471,6 +487,12 @@ export async function evaluateAgentTriggerFilters(
   const ruleIds = triggers.alertRuleIds ?? [];
   if (ruleIds.length > 0 && (ctx.ruleId === null || !ruleIds.includes(ctx.ruleId))) return false;
 
+  // AI patch agent W04 (#5750) — template category, beside alertRuleIds and
+  // with its exact null semantics: an unresolved category fails a non-empty
+  // filter rather than passing it.
+  const categories = triggers.alertCategories ?? [];
+  if (categories.length > 0 && (ctx.category == null || !categories.includes(ctx.category))) return false;
+
   const siteIds = triggers.siteIds ?? [];
   if (siteIds.length > 0 && (ctx.siteId === null || !siteIds.includes(ctx.siteId))) return false;
 
@@ -479,8 +501,10 @@ export async function evaluateAgentTriggerFilters(
 
   const groupIds = triggers.deviceGroupIds ?? [];
   if (groupIds.length > 0) {
-    if (deviceId === null) return false;
-    if (!(await deviceMatchesAnyGroup(deviceId, orgId, groupIds))) return false;
+    // W04: a device-less reactive patch run judges its FOCUS device.
+    const groupDeviceId = deviceId ?? ctx.focusDeviceId ?? null;
+    if (groupDeviceId === null) return false;
+    if (!(await deviceMatchesAnyGroup(groupDeviceId, orgId, groupIds))) return false;
   }
 
   return true;

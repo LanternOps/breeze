@@ -359,6 +359,10 @@ describe('managed AI-triage event binding against real Postgres', () => {
       automationRunId: runId,
       alertRuleId: alert.ruleId,
       managedByAgentId: fixture.agent.id,
+      // AI patch agent W04 (#5750): a rule-less alert resolves to no template
+      // category, so the classifier fails closed and triage keeps it — with
+      // the reason recorded on the run.
+      patchWorkFallbackReason: 'not_patch_work',
     });
   });
 
