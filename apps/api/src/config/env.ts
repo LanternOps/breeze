@@ -113,6 +113,18 @@ export function policyDecideEnabled(): boolean {
   return envFlag('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED', false);
 }
 
+// SEC-038 W06 (#5537). When on, every remote-desktop start dispatch site
+// refuses an agent that has not declared desktopFenceProtocolVersion=1 (the
+// durable start/terminal generation fence from W04/W05) with 503
+// agent_upgrade_required — the same fail-closed shape as the #5481
+// revocation-lease gate. Default OFF: the release that introduces the gate is
+// a fleet no-op (old agents stay protected by the lease), and the flag is
+// flipped one release later once agents have auto-updated. Read at CALL time
+// so a test can flip it per-case without vi.resetModules().
+export function remoteDesktopFenceRequired(): boolean {
+  return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
+}
+
 export type BreezeRegion = 'eu' | 'us';
 
 // Deployment region. Hosted regions are single-region deployments (one API +

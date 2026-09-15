@@ -480,6 +480,7 @@ Full explanation of what each one is for: [Rollout Modes & Compatibility Switche
 | `REMOTE_WS_REDIS_TOPOLOGY` | `standalone-single-primary` | Attestation that Redis is a single primary with AOF on, `noeviction`, cluster disabled. Only accepted value. Sentinel/Cluster/HA Redis will freeze remote admission by design. |
 | `REMOTE_WS_LEGACY_TICKET_WRITER_DRAINED_AT` | — | Timestamp the last pre-upgrade ticket writer stopped. Used to compute the barrier-reopen deadline. |
 | `REMOTE_WS_LEGACY_VIEWER_ISSUER_DRAINED_AT` | — | Timestamp the last legacy viewer-token issuer stopped. Gates the move to `pre_upgrade`. |
+| `REMOTE_DESKTOP_FENCE_REQUIRED` | `false` | When `true`, remote desktop refuses to start (`503 agent_upgrade_required`) on any agent that has not declared the durable start/terminal fence capability (`desktopFenceProtocolVersion=1`). Leave `false` for one release after upgrading so agents can auto-update, then flip to `true`. |
 | `OAUTH_AUTH_EPOCH_ENFORCE_AFTER` | — | **Required when MCP OAuth is enabled in production/staging.** Absolute UTC timestamp ending the compatibility window for access tokens issued before the live-revocation release. Must be ≥1800s after new token writers start. Choose once; never extend on restart. |
 
 ## Security Enforcement (opt-in)

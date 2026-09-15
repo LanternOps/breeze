@@ -233,7 +233,7 @@ vi.mock('../../services/partnerTrust', () => ({
   }),
 }));
 
-const isRevocationLeaseCapable = vi.fn<() => Promise<boolean>>(async () => true);
+const isDesktopStartCapable = vi.fn<() => Promise<boolean>>(async () => true);
 const LEASE_FIXTURE = {
   token: 'lease-token',
   expiresAt: 1_000_060_000,
@@ -250,7 +250,7 @@ const renewRevocationLease = vi.fn<() => Promise<Record<string, unknown>>>(async
 vi.mock('../../services/remoteRevocationLease', () => ({
   AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
-  isRevocationLeaseCapable: (...a: unknown[]) => isRevocationLeaseCapable(...(a as [])),
+  isDesktopStartCapable: (...a: unknown[]) => isDesktopStartCapable(...(a as [])),
   prepareRevocationLeaseForStart: (...a: unknown[]) => prepareRevocationLeaseForStart(...(a as [])),
   renewRevocationLease: (...a: unknown[]) => renewRevocationLease(...(a as [])),
 }));
@@ -1235,7 +1235,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    isRevocationLeaseCapable.mockResolvedValue(true);
+    isDesktopStartCapable.mockResolvedValue(true);
     prepareRevocationLeaseForStart.mockResolvedValue({
       ok: true,
       lease: LEASE_FIXTURE,
@@ -1269,7 +1269,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('refuses to CREATE a desktop session against an agent with no lease support (503 agent_upgrade_required)', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockResolvedValue(false);
+    isDesktopStartCapable.mockResolvedValue(false);
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1284,7 +1284,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('fails CLOSED when the capability probe itself throws', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockRejectedValue(new Error('db down'));
+    isDesktopStartCapable.mockRejectedValue(new Error('db down'));
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1326,7 +1326,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
 
   it('does NOT gate terminal sessions on the desktop lease capability', async () => {
     rigDeviceOnline();
-    isRevocationLeaseCapable.mockResolvedValue(false);
+    isDesktopStartCapable.mockResolvedValue(false);
 
     const res = await app.request('/remote/sessions', {
       method: 'POST',
@@ -1335,7 +1335,7 @@ describe('remote sessions — revocation-lease capability gate', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(isRevocationLeaseCapable).not.toHaveBeenCalled();
+    expect(isDesktopStartCapable).not.toHaveBeenCalled();
   });
 
   function rigOffer() {

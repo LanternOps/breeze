@@ -236,6 +236,13 @@ export const devices = pgTable('devices', {
   // Non-sticky, same contract as the versions above: rewritten every beat so a
   // downgrade clears the claim.
   revocationLeaseProtocolVersion: integer('revocation_lease_protocol_version').notNull().default(0),
+  // SEC-038 W06 desktop start/terminal fence capability. 1 = this agent build
+  // keeps the durable per-session generation fence (W04/W05) and refuses stale
+  // or post-terminal starts. 0 (default, and every agent that omits the field)
+  // means unfenced; behind REMOTE_DESKTOP_FENCE_REQUIRED the three
+  // desktop-start dispatch sites refuse with 503 agent_upgrade_required, same
+  // shape as the revocation-lease gate above. Non-sticky: rewritten every beat.
+  desktopFenceProtocolVersion: integer('desktop_fence_protocol_version').notNull().default(0),
   rollbackComponentVersions: jsonb('rollback_component_versions').$type<Record<string, string> | null>(),
   // Agent-reported build edition + migration-needed flag (heartbeat telemetry).
   // Non-sensitive; drives the self-hosted migration banner. Written unconditionally
