@@ -4,11 +4,15 @@ import type { ToolSourceRow } from '../../db/schema';
 import type { TenantToolDescriptor } from './resolver';
 
 const mockCallTool = vi.fn();
+const mockMcpClientCtor = vi.fn();
 
 vi.mock('./resolver', () => ({ loadTenantToolForExecution: vi.fn() }));
 vi.mock('./guardrails', () => ({ checkTenantToolRateLimit: vi.fn() }));
 vi.mock('./mcpClient', () => ({
   McpClient: class {
+    constructor(opts: unknown) {
+      mockMcpClientCtor(opts);
+    }
     callTool(...args: unknown[]) {
       return mockCallTool(...args);
     }
@@ -22,12 +26,14 @@ vi.mock('./secrets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./secrets')>();
   return { ...actual, decryptToolSourceAuth: vi.fn() };
 });
+vi.mock('../../config/env', () => ({ toolSourcesAllowPrivateEgress: vi.fn(() => false) }));
 
 import { executeTenantTool } from './execute';
 import { loadTenantToolForExecution } from './resolver';
 import { checkTenantToolRateLimit } from './guardrails';
 import { writeAuditEvent } from '../auditEvents';
 import { decryptToolSourceAuth } from './secrets';
+import { toolSourcesAllowPrivateEgress } from '../../config/env';
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -85,11 +91,25 @@ function makeAuth(overrides: Partial<AuthContext> = {}): AuthContext {
 describe('executeTenantTool', () => {
   beforeEach(() => {
     mockCallTool.mockReset();
+    mockMcpClientCtor.mockReset();
     vi.mocked(loadTenantToolForExecution).mockReset();
     vi.mocked(checkTenantToolRateLimit).mockReset();
     vi.mocked(writeAuditEvent).mockReset();
     vi.mocked(decryptToolSourceAuth).mockReset();
     vi.mocked(decryptToolSourceAuth).mockReturnValue({ authKind: 'none' });
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReset();
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(false);
+  });
+
+  it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for dispatch', async () => {
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
+    vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
+
+    await executeTenantTool(makeDescriptor(), { id: 'a1' }, makeAuth(), { surface: 'chat' });
+
+    expect(mockMcpClientCtor).toHaveBeenCalledWith(expect.objectContaining({ allowPrivateNetwork: true }));
   });
 
   it('validation error: short-circuits before rate-limit/load/call, returns a JSON error', async () => {

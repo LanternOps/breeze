@@ -223,6 +223,67 @@ describe('tool_sources / tool_source_tools partner RLS (#5216 W01 Task A11)', ()
       );
     });
 
+    // The two forge cases above only exercise the PARENT table
+    // (`tool_sources`) — every `tool_source_tools` write in this file runs
+    // under SYSTEM_CTX (`seedTool`), so the CHILD table's own
+    // `tool_source_tools_isolation` policy was never forged under a real
+    // tenant session. The forged row's owner is set to MATCH its parent's
+    // actual owner (not the attacking tenant) so the owner-guard trigger
+    // (23514, tested separately above) passes and the failure this test
+    // asserts is unambiguously the RLS WITH CHECK (42501), not the trigger.
+    it('partner B forging partner A\'s partner_id on tool_source_tools (child) is rejected (42501)', async () => {
+      const partnerA = await createPartner();
+      const partnerB = await createPartner();
+      const sourceId = await seedSource({ partnerId: partnerA.id });
+
+      await expectSqlState(
+        () =>
+          withDbAccessContext(partnerContext(partnerB.id, []), () =>
+            db
+              .insert(toolSourceTools)
+              .values({
+                sourceId,
+                orgId: null,
+                partnerId: partnerA.id,
+                name: 'forged_child_1',
+                qualifiedName: 'x__forged_child_1',
+                proposedTier: 1,
+                tier: 1,
+                revision: 'rev-1',
+              })
+              .returning(),
+          ),
+        '42501',
+      );
+    });
+
+    it('org B forging org A\'s org_id on tool_source_tools (child) is rejected (42501)', async () => {
+      const partner = await createPartner();
+      const orgA = await createOrganization({ partnerId: partner.id });
+      const orgB = await createOrganization({ partnerId: partner.id });
+      const sourceId = await seedSource({ orgId: orgA.id });
+
+      await expectSqlState(
+        () =>
+          withDbAccessContext(orgContext(orgB.id, partner.id), () =>
+            db
+              .insert(toolSourceTools)
+              .values({
+                sourceId,
+                orgId: orgA.id,
+                partnerId: null,
+                name: 'forged_child_2',
+                qualifiedName: 'x__forged_child_2',
+                proposedTier: 1,
+                tier: 1,
+                revision: 'rev-1',
+              })
+              .returning(),
+          ),
+        '42501',
+      );
+    });
+
     it('tool_sources: both owners set, and neither owner set, both violate the XOR CHECK (23514)', async () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });

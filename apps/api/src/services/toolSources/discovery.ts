@@ -25,6 +25,7 @@ import { toolSources, toolSourceTools } from '../../db/schema';
 import { decryptToolSourceAuth, redactSecrets, secretValuesOf } from './secrets';
 import { McpClient } from './mcpClient';
 import type { McpClientOptions } from './mcpClient';
+import { toolSourcesAllowPrivateEgress } from '../../config/env';
 
 export interface DiscoveryOutcome {
   added: number;
@@ -141,6 +142,7 @@ export async function discoverSource(
       endpointUrl: source.endpointUrl,
       credentialOrigin: source.credentialOrigin,
       auth: decryptedAuth,
+      allowPrivateNetwork: toolSourcesAllowPrivateEgress(),
     });
 
     await client.initialize();

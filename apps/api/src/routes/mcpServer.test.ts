@@ -1374,6 +1374,33 @@ describe('MCP transport integration', () => {
       expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
     });
 
+    it('denies a tenant tool over MCP when checkPermissionRequirements returns a denial string', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(descriptor);
+      routeMocks.checkPermissionRequirements.mockResolvedValueOnce(
+        'Insufficient permissions: requires external_tools.use',
+      );
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: { id: 'a-1' } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error?.message).toBe('Insufficient permissions: requires external_tools.use');
+      expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
+      expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
     it('denies a tier-3 tenant tool over MCP with MCP_APPROVAL_REQUIRED, same as core', async () => {
       delete process.env.IS_HOSTED;
       // isMcpApprovalRequired denies unconditionally, BEFORE the scope gates —

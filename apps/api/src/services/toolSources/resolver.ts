@@ -336,6 +336,17 @@ export async function loadTenantToolForExecution(
   toolId: string,
   auth?: AuthContext,
 ): Promise<{ descriptor: TenantToolDescriptor; source: ToolSourceRow } | null> {
+  // The kill switch is re-checked HERE, not only at session-start resolution
+  // (`resolveTenantTools`, routes, and the discovery worker): a chat
+  // session's SDK tool descriptors / `extraTools` map are built once when the
+  // session is created and can live for up to 24h. If an operator flips
+  // TOOL_SOURCES_ENABLED off mid-session, `resolveTenantTools` never runs
+  // again for that session — this dispatch chokepoint is the only place every
+  // surface (chat, MCP server, the `/tool-sources/*` test route) funnels
+  // through to actually call an external tool, so it is the one place a
+  // flag flip is guaranteed to reach before the next call goes out.
+  if (!toolSourcesEnabled()) return null;
+
   const rows = await runOutsideDbContext(() =>
     withSystemDbAccessContext(async () => {
       const query = buildLoadTenantToolForExecutionQuery(toolId, auth);

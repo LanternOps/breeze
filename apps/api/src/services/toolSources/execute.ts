@@ -15,6 +15,7 @@ import { decryptToolSourceAuth, redactSecrets, secretValuesOf } from './secrets'
 import { loadTenantToolForExecution, type TenantToolDescriptor } from './resolver';
 import { checkTenantToolRateLimit } from './guardrails';
 import { writeAuditEvent, requestLikeFromSnapshot } from '../auditEvents';
+import { toolSourcesAllowPrivateEgress } from '../../config/env';
 import type { AuthContext } from '../../middleware/auth';
 
 export interface ExecuteTenantToolOptions {
@@ -102,6 +103,7 @@ export async function executeTenantToolDetailed(
         endpointUrl: source.endpointUrl,
         credentialOrigin: source.credentialOrigin,
         auth: authConfig,
+        allowPrivateNetwork: toolSourcesAllowPrivateEgress(),
       });
 
       // Outside any DB context: `loadTenantToolForExecution` has already

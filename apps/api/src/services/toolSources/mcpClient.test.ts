@@ -262,6 +262,31 @@ describe('McpClient', () => {
     );
   });
 
+  it('forwards allowPrivateNetwork through to the fetch transport (self-hosted SSRF opt-in, TOOL_SOURCES_ALLOW_PRIVATE_EGRESS)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
+    const client = new McpClient({
+      endpointUrl: BASE_URL,
+      credentialOrigin: ORIGIN,
+      auth: { authKind: 'none' },
+      fetchImpl,
+      allowPrivateNetwork: true,
+    });
+
+    await client.listTools();
+
+    expect(fetchImpl).toHaveBeenCalledWith(BASE_URL, expect.objectContaining({ allowPrivateNetwork: true }));
+  });
+
+  it('defaults allowPrivateNetwork to undefined (never silently opts a tenant into private egress)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
+    const client = new McpClient({ endpointUrl: BASE_URL, credentialOrigin: ORIGIN, auth: { authKind: 'none' }, fetchImpl });
+
+    await client.listTools();
+
+    const init = fetchImpl.mock.calls[0]![1] as { allowPrivateNetwork?: boolean };
+    expect(init.allowPrivateNetwork).toBeUndefined();
+  });
+
   it('fetches and caches an oauth2 client_credentials token, attaching it as a Bearer header', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-abc', expires_in: 3600 }))

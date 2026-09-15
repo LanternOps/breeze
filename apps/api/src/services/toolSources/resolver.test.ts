@@ -10,6 +10,7 @@ import {
   buildLoadTenantToolForExecutionQuery,
   buildResolveTenantToolsQuery,
   compileToolDescriptor,
+  loadTenantToolForExecution,
   resolveTenantTools,
   type ResolvedToolRow,
 } from './resolver';
@@ -154,6 +155,27 @@ describe('resolveTenantTools — kill switch and system scope short-circuits (no
   it('returns [] for system scope — system callers get no tenant tools', async () => {
     vi.mocked(toolSourcesEnabled).mockReturnValue(true);
     await expect(resolveTenantTools(systemAuth())).resolves.toEqual([]);
+  });
+});
+
+describe('loadTenantToolForExecution — kill switch must reach the dispatch chokepoint', () => {
+  afterEach(() => {
+    vi.mocked(toolSourcesEnabled).mockReset();
+  });
+
+  // The kill switch is checked HERE, not only at session-start resolution:
+  // a chat session's SDK tool descriptors (and its `extraTools` map) are
+  // built once when the session is created and can live for up to 24h. If an
+  // operator flips TOOL_SOURCES_ENABLED off mid-session, `resolveTenantTools`
+  // never runs again for that session — the only thing standing between a
+  // "disabled" flag and a live external call is this function, the one place
+  // every surface (chat, MCP server, the test route) funnels through to
+  // actually dispatch. Gating only the read paths (routes, discovery worker,
+  // session-start resolve) would leave already-open sessions dispatching
+  // tenant tools for as long as they stay open.
+  it('returns null when toolSourcesEnabled() is false, even for an otherwise-authorized reload', async () => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(false);
+    await expect(loadTenantToolForExecution('tool-1', orgAuth(ORG_A))).resolves.toBeNull();
   });
 });
 

@@ -1,8 +1,61 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthContext } from '../../middleware/auth';
 import type { ToolSourceRow } from '../../db/schema';
 import { PARTNER_WIDE_WRITE_DENIED_MESSAGE } from '../partnerWideAccess';
-import { resolveToolSourceOwner, toToolSourceDto } from './service';
+
+const { insertMock, updateMock } = vi.hoisted(() => ({
+  insertMock: vi.fn(),
+  updateMock: vi.fn(),
+}));
+
+vi.mock('../../db', () => ({
+  db: { insert: insertMock, update: updateMock, select: vi.fn(), delete: vi.fn() },
+}));
+
+vi.mock('../../db/schema', () => ({
+  organizations: { id: 'organizations.id', partnerId: 'organizations.partnerId' },
+  toolSources: {
+    id: 'toolSources.id',
+    orgId: 'toolSources.orgId',
+    partnerId: 'toolSources.partnerId',
+    slug: 'toolSources.slug',
+    name: 'toolSources.name',
+    kind: 'toolSources.kind',
+    endpointUrl: 'toolSources.endpointUrl',
+    credentialOrigin: 'toolSources.credentialOrigin',
+    authKind: 'toolSources.authKind',
+    authConfigEncrypted: 'toolSources.authConfigEncrypted',
+    authFingerprint: 'toolSources.authFingerprint',
+    status: 'toolSources.status',
+    lastDiscoveredAt: 'toolSources.lastDiscoveredAt',
+    lastError: 'toolSources.lastError',
+    rateLimitPerMinute: 'toolSources.rateLimitPerMinute',
+    createdByUserId: 'toolSources.createdByUserId',
+    createdAt: 'toolSources.createdAt',
+    updatedAt: 'toolSources.updatedAt',
+  },
+  toolSourceTools: {
+    id: 'toolSourceTools.id',
+    sourceId: 'toolSourceTools.sourceId',
+    orgId: 'toolSourceTools.orgId',
+    partnerId: 'toolSourceTools.partnerId',
+    name: 'toolSourceTools.name',
+    qualifiedName: 'toolSourceTools.qualifiedName',
+    enabled: 'toolSourceTools.enabled',
+    removedAt: 'toolSourceTools.removedAt',
+    tier: 'toolSourceTools.tier',
+    lastError: 'toolSourceTools.lastError',
+    updatedAt: 'toolSourceTools.updatedAt',
+  },
+}));
+
+vi.mock('./secrets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./secrets')>();
+  return { ...actual, encryptToolSourceAuth: vi.fn() };
+});
+
+import { credentialOriginFor, encryptToolSourceAuth } from './secrets';
+import { createToolSourceRow, resolveToolSourceOwner, toToolSourceDto, updateToolSourceRow } from './service';
 
 function orgAuth(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
@@ -132,5 +185,134 @@ describe('toToolSourceDto', () => {
     const dto = toToolSourceDto(makeRow(), { toolCount: 5, enabledToolCount: 2 });
     expect(dto.toolCount).toBe(5);
     expect(dto.enabledToolCount).toBe(2);
+  });
+});
+
+describe('createToolSourceRow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('derives credentialOrigin from the endpoint and stores the encrypted auth config', async () => {
+    vi.mocked(encryptToolSourceAuth).mockReturnValue({ encrypted: 'ciphertext-1', fingerprint: 'fp-1' });
+    const returning = vi.fn().mockResolvedValue([{ id: 'src-new' }]);
+    const values = vi.fn().mockReturnValue({ returning });
+    insertMock.mockReturnValue({ values });
+
+    const input = {
+      slug: 'hudu',
+      name: 'Hudu',
+      kind: 'mcp',
+      endpointUrl: 'https://hudu.example.com/mcp?x=1',
+      authKind: 'bearer',
+      authConfig: { token: 'tok_abc' },
+      rateLimitPerMinute: 60,
+    } as unknown as Parameters<typeof createToolSourceRow>[1];
+
+    await createToolSourceRow({ orgId: 'org-A', partnerId: null }, input, 'user-1');
+
+    expect(values).toHaveBeenCalledTimes(1);
+    const row = values.mock.calls[0]![0] as Record<string, unknown>;
+    expect(row.credentialOrigin).toBe(credentialOriginFor(input.endpointUrl));
+    expect(row.credentialOrigin).toBe('https://hudu.example.com');
+    expect(row.authConfigEncrypted).toBe('ciphertext-1');
+    expect(row.authFingerprint).toBe('fp-1');
+    expect(encryptToolSourceAuth).toHaveBeenCalledWith(row.id, { authKind: 'bearer', token: 'tok_abc' });
+  });
+});
+
+describe('updateToolSourceRow', () => {
+  function makeExisting(overrides: Partial<ToolSourceRow> = {}): ToolSourceRow {
+    return {
+      id: 'src-1',
+      orgId: 'org-A',
+      partnerId: null,
+      slug: 'hudu',
+      name: 'Hudu',
+      kind: 'mcp',
+      endpointUrl: 'https://old.example.com/mcp',
+      credentialOrigin: 'https://old.example.com',
+      authKind: 'bearer',
+      authConfigEncrypted: 'old-ciphertext',
+      authFingerprint: 'old-fp',
+      status: 'active',
+      lastDiscoveredAt: null,
+      lastError: null,
+      rateLimitPerMinute: 60,
+      createdByUserId: 'user-1',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      updatedAt: new Date('2026-01-01T00:00:00Z'),
+      ...overrides,
+    } as ToolSourceRow;
+  }
+
+  function mockUpdateChain(returnedRow: ToolSourceRow) {
+    const returning = vi.fn().mockResolvedValue([returnedRow]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    updateMock.mockReturnValue({ set });
+    return set;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('re-derives credentialOrigin from the new endpoint AND re-encrypts when both the endpoint and the credential change', async () => {
+    vi.mocked(encryptToolSourceAuth).mockReturnValue({ encrypted: 'ciphertext-2', fingerprint: 'fp-2' });
+    const existing = makeExisting();
+    const set = mockUpdateChain({ ...existing, endpointUrl: 'https://new.example.com/mcp' });
+
+    const outcome = await updateToolSourceRow(existing, {
+      endpointUrl: 'https://new.example.com/mcp',
+      authKind: 'bearer',
+      authConfig: { token: 'tok_new' },
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    expect(set).toHaveBeenCalledTimes(1);
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.endpointUrl).toBe('https://new.example.com/mcp');
+    expect(updates.credentialOrigin).toBe(credentialOriginFor('https://new.example.com/mcp'));
+    expect(updates.credentialOrigin).toBe('https://new.example.com');
+    expect(updates.authConfigEncrypted).toBe('ciphertext-2');
+    expect(updates.authFingerprint).toBe('fp-2');
+    expect(encryptToolSourceAuth).toHaveBeenCalledWith(existing.id, { authKind: 'bearer', token: 'tok_new' });
+    expect(outcome.discoveryTriggered).toBe(true);
+  });
+
+  it('re-derives credentialOrigin on an endpoint-only change without touching the encrypted auth config', async () => {
+    const existing = makeExisting();
+    const set = mockUpdateChain({ ...existing, endpointUrl: 'https://new.example.com/mcp' });
+
+    const outcome = await updateToolSourceRow(existing, {
+      endpointUrl: 'https://new.example.com/mcp',
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.credentialOrigin).toBe('https://new.example.com');
+    expect(updates).not.toHaveProperty('authConfigEncrypted');
+    expect(updates).not.toHaveProperty('authFingerprint');
+    expect(encryptToolSourceAuth).not.toHaveBeenCalled();
+    expect(outcome.discoveryTriggered).toBe(true);
+  });
+
+  it('leaves credentialOrigin and the encrypted auth config untouched when updating an unrelated field', async () => {
+    const existing = makeExisting();
+    const set = mockUpdateChain({ ...existing, name: 'Renamed Hudu' });
+
+    const outcome = await updateToolSourceRow(existing, {
+      name: 'Renamed Hudu',
+    } as unknown as Parameters<typeof updateToolSourceRow>[1]);
+
+    expect(set).toHaveBeenCalledTimes(1);
+    const updates = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(updates.name).toBe('Renamed Hudu');
+    expect(updates).not.toHaveProperty('credentialOrigin');
+    expect(updates).not.toHaveProperty('endpointUrl');
+    expect(updates).not.toHaveProperty('authKind');
+    expect(updates).not.toHaveProperty('authConfigEncrypted');
+    expect(updates).not.toHaveProperty('authFingerprint');
+    expect(encryptToolSourceAuth).not.toHaveBeenCalled();
+    expect(outcome.discoveryTriggered).toBe(false);
   });
 });

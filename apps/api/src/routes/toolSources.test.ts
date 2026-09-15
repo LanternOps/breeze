@@ -5,10 +5,26 @@ import type { ToolSourceRow, ToolSourceToolRow } from '../db/schema';
 
 vi.mock('../config/env', () => ({ toolSourcesEnabled: vi.fn(() => true) }));
 
+// `requirePermission(resource, action)` is a FACTORY called once per const
+// at module load (`requireToolSourcesRead`/`Write`/`requireExternalToolsUse`
+// in `./toolSources`), not once per request — so recording its call args
+// alone can't prove which of the three resulting middlewares actually guards
+// a given route. Instead, the returned middleware stamps a response header
+// with the (resource, action) it was built for (routes with two gates
+// concatenate, comma-joined, in application order), so a real request
+// through each route can assert exactly what permission check would have run
+// — a deleted or mis-pointed gate on any one route fails that route's own
+// assertion instead of silently staying green.
 vi.mock('../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => next()),
   requireScope: vi.fn(() => async (_c: any, next: any) => next()),
-  requirePermission: vi.fn(() => async (_c: any, next: any) => next()),
+  requirePermission: vi.fn((resource: string, action: string) => async (c: any, next: any) => {
+    const prior = (c.get('__permissionChecks') as string[] | undefined) ?? [];
+    const updated = [...prior, `${resource}:${action}`];
+    c.set('__permissionChecks', updated);
+    c.header('X-Test-Permission-Checked', updated.join(','));
+    return next();
+  }),
   requireMfa: vi.fn(() => async (_c: any, next: any) => next()),
   withAuthDbAccessContext: vi.fn(async (_auth: any, fn: any) => fn()),
 }));
@@ -416,6 +432,104 @@ describe('toolSourcesRoutes', () => {
 
       expect(res.status).toBe(200);
       expect(vi.mocked(service.deleteToolSourceRow)).toHaveBeenCalledWith(SRC_ID);
+    });
+  });
+
+  // `requirePermission(resource, action)` is called ONCE per const at module
+  // load (`requireToolSourcesRead`/`Write`/`requireExternalToolsUse`), and
+  // those three consts are then reused across every route below — so merely
+  // asserting "requirePermission was called with these three pairs somewhere"
+  // proves nothing about which gate guards which ROUTE (deleting a route's
+  // gate, or wiring the wrong const onto it, would not change that call
+  // count at all). Each request below instead reads back the
+  // `X-Test-Permission-Checked` header the mocked middleware stamps with the
+  // (resource, action) it was built for (see the `../middleware/auth` mock
+  // above) — a route missing its gate, or pointed at the wrong permission,
+  // fails its own assertion here.
+  describe('permission gates — right resource/action per route', () => {
+    beforeEach(() => {
+      setAuth(orgAuth());
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(makeRow());
+    });
+
+    it('GET / requires tool_sources:read', async () => {
+      const res = await app.request('/tool-sources');
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:read');
+    });
+
+    it('POST / requires tool_sources:write', async () => {
+      vi.mocked(service.resolveToolSourceOwner).mockResolvedValue({ owner: { orgId: ORG_ID, partnerId: null } });
+      vi.mocked(service.createToolSourceRow).mockResolvedValue(makeRow());
+
+      const res = await app.request('/tool-sources', {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          name: 'Hudu',
+          slug: 'hudu',
+          kind: 'mcp',
+          endpointUrl: 'https://hudu.example.com/mcp',
+          authKind: 'none',
+        }),
+      });
+
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('GET /:id requires tool_sources:read', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}`);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:read');
+    });
+
+    it('PATCH /:id requires tool_sources:write', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('DELETE /:id requires tool_sources:write', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}`, { method: 'DELETE' });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('POST /:id/discover requires tool_sources:write', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}/discover`, { method: 'POST' });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('GET /:id/tools requires tool_sources:read', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools`);
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:read');
+    });
+
+    it('PATCH /:id/tools/:toolId requires tool_sources:write', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}`, {
+        method: 'PATCH',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ tier: 1 }),
+      });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('POST /:id/tools/bulk requires tool_sources:write', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/bulk`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ mode: 'enable_reads' }),
+      });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:write');
+    });
+
+    it('POST /:id/tools/:toolId/test requires BOTH tool_sources:read and external_tools:use', async () => {
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({}),
+      });
+      expect(res.headers.get('X-Test-Permission-Checked')).toBe('tool_sources:read,external_tools:use');
     });
   });
 });

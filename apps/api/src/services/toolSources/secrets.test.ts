@@ -126,6 +126,41 @@ describe('secretValuesOf', () => {
       'tok_live_abc123',
     ]);
   });
+
+  it('returns only the header value for api_key_header — never the header name', () => {
+    const secrets = secretValuesOf({
+      authKind: 'api_key_header',
+      headerName: 'X-Api-Key',
+      value: 'key_abc123',
+    });
+    expect(secrets).toEqual(['key_abc123']);
+    expect(secrets).not.toContain('X-Api-Key');
+  });
+
+  it('returns BOTH username and password for basic auth', () => {
+    const secrets = secretValuesOf({
+      authKind: 'basic',
+      username: 'svc-account',
+      password: 'p@ssw0rd!',
+    });
+    expect(secrets).toEqual(['svc-account', 'p@ssw0rd!']);
+    expect(secrets).toContain('svc-account');
+    expect(secrets).toContain('p@ssw0rd!');
+  });
+
+  it('returns only the client secret for oauth2_client_credentials — never tokenUrl/clientId/scope', () => {
+    const secrets = secretValuesOf({
+      authKind: 'oauth2_client_credentials',
+      tokenUrl: 'https://auth.example.com/token',
+      clientId: 'client-123',
+      clientSecret: 'client-secret-xyz',
+      scope: 'tools:read',
+    });
+    expect(secrets).toEqual(['client-secret-xyz']);
+    expect(secrets).not.toContain('client-123');
+    expect(secrets).not.toContain('https://auth.example.com/token');
+    expect(secrets).not.toContain('tools:read');
+  });
 });
 
 describe('redactSecrets', () => {

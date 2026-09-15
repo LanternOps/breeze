@@ -49,11 +49,13 @@ vi.mock('./secrets', () => ({
   secretValuesOf: vi.fn((cfg: { authKind: string; token?: string }) =>
     cfg.authKind === 'bearer' && cfg.token ? [cfg.token] : []),
 }));
+vi.mock('../../config/env', () => ({ toolSourcesAllowPrivateEgress: vi.fn(() => false) }));
 
 import { computeToolRevision, discoverSource, proposeTier } from './discovery';
 import { db } from '../../db';
 import { McpClient, McpClientError } from './mcpClient';
 import { decryptToolSourceAuth } from './secrets';
+import { toolSourcesAllowPrivateEgress } from '../../config/env';
 
 function makeSourceRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -183,6 +185,24 @@ describe('discoverSource', () => {
     const [readOnlyInsert, destructiveInsert] = values.mock.calls.map((c) => c[0]);
     expect(readOnlyInsert).toMatchObject({ name: 'get_widget', enabled: false, proposedTier: 1, tier: 1 });
     expect(destructiveInsert).toMatchObject({ name: 'delete_widget', enabled: false, proposedTier: 3, tier: 3 });
+  });
+
+  it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for a remote listing', async () => {
+    vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValueOnce(true);
+    mockSourceLookup(makeSourceRow());
+    mockExistingTools([]);
+    mockInsertCapture();
+    mockUpdateCapture();
+
+    const fakeClient = {
+      initialize: vi.fn().mockResolvedValue({}),
+      listTools: vi.fn().mockResolvedValue([]),
+    };
+    const clientFactory = vi.fn().mockReturnValue(fakeClient);
+
+    await discoverSource(SOURCE_ID, { clientFactory: clientFactory as any });
+
+    expect(clientFactory).toHaveBeenCalledWith(expect.objectContaining({ allowPrivateNetwork: true }));
   });
 
   it('second discovery with a changed schema bumps revision and leaves tier', async () => {
