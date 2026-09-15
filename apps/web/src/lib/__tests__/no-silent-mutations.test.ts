@@ -169,10 +169,11 @@ const TARGET_GLOBS = [
   // never guarded, so a future bare mutation would ship with no CI signal.
   'src/components/billing/quotes/QuoteActions.tsx',
   'src/components/billing/quotes/QuoteDocument.tsx',
-  'src/components/contracts/TemplateEditor.tsx',
-  'src/components/contracts/DocumentsTab.tsx',
-  'src/components/contracts/ContractDocumentsSection.tsx',
-  'src/components/contracts/TemplatesTab.tsx',
+  // W03 moved these three into the /agreements area; ContractDocumentsSection
+  // was deleted (contract detail now embeds SignedAgreementsPage).
+  'src/components/agreements/AgreementTemplateEditor.tsx',
+  'src/components/agreements/SignedAgreementsPage.tsx',
+  'src/components/agreements/TemplatesPage.tsx',
   'src/components/settings/PartnerCompanyTab.tsx',
   // Invoice/quote money-moment hosts (issue / send / delete / title / line
   // mutations): every mutation already routes through runAction, but the files
@@ -626,8 +627,10 @@ describe('no silent mutations in targeted set', () => {
     // #5723) replaces the deleted OrganizationsPage.tsx entry with two files
     // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
     // Monitor Activity tab (#5287 W03 / #5290) adds MonitorActivityTab.tsx, so
-    // the count is now 132.
-    expect(absoluteFiles.length).toBe(132);
+    // the count is now 132. Agreements W03 (#5825) moves three contracts files
+    // into components/agreements/ and DELETES ContractDocumentsSection.tsx
+    // (contract detail embeds the shared list instead), so the count is 131.
+    expect(absoluteFiles.length).toBe(131);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
