@@ -75,6 +75,7 @@ vi.mock('../db', () => ({
 
 import { isReusableState } from '../services/bullmqUtils';
 import {
+  createSoftwareRemediationWorker,
   processRemediateDevice,
   processRemediateDeviceInstall,
   scheduleSoftwareInstallRemediation,
@@ -691,5 +692,38 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
     for (const call of setSpy.mock.calls) {
       expect(call[0]).not.toHaveProperty('installRemediationAttempts');
     }
+  });
+
+  it('routes install-remediate-device to the install processor and leaves uninstall alone', async () => {
+    // Replaces W02's parking branch. The bullmq mock at the top of this file
+    // replaces Worker with a class that ignores its processor, so capture the
+    // processor argument directly.
+    const captured: Array<(job: any) => Promise<unknown>> = [];
+    const bullmq = await import('bullmq');
+    const OriginalWorker = (bullmq as any).Worker;
+    (bullmq as any).Worker = class {
+      constructor(_name: string, processor: (job: any) => Promise<unknown>) {
+        captured.push(processor);
+      }
+      on = vi.fn();
+      close = vi.fn();
+    };
+
+    createSoftwareRemediationWorker();
+    (bullmq as any).Worker = OriginalWorker;
+
+    const processor = captured[0]!;
+
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED }));
+    const installResult: any = await processor({ data: installJob() });
+    expect(installResult).toHaveProperty('deploymentsCreated');
+    expect(installResult).not.toHaveProperty('commandsQueued');
+
+    primeDb(policyRow({ enforceMode: false }));
+    const uninstallResult: any = await processor({
+      data: { type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID },
+    });
+    expect(uninstallResult).toHaveProperty('commandsQueued');
+    expect(uninstallResult).not.toHaveProperty('deploymentsCreated');
   });
 });

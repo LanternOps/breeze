@@ -997,37 +997,13 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
     SOFTWARE_REMEDIATION_QUEUE,
     async (job: Job<SoftwareRemediationJobData>) => {
       return runWithSystemDbAccess(async () => {
+        // #5505 W03: the two verbs are separate processors, replacing W02's
+        // parking branch. Discriminating on job.data.type keeps the uninstall
+        // path (and its #3553 manual-authorization machinery) byte-identical:
+        // processRemediateDevice is uninstall-specific end to end and would
+        // misread an install payload.
         if (job.data.type === 'install-remediate-device') {
-          // W03 (#5508) installs the real install processor here.
-          //
-          // Until it lands this job is PARKED, never routed to
-          // processRemediateDevice: that function is uninstall-specific end to
-          // end (manual-authorization consumption, unauthorized-violation
-          // selection, remediation_status writes) and would misread install job
-          // data. Parking is the safe intermediate state, not a leak: the
-          // compliance row stays at 'pending', which
-          // shouldQueueAutoRemediation reads as in_progress, so the device is
-          // queued exactly ONCE and no reinstall loop can form. W03 replaces
-          // this branch and clears those rows on its first pass.
-          console.warn(
-            '[SoftwareRemediationWorker] install-remediate-device received but no processor is installed yet (feature #5505 W03) — parking',
-            { policyId: job.data.policyId, deviceId: job.data.deviceId, catalogIds: job.data.catalogIds }
-          );
-          // Sentry, not just a log line. A parked job reaching production means
-          // W02 was deployed ahead of W03 and some policy already has
-          // autoInstall armed — the device will sit at 'pending' until W03
-          // lands and reconciles it. That is a deploy-ordering signal someone
-          // has to see, and a console.warn in a worker is not seen.
-          captureException(
-            new Error('[SoftwareRemediationWorker] install-remediate-device parked: no processor until #5505 W03'),
-          );
-          recordSoftwareRemediationDecision('install_processor_unavailable');
-          return {
-            policyId: job.data.policyId,
-            deviceId: job.data.deviceId,
-            commandsQueued: 0,
-            errors: 0,
-          };
+          return processRemediateDeviceInstall(job.data);
         }
         return processRemediateDevice(job.data);
       });
