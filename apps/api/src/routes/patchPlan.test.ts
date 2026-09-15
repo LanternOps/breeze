@@ -88,6 +88,29 @@ beforeEach(() => {
   createAndEnqueueAgentRunMock.mockResolvedValue({ created: true, run: { id: RUN_ID, status: 'queued' } });
 });
 
+// Every other suite in this file mounts `patchPlanRoutes` behind a test-only
+// middleware that pre-sets `c.set('auth', ...)` (see `buildApp`) — that masks
+// whether the router itself ever applies `authMiddleware`, because
+// `authMiddleware` no-ops when `auth` is already on the context. This suite
+// mounts the router bare, the way `index.ts` does (`api.route('/ai/patch-plan',
+// patchPlanRoutes)`, no upstream auth), so it exercises the router's own gate —
+// same shape as `routes/fleetDesign.test.ts` (#5866) and `routes/aiAgents.test.ts`.
+describe('router auth gate', () => {
+  it('is behind authMiddleware', async () => {
+    const app = new Hono();
+    app.route('/ai/patch-plan', patchPlanRoutes);
+
+    const res = await app.request('/ai/patch-plan/runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ orgId: ORG_ID }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(createAndEnqueueAgentRunMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /ai/patch-plan/runs', () => {
   it('admits a device-less patch run and audits it', async () => {
     const res = await postRuns(buildApp(), { orgId: ORG_ID });
