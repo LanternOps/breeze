@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Modèles de livrables",
         "description": "Définissez un niveau de service une seule fois et appliquez ses livrables à n'importe quel client."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modèles de liste de vérification de billets",
+        "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel billet."
       }
     }
   },

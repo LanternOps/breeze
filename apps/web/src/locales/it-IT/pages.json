@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Modelli di deliverable",
         "description": "Definisci un livello di servizio una volta e applica i suoi deliverable a qualsiasi cliente."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modelli di checklist per i ticket",
+        "description": "Elenchi di passaggi riutilizzabili che i tuoi tecnici possono applicare a qualsiasi ticket."
       }
     }
   },

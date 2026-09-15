@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Modelos de entregáveis",
         "description": "Defina um nível de serviço uma vez e aplique seus entregáveis a qualquer cliente."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modelos de checklist de chamados",
+        "description": "Listas de etapas reutilizáveis que seus técnicos podem aplicar a qualquer chamado."
       }
     }
   },

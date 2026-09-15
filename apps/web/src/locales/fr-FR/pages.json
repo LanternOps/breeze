@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Modèles de livrables",
         "description": "Définissez une offre de service une seule fois et appliquez ses livrables à tout client."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modèles de liste de contrôle de tickets",
+        "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel ticket."
       }
     }
   },

@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Deliverable Templates",
         "description": "Define a service tier once and apply its deliverables to any customer."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Ticket checklist templates",
+        "description": "Reusable step lists your technicians can apply to any ticket."
       }
     }
   },

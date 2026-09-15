@@ -224,6 +224,10 @@
       "deliverableTemplates": {
         "title": "Plantillas de entregables",
         "description": "Define un nivel de servicio una vez y aplica sus entregables a cualquier cliente."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Plantillas de lista de verificación de tickets",
+        "description": "Listas de pasos reutilizables que tus técnicos pueden aplicar a cualquier ticket."
       }
     }
   },

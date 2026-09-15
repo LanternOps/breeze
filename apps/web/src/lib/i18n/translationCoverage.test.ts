@@ -309,7 +309,8 @@ const namespaceDuplicateBaselines = {
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
-    'checklists.json': 1,
+    // +1 W02: templates.description — "Description" is also the French word.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -449,7 +450,8 @@ const namespaceDuplicateBaselines = {
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
-    'checklists.json': 1,
+    // +1 W02: templates.description — "Description" is also the French word.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -595,7 +597,8 @@ const namespaceDuplicateBaselines = {
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
     'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
     // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
-    'checklists.json': 1,
+    // +1 W02: templates.name — "Name" is also the German word.
+    'checklists.json': 2,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
