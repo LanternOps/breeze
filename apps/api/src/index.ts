@@ -188,6 +188,7 @@ import { adminRoutes } from './routes/admin';
 import { extensionsAdminRoutes } from './routes/extensionsAdmin';
 import { extensionsWebRoutes } from './routes/extensionsWeb';
 import { internalSyntheticRoutes } from './routes/internal/synthetic';
+import { toolSourcesRoutes } from './routes/toolSources';
 import { bootstrapPlatformAdmins } from './services/platformAdminBootstrap';
 import { reportStalePamRuleTiers } from './services/pamRuleTierDriftCheck';
 import {
@@ -1073,6 +1074,9 @@ api.route('/admin', accountDeletionAdminRoutes);
 // asset serving. Distinct from `/admin/extensions` above (platform-admin
 // operations) — this is the tenant-facing surface a browser reads.
 api.route('/extensions', extensionsWebRoutes);
+// Tool Catalog W1 (#5215 / #5216) — BYO MCP tool sources. 404s whole-router
+// when TOOL_SOURCES_ENABLED is off (routes/toolSources.ts's first `use('*')`).
+api.route('/tool-sources', toolSourcesRoutes);
 
 // One system-scoped state store, shared by the per-request enabled gate and the
 // built-in extension loader. The gate checks installed_extensions.enabled on
