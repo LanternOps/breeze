@@ -206,11 +206,13 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
   const name = item.name ?? fallback?.name;
   if (!name) return null;
 
-  // A saved report that matches a curated template (by id or name) folds into
-  // that curated card. `/reports/templates` returns every saved report, and
-  // "Use template" saves one under the curated name, so keying the row by its
-  // own UUID would render a second card with the same name after every use.
-  const id = fallback?.id ?? item.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  // A saved report keeps its own id even when it matches a curated template
+  // (by id or name) — `mergeTemplates` uses `fallback` to fold its display
+  // (icon/tone/description) onto the curated card, but the id itself must
+  // stay unique per saved report. Two saved reports that both kept the
+  // curated name (e.g. one monthly, one quarterly) must render as two cards,
+  // not collapse onto the curated template's shared id.
+  const id = item.id ?? fallback?.id ?? name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const previewImage = item.previewImage ?? item.previewUrl ?? fallback?.previewImage;
   const fallbackType = fallback?.defaults.type ?? 'executive_summary';
   const rawType = item.defaults?.type ?? item.type ?? item.reportType ?? fallback?.defaults.type;
@@ -249,7 +251,16 @@ const normalizeTemplate = (item: TemplateApiItem, fallback?: ReportTemplate): Re
 const mergeTemplates = (items: TemplateApiItem[]) => {
   const fallbackMap = new Map(defaultTemplates.map(template => [template.id, template]));
   const fallbackNameMap = new Map(defaultTemplates.map(template => [template.name.toLowerCase(), template]));
-  const normalized = new Map<string, ReportTemplate>();
+
+  // Saved reports that match a curated template (by id or name) replace that
+  // curated slot in the grid, grouped by the curated template's id — but each
+  // match keeps its own card. One match swaps in for the synthetic card in
+  // place; several matches (e.g. a monthly and a quarterly "Hardware
+  // Lifecycle Report") all render, side by side, instead of one silently
+  // shadowing the rest.
+  const matchesByFallbackId = new Map<string, ReportTemplate[]>();
+  const extras: ReportTemplate[] = [];
+  const seenIds = new Set<string>();
 
   items.forEach(item => {
     const fallback =
@@ -257,14 +268,19 @@ const mergeTemplates = (items: TemplateApiItem[]) => {
       (item.name && fallbackNameMap.get(item.name.toLowerCase())) ||
       undefined;
     const template = normalizeTemplate(item, fallback);
-    if (template) {
-      normalized.set(template.id, template);
+    if (!template || seenIds.has(template.id)) return;
+    seenIds.add(template.id);
+
+    if (fallback) {
+      const bucket = matchesByFallbackId.get(fallback.id) ?? [];
+      bucket.push(template);
+      matchesByFallbackId.set(fallback.id, bucket);
+    } else {
+      extras.push(template);
     }
   });
 
-  const merged = defaultTemplates.map(template => normalized.get(template.id) ?? template);
-  const defaultIds = new Set(defaultTemplates.map(template => template.id));
-  const extras = Array.from(normalized.values()).filter(template => !defaultIds.has(template.id));
+  const merged = defaultTemplates.flatMap(template => matchesByFallbackId.get(template.id) ?? [template]);
 
   return [...merged, ...extras];
 };
