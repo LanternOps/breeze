@@ -167,6 +167,45 @@ describe('findUnsafePortalCssPattern', () => {
   it('flags a disallowed url() scheme by value', () => {
     expect(findUnsafePortalCssPattern('a{background:url(http://evil.example/x.png)}')).toBe('url(http://evil.example/x.png)');
   });
+
+  // Review finding (#5982): CSS identifiers/at-keywords support backslash
+  // escapes per the CSS Syntax spec, and browsers decode them BEFORE parsing
+  // keywords — a naive literal-text filter can be bypassed by escaping one
+  // character of the blocked keyword. These prove the decode-before-scan
+  // step catches the decoded form.
+  describe('CSS-escape bypass attempts', () => {
+    it('catches a hex-escaped @import (\\69 = "i")', () => {
+      expect(findUnsafePortalCssPattern('@\\69mport "x.css";')).toBe('@import');
+    });
+
+    // CSS hex escapes greedily consume up to 6 hex digits, so when the
+    // following literal char is itself a hex digit (e/E here) the spec
+    // requires one trailing whitespace to terminate the escape — otherwise
+    // `\72e` decodes as hex "72e", not "72" + "e". These two use that space.
+    it('catches a hex-escaped expression( (\\72 = "r", space-terminated)', () => {
+      expect(findUnsafePortalCssPattern('a{width:exp\\72 ession(x)}')).toBe('expression(');
+    });
+
+    it('catches a hex-escaped behavior: (\\62 = "b", space-terminated)', () => {
+      expect(findUnsafePortalCssPattern('a{\\62 ehavior:url(x.htc)}')).toBe('behavior:');
+    });
+
+    it('catches a hex-escaped -moz-binding (\\62 = "b")', () => {
+      expect(findUnsafePortalCssPattern("a{-moz-\\62inding:url('x.xml')}")).toBe('-moz-binding');
+    });
+
+    it('catches a literal-char-escaped @import (\\@)', () => {
+      expect(findUnsafePortalCssPattern('\\@import "x.css";')).toBe('@import');
+    });
+
+    it('catches an escaped javascript: scheme inside url()', () => {
+      expect(findUnsafePortalCssPattern('a{background:url(j\\61vascript:alert(1))}')).toContain('javascript:alert(1)');
+    });
+
+    it('still accepts clean CSS containing an unrelated escape (e.g. a content ligature)', () => {
+      expect(findUnsafePortalCssPattern('a::before { content: "\\f101"; }')).toBeNull();
+    });
+  });
 });
 
 describe('invitePortalUserSchema', () => {

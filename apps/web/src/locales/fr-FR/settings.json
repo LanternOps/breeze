@@ -897,7 +897,9 @@
     "customCss": {
       "title": "Personnalisé CSS (avancé)",
       "description": "Utilisez des styles personnalisés pour affiner l’espacement, la typographie ou la mise en page.",
-      "saveError": "Échec de l’enregistrement du CSS personnalisé."
+      "saveError": "Échec de l’enregistrement du CSS personnalisé.",
+      "loadError": "Impossible de charger le CSS personnalisé actuellement enregistré. La modification est désactivée tant qu’il n’est pas chargé.",
+      "saveBlockedByLoadError": "Le CSS personnalisé n’a pas été enregistré : la valeur actuelle n’a pas pu être vérifiée. Rechargez la page et réessayez."
     },
     "preview": {
       "action": "Prévisualiser",

@@ -145,4 +145,68 @@ describe('OrgBrandingEditor', () => {
 
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
   });
+
+  // Review finding (#5982): a failed initial load must never let Save silently
+  // overwrite the admin's real persisted CSS with the seeded placeholder.
+  describe('load failure guard', () => {
+    it('a non-2xx load response disables the textarea, toasts, and blocks Save from PATCHing', async () => {
+      fetchMock.mockResolvedValue(makeJsonResponse({ error: 'boom' }, false, 500));
+      render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(getCustomCssTextarea().disabled).toBe(true);
+      await screen.findByText(/Could not load your currently saved custom CSS/);
+
+      showToast.mockClear();
+      fetchMock.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: expect.stringContaining('not saved') })
+      ));
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        `/orgs/organizations/${ORG_ID}/portal-settings`,
+        expect.objectContaining({ method: 'PATCH' })
+      );
+    });
+
+    it('a network error on load also disables Save from PATCHing customCss', async () => {
+      fetchMock.mockRejectedValue(new Error('network down'));
+      render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+
+      await waitFor(() => expect(getCustomCssTextarea().disabled).toBe(true));
+
+      fetchMock.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('an unparsable load response body also disables Save from PATCHing customCss', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: vi.fn().mockRejectedValue(new Error('not json'))
+      } as unknown as Response);
+      render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+
+      await waitFor(() => expect(getCustomCssTextarea().disabled).toBe(true));
+
+      fetchMock.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Save branding' }));
+      await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a successful load (including a legitimate null customCss) never disables Save', async () => {
+      fetchMock.mockResolvedValue(makeJsonResponse({ data: { customCss: null } }));
+      render(<OrgBrandingEditor organizationName="Acme Systems" orgId={ORG_ID} />);
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      expect(getCustomCssTextarea().disabled).toBe(false);
+      expect(showToast).not.toHaveBeenCalled();
+    });
+  });
 });

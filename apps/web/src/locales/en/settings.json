@@ -897,7 +897,9 @@
     "customCss": {
       "title": "Custom CSS (advanced)",
       "description": "Use custom styles to fine tune spacing, typography, or layout.",
-      "saveError": "Failed to save custom CSS."
+      "saveError": "Failed to save custom CSS.",
+      "loadError": "Could not load your currently saved custom CSS. Editing is disabled until this loads.",
+      "saveBlockedByLoadError": "Custom CSS was not saved: the current value could not be verified. Reload the page and try again."
     },
     "preview": {
       "action": "Preview",

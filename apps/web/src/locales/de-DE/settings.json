@@ -897,7 +897,9 @@
     "customCss": {
       "title": "Benutzerdefiniertes CSS (erweitert)",
       "description": "Verwenden Sie benutzerdefinierte Stile, um Abstände, Typografie oder Layout zu optimieren.",
-      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden."
+      "saveError": "Benutzerdefiniertes CSS konnte nicht gespeichert werden.",
+      "loadError": "Das aktuell gespeicherte benutzerdefinierte CSS konnte nicht geladen werden. Die Bearbeitung ist deaktiviert, bis dies geladen ist.",
+      "saveBlockedByLoadError": "Benutzerdefiniertes CSS wurde nicht gespeichert: Der aktuelle Wert konnte nicht überprüft werden. Laden Sie die Seite neu und versuchen Sie es erneut."
     },
     "preview": {
       "action": "Vorschau",

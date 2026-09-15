@@ -24,19 +24,47 @@ const CSS_DANGEROUS_PATTERNS: ReadonlyArray<{ pattern: RegExp; label: string }> 
 // Matches url(...), with or without quotes, capturing the raw value.
 const CSS_URL_PATTERN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
 
+// CSS identifiers/at-keywords support backslash escapes (CSS Syntax Module
+// §4.3.7): `\` + 1-6 hex digits (+ one optional trailing whitespace) decodes
+// to that Unicode code point, and `\` + any other character decodes to that
+// literal character. Browsers apply this BEFORE matching keywords like
+// `@import` or `expression(`, so `@i\6d port` parses as `@import` — a
+// well-known text-filter bypass. Decoding a copy before scanning (never the
+// persisted value itself) closes that class of bypass for every pattern
+// below, including inside url()'s scheme.
+function decodeCssEscapes(css: string): string {
+  return css.replace(
+    /\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([^\r\n\f])/g,
+    (_match, hex: string | undefined, literal: string | undefined) => {
+      if (hex !== undefined) {
+        const codePoint = parseInt(hex, 16);
+        if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+          return '�'; // invalid/surrogate code point per spec — never the intended keyword char
+        }
+        return String.fromCodePoint(codePoint);
+      }
+      return literal ?? '';
+    }
+  );
+}
+
 /**
  * Returns a human-readable label for the first disallowed pattern found in
  * `css`, or null if the CSS is clean. Exported so the API route can surface
- * a specific reason without re-implementing the scan.
+ * a specific reason without re-implementing the scan. Scans a CSS-escape-
+ * decoded copy (see decodeCssEscapes) so an escaped keyword can't slip past
+ * the literal-text patterns below.
  */
 export function findUnsafePortalCssPattern(css: string): string | null {
+  const decoded = css.includes('\\') ? decodeCssEscapes(css) : css;
+
   for (const { pattern, label } of CSS_DANGEROUS_PATTERNS) {
-    if (pattern.test(css)) return label;
+    if (pattern.test(decoded)) return label;
   }
 
   CSS_URL_PATTERN.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = CSS_URL_PATTERN.exec(css)) !== null) {
+  while ((match = CSS_URL_PATTERN.exec(decoded)) !== null) {
     const value = (match[2] ?? '').trim();
     if (!/^(https:|data:)/i.test(value)) {
       return value ? `url(${value})` : 'url()';

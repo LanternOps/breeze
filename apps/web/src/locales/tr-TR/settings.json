@@ -897,7 +897,9 @@
     "customCss": {
       "title": "Özel CSS (gelişmiş)",
       "description": "Aralığa, tipografiye veya düzene ince ayar yapmak için özel stiller kullanın.",
-      "saveError": "Özel CSS kaydedilemedi."
+      "saveError": "Özel CSS kaydedilemedi.",
+      "loadError": "Şu anda kayıtlı özel CSS yüklenemedi. Bu yüklenene kadar düzenleme devre dışı.",
+      "saveBlockedByLoadError": "Özel CSS kaydedilmedi: mevcut değer doğrulanamadı. Sayfayı yeniden yükleyip tekrar deneyin."
     },
     "preview": {
       "action": "Önizleme",

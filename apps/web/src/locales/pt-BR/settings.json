@@ -897,7 +897,9 @@
     "customCss": {
       "title": "CSS personalizado (avançado)",
       "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout.",
-      "saveError": "Falha ao salvar o CSS personalizado."
+      "saveError": "Falha ao salvar o CSS personalizado.",
+      "loadError": "Não foi possível carregar o CSS personalizado salvo atualmente. A edição está desativada até que isso seja carregado.",
+      "saveBlockedByLoadError": "O CSS personalizado não foi salvo: não foi possível verificar o valor atual. Recarregue a página e tente novamente."
     },
     "preview": {
       "action": "Visualizar",
