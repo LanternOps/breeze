@@ -2562,3 +2562,77 @@ describe('RunDetailPage — patch plan', () => {
     }
   });
 });
+
+// #4442 W05 — act-mode outcomes on the run detail. Before this wave every
+// created proposal rendered the same "Approval requested" link to /approvals;
+// act mode makes the interesting outcomes non-pending, so a proposal that ran
+// unattended must say so rather than sending the operator to an empty inbox.
+describe('RunDetailPage — sweep act outcomes (#4442 W05)', () => {
+  const ACT_SWEEP = {
+    ...SWEEP,
+    actSummary: { devicesActed: 1, devicesProposed: 2, stoppedBy: 'occurrence_cap' },
+    findings: [
+      {
+        ...SWEEP.findings[0],
+        proposal: {
+          ...SWEEP.findings[0].proposal,
+          outcome: 'auto_executing',
+          cohort: true,
+          stoppedBy: 'occurrence_cap',
+        },
+      },
+      {
+        ...SWEEP.findings[0],
+        deviceId: 'd9',
+        deviceHostname: 'WKS-09',
+        title: 'W32Time is stopped',
+        proposal: {
+          ...SWEEP.findings[0].proposal,
+          intentId: 'intent-10',
+          outcome: 'pending',
+          cohort: false,
+          stoppedBy: 'occurrence_cap',
+        },
+      },
+    ],
+  };
+
+  it('an auto-executed proposal renders the outcome, not a generic /approvals link', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-0-proposal');
+    expect(cell).toHaveTextContent('Running unattended');
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-0')).not.toBeInTheDocument();
+  });
+
+  it('a proposal outside the canary cohort renders "waiting for approval" and names the cap that stopped it', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-1')).toBeInTheDocument());
+    // Still a link to the approvals inbox — it IS waiting for a human.
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-1')).toBeInTheDocument();
+    const cell = screen.getByTestId('ai-agent-run-sweep-finding-1-proposal');
+    expect(cell).toHaveTextContent('per-sweep device cap');
+  });
+
+  it('shows the per-device act roll-up above the findings', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: ACT_SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    const rollup = await screen.findByTestId('ai-agent-run-sweep-act-summary');
+    expect(rollup).toHaveTextContent('1');
+    expect(rollup).toHaveTextContent('2');
+  });
+
+  it('a pre-act-mode run (no actSummary, no cohort field) still renders exactly as before', async () => {
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: SWEEP } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-sweep-act-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-0')).toBeInTheDocument();
+  });
+});

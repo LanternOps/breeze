@@ -1876,6 +1876,19 @@
         "empty": "Nessuna rilevazione segnalata.",
         "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all’agente.",
         "proposalCreated": "Approvazione richiesta",
+        "actSummary": "Intervento non presidiato su {{acted}} dispositivi su {{proposed}}: gli altri attendono un’approvazione.",
+        "outcomes": {
+          "auto_executing": "In esecuzione non presidiata",
+          "executed": "Completato",
+          "failed": "Non riuscito",
+          "declined": "Rifiutato",
+          "expired": "Scaduto"
+        },
+        "stoppedBy": {
+          "fleet_cap": "raggiunto il limite giornaliero del parco",
+          "day_cap": "raggiunto il limite giornaliero di azioni",
+          "occurrence_cap": "raggiunto il tetto di dispositivi per scansione"
+        },
         "columns": {
           "kind": "Controllo",
           "severity": "Gravità",

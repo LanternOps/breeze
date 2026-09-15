@@ -1876,6 +1876,19 @@
         "empty": "Aucun constat signalé.",
         "evidenceTruncated": "Les éléments ont été tronqués : toutes les lignes correspondantes n’ont pas été présentées à l’agent.",
         "proposalCreated": "Approbation demandée",
+        "actSummary": "Action sans supervision sur {{acted}} appareils sur {{proposed}} — les autres attendent une approbation.",
+        "outcomes": {
+          "auto_executing": "Exécution sans supervision",
+          "executed": "Terminé",
+          "failed": "Échec",
+          "declined": "Refusé",
+          "expired": "Expiré"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite quotidienne du parc atteinte",
+          "day_cap": "limite quotidienne d’actions atteinte",
+          "occurrence_cap": "plafond d’appareils par balayage atteint"
+        },
         "columns": {
           "kind": "Vérification",
           "severity": "Gravité",

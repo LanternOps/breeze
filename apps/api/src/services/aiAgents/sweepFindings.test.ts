@@ -897,6 +897,9 @@ describe('projectSweep', () => {
     expect(dto).toEqual({
       scheduleId: SCHEDULE_ID,
       occurrenceKey: '2026-08-29T06:00:00Z',
+      // No cohort verdict on the fixture's SweepProposalRecord, so there is
+      // nothing truthful to roll up.
+      actSummary: null,
       // Unknown kinds are dropped, catalog-checked exactly as the run loop
       // narrows `triggerRef.sweepKinds`.
       kinds: ['service_down', 'disk_pressure'],
@@ -917,6 +920,12 @@ describe('projectSweep', () => {
             disposition: 'intent_created',
             reason: null,
             intentId: INTENT_A,
+            // `intentOutcomes` defaults to an empty map in this call, so the
+            // live outcome is unknown; the fixture's proposal record carries
+            // no cohort verdict either.
+            outcome: null,
+            cohort: null,
+            stoppedBy: null,
           },
         },
         {
@@ -965,6 +974,9 @@ describe('projectSweep', () => {
       disposition: 'refused',
       reason: 'not_allowlisted',
       intentId: null,
+      outcome: null,
+      cohort: null,
+      stoppedBy: null,
     });
     expect(dto!.findings[0]!.deviceHostname).toBeNull();
   });

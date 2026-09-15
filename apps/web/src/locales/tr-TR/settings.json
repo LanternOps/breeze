@@ -1876,6 +1876,19 @@
         "empty": "Bildirilen bulgu yok.",
         "evidenceTruncated": "Kanıtlar kısaltıldı: eşleşen tüm satırlar aracıya gösterilmedi.",
         "proposalCreated": "Onay istendi",
+        "actSummary": "{{proposed}} cihazdan {{acted}} tanesinde gözetimsiz işlem yapıldı; kalanlar onay bekliyor.",
+        "outcomes": {
+          "auto_executing": "Gözetimsiz çalışıyor",
+          "executed": "Tamamlandı",
+          "failed": "Başarısız",
+          "declined": "Reddedildi",
+          "expired": "Süresi doldu"
+        },
+        "stoppedBy": {
+          "fleet_cap": "günlük filo sınırına ulaşıldı",
+          "day_cap": "günlük işlem sınırına ulaşıldı",
+          "occurrence_cap": "tarama başına cihaz sınırına ulaşıldı"
+        },
         "columns": {
           "kind": "Kontrol",
           "severity": "Önem düzeyi",

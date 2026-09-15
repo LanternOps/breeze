@@ -1148,6 +1148,13 @@ const runDetailResponseSchema = z.object({
     sweep: z.object({
       scheduleId: z.string().nullable(),
       occurrenceKey: z.string().nullable(),
+      // #4442 W05 — the act roll-up; null for a disarmed occurrence and for
+      // every pre-act-mode run.
+      actSummary: z.object({
+        devicesActed: z.number(),
+        devicesProposed: z.number(),
+        stoppedBy: z.string().nullable(),
+      }).strict().nullable(),
       kinds: z.array(z.string()),
       summary: z.string(),
       evidenceTruncated: z.boolean(),
@@ -1165,6 +1172,13 @@ const runDetailResponseSchema = z.object({
           disposition: z.enum(['intent_created', 'refused', 'cap_reached', 'error']),
           reason: z.string().nullable(),
           intentId: z.string().nullable(),
+          // #4442 W05 — the live per-intent outcome, cohort membership, and
+          // the cap that stopped the cohort walk.
+          outcome: z.enum([
+            'pending', 'auto_executing', 'executed', 'failed', 'declined', 'expired',
+          ]).nullable(),
+          cohort: z.boolean().nullable(),
+          stoppedBy: z.string().nullable(),
         }).strict().nullable(),
       }).strict()),
     }).strict().nullable(),
@@ -1491,13 +1505,14 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   it('skips the draft-rows read entirely for a non-ticket run', async () => {
     selectMock
       .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })])) // run + agent + device join
-    // No further selects expected — intentIds empty skips intents, sessionId
-    // null skips ledger, triggerKind !== 'ticket' skips draft rows.
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
+    // No further selects expected — sessionId null skips ledger,
+    // triggerKind !== 'ticket' skips draft rows.
     ;
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7.
@@ -1517,6 +1532,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           },
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain(
         [{ id: DEVICE_ID, hostname: 'WKS-042' }],
         (predicate) => { hostnameWhere = predicate; },
@@ -1525,7 +1541,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
     const params = sqlParams(hostnameWhere);
     expect(params).toContain(ORG_ID);
     expect(params).toContain(DEVICE_ID);
@@ -1578,8 +1594,13 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           sweepEvidenceTruncated: true,
         },
       })]))
-      // The ONE batched hostname read (no session, no intent ids, so this is
-      // the only other query the route makes).
+      // Intents (now unconditional) — this run minted no intent for the
+      // second finding's disposition, so it comes back empty; the first
+      // finding's proposal intentId is a distinct id that the intents read
+      // does not have to resolve for the DTO's `proposal.outcome` to be null.
+      .mockReturnValueOnce(selectChain([]))
+      // The ONE batched hostname read (no session, so this is the only other
+      // query the route makes).
       .mockReturnValueOnce(selectChain(
         [{ id: DEVICE_ID, hostname: 'WKS-042' }],
         (predicate) => { hostnameWhere = predicate; },
@@ -1590,9 +1611,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const body = await res.json();
     const parsed = runDetailResponseSchema.parse(body);
 
-    // Two selects total: the run row and ONE batched device read for BOTH
-    // findings — never a lookup per finding.
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    // Three selects total: the run row, intents, and ONE batched device read
+    // for BOTH findings — never a lookup per finding.
+    expect(selectMock).toHaveBeenCalledTimes(3);
     // Review round 1, IMPORTANT 1: the hostname read is pinned to the RUN's
     // own org, not just the caller's accessible set — `sweepDeviceIds` come
     // out of MODEL-AUTHORED outcome jsonb, so a partner-scoped caller must
@@ -1607,6 +1628,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(parsed.data.sweep).toEqual({
       scheduleId: '88888888-8888-4888-8888-888888888888',
       occurrenceKey: '2026-08-29T06:00:00Z',
+      actSummary: null,
       kinds: ['service_down'],
       summary: 'One service is down on two machines.',
       evidenceTruncated: true,
@@ -1618,6 +1640,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           proposal: {
             tool: 'manage_services', action: 'restart', disposition: 'intent_created',
             reason: null, intentId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+            // No matching row came back from the (empty) intents read, so
+            // the live outcome is unknown — never inferred from disposition.
+            outcome: null, cohort: null, stoppedBy: null,
           },
         },
         {
@@ -1677,6 +1702,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain(
         [{
           reportRunId: REPORT_RUN_ID,
@@ -1692,9 +1718,9 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(res.status).toBe(200);
     const parsed = runDetailResponseSchema.parse(await res.json());
 
-    // Two selects: the run row and the artifact. No session, no intent ids and
+    // Three selects: the run row, intents, and the artifact. No session and
     // no sweep findings, so nothing else is queried.
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
     const params = sqlParams(artifactWhere);
     expect(params).toContain(ORG_ID);
     expect(params).toContain(REPORT_RUN_ID);
@@ -1713,12 +1739,14 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   });
 
   it('skips the artifact read entirely for a run that links none', async () => {
-    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
 
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(selectMock).toHaveBeenCalledTimes(2);
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrative).toBeNull();
     expect(parsed.data.reportRunId).toBeNull();
@@ -1748,6 +1776,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           narrativeReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain([{
         reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
       }]))
@@ -1762,7 +1791,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     const body = await res.json();
     const parsed = runDetailResponseSchema.parse(body);
 
-    expect(selectMock).toHaveBeenCalledTimes(3);
+    expect(selectMock).toHaveBeenCalledTimes(4);
     expect(sqlParams(summaryWhere)).toContain(REPORT_RUN_ID);
     // Terminal `refused` and not-yet-delivered `pending` stay SEPARATE: they
     // have different causes and different remedies, and folding them under one
@@ -1787,6 +1816,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           narrativeRecipientsUnresolved: true,
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain([{
         reportRunId: REPORT_RUN_ID, reportId: REPORT_ID, periodStart: null, periodEnd: null, contextTruncated: false,
       }]))
@@ -1809,11 +1839,12 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
         triggerKind: 'schedule', profile: 'narrative', reportRunId: REPORT_RUN_ID,
         outcome: { executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0 },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain([])); // artifact read finds nothing
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.narrativeDelivery).toBeNull();
   });
@@ -1862,6 +1893,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           fleetDesignReport: { reportId: REPORT_ID, reportRunId: REPORT_RUN_ID },
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       // The existing (narrative) artifact query still fires unconditionally
       // on `reportRunId` alone (see the sibling "skips" test below) — it
       // finds nothing for a design run's projection.
@@ -1880,10 +1912,10 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(res.status).toBe(200);
     const parsed = runDetailResponseSchema.parse(await res.json());
 
-    // Three selects: the run row, the (empty) narrative-projection query and
-    // the fleet design artifact. No session, no intent ids and no sweep
-    // findings, so nothing else is queried.
-    expect(selectMock).toHaveBeenCalledTimes(3);
+    // Four selects: the run row, intents, the (empty) narrative-projection
+    // query and the fleet design artifact. No session and no sweep findings,
+    // so nothing else is queried.
+    expect(selectMock).toHaveBeenCalledTimes(4);
     const params = sqlParams(artifactWhere);
     expect(params).toContain(ORG_ID);
     expect(params).toContain(REPORT_RUN_ID);
@@ -1909,13 +1941,14 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       // The existing (narrative) artifact query still fires — reportRunId
       // alone gates it — but it finds nothing for this row's projection.
       .mockReturnValueOnce(selectChain([]));
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
-    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock).toHaveBeenCalledTimes(3);
     const parsed = runDetailResponseSchema.parse(await res.json());
     expect(parsed.data.fleetDesign).toBeNull();
   });
@@ -1957,6 +1990,7 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
           sweepEvidenceTruncated: false,
         },
       })]))
+      .mockReturnValueOnce(selectChain([])) // intents (now unconditional; none minted)
       .mockReturnValueOnce(selectChain(
         [{ id: DEVICE_ID, hostname: 'WKS-042' }],
         (predicate) => { hostnameWhere = predicate; },
@@ -1975,16 +2009,24 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     });
   });
 
-  it('skips the ledger/intents queries when the run has no session and no intent ids', async () => {
-    selectMock.mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]));
+  // #4442 W05 — the ledger read is still conditional on `run.sessionId`, but
+  // the intents read is now UNCONDITIONAL (it reads by
+  // `requesting_agent_run_id`, not the pending-only `run.intentIds`): even a
+  // run that minted no intents still issues the query, it just comes back
+  // empty. `run.intentIds` being empty no longer has any bearing on whether
+  // that second query runs.
+  it('skips the ledger query but still issues the (now unconditional) intents query when the run has no session', async () => {
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({ sessionId: null, intentIds: [] })]))
+      .mockReturnValueOnce(selectChain([])); // intents — unconditional, comes back empty
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.ledger).toEqual([]);
     expect(body.data.intents).toEqual([]);
-    // Only the run-row select ran — no second/third db.select for ledger/intents.
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    // Run row + intents — no third db.select for the ledger (sessionId null).
+    expect(selectMock).toHaveBeenCalledTimes(2);
   });
 
   // Review fix (#3828): ai_agents is dual-ownership (#2135) — a partner-wide
@@ -1992,9 +2034,11 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // it produced (plain org-scoped) stays visible. Before this fix the route
   // innerJoin'd ai_agents, so this case 404'd instead of returning the run.
   it('returns the run (not 404) when its agent row is RLS-invisible, with agentName/agentKind null', async () => {
-    selectMock.mockReturnValueOnce(selectChain([
-      runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
-    ]));
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({ sessionId: null, intentIds: [], agentName: null, agentKind: null }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);
@@ -2013,27 +2057,29 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // above `alertVerdicts`), so this exercises the actual projection, not a
   // stub — the schema parse below is the assertion that matters.
   it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
-    selectMock.mockReturnValueOnce(selectChain([
-      runRow({
-        sessionId: null,
-        intentIds: [],
-        outcome: {
-          findings: [],
-          executedActions: [],
-          proposedActions: [],
-          deniedActions: [],
-          toolExecutionCount: 0,
-          runVerdict: 'partial',
-          alertVerdict: {
-            classification: 'actionable',
-            confidence: 0.9,
-            rationale: 'Another run already recorded a verdict for this alert.',
-            suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+    selectMock
+      .mockReturnValueOnce(selectChain([
+        runRow({
+          sessionId: null,
+          intentIds: [],
+          outcome: {
+            findings: [],
+            executedActions: [],
+            proposedActions: [],
+            deniedActions: [],
+            toolExecutionCount: 0,
+            runVerdict: 'partial',
+            alertVerdict: {
+              classification: 'actionable',
+              confidence: 0.9,
+              rationale: 'Another run already recorded a verdict for this alert.',
+              suggestedAction: { tool: 'manage_alerts', action: 'resolve', alertId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' },
+            },
+            alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
           },
-          alertVerdictIntent: { disposition: 'not_created', reason: 'superseded_concurrently' },
-        },
-      }),
-    ]));
+        }),
+      ]))
+      .mockReturnValueOnce(selectChain([])); // intents (now unconditional; none minted)
 
     const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
     expect(res.status).toBe(200);

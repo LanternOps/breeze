@@ -1876,6 +1876,19 @@
         "empty": "Nenhuma constatação relatada.",
         "evidenceTruncated": "As evidências foram truncadas: nem todas as linhas correspondentes foram mostradas ao agente.",
         "proposalCreated": "Aprovação solicitada",
+        "actSummary": "Ação sem supervisão em {{acted}} de {{proposed}} dispositivos — os demais aguardam aprovação.",
+        "outcomes": {
+          "auto_executing": "Em execução sem supervisão",
+          "executed": "Concluído",
+          "failed": "Falhou",
+          "declined": "Recusado",
+          "expired": "Expirado"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite diário da frota atingido",
+          "day_cap": "limite diário de ações atingido",
+          "occurrence_cap": "teto de dispositivos por varredura atingido"
+        },
         "columns": {
           "kind": "Verificação",
           "severity": "Gravidade",

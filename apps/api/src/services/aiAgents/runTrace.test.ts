@@ -729,6 +729,7 @@ describe('buildRunTrace — safe projection (#3828)', () => {
       expect(detail.sweep).toEqual({
         scheduleId: SCHEDULE_ID,
         occurrenceKey: '2026-08-29T06:00:00Z',
+        actSummary: null,
         kinds: ['service_down'],
         summary: 'One service is down.',
         evidenceTruncated: false,
@@ -746,6 +747,11 @@ describe('buildRunTrace — safe projection (#3828)', () => {
             disposition: 'intent_created',
             reason: null,
             intentId: INTENT_ID,
+            // The empty `intents` array passed to buildRunTrace above has no
+            // row for INTENT_ID, so the live outcome is unknown.
+            outcome: null,
+            cohort: null,
+            stoppedBy: null,
           },
         }],
       });

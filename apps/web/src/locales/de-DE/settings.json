@@ -1876,6 +1876,19 @@
         "empty": "Keine Befunde gemeldet.",
         "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
         "proposalCreated": "Genehmigung angefordert",
+        "actSummary": "Unbeaufsichtigt auf {{acted}} von {{proposed}} Geräten ausgeführt — der Rest wartet auf Freigabe.",
+        "outcomes": {
+          "auto_executing": "Läuft unbeaufsichtigt",
+          "executed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "declined": "Abgelehnt",
+          "expired": "Abgelaufen"
+        },
+        "stoppedBy": {
+          "fleet_cap": "Tageslimit für die Flotte erreicht",
+          "day_cap": "Tageslimit für Aktionen erreicht",
+          "occurrence_cap": "Gerätelimit pro Durchlauf erreicht"
+        },
         "columns": {
           "kind": "Prüfung",
           "severity": "Schweregrad",

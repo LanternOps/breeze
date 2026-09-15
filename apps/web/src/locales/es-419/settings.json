@@ -1876,6 +1876,19 @@
         "empty": "No se reportaron hallazgos.",
         "evidenceTruncated": "La evidencia se truncó: no se le mostraron al agente todas las filas coincidentes.",
         "proposalCreated": "Aprobación solicitada",
+        "actSummary": "Se actuó sin supervisión en {{acted}} de {{proposed}} dispositivos; el resto espera aprobación.",
+        "outcomes": {
+          "auto_executing": "Ejecutándose sin supervisión",
+          "executed": "Completado",
+          "failed": "Falló",
+          "declined": "Rechazado",
+          "expired": "Vencido"
+        },
+        "stoppedBy": {
+          "fleet_cap": "se alcanzó el límite diario de la flota",
+          "day_cap": "se alcanzó el límite diario de acciones",
+          "occurrence_cap": "se alcanzó el tope de dispositivos por barrido"
+        },
         "columns": {
           "kind": "Comprobación",
           "severity": "Gravedad",

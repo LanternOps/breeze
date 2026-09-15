@@ -1876,6 +1876,19 @@
         "empty": "No findings reported.",
         "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
         "proposalCreated": "Approval requested",
+        "actSummary": "Acted unattended on {{acted}} of {{proposed}} devices — the rest are waiting for approval.",
+        "outcomes": {
+          "auto_executing": "Running unattended",
+          "executed": "Completed",
+          "failed": "Failed",
+          "declined": "Declined",
+          "expired": "Expired"
+        },
+        "stoppedBy": {
+          "fleet_cap": "daily fleet limit reached",
+          "day_cap": "daily action limit reached",
+          "occurrence_cap": "per-sweep device cap reached"
+        },
         "columns": {
           "kind": "Check",
           "severity": "Severity",

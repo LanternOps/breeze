@@ -99,6 +99,8 @@ import {
   sweepTriggerKey,
   type AiAgentRunSweepDto,
   type AiAgentRunSweepFindingDto,
+  type AiAgentRunSweepActSummaryDto,
+  type AiAgentRunSweepProposalOutcome,
   type AiSweepKind,
   type SweepFinding,
   type SweepFindingsOutcome,
@@ -723,6 +725,14 @@ export function projectSweep(
     sweepEvidenceTruncated?: boolean;
   },
   hostnames: ReadonlyMap<string, string>,
+  /**
+   * #4442 W05 — LIVE outcomes for the intents this run minted, keyed by
+   * intent id, built by the route from a `requesting_agent_run_id` read.
+   * Deliberately not derived from `run.intentIds`, which is pending-only: act
+   * mode makes the interesting outcomes non-pending, so a run's most
+   * important proposals would simply vanish from this projection.
+   */
+  intentOutcomes: ReadonlyMap<string, AiAgentRunSweepProposalOutcome> = new Map(),
 ): AiAgentRunSweepDto | null {
   const sweep = outcome.sweepFindings;
   if (!sweep) return null;
@@ -737,6 +747,7 @@ export function projectSweep(
   return {
     scheduleId: run.scheduleId,
     occurrenceKey,
+    actSummary: projectActSummary(outcome.sweepProposals ?? []),
     kinds: readSweepKinds(triggerRef),
     // Defensive `?? ''`/`?? {}` below for the same reason `runTrace.ts`
     // defaults every outcome field: this is a jsonb column with no
@@ -770,6 +781,13 @@ export function projectSweep(
             disposition: record.disposition,
             reason: record.reason ?? null,
             intentId: record.intentId ?? null,
+            outcome: record.intentId ? intentOutcomes.get(record.intentId) ?? null : null,
+            // `?? null`, never `?? false`: "this occurrence computed no
+            // cohort" (disarmed, or a pre-act-mode run) is a different
+            // statement from "this proposal was outside the cohort", and the
+            // UI must not render the second when it only knows the first.
+            cohort: record.cohort ?? null,
+            stoppedBy: record.stoppedBy ?? null,
           }
           : null,
       };
@@ -777,6 +795,27 @@ export function projectSweep(
   };
 }
 
+
+/**
+ * #4442 W05 — the per-occurrence act roll-up. Counts DISTINCT DEVICES, not
+ * proposals: two proposals on one machine are one machine acted on. `null`
+ * when no record carries a cohort verdict at all — a disarmed occurrence or a
+ * pre-act-mode run, where there is nothing truthful to say.
+ */
+function projectActSummary(records: readonly SweepProposalRecord[]): AiAgentRunSweepActSummaryDto | null {
+  const scored = records.filter((r) => r.cohort !== undefined);
+  if (scored.length === 0) return null;
+
+  const acted = new Set<string>();
+  const proposed = new Set<string>();
+  let stoppedBy: string | null = null;
+  for (const record of scored) {
+    proposed.add(record.deviceId);
+    if (record.cohort) acted.add(record.deviceId);
+    if (stoppedBy === null && record.stoppedBy) stoppedBy = record.stoppedBy;
+  }
+  return { devicesActed: acted.size, devicesProposed: proposed.size, stoppedBy };
+}
 
 /** Subject of the finding from structured evidence/proposal, never its prose.
  * This is provenance, not proof that a model-authored subject is trusted. */

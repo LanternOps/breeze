@@ -1418,24 +1418,31 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .orderBy(asc(aiToolExecutions.createdAt))
     : [];
 
-  // `run.intent_ids` only ever lists PENDING intents (see the column's
-  // docstring in schema/aiAgents.ts and OutcomeProposedAction.intentId's in
-  // runLoop.ts) — an intent that was decided or expired drops out of the
-  // array, so this summary reflects "what's still awaiting a human", not
-  // the full proposal history. The org predicate is defence-in-depth beside
-  // RLS, matching the run read above.
-  const intentRows = run.intentIds.length > 0
-    ? await db
-      .select({
-        id: actionIntents.id,
-        status: actionIntents.status,
-        actionName: actionIntents.actionName,
-        approvalScope: actionIntents.approvalScope,
-        decidedVia: actionIntents.decidedVia,
-      })
-      .from(actionIntents)
-      .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
-    : [];
+  // #4442 W05 — read by `requesting_agent_run_id`, NOT by `run.intent_ids`.
+  // That column only ever lists PENDING intents (see its docstring in
+  // schema/aiAgents.ts and OutcomeProposedAction.intentId's in runLoop.ts): an
+  // intent that was decided, auto-executed or expired drops out of the array.
+  // Act mode makes exactly those the interesting outcomes, so a pending-only
+  // read would silently drop the proposals this page most needs to report.
+  // `run.intent_ids` is left populated as-is for every other consumer
+  // (ticketProposal below still reads it); this route just stops depending on
+  // it. TWO org predicates: the run's OWN org pins the read, and the caller's
+  // condition stays as defence-in-depth beside RLS — same posture as the
+  // batched hostname read below.
+  const intentRows = await db
+    .select({
+      id: actionIntents.id,
+      status: actionIntents.status,
+      actionName: actionIntents.actionName,
+      approvalScope: actionIntents.approvalScope,
+      decidedVia: actionIntents.decidedVia,
+    })
+    .from(actionIntents)
+    .where(and(
+      eq(actionIntents.requestingAgentRunId, run.id),
+      eq(actionIntents.orgId, run.orgId),
+      auth.orgCondition(actionIntents.orgId),
+    ));
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
   // device-less but its findings each name one device, so the detail needs
