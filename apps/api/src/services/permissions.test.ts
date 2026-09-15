@@ -615,8 +615,16 @@ describe('permissions service', () => {
         accessiblePartnerIds: [],
       });
       mockPlatformAdminRead([{ isPlatformAdmin: false }]);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       expect(await getUserPermissions('not-admin', { scope: 'system' })).toBeNull();
+      // Leaves the same diagnostic trail as authMiddleware's SR2-02 rejection:
+      // reaching this branch at all means the demotion landed mid-request.
+      expect(warn).toHaveBeenCalledWith('[permissions] denied system-scope token', {
+        reason: 'system_scope_not_platform_admin',
+        userId: 'not-admin',
+      });
+      warn.mockRestore();
     });
 
     it('returns null when the user row is gone entirely', async () => {

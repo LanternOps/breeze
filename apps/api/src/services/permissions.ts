@@ -138,7 +138,18 @@ async function resolveSystemScopePermissions(userId: string): Promise<UserPermis
     ? await readIsPlatformAdmin()
     : await runOutsideDbContext(() => withSystemDbAccessContext(readIsPlatformAdmin));
 
-  if (!isPlatformAdmin) return null;
+  if (!isPlatformAdmin) {
+    // Mirrors authMiddleware's SR2-02 rejection log (`system_scope_demoted`),
+    // which covers the same condition one layer up. Reaching THIS branch means
+    // the demotion landed inside the request — between authMiddleware's live
+    // read and this one — so it is a narrow TOCTOU race that deserves the same
+    // diagnostic trail rather than a silent 403.
+    console.warn('[permissions] denied system-scope token', {
+      reason: 'system_scope_not_platform_admin',
+      userId,
+    });
+    return null;
+  }
 
   return {
     permissions: PLATFORM_ADMIN_GRANTS.map((grant) => ({ ...grant })),

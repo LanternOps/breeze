@@ -488,16 +488,23 @@ describe('GET /orgs/account-readiness', () => {
     expect(body.orgs.map((org: { orgId: string }) => org.orgId).sort()).toEqual([orgA, orgB].sort());
   });
 
-  runDb('a system-scope token whose user is NOT a platform admin never reaches the handler', async () => {
+  // This case pins the OUTER layer only, and passes on a base without #5733 —
+  // that is the honest reading, not a discrimination failure to paper over.
+  // authMiddleware's SR2-02 live-binding check (middleware/auth.ts, "system
+  // scope is only legitimate for a current platform admin") rejects the token
+  // before requirePermission runs, so getUserPermissions' own null branch is
+  // unreachable through the real chain except in a same-request demotion race.
+  // That inner branch is pinned where it CAN be driven: services/permissions.test.ts
+  // ("returns null (→ 403) for a system token whose user is NOT a platform
+  // admin"). Kept here so a future widening of the fix — one that granted the
+  // wildcard set off the token's scope claim alone — fails at BOTH layers.
+  runDb('a system-scope token whose user is NOT a platform admin is rejected before the handler', async () => {
     const board = await seedBoard();
     const { app, partnerId, orgA } = board;
     const get = await systemScopeGet(app, partnerId, { isPlatformAdmin: false });
 
     const res = await get(readinessPath([orgA], partnerId));
 
-    // authMiddleware's SR2-02 live-binding check rejects a demoted admin's
-    // system claim before requirePermission is reached; getUserPermissions'
-    // own live read is the same answer one layer down. Either way: 403.
     expect(res.status).toBe(403);
   });
 
