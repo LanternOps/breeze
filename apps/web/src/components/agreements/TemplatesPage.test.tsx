@@ -73,7 +73,7 @@ const ORG_TEMPLATE = {
   latestVersion: null,
 };
 
-describe('TemplatesTab — library list', () => {
+describe('TemplatesPage — agreement template library', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.location.hash = '';
