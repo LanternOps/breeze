@@ -32,6 +32,7 @@ vi.mock('./softwareDeployment', () => ({ createSoftwareDeployment: createSoftwar
 import {
   createPolicyOwnedInstallDeployment,
   hasUnfinishedPolicyOwnedInstall,
+  readLatestPolicyOwnedInstallByDevice,
   resolvePolicyInstallTarget,
 } from './softwarePolicyInstallRemediation';
 
@@ -209,5 +210,38 @@ describe('createPolicyOwnedInstallDeployment', () => {
     expect(input.softwareVersionId).toBe('sv-1');
     expect(input.installMethodId).toBeUndefined();
     expect(input.versionMode).toBeUndefined();
+  });
+});
+
+describe('readLatestPolicyOwnedInstallByDevice', () => {
+  it('returns the LATEST policy-owned deployment timestamp per device', async () => {
+    const older = new Date('2026-09-15T09:00:00Z');
+    const newer = new Date('2026-09-15T11:00:00Z');
+    primeSelects([
+      { deviceId: 'dev-1', createdAt: older },
+      { deviceId: 'dev-1', createdAt: newer },
+      { deviceId: 'dev-2', createdAt: older },
+    ]);
+
+    const byDevice = await readLatestPolicyOwnedInstallByDevice('pol-1', ['dev-1', 'dev-2']);
+
+    expect(byDevice.get('dev-1')).toEqual(newer);
+    expect(byDevice.get('dev-2')).toEqual(older);
+  });
+
+  it('short-circuits on an empty device list without touching the database', async () => {
+    primeSelects([]);
+    const byDevice = await readLatestPolicyOwnedInstallByDevice('pol-1', []);
+    expect(byDevice.size).toBe(0);
+    expect(selectMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores rows with a missing or unusable createdAt rather than storing garbage', async () => {
+    primeSelects([
+      { deviceId: 'dev-1', createdAt: null },
+      { deviceId: 'dev-2', createdAt: 'not-a-date' },
+    ]);
+    const byDevice = await readLatestPolicyOwnedInstallByDevice('pol-1', ['dev-1', 'dev-2']);
+    expect(byDevice.size).toBe(0);
   });
 });

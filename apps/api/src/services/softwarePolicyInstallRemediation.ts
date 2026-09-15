@@ -1,4 +1,4 @@
-import { and, eq, gte, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
   deploymentResults,
@@ -274,4 +274,55 @@ export async function createPolicyOwnedInstallDeployment(input: {
     status: result.status,
     ...(result.message ? { message: result.message } : {}),
   };
+}
+
+/**
+ * The newest policy-owned deployment per device for one policy, batched.
+ *
+ * Feeds the compliance worker's orphaned-install reconcile sweep (#5505 W03),
+ * which must distinguish "this enqueue produced a deployment" from "this
+ * enqueue produced nothing". Mere MEMBERSHIP is not enough: a device whose
+ * PREVIOUS cycle installed successfully still has policy-owned deployments, so
+ * the sweep needs the timestamp to compare against
+ * last_install_remediation_attempt.
+ *
+ * Deliberately not bounded by POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES: the
+ * comparison the caller makes is against its own attempt timestamp, and an
+ * older bound would hide exactly the rows it needs to see.
+ */
+export async function readLatestPolicyOwnedInstallByDevice(
+  policyId: string,
+  deviceIds: string[],
+): Promise<Map<string, Date>> {
+  const byDevice = new Map<string, Date>();
+  const normalized = Array.from(
+    new Set(deviceIds.filter((id): id is string => typeof id === 'string' && id.length > 0)),
+  );
+  if (normalized.length === 0) return byDevice;
+
+  const rows = await db
+    .select({
+      deviceId: deploymentResults.deviceId,
+      createdAt: softwareDeployments.createdAt,
+    })
+    .from(deploymentResults)
+    .innerJoin(softwareDeployments, eq(softwareDeployments.id, deploymentResults.deploymentId))
+    .where(
+      and(
+        eq(softwareDeployments.softwarePolicyId, policyId),
+        inArray(deploymentResults.deviceId, normalized),
+      ),
+    );
+
+  for (const row of rows) {
+    // software_deployments.created_at is NOT NULL, but this reads a join result
+    // that a future schema change could widen — a garbage value must be dropped
+    // rather than stored as an Invalid Date that silently compares false.
+    if (!(row.createdAt instanceof Date) || Number.isNaN(row.createdAt.getTime())) continue;
+    const existing = byDevice.get(row.deviceId);
+    if (!existing || row.createdAt.getTime() > existing.getTime()) {
+      byDevice.set(row.deviceId, row.createdAt);
+    }
+  }
+  return byDevice;
 }
