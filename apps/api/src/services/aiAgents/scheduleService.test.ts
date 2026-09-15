@@ -287,19 +287,19 @@ describe('effectiveSchedule', () => {
       name: 'no override passes the baseline through',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
       override: null,
-      expected: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
+      expected: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents'), actMode: false },
     },
     {
       name: 'a disabled baseline cannot be re-enabled by the override',
       baseline: { enabled: false, sweepKinds: kinds('disk_pressure') },
       override: { enabled: true, sweepKinds: kinds('disk_pressure') },
-      expected: { enabled: false, sweepKinds: kinds('disk_pressure') },
+      expected: { enabled: false, sweepKinds: kinds('disk_pressure'), actMode: false },
     },
     {
       name: 'a disabled override disables an enabled baseline',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure') },
       override: { enabled: false, sweepKinds: kinds('disk_pressure') },
-      expected: { enabled: false, sweepKinds: kinds('disk_pressure') },
+      expected: { enabled: false, sweepKinds: kinds('disk_pressure'), actMode: false },
     },
     {
       name: 'kinds are intersected, never unioned',
@@ -307,13 +307,13 @@ describe('effectiveSchedule', () => {
       // 'service_down' is NOT in the baseline: a stale override may name it,
       // and it must never widen what the org actually sweeps.
       override: { enabled: true, sweepKinds: kinds('stale_agents', 'service_down') },
-      expected: { enabled: true, sweepKinds: kinds('stale_agents') },
+      expected: { enabled: true, sweepKinds: kinds('stale_agents'), actMode: false },
     },
     {
       name: 'an empty override kind list sweeps nothing',
       baseline: { enabled: true, sweepKinds: kinds('disk_pressure', 'stale_agents') },
       override: { enabled: true, sweepKinds: [] as AiSweepKind[] },
-      expected: { enabled: true, sweepKinds: [] as AiSweepKind[] },
+      expected: { enabled: true, sweepKinds: [] as AiSweepKind[], actMode: false },
     },
   ])('$name', ({ baseline, override, expected }) => {
     expect(effectiveSchedule(baseline, override)).toEqual(expected);
@@ -324,6 +324,88 @@ describe('effectiveSchedule', () => {
     const result = effectiveSchedule(baseline, null);
     result.sweepKinds.push('service_down' as AiSweepKind);
     expect(baseline.sweepKinds).toEqual(kinds('disk_pressure'));
+  });
+});
+
+// #4442 W04 — act mode is TIGHTEN-ONLY in both directions and three-valued:
+// a partner baseline arms it (`true`), an org override may only DISARM
+// (`false`) or stay silent (`null`/absent = inherit). An override can never
+// arm what the partner did not, and `null` on a baseline is "not armed", not
+// "unknown". Every unresolved combination resolves to FALSE — this is the
+// brake on Tier-3 unattended execution, so it fails closed.
+describe('effectiveSchedule actMode (tighten-only)', () => {
+  const kinds = (...k: string[]) => k as AiSweepKind[];
+  const cases: Array<[boolean | null, boolean | null | undefined, boolean]> = [
+    [true, undefined, true],
+    [true, null, true],
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+    [null, true, false],
+    [null, undefined, false],
+    [false, undefined, false],
+    [null, false, false],
+  ];
+  it.each(cases)('baseline=%s override=%s -> %s', (baselineActMode, overrideActMode, want) => {
+    const baseline = { enabled: true, sweepKinds: kinds('disk_pressure'), actMode: baselineActMode };
+    const override = overrideActMode === undefined
+      ? null
+      : { enabled: true, sweepKinds: kinds('disk_pressure'), actMode: overrideActMode };
+    expect(effectiveSchedule(baseline, override).actMode).toBe(want);
+  });
+
+  it('is false when neither side mentions actMode at all (absent = not armed)', () => {
+    expect(effectiveSchedule(
+      { enabled: true, sweepKinds: kinds('disk_pressure') },
+      { enabled: true, sweepKinds: kinds('disk_pressure') },
+    ).actMode).toBe(false);
+  });
+});
+
+describe('actMode write rules', () => {
+  it('a partner baseline may arm act mode', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+    dbState.updateReturning = baselineRow({ actMode: true });
+
+    await updateSchedule(partnerAuth(), BASELINE_ID, { actMode: true });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: true });
+  });
+
+  it('a partner admin without full org access cannot arm act mode', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await expect(
+      updateSchedule(partnerAuth({ partnerOrgAccess: 'selected' }), BASELINE_ID, { actMode: true }),
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(dbState.updatedValues).toBeNull();
+  });
+
+  it('an org override may DISARM act mode', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+    dbState.updateReturning = overrideRow({ actMode: false });
+
+    await updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: false });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: false });
+  });
+
+  it('an org override may clear its disarm back to inherit (null)', async () => {
+    dbState.scheduleRows = [[overrideRow({ actMode: false })]];
+    dbState.updateReturning = overrideRow({ actMode: null });
+
+    await updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: null });
+
+    expect(dbState.updatedValues).toMatchObject({ actMode: null });
+  });
+
+  it('an org override CANNOT arm act mode — rejected, never silently coerced', async () => {
+    dbState.scheduleRows = [[overrideRow()]];
+
+    await expect(
+      updateSchedule(orgAuth(), OVERRIDE_ID, { actMode: true }),
+    ).rejects.toMatchObject({ code: 'act_mode_org_cannot_arm' });
+    expect(dbState.updatedValues).toBeNull();
   });
 });
 
@@ -1086,6 +1168,7 @@ describe('listSchedules', () => {
     expect(rows[0]?.effective).toEqual({
       enabled: true,
       sweepKinds: ['disk_pressure', 'stale_agents', 'failed_backups'],
+      actMode: false,
     });
   });
 
@@ -1095,7 +1178,7 @@ describe('listSchedules', () => {
     const rows = await listSchedules(partnerAuth(), { orgId: ORG_ID });
 
     expect(rows[0]?.override).toEqual({ id: OVERRIDE_ID, enabled: true, sweepKinds: ['disk_pressure'] });
-    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'] });
+    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'], actMode: false });
   });
 
   it('denies a partner caller asking for an org it cannot access', async () => {
@@ -1115,7 +1198,7 @@ describe('listSchedules', () => {
     // reach one of them.
     expect(rows[0]?.lastRunSummary).toBeNull();
     expect(rows[0]?.override).toEqual({ id: OVERRIDE_ID, enabled: true, sweepKinds: ['disk_pressure'] });
-    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'] });
+    expect(rows[0]?.effective).toEqual({ enabled: true, sweepKinds: ['disk_pressure'], actMode: false });
   });
 
   it('reads the partner baselines for an org caller through the partner-axis escape', async () => {

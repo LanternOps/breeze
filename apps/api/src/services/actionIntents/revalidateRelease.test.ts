@@ -30,6 +30,12 @@ vi.mock('./policyDecidable', () => ({
 vi.mock('../../config/env', () => ({
   policyDecideEnabled: vi.fn(() => true),
 }));
+// #4442 W04 — the release-time schedule brake. Mocked at the module boundary:
+// its own DB behaviour (baseline ∧ override, every unresolved lookup = not
+// armed) is covered exhaustively in aiAgents/sweepActMode.test.ts.
+vi.mock('../aiAgents/sweepActMode', () => ({
+  checkSweepScheduleBrake: vi.fn(async () => ({ ok: true })),
+}));
 
 import { revalidateApprovedIntentForRelease } from './revalidateRelease';
 import { checkToolPermission } from '../aiGuardrails';
@@ -37,6 +43,7 @@ import { checkAgentReleaseAuthority } from './agentReleaseAuthority';
 import { validateAuthorizationKeys } from './policyDecidable';
 import { policyDecideEnabled } from '../../config/env';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
+import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
 
 /** Minimal ActionIntent shape the function actually reads. */
 function intentFixture(overrides: Record<string, unknown> = {}) {
@@ -300,6 +307,88 @@ describe('revalidateApprovedIntentForRelease policy-evidence branch (wave 5b, #3
       details: { key: POLICY_KEY },
     });
     expect(checkAgentReleaseAuthority).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4442 W04 Task 7 — the release-time schedule brake.
+//
+// Replacing the CREATION gate cannot revoke an intent that is already
+// `approved`; only a release-time re-read can. This is the ORDINARY brake an
+// operator reaches for.
+// ---------------------------------------------------------------------------
+describe('revalidateApprovedIntentForRelease sweep act brake (#4442 W04)', () => {
+  const args = { deviceId: 'dev-1', action: 'restart', serviceName: 'Spooler' };
+  const digest = computeArgumentDigest(canonicalizeArguments(args));
+
+  const sweepIntent = (overrides: Record<string, unknown> = {}) => intentFixture({
+    requestedByUserId: null,
+    requestingAgentRunId: 'run-1',
+    originPrincipalKind: 'ai_agent',
+    originPrincipalId: 'agent-1',
+    source: 'ai_agent',
+    actionName: 'manage_services',
+    arguments: args,
+    argumentDigest: digest,
+    triggerKind: 'sweep_finding',
+    triggerKey: 'sweep:service_down:Spooler',
+    scopeKind: 'device',
+    scopeDeviceId: 'dev-1',
+    decidedVia: 'policy',
+    policyDecisionState: 'authorized',
+    policyAuthorizationKey: 'manage_services:restart',
+    policySnapshotDigest: 'd'.repeat(64),
+    policyClassificationVersion: 1,
+    policyReservationId: 'reservation-1',
+    policyKillEpoch: 0,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    vi.mocked(policyDecideEnabled).mockReturnValue(true);
+    vi.mocked(validateAuthorizationKeys).mockImplementation((keys: string[]) => ({ ok: keys, rejected: [] }));
+    vi.mocked(checkSweepScheduleBrake).mockResolvedValue({ ok: true });
+  });
+
+  it('a sweep-minted, policy-decided intent whose schedule is still armed releases', async () => {
+    const result = await revalidateApprovedIntentForRelease(sweepIntent(), null);
+
+    expect(result.ok).toBe(true);
+    expect(checkSweepScheduleBrake).toHaveBeenCalledTimes(1);
+  });
+
+  it('a sweep-minted intent whose act mode was turned off between decide and release is refused agent_policy_denied', async () => {
+    vi.mocked(checkSweepScheduleBrake).mockResolvedValue({ ok: false, reason: 'sweep act mode is no longer armed for this organization' });
+
+    const result = await revalidateApprovedIntentForRelease(sweepIntent(), null);
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'agent_policy_denied',
+      details: { reason: 'sweep act mode is no longer armed for this organization' },
+    });
+  });
+
+  it('an ALERT-triggered policy-decided intent takes no new query at all', async () => {
+    const result = await revalidateApprovedIntentForRelease(
+      sweepIntent({ triggerKind: 'alert', triggerKey: 'alert:Disk Low', scopeKind: null, scopeDeviceId: null }),
+      null,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(checkSweepScheduleBrake).not.toHaveBeenCalled();
+  });
+
+  it('a sweep intent a HUMAN approved is NOT subject to the brake — a human decision is not policy autonomy', async () => {
+    vi.mocked(checkSweepScheduleBrake).mockResolvedValue({ ok: false, reason: 'disarmed' });
+
+    const result = await revalidateApprovedIntentForRelease(
+      sweepIntent({ decidedVia: null, policyDecisionState: 'human_required' }),
+      { boundArgumentDigest: digest },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(checkSweepScheduleBrake).not.toHaveBeenCalled();
   });
 });
 

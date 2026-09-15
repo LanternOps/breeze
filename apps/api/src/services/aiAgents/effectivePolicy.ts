@@ -243,6 +243,9 @@ export function mergeAgentPolicies(
         org.triggers.alertSeverities,
       ) as AiAgentPolicy['triggers']['alertSeverities'],
       alertRuleIds: intersectOptional(partner.triggers.alertRuleIds, org.triggers.alertRuleIds),
+      // AI patch agent W04 (#5750) — same tighten-only intersection as the
+      // other narrowing lists; enforced by evaluateAgentTriggerFilters.
+      alertCategories: intersectOptional(partner.triggers.alertCategories, org.triggers.alertCategories),
       siteIds: intersectOptional(partner.triggers.siteIds, org.triggers.siteIds),
       deviceGroupIds: intersectOptional(partner.triggers.deviceGroupIds, org.triggers.deviceGroupIds),
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),

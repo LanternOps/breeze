@@ -15,8 +15,14 @@ import type { AiSweepSeverity } from './aiAgentSchedules';
  *                      approval decision. Never device-scoped and never
  *                      writes a `patch_approvals` row (OD-3 A).
  *   reboot_plan        device-scoped: reboot inside an EXISTING resolved
- *                      maintenance window. Never a synthesised time. W01
- *                      evidence resolves no windows, so every one is refused.
+ *                      maintenance window. Never a synthesised time, never
+ *                      dispatched (W04, #5750: the evidence resolves each
+ *                      pending-reboot device's next window; the persister
+ *                      refuses a window the evidence did not resolve for
+ *                      THAT device, a policy that is not window-gated, an
+ *                      unknown redundancy group, and two same-group devices
+ *                      in one window — each refusal is visible, and the
+ *                      model is told to escalate those instead).
  *   chase              device-scoped: failed patch work to retry — an install
  *                      WITH A HISTORY. W03 (#5749) fills the failure evidence
  *                      and mints it through the same path as `install`, bounded
@@ -69,6 +75,17 @@ export const PATCH_FAILURE_RETRYABLE_CLASSES: ReadonlySet<PatchFailureClass> = n
  * `failed` within the evidence window; nothing retries itself.
  */
 export const PATCH_CHASE_MAX_ATTEMPTS = 2;
+
+/**
+ * AI patch agent W04 (#5750) — the `alert_templates.category` every patch
+ * alert source carries: the built-in `patch_compliance` monitor's compiled
+ * template, the patch-job-failure template and the reboot-pending template.
+ * `classifyAlertAsPatchWork` (apps/api `services/aiAgents/patchWorkClassifier.ts`)
+ * reaches it through `alerts.rule_id → alert_rules.template_id`, and
+ * `AiAgentTriggers.alertCategories` matches against it. One spelling, shared,
+ * so a template and the classifier cannot drift apart.
+ */
+export const PATCH_ALERT_CATEGORY = 'patching' as const;
 
 /** Fleet posture the model reports at the top of the plan. */
 export interface PatchPlanPosture {
@@ -150,8 +167,52 @@ export const PATCH_PLAN_REFUSAL_REASONS = [
    * in favour of an escalation rather than guessed.
    */
   'failure_history_truncated',
+  // W04 (#5750) — the reboot_plan gates, on top of window membership.
+  /**
+   * The device's resolved reboot policy is `if_required`/`always`/`never`,
+   * not `maintenance_window`: `patchRebootHandler.evaluateRebootPolicy`
+   * reboots the first two with NO window check at all, so a "plan" would be
+   * a claim the system does not honour. Escalate instead.
+   */
+  'reboot_policy_not_window_gated',
+  /** No confident function assessment and no `role:` tag — the redundancy group is unknown, so ordering cannot be checked. */
+  'redundancy_unknown',
+  /** Another accepted reboot_plan item in THIS plan already puts a device of the same redundancy group in the same window. */
+  'redundancy_collision',
 ] as const;
 export type PatchPlanRefusalReason = (typeof PATCH_PLAN_REFUSAL_REASONS)[number];
+
+/**
+ * W04 (#5750) — why the evidence marks a pending-reboot device UNPLANNABLE
+ * (the model must escalate it rather than submit a `reboot_plan`). Display
+ * values, rendered verbatim on the run trace.
+ */
+export const PATCH_REBOOT_UNPLANNABLE_REASONS = [
+  /** No maintenance window (config policy or standalone) starts within the projector's horizon. */
+  'no_window_in_horizon',
+  'reboot_policy_not_window_gated',
+  'redundancy_unknown',
+] as const;
+export type PatchRebootUnplannableReason = (typeof PATCH_REBOOT_UNPLANNABLE_REASONS)[number];
+
+/**
+ * W04 (#5750) — one pending-reboot device as the persister sees it: the
+ * window the evidence resolved for it (`windowId` grammar:
+ * `<config_policy_maintenance_settings.id | maintenance_windows.id>@<startsAt ISO>`,
+ * see `parsePatchWindowId`), its resolved reboot policy and redundancy
+ * group, and why it cannot be planned when it cannot.
+ */
+export interface PatchRebootPlanRef {
+  deviceId: string;
+  windowId: string | null;
+  windowStartsAt: string | null;
+  windowEndsAt: string | null;
+  /** `never | if_required | always | maintenance_window`, or null when unresolved. */
+  rebootPolicy: string | null;
+  /** A confident `device_function_assessments.function_key`, else a `role:<x>` device tag, else null. */
+  redundancyGroup: string | null;
+  unplannableReason: PatchRebootUnplannableReason | null;
+}
 
 /**
  * Why `resolvePatchInstallEligibility` (apps/api `services/patchEligibility.ts`)
@@ -212,6 +273,14 @@ export interface PatchPlanItemRecord {
    */
   droppedPatchIds?: Array<{ patchId: string; reason: PatchIneligibleReason }>;
   mintedPatchIds?: string[];
+  /**
+   * W04: for a recorded `reboot_plan`, the resolved window's bounds and the
+   * device's redundancy group, copied from the evidence at persist time so
+   * the run trace can show them after the evidence is gone.
+   */
+  windowStartsAt?: string;
+  windowEndsAt?: string;
+  redundancyGroup?: string;
 }
 
 /** `ai_agent_runs.outcome.patchPlan` — server-built from a validated submission. */
@@ -247,6 +316,12 @@ export interface PatchPlanOutcomeRefs {
    * bundle.
    */
   failedWorkByJobResult?: ReadonlyMap<string, PatchFailedWorkRef>;
+  /**
+   * W04: every pending-reboot device the evidence showed → its resolved
+   * window, reboot policy and redundancy group. `windowIds` is the set of
+   * every `windowId` in here. Absent on a pre-W04 bundle.
+   */
+  rebootPlanByDevice?: ReadonlyMap<string, PatchRebootPlanRef>;
 }
 
 /** W03: one failedWork evidence group as the persister sees it. */
@@ -284,6 +359,13 @@ export interface AiAgentRunPatchItemDto {
   failureClass: PatchFailureClass | null;
   /** W03: the attempt count the item cites (`chase`/`escalation`), else null. */
   attemptCount: number | null;
+  /** W04: the resolved maintenance window a `reboot_plan` names, else null. */
+  windowId: string | null;
+  /** W04: that window's start/end (ISO), from the evidence, else null. */
+  windowStartsAt: string | null;
+  windowEndsAt: string | null;
+  /** W04: the device's redundancy group from the evidence, else null. */
+  redundancyGroup: string | null;
 }
 
 /**

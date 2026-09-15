@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Ein Patch-Plan wird höchstens einmal am Tag ausgelöst: feste Minute und Stunde sowie * oder eine literale Liste für Tag-des-Monats, Monat und Wochentag. Beispiel: 0 2 * * * läuft jede Nacht um 02:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
+      "actMode": {
+        "label": "Aktionsmodus",
+        "hint": "Wenn aktiviert, kann dieser Zeitplan bestimmte Korrekturen automatisch anwenden, anstatt auf eine Genehmigung zu warten.",
+        "disabledHint": "Zum Aktivieren des Aktionsmodus ist vollständiger Partnerzugriff auf alle Organisationen erforderlich.",
+        "scopeNote": "Unbeaufsichtigte Korrekturen beschränken sich auf den Neustart eines gestoppten Dienstes, und das nur auf Geräten, deren Organisation bereits die Berechtigung manage_services:restart erhalten hat. Alles andere wartet weiterhin auf eine Genehmigung.",
+        "disableForOrg": "Aktionsmodus für diese Organisation deaktivieren",
+        "disableForOrgHint": "Diese Organisation übernimmt immer die Aktionsmodus-Einstellung der Partner-Basis, sofern sie hier nicht deaktiviert wird — sie kann ihn niemals unabhängig aktivieren."
+      },
       "override": "Für diese Organisation überschreiben",
       "editOverride": "Ausnahme dieser Organisation bearbeiten",
       "overrideHint": "Die Ausnahme dieser Organisation zur Partner-Basis. Sie läuft immer im Takt der Basis.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Ein Flottendesign-Zeitplan muss auf einen Flottendesigner-Agenten abzielen.",
         "agentKindNotPatch": "Ein Patch-Plan-Zeitplan muss auf einen Patch-Agenten abzielen.",
         "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
-        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
+        "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag.",
+        "actModeOrgCannotArm": "Der Aktionsmodus ist in der Partner-Basis aktiviert; eine Ausnahme der Organisation kann ihn nur deaktivieren, niemals aktivieren."
       }
     },
     "title": "KI-Agenten",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
+      "alertCategories": "Alarmkategorien",
+      "alertCategoriesHint": "Nur Alarme, deren Vorlagenkategorie hier aufgeführt ist, wecken diesen Agenten. Leer lassen für jede Kategorie. Patch-Alarme tragen „patching“.",
+      "alertCategoriesPlaceholder": "z. B. patching, monitor",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Gerät nicht in den Belegen des Prüflaufs",
+          "subject_not_in_evidence": "Objekt nicht in den Belegen des Prüflaufs",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
           "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
           "no_eligible_approvers": "Keine berechtigten Genehmiger",
@@ -1919,6 +1932,8 @@
         "failureClass": "Fehlerklasse: {{label}}",
         "attempts": "{{count}} fehlgeschlagener Versuch",
         "attempts_other": "{{count}} fehlgeschlagene Versuche",
+        "rebootWindow": "Zeitfenster: {{start}} – {{end}}",
+        "redundancyGroup": "Redundanzgruppe: {{group}}",
         "escalation": "Erfordert eine Person – dies wird nicht automatisch wiederholt.",
         "escalations": "{{count}} Eskalation",
         "escalations_other": "{{count}} Eskalationen",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Diese Art von Fehler wird nie automatisch wiederholt",
           "chase_attempts_exhausted": "Das Wiederholungslimit für dieses Update wurde erreicht – stattdessen eskaliert",
           "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein",
-          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich"
+          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich",
+          "reboot_policy_not_window_gated": "Die Neustartrichtlinie des Geräts startet außerhalb von Wartungsfenstern neu, daher würde ein Zeitfensterplan nicht eingehalten",
+          "redundancy_unknown": "Die Redundanzgruppe des Geräts ist unbekannt, daher konnte die Reihenfolge nicht überprüft werden",
+          "redundancy_collision": "Ein anderes Gerät derselben Redundanzgruppe ist für dieses Zeitfenster bereits eingeplant"
         },
         "ineligible": {
           "not_outstanding": "Auf diesem Gerät nicht ausstehend",
@@ -2028,7 +2046,9 @@
           "startedAt": "Gestartet",
           "finishedAt": "Beendet",
           "turnCount": "Runden",
-          "summary": "Zusammenfassung"
+          "summary": "Zusammenfassung",
+          "computeCost": "Rechenkosten",
+          "computeEstimated": "(geschätzt)"
         },
         "flags": {
           "budgetExceeded": "Budget überschritten",
@@ -2060,6 +2080,29 @@
             "skipped": "Verifizierung übersprungen"
           },
           "viewApproval": "In Genehmigungen prüfen"
+        },
+        "artifacts": {
+          "title": "Von diesem Lauf erzeugte Dateien",
+          "download": "Herunterladen",
+          "preview": "Vorschau",
+          "attachToTicket": "An ein Ticket anhängen",
+          "attach": "{{name}} anhängen",
+          "ticketIdPlaceholder": "Ticket-ID",
+          "attachedToTicket": "An das Ticket angehängt",
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
+        },
+        "workspace": {
+          "title": "Was in der Sandbox ausgeführt wurde",
+          "region": "Region",
+          "status": "Sandbox",
+          "cpu": "CPU-Zeit",
+          "steps": "Schritte",
+          "script": "Skript",
+          "stdout": "Ausgabe",
+          "exitCode": "Exit",
+          "timedOut": "Zeitüberschreitung",
+          "noExitCode": "kein Exit-Code",
+          "artifactExpired": "abgelaufen"
         },
         "progress": {
           "title": "Fortschritt"
@@ -4295,6 +4338,12 @@
       "organizationId": "Organisations-ID",
       "copyOrganizationId": "Organisations-ID kopieren",
       "organizationIdHelp": "Verwenden Sie diese ID, wenn Sie Benutzer einladen oder Integrationen konfigurieren."
+    },
+    "ai": {
+      "externalProcessing": "Sandbox-KI-Analyse zulassen",
+      "externalProcessingDescription": "Ermöglicht es KI-Analyseläufen, für diese Organisation Code in einer isolierten Sandbox ohne Netzwerkzugriff auszuführen, gehostet in der Region dieser Organisation. Standardmäßig deaktiviert.",
+      "externalProcessingSaved": "Gespeichert",
+      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden"
     },
     "breadcrumbs": {
       "settings": "Einstellungen",

@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Un plan de parches se dispara como máximo una vez al día: minuto y hora literales, y * o una lista literal para día-del-mes, mes y día de la semana. Por ejemplo, 0 2 * * * se ejecuta todas las noches a las 02:00.",
       "kindsRequired": "Selecciona al menos una comprobación.",
       "enabled": "Habilitado",
+      "actMode": {
+        "label": "Modo de actuación",
+        "hint": "Cuando está activado, este programa puede aplicar ciertas correcciones automáticamente en lugar de esperar aprobación.",
+        "disabledHint": "Activar el modo de actuación requiere acceso total del partner a todas las organizaciones.",
+        "scopeNote": "Las correcciones no supervisadas se limitan a reiniciar un servicio detenido, y solo en dispositivos cuya organización ya cuenta con el permiso manage_services:restart. Todo lo demás sigue esperando aprobación.",
+        "disableForOrg": "Desactivar el modo de actuación para esta organización",
+        "disableForOrgHint": "Esta organización siempre hereda la configuración de modo de actuación de la línea base del partner, salvo que se desactive aquí — nunca puede activarse de forma independiente."
+      },
       "override": "Anular para esta organización",
       "editOverride": "Editar la excepción de esta organización",
       "overrideHint": "La excepción de esta organización sobre la línea base del partner. Siempre se ejecuta con la cadencia de la línea base.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Una programación de diseño de flota debe dirigirse a un agente Diseñador de flota.",
         "agentKindNotPatch": "Una programación de plan de parches debe dirigirse a un agente de Parches.",
         "kindsNotEmpty": "Una programación de informe semanal no ejecuta comprobaciones. Quita las comprobaciones seleccionadas antes de guardar.",
-        "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana."
+        "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana.",
+        "actModeOrgCannotArm": "El modo de actuación está activado en la línea base del partner; una anulación de la organización solo puede desactivarlo, nunca activarlo."
       }
     },
     "title": "Agentes de IA",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento.",
       "ticketAutonomousWrites": "Escrituras autónomas de tickets",
       "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
+      "alertCategories": "Categorías de alertas",
+      "alertCategoriesHint": "Solo las alertas cuya categoría de plantilla aparece aquí activan este agente. Déjelo vacío para cualquier categoría. Las alertas de parches llevan \"patching\".",
+      "alertCategoriesPlaceholder": "p. ej. patching, monitor",
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
       "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
       "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "El dispositivo no aparece en la evidencia del barrido",
+          "subject_not_in_evidence": "El elemento no está en las evidencias del barrido",
           "device_not_in_org": "El dispositivo no pertenece a esta organización",
           "not_allowlisted": "Herramienta no permitida para este agente",
           "no_eligible_approvers": "Sin aprobadores elegibles",
@@ -1919,6 +1932,8 @@
         "failureClass": "Clase de fallo: {{label}}",
         "attempts": "{{count}} intento fallido",
         "attempts_other": "{{count}} intentos fallidos",
+        "rebootWindow": "Ventana: {{start}} – {{end}}",
+        "redundancyGroup": "Grupo de redundancia: {{group}}",
         "escalation": "Requiere una persona: esto no se reintentará automáticamente.",
         "escalations": "{{count}} escalamiento",
         "escalations_other": "{{count}} escalamientos",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Este tipo de fallo nunca se reintenta automáticamente",
           "chase_attempts_exhausted": "Se alcanzó el límite de reintentos para esta actualización; se escaló en su lugar",
           "attempt_count_mismatch": "El número de intentos citado no coincide con la evidencia",
-          "failure_history_truncated": "El historial de fallos estaba incompleto, por lo que no se pudo confiar en el número de reintentos"
+          "failure_history_truncated": "El historial de fallos estaba incompleto, por lo que no se pudo confiar en el número de reintentos",
+          "reboot_policy_not_window_gated": "La política de reinicio del dispositivo reinicia fuera de las ventanas de mantenimiento, por lo que un plan de ventana no se respetaría",
+          "redundancy_unknown": "Se desconoce el grupo de redundancia del dispositivo, por lo que no se pudo verificar el orden",
+          "redundancy_collision": "Otro dispositivo del mismo grupo de redundancia ya está planificado para esta ventana"
         },
         "ineligible": {
           "not_outstanding": "No está pendiente en este dispositivo",
@@ -2028,7 +2046,9 @@
           "startedAt": "Iniciado",
           "finishedAt": "Finalizado",
           "turnCount": "Turnos",
-          "summary": "Resumen"
+          "summary": "Resumen",
+          "computeCost": "Cómputo",
+          "computeEstimated": "(estimado)"
         },
         "flags": {
           "budgetExceeded": "Presupuesto excedido",
@@ -2060,6 +2080,29 @@
             "skipped": "Verificación omitida"
           },
           "viewApproval": "Revisar en Aprobaciones"
+        },
+        "artifacts": {
+          "title": "Archivos generados por esta ejecución",
+          "download": "Descargar",
+          "preview": "Vista previa",
+          "attachToTicket": "Adjuntar a un ticket",
+          "attach": "Adjuntar {{name}}",
+          "ticketIdPlaceholder": "ID del ticket",
+          "attachedToTicket": "Adjuntado al ticket",
+          "attachFailed": "No se pudo adjuntar el archivo a ese ticket"
+        },
+        "workspace": {
+          "title": "Lo que se ejecutó en el entorno aislado",
+          "region": "Región",
+          "status": "Entorno aislado",
+          "cpu": "Tiempo de CPU",
+          "steps": "Pasos",
+          "script": "Script",
+          "stdout": "Salida",
+          "exitCode": "salida",
+          "timedOut": "tiempo agotado",
+          "noExitCode": "sin código de salida",
+          "artifactExpired": "expirado"
         },
         "progress": {
           "title": "Progreso"
@@ -4295,6 +4338,12 @@
       "organizationId": "Organización ID",
       "copyOrganizationId": "Copiar organización ID",
       "organizationIdHelp": "Utilice este ID cuando invite a usuarios o configure integraciones."
+    },
+    "ai": {
+      "externalProcessing": "Permitir análisis de IA en entorno aislado",
+      "externalProcessingDescription": "Permite que las ejecuciones de análisis de IA ejecuten código para esta organización en un entorno aislado sin acceso a la red, alojado en la región de esta organización. Desactivado de forma predeterminada.",
+      "externalProcessingSaved": "Guardado",
+      "externalProcessingSaveFailed": "No se pudo cambiar esta configuración"
     },
     "breadcrumbs": {
       "settings": "Configuración",

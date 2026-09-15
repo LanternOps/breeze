@@ -116,6 +116,7 @@ export default function WorkspaceChatPanel({ tab }: WorkspaceChatPanelProps) {
       {/* Messages */}
       <AiChatMessages
         messages={tab.messages}
+        chatRuns={tab.chatRuns}
         pendingApproval={tab.pendingApproval}
         pendingPlan={tab.pendingPlan}
         activePlan={tab.activePlan}

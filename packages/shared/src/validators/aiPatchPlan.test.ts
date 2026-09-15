@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { PATCH_CHASE_MAX_ATTEMPTS, PATCH_FAILURE_CLASSES, PATCH_PLAN_ITEM_CLASSES } from '../types/aiPatchPlan';
-import { PatchPlanReferenceError, patchPlanOutcomeFromSubmission, patchPlanSubmissionSchema, triggerPatchPlanRunSchema } from './aiPatchPlan';
+import {
+  PATCH_CHASE_MAX_ATTEMPTS, PATCH_FAILURE_CLASSES, PATCH_PLAN_ITEM_CLASSES, PATCH_PLAN_REFUSAL_REASONS, PATCH_REBOOT_UNPLANNABLE_REASONS,
+} from '../types/aiPatchPlan';
+import {
+  PatchPlanReferenceError, isPatchWindowId, parsePatchWindowId, patchPlanOutcomeFromSubmission, patchPlanSubmissionSchema, triggerPatchPlanRunSchema,
+} from './aiPatchPlan';
 
 const DEV = '11111111-1111-4111-8111-111111111111';
 const WIN = '22222222-2222-4222-8222-222222222222';
+// W04: a resolved window id carries its occurrence start.
+const WIN_ID = `${WIN}@2026-09-16T02:00:00.000Z`;
 const base = {
   summary: 'Fleet is 82% compliant; 14 devices hold critical updates.',
   posture: { compliancePct: 82, devicesAtRisk: 14, oldestOutstandingDays: 63 },
@@ -39,7 +45,7 @@ describe('patchPlanSubmissionSchema', () => {
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'install', deviceId: DEV, patchIds: [DEV], jobResultIds: [DEV] })] }).success).toBe(false);
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN, patchIds: [DEV] })] }).success).toBe(false);
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'escalation', windowId: WIN })] }).success).toBe(false);
-    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN })] }).success).toBe(true);
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN_ID })] }).success).toBe(true);
     expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'chase', deviceId: DEV, patchIds: [DEV], jobResultIds: [DEV] })] }).success).toBe(true);
   });
 
@@ -83,6 +89,29 @@ describe('patchPlanSubmissionSchema', () => {
   });
 });
 
+// AI patch agent W04 (#5750) — a resolved window id is `<uuid>@<ISO start>`,
+// never a bare uuid (a maintenance settings row recurs; the occurrence is
+// part of the identity).
+describe('windowId grammar (W04)', () => {
+  it('accepts <uuid>@<ISO start> and parses it', () => {
+    expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN_ID })] }).success).toBe(true);
+    expect(parsePatchWindowId(WIN_ID)).toEqual({ sourceId: WIN, startsAt: new Date('2026-09-16T02:00:00.000Z') });
+    expect(isPatchWindowId(WIN_ID)).toBe(true);
+  });
+  it('rejects a bare uuid, a non-ISO start and free text', () => {
+    for (const bad of [WIN, `${WIN}@tomorrow`, 'next window', `${WIN}@2026-09-16T02:00:00.000Z@x`]) {
+      expect(patchPlanSubmissionSchema.safeParse({ ...base, items: [item({ class: 'reboot_plan', deviceId: DEV, windowId: bad })] }).success).toBe(false);
+      expect(parsePatchWindowId(bad)).toBeNull();
+    }
+  });
+  it('closes the reboot refusal and unplannable reason unions', () => {
+    for (const r of ['reboot_policy_not_window_gated', 'redundancy_unknown', 'redundancy_collision']) {
+      expect(PATCH_PLAN_REFUSAL_REASONS).toContain(r);
+    }
+    expect([...PATCH_REBOOT_UNPLANNABLE_REASONS]).toEqual(['no_window_in_horizon', 'reboot_policy_not_window_gated', 'redundancy_unknown']);
+  });
+});
+
 describe('patchPlanOutcomeFromSubmission (the in-tool referential gate)', () => {
   const P1 = '33333333-3333-4333-8333-333333333333';
   const P9 = '44444444-4444-4444-8444-444444444444';
@@ -112,7 +141,7 @@ describe('patchPlanOutcomeFromSubmission (the in-tool referential gate)', () => 
 
   it('does NOT throw on an unresolved window or job result — the persister refuses those with a disposition', () => {
     const out = patchPlanOutcomeFromSubmission(plan([
-      item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN }),
+      item({ class: 'reboot_plan', deviceId: DEV, windowId: WIN_ID }),
       item({ class: 'chase', deviceId: DEV, patchIds: [P1], jobResultIds: [OTHER] }),
     ]), refs, meta);
     expect(out.items).toHaveLength(2);

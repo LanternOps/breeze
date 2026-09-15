@@ -19,6 +19,11 @@ const orgScopeOf = () =>
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  // #4442 W04: AiAgentSchedulesSection now reads the partner-wide capability
+  // off the auth store to gate the act-mode arm switch, so this mock has to
+  // carry it too. `undefined` user = the absent-means-capable default the
+  // component (and CustomFieldsPage) already assume; the server gates for real.
+  useAuthStore: (selector: (s: { user: undefined }) => unknown) => selector({ user: undefined }),
 }));
 // Resolved relative to THIS file (components/settings/), the same module
 // runAction.ts reaches via '../components/shared/Toast' — vitest matches on the

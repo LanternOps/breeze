@@ -39,4 +39,12 @@ describe('ai_agent_schedules schema + ceremonies', () => {
     expect(CORE_TENANT_EXPORT_POLICY.action_intents!.columns.scope_device_id).toBeDefined();
     expect(getOrgMergePolicies().get('ai_agent_schedules')).toEqual(expect.objectContaining({ kind: 'leave-for-erasure' }));
   });
+  // #4442 W04 — act_mode is a plain boolean flag, not credential material, so
+  // it belongs in `included`. The export-policy registry fires on a new COLUMN
+  // of an already-registered table, and this unit guard makes that miss red in
+  // Test API rather than two jobs later in Integration Tests.
+  it('exposes act_mode and registers it as an included export column', () => {
+    expect(getTableColumns(aiAgentSchedules).actMode).toBeDefined();
+    expect(CORE_TENANT_EXPORT_POLICY.ai_agent_schedules!.columns.act_mode!.decision).toBe('include');
+  });
 });

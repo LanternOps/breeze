@@ -137,7 +137,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in pt-BR.
-    'settings.json': 124,
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox") and .script ("Script") — both are the standard loanwords in
+    // pt-BR, and translating them would read as invented jargon.
+    'settings.json': 126,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -259,7 +262,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in es-419.
-    'settings.json': 127,
+    // +1 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.script
+    // — "Script" is the standard loanword in es-419. (`status` is translated
+    // here as "Entorno aislado" and is NOT a duplicate.)
+    'settings.json': 128,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -406,7 +412,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // French.
-    'settings.json': 173,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in French (same acceptance as scriptRejected).
+    'settings.json': 174,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -549,7 +557,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // Canadian French.
-    'settings.json': 179,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in Canadian French too.
+    'settings.json': 180,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -684,7 +694,11 @@ const namespaceDuplicateBaselines = {
     // — "Service" is the same word in German.
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in de-DE.
-    'settings.json': 187,
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.region
+    // ("Region" is the same word in German) and .status ("Sandbox", the
+    // standard loanword). `exitCode` is deliberately "Exit" rather than the
+    // English "exit", so it is not among these.
+    'settings.json': 189,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -781,7 +795,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in it-IT.
-    'settings.json': 165,
+    // +3 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox"), .script ("Script") and .stdout ("Output") — all three are
+    // the standard loanwords in it-IT.
+    'settings.json': 168,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two

@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Yama planı günde en fazla bir kez çalışır: sabit dakika ve saat, ayın-günü, ay ve haftanın günü için ise * veya sabit bir liste. Örneğin 0 2 * * * her gece saat 02:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
+      "actMode": {
+        "label": "Eylem modu",
+        "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
+        "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
+        "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
+        "disableForOrgHint": "Bu kuruluş, burada devre dışı bırakılmadıkça her zaman iş ortağı temel çizgisinin eylem modu ayarını devralır — bağımsız olarak asla etkinleştirilemez."
+      },
       "override": "Bu kuruluş için geçersiz kıl",
       "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
       "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
@@ -1566,7 +1574,8 @@
         "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
         "agentKindNotPatch": "Bir yama planı zamanlaması bir Yama aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
-        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın.",
+        "actModeOrgCannotArm": "Eylem modu iş ortağı temel çizgisinde etkin; bir kuruluş geçersiz kılması bunu yalnızca devre dışı bırakabilir, asla etkinleştiremez."
       }
     },
     "title": "Yapay Zeka Aracıları",
@@ -1777,6 +1786,9 @@
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
       "ticketAutonomousWrites": "Otonom talep yazmaları",
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "alertCategories": "Uyarı kategorileri",
+      "alertCategoriesHint": "Yalnızca şablon kategorisi burada listelenen uyarılar bu aracıyı uyandırır. Herhangi bir kategori için boş bırakın. Yama uyarıları \"patching\" taşır.",
+      "alertCategoriesPlaceholder": "örn. patching, monitor",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
@@ -1890,6 +1902,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "subject_not_in_evidence": "Öğe tarama kanıtlarında yok",
           "device_not_in_org": "Cihaz bu organizasyona ait değil",
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",
@@ -1919,6 +1932,8 @@
         "failureClass": "Hata sınıfı: {{label}}",
         "attempts": "{{count}} başarısız deneme",
         "attempts_other": "{{count}} başarısız deneme",
+        "rebootWindow": "Pencere: {{start}} – {{end}}",
+        "redundancyGroup": "Yedeklilik grubu: {{group}}",
         "escalation": "Bir kişinin bakması gerekiyor — bu otomatik olarak yeniden denenmeyecek.",
         "escalations": "{{count}} yükseltme",
         "escalations_other": "{{count}} yükseltme",
@@ -1948,7 +1963,10 @@
           "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
           "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
           "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor",
-          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi"
+          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi",
+          "reboot_policy_not_window_gated": "Cihazın yeniden başlatma politikası bakım pencereleri dışında yeniden başlatıyor, bu nedenle bir pencere planı uygulanmaz",
+          "redundancy_unknown": "Cihazın yedeklilik grubu bilinmiyor, bu nedenle sıralama kontrol edilemedi",
+          "redundancy_collision": "Aynı yedeklilik grubundaki başka bir cihaz bu pencere için zaten planlandı"
         },
         "ineligible": {
           "not_outstanding": "Bu cihazda bekleyen değil",
@@ -2028,7 +2046,9 @@
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",
           "turnCount": "Tur sayısı",
-          "summary": "Özet"
+          "summary": "Özet",
+          "computeCost": "Hesaplama",
+          "computeEstimated": "(tahmini)"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -2060,6 +2080,29 @@
             "skipped": "Doğrulama atlandı"
           },
           "viewApproval": "Onaylar'da incele"
+        },
+        "artifacts": {
+          "title": "Bu çalıştırmanın oluşturduğu dosyalar",
+          "download": "İndir",
+          "preview": "Önizleme",
+          "attachToTicket": "Bilete ekle",
+          "attach": "{{name}} dosyasını ekle",
+          "ticketIdPlaceholder": "Bilet No",
+          "attachedToTicket": "Bilete eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi"
+        },
+        "workspace": {
+          "title": "Korumalı alanda ne çalıştı",
+          "region": "Bölge",
+          "status": "Korumalı alan",
+          "cpu": "İşlemci süresi",
+          "steps": "Adımlar",
+          "script": "Betik",
+          "stdout": "Çıktı",
+          "exitCode": "çıkış",
+          "timedOut": "zaman aşımı",
+          "noExitCode": "çıkış kodu yok",
+          "artifactExpired": "süresi doldu"
         },
         "progress": {
           "title": "İlerleme"
@@ -4348,6 +4391,12 @@
       "organizationId": "Kuruluş Kimliği",
       "copyOrganizationId": "Kuruluş Kimliğini Kopyala",
       "organizationIdHelp": "Kullanıcıları davet ederken veya entegrasyonları yapılandırırken bu kimliği kullanın."
+    },
+    "ai": {
+      "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
+      "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
+      "externalProcessingSaved": "Kaydedildi",
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
     },
     "breadcrumbs": {
       "settings": "Ayarlar",

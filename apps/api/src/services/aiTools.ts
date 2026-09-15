@@ -95,6 +95,11 @@ import { registerExportTools } from './aiToolsExport';
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
 import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolTiers } from './aiToolsGoogle';
+// Execution plane (spec §5.5). Session-only, like the M365/Google helpdesk
+// tools: it dispatches through makeSessionAwareHandler and is NEVER added to
+// the `aiTools` execution map. Its tier still has to be visible to getToolTier
+// so checkGuardrails can gate it.
+import { workspaceLaunchToolTiers } from './workspace/workspaceLaunchLimits';
 
 // ============================================
 // Shared Types
@@ -345,7 +350,9 @@ registerExportTools(aiTools);
 // behavior identical to the pre-extraction version; see aiToolNames.ts's
 // header and aiToolNames.test.ts.
 registerReservedAiToolNamePredicate(
-  (toolName) => m365ToolTiers[toolName] !== undefined || googleToolTiers[toolName] !== undefined,
+  (toolName) => m365ToolTiers[toolName] !== undefined
+    || googleToolTiers[toolName] !== undefined
+    || workspaceLaunchToolTiers[toolName] !== undefined,
 );
 
 /** The state-store surface the extension AI-tool gate needs (injectable for tests). */
@@ -400,7 +407,8 @@ export function getToolTier(
 ): AiToolTier | undefined {
   const coreTier = aiTools.get(toolName)?.tier
     ?? m365ToolTiers[toolName]
-    ?? googleToolTiers[toolName];
+    ?? googleToolTiers[toolName]
+    ?? workspaceLaunchToolTiers[toolName];
   const extensionTool = registry.getAiTool(toolName);
   if (coreTier !== undefined && extensionTool) {
     throw new Error(`AI tool name collision with core registry: ${toolName}`);
@@ -421,6 +429,7 @@ export function getAllRegisteredToolNames(): string[] {
     ...aiTools.keys(),
     ...Object.keys(m365ToolTiers),
     ...Object.keys(googleToolTiers),
+    ...Object.keys(workspaceLaunchToolTiers),
   ];
 }
 

@@ -65,6 +65,7 @@ function mapScheduleRow(row: AiAgentScheduleRow): AiAgentScheduleDto {
     timezone: row.timezone,
     sweepKinds: row.sweepKinds,
     enabled: row.enabled,
+    actMode: row.actMode,
     lastEnqueuedAt: row.lastEnqueuedAt?.toISOString() ?? null,
     lastOccurrenceKey: row.lastOccurrenceKey,
     // Safe on a write response: the caller just wrote this exact row on its own
@@ -157,6 +158,7 @@ aiAgentSchedulesRoutes.post(
           // — there is no later event that could record it.
           kind: row.kind,
           sweepKinds: row.sweepKinds,
+          actMode: row.actMode,
         },
       });
       return c.json({ data: mapScheduleRow(row) }, 201);
@@ -185,7 +187,10 @@ aiAgentSchedulesRoutes.patch(
         resourceType: 'ai_agent_schedule',
         resourceId: row.id,
         result: 'success',
-        details: { changed: Object.keys(body), sweepKinds: row.sweepKinds, enabled: row.enabled },
+        // #4442 W04: `actMode` is audited explicitly — arming unattended
+        // Tier-3 execution for a whole partner is the single most consequential
+        // field on this router, and `changed` alone would not record the value.
+        details: { changed: Object.keys(body), sweepKinds: row.sweepKinds, enabled: row.enabled, actMode: row.actMode },
       });
       return c.json({ data: mapScheduleRow(row) });
     } catch (err) {

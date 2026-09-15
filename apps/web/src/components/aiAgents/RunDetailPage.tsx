@@ -7,6 +7,10 @@ import { fetchWithAuth } from '../../stores/auth';
 import { exportReport, getBrowserTimezone } from '../reports/reportExport';
 import { formatDate, formatDateTime, formatTime } from '@/lib/dateTimeFormat';
 import { formatCurrency, formatNumber } from '@/lib/i18n/format';
+// Execution plane W05 (spec §5.8). Both render null when empty, so every
+// pre-existing run's page is unchanged.
+import RunArtifactsSection from './RunArtifactsSection';
+import RunWorkspaceSection from './RunWorkspaceSection';
 import { badgeClass, runStatusTone, verdictTone } from './statusBadge';
 import { EmptyState } from '../shared/EmptyState';
 import {
@@ -565,6 +569,10 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   intent_error: true,
   max_actions_per_run: true,
   intent_invalid_provenance: true,
+  // #4442 W04 — the anti-substitution refusal: the device was in the sweep
+  // evidence but the SUBJECT (service name, mount point, vulnerability ids)
+  // the proposal named was not.
+  subject_not_in_evidence: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**
@@ -719,6 +727,23 @@ function PatchPlanItem({
           {item.attemptCount != null && (
             <span data-testid={`ai-agent-run-patch-item-${item.index}-attempts`}>
               {t('aiAgentsPage.runs.patch.attempts', { count: item.attemptCount })}
+            </span>
+          )}
+        </p>
+      )}
+      {(item.windowStartsAt != null || item.redundancyGroup != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.windowStartsAt != null && item.windowEndsAt != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-window`}>
+              {t('aiAgentsPage.runs.patch.rebootWindow', {
+                start: formatDateTime(item.windowStartsAt),
+                end: formatDateTime(item.windowEndsAt),
+              })}
+            </span>
+          )}
+          {item.redundancyGroup != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-redundancy`}>
+              {t('aiAgentsPage.runs.patch.redundancyGroup', { group: item.redundancyGroup })}
             </span>
           )}
         </p>
@@ -1754,6 +1779,28 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
               <dt className="text-xs text-muted-foreground">{t('aiAgentsPage.runs.detail.labels.cost')}</dt>
               <dd>{formatCurrency(run.costCents / 100)}</dd>
             </div>
+            {/* Execution plane W05 (spec §5.6, §10) — sandbox compute, shown
+                BESIDE the token cost rather than folded into it: they are
+                different bills with different levers. Hidden at 0, which is
+                every run that never built a sandbox. `computeUsageEstimated`
+                says the provider could not report usage and the run settled at
+                its reservation — a worst-case number must not be presented as
+                a measurement. */}
+            {run.computeCents > 0 && (
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t('aiAgentsPage.runs.detail.labels.computeCost')}
+                </dt>
+                <dd data-testid="run-detail-compute-cost">
+                  {formatCurrency(run.computeCents / 100)}
+                  {run.computeUsageEstimated && (
+                    <span className="ml-1 text-xs text-muted-foreground">
+                      {t('aiAgentsPage.runs.detail.labels.computeEstimated')}
+                    </span>
+                  )}
+                </dd>
+              </div>
+            )}
             {/* Duration lives in the status row above (UI critique finding
                 #4) — repeating it here would double-mark the same fact. */}
             <div>
@@ -2119,6 +2166,9 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           )}
         </section>
       )}
+
+      <RunWorkspaceSection workspace={run.workspace} />
+      <RunArtifactsSection artifacts={run.artifacts} />
 
       <div className="rounded-lg border bg-card p-4">
         <h2 className="text-sm font-semibold">{t('aiAgentsPage.runs.detail.trace.title')}</h2>

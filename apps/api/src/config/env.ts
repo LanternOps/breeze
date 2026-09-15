@@ -125,6 +125,23 @@ export function remoteDesktopFenceRequired(): boolean {
   return envFlag('REMOTE_DESKTOP_FENCE_REQUIRED', false);
 }
 
+// #4442 W04 (AI sweeps act mode). A SUB-flag of
+// BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED, not a replacement for it: the sweep
+// lane widens autonomy to targets the run never established for itself (a
+// sweep proposal is fanned out per DEVICE from one device-less run), so it has
+// to be revocable on its own — turning it off must not disarm the
+// alert-triggered policy-decide lane that has been running independently.
+// Both flags are required for a sweep-minted intent to reach policy-decide.
+// Default OFF: with this false, resolvePolicyDecisionState returns
+// 'human_required' for every scoped intent without evaluating anything else,
+// which is byte-identical to the behaviour before this wave (see
+// policyDecide.sweepFlagOff.test.ts, the regression control for exactly that).
+// Read at CALL time, like policyDecideEnabled above, so a test can flip it
+// per case without vi.resetModules().
+export function sweepActEnabled(): boolean {
+  return envFlag('BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED', false);
+}
+
 export type BreezeRegion = 'eu' | 'us';
 
 // Deployment region. Hosted regions are single-region deployments (one API +

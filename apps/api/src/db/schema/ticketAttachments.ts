@@ -3,6 +3,7 @@ import { pgTable, uuid, varchar, text, integer, char, timestamp, index } from 'd
 import { tickets, ticketComments } from './portal';
 import { organizations } from './orgs';
 import { users, bytea } from './users';
+import { aiRunArtifacts } from './aiWorkspace';
 
 /**
  * Ticket comment attachments (W08, #3902). Shape 1 (direct org_id). Bytes are
@@ -19,13 +20,29 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   ticketId: uuid('ticket_id').notNull().references(() => tickets.id, { onDelete: 'cascade' }),
   commentId: uuid('comment_id').references(() => ticketComments.id, { onDelete: 'cascade' }),
   uploadedByUserId: uuid('uploaded_by_user_id').references(() => users.id, { onDelete: 'set null' }),
-  storageBackend: varchar('storage_backend', { length: 8 }).$type<'s3' | 'db'>().notNull(),
+  storageBackend: varchar('storage_backend', { length: 8 })
+    .$type<'s3' | 'db' | 'artifact'>().notNull(),
   storageKey: text('storage_key'),
   data: bytea('data'),
   contentType: varchar('content_type', { length: 64 }).notNull(),
   byteSize: integer('byte_size').notNull(),
   originalFilename: varchar('original_filename', { length: 255 }).notNull(),
   sha256: char('sha256', { length: 64 }).notNull(),
+  /**
+   * The `ai_run_artifacts` row that owns this attachment's bytes, for a
+   * `storage_backend = 'artifact'` row (execution-plane spec §6.3). NULL for
+   * every uploaded attachment — and ALSO null on an artifact-backed row whose
+   * artifact has since expired (ON DELETE SET NULL), which the content route
+   * answers 410 for. Never dereference it without handling that.
+   *
+   * The FK itself is created by 2026-10-16-192900-artifact-attachments.sql; the
+   * `.references()` here is the Drizzle-side declaration of that same
+   * constraint. (Its sibling on `report_runs` is deliberately SQL-only — that
+   * module IS in a real cycle, because `aiWorkspace` imports `aiAgents`, which
+   * imports `reports` for `reportRuns`. Nothing reaches back into this module,
+   * so no such workaround is needed here; verified by `tsc`.)
+   */
+  artifactId: uuid('artifact_id').references(() => aiRunArtifacts.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   attachedAt: timestamp('attached_at', { withTimezone: true }),
 }, (t) => [
@@ -36,6 +53,7 @@ export const ticketAttachments = pgTable('ticket_attachments', {
   index('ticket_attachments_comment_idx').on(t.commentId).where(sql`${t.commentId} IS NOT NULL`),
   index('ticket_attachments_pending_idx').on(t.uploadedByUserId, t.createdAt).where(sql`${t.commentId} IS NULL`),
   index('ticket_attachments_org_idx').on(t.orgId),
+  index('ticket_attachments_artifact_idx').on(t.artifactId).where(sql`${t.artifactId} IS NOT NULL`),
 ]);
 
 export type TicketAttachmentRow = typeof ticketAttachments.$inferSelect;

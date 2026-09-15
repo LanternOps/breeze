@@ -471,6 +471,11 @@ export interface RunContext {
     scheduleId: string | null;
     occurrenceKey: string | null;
     evidence: PatchEvidence;
+    /**
+     * W04 (#5750): `triggerRef.focusDeviceId` of a reactive (alert-routed)
+     * run — a prompt hint only; the run stays device-less.
+     */
+    focusDeviceId?: string | null;
   } | null;
   /**
    * The execution-ledger `ai_sessions` row for this run (Task 1/2). Set once,

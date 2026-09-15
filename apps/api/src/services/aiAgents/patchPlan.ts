@@ -83,6 +83,16 @@
  * must cite the job results that prove it (gate b applies); one that quotes
  * nothing is recorded as-is. `queued` results are the delivery clock and
  * never appear in the failedWork section, so no chase can cite one.
+ *
+ * **W04 (#5750) — reboot plans.** A `reboot_plan` is a FINDING against a
+ * window the evidence already resolved (`rebootPlanByDevice`, from the
+ * next-occurrence projector): `rebootPlanGate` refuses a window that is not
+ * this device's own, a reboot policy that is not `maintenance_window`, and an
+ * unknown redundancy group; `refuseRedundancyCollisions` refuses the second
+ * of two accepted items sharing `(windowId, redundancyGroup)`. Nothing mints,
+ * nothing dispatches, no window is ever created — ordered reboots are
+ * Operator P4-3's. A recorded item carries the window bounds and group so
+ * the trace can show them after the evidence is gone.
  */
 import { and, eq, inArray } from 'drizzle-orm';
 import { ZodError } from 'zod';
@@ -159,6 +169,55 @@ function quoteMismatch(item: PatchPlanItem, group: PatchFailedWorkRef | null): P
   return null;
 }
 
+/**
+ * W04 (#5750) — the reboot_plan gates on top of window membership, all
+ * against `refs.rebootPlanByDevice` (the reboot backlog the model was shown):
+ *
+ *  - the window must be THE window the evidence resolved for THIS device
+ *    (`window_not_resolved` — a window resolved for a sibling is not this
+ *    device's);
+ *  - the device's resolved reboot policy must be `maintenance_window`
+ *    (`reboot_policy_not_window_gated` — `patchRebootHandler.evaluateRebootPolicy`
+ *    reboots `if_required`/`always` with NO window check, so a plan would be
+ *    a claim the system does not honour; `never` never reboots at all);
+ *  - the redundancy group must be known (`redundancy_unknown`).
+ *
+ * The cross-item rule — no two accepted items with the same
+ * `(windowId, redundancyGroup)` — is `refuseRedundancyCollisions`, run after
+ * gate 1 over the whole plan. Nothing here dispatches, schedules or creates
+ * anything: a recorded reboot_plan is a finding for Operator P4-3.
+ */
+function rebootPlanGate(item: PatchPlanItem, refs: PatchPlanOutcomeRefs): PatchPlanRefusalReason | null {
+  const ref = typeof item.deviceId === 'string' ? refs.rebootPlanByDevice?.get(item.deviceId) : undefined;
+  if (!ref || ref.windowId === null || ref.windowId !== item.windowId) return 'window_not_resolved';
+  if (ref.rebootPolicy !== 'maintenance_window') return 'reboot_policy_not_window_gated';
+  if (ref.redundancyGroup === null) return 'redundancy_unknown';
+  // An evidence-side reason the three checks above did not already name
+  // (`no_window_in_horizon` cannot reach here — a null window was refused
+  // above — but the mapping keeps the union closed rather than assumed).
+  if (ref.unplannableReason !== null) {
+    return ref.unplannableReason === 'no_window_in_horizon' ? 'window_not_resolved' : ref.unplannableReason;
+  }
+  return null;
+}
+
+/** W04: first accepted item per `(windowId, redundancyGroup)` wins; every later one is a `redundancy_collision`. */
+function refuseRedundancyCollisions(
+  items: PatchPlanItem[],
+  refusals: Map<number, PatchPlanRefusalReason>,
+  refs: PatchPlanOutcomeRefs,
+): void {
+  const taken = new Set<string>();
+  items.forEach((item, index) => {
+    if (item.class !== 'reboot_plan' || refusals.has(index) || typeof item.deviceId !== 'string') return;
+    const group = refs.rebootPlanByDevice?.get(item.deviceId)?.redundancyGroup;
+    if (!group || !item.windowId) return;
+    const key = `${item.windowId}\u0000${group}`;
+    if (taken.has(key)) refusals.set(index, 'redundancy_collision');
+    else taken.add(key);
+  });
+}
+
 /** Gate 1 for one item — pure, evidence-only. `null` = cleared. */
 function gateOne(
   item: PatchPlanItem, refs: PatchPlanOutcomeRefs, allPatchIds: ReadonlySet<string>,
@@ -169,6 +228,10 @@ function gateOne(
   if ((item.patchIds ?? []).some((p) => !scope.has(p))) return { reason: 'patch_not_in_evidence', group: null };
   if (item.windowId != null && !refs.windowIds.has(item.windowId)) return { reason: 'window_not_resolved', group: null };
   if ((item.jobResultIds ?? []).some((j) => !refs.jobResultIds.has(j))) return { reason: 'job_result_not_in_evidence', group: null };
+  if (item.class === 'reboot_plan') {
+    const reason = rebootPlanGate(item, refs);
+    if (reason) return { reason, group: null };
+  }
 
   // W03 — the chase gates (a, b, c in the header).
   const group = citedFailedWorkGroup(item, refs);
@@ -235,6 +298,7 @@ export async function persistPatchPlan(
     if (reason) refusals.set(index, reason);
     else if (group) groups.set(index, group);
   });
+  refuseRedundancyCollisions(items, refusals, refs);
 
   const toCheck = [...new Set(items
     .filter((item, index) => !refusals.has(index) && typeof item.deviceId === 'string')
@@ -260,12 +324,20 @@ export async function persistPatchPlan(
 
   const dispositions = items.map((item, index): PatchPlanItemRecord => {
     const reason = refusals.get(index);
+    // W04: a recorded reboot_plan carries its window bounds and group so the
+    // trace can render them once the evidence is gone.
+    const reboot = !reason && item.class === 'reboot_plan' && typeof item.deviceId === 'string'
+      ? refs.rebootPlanByDevice?.get(item.deviceId)
+      : undefined;
     return {
       index,
       class: item.class,
       deviceId: item.deviceId ?? null,
       disposition: reason ? 'refused' : 'recorded',
       ...(reason ? { reason } : {}),
+      ...(reboot?.windowStartsAt ? { windowStartsAt: reboot.windowStartsAt } : {}),
+      ...(reboot?.windowEndsAt ? { windowEndsAt: reboot.windowEndsAt } : {}),
+      ...(reboot?.redundancyGroup ? { redundancyGroup: reboot.redundancyGroup } : {}),
     };
   });
 
@@ -521,6 +593,12 @@ export function projectPatch(
         : [],
       failureClass: typeof item.failureClass === 'string' ? item.failureClass : null,
       attemptCount: typeof item.attemptCount === 'number' ? item.attemptCount : null,
+      // W04: the resolved window a reboot_plan names, plus what the persister
+      // copied from the evidence for it.
+      windowId: typeof item.windowId === 'string' ? item.windowId : null,
+      windowStartsAt: typeof record?.windowStartsAt === 'string' ? record.windowStartsAt : null,
+      windowEndsAt: typeof record?.windowEndsAt === 'string' ? record.windowEndsAt : null,
+      redundancyGroup: typeof record?.redundancyGroup === 'string' ? record.redundancyGroup : null,
     };
   });
 

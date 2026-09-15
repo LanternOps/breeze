@@ -487,5 +487,19 @@
     "ownerScopeOrganization": "Nur diese Organisation",
     "ownerScopePartner": "Alle Organisationen dieses Partners",
     "nameRequired": "Ein Name ist erforderlich."
+  },
+  "aiRunCard": {
+    "title": "Analyselauf",
+    "openRun": "Vollständigen Lauf öffnen",
+    "resultOnRunPage": "Dieser Vorgang wurde abgeschlossen, nachdem sich die Unterhaltung weiterentwickelt hat – das vollständige Ergebnis finden Sie auf der Lauf-Seite.",
+    "status": {
+      "queued": "wartet",
+      "running": "läuft",
+      "completed": "abgeschlossen",
+      "failed": "fehlgeschlagen",
+      "cancelled": "abgebrochen",
+      "expired": "abgelaufen",
+      "skipped": "übersprungen"
+    }
   }
 }
