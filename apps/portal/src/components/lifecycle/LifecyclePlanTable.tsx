@@ -10,7 +10,7 @@ import {
 import type { HardwareLifecycleDeviceRow, ReplacementStatus } from '@breeze/shared';
 import { withBase } from '@/lib/basePath';
 import { CELL, ROW, TH } from '../portal/ui';
-import { TimelineCell } from './TimelineCell';
+import { TimelineCell, timelineKeySentence } from './TimelineCell';
 
 /** Second line under the OS name so support risk is a word, not just a colour.
  *  Reproduced locally: the PDF's map (hardwareLifecyclePdf.ts) is a private
@@ -147,7 +147,10 @@ export function LifecyclePlanTable({
                       {REPLACEMENT_LABELS[row.replacement]}
                     </span>
                   </td>
-                  <td className={CELL}>
+                  {/* nowrap so the auto table layout gives this column the
+                      grid + label's full width instead of clipping the label
+                      at the table's edge. */}
+                  <td className={cn(CELL, 'sm:whitespace-nowrap')}>
                     <TimelineCell row={row} />
                   </td>
                 </tr>
@@ -157,6 +160,11 @@ export function LifecyclePlanTable({
         </table>
       </div>
 
+      {rows.some((r) => r.replaceBy) && (
+        <p data-testid={`lifecycle-plan-timeline-key-${sectionId}`} className="mt-2 text-xs text-muted-foreground">
+          {timelineKeySentence()}
+        </p>
+      )}
       {hasVendorSourcedDate && (
         <p data-testid={`lifecycle-plan-footnote-${sectionId}`} className="mt-2 text-xs text-muted-foreground">
           * Purchase date taken from the manufacturer&apos;s ship record.

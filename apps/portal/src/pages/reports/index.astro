@@ -28,9 +28,11 @@ if (isPortalPageDisabled(response)) {
 ---
 
 <PortalLayout title="Reports">
+  {/* The plan is a tab on /devices now; the standalone page remains for orgs
+      with Self-service off, whose /devices bounces home (#4932, #5880). */}
   {branding.enableLifecycle && (
     <a
-      href={withBase('/reports/lifecycle')}
+      href={withBase(branding.enableSelfService !== false ? '/devices#lifecycle' : '/reports/lifecycle')}
       data-testid="reports-lifecycle-card"
       class="mb-6 flex items-center justify-between rounded-lg border border-border bg-card px-5 py-4 text-sm transition-colors hover:bg-accent"
     >

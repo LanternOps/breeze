@@ -170,3 +170,51 @@ describe('TimelineCell', () => {
     expect(screen.getByTestId('lifecycle-timeline-quarter-19').getAttribute('title')).toBe('Q1 2029');
   });
 });
+
+describe('TimelineCell geometry (squares + shared today rule)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-10T12:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('draws every quarter as a fixed-size square, not a flex-stretched sliver', () => {
+    render(<TimelineCell row={LAW_SRV} />);
+    for (let q = 0; q < 20; q += 1) {
+      const cls = screen.getByTestId(`lifecycle-timeline-quarter-${q}`).className;
+      expect(cls).toMatch(/\bh-3\b/);
+      expect(cls).toMatch(/\bw-3\b/);
+      expect(cls).not.toContain('flex-1');
+    }
+  });
+
+  it('marks today with one rule that overshoots the cell so it joins up across rows', () => {
+    render(<TimelineCell row={LAW_SRV} />);
+    const rules = screen.getAllByTestId('lifecycle-timeline-today');
+    expect(rules).toHaveLength(1);
+    expect(screen.getByTestId('lifecycle-timeline-quarter-8')).toContainElement(rules[0]);
+    expect(rules[0].className).toMatch(/-top-/);
+    expect(rules[0].className).toMatch(/-bottom-/);
+    // The old treatment: two borders on the today cell.
+    expect(screen.getByTestId('lifecycle-timeline-quarter-8').className).not.toContain('border-x');
+  });
+});
+
+describe('timelineKeySentence', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-10T12:00:00.000Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('names the grid span and what the rule and solid square mean', async () => {
+    const { timelineKeySentence } = await import('./TimelineCell');
+    expect(timelineKeySentence()).toBe(
+      'Replacement timeline: one square per quarter, Q2 2024 to Q1 2029. The dark line is today; the solid square is the replace-by quarter.',
+    );
+  });
+});

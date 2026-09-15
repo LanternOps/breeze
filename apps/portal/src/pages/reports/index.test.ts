@@ -35,9 +35,13 @@ describe('reports page hardware lifecycle card (W02)', () => {
     expect(pageSource).toMatch(/branding\.enableLifecycle/);
   });
 
-  it('links to the lifecycle page through withBase, with a stable testid', () => {
+  it('links to the lifecycle tab on /devices through withBase, with a stable testid', () => {
     expect(pageSource).toContain('data-testid="reports-lifecycle-card"');
-    expect(pageSource).toContain("withBase('/reports/lifecycle')");
+    // The plan lives under Devices now (a hash tab); /reports/lifecycle stays
+    // as the standalone page for orgs with Self-service off, since /devices
+    // bounces home for them.
+    expect(pageSource).toMatch(/href=\{withBase\([^)]*'\/devices#lifecycle'[^)]*'\/reports\/lifecycle'\)\}/);
+    expect(pageSource).toMatch(/branding\.enableSelfService !== false/);
   });
 
   it('positions the card above ReportRunList', () => {
