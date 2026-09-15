@@ -2207,6 +2207,7 @@
       "emptyState": {
         "title": "Aucun résultat d’IA pour cette période",
         "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "descriptionWidestWindow": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Il n’y a pas encore assez de données, même pour la période de rapport la plus longue — configurez un agent pour commencer.",
         "action": "Configurer un agent"
       },
       "tileGroups": {

@@ -2207,6 +2207,7 @@
       "emptyState": {
         "title": "No AI outcomes in this window yet",
         "description": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Widen the reporting window above, or set up an agent to get started.",
+        "descriptionWidestWindow": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Not enough data yet, even at the widest reporting window — set up an agent to get started.",
         "action": "Set up an agent"
       },
       "tileGroups": {

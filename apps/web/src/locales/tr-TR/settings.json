@@ -2207,6 +2207,7 @@
       "emptyState": {
         "title": "Bu dönemde henüz yapay zekâ sonucu yok",
         "description": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. Yukarıdaki raporlama dönemini genişletin veya başlamak için bir ajan kurun.",
+        "descriptionWidestWindow": "Yapay zekâ ajanlarınız gölge veya eylem modunda bir uyarıyı değerlendirdiğinde, bir bileti sınıflandırdığında ya da bir düzeltme uyguladığında sonuçlar burada görünecek. En geniş raporlama döneminde bile henüz yeterli veri yok — başlamak için bir ajan kurun.",
         "action": "Ajan kur"
       },
       "tileGroups": {

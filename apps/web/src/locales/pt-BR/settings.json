@@ -2207,6 +2207,7 @@
       "emptyState": {
         "title": "Ainda não há resultados de IA neste período",
         "description": "Os resultados aparecerão aqui assim que seus agentes de IA avaliarem um alerta, triarem um chamado ou executarem uma correção no modo de observação ou de ação. Amplie o período do relatório acima ou configure um agente para começar.",
+        "descriptionWidestWindow": "Os resultados aparecerão aqui assim que seus agentes de IA avaliarem um alerta, triarem um chamado ou executarem uma correção no modo de observação ou de ação. Ainda não há dados suficientes, mesmo no período de relatório mais amplo — configure um agente para começar.",
         "action": "Configurar um agente"
       },
       "tileGroups": {
