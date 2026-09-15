@@ -490,8 +490,8 @@ importers:
         specifier: ^4.9.0
         version: 4.11.2
       '@azure/msal-node':
-        specifier: ^3.8.10
-        version: 3.8.10
+        specifier: ^6.0.0
+        version: 6.0.0
       '@breeze/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -1815,10 +1815,6 @@ packages:
     resolution: {integrity: sha512-SPTeHYZghdEdRddJzNjhH+CI5MSQtquNYwGJnYXfOHIBRXCmrWimBS85OhwXpXFIlrCtNTbBPm5mPAWRNEoktA==}
     engines: {node: '>=0.8.0'}
 
-  '@azure/msal-common@15.17.0':
-    resolution: {integrity: sha512-VQ5/gTLFADkwue+FohVuCqlzFPUq4xSrX8jeZe+iwZuY6moliNC8xt86qPVNYdtbQfELDf2Nu6LI+demFPHGgw==}
-    engines: {node: '>=0.8.0'}
-
   '@azure/msal-common@16.11.1':
     resolution: {integrity: sha512-yPohvMwWLv1XnaWnIUyKUh8CvcVChCGqG/VluGwfGmaAfrZTNt5yQ+sIs462Sgw6+e2K83KGmMJ860p73ZSCrw==}
     engines: {node: '>=0.8.0'}
@@ -1827,12 +1823,16 @@ packages:
     resolution: {integrity: sha512-hgLgfRdbG2AmhXPygebf1KYJEvse86+ZZLWufdiTKaGRYEUqOzHdlf6AS1IiuUCHWbynkgbHc451jSNkbfhWlg==}
     engines: {node: '>=0.8.0'}
 
-  '@azure/msal-node@3.8.10':
-    resolution: {integrity: sha512-0Hz7Kx4hs70KZWep/Rd7aw/qOLUF92wUOhn7ZsOuB5xNR/06NL1E2RAI9+UKH1FtvN8nD6mFjH7UKSjv6vOWvQ==}
-    engines: {node: '>=16'}
+  '@azure/msal-common@16.14.0':
+    resolution: {integrity: sha512-A4rb55hI86Q9tBl/+jBj7TMz7iX2RFgQs/nExFzcAtoI/BFRVdaH5SL/MivrYD7qvweMpN8AgVvVMHV8UBYxew==}
+    engines: {node: '>=0.8.0'}
 
   '@azure/msal-node@5.4.0':
     resolution: {integrity: sha512-6EZEParwHRlnSSIikw8FNAnAzwmh71uhveUXdPNFeZFviJ9SH+rwFiurhjzXqICYTrpm3E+dj693QOwfPbJXAQ==}
+    engines: {node: '>=20'}
+
+  '@azure/msal-node@6.0.0':
+    resolution: {integrity: sha512-PU0l3CsEZVm2K8vZNFxvgmM5d0Yx/sVL/axWW0hJBoeyiB6Q/uv7hXORb7EdzlNxvehsWEF82/o+/sXlIo+UIw==}
     engines: {node: '>=20'}
 
   '@babel/code-frame@7.29.7':
@@ -12735,21 +12735,20 @@ snapshots:
     dependencies:
       '@azure/msal-common': 16.12.0
 
-  '@azure/msal-common@15.17.0': {}
-
   '@azure/msal-common@16.11.1': {}
 
   '@azure/msal-common@16.12.0': {}
 
-  '@azure/msal-node@3.8.10':
-    dependencies:
-      '@azure/msal-common': 15.17.0
-      jsonwebtoken: 9.0.3
-      uuid: 14.0.1
+  '@azure/msal-common@16.14.0': {}
 
   '@azure/msal-node@5.4.0':
     dependencies:
       '@azure/msal-common': 16.11.1
+      jsonwebtoken: 9.0.3
+
+  '@azure/msal-node@6.0.0':
+    dependencies:
+      '@azure/msal-common': 16.14.0
       jsonwebtoken: 9.0.3
 
   '@babel/code-frame@7.29.7':
