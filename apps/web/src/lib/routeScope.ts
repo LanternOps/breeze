@@ -142,6 +142,12 @@ export const ROUTE_SCOPES: Array<{ pattern: RegExp; kind: RouteScopeKind }> = [
   { pattern: /^\/tickets(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/billing(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/contracts(\/.*)?$/, kind: 'org-or-all' },
+  // W03 IA split: the agreements area is the same fleet-state surface the
+  // Templates/Documents tabs were under /contracts, so it keeps that page's
+  // scope verbatim — moving the routes must not also change org-context
+  // behavior. (An argument exists for 'catalog' on the template library; it
+  // would stop orgId injection and widen the list, so it is a separate call.)
+  { pattern: /^\/agreements(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/reports(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/configuration-policies(\/.*)?$/, kind: 'org-or-all' },
   { pattern: /^\/policies(\/.*)?$/, kind: 'org-or-all' },

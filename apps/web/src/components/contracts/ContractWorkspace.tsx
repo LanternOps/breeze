@@ -78,12 +78,20 @@ export default function ContractWorkspace({ contractId }: Props) {
   useEffect(() => {
     if (isNew || !contractId) return;
     let cancelled = false;
+    // try/catch around the WHOLE body, not `.catch()` on the call: the client
+    // can throw synchronously (or, under a stubbed transport, return nothing at
+    // all), and an unhandled rejection out of a decorative effect would take the
+    // page down with it.
     void (async () => {
-      const res = await listContractDocuments({ contractId }).catch(() => null);
-      if (!res?.ok) return;                 // decoration; a failure is silent
-      const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
-      const docs = body?.data ?? [];
-      if (!cancelled && docs.length) setFirstAgreement(docs[docs.length - 1]!);
+      try {
+        const res = await listContractDocuments({ contractId });
+        if (!res?.ok) return;               // decoration; a failure is silent
+        const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
+        const docs = body?.data ?? [];
+        if (!cancelled && docs.length) setFirstAgreement(docs[docs.length - 1]!);
+      } catch {
+        // no pill; never a page-level error
+      }
     })();
     return () => { cancelled = true; };
   }, [isNew, contractId]);

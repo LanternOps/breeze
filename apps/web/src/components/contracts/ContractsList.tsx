@@ -310,15 +310,20 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
   useEffect(() => {
     if (lockedOrgId) return;
     let cancelled = false;
+    // try/catch around the whole body: a synchronously-throwing (or stubbed)
+    // client must not produce an unhandled rejection from a decorative probe.
     void (async () => {
-      const res = await listContractCurrencyMismatches({ limit: 50 }).catch(() => null);
-      if (!res?.ok) return;
-      const body = (await res.json().catch(() => null)) as { data?: ContractCurrencyMismatchReport } | null;
-      // `items` is optional-chained too: a stubbed or partial payload must not
-      // throw out of a decorative probe.
-      const items = body?.data?.items;
-      if (!cancelled && items?.length) {
-        setMismatches({ count: items.length, more: body?.data?.nextCursor != null });
+      try {
+        const res = await listContractCurrencyMismatches({ limit: 50 });
+        if (!res?.ok) return;
+        const body = (await res.json().catch(() => null)) as { data?: ContractCurrencyMismatchReport } | null;
+        // `items` is optional-chained too: a partial payload must not throw.
+        const items = body?.data?.items;
+        if (!cancelled && items?.length) {
+          setMismatches({ count: items.length, more: body?.data?.nextCursor != null });
+        }
+      } catch {
+        // no banner; this is an affordance, not data
       }
     })();
     return () => { cancelled = true; };

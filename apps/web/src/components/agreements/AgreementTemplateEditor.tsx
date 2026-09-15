@@ -117,11 +117,17 @@ export default function AgreementTemplateEditor({ templateId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // try/catch around the whole body: a synchronously-throwing (or stubbed)
+    // client must not produce an unhandled rejection from a decorative effect.
     void (async () => {
-      const res = await getTemplateUsage(templateId).catch(() => null);
-      if (!res?.ok) return;                       // usage is decoration; a failure is silent
-      const body = (await res.json().catch(() => null)) as { data?: TemplateUsage } | null;
-      if (!cancelled && body?.data) setUsage(body.data);
+      try {
+        const res = await getTemplateUsage(templateId);
+        if (!res?.ok) return;                     // usage is decoration; a failure is silent
+        const body = (await res.json().catch(() => null)) as { data?: TemplateUsage } | null;
+        if (!cancelled && body?.data) setUsage(body.data);
+      } catch {
+        // usage stays unknown; the archive confirm says so rather than "0"
+      }
     })();
     return () => { cancelled = true; };
   }, [templateId]);
