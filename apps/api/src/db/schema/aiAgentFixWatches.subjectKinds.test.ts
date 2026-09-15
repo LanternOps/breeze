@@ -13,15 +13,35 @@
  * but not in the catalog is a value no code can ever produce, which quietly
  * advertises support that does not exist.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AI_SWEEP_KINDS } from '@breeze/shared';
 
-const MIGRATION = join(
-  __dirname,
-  '../../../migrations/2026-10-16-190300-sweep-condition-fix-watches.sql',
-);
+const MIGRATIONS_DIR = join(__dirname, '../../../migrations');
+
+/**
+ * The migration that declares the CHECK **last** in apply order is the one
+ * that decides the live constraint. A shipped migration is never edited, so a
+ * later wave adding a kind re-declares the constraint in its own file (#5754
+ * did exactly that for `expiring_certs`); pinning a fixed filename here would
+ * have asserted against a superseded definition.
+ */
+function effectiveMigration(constraint: string): string {
+  const declaring = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => /^\d{4}-.*\.sql$/.test(f))
+    .sort((a, b) => a.localeCompare(b))
+    .filter((f) =>
+      readFileSync(join(MIGRATIONS_DIR, f), 'utf8').includes(`ADD CONSTRAINT ${constraint}`),
+    );
+  expect(declaring.length, `no migration declares ${constraint}`).toBeGreaterThan(0);
+  return join(MIGRATIONS_DIR, declaring[declaring.length - 1]!);
+}
+
+const MIGRATION = effectiveMigration('ai_agent_fix_watches_subject_kind_chk');
+
+/** W02's own file — the one that created the table and the shape constraint. */
+const ORIGIN_MIGRATION = join(MIGRATIONS_DIR, '2026-10-16-190300-sweep-condition-fix-watches.sql');
 
 /** The quoted literals of the `subject_kind IN (...)` list, in file order. */
 function checkConstraintKinds(sql: string): string[] {
@@ -58,7 +78,7 @@ describe('ai_agent_fix_watches_subject_kind_chk', () => {
   });
 
   it('pairs subject_kind with subject_key both-or-neither', () => {
-    const sql = readFileSync(MIGRATION, 'utf8');
+    const sql = readFileSync(ORIGIN_MIGRATION, 'utf8');
     expect(sql).toMatch(
       /ai_agent_fix_watches_subject_shape_chk\s+CHECK \(\(subject_kind IS NULL\) = \(subject_key IS NULL\)\)/,
     );

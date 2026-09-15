@@ -13,8 +13,15 @@
  * evaluator in the sweeper (disk usage, agent last-checkin age, pending
  * reboot flag, last backup age, service state, unpatched-critical count),
  * so a schedule can only reference a kind the sweeper actually knows how to
- * run. `expiring_certs` was considered and deferred — see the P2-2 plan's
- * amendments doc.
+ * run.
+ *
+ * `expiring_certs` (#5751 W03, #5754) joined the catalog once it gained a real
+ * evidence source: the typed `network_monitors.tls_*` columns, fed by the TLS
+ * observation the Go agent emits on every HTTPS `http_check`. It is
+ * **finding-only** — `SweepProposedAction` is a closed union and there is no
+ * safe automated certificate renewal — so it proposes nothing, registers no
+ * subject probe, and `isActEligibleSweepKind('expiring_certs')` is false by
+ * construction.
  */
 export const AI_SWEEP_KINDS = [
   'disk_pressure',
@@ -23,6 +30,7 @@ export const AI_SWEEP_KINDS = [
   'failed_backups',
   'service_down',
   'unpatched_critical',
+  'expiring_certs',
 ] as const;
 export type AiSweepKind = (typeof AI_SWEEP_KINDS)[number];
 

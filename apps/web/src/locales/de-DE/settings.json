@@ -1543,7 +1543,8 @@
         "pending_reboots": "Ausstehende Neustarts",
         "failed_backups": "Fehlgeschlagene Backups",
         "service_down": "Dienst ausgefallen",
-        "unpatched_critical": "Kritische ungepatchte Schwachstellen"
+        "unpatched_critical": "Kritische ungepatchte Schwachstellen",
+        "expiring_certs": "Ablaufende Zertifikate"
       },
       "toasts": {
         "saved": "Zeitplan gespeichert",
@@ -1880,7 +1881,8 @@
           "pending_reboots": "Ausstehende Neustarts",
           "failed_backups": "Fehlgeschlagene Sicherungen",
           "service_down": "Dienst gestoppt",
-          "unpatched_critical": "Ungepatchte kritische Schwachstellen"
+          "unpatched_critical": "Ungepatchte kritische Schwachstellen",
+          "expiring_certs": "Bald ablaufende Zertifikate"
         },
         "severities": {
           "critical": "Kritisch",

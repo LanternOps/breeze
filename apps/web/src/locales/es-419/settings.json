@@ -1543,7 +1543,8 @@
         "pending_reboots": "Reinicios pendientes",
         "failed_backups": "Respaldos fallidos",
         "service_down": "Servicio caído",
-        "unpatched_critical": "Vulnerabilidades críticas sin parchear"
+        "unpatched_critical": "Vulnerabilidades críticas sin parchear",
+        "expiring_certs": "Certificados por vencer"
       },
       "toasts": {
         "saved": "Programación guardada",
@@ -1880,7 +1881,8 @@
           "pending_reboots": "Reinicios pendientes",
           "failed_backups": "Copias de seguridad fallidas",
           "service_down": "Servicio detenido",
-          "unpatched_critical": "Vulnerabilidades críticas sin parchear"
+          "unpatched_critical": "Vulnerabilidades críticas sin parchear",
+          "expiring_certs": "Certificados próximos a vencer"
         },
         "severities": {
           "critical": "Crítica",

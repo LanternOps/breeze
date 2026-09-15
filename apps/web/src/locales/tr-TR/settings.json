@@ -1543,7 +1543,8 @@
         "pending_reboots": "Bekleyen yeniden başlatmalar",
         "failed_backups": "Başarısız yedeklemeler",
         "service_down": "Durdurulmuş hizmet",
-        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları"
+        "unpatched_critical": "Yamalanmamış kritik güvenlik açıkları",
+        "expiring_certs": "Süresi dolan sertifikalar"
       },
       "toasts": {
         "saved": "Zamanlama kaydedildi",
@@ -1880,7 +1881,8 @@
           "pending_reboots": "Bekleyen yeniden başlatmalar",
           "failed_backups": "Başarısız yedeklemeler",
           "service_down": "Servis durdu",
-          "unpatched_critical": "Yamalanmamış kritik açıklar"
+          "unpatched_critical": "Yamalanmamış kritik açıklar",
+          "expiring_certs": "Süresi dolmak üzere olan sertifikalar"
         },
         "severities": {
           "critical": "Kritik",

@@ -747,6 +747,7 @@ function narrativeContext(
       findingsByKind: {
         disk_pressure: 2, stale_agents: 1, pending_reboots: 0,
         failed_backups: 1, service_down: 0, unpatched_critical: 3,
+        expiring_certs: 0,
       },
       findingsBySeverity: { critical: 0, high: 2, medium: 3, low: 2, info: 0 },
       proposals: { intent_created: 1, refused: 0, cap_reached: 0, error: 0 },

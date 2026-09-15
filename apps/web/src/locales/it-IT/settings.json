@@ -1543,7 +1543,8 @@
         "pending_reboots": "Riavvii in sospeso",
         "failed_backups": "Backup non riusciti",
         "service_down": "Servizio non attivo",
-        "unpatched_critical": "Vulnerabilità critiche non corrette"
+        "unpatched_critical": "Vulnerabilità critiche non corrette",
+        "expiring_certs": "Certificati in scadenza"
       },
       "toasts": {
         "saved": "Pianificazione salvata",
@@ -1880,7 +1881,8 @@
           "pending_reboots": "Riavvii in sospeso",
           "failed_backups": "Backup non riusciti",
           "service_down": "Servizio non attivo",
-          "unpatched_critical": "Vulnerabilità critiche non corrette"
+          "unpatched_critical": "Vulnerabilità critiche non corrette",
+          "expiring_certs": "Certificati prossimi alla scadenza"
         },
         "severities": {
           "critical": "Critica",

@@ -200,6 +200,56 @@ describe('ai_agent_schedules RLS — dual-axis (2026-09-23 migration)', () => {
     );
   });
 
+  // #5751 W03 (#5754). The set-equality contract below proves the CHECK's
+  // vocabulary matches the catalog, but not that a real INSERT of the new
+  // value actually lands — a constraint re-declared in a later migration
+  // could have failed to replace the shipped one and this is what notices.
+  it('accepts a baseline sweeping every kind, expiring_certs included', async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    const rows = await withDbAccessContext(partnerContext(partner.id, []), () =>
+      db
+        .insert(aiAgentSchedules)
+        .values({
+          cron: BASE.cron,
+          sweepKinds: [...AI_SWEEP_KINDS],
+          orgId: null,
+          partnerId: partner.id,
+          agentId,
+          baselineScheduleId: null,
+          createdBy: by,
+        })
+        .returning(),
+    );
+    expect(rows[0]?.sweepKinds).toContain('expiring_certs');
+    createdSchedules.push(rows[0]!.id);
+  });
+
+  it('still rejects that same array plus a bogus value (23514)', async () => {
+    const partner = await createPartner();
+    const by = await creator(partner.id);
+    const agentId = await createAgent(partner.id, by);
+    await expectSqlState(
+      () =>
+        withDbAccessContext(partnerContext(partner.id, []), () =>
+          db
+            .insert(aiAgentSchedules)
+            .values({
+              cron: BASE.cron,
+              sweepKinds: [...AI_SWEEP_KINDS, 'not_a_real_kind'] as never,
+              orgId: null,
+              partnerId: partner.id,
+              agentId,
+              baselineScheduleId: null,
+              createdBy: by,
+            })
+            .returning(),
+        ),
+      '23514',
+    );
+  });
+
   it('rejects an unknown sweep kind (23514 — ai_agent_schedules_kinds_chk)', async () => {
     const partner = await createPartner();
     const by = await creator(partner.id);
