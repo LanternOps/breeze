@@ -585,6 +585,45 @@
       }
     }
   },
+  "agreements": {
+    "tabs": {
+      "templates": "Modelli di accordo",
+      "signed": "Accordi firmati"
+    },
+    "signedPage": {
+      "title": "Accordi firmati",
+      "description": "Tutti gli accordi firmati dai tuoi clienti. Collegane uno a un contratto perché compaia sul contratto che regola.",
+      "unlinkedOnly": "Solo non collegati",
+      "empty": {
+        "title": "Nessun accordo firmato per ora",
+        "description": "Un accordo è firmato quando un cliente accetta un preventivo che lo contiene."
+      },
+      "emptyUnlinked": {
+        "title": "Nessun accordo firmato non collegato",
+        "description": "Ogni accordo firmato è già archiviato su un contratto."
+      },
+      "columns": {
+        "contract": "Contratto"
+      },
+      "viewContract": "Vedi contratto",
+      "notLinked": "Non collegato",
+      "rowSubtitle": "Accettato con il preventivo {{quoteNumber}} da {{signer}} il {{date}}",
+      "rowSubtitleNoQuote": "Firmato da {{signer}} il {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati",
+      "usageUnavailable": "Utilizzo non disponibile",
+      "backToTemplates": "Torna ai modelli di accordo",
+      "archiveConfirm": {
+        "title": "Archiviare questo modello di accordo?",
+        "message": "Usato su {{quotes}} preventivi · {{signed}} accordi firmati. I preventivi già vincolati continuano a funzionare, ma non sarà possibile aggiungere nuove sezioni di accordo.",
+        "confirm": "Archivia modello"
+      }
+    },
+    "contractPill": {
+      "under": "In base a {{template}} v{{n}}"
+    }
+  },
   "quotes": {
     "deviceSet": {
       "roleNoun": {

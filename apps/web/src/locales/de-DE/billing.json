@@ -585,6 +585,45 @@
       }
     }
   },
+  "agreements": {
+    "tabs": {
+      "templates": "Vereinbarungsvorlagen",
+      "signed": "Unterzeichnete Vereinbarungen"
+    },
+    "signedPage": {
+      "title": "Unterzeichnete Vereinbarungen",
+      "description": "Alle Vereinbarungen, die Ihre Kunden unterzeichnet haben. Ordnen Sie eine einem Vertrag zu, damit sie bei dem Vertrag erscheint, den sie regelt.",
+      "unlinkedOnly": "Nur nicht zugeordnete",
+      "empty": {
+        "title": "Noch keine unterzeichneten Vereinbarungen",
+        "description": "Eine Vereinbarung gilt als unterzeichnet, sobald ein Kunde ein Angebot annimmt, das sie enthält."
+      },
+      "emptyUnlinked": {
+        "title": "Keine nicht zugeordneten unterzeichneten Vereinbarungen",
+        "description": "Jede unterzeichnete Vereinbarung ist bereits einem Vertrag zugeordnet."
+      },
+      "columns": {
+        "contract": "Vertrag"
+      },
+      "viewContract": "Vertrag ansehen",
+      "notLinked": "Nicht zugeordnet",
+      "rowSubtitle": "Mit Angebot {{quoteNumber}} angenommen von {{signer}} am {{date}}",
+      "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
+      "usageUnavailable": "Verwendung nicht verfügbar",
+      "backToTemplates": "Zurück zu den Vereinbarungsvorlagen",
+      "archiveConfirm": {
+        "title": "Diese Vereinbarungsvorlage archivieren?",
+        "message": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "confirm": "Vorlage archivieren"
+      }
+    },
+    "contractPill": {
+      "under": "Gemäß {{template}} v{{n}}"
+    }
+  },
   "quotes": {
     "deviceSet": {
       "roleNoun": {

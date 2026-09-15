@@ -161,7 +161,11 @@
     "timesheet": "Zeiterfassung",
     "vulnerabilities": "Schwachstellen",
     "workspace": "KI-Assistent",
-    "aiAgentsFleetDesign": "Flottendesign"
+    "aiAgentsFleetDesign": "Flottendesign",
+    "agreementTemplates": "Vereinbarungsvorlagen",
+    "agreementTemplateDetail": "Vereinbarungsvorlage",
+    "agreementTemplateNew": "Neue Vereinbarungsvorlage",
+    "signedAgreements": "Unterzeichnete Vereinbarungen"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote-Überwachung und -Verwaltung",

@@ -585,6 +585,45 @@
       }
     }
   },
+  "agreements": {
+    "tabs": {
+      "templates": "Agreement templates",
+      "signed": "Signed agreements"
+    },
+    "signedPage": {
+      "title": "Signed agreements",
+      "description": "Every agreement your customers have signed. Link one to a contract so it shows on the contract it governs.",
+      "unlinkedOnly": "Unlinked only",
+      "empty": {
+        "title": "No signed agreements yet",
+        "description": "An agreement is signed when a customer accepts a quote that carries one."
+      },
+      "emptyUnlinked": {
+        "title": "No unlinked signed agreements",
+        "description": "Every signed agreement is already filed against a contract."
+      },
+      "columns": {
+        "contract": "Contract"
+      },
+      "viewContract": "View contract",
+      "notLinked": "Not linked",
+      "rowSubtitle": "Accepted with quote {{quoteNumber}} by {{signer}} on {{date}}",
+      "rowSubtitleNoQuote": "Signed by {{signer}} on {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Used on {{quotes}} quotes · {{signed}} signed agreements",
+      "usageUnavailable": "Usage unavailable",
+      "backToTemplates": "Back to agreement templates",
+      "archiveConfirm": {
+        "title": "Archive this agreement template?",
+        "message": "Used on {{quotes}} quotes · {{signed}} signed agreements. Quotes already pinned to it keep working, but no new agreement sections can be added.",
+        "confirm": "Archive template"
+      }
+    },
+    "contractPill": {
+      "under": "Under {{template}} v{{n}}"
+    }
+  },
   "quotes": {
     "deviceSet": {
       "roleNoun": {
