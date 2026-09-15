@@ -3,6 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const showToast = vi.fn();
 vi.mock('../components/shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
+// Force the translated path for the validation envelope: with i18n uninitialized
+// (as in the other runAction tests) exists() is false and the envelope no-ops,
+// so we stub it to assert the Step-4 behavior explicitly.
+vi.mock('./i18n', () => ({
+  i18n: {
+    exists: (key: string) => key === 'errors:VALIDATION_FAILED',
+    t: (key: string) => (key === 'errors:VALIDATION_FAILED' ? 'Check the highlighted fields' : key),
+  },
+}));
+
 import { runAction, ActionError } from './runAction';
 import { TRUST_DENIED_EVENT } from './trustProbation';
 
@@ -261,5 +271,26 @@ describe('runAction', () => {
     expect(caught).toBeInstanceOf(ActionError);
     expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ message: 'boom', type: 'error' });
+  });
+  it('validation 400 without code: translated VALIDATION_FAILED headline + field text as detail (Step 4 of #3859)', async () => {
+    await expect(runAction({
+      request: async () => res({ error: 'name is required' }, 400),
+      errorFallback: 'fb',
+    })).rejects.toBeInstanceOf(ActionError);
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Check the highlighted fields',
+      detail: 'name is required',
+      type: 'error',
+    });
+  });
+
+  it('validation envelope does NOT fire when a code is present (code path wins)', async () => {
+    await expect(runAction({
+      request: async () => res({ error: 'name is required', code: 'SOME_CODE' }, 400),
+      errorFallback: 'fb',
+    })).rejects.toBeInstanceOf(ActionError);
+    // code present -> envelope skipped; detail stays undefined
+    const call = showToast.mock.calls.at(-1)?.[0];
+    expect(call.detail).toBeUndefined();
   });
 });

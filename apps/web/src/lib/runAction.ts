@@ -87,9 +87,28 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
     if (code && i18n.exists(`errors:${code}`)) {
       message = i18n.t(/* i18n-dynamic */ `errors:${code}`);
     }
+    let friendlyApplied = false;
     if (friendlyKey && opts.friendly) {
       const friendly = opts.friendly(friendlyKey);
-      if (friendly) message = friendly;
+      if (friendly) {
+        message = friendly;
+        friendlyApplied = true;
+      }
+    }
+    // Validation envelope (Phase-3 Step 4 of #3859): a 400 with no `code` and no
+    // per-call friendly() is a validation failure whose message is the raw field
+    // text from extractApiError. Promote a translated VALIDATION_FAILED headline
+    // and keep the specific field text as the toast detail line, so specifics
+    // aren't lost. Scoped to 400-without-code as agreed on #5692.
+    let detail: string | undefined;
+    if (
+      response.status === 400 &&
+      !code &&
+      !friendlyApplied &&
+      i18n.exists('errors:VALIDATION_FAILED')
+    ) {
+      detail = message;
+      message = i18n.t('errors:VALIDATION_FAILED');
     }
     if (response.status === 403 && isTrustDenial(data)) {
       // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
@@ -98,9 +117,9 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       // it — the banner isn't mounted on this page — fall back to the
       // normal error toast so the failure is never silent.
       const handled = dispatchTrustDenied(data);
-      if (!handled) showToast({ message, type: 'error' });
+      if (!handled) showToast({ message, detail, type: 'error' });
     } else {
-      showToast({ message, type: 'error' });
+      showToast({ message, detail, type: 'error' });
     }
     throw new ActionError(message, response.status, code, data);
   }
