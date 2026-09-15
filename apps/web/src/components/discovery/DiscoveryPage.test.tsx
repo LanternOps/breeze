@@ -69,6 +69,10 @@ vi.mock('./NetworkChangesPanel', () => ({
   default: () => <div>Changes tab</div>
 }));
 
+vi.mock('./NetworkBaselinesPanel', () => ({
+  default: () => <div>Baselines tab</div>
+}));
+
 // The discovery profiles render through ResponsiveTable, which puts both a
 // desktop <table> and a mobile card list in the DOM at once (the sm: breakpoint
 // is CSS-only, invisible to jsdom). Scope row text/label queries to the desktop
@@ -138,6 +142,16 @@ describe('DiscoveryPage', () => {
 
     expect(window.location.hash).toBe('#topology');
     expect(await screen.findByText('Topology tab')).toBeInTheDocument();
+  });
+
+  it('renders the Baselines tab and wires it up via the hash (#5433)', async () => {
+    window.history.pushState({}, '', '/discovery#baselines');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+
+    expect(await screen.findByText('Baselines tab')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Baselines' })).toBeInTheDocument();
   });
 
   it('toasts and shows a per-profile loading state while queuing a scan', async () => {

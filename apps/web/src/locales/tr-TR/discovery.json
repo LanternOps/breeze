@@ -241,6 +241,7 @@
     },
     "tabs": {
       "assets": "Varlıklar",
+      "baselines": "Taban Hatları",
       "changes": "Değişiklikler",
       "jobs": "İş İlanları",
       "profiles": "Profiller",

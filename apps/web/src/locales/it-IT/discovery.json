@@ -241,6 +241,7 @@
     },
     "tabs": {
       "assets": "Asset",
+      "baselines": "Baseline",
       "changes": "Modifiche",
       "jobs": "Processi",
       "profiles": "Profili",

@@ -645,7 +645,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 5,
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
-    'discovery.json': 27,
+    // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
+    // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
+    'discovery.json': 28,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
     'errors.json': 9,
