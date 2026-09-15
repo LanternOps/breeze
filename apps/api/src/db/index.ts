@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 // Load .env from monorepo root (when running from apps/api) or cwd (when running from root)
-config({ path: '../../.env' });
-config(); // Also try cwd
+config({ path: '../../.env', quiet: true });
+config({ quiet: true }); // Also try cwd
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { sql, type SQL } from 'drizzle-orm';
