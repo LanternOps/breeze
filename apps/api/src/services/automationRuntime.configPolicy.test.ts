@@ -54,7 +54,7 @@ vi.mock('../db/schema', () => ({
   configurationPolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId' },
   organizations: { id: 'id', partnerId: 'partnerId', type: 'type' },
   automationResourceBindings: { automationId: 'automationId' },
-  devices: { id: 'id', hostname: 'hostname', osType: 'osType', status: 'status' },
+  devices: { id: 'id', orgId: 'orgId', hostname: 'hostname', osType: 'osType', status: 'status' },
   scripts: { id: 'id', deletedAt: 'deletedAt' },
   notificationChannels: { id: 'id', orgId: 'orgId' },
   automations: { id: 'id', runCount: 'runCount' },
@@ -182,6 +182,40 @@ function mockInsertCapturingValues(result: unknown[]) {
     values: valuesMock,
   } as any);
   return valuesMock;
+}
+
+/**
+ * Serves the three select shapes the standalone target-authority path uses:
+ *
+ *   `.where(...)`                        -> the unlocked locator reads
+ *   `.where(...).orderBy(...).for(...)`  -> `devices FOR NO KEY UPDATE`
+ *   `.where(...).limit(1).for(...)`      -> `organizations FOR SHARE`
+ *
+ * The organizations arm is derived from the device rows' own `orgId`s so the
+ * default is "every org these devices sit in exists and belongs to
+ * `partner-1`". That deliberately does NOT decide the test: the owner check in
+ * `lockCurrentAutomationTargetDevices` still compares the DEVICE row's orgId
+ * against the automation's owner, which is what the moved-target cases turn on.
+ * Pass `orgRows` to model an org that is missing, reassigned, or quick-support.
+ */
+function selectableRows(
+  rows: unknown[],
+  _options: { locked?: boolean; orgRows?: unknown[] } = {},
+) {
+  const orgRows = _options.orgRows ?? [
+    ...new Set(
+      (rows as Array<{ orgId?: string }>).map((row) => row?.orgId).filter(Boolean) as string[],
+    ),
+  ].map((id) => ({ id, partnerId: 'partner-1', type: 'standard' }));
+  const whereResult = Object.assign(Promise.resolve(rows), {
+    orderBy: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue(rows) }),
+    limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue(orgRows) }),
+  });
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue(whereResult),
+    }),
+  };
 }
 
 function mockSelectChain(result: unknown[]) {
@@ -747,7 +781,9 @@ describe('executeConfigPolicyAutomationRun', () => {
     });
     resolveOwnedAutomationReferencesMock.mockResolvedValue({
       ...emptyResolvedReferences(),
-      softwareCatalogsById: new Map([['catalog-1', { id: 'catalog-1', name: 'Tool' }]]),
+      softwareCatalogsById: new Map([['catalog-1', {
+        id: 'catalog-1', name: 'Tool', orgId: 'org-1', partnerId: null,
+      }]]),
       softwareVersionsByCatalogId: new Map([['catalog-1', {
         id: 'version-1', catalogId: 'catalog-1', version: '1.0.0', supportedOs: ['linux'],
       }]]),
@@ -1312,15 +1348,12 @@ describe('executeAutomationRun durable dispatch', () => {
           from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }),
         } as any;
       }
-      return {
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{
-            id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
-            osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null,
-            customFields: null,
-          }]),
-        }),
-      } as any;
+      const rows = [{
+        id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+        osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null,
+        customFields: null,
+      }];
+      return selectableRows(rows, { locked: selectCall >= 5 }) as any;
     });
     vi.mocked(db.insert).mockReturnValue({
       values: vi.fn().mockReturnValue({
@@ -1351,6 +1384,188 @@ describe('executeAutomationRun durable dispatch', () => {
       commandId: 'cmd-ordinary',
     }));
     expect(reconcileRunMock).toHaveBeenCalledWith(run.id);
+  });
+
+  it('re-locks the current owner boundary around a standalone software deployment batch', async () => {
+    const run = {
+      id: 'run-deploy-lock', automationId: 'auto-deploy-lock', status: 'running',
+      triggeredBy: 'scheduler', logs: [],
+    };
+    const automation = {
+      id: 'auto-deploy-lock', orgId: 'org-1', partnerId: null, name: 'Deploy lock',
+      trigger: { type: 'manual' }, conditions: null,
+      actions: [{ type: 'deploy_software', catalogId: 'catalog-1' }],
+      onFailure: 'stop', notificationTargets: null, createdBy: 'user-1',
+    };
+    const device = {
+      id: 'dev-1', orgId: 'org-1', hostname: 'host-1', displayName: null,
+      osType: 'linux', status: 'online', agentId: 'agent-1', siteId: null, customFields: null,
+    };
+    resolveOwnedAutomationReferencesMock.mockResolvedValue({
+      ...emptyResolvedReferences(),
+      softwareCatalogsById: new Map([['catalog-1', {
+        id: 'catalog-1', name: 'Tool', orgId: 'org-1', partnerId: null,
+      }]]),
+      softwareVersionsByCatalogId: new Map([['catalog-1', {
+        id: 'version-1', catalogId: 'catalog-1', version: '1.0.0', supportedOs: ['linux'],
+      }]]),
+    });
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(selectCall === 1 ? [run] : [automation]),
+        }) }) } as any;
+      }
+      if (selectCall === 3) return selectableRows([{
+        resourceKind: 'software_catalog', resourceId: 'catalog-1', state: 'active',
+        expectedResourceOrgId: 'org-1', expectedResourcePartnerId: null,
+        expectedResourceIsSystem: false,
+      }]) as any;
+      return selectableRows([device]) as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    isDeviceSoftwareCurrentMock.mockResolvedValue(false);
+    createSoftwareDeploymentMock.mockResolvedValue({
+      deploymentId: 'deployment-1', status: 'pending', dispatchedDeviceIds: [device.id],
+      deviceResults: [{
+        deviceId: device.id, deploymentResultId: 'result-1', status: 'pending',
+        deviceCommandId: 'command-1', message: null,
+      }],
+    });
+
+    await executeAutomationRun(run.id, [device.id]);
+
+    expect(createSoftwareDeploymentMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: device.orgId,
+      deviceIds: [device.id],
+    }));
+    // Initial target load, per-action refresh, then the load-bearing locked
+    // refresh enclosing createSoftwareDeployment.
+    expect(selectCall).toBeGreaterThanOrEqual(6);
+  });
+
+  it('does not dispatch any action when a queued target has moved outside the automation owner org', async () => {
+    const run = {
+      id: 'run-moved',
+      automationId: 'auto-source-org',
+      status: 'running',
+      triggeredBy: 'scheduler',
+      logs: [],
+    };
+    const automation = {
+      id: 'auto-source-org',
+      orgId: 'org-source',
+      partnerId: null,
+      name: 'Source organization automation',
+      trigger: { type: 'manual' },
+      conditions: null,
+      actions: [{ type: 'execute_command', command: 'echo must-not-run' }],
+      onFailure: 'stop',
+      notificationTargets: null,
+      createdBy: 'user-1',
+    };
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        const rows = selectCall === 1 ? [run] : [automation];
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+          }),
+        } as any;
+      }
+      if (selectCall === 3) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+      }
+      // Simulate the stale bare-id lookup returning the same device after an
+      // independently authorized move to another organization.
+      return selectableRows([{
+        id: 'dev-moved', orgId: 'org-destination', hostname: 'moved-host', displayName: null,
+        osType: 'linux', status: 'online', agentId: 'agent-moved', siteId: null,
+        customFields: null,
+      }]) as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+
+    await executeAutomationRun(run.id, ['dev-moved']);
+
+    expect(seedActionResultsMock).not.toHaveBeenCalled();
+    expect(recordActionDispatchMock).not.toHaveBeenCalled();
+    expect(dispatchScriptToDevice).not.toHaveBeenCalled();
+    expect(createSoftwareDeploymentMock).not.toHaveBeenCalled();
+  });
+
+  it('stops before the next action when a target moves outside the owner org during a run', async () => {
+    const run = {
+      id: 'run-mid-move', automationId: 'auto-mid-move', status: 'running',
+      triggeredBy: 'scheduler', logs: [],
+    };
+    const automation = {
+      id: 'auto-mid-move', orgId: 'org-source', partnerId: null,
+      name: 'Mid-run movement automation', trigger: { type: 'manual' }, conditions: null,
+      actions: [
+        { type: 'execute_command', command: 'echo first' },
+        { type: 'execute_command', command: 'echo second' },
+      ],
+      onFailure: 'stop', notificationTargets: null, createdBy: 'user-1',
+    };
+    const sourceDevice = {
+      id: 'dev-mid-move', orgId: 'org-source', hostname: 'source-host', displayName: null,
+      osType: 'linux', status: 'online', agentId: 'agent-source', siteId: null,
+      customFields: null,
+    };
+    const movedDevice = { ...sourceDevice, orgId: 'org-destination', agentId: 'agent-destination' };
+    let selectCall = 0;
+    vi.mocked(db.select).mockImplementation(() => {
+      selectCall += 1;
+      if (selectCall === 1 || selectCall === 2) {
+        const rows = selectCall === 1 ? [run] : [automation];
+        return { from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
+        }) } as any;
+      }
+      if (selectCall === 3) {
+        return { from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([]) }) } as any;
+      }
+      // Selects 4..8 are the admission load plus the WHOLE of action 0:
+      // per-action load (5), then the lock sequence — candidate org read (6),
+      // `organizations FOR SHARE` (7), `devices FOR NO KEY UPDATE` (8). The
+      // device moves only once action 0 has fully dispatched, so action 1's
+      // re-read at select 9 is the first to see it in the destination org.
+      const rows = selectCall <= 8 ? [sourceDevice] : [movedDevice];
+      return selectableRows(rows, { locked: selectCall === 8 }) as any;
+    });
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({ onConflictDoNothing: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(db.update).mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+    } as any);
+    vi.mocked(dispatchScriptToDevice).mockResolvedValue({
+      ok: true, commandId: 'cmd-first', executionId: null, delivered: true,
+      executedAt: new Date(), ignoredParameters: [],
+    } as any);
+
+    await executeAutomationRun(run.id, [sourceDevice.id]);
+
+    expect(dispatchScriptToDevice).toHaveBeenCalledOnce();
+    expect(recordActionDispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      runId: run.id, deviceId: sourceDevice.id, actionIndex: 1, status: 'failed',
+      message: expect.stringContaining('no longer belongs'),
+    }));
   });
 
   // #3525 W05 — the dispatch fence. A BullMQ job is not permission to
