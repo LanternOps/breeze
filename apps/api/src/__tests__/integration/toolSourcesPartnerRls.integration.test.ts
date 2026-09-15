@@ -40,7 +40,7 @@ import { db, withDbAccessContext, type DbAccessContext } from '../../db';
 import { toolSources, toolSourceTools } from '../../db/schema';
 import { pgErrorCode } from '../../utils/pgErrors';
 import { createOrganization, createPartner } from './db-utils';
-import { resolveTenantTools } from '../../services/toolSources/resolver';
+import { loadTenantToolBindingState, resolveTenantTools } from '../../services/toolSources/resolver';
 import type { AuthContext } from '../../middleware/auth';
 
 const SYSTEM_CTX: DbAccessContext = {
@@ -555,5 +555,35 @@ describe('tool_sources / tool_source_tools partner RLS (#5216 W01 Task A11)', ()
       const resolvedForOther = await resolveTenantTools(otherOrgAuth);
       expect(resolvedForOther.map((d) => d.qualifiedName)).not.toContain('mine__get_asset');
     });
+  });
+});
+
+/**
+ * Tool catalog W01 PR B (#5216): `loadTenantToolBindingState` is what release
+ * revalidation classifies an approved external intent against, and its whole
+ * job is to report WHY a tool can no longer run. Every unit-level caller mocks
+ * it, so the row -> `{ tool, source }` mapping is only ever proven here: a
+ * swapped field (source status read off the tool row, say) would turn
+ * `external_tool_source_unavailable` into a silent release with every mocked
+ * test still green.
+ */
+describe('loadTenantToolBindingState — live row mapping (#5216 PR B)', () => {
+  it('returns the live tool AND source facts unfiltered, whatever their state', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const sourceId = await seedSource({ orgId: org.id });
+    const toolId = await seedTool(sourceId, { orgId: org.id }, { enabled: false, tier: 3 });
+
+    const state = await loadTenantToolBindingState(toolId);
+
+    // A disabled tool must still COME BACK (with enabled:false) — this loader
+    // deliberately has none of the dispatch loader's filters.
+    expect(state).not.toBeNull();
+    expect(state!.tool).toMatchObject({ id: toolId, enabled: false, removedAt: null, revision: 'rev-1', tier: 3 });
+    expect(state!.source).toMatchObject({ id: sourceId, status: 'active' });
+  });
+
+  it('returns null for an id that names no row (a stale binding on an immutable intent)', async () => {
+    expect(await loadTenantToolBindingState('11111111-1111-4111-8111-111111111111')).toBeNull();
   });
 });

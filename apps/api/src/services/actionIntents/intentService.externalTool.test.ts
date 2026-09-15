@@ -577,6 +577,33 @@ describe('external (tenant tool-source) Tier-3 intents (tool catalog W01 PR B, #
     expect(dbState.insertedActionIntentValues).toHaveLength(0);
   });
 
+  it('refuses to reuse a live idempotency key whose external binding changed (rediscovered tool row)', async () => {
+    // The tool was deleted and recreated under the same qualified name (new
+    // uuid) — or rediscovered into a new revision — while an earlier intent
+    // with identical args/actor is still pending. Reusing it would hand back a
+    // binding release revalidation is going to refuse.
+    dbState.insertActionIntentsResults.push([]); // ON CONFLICT DO NOTHING -> no row
+    dbState.selectActionIntentsResults.push([
+      {
+        ...makeIntentRow({
+          actionName: 'hudu__create_asset',
+          source: 'chat',
+          status: 'pending_approval',
+          requestingAgentRunId: null,
+          toolSourceToolId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          toolRevision: 'rev-6',
+        }),
+        argumentDigest: computeArgumentDigest(
+          canonicalizeArguments({ name: 'Printer 3', companyId: 42 }),
+        ),
+      },
+    ]);
+
+    await expect(
+      createActionIntent(makeAuth(), externalInput({ idempotencyKey: 'reuse-1' })),
+    ).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  });
+
   it('policy-decide can never authorize an external tool (qualified names are not decidable keys)', () => {
     // Asserted, not trusted: resolvePolicyDecisionState keys on
     // isPolicyDecidableKey(toolName), which can never match a `__` name.

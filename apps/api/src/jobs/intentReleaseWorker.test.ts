@@ -71,7 +71,7 @@ const { schema, dbState, dbMock, intentServiceMock, actorContextMock, tenantStat
     toolSourcesMock: {
       loadTenantToolBindingState: vi.fn(async () => null as unknown),
       loadTenantToolForExecution: vi.fn(async () => null as unknown),
-      executeTenantTool: vi.fn(async () => JSON.stringify({ ok: true })),
+      executeTenantToolDetailed: vi.fn(async () => ({ isError: false, text: JSON.stringify({ ok: true }) })),
     },
     // Wave-5A review fix (#3827): mocked at the module boundary so a
     // kill_switch_engaged veto can be driven WITHOUT constructing the agent
@@ -393,7 +393,7 @@ vi.mock('../services/toolSources/guardrails', () => ({
   tenantToolPermissionRequirement: vi.fn(() => ({ resource: 'external_tools', action: 'write' })),
 }));
 vi.mock('../services/toolSources/execute', () => ({
-  executeTenantTool: toolSourcesMock.executeTenantTool,
+  executeTenantToolDetailed: toolSourcesMock.executeTenantToolDetailed,
 }));
 // See the hoisted `agentReleaseAuthorityMock` comment: real
 // `revalidateApprovedIntentForRelease` runs, only its `checkAgentReleaseAuthority`
@@ -910,14 +910,14 @@ describe('releaseApprovedIntent', () => {
     it('dispatches through executeTenantTool with the revalidated descriptor — never executeTool', async () => {
       const intent = externalIntent();
       primeExternal(intent);
-      toolSourcesMock.executeTenantTool.mockResolvedValueOnce(JSON.stringify({ id: 'asset-9' }));
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: false, text: JSON.stringify({ id: 'asset-9' }) });
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
 
       await releaseApprovedIntent(intent.id);
 
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(aiGuardrailsMock.checkToolPermission).not.toHaveBeenCalled();
-      expect(toolSourcesMock.executeTenantTool).toHaveBeenCalledWith(
+      expect(toolSourcesMock.executeTenantToolDetailed).toHaveBeenCalledWith(
         descriptor,
         EXT_ARGS,
         fakeAuth,
@@ -934,7 +934,7 @@ describe('releaseApprovedIntent', () => {
     it('a returned {error} from the external tool fails the release as tool_returned_error', async () => {
       const intent = externalIntent();
       primeExternal(intent);
-      toolSourcesMock.executeTenantTool.mockResolvedValueOnce(JSON.stringify({ error: 'MCP call failed: 502' }));
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({ isError: true, text: 'MCP call failed: 502' });
       intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
 
       await releaseApprovedIntent(intent.id);
@@ -944,6 +944,66 @@ describe('releaseApprovedIntent', () => {
         'executing',
         'failed',
         expect.objectContaining({ errorCode: 'tool_returned_error', result: { error: 'MCP call failed: 502' } }),
+      );
+    });
+
+    it('fails the release with execution_error when the external tool exceeds its timeout', async () => {
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolTimeoutsMock.getToolTimeout.mockReturnValue(5);
+      toolSourcesMock.executeTenantToolDetailed.mockImplementationOnce(() => new Promise(() => {}));
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'execution_error' }),
+      );
+    });
+
+    it("trusts the executor's isError over the body-shape heuristic: {error:null,...} is a SUCCESS", async () => {
+      // A third-party MCP body Breeze does not control. `isReturnedToolError`
+      // would call this a failure (an `error` key, none of
+      // success/data/configured); the executor said otherwise.
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({
+        isError: false,
+        text: JSON.stringify({ error: null, ticket: { id: 42 } }),
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> completed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'completed',
+        expect.objectContaining({ result: { error: null, ticket: { id: 42 } } }),
+      );
+    });
+
+    it('an OVERSIZE external error body is still a failed release, not a truncated completion', async () => {
+      // > MAX_RESULT_BYTES (64 KiB): the `!truncated` guard would have
+      // suppressed the heuristic and recorded this as a completion.
+      const intent = externalIntent();
+      primeExternal(intent);
+      toolSourcesMock.executeTenantToolDetailed.mockResolvedValueOnce({
+        isError: true,
+        text: 'x'.repeat(70 * 1024),
+      });
+      intentServiceMock.transitionIntent.mockResolvedValueOnce(true); // executing -> failed
+
+      await releaseApprovedIntent(intent.id);
+
+      expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
+        intent.id,
+        'executing',
+        'failed',
+        expect.objectContaining({ errorCode: 'tool_returned_error', result: { truncated: true } }),
       );
     });
 
@@ -958,7 +1018,7 @@ describe('releaseApprovedIntent', () => {
 
       await releaseApprovedIntent(intent.id);
 
-      expect(toolSourcesMock.executeTenantTool).not.toHaveBeenCalled();
+      expect(toolSourcesMock.executeTenantToolDetailed).not.toHaveBeenCalled();
       expect(aiToolsMock.executeTool).not.toHaveBeenCalled();
       expect(intentServiceMock.transitionIntent).toHaveBeenLastCalledWith(
         intent.id,

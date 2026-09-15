@@ -643,6 +643,21 @@ describe('revalidateApprovedIntentForRelease external tool branch (tool catalog 
     expect(result).toMatchObject({ ok: false, errorCode: 'rbac_denied' });
   });
 
+  it('a THROWN binding load fails closed as external_tool_check_failed, never escaping to strand the claimed intent', async () => {
+    vi.mocked(loadTenantToolBindingState).mockRejectedValueOnce(new Error('connection terminated'));
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_check_failed' });
+    // Distinct from a real revocation: an operator scanning error_code must be
+    // able to tell an infrastructure fault from a disabled tool.
+    expect(result).not.toMatchObject({ errorCode: 'external_tool_disabled' });
+  });
+
+  it('a THROWN actor-scoped reload fails closed as external_tool_check_failed too', async () => {
+    vi.mocked(loadTenantToolForExecution).mockRejectedValueOnce(new Error('redis blip'));
+    const result = await revalidateApprovedIntentForRelease(externalIntent(), { boundArgumentDigest: digest });
+    expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_check_failed' });
+  });
+
   it('refuses a malformed binding (tool id without a revision) instead of trusting it', async () => {
     const result = await revalidateApprovedIntentForRelease(externalIntent({ toolRevision: null }), { boundArgumentDigest: digest });
     expect(result).toMatchObject({ ok: false, errorCode: 'external_tool_drift' });

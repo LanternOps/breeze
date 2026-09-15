@@ -2030,10 +2030,19 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
-          existing.argumentDigest !== argumentDigest
+          existing.argumentDigest !== argumentDigest ||
+          // Tool catalog W01 PR B (#5216): the external binding is part of the
+          // request's identity. A tool row deleted and recreated under the
+          // same qualified name (new uuid, or a new revision after
+          // rediscovery) is a DIFFERENT approval target, so reusing the live
+          // intent would hand the caller a binding release revalidation is
+          // going to refuse as `external_tool_disabled`/`_drift` — a confusing
+          // spurious failure instead of an honest conflict here.
+          (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
             'idempotency_conflict',
           );
         }

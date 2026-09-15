@@ -13,6 +13,7 @@ import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
+import { captureException } from '../sentry';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -77,7 +78,25 @@ async function revalidateExternalToolBinding(
   if (!intent.toolRevision) {
     return { ok: false, errorCode: 'external_tool_drift', details: { reason: 'intent carries no tool_revision' } };
   }
-  const live = await loadTenantToolBindingState(toolId);
+  // A THROW here (Postgres blip mid-release) must not escape: the intent is
+  // already CAS'd `executing`, the release job carries no BullMQ retry, and an
+  // escaping error strands it until the 20-minute stale-executing reaper
+  // rewrites the cause as the generic `execution_lost`. Fail closed and
+  // CATEGORIZED instead, exactly like the worker's own `digest_check_failed`
+  // treatment of a throwing effect-digest recompute — and like
+  // `executeTenantToolDetailed`'s own defensive wrapper around this same
+  // loader (toolSources/execute.ts).
+  let live: Awaited<ReturnType<typeof loadTenantToolBindingState>>;
+  try {
+    live = await loadTenantToolBindingState(toolId);
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return {
+      ok: false,
+      errorCode: 'external_tool_check_failed',
+      details: { toolSourceToolId: toolId, reason: err instanceof Error ? err.message : String(err) },
+    };
+  }
   if (!live || !live.tool.enabled || live.tool.removedAt) {
     return {
       ok: false,
@@ -430,7 +449,20 @@ async function revalidateExternalToolForActor(
   intent: ActionIntent,
   auth: AuthContext,
 ): Promise<IntentReleaseRevalidation> {
-  const loaded = await loadTenantToolForExecution(intent.toolSourceToolId!, auth);
+  let loaded: Awaited<ReturnType<typeof loadTenantToolForExecution>>;
+  try {
+    loaded = await loadTenantToolForExecution(intent.toolSourceToolId!, auth);
+  } catch (err) {
+    // Same reasoning as `revalidateExternalToolBinding`'s wrapper: a thrown
+    // reload is an infrastructure fault, not a revocation, and must not be
+    // reported as one — nor allowed to strand the claimed intent.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return {
+      ok: false,
+      errorCode: 'external_tool_check_failed',
+      details: { toolSourceToolId: intent.toolSourceToolId, reason: err instanceof Error ? err.message : String(err) },
+    };
+  }
   if (!loaded) {
     return {
       ok: false,
