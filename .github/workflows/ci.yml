@@ -1966,6 +1966,11 @@ jobs:
         run: |
           cd agent
           export BREEZE_BACKUP_BIN="$PWD/breeze-backup-linux-amd64"
+          # Static assertions on run-qemu.sh's own QEMU command lines
+          # (~1 s, no QEMU/root needed) — cheap enough to run right before
+          # the ~35 min emulated restore below, and the only place they are
+          # enforced. See recovery-media/e2e/run-qemu_test.sh.
+          bash recovery-media/e2e/run-qemu_test.sh
           sudo -E env "PATH=$PATH" ./recovery-media/e2e/seed-snapshot.sh e2e-store
           sudo -E env "PATH=$PATH" ./recovery-media/e2e/run-qemu.sh out/breeze-recovery-linux-amd64.iso e2e-store e2e-out
 

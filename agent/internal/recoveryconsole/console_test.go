@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -472,6 +473,81 @@ func TestConsole_LockAcquisitionFailureAbortsBeforeAnyIO(t *testing.T) {
 	}
 	if io.readLineCalls != 0 {
 		t.Errorf("ReadLine was called %d times, want 0 (must abort before any prompt)", io.readLineCalls)
+	}
+}
+
+// TestMain replaces the package's real holdAfterPower — which blocks
+// FOREVER by design, see its doc comment — with a no-op for every test in
+// this package. Without it, every test whose flow reaches c.power() (the
+// happy path, CI mode, the failure menu's [p]oweroff, …) would hang the
+// whole run rather than fail. A test that needs to ASSERT on the hold
+// stubs it again with stubHoldAfterPower.
+func TestMain(m *testing.M) {
+	holdAfterPower = func() {}
+	os.Exit(m.Run())
+}
+
+// stubHoldAfterPower replaces holdAfterPower with a recording no-op for
+// the duration of one test and returns the call counter.
+func stubHoldAfterPower(t *testing.T) *int {
+	t.Helper()
+	prev := holdAfterPower
+	calls := 0
+	holdAfterPower = func() { calls++ }
+	t.Cleanup(func() { holdAfterPower = prev })
+	return &calls
+}
+
+// TestConsole_HoldsAfterPowerSoTheLockHolderPidStaysAlive is the red-first
+// regression test for issue #5890 — the THIRD layer of the same
+// two-consoles race, after AcquireLock (#5588) and after
+// never-releasing-once-powering-off
+// (TestConsole_AcquiresLockAndNeverReleasesOnceItPowersOff).
+//
+// Holding the lock is not enough on its own, because the lock's
+// mutual-exclusion primitive is the holder's PID, not the file: the loser
+// polls, reads the holder PID out of the lock file, and reclaims the lock
+// as stale the moment that PID stops being alive
+// (acquireRecoveryConsoleLock in cmd/breeze-backup/recovery_console_cmd.go
+// — deliberately, so an OOM-killed holder can't wedge the media forever).
+// `systemctl poweroff` is asynchronous and returns in milliseconds, so the
+// winner's Run() returned, the console process exited, its PID died, and
+// the losing instance's next 2 s poll reclaimed the lock and started a
+// whole second recovery attempt inside the multi-second real shutdown
+// window — posting one extra "media_booted" before the kernel finally
+// halted. Verified against CI run 34919726987 (merge-group for PR #5871):
+// serial-1.log shows exactly ONE boot ending in a clean "reboot: Power
+// down", so nothing ever re-booted the live ISO, yet progress.json read
+// ["media_booted","planned","restoring","validated","rebooted","media_booted"].
+//
+// Fix: once Run() has committed to powering the machine off or rebooting,
+// it blocks forever instead of returning, keeping this PID alive (and
+// therefore the lock genuinely held) until the kernel halts the machine.
+func TestConsole_HoldsAfterPowerSoTheLockHolderPidStaysAlive(t *testing.T) {
+	holdCalls := stubHoldAfterPower(t)
+
+	io := &fakeIO{FailReadLine: true}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: deps.build("0.111.1"), Cmdline: cmdline}
+
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if strings.Join(deps.powerCalls, ",") != "poweroff" {
+		t.Fatalf("power calls = %v, want [poweroff]", deps.powerCalls)
+	}
+	if *holdCalls != 1 {
+		t.Errorf("holdAfterPower called %d times, want 1 (the console must keep its PID alive after powering off, or the losing instance reclaims the lock as stale and runs a second attempt)", *holdCalls)
 	}
 }
 
