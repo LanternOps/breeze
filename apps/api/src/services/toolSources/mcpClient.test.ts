@@ -298,7 +298,8 @@ describe('McpClient', () => {
   it('does not share a cached oauth2 token between two configs with the same clientId but different secrets', async () => {
     let issued = 0;
     let rpcId = 0;
-    const fetchImpl = vi.fn(async (url: string) => {
+    const fetchImpl = vi.fn(async (url: string, _init: { headers?: unknown }) => {
+      void _init;
       if (url.includes('shared-token-endpoint')) {
         issued += 1;
         return jsonResponse({ access_token: `tok-${issued}`, expires_in: 3600 });
