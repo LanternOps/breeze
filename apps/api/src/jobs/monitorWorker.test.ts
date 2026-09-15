@@ -547,6 +547,102 @@ describe('recordMonitorCheckResult', () => {
     expect(stateSet.lastError).toContain('[PRIVATE_KEY_REDACTED]');
     expect(stateSet.lastError).not.toContain('BEGIN RSA PRIVATE KEY');
   });
+
+  // #5751 W03 (#5754): the TLS observation joins the SAME updateSet as
+  // lastStatus/lastResponseMs, inside the transaction that inserts the result
+  // row — never a second statement that could land without it.
+  describe('TLS observation writeback', () => {
+    /** Runs one result and returns the network_monitors updateSet it produced. */
+    async function recordAndCaptureUpdate(
+      details: Record<string, unknown> | undefined,
+    ): Promise<Record<string, unknown>> {
+      const txUpdateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+      vi.mocked(db.transaction).mockImplementation(async (callback: any) => callback({
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+        update: vi.fn().mockReturnValue({ set: txUpdateSet }),
+      }));
+      vi.mocked(db.select)
+        .mockReturnValueOnce(selectLimitResolved([{
+          id: 'monitor-1', orgId: 'org-1', assetId: null, name: 'Web',
+          target: 'https://a.example', monitorType: 'http_check', consecutiveFailures: 0,
+        }]) as any)
+        .mockReturnValueOnce(selectWhereResolved([]) as any);
+
+      await recordMonitorCheckResult('monitor-1', {
+        monitorId: 'monitor-1', status: 'online', responseMs: 12, details,
+      }, { orgId: 'org-1', deviceId: 'device-1' });
+
+      return txUpdateSet.mock.calls[0]![0] as Record<string, unknown>;
+    }
+
+    it('writes every tls_* column from an observed result', async () => {
+      const set = await recordAndCaptureUpdate({
+        monitorId: 'monitor-1',
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: 'CN=Example CA',
+        sslObservedHost: 'final.example.com',
+      });
+
+      expect(set.tlsState).toBe('observed');
+      expect(set.tlsNotAfter).toEqual(new Date('2027-01-02T03:04:05Z'));
+      expect(set.tlsIssuer).toBe('CN=Example CA');
+      // The OBSERVED host, not the monitor's target — redirects are followed.
+      expect(set.tlsObservedHost).toBe('final.example.com');
+      expect(set.tlsObservedAt).toBeInstanceOf(Date);
+    });
+
+    it('records handshake_failed with a NULL expiry, so a stale one never reads as fine', async () => {
+      const set = await recordAndCaptureUpdate({
+        monitorId: 'monitor-1',
+        sslState: 'handshake_failed',
+        sslObservedHost: 'broken.example.com',
+      });
+
+      expect(set.tlsState).toBe('handshake_failed');
+      expect(set.tlsNotAfter).toBeNull();
+      expect(set.tlsIssuer).toBeNull();
+    });
+
+    it('leaves the stored observation untouched for a result with no ssl* keys (icmp/dns)', async () => {
+      const set = await recordAndCaptureUpdate({ monitorId: 'monitor-1', status: 'online' });
+
+      for (const key of ['tlsState', 'tlsNotAfter', 'tlsIssuer', 'tlsObservedHost', 'tlsObservedAt']) {
+        expect(set, `${key} must be absent, not null — null would clear a good reading`)
+          .not.toHaveProperty(key);
+      }
+    });
+
+    it('writes nothing for a result with no details at all', async () => {
+      const set = await recordAndCaptureUpdate(undefined);
+      expect(set).not.toHaveProperty('tlsState');
+    });
+
+    it('does not write an invalid date when sslExpiry is unparseable', async () => {
+      const set = await recordAndCaptureUpdate({
+        sslState: 'observed', sslExpiry: 'not-a-date', sslObservedHost: 'h.example',
+      });
+
+      expect(set.tlsNotAfter).toBeNull();
+      // Degraded rather than 'observed', which the shape CHECK would reject.
+      expect(set.tlsState).not.toBe('observed');
+    });
+
+    it('survives redactSecretsDeep — a real issuer DN reaches the column intact', async () => {
+      // redactSecretsDeep runs on `details` BEFORE this writeback, so the
+      // assertion is on the value that actually lands, not on the input.
+      const issuer = 'CN=R10,O=Let’s Encrypt,C=US';
+      const set = await recordAndCaptureUpdate({
+        sslState: 'observed',
+        sslExpiry: '2027-01-02T03:04:05Z',
+        sslIssuer: issuer,
+        sslObservedHost: 'final.example.com',
+      });
+
+      expect(set.tlsIssuer).toBe(issuer);
+      expect(set.tlsObservedHost).toBe('final.example.com');
+    });
+  });
 });
 
 describe('processCheckMonitor (wave 3.5b #4084 — dispatch via facade)', () => {

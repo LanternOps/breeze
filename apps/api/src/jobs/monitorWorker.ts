@@ -25,6 +25,7 @@ import {
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
+import { tlsObservationUpdate } from '../services/monitors/tlsObservation';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -605,7 +606,16 @@ export async function recordMonitorCheckResult(
       lastStatus: result.status,
       lastResponseMs: result.responseMs ?? null,
       lastError: result.error ?? null,
-      updatedAt: now
+      updatedAt: now,
+      // #5754: the TLS observation joins THIS updateSet rather than a second
+      // statement, so the certificate reading and the check it came from can
+      // never disagree. The fragment is empty for any result carrying no
+      // `sslState` — every icmp/dns/tcp check, and every agent predating the
+      // wave — so those never clear a good observation. It is written on the
+      // `network_monitors` DEFINITION row, so for a partner-wide monitor
+      // (org_id NULL, fanned out to many orgs) the last reporting org wins;
+      // harmless today because loadExpiringCerts reads org-owned rows only.
+      ...tlsObservationUpdate(result.details, now),
     };
 
     if (isFailure) {
