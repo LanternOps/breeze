@@ -1,0 +1,39 @@
+{
+  "card": {
+    "title": "Checklist",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Nenhuma etapa ainda.",
+    "addPlaceholder": "Adicionar uma etapa",
+    "add": "Adicionar",
+    "internalOnly": "Interno — nunca exibido ao cliente",
+    "detailPlaceholder": "Nota opcional para esta etapa"
+  },
+  "actions": {
+    "moveUp": "Mover para cima",
+    "moveDown": "Mover para baixo",
+    "delete": "Excluir",
+    "edit": "Editar",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "retry": "Tentar novamente"
+  },
+  "source": {
+    "manual": "Manual",
+    "deliverable": "Entrega",
+    "checklist_template": "Modelo"
+  },
+  "editDoneWarning": "Editar uma etapa concluída apaga quem a concluiu e quando.",
+  "resolveConfirm": {
+    "title": "Checklist incompleto",
+    "body_one": "{{count}} de {{total}} etapa não está marcada. Resolver mesmo assim?",
+    "body_other": "{{count}} de {{total}} etapas não estão marcadas. Resolver mesmo assim?",
+    "confirm": "Resolver mesmo assim",
+    "cancel": "Voltar"
+  },
+  "errors": {
+    "loadFailed": "Falha ao carregar o checklist.",
+    "saveFailed": "Falha ao salvar a etapa do checklist.",
+    "reorderFailed": "Falha ao reordenar o checklist.",
+    "tickRequiresUser": "Marcar uma etapa exige uma sessão de usuário autenticada."
+  }
+}

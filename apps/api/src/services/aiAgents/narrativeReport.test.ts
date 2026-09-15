@@ -229,6 +229,7 @@ function input(overrides: Partial<NarrativePersistInput> = {}): NarrativePersist
     occurrenceKey: '2026-08-31T07:00:00+02:00',
     context: context(),
     outcome: outcome(),
+    emailRecipientUserIds: [],
     ...overrides,
   };
 }
@@ -262,6 +263,7 @@ describe('persistNarrativeReport', () => {
       reportId: REPORT_ID,
       reportRunId: REPORT_RUN_ID,
       downloadPath: `/api/reports/runs/${REPORT_RUN_ID}/download`,
+      deliveriesCreated: 0,
     });
     // Every statement ran under the same system scope — a single
     // `withSystemDbAccessContext` transaction, never a second connection.
@@ -476,6 +478,52 @@ describe('persistNarrativeReport', () => {
     // `flattenNarrativeLine` treats it — a silent deletion would rewrite what
     // the name says.
     expect(result.summary.narrative.partnerName).toBe('North wind');
+  });
+
+  // #4248 W03 (Task 6): delivery rows are created ATOMICALLY with the artifact.
+  describe('narrative delivery rows', () => {
+    const U1 = '00000000-0000-4000-8000-0000000000e1';
+    const U2 = '00000000-0000-4000-8000-0000000000e2';
+
+    it('creates one pending delivery row per recipient inside the artifact transaction', async () => {
+      queueHappyPath();
+      state.insertReturningQueue.push([{ id: 'd1' }, { id: 'd2' }]); // the deliveries insert
+
+      const out = await persistNarrativeReport(input({ emailRecipientUserIds: [U1, U2] }));
+
+      expect(out.deliveriesCreated).toBe(2);
+      // Third insert: definition, artifact, deliveries — all under the ONE system scope.
+      expect(state.insertCount).toBe(3);
+      expect(state.insertValues[2]).toEqual([
+        { reportRunId: REPORT_RUN_ID, recipientUserId: U1, channel: 'email', state: 'pending' },
+        { reportRunId: REPORT_RUN_ID, recipientUserId: U2, channel: 'email', state: 'pending' },
+      ]);
+      expect(new Set(state.statementScopes)).toEqual(new Set(['system']));
+      // Deliveries are written BEFORE the commit-gate CAS, so a lost CAS rolls them back too.
+      const deliveriesConflict = state.insertConflicts[2];
+      expect(deliveriesConflict, 'idempotent against the (run, recipient, channel) unique index').toBeDefined();
+    });
+
+    it('creates no delivery rows when there are no recipients', async () => {
+      queueHappyPath();
+      const out = await persistNarrativeReport(input({ emailRecipientUserIds: [] }));
+      expect(out.deliveriesCreated).toBe(0);
+      expect(state.insertCount).toBe(2);
+    });
+
+    it('a lost CAS still throws the conflict AFTER the delivery rows were written — the rollback must take them too', async () => {
+      state.selectQueue.push([{ id: RUN_ID, status: 'running', reportRunId: null }]);
+      state.selectQueue.push([{ id: REPORT_ID }]);
+      state.insertReturningQueue.push([{ id: REPORT_RUN_ID }]);
+      state.insertReturningQueue.push([{ id: 'd1' }]);
+      state.updateReturningQueue.push([]); // the CAS lost
+
+      await expect(persistNarrativeReport(input({ emailRecipientUserIds: [U1] })))
+        .rejects.toBeInstanceOf(NarrativePersistConflictError);
+      expect(state.insertCount).toBe(3);
+      // Live-Postgres proof that the rows are actually gone after the rollback:
+      // narrativeEmailDelivery.integration.test.ts.
+    });
   });
 });
 

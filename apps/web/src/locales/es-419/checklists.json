@@ -1,0 +1,39 @@
+{
+  "card": {
+    "title": "Lista de verificación",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Aún no hay pasos.",
+    "addPlaceholder": "Agregar un paso",
+    "add": "Agregar",
+    "internalOnly": "Interno — nunca se muestra al cliente",
+    "detailPlaceholder": "Nota opcional para este paso"
+  },
+  "actions": {
+    "moveUp": "Subir",
+    "moveDown": "Bajar",
+    "delete": "Eliminar",
+    "edit": "Editar",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "retry": "Reintentar"
+  },
+  "source": {
+    "manual": "Manual",
+    "deliverable": "Entregable",
+    "checklist_template": "Plantilla"
+  },
+  "editDoneWarning": "Editar un paso completado borra quién lo completó y cuándo.",
+  "resolveConfirm": {
+    "title": "Lista de verificación incompleta",
+    "body_one": "{{count}} de {{total}} paso no está marcado. ¿Resolver de todos modos?",
+    "body_other": "{{count}} de {{total}} pasos no están marcados. ¿Resolver de todos modos?",
+    "confirm": "Resolver de todos modos",
+    "cancel": "Volver"
+  },
+  "errors": {
+    "loadFailed": "No se pudo cargar la lista de verificación.",
+    "saveFailed": "No se pudo guardar el paso de la lista de verificación.",
+    "reorderFailed": "No se pudo reordenar la lista de verificación.",
+    "tickRequiresUser": "Marcar un paso requiere una sesión de usuario con inicio de sesión."
+  }
+}

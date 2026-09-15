@@ -71,6 +71,7 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { reportRuns, reports } from '../../db/schema/reports';
 import type { NarrativeContext } from './narrativeContext';
+import { createPendingDeliveries } from '../reportRunDelivery';
 import { persistedSystemSiteScopeValues, systemReportAuthority } from '../siteScope';
 
 /** The definition name every weekly narrative shares. Not model-authored and
@@ -99,6 +100,18 @@ export interface NarrativePersistInput {
   occurrenceKey: string | null;
   context: NarrativeContext;
   outcome: NarrativeOutcome;
+  /**
+   * #4248 W03 — the users who should receive the narrative BY EMAIL, resolved
+   * by the caller (`resolveRecipientUserIds` against the run org) BEFORE the
+   * persist so this stays a pure DB operation. One `report_run_deliveries`
+   * row per id is created in the SAME transaction as the artifact: "the
+   * narrative exists" and "someone is supposed to receive it" become a single
+   * atomic fact, and a crash between the artifact commit and the notify path
+   * can no longer lose the delivery intent. The authority gate runs later, at
+   * send time (`reportNarrativeDelivery.ts`) — a row here is an intent, not a
+   * grant.
+   */
+  emailRecipientUserIds: readonly string[];
 }
 
 /**
@@ -201,8 +214,8 @@ function safeSections(value: unknown): NarrativeSection[] {
  */
 export async function persistNarrativeReport(
   input: NarrativePersistInput,
-): Promise<{ reportId: string; reportRunId: string; downloadPath: string }> {
-  const { run, agent, context, outcome } = input;
+): Promise<{ reportId: string; reportRunId: string; downloadPath: string; deliveriesCreated: number }> {
+  const { run, agent, context, outcome, emailRecipientUserIds } = input;
 
   return inSystemDbContext(async () => {
     // 1. Lock the run and re-check ownership. `FOR UPDATE` holds the row for
@@ -332,6 +345,15 @@ export async function persistNarrativeReport(
       .set({ outputUrl: downloadPath })
       .where(eq(reportRuns.id, artifact.id));
 
+    // 3b. #4248 W03 — the per-recipient delivery intents, in THIS transaction
+    //     and BEFORE the commit-gate CAS in step 5, so a lost CAS rolls them
+    //     back with the artifact (an orphan delivery row would email a
+    //     document nobody's run points at). Idempotent against the
+    //     (run, recipient, channel) unique index.
+    const deliveriesCreated = await createPendingDeliveries(
+      db, artifact.id, emailRecipientUserIds, 'email',
+    );
+
     // 4. Stamp the definition so `/reports` sorts and renders it like any
     //    other. Org-pinned even though the id is unique: the system context
     //    bypasses RLS, so the pin is the only tenancy check on this statement.
@@ -358,7 +380,7 @@ export async function persistNarrativeReport(
       );
     }
 
-    return { reportId: definition.id, reportRunId: artifact.id, downloadPath };
+    return { reportId: definition.id, reportRunId: artifact.id, downloadPath, deliveriesCreated };
   });
 }
 

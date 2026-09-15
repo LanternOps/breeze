@@ -955,6 +955,23 @@ export async function applyBackupCommandResultToJob(params: {
     if (result.referencedFiles !== undefined) {
       updateData.referencedFiles = result.referencedFiles;
     }
+    // #5410: finalize the transferred counter from the terminal result. While
+    // the run is in flight, backupProgress.ts mirrors the agent's `current`
+    // (bytes PROCESSED toward `total`, referenced files included — that is
+    // what a progress bar needs) into transferred_size. Left as-is, a fully
+    // deduped incremental run reads as having uploaded the whole corpus, and a
+    // job that completed while the API was restarting keeps whatever mid-run
+    // value the last progress message carried. The terminal result is the
+    // authority: uploaded bytes = protected bytes minus the bytes satisfied by
+    // referencing an earlier snapshot. An agent that reports no dedup stats
+    // (full backup, or one predating incrementals) uploaded everything it
+    // protected.
+    if (result.bytesBackedUp !== undefined) {
+      updateData.transferredSize =
+        result.referencedBytes !== undefined
+          ? Math.max(0, result.bytesBackedUp - result.referencedBytes)
+          : result.bytesBackedUp;
+    }
   } else {
     updateData.status = terminalStatus;
     // Both, not either. `error` is the failure reason; `warning` is the run's

@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Yapay zekâ etkinliği",
+    "count": "Son {{days}} günde {{count}} eylem gönderildi",
+    "tooltip": "Bu cihazda kaydedilen yapay zekâ tarafından gönderilen komut dosyalarını ve komutları sayar. İptal işlemi kendi başına bir eylem olarak sayılır. En iyi çaba esasına göre kaydedilir."
+  },
   "deviceChangeHistoryTab": {
     "title": "Değişiklik Geçmişi",
     "loading": "Değişiklik geçmişi yükleniyor…",

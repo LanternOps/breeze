@@ -1404,6 +1404,20 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       };
     },
   },
+  {
+    // #4248 W03 (AI Scorecard #5757) — 15-minute sweep over unsettled
+    // report_run_deliveries: re-attempts pending narrative emails the
+    // finalizer never reached, marks stale claims `unknown` (never resends).
+    name: 'reportRunDeliveryReconciler',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/reportRunDeliveryReconciler');
+      return {
+        init: m.initializeReportRunDeliveryReconciler,
+        shutdown: m.shutdownReportRunDeliveryReconciler,
+      };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

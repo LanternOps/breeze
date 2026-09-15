@@ -1632,7 +1632,17 @@ export async function addAiTriageNote(
   }
 
   try {
-    const inserted = await db.insert(ticketComments).values({
+    // #4209 (W03): the insert is wrapped in its own `db.transaction()` — a
+    // SAVEPOINT, since this always runs inside the caller's own request/system
+    // transaction. Without it the unique-violation recovery below does NOT
+    // actually work: postgres.js marks the WHOLE surrounding transaction
+    // aborted after a failed statement, so the recovery SELECT throws 25P02
+    // ("current transaction is aborted") instead of returning the existing
+    // row. PROVEN by aiAgentTicketTriage.integration.test.ts's retry case,
+    // which red'd with exactly that error before this savepoint was added —
+    // the same discovery postProposalNote's header records, which flagged this
+    // function as sharing the unguarded shape.
+    const inserted = await db.transaction((tx) => tx.insert(ticketComments).values({
       ticketId,
       userId: null,
       portalUserId: null,
@@ -1643,9 +1653,41 @@ export async function addAiTriageNote(
       isPublic: false,
       originPrincipalKind: 'ai_agent',
       agentRunId: runId
-    }).returning({ id: ticketComments.id });
+    }).returning({ id: ticketComments.id }));
     const comment = inserted[0];
     if (!comment) throw new TicketServiceError('Failed to add AI triage note', 500);
+
+    // #4209 (W03) review: the audit write is FIRST among the post-insert side
+    // effects, deliberately. Once the savepoint above commits, the comment row
+    // is durable; the three side effects below are not transactional with it.
+    // `writeTicketOutbox` is a plain insert that can throw for reasons that are
+    // NOT unique violations (FK, connection drop) — and if it ran first, that
+    // throw would skip the audit entirely, leaving a committed autonomous
+    // comment with no compliance record, while a caller retry would hit the
+    // one-note-per-run index and return the existing row as a clean success so
+    // nothing ever noticed. Ordering the audit first shrinks that window to
+    // nothing: `createAuditLogAsync` never throws (it swallows into its own
+    // retry queue + Sentry), so it cannot in turn endanger emit/outbox.
+    //
+    // `audit_logs.actor_id` is uuid NOT NULL with NO FK, so the RUN id is legal
+    // there — and it is the
+    // right identifier: it is the thing an operator can open, whose policy
+    // snapshot froze the gate that authorised this note. Deliberately NOT the
+    // all-zero system sentinel other services use: that would erase the only
+    // link back to the authorising run. Deliberately NOT the agent id either —
+    // `aiAgents.id` is attribution-only and is not a `users` row, and the run is
+    // the narrower, replayable handle (the agent id is reachable from it).
+    await createAuditLogAsync({
+      orgId: ticket.orgId,
+      actorId: runId,
+      actorType: 'ai_agent',
+      action: 'ticket.comment',
+      resourceType: 'ticket',
+      resourceId: ticketId,
+      details: { commentId: comment.id, agentRunId: runId, isInternal: true, isPublic: false },
+      result: 'success',
+      initiatedBy: 'ai'
+    });
 
     await emitTicketEvent({
       type: 'ticket.commented',
@@ -2522,10 +2564,14 @@ export async function moveTicketOrg(
     // statements below exist precisely so those fail fast and loudly if a new
     // referencing row type is ever added without its own cleanup.
     //
+    // #5783 W01 adds ticket_checklist_items_ticket_org_fk — the third composite
+    // (ticket_id, org_id) -> tickets(id, org_id) child FK, same shape and same
+    // reason as the two above it. Still BY NAME, never `ALL`.
+    //
     // Safe to precede the org lock below: SET CONSTRAINTS takes no table locks,
     // so it does not participate in the lock order this transaction documents.
     await tx.execute(
-      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED`
+      sql`SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED`
     );
     // Lock order (global, #3778): organizations FOR SHARE (BOTH orgs, ascending
     // UUID so two concurrent moves between the same pair cannot deadlock) →

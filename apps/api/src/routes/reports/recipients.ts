@@ -23,9 +23,27 @@ import { getReportWithOrgCheck } from './helpers';
 import {
   addReportRecipientSchema,
   convertReportRecipientSchema,
+  INTERNAL_REPORT_TYPES,
 } from './schemas';
 
 export const recipientsRoutes = new Hono();
+
+/**
+ * #4248 W03 — a system-managed definition (the weekly AI narrative, the Fleet
+ * Design) is never executed by the report worker (`WORKER_EXCLUDED_REPORT_TYPES`,
+ * kept in lockstep with `INTERNAL_REPORT_TYPES` by
+ * `reportScheduleWorker.contract.test.ts`), so a manual recipient on it would
+ * never receive anything: the narrative's own delivery is
+ * `report_run_deliveries`, gated per recipient on live export authority.
+ * Refuse on BOTH writers — `/recipients/convert` inserts into
+ * `report_schedule_recipients` independently of `/recipients`.
+ */
+function systemManagedRefusal(report: { type?: string | null }) {
+  const type = report.type ?? '';
+  return INTERNAL_REPORT_TYPES.has(type)
+    ? { error: 'report_type_system_managed' as const, type }
+    : null;
+}
 
 recipientsRoutes.use('*', authMiddleware);
 
@@ -83,6 +101,8 @@ recipientsRoutes.post(
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
+    const refusal = systemManagedRefusal(report);
+    if (refusal) return c.json(refusal, 409);
 
     const { contactId } = c.req.valid('json');
     const [contact] = await db.select({ id: contacts.id })
@@ -145,6 +165,8 @@ recipientsRoutes.post(
       c.get('auth'),
     );
     if (!report) return c.json({ error: 'Report not found' }, 404);
+    const refusal = systemManagedRefusal(report);
+    if (refusal) return c.json(refusal, 409);
 
     const input = c.req.valid('json');
     const email = input.email.trim().toLowerCase();

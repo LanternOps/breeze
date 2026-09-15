@@ -1,11 +1,11 @@
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
 import { AuthPage } from '../pages/AuthPage';
-import type { CDPSession, Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { addVirtualAuthenticator, removeVirtualAuthenticator, registerApproverDevice } from '../webauthn';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,23 +58,6 @@ function seedSoleOperatorApproval(): string {
  * proves is the state that branch produces.
  */
 
-async function addVirtualAuthenticator(page: Page): Promise<{ cdp: CDPSession; authenticatorId: string }> {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('WebAuthn.enable');
-  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: {
-      protocol: 'ctap2',
-      ctap2Version: 'ctap2_1',
-      transport: 'internal',        // platform authenticator (Touch ID / Hello)
-      hasResidentKey: true,
-      hasUserVerification: true,
-      isUserVerified: true,         // auto-satisfy UV so no human touch is needed
-      automaticPresenceSimulation: true,
-    },
-  });
-  return { cdp, authenticatorId };
-}
-
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(clearRefreshState);
 
@@ -88,7 +71,7 @@ test.describe('inline sole-operator self-approve', () => {
     expect(psql(`SELECT status FROM approval_requests WHERE id = '${approvalId}'`)).toBe('pending');
 
     // Virtual authenticator must exist BEFORE any navigator.credentials call.
-    const { cdp, authenticatorId } = await addVirtualAuthenticator(cleanPage);
+    const authenticator = await addVirtualAuthenticator(cleanPage);
 
     const auth = new AuthPage(cleanPage);
     await cleanPage.goto(`${auth.url}?next=${encodeURIComponent('/dashboard')}`);
@@ -102,12 +85,25 @@ test.describe('inline sole-operator self-approve', () => {
     // ---- 1. Register an approver device through the real API, in the real
     // browser, against the virtual authenticator. This is the registration
     // half of the claim "a desktop browser can reach L3 with no mobile app".
-    const registered = await cleanPage.evaluate(async (adminPassword: string) => {
-      // Access tokens live in memory only (auth.ts persists just the user; the
-      // refresh cookie restores tokens). Mint one the same way the app does so
-      // these calls carry a real Bearer header.
-      // /auth/refresh is CSRF-protected via the double-submit cookie the app
-      // echoes back in x-breeze-csrf (stores/auth.ts).
+    // Registration is grant-gated since #2707 (mint a registerGrantId, then
+    // options/verify); ../webauthn.ts owns that recipe.
+    const registered = await registerApproverDevice(cleanPage, process.env.E2E_ADMIN_PASSWORD!, `E2E Virtual Platform Authenticator ${Date.now()}`);
+
+    expect(registered, `approver-device registration failed: ${JSON.stringify(registered)}`).toMatchObject({ ok: true });
+
+    // ---- 2. Decide the seeded sole-operator intent WITH a real assertion,
+    // mirroring exactly what decideIntentApproval does in the app.
+    const decided = await cleanPage.evaluate(async (id) => {
+      // The helper's registration ceremony rotates the refresh cookie, so we need a fresh access token.
+      const b64uToBuf = (s: string) => {
+        const pad = s.replace(/-/g, '+').replace(/_/g, '/');
+        const bin = atob(pad + '='.repeat((4 - (pad.length % 4)) % 4));
+        return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
+      };
+      const bufToB64u = (b: ArrayBuffer) =>
+        btoa(String.fromCharCode(...new Uint8Array(b)))
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
       const csrf = document.cookie
         .split('; ')
         .find((c) => c.startsWith('breeze_csrf_token='))
@@ -127,80 +123,7 @@ test.describe('inline sole-operator self-approve', () => {
       const { tokens } = await refreshRes.json();
       const accessToken: string = tokens?.accessToken;
       if (!accessToken) return { ok: false, stage: 'refresh', status: 200, body: 'no accessToken in refresh body' };
-      (window as unknown as { __e2eToken: string }).__e2eToken = accessToken;
 
-      const api = (path: string, body?: unknown) =>
-        fetch(`/api/v1${path}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          credentials: 'include',
-          body: body === undefined ? undefined : JSON.stringify(body),
-        });
-
-      // Registering an approver device is password step-up gated
-      // (routes/authenticator.ts) — same as passkey registration.
-      const optRes = await api('/authenticator/devices/webauthn/options', {
-        currentPassword: adminPassword,
-      });
-      if (!optRes.ok) return { ok: false, stage: 'options', status: optRes.status, body: await optRes.text() };
-      const optJson = await optRes.json();
-      const options = optJson.options ?? optJson.optionsJSON ?? optJson;
-
-      // Minimal WebAuthn create() — base64url helpers inline so the page needs
-      // no bundle access.
-      const b64uToBuf = (s: string) => {
-        const pad = s.replace(/-/g, '+').replace(/_/g, '/');
-        const bin = atob(pad + '='.repeat((4 - (pad.length % 4)) % 4));
-        return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
-      };
-      const bufToB64u = (b: ArrayBuffer) =>
-        btoa(String.fromCharCode(...new Uint8Array(b)))
-          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-      const cred = (await navigator.credentials.create({
-        publicKey: {
-          ...options,
-          challenge: b64uToBuf(options.challenge),
-          user: { ...options.user, id: b64uToBuf(options.user.id) },
-          excludeCredentials: (options.excludeCredentials ?? []).map((c: { id: string }) => ({
-            ...c, id: b64uToBuf(c.id),
-          })),
-        },
-      })) as PublicKeyCredential | null;
-      if (!cred) return { ok: false, stage: 'create', status: 0, body: 'null credential' };
-
-      const att = cred.response as AuthenticatorAttestationResponse;
-      const verifyRes = await api('/authenticator/devices/webauthn/verify', {
-        label: 'E2E Virtual Platform Authenticator',
-        response: {
-          id: cred.id,
-          rawId: bufToB64u(cred.rawId),
-          type: cred.type,
-          clientExtensionResults: cred.getClientExtensionResults(),
-          response: {
-            clientDataJSON: bufToB64u(att.clientDataJSON),
-            attestationObject: bufToB64u(att.attestationObject),
-          },
-        },
-      });
-      return { ok: verifyRes.ok, stage: 'verify', status: verifyRes.status, body: await verifyRes.text() };
-    }, process.env.E2E_ADMIN_PASSWORD!);
-
-    expect(registered, `approver-device registration failed: ${JSON.stringify(registered)}`).toMatchObject({ ok: true });
-
-    // ---- 2. Decide the seeded sole-operator intent WITH a real assertion,
-    // mirroring exactly what decideIntentApproval does in the app.
-    const decided = await cleanPage.evaluate(async (id) => {
-      const b64uToBuf = (s: string) => {
-        const pad = s.replace(/-/g, '+').replace(/_/g, '/');
-        const bin = atob(pad + '='.repeat((4 - (pad.length % 4)) % 4));
-        return Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
-      };
-      const bufToB64u = (b: ArrayBuffer) =>
-        btoa(String.fromCharCode(...new Uint8Array(b)))
-          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-      const accessToken = (window as unknown as { __e2eToken: string }).__e2eToken;
       const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
 
       const chRes = await fetch(`/api/v1/mobile/approvals/${id}/assertion-challenge`, {
@@ -271,6 +194,6 @@ test.describe('inline sole-operator self-approve', () => {
     expect(intentStatus, 'the linked intent must be released').toBe('approved');
     expect(selfDecided, 'this must be the sole-operator self-approve path').toBe('true');
 
-    await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
+    await removeVirtualAuthenticator(authenticator);
   });
 });

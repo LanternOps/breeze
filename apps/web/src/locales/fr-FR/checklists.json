@@ -1,0 +1,39 @@
+{
+  "card": {
+    "title": "Liste de contrôle",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Aucune étape pour l'instant.",
+    "addPlaceholder": "Ajouter une étape",
+    "add": "Ajouter",
+    "internalOnly": "Interne — jamais visible du client",
+    "detailPlaceholder": "Note facultative pour cette étape"
+  },
+  "actions": {
+    "moveUp": "Monter",
+    "moveDown": "Descendre",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "retry": "Réessayer"
+  },
+  "source": {
+    "manual": "Manuelle",
+    "deliverable": "Livrable",
+    "checklist_template": "Modèle"
+  },
+  "editDoneWarning": "Modifier une étape terminée efface qui l'a terminée et quand.",
+  "resolveConfirm": {
+    "title": "Liste de contrôle incomplète",
+    "body_one": "{{count}} étape sur {{total}} n'est pas cochée. Résoudre quand même ?",
+    "body_other": "{{count}} étapes sur {{total}} ne sont pas cochées. Résoudre quand même ?",
+    "confirm": "Résoudre quand même",
+    "cancel": "Retour"
+  },
+  "errors": {
+    "loadFailed": "Impossible de charger la liste de contrôle.",
+    "saveFailed": "Impossible d'enregistrer l'étape de la liste de contrôle.",
+    "reorderFailed": "Impossible de réordonner la liste de contrôle.",
+    "tickRequiresUser": "Cocher une étape nécessite une session utilisateur connectée."
+  }
+}

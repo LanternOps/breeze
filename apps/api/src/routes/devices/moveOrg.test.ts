@@ -744,6 +744,44 @@ describe('POST /devices/:id/move-org', () => {
       expect(idx('ticket_attachments')).toBeLessThan(idx('ticket_email_links'));
     });
 
+    it('rewrites ticket_checklist_items org_id via the tickets join inside the transaction (#5783 W01)', async () => {
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: TARGET_ORG, partnerId: 'partner-1' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess();
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+
+      // The PREDICATE is the point, not just the table name. List membership
+      // (moveOrg.coverage.test.ts) and statement ORDER are already asserted
+      // elsewhere and would both still pass if this UPDATE were "simplified" to
+      // `WHERE ticket_id IN (SELECT id FROM tickets WHERE org_id = ...)` — which
+      // would re-stamp EVERY checklist row in the source org instead of only the
+      // moved device's tickets. This assertion is the only thing that catches it.
+      const rewrites = statements.filter((s) => s.startsWith('UPDATE ticket_checklist_items '));
+      expect(
+        rewrites,
+        `Expected exactly one ticket_checklist_items org_id rewrite.\nStatements:\n${statements.join('\n')}`,
+      ).toEqual([
+        `UPDATE ticket_checklist_items SET org_id = ${TARGET_ORG}::uuid ` +
+          `WHERE ticket_id IN (SELECT id FROM tickets WHERE device_id = ${DEVICE_ID}::uuid)`,
+      ]);
+      // Lock order: appended last, after ticket_email_links, so this path and
+      // moveTicketOrg agree on the relative order (ticketOrgMoveLockOrder.ts).
+      const idx = (t: string) => statements.findIndex((s) => s.startsWith(`UPDATE ${t} `));
+      expect(idx('ticket_email_links')).toBeLessThan(idx('ticket_checklist_items'));
+    });
+
     it('detaches ai_agent_runs.ticket_id via the tickets join, before tickets are re-stamped (#4215)', async () => {
       vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
       rigOrgAndSiteSelects({
@@ -1256,7 +1294,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1309,7 +1347,7 @@ describe('POST /devices/:id/move-org', () => {
       });
     });
 
-    it('#4596: defers the two ticket/org composite FKs BY NAME as the first statement', async () => {
+    it('#4596/#5783: defers the three ticket/org composite FKs BY NAME as the first statement', async () => {
       rigMove();
       const { statements } = rigTransactionSuccess();
 
@@ -1317,7 +1355,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });

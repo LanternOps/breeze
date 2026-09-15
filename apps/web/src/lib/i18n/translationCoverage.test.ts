@@ -56,6 +56,10 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 60, // +1 W03: site sub-label "Site: {{name}}" is intentionally identical in pt-BR; +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.manual "Manual" are
+    // identical cognates in pt-BR.
+    'checklists.json': 3,
     // +1: richTextEditor.link — "Link" is the standard loanword in pt-BR.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -76,6 +80,8 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     'devices.json': 175,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): pt-BR fully translated, no cognates.
+    'errors.json': 0,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in pt-BR.
     'fleetDesign.json': 2,
@@ -176,6 +182,9 @@ const namespaceDuplicateBaselines = {
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 46, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; source.manual "Manual" is an identical cognate in es-419.
+    'checklists.json': 2,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -198,6 +207,9 @@ const namespaceDuplicateBaselines = {
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     'devices.json': 126,
     'discovery.json': 17,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in es-419.
     'fleetDesign.json': 2,
@@ -296,6 +308,8 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: dashboard.vuln.kevCves_one — "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -321,6 +335,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-FR.
@@ -431,6 +448,8 @@ const namespaceDuplicateBaselines = {
     // string.
     // +1 W05: quotes.document.deviceSet.badge "Est." is intentionally identical.
     'billing.json': 59, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -456,6 +475,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 6,
     'devices.json': 152,
     'discovery.json': 15,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +2 W04 (#5654): legacy.columns.script — "Script" — and legacy.columns.notes —
     // "Notes" — both spell identically in fr-CA.
@@ -572,6 +594,8 @@ const namespaceDuplicateBaselines = {
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     // +1 W07: invoiceDetail.devices.hostname — "Hostname" is also the German word.
     'billing.json': 45, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     // +1: richTextEditor.link — "Link" is the standard loanword in de-DE.
     // +3: dashboard.vuln.kevCves — "{{count}} CVE(s)" is a locale-invariant
     // acronym (base/_one/_other).
@@ -604,6 +628,9 @@ const namespaceDuplicateBaselines = {
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 43,
@@ -691,6 +718,10 @@ const namespaceDuplicateBaselines = {
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     'billing.json': 37, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure
+    // interpolation; card.title "Checklist" and source.deliverable "Deliverable"
+    // are the same loanwords deliverables.json already keeps untranslated in it-IT.
+    'checklists.json': 3,
     // +1: dashboard.vuln.kevCves_one "{{count}} CVE" is a locale-invariant
     // acronym.
     // +8: PsaConnectionForm credential placeholders — literal token formats
@@ -705,6 +736,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 2,
     'devices.json': 144,
     'discovery.json': 22,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     // +1 W04 (#5654): legacy.columns.script — "Script" is the identical loanword in it-IT.
     'fleetDesign.json': 2,
@@ -780,6 +814,8 @@ const namespaceDuplicateBaselines = {
     // Phase D) — the badge value IS the proper noun, so it is identical in
     // every catalog. `.viaQuickbooks` IS translated in this locale.
     'billing.json': 22, // +1 W06: roleBucket "{{count}} {{role}}" is a pure-interpolation literal
+    // #5808 W01 (ticket checklists): card.progress "{{done}} / {{total}}" is pure interpolation.
+    'checklists.json': 1,
     'common.json': 49, // +1 W06: lists.separator ", " is punctuation
     // +6 W09 (#4777, RMM custom-field import): rmmCustomFieldImport.sources
     // product names (Datto RMM / NinjaOne / ConnectWise Automate / N-central)
@@ -790,6 +826,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 1,
     'devices.json': 88,
     'discovery.json': 9,
+    // errors namespace (Task 3 of #3859): seeded as English copies pending
+    // native review, so all 9 codes are exact-English cognates for now.
+    'errors.json': 9,
     // +1: roleCorrectionLabel is pure interpolation ("{{from}} → {{to}}"), no wording to translate.
     'fleetDesign.json': 1,
     'integrations.json': 22,

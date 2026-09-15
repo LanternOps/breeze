@@ -1,0 +1,39 @@
+{
+  "card": {
+    "title": "Checkliste",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Noch keine Schritte.",
+    "addPlaceholder": "Schritt hinzufügen",
+    "add": "Hinzufügen",
+    "internalOnly": "Intern — wird dem Kunden nie angezeigt",
+    "detailPlaceholder": "Optionale Notiz zu diesem Schritt"
+  },
+  "actions": {
+    "moveUp": "Nach oben",
+    "moveDown": "Nach unten",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "retry": "Erneut versuchen"
+  },
+  "source": {
+    "manual": "Manuell",
+    "deliverable": "Leistung",
+    "checklist_template": "Vorlage"
+  },
+  "editDoneWarning": "Das Bearbeiten eines erledigten Schritts löscht, wer ihn wann erledigt hat.",
+  "resolveConfirm": {
+    "title": "Unvollständige Checkliste",
+    "body_one": "{{count}} von {{total}} Schritten ist nicht erledigt. Trotzdem lösen?",
+    "body_other": "{{count}} von {{total}} Schritten sind nicht erledigt. Trotzdem lösen?",
+    "confirm": "Trotzdem lösen",
+    "cancel": "Zurück"
+  },
+  "errors": {
+    "loadFailed": "Checkliste konnte nicht geladen werden.",
+    "saveFailed": "Checklisten-Schritt konnte nicht gespeichert werden.",
+    "reorderFailed": "Checkliste konnte nicht neu angeordnet werden.",
+    "tickRequiresUser": "Zum Abhaken eines Schritts ist eine angemeldete Benutzersitzung erforderlich."
+  }
+}

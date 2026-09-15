@@ -70,7 +70,8 @@
         "autoIssue": "Automatisch ausstellen",
         "renewal": "Erneuerung",
         "estimatedPerPeriod": "Geschätzt / Zeitraum",
-        "notes": "Notizen"
+        "notes": "Notizen",
+        "invoiceNote": "Rechnungshinweis"
       },
       "values": {
         "noDrafts": "Nein (Entwürfe)"
@@ -147,7 +148,8 @@
         "confirm": "Entwurf löschen"
       },
       "documents": {
-        "title": "Ausgeführte Dokumente",
+        "title": "Unterzeichnete Vereinbarungen",
+        "subtitle": "Mit dem Angebot angenommen und auf die Vorlagenversion festgelegt, die der Kunde gesehen hat.",
         "columns": {
           "template": "Vorlage",
           "signer": "Unterzeichner",
@@ -155,8 +157,8 @@
           "quote": "Angebot"
         },
         "templateVersion": "{{name}} — v{{number}}",
-        "empty": "Noch keine ausgeführten Dokumente.",
-        "loadError": "Ausgeführte Dokumente konnten nicht geladen werden.",
+        "empty": "Noch keine unterzeichneten Vereinbarungen.",
+        "loadError": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
         "downloadError": "PDF konnte nicht heruntergeladen werden.",
         "download": "PDF herunterladen",
         "preparing": "Wird vorbereitet…",
@@ -218,8 +220,8 @@
       },
       "content": {
         "title": "Inhalt",
-        "notesOptional": "Notizen (optional)",
-        "termsOptional": "Bedingungen (optional, auf der Rechnung angegeben)",
+        "notesOptional": "Notizen (optional, werden dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
+        "termsOptional": "Rechnungshinweis (optional, wird dem Notizblock auf erzeugten Rechnungen hinzugefügt)",
         "termsPlaceholder": "z.B. Netto 30. Automatische Verlängerung, sofern nicht 30 Tage vorher gekündigt."
       },
       "lines": {
@@ -397,8 +399,8 @@
     },
     "tabs": {
       "contracts": "Verträge",
-      "templates": "Vorlagen",
-      "documents": "Dokumente",
+      "templates": "Vereinbarungsvorlagen",
+      "documents": "Unterzeichnete Vereinbarungen",
       "currencyMismatches": "Währungsabweichungen"
     },
     "currencyMismatches": {
@@ -459,16 +461,16 @@
       }
     },
     "templatesTab": {
-      "title": "Vertragsvorlagen",
-      "description": "Wiederverwendbare Vertragsdokumente, die Sie an angenommene Angebote anhängen können.",
-      "newTemplate": "Neue Vorlage",
+      "title": "Vereinbarungsvorlagen",
+      "description": "Ihr Rahmenvertrag und Ihre Standardbedingungen. Fügen Sie eine Vorlage einem Angebot hinzu, und der Kunde unterzeichnet sie zusammen mit dem Angebot; die unterzeichnete Kopie wird beim Vertrag abgelegt, den dieses Angebot erzeugt.",
+      "newTemplate": "Neue Vereinbarungsvorlage",
       "includeArchived": "Archivierte anzeigen",
       "allOrgs": "Alle Orgs",
       "ownerOrg": "Organisation",
       "noVersions": "Noch keine Versionen",
       "versionLabel": "v{{number}} · {{status}}",
       "archive": "Archivieren",
-      "loadError": "Vertragsvorlagen konnten nicht geladen werden",
+      "loadError": "Vereinbarungsvorlagen konnten nicht geladen werden",
       "createError": "Vorlage konnte nicht erstellt werden",
       "created": "Vorlage erstellt",
       "archiveError": "Vorlage konnte nicht archiviert werden",
@@ -484,11 +486,11 @@
         "archived": "Archiviert"
       },
       "empty": {
-        "title": "Noch keine Vorlagen",
-        "description": "Erstellen Sie Ihre erste Vertragsvorlage, um zu beginnen."
+        "title": "Noch keine Vereinbarungsvorlagen",
+        "description": "Hinterlegen Sie Ihren Rahmenvertrag oder Ihre Standardbedingungen einmalig und fügen Sie sie danach jedem beliebigen Angebot hinzu. Kunden unterzeichnen sie bei der Annahme."
       },
       "createDialog": {
-        "title": "Neue Vertragsvorlage",
+        "title": "Neue Vereinbarungsvorlage",
         "name": "Name",
         "namePlaceholder": "z. B. Rahmendienstleistungsvertrag",
         "description": "Beschreibung",
@@ -502,18 +504,18 @@
         "orgRequired": "Wählen Sie eine Organisation für eine organisationseigene Vorlage.",
         "nameRequired": "Geben Sie einen Vorlagennamen ein.",
         "cancel": "Abbrechen",
-        "create": "Vorlage erstellen",
+        "create": "Vereinbarungsvorlage erstellen",
         "creating": "Wird erstellt…"
       }
     },
     "documentsTab": {
-      "title": "Dokumente",
-      "description": "Ausgeführte Vertragsdokumente, die noch keinem Vertrag zugeordnet sind.",
+      "title": "Unterzeichnete Vereinbarungen",
+      "description": "Unterzeichnete Vereinbarungen, die noch keinem Vertrag zugeordnet sind. Ordnen Sie jede zu, damit sie beim zugehörigen Vertrag erscheint.",
       "empty": {
-        "title": "Keine nicht zugeordneten Dokumente",
-        "description": "Ausgeführte Dokumente erscheinen hier, bis sie einem Vertrag zugeordnet werden."
+        "title": "Keine nicht zugeordneten unterzeichneten Vereinbarungen",
+        "description": "Unterzeichnete Vereinbarungen erscheinen hier, bis sie einem Vertrag zugeordnet werden."
       },
-      "loadError": "Dokumente konnten nicht geladen werden.",
+      "loadError": "Unterzeichnete Vereinbarungen konnten nicht geladen werden.",
       "columns": {
         "template": "Vorlage",
         "signer": "Unterzeichner",
@@ -535,8 +537,8 @@
         "confirm": "Verknüpfen",
         "linking": "Wird verknüpft…"
       },
-      "linkSuccess": "Dokument mit Vertrag verknüpft.",
-      "linkError": "Dokument konnte nicht mit diesem Vertrag verknüpft werden."
+      "linkSuccess": "Unterzeichnete Vereinbarung mit Vertrag verknüpft.",
+      "linkError": "Die unterzeichnete Vereinbarung konnte nicht mit diesem Vertrag verknüpft werden."
     },
     "templateEditor": {
       "back": "Zurück",
@@ -562,7 +564,7 @@
       "publish": "Veröffentlichen",
       "publishDirtyHint": "Speichern Sie Ihren Entwurf vor dem Veröffentlichen",
       "body": "Inhalt",
-      "bodyAria": "Inhalt der Vertragsvorlage",
+      "bodyAria": "Inhalt der Vereinbarungsvorlage",
       "preview": "Vorschau",
       "edit": "Bearbeiten",
       "saveDraft": "Entwurf speichern",
@@ -579,7 +581,7 @@
       "publishError": "Version konnte nicht veröffentlicht werden",
       "publishSuccess": "Version veröffentlicht",
       "warnings": {
-        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vertragstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
+        "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vereinbarungstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
       }
     }
   },
@@ -684,7 +686,7 @@
         "image": "Bild",
         "pricingTable": "Preistabelle",
         "richText": "Rich-Text",
-        "contract": "Vertrag",
+        "contract": "Vereinbarung / Bedingungen",
         "table": "Tabelle",
         "callout": "Hinweisbox"
       },
@@ -755,7 +757,7 @@
       "emptyBlocks": "Noch kein Inhalt. Fügen Sie unten eine Überschrift, Rich-Text oder eine Preistabelle hinzu.",
       "errors": {
         "addCatalogItem": "Das Katalogelement konnte nicht hinzugefügt werden.",
-        "addContractSection": "Der Vertragsabschnitt konnte nicht hinzugefügt werden",
+        "addContractSection": "Der Vereinbarungsabschnitt konnte nicht hinzugefügt werden",
         "addDistributorItem": "Der Händlerartikel konnte nicht hinzugefügt werden.",
         "addImageSection": "Der Bildabschnitt konnte nicht hinzugefügt werden.",
         "addLine": "Die Position konnte nicht hinzugefügt werden.",
@@ -770,7 +772,7 @@
         "importPax8Product": "Das Pax8-Produkt konnte nicht importiert werden.",
         "lineAddedCatalogSaveFailed": "Position hinzugefügt, aber das Speichern im Katalog ist fehlgeschlagen.",
         "lineNeedsNameOrDescription": "Eine Position benötigt einen Namen oder eine Beschreibung.",
-        "loadContractTemplates": "Vertragsvorlagen konnten nicht geladen werden",
+        "loadContractTemplates": "Vereinbarungsvorlagen konnten nicht geladen werden",
         "moveLine": "Die Position konnte nicht verschoben werden.",
         "quantityWholeGreaterThanZero": "Geben Sie eine ganzzahlige Menge größer als 0 ein.",
         "removeLine": "Die Position konnte nicht entfernt werden.",
@@ -875,7 +877,7 @@
         "savedToCatalog": "Im Katalog gespeichert",
         "sectionAdded": "Abschnitt hinzugefügt",
         "sectionRemoved": "Abschnitt entfernt",
-        "contractSectionAdded": "Vertragsabschnitt hinzugefügt"
+        "contractSectionAdded": "Vereinbarungsabschnitt hinzugefügt"
       },
       "symbols": {
         "check": "✓",
@@ -921,8 +923,9 @@
         "reshapedWarning": "Diese Tabelle überschritt das Limit von {{columns}} Spalten x {{rows}} Zeilen und wurde angepasst. Beim Speichern wird die gespeicherte Tabelle durch die hier angezeigte ersetzt."
       },
       "terms": {
-        "placeholder": "Zahlungsbedingungen, Garantieklauseln usw.",
-        "title": "Allgemeine Geschäftsbedingungen"
+        "placeholder": "Zahlungsbedingungen, Lieferhinweise usw.",
+        "title": "Allgemeine Geschäftsbedingungen (Klartext)",
+        "helper": "Für wiederverwendbare Rechtstexte fügen Sie einen Abschnitt „Vereinbarung / Bedingungen“ hinzu – der Kunde unterzeichnet ihn zusammen mit dem Angebot."
       },
       "tidyAll": {
         "complete": "{{count}} Beschreibung(en) überprüft.",
@@ -941,10 +944,10 @@
         "perYear": "/Jahr"
       },
       "contract": {
-        "templateLabel": "Vertragsvorlage",
+        "templateLabel": "Vereinbarungsvorlage",
         "templatePlaceholder": "Vorlage auswählen…",
-        "noTemplates": "Noch keine Vertragsvorlagen. Erstellen Sie eine unter Verträge → Vorlagen.",
-        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie vor dem Anhängen.",
+        "noTemplates": "Noch keine Vereinbarungsvorlagen. <templatesLink>Erstellen Sie eine</templatesLink> unter Verträge → Vereinbarungsvorlagen.",
+        "noPublishedVersion": "Diese Vorlage hat noch keine veröffentlichte Version. Veröffentlichen Sie sie, bevor Sie sie einem Angebot hinzufügen.",
         "pinnedVersion": "Angeheftet an v{{version}}",
         "autoVariablesTitle": "Automatisch aus dem Angebot ausgefüllt",
         "autoHint": "Diese Werte werden beim Senden des Angebots aus dem Angebot aufgelöst.",
@@ -953,7 +956,7 @@
         "labelPlaceholder": "Optionale Bezeichnung (z. B. Rahmenvertrag)",
         "variableRequired": "Wert eingeben",
         "variableUnresolved": "Diese Variable ist noch nicht aufgelöst",
-        "untitledTemplate": "Vertrag",
+        "untitledTemplate": "Vereinbarung",
         "readOnlyHint": "Entfernen Sie diesen Abschnitt und fügen Sie ihn neu hinzu, um Vorlage, Version oder Variablen zu ändern.",
         "updateToVersion": "Auf v{{version}} aktualisieren",
         "saveVariables": "Variablen speichern",
@@ -1292,8 +1295,8 @@
       },
       "additionalItems": "Zusätzliche Artikel",
       "contract": {
-        "download": "Vertrag herunterladen",
-        "previewTitle": "Vertragsdokument {{name}}",
+        "download": "Vereinbarung herunterladen",
+        "previewTitle": "Vereinbarung {{name}}",
         "unavailable": "Vertragsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },

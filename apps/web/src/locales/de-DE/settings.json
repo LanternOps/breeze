@@ -1892,7 +1892,17 @@
         "truncatedNote": "Der Kontext des Agenten wurde gekürzt — diese Zusammenfassung hat nicht die ganze Woche gesehen.",
         "openReport": "Bericht öffnen",
         "download": "PDF herunterladen",
-        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden."
+        "downloadFailed": "Das PDF konnte nicht heruntergeladen werden.",
+        "delivery": {
+          "sent": "Per E-Mail an {{sent}} von {{total}} Empfängern gesendet",
+          "refused_one": "{{count}} Empfänger erhielt keine E-Mail — Berichtsberechtigung, fehlende Adresse oder der Anbieter hat abgelehnt.",
+          "refused_other": "{{count}} Empfänger erhielten keine E-Mail — Berichtsberechtigung, fehlende Adresse oder der Anbieter hat abgelehnt.",
+          "pending_one": "{{count}} Zustellung wurde noch nicht gesendet — sie wird erneut versucht.",
+          "pending_other": "{{count}} Zustellungen wurden noch nicht gesendet — sie werden erneut versucht.",
+          "unknown_one": "{{count}} Zustellung konnte nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort.",
+          "unknown_other": "{{count}} Zustellungen konnten nicht bestätigt werden — der E-Mail-Anbieter gab keine eindeutige Antwort.",
+          "recipientsUnresolved": "Die Empfängersuche ist fehlgeschlagen, daher wurde diese Zusammenfassung an niemanden gesendet. Der Bericht selbst wurde gespeichert."
+        }
       },
       "fleetDesign": {
         "title": "Flottendesign",

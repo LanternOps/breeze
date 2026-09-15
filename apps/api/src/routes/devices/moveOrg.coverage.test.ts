@@ -15,6 +15,7 @@ import {
   DEVICE_ORG_FK_CASCADE_TABLES,
   DEVICE_SITE_DENORMALIZED_TABLES,
 } from './core';
+import { TICKET_ORG_DENORMALIZED_TABLES } from '../../services/ticketOrgMoveLockOrder';
 
 /**
  * Mirrors cascadeDelete.test.ts but for the `org_id` denormalization list.
@@ -514,6 +515,115 @@ describe('ALERT_CHILD_ORG_REWRITE_TABLES coverage (#4867)', () => {
       `moveOrg.ts has no \`UPDATE \${sql.identifier('<table>')} ... SET org_id\` statement for these ` +
         `ALERT_CHILD_ORG_REWRITE_TABLES entries — the list is not self-applying: ${missing.join(', ')}`,
     ).toEqual([]);
+  });
+});
+
+/**
+ * Ticket-axis org-denormalization completeness (#5783 W01).
+ *
+ * TICKET_ORG_DENORMALIZED_TABLES drives moveTicketOrg's rewrite loop, and
+ * CUSTOM_ORG_REWRITE_TABLES drives the device mover's hand-written statements.
+ * ticketOrgMoveLockOrder.test.ts asserts only that the two lists AGREE — it has
+ * never asserted that either is COMPLETE. A new ticket-child table that
+ * denormalizes org_id and is left out of both therefore fails at runtime, on an
+ * admin action, with a cross-tenant row left behind and nothing red in CI.
+ *
+ * This derives the expected membership from the Drizzle schema instead: every
+ * table carrying BOTH ticket_id and org_id must be in
+ * TICKET_ORG_DENORMALIZED_TABLES or in the documented exemption set below.
+ * Same shape as the ALERT_CHILD_ORG_REWRITE_TABLES guard above, and the same
+ * lesson as the cascade-list history: contract tests 5/5, code review 0/5.
+ *
+ * This block lives here rather than in ticketOrgMoveLockOrder.test.ts (a
+ * deliberate deviation from spec #5783 §9): that file's header makes being
+ * schema-free and DB-free a stated property, while this one already imports the
+ * Drizzle schema and already carries a structurally identical guard. Both run
+ * in the Test API unit job, so the CI outcome is identical.
+ */
+describe('TICKET_ORG_DENORMALIZED_TABLES completeness (#5783)', () => {
+  const allTables = Object.values(schema).filter(
+    (v) => v instanceof PgTable,
+  ) as PgTable<any>[];
+
+  /** Every Drizzle-declared table carrying BOTH a `ticket_id` and an `org_id` column. */
+  function ticketAndOrgScopedTableNames(): string[] {
+    return allTables
+      .filter((t) => {
+        const cols = getColumns(t);
+        return cols.some((c) => c.name === 'ticket_id') && cols.some((c) => c.name === 'org_id');
+      })
+      .map(getTableName)
+      .sort();
+  }
+
+  /**
+   * Tables with both columns that deliberately do NOT move with their ticket.
+   * Each entry is a ruling already written down in moveTicketOrg's own source,
+   * not a TODO.
+   */
+  const INTENTIONALLY_NOT_REWRITTEN = new Set<string>([
+    // ai_agent_runs (#4642): moveTicketOrg DETACHES the pointer
+    // (`ticketId: null`) instead — the run belongs to the org that ran it and
+    // is `leave-for-erasure` in the merge registry.
+    'ai_agent_runs',
+    // device_vulnerabilities (#4645): org_id is the DEVICE's org and a device
+    // never moves as a side effect of a ticket move, so moveTicketOrg detaches
+    // the remediation-ticket pointer rather than re-stamping the finding.
+    'device_vulnerabilities',
+    // Issued billing history stays stamped with the org that was billed. Its
+    // ticket_id FK is ON DELETE SET NULL, so a move never orphans it.
+    // (Excluded from the device axis for the identical reason.)
+    'invoice_lines',
+    // service_deliverable_occurrences (#5573 W02): moveTicketOrg REFUSES the
+    // move outright when a ticket is pinned to an occurrence, before the ticket
+    // UPDATE — so there is no cross-org row to re-stamp.
+    'service_deliverable_occurrences',
+    // ticket_drafts rows are DELETED by moveTicketOrg, not re-stamped: their
+    // run_id is composite-FK'd to ai_agent_runs(id, org_id) and the run stays
+    // in the source org, so re-stamping org_id would trade one 23503 for
+    // another. Drafts are ephemeral by design (db/schema/ticketDrafts.ts).
+    'ticket_drafts',
+  ]);
+
+  it('every table with both ticket_id and org_id is rewritten or documented as exempt', () => {
+    const withBoth = ticketAndOrgScopedTableNames();
+    // Proves the enumerator actually sees the schema: a silently-empty
+    // enumerator would make every assertion below vacuously green.
+    expect(
+      withBoth.length,
+      'the schema enumerator found no ticket+org scoped tables at all — it is broken, not the lists',
+    ).toBeGreaterThan(5);
+
+    const registered = new Set<string>(TICKET_ORG_DENORMALIZED_TABLES);
+    const missing = withBoth.filter(
+      (name) => !registered.has(name) && !INTENTIONALLY_NOT_REWRITTEN.has(name),
+    );
+    expect(
+      missing,
+      'A table denormalizing org_id from its ticket is in NEITHER ' +
+        'TICKET_ORG_DENORMALIZED_TABLES (services/ticketOrgMoveLockOrder.ts) nor the ' +
+        'documented exemption set. Left as-is it strands cross-tenant rows on an org move ' +
+        'with no CI signal. Add it to that list AND to CUSTOM_ORG_REWRITE_TABLES ' +
+        '(routes/devices/core.ts) with its own hand-written UPDATE in ' +
+        `routes/devices/moveOrg.ts, or add it here with the ruling that exempts it.\n\n` +
+        `Missing: ${missing.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('names no exemption that no longer has both columns', () => {
+    const withBoth = new Set(ticketAndOrgScopedTableNames());
+    const stale = [...INTENTIONALLY_NOT_REWRITTEN].filter((name) => !withBoth.has(name));
+    expect(
+      stale,
+      `exemption names a table that no longer has both ticket_id and org_id — drop it: ${stale.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('ticket_checklist_items is registered on both axes', () => {
+    // The table this guard was added for. Named explicitly so a regression
+    // says what broke rather than just "arrays differ".
+    expect([...TICKET_ORG_DENORMALIZED_TABLES]).toContain('ticket_checklist_items');
+    expect([...CUSTOM_ORG_REWRITE_TABLES]).toContain('ticket_checklist_items');
   });
 });
 

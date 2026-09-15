@@ -35,6 +35,7 @@ import {
   type AiAgentRunDetailDto,
   type AiAgentRunIntentSummaryDto,
   type AiAgentRunLedgerEntryDto,
+  type AiAgentRunNarrativeDeliveryDto,
   type AiAgentRunStatus,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
@@ -407,6 +408,10 @@ export function buildRunTrace(
   // scalars, or `null` for every run that has none. Defaults null so every
   // existing caller is unchanged.
   fleetDesignArtifact: RunTraceFleetDesignArtifactInput | null = null,
+  // #4248 W03 (Task 10) — the narrative's email delivery counts, or `null`
+  // for every run that produced no narrative artifact. Defaults null so every
+  // existing caller is unchanged.
+  narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null = null,
   // `progress` is intentionally NOT a parameter here: it is read from the
   // live Redis ring (`readRunProgress`, W03) by the route, not assembled
   // from persisted run state like everything else this function builds.
@@ -483,5 +488,7 @@ export function buildRunTrace(
     // derived markdown is deliberately left out too, since the detail view
     // renders the structured sections itself.
     fleetDesign: projectFleetDesign(run, outcome, fleetDesignArtifact),
+    // #4248 W03: counts only, never a recipient — see the DTO docstring.
+    narrativeDelivery,
   };
 }
