@@ -163,6 +163,17 @@ const triggersFields = z.object({
   ticketAutonomousWrites: z.boolean(),
 });
 export const aiAgentTriggersPatchSchema = triggersFields.partial();
+/**
+ * AI patch agent W04 (#5750) — the UPDATE shape of the trigger filters. The
+ * PATCH merge is shallow (`{ ...stored.triggers, ...input.triggers }`), so an
+ * absent key keeps the stored list and `[]` is rejected by `.min(1)`;
+ * `alertCategories: null` is the one representable "clear back to
+ * unrestricted" — `agentService` deletes the key when it sees it. Update-only:
+ * a stored row never carries a null.
+ */
+export const aiAgentTriggersUpdateSchema = aiAgentTriggersPatchSchema.extend({
+  alertCategories: triggersFields.shape.alertCategories.nullable().optional(),
+});
 export const aiAgentTriggersSchema = aiAgentTriggersPatchSchema.transform((v) => ({
   alertSeverities: ['critical', 'high'] as Array<(typeof ALERT_SEVERITIES)[number]>,
   respectMaintenanceWindows: true,
@@ -275,7 +286,7 @@ export const updateAiAgentSchema = z.object({
   toolAllowlist: z.array(z.string().regex(TOOL_REF)).max(300).optional(),
   protectedResources: aiAgentProtectedResourcesPatchSchema.optional(),
   limits: aiAgentLimitsPatchSchema.optional(),
-  triggers: aiAgentTriggersPatchSchema.optional(),
+  triggers: aiAgentTriggersUpdateSchema.optional(),
   recipients: aiAgentRecipientsPatchSchema.optional(),
   actAssets: aiAgentActAssetsPatchSchema.optional(),
   instructions: z.string().max(2000).nullable().optional(),

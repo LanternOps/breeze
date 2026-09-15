@@ -723,6 +723,23 @@ function PatchPlanItem({
           )}
         </p>
       )}
+      {(item.windowStartsAt != null || item.redundancyGroup != null) && (
+        <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {item.windowStartsAt != null && item.windowEndsAt != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-window`}>
+              {t('aiAgentsPage.runs.patch.rebootWindow', {
+                start: formatDateTime(item.windowStartsAt),
+                end: formatDateTime(item.windowEndsAt),
+              })}
+            </span>
+          )}
+          {item.redundancyGroup != null && (
+            <span data-testid={`ai-agent-run-patch-item-${item.index}-redundancy`}>
+              {t('aiAgentsPage.runs.patch.redundancyGroup', { group: item.redundancyGroup })}
+            </span>
+          )}
+        </p>
+      )}
       {item.class === 'escalation' && item.disposition === 'recorded' && (
         <p
           className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400"

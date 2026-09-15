@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
+      "alertCategories": "Categorie di avvisi",
+      "alertCategoriesHint": "Solo gli avvisi la cui categoria di modello è elencata qui attivano questo agente. Lasciare vuoto per qualsiasi categoria. Gli avvisi di patch portano \"patching\".",
+      "alertCategoriesPlaceholder": "es. patching, monitor",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Classe di errore: {{label}}",
         "attempts": "{{count}} tentativo non riuscito",
         "attempts_other": "{{count}} tentativi non riusciti",
+        "rebootWindow": "Finestra: {{start}} – {{end}}",
+        "redundancyGroup": "Gruppo di ridondanza: {{group}}",
         "escalation": "Richiede una persona: non verrà ritentato automaticamente.",
         "escalations": "{{count}} inoltro urgente",
         "escalations_other": "{{count}} inoltri urgenti",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
           "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
           "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
-          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile"
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile",
+          "reboot_policy_not_window_gated": "La politica di riavvio del dispositivo riavvia al di fuori delle finestre di manutenzione, quindi un piano a finestra non verrebbe rispettato",
+          "redundancy_unknown": "Il gruppo di ridondanza del dispositivo è sconosciuto, quindi non è stato possibile verificare l'ordine",
+          "redundancy_collision": "Un altro dispositivo dello stesso gruppo di ridondanza è già pianificato per questa finestra"
         },
         "ineligible": {
           "not_outstanding": "Non in sospeso su questo dispositivo",

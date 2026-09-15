@@ -4,6 +4,7 @@ import {
   type AiAgentActAssets,
   type AiAgentKind,
   type AiAgentRecipients,
+  type AiAgentTriggers,
   type CreateAiAgentInput,
   type UpdateAiAgentInput,
 } from '@breeze/shared';
@@ -285,6 +286,23 @@ function createPolicyColumns(input: CreateAiAgentInput): Partial<typeof aiAgents
   };
 }
 
+/**
+ * AI patch agent W04 (#5750): the shallow trigger merge, plus the one
+ * clear-to-unrestricted sentinel — `alertCategories: null` DELETES the stored
+ * key (an absent key keeps it; `[]` never parses). A stored row never carries
+ * the null.
+ */
+function mergeTriggers(
+  stored: AiAgentTriggers,
+  patch: NonNullable<UpdateAiAgentInput['triggers']>,
+): AiAgentTriggers {
+  const { alertCategories, ...rest } = patch;
+  const merged: AiAgentTriggers = { ...stored, ...rest };
+  if (alertCategories === null) delete merged.alertCategories;
+  else if (alertCategories !== undefined) merged.alertCategories = alertCategories;
+  return merged;
+}
+
 function updatePolicyColumns(
   existing: AiAgentRow,
   input: UpdateAiAgentInput,
@@ -300,7 +318,7 @@ function updatePolicyColumns(
       : { limits: { ...stored.limits, ...input.limits } }),
     ...(input.triggers === undefined
       ? {}
-      : { triggers: { ...stored.triggers, ...input.triggers } }),
+      : { triggers: mergeTriggers(stored.triggers, input.triggers) }),
     ...(input.recipients === undefined
       ? {}
       : { recipients: { ...stored.recipients, ...input.recipients } }),

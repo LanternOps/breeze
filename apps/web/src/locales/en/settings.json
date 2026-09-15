@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "Couldn't load the policy-decidable action list, so unattended authorization can't be changed right now.",
       "ticketAutonomousWrites": "Autonomous ticket writes",
       "ticketAutonomousWritesHint": "Org override only — autonomous ticket writes require act mode and this org-level opt-in",
+      "alertCategories": "Alert categories",
+      "alertCategoriesHint": "Only alerts whose template category is listed here wake this agent. Leave empty for any category. Patch alerts carry \"patching\".",
+      "alertCategoriesPlaceholder": "e.g. patching, monitor",
       "enabledHint": "Enabled and the mode are separate switches and a run needs both: with this off nothing runs whatever the mode says, and in Off mode nothing runs even while this is on.",
       "enabledCreateHint": "New agents are created switched off. Review the tool allowlist and the limits below, then turn this on when you want the agent to start running.",
       "actKeysCleared": "Act-mode permissions are kept but won't be saved unless this agent returns to Act mode.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Failure class: {{label}}",
         "attempts": "{{count}} failed attempt",
         "attempts_other": "{{count}} failed attempts",
+        "rebootWindow": "Window: {{start}} – {{end}}",
+        "redundancyGroup": "Redundancy group: {{group}}",
         "escalation": "Needs a human — nothing will retry this automatically.",
         "escalations": "{{count}} escalation",
         "escalations_other": "{{count}} escalations",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "This kind of failure is never retried automatically",
           "chase_attempts_exhausted": "The retry limit for this update was reached — escalated instead",
           "attempt_count_mismatch": "The quoted attempt count does not match the evidence",
-          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted"
+          "failure_history_truncated": "The failure history was incomplete, so the retry count could not be trusted",
+          "reboot_policy_not_window_gated": "The device's reboot policy reboots outside maintenance windows, so a window plan would not be honoured",
+          "redundancy_unknown": "The device's redundancy group is unknown, so ordering could not be checked",
+          "redundancy_collision": "Another device in the same redundancy group is already planned for this window"
         },
         "ineligible": {
           "not_outstanding": "Not outstanding on this device",

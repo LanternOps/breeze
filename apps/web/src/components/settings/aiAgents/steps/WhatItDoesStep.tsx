@@ -1,9 +1,9 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ALERT_SEVERITIES, type AgentCeilingDto, type AgentToolCatalogDto } from '@breeze/shared';
 import CapabilityPicker from '../CapabilityPicker';
 import { listField } from '../agentFields';
-import { ALERT_SEVERITY_KINDS, lines, toggle, type Draft } from '../agentDraft';
+import { ALERT_SEVERITY_KINDS, commaSeparated, lines, toggle, type Draft } from '../agentDraft';
 
 export interface WhatItDoesStepProps {
   draft: Draft;
@@ -36,6 +36,18 @@ export default function WhatItDoesStep({
   const { t } = useTranslation('settings');
   const permissionsHeadingId = useId();
   const usesAlertSeverities = ALERT_SEVERITY_KINDS.has(draft.kind);
+
+  // AI patch agent W04 (#5750), Task 6 — the alert-category trigger filter is
+  // a comma-separated text input, not the newline `listField` the tool
+  // allowlist fallback uses (those parse into `Draft`'s own newline-joined
+  // RAW STRING fields; `Draft.alertCategories` is already the parsed array —
+  // see `agentDraft.ts`). Local raw text, not `draft.alertCategories.join(',
+  // ')`, is what the input displays: reconstructing the value from the
+  // parsed array on every keystroke collapses a just-typed trailing "," (an
+  // empty last segment `commaSeparated` correctly drops) back to the
+  // pre-comma text, which silently eats the delimiter the operator is
+  // mid-way through typing a second category after.
+  const [alertCategoriesText, setAlertCategoriesText] = useState(() => draft.alertCategories.join(', '));
 
   return (
     <div className="space-y-3" data-testid="agent-step-does">
@@ -96,6 +108,22 @@ export default function WhatItDoesStep({
               {t('aiAgentsPage.fields.ticketAutonomousWritesHint')}
             </p>
           </div>
+        )}
+        {draft.kind === 'patch' && (
+          <fieldset className="space-y-1">
+            <legend className="text-sm font-medium">{t('aiAgentsPage.fields.alertCategories')}</legend>
+            <p className="text-xs text-muted-foreground">{t('aiAgentsPage.fields.alertCategoriesHint')}</p>
+            <input
+              className="w-full rounded-md border bg-background px-2.5 py-1.5 text-sm"
+              value={alertCategoriesText}
+              placeholder={t('aiAgentsPage.fields.alertCategoriesPlaceholder')}
+              onChange={(e) => {
+                setAlertCategoriesText(e.target.value);
+                patch({ alertCategories: commaSeparated(e.target.value) });
+              }}
+              data-testid="ai-agent-alert-categories"
+            />
+          </fieldset>
         )}
       </fieldset>
 

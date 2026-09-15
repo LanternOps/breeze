@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "No se pudo cargar la lista de acciones decidibles por política, así que la autorización no supervisada no se puede cambiar en este momento.",
       "ticketAutonomousWrites": "Escrituras autónomas de tickets",
       "ticketAutonomousWritesHint": "Solo anulación de la organización — las escrituras autónomas de tickets requieren el modo de actuación y esta activación a nivel de organización",
+      "alertCategories": "Categorías de alertas",
+      "alertCategoriesHint": "Solo las alertas cuya categoría de plantilla aparece aquí activan este agente. Déjelo vacío para cualquier categoría. Las alertas de parches llevan \"patching\".",
+      "alertCategoriesPlaceholder": "p. ej. patching, monitor",
       "enabledHint": "«Habilitado» y el modo son interruptores distintos y una ejecución necesita los dos: con esto apagado no se ejecuta nada sin importar el modo, y en modo Apagado no se ejecuta nada aunque esto esté encendido.",
       "enabledCreateHint": "Los agentes nuevos se crean apagados. Revise la lista de herramientas permitidas y los límites de abajo, y encienda esto cuando quiera que el agente empiece a ejecutarse.",
       "actKeysCleared": "Los permisos del modo de actuación se conservan, pero no se guardarán a menos que este agente vuelva al modo de actuación.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Clase de fallo: {{label}}",
         "attempts": "{{count}} intento fallido",
         "attempts_other": "{{count}} intentos fallidos",
+        "rebootWindow": "Ventana: {{start}} – {{end}}",
+        "redundancyGroup": "Grupo de redundancia: {{group}}",
         "escalation": "Requiere una persona: esto no se reintentará automáticamente.",
         "escalations": "{{count}} escalamiento",
         "escalations_other": "{{count}} escalamientos",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "Este tipo de fallo nunca se reintenta automáticamente",
           "chase_attempts_exhausted": "Se alcanzó el límite de reintentos para esta actualización; se escaló en su lugar",
           "attempt_count_mismatch": "El número de intentos citado no coincide con la evidencia",
-          "failure_history_truncated": "El historial de fallos estaba incompleto, por lo que no se pudo confiar en el número de reintentos"
+          "failure_history_truncated": "El historial de fallos estaba incompleto, por lo que no se pudo confiar en el número de reintentos",
+          "reboot_policy_not_window_gated": "La política de reinicio del dispositivo reinicia fuera de las ventanas de mantenimiento, por lo que un plan de ventana no se respetaría",
+          "redundancy_unknown": "Se desconoce el grupo de redundancia del dispositivo, por lo que no se pudo verificar el orden",
+          "redundancy_collision": "Otro dispositivo del mismo grupo de redundancia ya está planificado para esta ventana"
         },
         "ineligible": {
           "not_outstanding": "No está pendiente en este dispositivo",

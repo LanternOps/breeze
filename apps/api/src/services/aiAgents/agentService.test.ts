@@ -525,6 +525,19 @@ describe('agent mutations', () => {
     expect(state.publish).not.toHaveBeenCalled();
   });
 
+  // AI patch agent W04 (#5750): `triggers.alertCategories: null` on a PATCH
+  // clears a stored filter (deletes the key) instead of storing a null.
+  it('clears triggers.alertCategories when the patch sends null, leaving every sibling alone', async () => {
+    state.currentRow = { ...storedRow, triggers: { ...storedRow.triggers, alertCategories: ['patching'] } };
+    state.returnedRow = state.currentRow;
+
+    await updateAgent(auth(), 'a1', { triggers: { alertCategories: null } } as never);
+
+    const triggers = (state.updatedValues as { triggers: Record<string, unknown> }).triggers;
+    expect(triggers).not.toHaveProperty('alertCategories');
+    expect(triggers).toMatchObject(storedRow.triggers);
+  });
+
   it('deep-merges every nested patch object so stored siblings survive', async () => {
     state.currentRow = storedRow;
     state.returnedRow = storedRow;

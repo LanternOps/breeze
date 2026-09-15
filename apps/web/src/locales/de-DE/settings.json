@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "Die Liste der per Richtlinie entscheidbaren Aktionen konnte nicht geladen werden, daher kann die unbeaufsichtigte Autorisierung derzeit nicht geändert werden.",
       "ticketAutonomousWrites": "Autonome Ticket-Schreibvorgänge",
       "ticketAutonomousWritesHint": "Nur Organisationsüberschreibung — autonome Ticket-Schreibvorgänge erfordern den Aktionsmodus und diese Opt-in-Einstellung auf Organisationsebene",
+      "alertCategories": "Alarmkategorien",
+      "alertCategoriesHint": "Nur Alarme, deren Vorlagenkategorie hier aufgeführt ist, wecken diesen Agenten. Leer lassen für jede Kategorie. Patch-Alarme tragen „patching“.",
+      "alertCategoriesPlaceholder": "z. B. patching, monitor",
       "enabledHint": "„Aktiviert“ und der Modus sind getrennte Schalter, und ein Lauf braucht beide: Ist dies aus, läuft unabhängig vom Modus nichts, und im Modus „Aus“ läuft auch dann nichts, wenn dies eingeschaltet ist.",
       "enabledCreateHint": "Neue Agenten werden ausgeschaltet erstellt. Prüfen Sie unten die Tool-Zulassungsliste und die Limits und schalten Sie dies dann ein, wenn der Agent starten soll.",
       "actKeysCleared": "Die Berechtigungen des Aktionsmodus bleiben erhalten, werden aber erst gespeichert, wenn dieser Agent wieder in den Aktionsmodus wechselt.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Fehlerklasse: {{label}}",
         "attempts": "{{count}} fehlgeschlagener Versuch",
         "attempts_other": "{{count}} fehlgeschlagene Versuche",
+        "rebootWindow": "Zeitfenster: {{start}} – {{end}}",
+        "redundancyGroup": "Redundanzgruppe: {{group}}",
         "escalation": "Erfordert eine Person – dies wird nicht automatisch wiederholt.",
         "escalations": "{{count}} Eskalation",
         "escalations_other": "{{count}} Eskalationen",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "Diese Art von Fehler wird nie automatisch wiederholt",
           "chase_attempts_exhausted": "Das Wiederholungslimit für dieses Update wurde erreicht – stattdessen eskaliert",
           "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein",
-          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich"
+          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich",
+          "reboot_policy_not_window_gated": "Die Neustartrichtlinie des Geräts startet außerhalb von Wartungsfenstern neu, daher würde ein Zeitfensterplan nicht eingehalten",
+          "redundancy_unknown": "Die Redundanzgruppe des Geräts ist unbekannt, daher konnte die Reihenfolge nicht überprüft werden",
+          "redundancy_collision": "Ein anderes Gerät derselben Redundanzgruppe ist für dieses Zeitfenster bereits eingeplant"
         },
         "ineligible": {
           "not_outstanding": "Auf diesem Gerät nicht ausstehend",

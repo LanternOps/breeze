@@ -232,6 +232,14 @@ describe('aiAgents validators', () => {
     it('rejects the empty array — [] would read as "matches nothing"', () => {
       expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { alertCategories: [] } }).success).toBe(false);
     });
+
+    it('an UPDATE may send null to clear the filter back to unrestricted; create may not', () => {
+      // The PATCH merge is shallow ({ ...stored, ...input }), so an absent key
+      // keeps the stored list. `null` is the one representable "clear" —
+      // agentService drops the key when it sees it.
+      expect(updateAiAgentSchema.parse({ triggers: { alertCategories: null } })).toEqual({ triggers: { alertCategories: null } });
+      expect(createAiAgentSchema.safeParse({ kind: 'patch', name: 'Patch', triggers: { alertCategories: null } }).success).toBe(false);
+    });
   });
 
   describe('triggers.anomalyTypes / metricNames / minAnomalyScore (wave 6 PR 4, #3828)', () => {

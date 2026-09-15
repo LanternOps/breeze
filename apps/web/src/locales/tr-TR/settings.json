@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "Politikayla karar verilebilecek işlem listesi yüklenemedi, bu nedenle gözetimsiz yetkilendirme şu anda değiştirilemiyor.",
       "ticketAutonomousWrites": "Otonom talep yazmaları",
       "ticketAutonomousWritesHint": "Yalnızca organizasyon geçersiz kılması — otonom talep yazmaları eylem modunu ve bu organizasyon düzeyindeki katılımı gerektirir",
+      "alertCategories": "Uyarı kategorileri",
+      "alertCategoriesHint": "Yalnızca şablon kategorisi burada listelenen uyarılar bu aracıyı uyandırır. Herhangi bir kategori için boş bırakın. Yama uyarıları \"patching\" taşır.",
+      "alertCategoriesPlaceholder": "örn. patching, monitor",
       "enabledHint": "«Etkin» ve mod ayrı anahtarlardır ve bir çalıştırma ikisini de gerektirir: bu kapalıyken mod ne olursa olsun hiçbir şey çalışmaz, Kapalı modda ise bu açık olsa bile hiçbir şey çalışmaz.",
       "enabledCreateHint": "Yeni aracılar kapalı olarak oluşturulur. Aşağıdaki araç izin listesini ve sınırları gözden geçirin, ardından aracının çalışmaya başlamasını istediğinizde bunu açın.",
       "actKeysCleared": "Eylem modu izinleri saklanır, ancak bu araç yeniden Eylem moduna dönmedikçe kaydedilmez.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Hata sınıfı: {{label}}",
         "attempts": "{{count}} başarısız deneme",
         "attempts_other": "{{count}} başarısız deneme",
+        "rebootWindow": "Pencere: {{start}} – {{end}}",
+        "redundancyGroup": "Yedeklilik grubu: {{group}}",
         "escalation": "Bir kişinin bakması gerekiyor — bu otomatik olarak yeniden denenmeyecek.",
         "escalations": "{{count}} yükseltme",
         "escalations_other": "{{count}} yükseltme",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
           "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
           "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor",
-          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi"
+          "failure_history_truncated": "Hata geçmişi eksikti, bu nedenle yeniden deneme sayısına güvenilemedi",
+          "reboot_policy_not_window_gated": "Cihazın yeniden başlatma politikası bakım pencereleri dışında yeniden başlatıyor, bu nedenle bir pencere planı uygulanmaz",
+          "redundancy_unknown": "Cihazın yedeklilik grubu bilinmiyor, bu nedenle sıralama kontrol edilemedi",
+          "redundancy_collision": "Aynı yedeklilik grubundaki başka bir cihaz bu pencere için zaten planlandı"
         },
         "ineligible": {
           "not_outstanding": "Bu cihazda bekleyen değil",

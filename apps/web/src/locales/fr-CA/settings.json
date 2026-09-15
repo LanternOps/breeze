@@ -1776,6 +1776,9 @@
       "supervisedActionKeysFailed": "Impossible de charger la liste des actions décidables par politique ; l’autorisation sans surveillance ne peut pas être modifiée pour le moment.",
       "ticketAutonomousWrites": "Écritures autonomes de tickets",
       "ticketAutonomousWritesHint": "Dérogation d'organisation seulement — les écritures autonomes de tickets nécessitent le mode action et cette activation au niveau de l'organisation",
+      "alertCategories": "Catégories d'alertes",
+      "alertCategoriesHint": "Seules les alertes dont la catégorie de modèle est listée ici réveillent cet agent. Laisser vide pour toute catégorie. Les alertes de correctifs portent « patching ».",
+      "alertCategoriesPlaceholder": "p. ex. patching, monitor",
       "enabledHint": "« Activé » et le mode sont deux interrupteurs distincts et une exécution a besoin des deux : si ceci est désactivé, rien ne s’exécute quel que soit le mode, et en mode Désactivé rien ne s’exécute même si ceci est activé.",
       "enabledCreateHint": "Les nouveaux agents sont créés éteints. Vérifiez la liste des outils autorisés et les limites ci-dessous, puis activez ceci lorsque vous voulez que l’agent commence à s’exécuter.",
       "actKeysCleared": "Les autorisations du mode action sont conservées, mais ne seront pas enregistrées tant que cet agent ne repasse pas en mode Action.",
@@ -1917,6 +1920,8 @@
         "failureClass": "Classe d'échec : {{label}}",
         "attempts": "{{count}} tentative échouée",
         "attempts_other": "{{count}} tentatives échouées",
+        "rebootWindow": "Fenêtre : {{start}} – {{end}}",
+        "redundancyGroup": "Groupe de redondance : {{group}}",
         "escalation": "Nécessite une intervention humaine – aucune nouvelle tentative automatique.",
         "escalations": "{{count}} escalade",
         "escalations_other": "{{count}} escalades",
@@ -1946,7 +1951,10 @@
           "class_not_retryable": "Ce type d'échec n'est jamais retenté automatiquement",
           "chase_attempts_exhausted": "La limite de nouvelles tentatives pour cette mise à jour est atteinte – escaladé à la place",
           "attempt_count_mismatch": "Le nombre de tentatives cité ne correspond pas aux éléments de preuve",
-          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable"
+          "failure_history_truncated": "L'historique des échecs était incomplet : le nombre de tentatives n'était pas fiable",
+          "reboot_policy_not_window_gated": "La politique de redémarrage de l'appareil redémarre en dehors des fenêtres de maintenance, un plan de fenêtre ne serait donc pas respecté",
+          "redundancy_unknown": "Le groupe de redondance de l'appareil est inconnu, l'ordre n'a donc pas pu être vérifié",
+          "redundancy_collision": "Un autre appareil du même groupe de redondance est déjà planifié pour cette fenêtre"
         },
         "ineligible": {
           "not_outstanding": "Non en attente sur cet appareil",
