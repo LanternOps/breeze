@@ -316,6 +316,11 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
 
   // ---- workspace ----
   export_dataset: 'workspace',
+  // ---- workspace (execution plane W04) ----
+  workspace_stage: 'workspace',
+  workspace_run: 'workspace',
+  workspace_collect: 'workspace',
+  workspace_cancel: 'workspace',
 };
 
 export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>> = {

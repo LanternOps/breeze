@@ -132,6 +132,14 @@ interface PatchDigest {
   items: number;
   critical: number;
   summaryFirstLine: string;
+  /** W03 (#5749): submitted `chase` items — retry proposals, whatever their disposition. */
+  chases: number;
+  /** W03: submitted `escalation` items. Nothing retries these; a human looks. */
+  escalations: number;
+  /** W03: quoted failure classes across chase + escalation items, by class. */
+  failureClasses: Record<string, number>;
+  /** W03: installs waiting for offline devices (`null` = not measured). */
+  queuedOffline: number | null;
 }
 
 function readPatchPlanDigest(outcome: Record<string, unknown>): PatchDigest | null {
@@ -141,13 +149,57 @@ function readPatchPlanDigest(outcome: Record<string, unknown>): PatchDigest | nu
   const items = Array.isArray(entry.items) ? entry.items : [];
 
   let critical = 0;
+  let chases = 0;
+  let escalations = 0;
+  const failureClasses: Record<string, number> = {};
   for (const raw of items) {
     if (!raw || typeof raw !== 'object') continue;
-    if ((raw as Record<string, unknown>).severity === 'critical') critical += 1;
+    const item = raw as Record<string, unknown>;
+    if (item.severity === 'critical') critical += 1;
+    if (item.class === 'chase') chases += 1;
+    else if (item.class === 'escalation') escalations += 1;
+    else continue;
+    // Only the class the persister could check (it refuses a mismatch); the
+    // digest still counts a refused item — the recipient is told what the
+    // agent proposed, the run trace shows what was refused and why.
+    if (typeof item.failureClass === 'string') {
+      failureClasses[item.failureClass] = (failureClasses[item.failureClass] ?? 0) + 1;
+    }
   }
 
   const summary = typeof entry.summary === 'string' ? entry.summary : '';
-  return { items: items.length, critical, summaryFirstLine: summary.split('\n')[0]?.trim() ?? '' };
+  return {
+    items: items.length,
+    critical,
+    summaryFirstLine: summary.split('\n')[0]?.trim() ?? '',
+    chases,
+    escalations,
+    failureClasses,
+    queuedOffline: typeof entry.queuedOffline === 'number' ? entry.queuedOffline : null,
+  };
+}
+
+/**
+ * W03 (#5749): the failure/escalation breakdown appended to the patch digest
+ * message. Empty when the plan carries neither a chase nor an escalation and
+ * no queued-offline note, so a W01/W02-shaped plan reads exactly as before.
+ */
+function patchDigestFailureNote(patch: PatchDigest): string {
+  const parts: string[] = [];
+  if (patch.chases > 0 || patch.escalations > 0) {
+    const classes = Object.entries(patch.failureClasses)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([cls, n]) => `${cls} ${n}`)
+      .join(', ');
+    parts.push(
+      `${patch.chases} retry proposal(s), ${patch.escalations} escalation(s)`
+      + (classes ? ` — failures by class: ${classes}` : '') + '.',
+    );
+  }
+  if (patch.queuedOffline !== null && patch.queuedOffline > 0) {
+    parts.push(`${patch.queuedOffline} install(s) waiting for offline devices.`);
+  }
+  return parts.join(' ');
 }
 
 function readSweepDigest(outcome: Record<string, unknown>): SweepDigest | null {
@@ -559,6 +611,7 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
           + `${sweep.critical > 0 ? ` (${sweep.critical} critical)` : ''} — ${agent.name}`
         : patch
           ? `Patch plan ready: ${patch.items} item(s)`
+            + `${patch.escalations > 0 ? `, ${patch.escalations} escalation(s)` : ''}`
             + `${patch.critical > 0 ? ` (${patch.critical} critical)` : ''} — ${agent.name}`
           : (triage && ticketLabel)
             ? `Ticket #${ticketLabel} triaged — ${agent.name}`
@@ -570,7 +623,8 @@ export async function deliverRunFinishedNotifications(runId: string): Promise<vo
       : sweep
         ? sweep.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
         : patch
-          ? patch.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`
+          ? [patch.summaryFirstLine || `${agent.name}: ${firstLine || run.status}`, patchDigestFailureNote(patch)]
+            .filter((part) => part !== '').join(' ')
           : `${agent.name}: ${firstLine || run.status}`;
   // Autonomy note appended, never substituted — the recipient still gets
   // what the run actually did, plus the fact that it happened unattended.

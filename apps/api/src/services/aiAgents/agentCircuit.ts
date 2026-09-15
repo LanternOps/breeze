@@ -134,6 +134,13 @@ const STREAK_NEUTRAL_PROFILES: ReadonlySet<AiAgentRunProfile> = new Set([
   // HAND: nothing fails to compile if this line is missing (see the note on
   // `classifyTerminal`); agentCircuit.test.ts's per-profile row is the guard.
   'patch',
+  // Execution plane W04 (#5715): an analysis run computes over data it was
+  // given and PROPOSES; it executes nothing on the fleet
+  // (`maxActionsPerRun: 0`), so its clean completion says nothing about
+  // whether the org's remediation is working and must neither reset nor
+  // increment the streak. Added BY HAND, same as `patch` above — the
+  // per-profile row in agentCircuit.test.ts is the guard.
+  'analysis',
 ]);
 
 /**

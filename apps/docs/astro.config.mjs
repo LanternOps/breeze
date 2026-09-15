@@ -107,6 +107,7 @@ export default defineConfig({
                 { slug: 'features/invoices' },
                 { slug: 'features/quotes' },
                 { slug: 'features/contracts' },
+                { slug: 'features/agreements' },
                 { slug: 'features/online-payments' },
               ],
             },

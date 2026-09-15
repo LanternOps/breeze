@@ -7,6 +7,7 @@ vi.mock('../reports/reportExport', () => ({
   getBrowserTimezone: () => 'UTC',
 }));
 
+import { PATCH_PLAN_REFUSAL_REASONS } from '@breeze/shared';
 import RunDetailPage from './RunDetailPage';
 import { fetchWithAuth } from '../../stores/auth';
 import { exportReport } from '../reports/reportExport';
@@ -2396,5 +2397,107 @@ describe('RunDetailPage — patch plan', () => {
 
     await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
     expect(screen.queryByTestId('ai-agent-run-patch-counts')).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // AI patch agent W03 (#5749), Task 5 — chase items carry the evidence's
+  // failure class and attempt count; escalation items are recorded, never
+  // minted; every W03 refusal reason has real copy.
+  // ---------------------------------------------------------------------------
+  const CHASE = {
+    ...PATCH,
+    items: [
+      {
+        ...PATCH.items[0],
+        class: 'chase' as const,
+        title: 'Retry KB5000001 on WKS-01',
+        disposition: 'intent_created' as const,
+        intentId: 'intent-chase1',
+        failureClass: 'transient' as const,
+        attemptCount: 1,
+      },
+      {
+        index: 1,
+        class: 'escalation' as const,
+        severity: 'high' as const,
+        deviceId: 'd2',
+        deviceHostname: 'SRV-02',
+        patchCount: 1,
+        title: 'KB5000002 keeps failing on SRV-02',
+        detail: 'Two failed installs with a vendor not-applicable error; a technician must look.',
+        disposition: 'recorded' as const,
+        reason: null,
+        intentId: null,
+        droppedPatchIds: [],
+        failureClass: 'permanent' as const,
+        attemptCount: 2,
+      },
+    ],
+    recordedCount: 1,
+    refusedCount: 0,
+    intentCreatedCount: 1,
+    suppressedCount: 0,
+    escalationCount: 1,
+  };
+
+  it('renders the failure class and attempt count on a chase item', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: CHASE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-class')).toHaveTextContent('Transient');
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-attempts')).toHaveTextContent('1 failed attempt');
+    expect(screen.getByTestId('ai-agent-run-patch-item-0')).not.toHaveTextContent('transient');
+    expect(screen.getByTestId('ai-agent-run-patch-item-0-intent')).toBeInTheDocument();
+  });
+
+  it('renders an escalation item with its class and attempts and no approve control', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: CHASE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    const item = screen.getByTestId('ai-agent-run-patch-item-1');
+    expect(within(item).getByTestId('ai-agent-run-patch-item-1-class')).toHaveTextContent('Permanent');
+    expect(within(item).getByTestId('ai-agent-run-patch-item-1-attempts')).toHaveTextContent('2 failed attempts');
+    expect(within(item).getByTestId('ai-agent-run-patch-item-1-escalation')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-1-intent')).toBeNull();
+    expect(item.querySelector('button')).toBeNull();
+    expect(item).not.toHaveTextContent('permanent');
+  });
+
+  it('states the escalation count in the section rollup', async () => {
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: CHASE } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-patch-counts')).toHaveTextContent('1 escalation');
+  });
+
+  it('omits the class/attempt line on an item that quotes neither', async () => {
+    mockEndpoints({ detail: PATCH_RUN });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-class')).toBeNull();
+    expect(screen.queryByTestId('ai-agent-run-patch-item-0-attempts')).toBeNull();
+  });
+
+  it('renders every refusal reason with real copy, never a raw enum token', async () => {
+    const items = PATCH_PLAN_REFUSAL_REASONS.map((reason, index) => ({
+      ...PATCH.items[1],
+      index,
+      class: 'chase' as const,
+      disposition: 'refused' as const,
+      reason,
+    }));
+    mockEndpoints({ detail: { ...PATCH_RUN, patch: { ...PATCH, items, recordedCount: 0, refusedCount: items.length } } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-patch')).toBeInTheDocument());
+    for (const [index, reason] of PATCH_PLAN_REFUSAL_REASONS.entries()) {
+      const el = screen.getByTestId(`ai-agent-run-patch-item-${index}-reason`);
+      expect(el, reason).not.toHaveTextContent(reason);
+      expect(el.textContent, reason).toMatch(/Not recorded: \S/);
+    }
   });
 });

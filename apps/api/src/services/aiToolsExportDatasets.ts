@@ -89,6 +89,33 @@ async function siteScopedDeviceIds(req: DatasetRequest): Promise<string[] | null
   return resolveSiteAllowedDeviceIds(req.orgId, req.auth);
 }
 
+/**
+ * The full narrowing set for a request: the site axis AND — execution plane
+ * W04 (#5715) — the run's FROZEN device set.
+ *
+ * Why the run frame has to be applied here and not only in `aiToolsExport.ts`:
+ * that file refuses a model-supplied `deviceIds` list that strays outside
+ * `runTargets`, which bounds the export only when the model bothers to supply
+ * one. An `analysis` run whose whole point is a device set frozen at admission
+ * (spec §8 "Data minimisation") could otherwise call
+ * `export_dataset({ dataset: 'event_logs' })` with NO filter and page the
+ * entire org's logs into its sandbox — the admission cap
+ * (`analysisMaxInputDevicesPerRun`), the frozen `staged_inputs.deviceIds` and
+ * `workspace_stage`'s handle allowlist would all still be satisfied, because
+ * the leak happens one layer earlier, when the artifact is created.
+ *
+ * An absent/empty `runTargets` means "no run frame" (direct chat/MCP), not "no
+ * devices" — see `ToolExecutionContext.runTargets`.
+ */
+async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
+  const siteScoped = await siteScopedDeviceIds(req);
+  const frame = req.runTargets && req.runTargets.length > 0 ? req.runTargets : null;
+  if (!frame) return siteScoped;
+  if (!siteScoped) return [...frame];
+  const inSite = new Set(siteScoped);
+  return frame.filter((id) => inSite.has(id));
+}
+
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
 const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
 
@@ -112,7 +139,7 @@ const eventLogsAdapter: DatasetAdapter = {
     // Same two lines `search_logs` runs before it queries (aiToolsEventLogs.ts:84).
     // `allowedDeviceIds` is the site axis, which RLS does NOT enforce; dropping
     // it would let a site-restricted tech export the whole org's logs.
-    const allowedDeviceIds = await siteScopedDeviceIds(req);
+    const allowedDeviceIds = await scopedDeviceIds(req);
     if (allowedDeviceIds != null && allowedDeviceIds.length === 0) return emptyPager;
 
     return async (cursor) => {
@@ -160,8 +187,13 @@ const agentLogsAdapter: DatasetAdapter = {
   deviceScoped: false,
   async createPager(req) {
     const f = req.filters;
+    // W04: fall back to the run's frozen device set when the model supplied no
+    // explicit list — `buildAgentLogConditions` narrows by the site axis only,
+    // so without this an analysis run exports every agent log in the org.
+    const agentLogDeviceIds = req.deviceIds
+      ?? (req.runTargets && req.runTargets.length > 0 ? req.runTargets : null);
     const conditions = await buildAgentLogConditions(req.orgId, req.auth, {
-      deviceIds: req.deviceIds ?? undefined,
+      deviceIds: agentLogDeviceIds ?? undefined,
       level: typeof f.level === 'string' ? f.level : undefined,
       component: typeof f.component === 'string' ? f.component : undefined,
       startTime: typeof f.startTime === 'string' ? f.startTime : undefined,
@@ -318,7 +350,8 @@ const metricsAdapter: DatasetAdapter = {
   async createPager(req) {
     const hoursBack = Math.min(Math.max(1, Number(req.filters.hoursBack) || 24), 168);
     const since = new Date(Date.now() - hoursBack * 3_600_000);
-    const deviceIds = req.deviceIds ?? [];
+    // W04: an analysis run that names no devices gets its frozen set.
+    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
     let index = 0;
 
     return async () => {
@@ -364,7 +397,8 @@ const vulnerabilitiesAdapter: DatasetAdapter = {
   deviceScoped: true,
   async createPager(req) {
     const status = normStatus(req.filters.status);
-    const deviceIds = req.deviceIds ?? [];
+    // W04: an analysis run that names no devices gets its frozen set.
+    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
     let index = 0;
 
     return async () => {
@@ -422,7 +456,8 @@ const customFieldsAdapter: DatasetAdapter = {
     const readCustomFieldDefinitions = await getReadCustomFieldDefinitions();
     const definitions = await readCustomFieldDefinitions(req.auth);
 
-    const deviceIds = req.deviceIds ?? [];
+    // W04: an analysis run that names no devices gets its frozen set.
+    const deviceIds = req.deviceIds ?? req.runTargets ?? [];
     let index = 0;
 
     return async () => {

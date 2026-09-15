@@ -14,6 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -244,6 +245,15 @@ export const TOOL_TIERS = {
   // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
   // it just refuses to throw the result away. Tier 1 like its source tools.
   export_dataset: 1,
+  // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
+  // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
+  // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
+  // this map is invisible to chat AND to every run profile even when it is
+  // registered in `aiTools`.
+  workspace_stage: 1,
+  workspace_run: 1,
+  workspace_collect: 1,
+  workspace_cancel: 1,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_configuration_policy: 1,
@@ -2164,6 +2174,34 @@ export function createBreezeMcpServer(
         maxRows: z.number().optional(),
       },
       makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_stage',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage,
+      WORKSPACE_MCP_SHAPES.workspace_stage,
+      makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_run',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_run,
+      WORKSPACE_MCP_SHAPES.workspace_run,
+      makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_collect',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect,
+      WORKSPACE_MCP_SHAPES.workspace_collect,
+      makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_cancel',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel,
+      WORKSPACE_MCP_SHAPES.workspace_cancel,
+      makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

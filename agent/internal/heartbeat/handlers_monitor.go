@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/breeze-rmm/agent/internal/discovery"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
@@ -172,6 +174,29 @@ func handleNetworkTcpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }
 
+// maxTlsObservationLen bounds the issuer DN and observed host the agent
+// reports. They land in varchar(255) columns on network_monitors (#4230); a
+// truncated display string is strictly better than a rejected writeback that
+// drops the whole observation.
+const maxTlsObservationLen = 255
+
+// maxRedirectHops mirrors net/http's own default redirect cap, which our
+// CheckRedirect replaces.
+const maxRedirectHops = 10
+
+// truncateObservation clips to maxTlsObservationLen bytes without splitting a
+// multi-byte rune — issuer DNs carry non-ASCII organisation names.
+func truncateObservation(s string) string {
+	if len(s) <= maxTlsObservationLen {
+		return s
+	}
+	cut := maxTlsObservationLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 	url, errResult := tools.RequirePayloadString(cmd.Payload, "url")
@@ -199,10 +224,26 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 		Transport: transport,
 	}
 
-	if !followRedirects {
-		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+	// The hop actually being ATTEMPTED (#5754). `client.Do` follows redirects by
+	// building a new request per hop and never mutates the caller's, so the
+	// original `req` cannot answer "which endpoint just failed". Without this,
+	// an http:// monitor that redirects to a broken https endpoint reports no
+	// TLS state at all, the server leaves the stored observation untouched, and
+	// a stale `observed` row keeps reading as "fine" through a live failure.
+	var lastURL *neturl.URL
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if !followRedirects {
 			return http.ErrUseLastResponse
 		}
+		// Installing ANY CheckRedirect replaces net/http's default, which is
+		// what caps a chain at 10 hops. Restoring the cap explicitly is the
+		// only thing between a redirect LOOP and a check that runs hops for
+		// the whole timeout window on every polling interval.
+		if len(via) >= maxRedirectHops {
+			return fmt.Errorf("stopped after %d redirects", len(via))
+		}
+		lastURL = r.URL
+		return nil
 	}
 
 	req, err := http.NewRequest(method, url, nil)
@@ -216,16 +257,28 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 	}
 
 	req.Header.Set("User-Agent", "BreezeRMM-Monitor/1.0")
+	lastURL = req.URL
 
 	reqStart := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return tools.NewSuccessResult(map[string]any{
+		errResult := map[string]any{
 			"monitorId":  monitorId,
 			"status":     "offline",
 			"responseMs": float64(time.Since(reqStart).Microseconds()) / 1000.0,
 			"error":      err.Error(),
-		}, time.Since(start).Milliseconds())
+		}
+		// #4230: the server must be able to tell "the handshake failed" from
+		// "plain HTTP" from "the check never ran". A TLS failure returns here,
+		// before any certificate exists, so the state is reported explicitly.
+		// A TCP-level failure against an http:// target is NOT a handshake
+		// failure and stays silent, leaving any prior observation untouched.
+		if lastURL != nil && strings.EqualFold(lastURL.Scheme, "https") {
+			errResult["sslState"] = "handshake_failed"
+			errResult["sslObservedHost"] = truncateObservation(lastURL.Host)
+			errResult["sslRequestedUrl"] = truncateObservation(url)
+		}
+		return tools.NewSuccessResult(errResult, time.Since(start).Milliseconds())
 	}
 	defer resp.Body.Close()
 
@@ -266,13 +319,34 @@ func handleNetworkHttpCheck(_ *Heartbeat, cmd Command) tools.CommandResult {
 		result["error"] = strings.Join(errors, "; ")
 	}
 
-	// Check SSL expiry if TLS was used
+	// Certificate observation (#4230). The certificate belongs to the FINAL
+	// response, which after a redirect is a different endpoint than the
+	// monitor's target — so the observed host is recorded alongside the expiry,
+	// or a finding would name the wrong endpoint.
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		cert := resp.TLS.PeerCertificates[0]
 		daysUntilExpiry := int(time.Until(cert.NotAfter).Hours() / 24)
 		result["sslExpiry"] = cert.NotAfter.Format(time.RFC3339)
 		result["sslDaysRemaining"] = daysUntilExpiry
+		result["sslIssuer"] = truncateObservation(cert.Issuer.String())
+		result["sslState"] = "observed"
+	} else if resp.TLS != nil {
+		// A completed handshake that presented no certificate is not plain
+		// HTTP and is not a reading we can trust — never report it as not_tls,
+		// which would say "this endpoint has no certificate to expire".
+		result["sslState"] = "handshake_failed"
+	} else {
+		result["sslState"] = "not_tls"
 	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		result["sslObservedHost"] = truncateObservation(resp.Request.URL.Host)
+	} else {
+		result["sslObservedHost"] = truncateObservation(req.URL.Host)
+	}
+	// Echoed so the server can tell a result produced under the CURRENT
+	// target/config from one already in flight when an operator edited the
+	// monitor — see recordMonitorCheckResult.
+	result["sslRequestedUrl"] = truncateObservation(url)
 
 	return tools.NewSuccessResult(result, time.Since(start).Milliseconds())
 }

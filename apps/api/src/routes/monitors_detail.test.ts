@@ -263,6 +263,74 @@ describe('monitors routes', () => {
 
       expect(res.status).toBe(404);
     });
+
+    // #5751 W03 (#5754): a check result already in flight was produced under
+    // the OLD target/config, and recordMonitorCheckResult overwrites monitor
+    // state unconditionally. Without invalidation, an arriving certificate
+    // would be attributed to an endpoint it never came from.
+    describe('TLS observation invalidation', () => {
+      const EXISTING = {
+        id: MONITOR_ID,
+        orgId: ORG_ID,
+        name: 'Web',
+        monitorType: 'http_check',
+        target: 'https://a.example',
+        config: { url: 'https://a.example', method: 'GET' },
+        isActive: true,
+      };
+
+      /** Runs one PATCH and returns the `set()` payload the route produced. */
+      async function patchAndCaptureSet(payload: Record<string, unknown>) {
+        const setSpy = vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([EXISTING]),
+          }),
+        });
+        vi.mocked(db.select).mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([EXISTING]),
+            }),
+          }),
+        } as any);
+        vi.mocked(db.update).mockReturnValueOnce({ set: setSpy } as any);
+
+        const res = await app.request(`/monitors/${MONITOR_ID}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        expect(res.status).toBe(200);
+        return setSpy.mock.calls[0]![0] as Record<string, unknown>;
+      }
+
+      const TLS_COLUMNS = ['tlsState', 'tlsNotAfter', 'tlsIssuer', 'tlsObservedHost', 'tlsObservedAt'];
+
+      it('clears every tls_* column when target changes', async () => {
+        const set = await patchAndCaptureSet({ target: 'https://b.example' });
+        for (const column of TLS_COLUMNS) expect(set[column]).toBeNull();
+      });
+
+      it('clears every tls_* column when config changes', async () => {
+        const set = await patchAndCaptureSet({ config: { url: 'https://a.example', method: 'HEAD' } });
+        for (const column of TLS_COLUMNS) expect(set[column]).toBeNull();
+      });
+
+      it('leaves the observation alone when only name changes', async () => {
+        const set = await patchAndCaptureSet({ name: 'Renamed' });
+        for (const column of TLS_COLUMNS) expect(set).not.toHaveProperty(column);
+      });
+
+      it('leaves the observation alone when target is re-sent unchanged', async () => {
+        const set = await patchAndCaptureSet({ target: EXISTING.target, name: 'Renamed' });
+        for (const column of TLS_COLUMNS) expect(set).not.toHaveProperty(column);
+      });
+
+      it('leaves the observation alone when config is re-sent with the same values', async () => {
+        const set = await patchAndCaptureSet({ config: { url: 'https://a.example', method: 'GET' } });
+        for (const column of TLS_COLUMNS) expect(set).not.toHaveProperty(column);
+      });
+    });
   });
 
   // ────────────────────── DELETE /:id ──────────────────────

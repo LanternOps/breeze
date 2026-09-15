@@ -155,6 +155,12 @@ export const SENTRY_EVENT_CODES = [
   'ai_billing_credits_deduct_failed',
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
+  /**
+   * Execution plane W04 (#5715): the sandbox backend's create circuit opened
+   * after 5 consecutive failures — no analysis run can start in this region
+   * until it closes.
+   */
+  'ai_workspace_breaker_open',
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
   /**

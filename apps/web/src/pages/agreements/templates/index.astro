@@ -1,0 +1,11 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import AgreementsShell from '../../../components/agreements/AgreementsShell';
+import TemplatesPage from '../../../components/agreements/TemplatesPage';
+---
+
+<DashboardLayout titleKey="titles.agreementTemplates">
+  <AgreementsShell tab="templates" client:load>
+    <TemplatesPage client:load />
+  </AgreementsShell>
+</DashboardLayout>

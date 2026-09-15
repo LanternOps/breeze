@@ -206,6 +206,13 @@ const TOOL_CAPABILITY_NOT_YET_IN_TIER_CONFIG: readonly string[] = [
   'trigger_mssql_backup',
   'trigger_vault_sync',
   'verify_mssql_backup',
+  // W04 execution plane (#5715) — the four sandbox-workspace tools share
+  // `export_dataset`'s situation: the risk page copy is W05's surface work,
+  // so each entry here is a follow-up owed, not a design choice.
+  'workspace_cancel',
+  'workspace_collect',
+  'workspace_run',
+  'workspace_stage',
 ];
 
 /**

@@ -1,0 +1,32 @@
+-- @no-transaction
+-- AI patch agent W03 (#5749): patch_job_results (created_at) WHERE status IN ('failed', 'queued').
+--
+-- The failedWork evidence read (services/aiAgents/patchEvidence.ts,
+-- loadFailedWork) and its queued-offline sibling scan
+--   WHERE status = 'failed' | 'queued' AND created_at >= now() - 30 days
+-- then reach the org through patch_jobs.org_id and devices.org_id. The table
+-- has NO index on job_id or device_id (FKs only) and the only created_at index
+-- (idx_patch_job_results_active_created, 0075) is partial on
+-- status IN ('pending', 'running'), so EXPLAIN on a 6,000-row table showed a
+-- full sequential scan over patch_job_results with 5,761 rows removed by
+-- filter (recorded in PR #5749's body).
+--
+-- Why a PARTIAL index on created_at and not a (status, created_at) composite:
+-- the read runs as breeze_app under forced RLS (system scope is a GUC, not a
+-- BYPASSRLS role), and the planner promotes a clause to an index CONDITION
+-- only when its operator is leakproof. `enum_eq` (patch_job_result_status) is
+-- NOT leakproof, so `status = 'failed'` can never lead an index scan — a
+-- composite was tried first and EXPLAIN as breeze_app still seq-scanned.
+-- `timestamp_ge` IS leakproof, so created_at is the index condition, and the
+-- status restriction lives in the partial predicate, which is proven
+-- statically (predicate_implied_by) as long as the query states the status as
+-- an inline constant — which loadFailedWork/loadQueuedOffline do. Same
+-- recipe as audit_logs_device_feed_*_idx (#4835).
+--
+-- This is the wave's only migration — the plan permits exactly this index and
+-- nothing else (no new table, no new column). Idempotent DDL. CREATE INDEX
+-- CONCURRENTLY (autoMigrate's @no-transaction lane) so the build takes no
+-- SHARE lock on patch_job_results at deploy time: every patch job writes here.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_patch_job_results_status_created
+  ON patch_job_results (created_at)
+  WHERE status IN ('failed', 'queued');

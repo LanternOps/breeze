@@ -318,6 +318,11 @@
       "estimateExcluded": "Excluye {{count}} contrato(s) cuya estimación no está disponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos se facturan en una moneda distinta a la de su organización.",
+        "countPlus": "{{count}}+ contratos se facturan en una moneda distinta a la de su organización.",
+        "review": "Revisarlos"
+      },
       "title": "Contratos",
       "description": "Acuerdos recurrentes que generan automáticamente borradores de facturas según una cadencia.",
       "newContract": "Nuevo contrato",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Se guardó, pero se eliminó formato no admitido: {{tags}}. Los cuerpos de los acuerdos admiten títulos, negrita, cursiva, subrayado, listas y enlaces."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Plantillas de acuerdo",
+      "signed": "Acuerdos firmados"
+    },
+    "signedPage": {
+      "title": "Acuerdos firmados",
+      "description": "Todos los acuerdos que tus clientes han firmado. Vincula uno a un contrato para que aparezca en el contrato que rige.",
+      "unlinkedOnly": "Solo sin vincular",
+      "empty": {
+        "title": "Aún no hay acuerdos firmados",
+        "description": "Un acuerdo se firma cuando el cliente acepta una cotización que lo incluye."
+      },
+      "emptyUnlinked": {
+        "title": "No hay acuerdos firmados sin vincular",
+        "description": "Todos los acuerdos firmados ya están archivados en un contrato."
+      },
+      "columns": {
+        "contract": "Contrato"
+      },
+      "viewContract": "Ver contrato",
+      "notLinked": "Sin vincular",
+      "rowSubtitle": "Aceptado con la cotización {{quoteNumber}} por {{signer}} el {{date}}",
+      "rowSubtitleNoQuote": "Firmado por {{signer}} el {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados",
+      "usageUnavailable": "Uso no disponible",
+      "backToTemplates": "Volver a las plantillas de acuerdo",
+      "archiveConfirm": {
+        "title": "¿Archivar esta plantilla de acuerdo?",
+        "message": "Usada en {{quotes}} cotizaciones · {{signed}} acuerdos firmados. Las cotizaciones ya fijadas a ella siguen funcionando, pero no se podrán agregar nuevas secciones de acuerdo.",
+        "messageUnknownUsage": "No pudimos verificar en qué se usa esta plantilla. Las cotizaciones ya fijadas a ella siguen funcionando, pero no se podrán agregar nuevas secciones de acuerdo.",
+        "confirm": "Archivar plantilla"
+      }
+    },
+    "contractPill": {
+      "under": "Bajo {{template}} v{{n}}"
     }
   },
   "quotes": {

@@ -204,8 +204,18 @@ describe('isActEligibleSweepKind', () => {
   it('is false for a value that is not a sweep kind at all', () => {
     // A trigger key is parsed from a stored string, so the kind reaching here
     // is not compile-time guaranteed to be in the catalog.
-    expect(isActEligibleSweepKind('expiring_certs')).toBe(false);
+    expect(isActEligibleSweepKind('not_a_sweep_kind')).toBe(false);
     expect(isActEligibleSweepKind('__proto__')).toBe(false);
     expect(isActEligibleSweepKind('')).toBe(false);
+  });
+
+  it('is false for expiring_certs, which is finding-only by construction', () => {
+    // #5751 W03 (#5754): the kind IS in the catalog now, but there is no safe
+    // automated certificate renewal and `SweepProposedAction` is a closed
+    // union, so it deliberately registers no probe. Asserted explicitly rather
+    // than relying on the loop above, because a future probe added by
+    // accident would silently make a finding-only kind act-eligible.
+    expect(AI_SWEEP_KINDS as readonly string[]).toContain('expiring_certs');
+    expect(isActEligibleSweepKind('expiring_certs')).toBe(false);
   });
 });

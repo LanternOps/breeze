@@ -26,7 +26,7 @@ import { escapeLike } from '../utils/sql';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { verifyDeviceAccess } from './aiTools';
-import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { projectPublicDevice } from '../routes/devices/helpers';
 import {
   getActiveDeviceContext,
@@ -138,6 +138,11 @@ export function registerDeviceTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(devices.id, allowed));
       }
+      // W04 (#5715): a device-LESS analysis run carries no site axis, only the
+      // device set frozen at admission. Without this it enumerates the whole
+      // org — see `runFrozenDeviceIds`'s docstring.
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds) conditions.push(inArray(devices.id, frozenDeviceIds));
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
 

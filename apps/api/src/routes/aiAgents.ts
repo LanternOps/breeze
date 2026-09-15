@@ -1358,6 +1358,9 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // the only representation that goes back to null when the artifact is
       // deleted.
       reportRunId: aiAgentRuns.reportRunId,
+      // Execution plane W04 (#5715) — the settled sandbox charge the
+      // run-detail DTO surfaces beside the analysis outcome.
+      computeCents: aiAgentRuns.computeCents,
       // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
       // read below; `undefined`/absent for a row read back through an older
       // mock/fixture simply never matches `'design'`.

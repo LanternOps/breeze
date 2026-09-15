@@ -223,6 +223,36 @@ func (m *SessionManager) ApplyLeaseUpdate(u ipc.DesktopLeaseUpdate) {
 		MonotonicDeadline(u.HardDeadlineUnixMs))
 }
 
+// watchdogClock is the time source watchSessionLifetime runs on. Production
+// leaves it nil and gets the real clock; tests install a virtual one so the
+// whole lease state machine (renew cadence, expiry, grace, hard deadline) can
+// be stepped deterministically instead of raced against wall-clock sleeps —
+// which is how the helper-lease tests flaked under -race on a loaded runner
+// (#5891).
+type watchdogClock struct {
+	// now replaces time.Now for every decision the watchdog makes.
+	now func() time.Time
+	// ticks replaces time.NewTicker: it returns the channel the watchdog wakes
+	// on and a stop func. Each value received is ignored — the watchdog reads
+	// `now` for the current time — so a test can send anything to fire a tick.
+	ticks func(tick time.Duration) (<-chan time.Time, func())
+}
+
+func (m *SessionManager) watchdogNow() time.Time {
+	if m.clock != nil && m.clock.now != nil {
+		return m.clock.now()
+	}
+	return time.Now()
+}
+
+func (m *SessionManager) watchdogTicks(tick time.Duration) (<-chan time.Time, func()) {
+	if m.clock != nil && m.clock.ticks != nil {
+		return m.clock.ticks(tick)
+	}
+	t := time.NewTicker(tick)
+	return t.C, t.Stop
+}
+
 // watchdogTickInterval is how often the lifetime + lease watchdog wakes up.
 // Small enough that a 25s renew cadence and a 90s grace window are both honored
 // with useful resolution, large enough to cost nothing.
@@ -243,21 +273,21 @@ func (m *SessionManager) watchSessionLifetime(
 	policy SessionPolicy,
 	tick time.Duration,
 ) {
-	startWall := time.Now()
+	startWall := m.watchdogNow()
 	renewEvery := time.Duration(0)
 	if policy.RevocationLease != nil {
 		renewEvery = policy.RevocationLease.RenewEvery
 	}
 	var lastRenewRequest time.Time
 
-	ticker := time.NewTicker(tick)
-	defer ticker.Stop()
+	ticks, stopTicks := m.watchdogTicks(tick)
+	defer stopTicks()
 	for {
 		select {
 		case <-session.done:
 			return
-		case <-ticker.C:
-			now := time.Now()
+		case <-ticks:
+			now := m.watchdogNow()
 
 			// Ask for a renewal when due. Fire-and-forget: the answer arrives
 			// asynchronously on the command socket and lands via

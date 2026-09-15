@@ -102,6 +102,7 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/billing/invoices')).toBe(true);
     expect(has(container, '/billing/quotes')).toBe(true);
     expect(has(container, '/contracts')).toBe(true);
+    expect(has(container, '/agreements/templates')).toBe(true);
     expect(has(container, '/settings/catalog')).toBe(true);
 
     // Admin / fleet surfaces it must NOT see (the #1454 regression):
@@ -146,6 +147,7 @@ describe('Sidebar — permission-aware nav for billing vs technician vs admin', 
     expect(has(container, '/billing/invoices')).toBe(false);
     expect(has(container, '/billing/quotes')).toBe(false);
     expect(has(container, '/contracts')).toBe(false);
+    expect(has(container, '/agreements/templates')).toBe(false);
     expect(has(container, '/settings/catalog')).toBe(false);
 
     // No users grant → user/role admin hidden:
@@ -224,5 +226,14 @@ describe('Sidebar — SSO (sso:admin) and platform-admin gating', () => {
     expect(has(container, '/admin/third-party-catalog')).toBe(true);
     expect(has(container, '/admin/connected-apps')).toBe(true);
     expect(hasSectionHeader(container, 'Administration')).toBe(true);
+  });
+  it('shows Agreements for agreements:read alone and hides it without', async () => {
+    state.user.permissions = [{ resource: 'agreements', action: 'read' }];
+    const { container, rerender } = render(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(has(container, '/agreements/templates')).toBe(true));
+    // contracts:read alone must NOT reveal it — the whole point of the W02 split.
+    state.user.permissions = [{ resource: 'contracts', action: 'read' }];
+    rerender(<Sidebar currentPath="/" />);
+    await waitFor(() => expect(has(container, '/agreements/templates')).toBe(false));
   });
 });

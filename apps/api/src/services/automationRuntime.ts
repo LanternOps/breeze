@@ -1431,6 +1431,19 @@ const AI_TRIAGE_SKIP_IS_FAILURE: Readonly<Record<AgentRunSkipReason, boolean>> =
   // AI patch agent (W01) — the patch-profile equivalents, same classification.
   max_concurrent_patch_runs: false,
   patch_rate: false,
+  // Execution plane W04 — every analysis refusal is a policy, volume or spend
+  // gate (or a provider outage), never a data-integrity bug. `device_not_in_org`
+  // stays classified where it already is.
+  analysis_not_available: false,
+  external_processing_disabled: false,
+  workspace_capability_missing: false,
+  analysis_region_unavailable: false,
+  max_concurrent_analysis_runs: false,
+  analysis_rate: false,
+  compute_budget_exceeded: false,
+  compute_credits_exhausted: false,
+  too_many_input_devices: false,
+  workspace_unavailable: false,
 });
 
 // Exported for direct unit coverage of the script_executions correlation

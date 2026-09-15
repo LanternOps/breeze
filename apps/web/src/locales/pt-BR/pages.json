@@ -161,7 +161,11 @@
     "timesheet": "Folha de horas",
     "vulnerabilities": "Vulnerabilidades",
     "workspace": "Assistente de IA",
-    "aiAgentsFleetDesign": "Design de frota"
+    "aiAgentsFleetDesign": "Design de frota",
+    "agreementTemplates": "Modelos de acordo",
+    "agreementTemplateDetail": "Modelo de acordo",
+    "agreementTemplateNew": "Novo modelo de acordo",
+    "signedAgreements": "Acordos assinados"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoramento e Gerenciamento Remoto",

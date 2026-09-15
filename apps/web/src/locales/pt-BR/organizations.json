@@ -128,7 +128,8 @@
       "sections": {
         "contracts": "Contratos",
         "invoices": "Faturas",
-        "quotes": "Cotações"
+        "quotes": "Cotações",
+        "agreements": "Acordos"
       }
     },
     "documents": {

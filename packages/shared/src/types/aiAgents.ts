@@ -157,6 +157,30 @@ export interface AiAgentLimits {
   maxPatchRunsPerDay: number;
   patchBudgetCentsPerRun: number;
   patchMaxTurns: number;
+  /**
+   * Execution plane W04 (spec 2026-09-13 §5.4) — the `analysis`-profile caps.
+   * Split from every other profile for the same reason those are split from
+   * each other: an analysis run is the most expensive shape (sandbox compute
+   * on top of tokens), so its volume must never starve — or be starved by —
+   * triage/verdict/sweep admission. `analysisMaxComputeSeconds` is sandbox
+   * CPU-seconds across every `workspace_run` step; `analysisMaxComputeCentsPerRun`
+   * is ALSO the reservation taken at admission against the org's daily
+   * compute budget (`ai_budgets.max_compute_cents_per_day`). Byte caps are in
+   * bytes (256 MiB / 128 MiB defaults); the validator bounds them in bytes
+   * between 1 MiB and 1 GiB / 512 MiB. Snapshot v12.
+   */
+  analysisMaxInputDevicesPerRun: number;
+  analysisMaxTurnsPerRun: number;
+  analysisWallClockSeconds: number;
+  analysisMaxComputeSeconds: number;
+  analysisMaxComputeCentsPerRun: number;
+  analysisMaxStagedBytesPerRun: number;
+  analysisMaxArtifactBytesPerRun: number;
+  analysisMaxBudgetCentsPerRun: number;
+  analysisMaxRunsPerHour: number;
+  analysisMaxConcurrentRuns: number;
+  analysisMaxStepTimeoutSeconds: number;
+  analysisMaxStepsPerRun: number;
 }
 
 export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
@@ -212,6 +236,20 @@ export const AI_AGENT_LIMIT_DEFAULTS: Readonly<AiAgentLimits> = Object.freeze({
   maxPatchRunsPerDay: 2,
   patchBudgetCentsPerRun: 60,
   patchMaxTurns: 20,
+  // Analysis-profile caps (execution plane W04, spec §5.4 table) — see
+  // AiAgentLimits.analysisMaxInputDevicesPerRun's docstring.
+  analysisMaxInputDevicesPerRun: 50,
+  analysisMaxTurnsPerRun: 40,
+  analysisWallClockSeconds: 900,
+  analysisMaxComputeSeconds: 600,
+  analysisMaxComputeCentsPerRun: 25,
+  analysisMaxStagedBytesPerRun: 256 * 1024 * 1024,
+  analysisMaxArtifactBytesPerRun: 128 * 1024 * 1024,
+  analysisMaxBudgetCentsPerRun: 150,
+  analysisMaxRunsPerHour: 10,
+  analysisMaxConcurrentRuns: 2,
+  analysisMaxStepTimeoutSeconds: 300,
+  analysisMaxStepsPerRun: 40,
 });
 
 export interface AiAgentTriggers {
@@ -497,12 +535,19 @@ export type AiAgentPolicyProvenance = Record<keyof AiAgentPolicy, 'partner' | 'o
  * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
  * pre-v11 snapshot. Every site that switches on `schemaVersion` must
  * tolerate 1 through 11.
+ *
+ * v12 (this bump, execution plane W04): the twelve `analysis*` limit fields —
+ * see `AiAgentLimits.analysisMaxInputDevicesPerRun`'s docstring. Same rule as
+ * every prior bump: a v1-v11 in-flight run's snapshot lacks them and MUST
+ * still execute; read sites fall back to `AI_AGENT_LIMIT_DEFAULTS` for a
+ * pre-v12 snapshot. Every site that switches on `schemaVersion` must tolerate
+ * 1 through 12.
  */
-export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 11 as const;
+export const AI_AGENT_POLICY_SNAPSHOT_VERSION = 12 as const;
 
 export interface AiAgentPolicySnapshot {
-  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), or 11 (current). Read sites must tolerate all eleven. */
-  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  /** 1 (pre-maxActionsPerRun), 2 (pre-maxPolicyDecisionsPerDay), 3 (pre-maxConsecutiveFailures), 4 (pre-verdict-limits), 5 (pre-sweep-limits), 6 (pre-narrative-limits), 7 (pre-triage-limits), 8 (pre-promoteThreshold), 9 (pre-design-limits), 10 (pre-patch-limits), 11 (pre-analysis-limits), or 12 (current). Read sites must tolerate all twelve. */
+  schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
   agentId: string;
   kind: AiAgentKind;
   effective: AiAgentPolicy;
@@ -883,8 +928,16 @@ export type AgentRunVerdict = 'remediated' | 'needs_attention' | 'partial' | 'no
  * `submit_patch_plan`. It executes nothing (`maxActionsPerRun` pinned to 0).
  * Admission is counted against
  * `AiAgentLimits.maxConcurrentPatchRuns`/`maxPatchRunsPerDay`.
+ *
+ * Execution plane W04 (spec 2026-09-13) added `analysis`: a hosted-only,
+ * device-LESS run over a frozen device SET (`ai_agent_runs.staged_inputs`)
+ * that gathers server-side datasets, computes inside a per-run sandbox via
+ * the `workspace_*` tools, and ends with `submit_analysis`. Admission is
+ * counted against `analysisMaxConcurrentRuns`/`analysisMaxRunsPerHour`.
  */
-export const AI_AGENT_RUN_PROFILES = ['full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch'] as const;
+export const AI_AGENT_RUN_PROFILES = [
+  'full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis',
+] as const;
 export type AiAgentRunProfile = (typeof AI_AGENT_RUN_PROFILES)[number];
 
 /**
@@ -925,4 +978,35 @@ export interface AlertVerdictOutcome {
   rationale: string;
   pattern?: AiAlertVerdictPattern;
   suggestedAction?: AlertVerdictSuggestedAction;
+}
+
+/**
+ * Execution plane W04 — produced by the `submit_analysis` outcome tool and
+ * stored on `ai_agent_runs.outcome.analysis`. `proposedActions` are PROPOSALS
+ * a technician turns into intents via the existing approval UI; the run never
+ * executes them (spec §7 step 5, §8 "Injection containment").
+ */
+export const ANALYSIS_FINDING_SEVERITIES = ['info', 'low', 'medium', 'high'] as const;
+export type AnalysisFindingSeverity = (typeof ANALYSIS_FINDING_SEVERITIES)[number];
+
+export interface AnalysisFinding {
+  title: string;
+  severity: AnalysisFindingSeverity;
+  detail: string;
+  artifactHandles: string[];
+}
+
+export interface AnalysisProposedAction {
+  tool: string;
+  action?: string;
+  deviceId?: string;
+  args: Record<string, unknown>;
+  rationale: string;
+}
+
+export interface AnalysisOutcome {
+  summary: string;
+  findings: AnalysisFinding[];
+  artifactHandles: string[];
+  proposedActions: AnalysisProposedAction[];
 }

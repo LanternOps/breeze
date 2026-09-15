@@ -614,7 +614,7 @@ describe('sweep profile exposure and context in the run loop (P2-2)', () => {
   });
 
   it('drops sweepKinds the catalog does not know and tolerates a missing triggerRef entirely', async () => {
-    seedRows({ profile: 'sweep', triggerRef: { sweepKinds: ['disk_pressure', 'expiring_certs', 7] } });
+    seedRows({ profile: 'sweep', triggerRef: { sweepKinds: ['disk_pressure', 'not_a_sweep_kind', 7] } });
     await executeAgentRun(RUN_ID);
     expect(loadSweepEvidence).toHaveBeenCalledWith(ORG_ID, ['disk_pressure']);
 

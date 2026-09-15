@@ -17,9 +17,11 @@ import type { AiSweepSeverity } from './aiAgentSchedules';
  *   reboot_plan        device-scoped: reboot inside an EXISTING resolved
  *                      maintenance window. Never a synthesised time. W01
  *                      evidence resolves no windows, so every one is refused.
- *   chase              device-scoped: failed patch work to retry. W03 fills
- *                      the failure evidence; W01 refuses every one.
- *   escalation         something a human must look at.
+ *   chase              device-scoped: failed patch work to retry — an install
+ *                      WITH A HISTORY. W03 (#5749) fills the failure evidence
+ *                      and mints it through the same path as `install`, bounded
+ *                      by class and `PATCH_CHASE_MAX_ATTEMPTS`.
+ *   escalation         something a human must look at. Never mints.
  */
 export const PATCH_PLAN_ITEM_CLASSES = ['install', 'approval_advisory', 'reboot_plan', 'chase', 'escalation'] as const;
 export type PatchPlanItemClass = (typeof PATCH_PLAN_ITEM_CLASSES)[number];
@@ -32,6 +34,41 @@ export const PATCH_PLAN_TITLE_MAX_CHARS = 120;
 export const PATCH_PLAN_DETAIL_MAX_CHARS = 1000;
 export const PATCH_PLAN_SUMMARY_MAX_CHARS = 600;
 export const PATCH_PLAN_EVIDENCE_REF_MAX_CHARS = 200;
+
+/**
+ * AI patch agent W03 (#5749) — the failure classes `classifyPatchFailure`
+ * (apps/api `services/patchFailureClass.ts`) derives from a failed
+ * `patch_job_results` row's SERVER-SIDE fields. Never from model prose.
+ *
+ *   transient      the agent never answered (server-side timeout) or the
+ *                  install was interrupted — worth one bounded retry.
+ *   needs_reboot   the install is waiting on a restart. NOT a failure to
+ *                  retry: it routes to the reboot plan (W04).
+ *   disk_space     the device is out of disk — retryable once someone has
+ *                  freed space, so the card names the cause.
+ *   store_corrupt  the component store / update cache is damaged — a retry
+ *                  after repair is reasonable.
+ *   permanent      the vendor says the update does not apply here.
+ *   unknown        the message matched nothing. A class we cannot name is a
+ *                  class we cannot bound, so it escalates.
+ */
+export const PATCH_FAILURE_CLASSES = [
+  'transient', 'needs_reboot', 'disk_space', 'store_corrupt', 'permanent', 'unknown',
+] as const;
+export type PatchFailureClass = (typeof PATCH_FAILURE_CLASSES)[number];
+
+/** The classes a `chase` (bounded re-install) may target. Everything else escalates. */
+export const PATCH_FAILURE_RETRYABLE_CLASSES: ReadonlySet<PatchFailureClass> = new Set<PatchFailureClass>([
+  'transient', 'disk_space', 'store_corrupt',
+]);
+
+/**
+ * A chase is refused once the evidence already counts this many failed
+ * attempts for the (device, patch, class) group — the run proposes an
+ * escalation instead. Attempts are counted from `patch_job_results` rows in
+ * `failed` within the evidence window; nothing retries itself.
+ */
+export const PATCH_CHASE_MAX_ATTEMPTS = 2;
 
 /** Fleet posture the model reports at the top of the plan. */
 export interface PatchPlanPosture {
@@ -55,6 +92,14 @@ export interface PatchPlanItem {
   detail: string;
   /** Opaque section/row reference into the evidence bundle. */
   evidenceRef: string;
+  /**
+   * W03: `chase`/`escalation` only — the class the EVIDENCE computed for the
+   * cited failed work. The model may quote it, never assign it: the persister
+   * refuses a citation that disagrees with the evidence.
+   */
+  failureClass?: PatchFailureClass;
+  /** W03: `chase`/`escalation` only — the evidence's attempt count for the cited group, quoted. */
+  attemptCount?: number;
 }
 
 /** What the model submits through `submit_patch_plan`. */
@@ -90,6 +135,21 @@ export const PATCH_PLAN_REFUSAL_REASONS = [
   'recently_rejected',
   'recently_cancelled',
   'recently_completed',
+  // W03 (#5749) — the chase gates, before the W02 minting branch.
+  /** The cited `failureClass` is not what the evidence computed for that group. */
+  'failure_class_mismatch',
+  /** The group's class is `needs_reboot`, `permanent` or `unknown` — never re-installed by proposal. */
+  'class_not_retryable',
+  /** The evidence already counts `PATCH_CHASE_MAX_ATTEMPTS` failed attempts — escalate instead. */
+  'chase_attempts_exhausted',
+  /** The cited `attemptCount` is not what the evidence computed for that group. */
+  'attempt_count_mismatch',
+  /**
+   * The failed-work read was capped, so this group's attempt count is a FLOOR,
+   * not a total — a chase could be minted past its real retry budget. Refused
+   * in favour of an escalation rather than guessed.
+   */
+  'failure_history_truncated',
 ] as const;
 export type PatchPlanRefusalReason = (typeof PATCH_PLAN_REFUSAL_REASONS)[number];
 
@@ -165,6 +225,12 @@ export interface PatchPlanOutcome {
   /** Copied from the evidence bundle: some section hit a row or byte cap. */
   evidenceTruncated: boolean;
   generatedAt: string;
+  /**
+   * W03: copied from the evidence by the finalizer — installs waiting for an
+   * OFFLINE device (a coverage note the digest states, never failed work).
+   * `null` = not measured; absent on a pre-W03 row.
+   */
+  queuedOffline?: number | null;
 }
 
 /** What the in-tool referential gate checks a submission against. */
@@ -172,7 +238,30 @@ export interface PatchPlanOutcomeRefs {
   deviceIds: ReadonlySet<string>;
   patchIdsByDevice: ReadonlyMap<string, ReadonlySet<string>>;
   windowIds: ReadonlySet<string>;
+  /** W03: every failed `patch_job_results.id` the failedWork section showed. */
   jobResultIds: ReadonlySet<string>;
+  /**
+   * W03: every shown failed job result id → its failedWork GROUP (device,
+   * patch, class, attempt count, sibling ids) — what a chase item's cited
+   * `failureClass`/`attemptCount` are checked against. Absent on a W01/W02
+   * bundle.
+   */
+  failedWorkByJobResult?: ReadonlyMap<string, PatchFailedWorkRef>;
+}
+
+/** W03: one failedWork evidence group as the persister sees it. */
+export interface PatchFailedWorkRef {
+  deviceId: string;
+  patchId: string;
+  failureClass: PatchFailureClass;
+  /**
+   * Failed attempts the evidence counted. A FLOOR when `truncated` is true —
+   * the read was capped and older attempts were dropped.
+   */
+  attemptCount: number;
+  /** The failedWork section was capped, so `attemptCount` may undercount. */
+  truncated: boolean;
+  jobResultIds: readonly string[];
 }
 
 /** One plan item on the run-detail DTO. */
@@ -191,6 +280,10 @@ export interface AiAgentRunPatchItemDto {
   intentId: string | null;
   /** W02: patch ids the eligibility resolver dropped from the card, with why. */
   droppedPatchIds: Array<{ patchId: string; reason: PatchIneligibleReason }>;
+  /** W03: the failure class the item cites (`chase`/`escalation`), else null. */
+  failureClass: PatchFailureClass | null;
+  /** W03: the attempt count the item cites (`chase`/`escalation`), else null. */
+  attemptCount: number | null;
 }
 
 /**
@@ -210,5 +303,7 @@ export interface AiAgentRunPatchDto {
   intentCreatedCount: number;
   /** W02: items withheld because the same problem already has a live/recent card. */
   suppressedCount: number;
+  /** W03: `escalation` items the run recorded (they never mint). */
+  escalationCount: number;
   evidenceTruncated: boolean;
 }

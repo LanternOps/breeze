@@ -1551,7 +1551,8 @@
         "pending_reboots": "Riavvii in sospeso",
         "failed_backups": "Backup non riusciti",
         "service_down": "Servizio non attivo",
-        "unpatched_critical": "Vulnerabilità critiche non corrette"
+        "unpatched_critical": "Vulnerabilità critiche non corrette",
+        "expiring_certs": "Certificati in scadenza"
       },
       "toasts": {
         "saved": "Pianificazione salvata",
@@ -1886,7 +1887,8 @@
           "pending_reboots": "Riavvii in sospeso",
           "failed_backups": "Backup non riusciti",
           "service_down": "Servizio non attivo",
-          "unpatched_critical": "Vulnerabilità critiche non corrette"
+          "unpatched_critical": "Vulnerabilità critiche non corrette",
+          "expiring_certs": "Certificati prossimi alla scadenza"
         },
         "severities": {
           "critical": "Critica",
@@ -1924,6 +1926,12 @@
         "dropped": "{{count}} aggiornamento è stato escluso dalla scheda",
         "dropped_other": "{{count}} aggiornamenti sono stati esclusi dalla scheda",
         "counts": "{{created}} in attesa di approvazione · {{suppressed}} già proposti",
+        "failureClass": "Classe di errore: {{label}}",
+        "attempts": "{{count}} tentativo non riuscito",
+        "attempts_other": "{{count}} tentativi non riusciti",
+        "escalation": "Richiede una persona: non verrà ritentato automaticamente.",
+        "escalations": "{{count}} inoltro urgente",
+        "escalations_other": "{{count}} inoltri urgenti",
         "classes": {
           "install": "Installazione",
           "approval_advisory": "Consiglio di approvazione",
@@ -1945,7 +1953,12 @@
           "live_intent_exists": "Una scheda di approvazione per questo aggiornamento è già aperta",
           "recently_rejected": "Questo aggiornamento è stato rifiutato di recente",
           "recently_cancelled": "La scheda di questo aggiornamento è stata annullata di recente",
-          "recently_completed": "Questo aggiornamento è stato installato di recente"
+          "recently_completed": "Questo aggiornamento è stato installato di recente",
+          "failure_class_mismatch": "La classe di errore citata non corrisponde alle evidenze",
+          "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
+          "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
+          "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile"
         },
         "ineligible": {
           "not_outstanding": "Non in sospeso su questo dispositivo",
@@ -1957,6 +1970,14 @@
           "awaiting_manual_approval": "In attesa di approvazione manuale",
           "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
+        },
+        "failureClasses": {
+          "transient": "Transitorio",
+          "needs_reboot": "Riavvio necessario",
+          "disk_space": "Spazio su disco",
+          "store_corrupt": "Archivio aggiornamenti danneggiato",
+          "permanent": "Permanente",
+          "unknown": "Sconosciuto"
         }
       },
       "narrative": {
@@ -2429,6 +2450,10 @@
         "tenancy": {
           "label": "Gestione organizzazioni",
           "description": "Gestire organizzazioni, sedi e integrazioni tra organizzazioni."
+        },
+        "workspace": {
+          "label": "Sandbox di analisi dei dati",
+          "description": "Esporta i set di dati della flotta ed esegui codice di analisi in una sandbox isolata, senza rete e senza accesso ai dispositivi. I risultati tornano come proposte che un tecnico approva."
         }
       },
       "tools": {

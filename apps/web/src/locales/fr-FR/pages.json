@@ -161,7 +161,11 @@
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
     "workspace": "Assistant IA",
-    "aiAgentsFleetDesign": "Conception de flotte"
+    "aiAgentsFleetDesign": "Conception de flotte",
+    "agreementTemplates": "Modèles de convention",
+    "agreementTemplateDetail": "Modèle de convention",
+    "agreementTemplateNew": "Nouveau modèle de convention",
+    "signedAgreements": "Conventions signées"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",

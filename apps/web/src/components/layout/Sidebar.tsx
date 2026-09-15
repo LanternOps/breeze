@@ -335,6 +335,9 @@ export const navSections: NavSection[] = [
       { name: 'Quotes', labelKey: 'nav.quotes', href: '/billing/quotes', icon: FileText, partnerScopeOnly: true, requiredPermission: { resource: 'quotes', action: 'read' } },
       { name: 'Invoices', labelKey: 'nav.invoices', href: '/billing/invoices', icon: Receipt, partnerScopeOnly: true, requiredPermission: { resource: 'invoices', action: 'read' } },
       { name: 'Contracts', labelKey: 'nav.contracts', href: '/contracts', icon: FileSignature, partnerScopeOnly: true, requiredPermission: { resource: 'contracts', action: 'read' } },
+      // ScrollText, not FileText: Quotes three rows up already uses FileText, and
+      // two identical icons in one section is the confusion this wave removes.
+      { name: 'Agreements', labelKey: 'nav.agreements', href: '/agreements/templates', icon: ScrollText, partnerScopeOnly: true, requiredPermission: { resource: 'agreements', action: 'read' } },
       { name: 'Product Catalog', labelKey: 'nav.productCatalog', href: '/settings/catalog', icon: Tags, partnerScopeOnly: true, requiredPermission: { resource: 'catalog', action: 'read' } },
     ],
   },
@@ -459,6 +462,10 @@ const allNavItems: NavItem[] = [
 const pathAliases: Record<string, string> = {
   '/software-inventory': '/software',
   '/software-policies': '/software',
+  // The Agreements nav item points at the Templates tab; the Signed tab is a
+  // sibling route, not a child, so prefix matching would leave the item
+  // unhighlighted there.
+  '/agreements/signed': '/agreements/templates',
 };
 
 // Determine which section a given href belongs to (for auto-expand)

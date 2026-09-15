@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { AI_SWEEP_SEVERITIES } from '../types/aiAgentSchedules';
 import {
+  PATCH_FAILURE_CLASSES,
   PATCH_PLAN_DETAIL_MAX_CHARS, PATCH_PLAN_EVIDENCE_REF_MAX_CHARS, PATCH_PLAN_ITEM_CLASSES,
   PATCH_PLAN_MAX_ITEMS, PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM, PATCH_PLAN_MAX_PATCH_IDS_PER_ITEM,
   PATCH_PLAN_SCHEMA_VERSION, PATCH_PLAN_SUMMARY_MAX_CHARS, PATCH_PLAN_TITLE_MAX_CHARS,
@@ -59,8 +60,18 @@ const patchPlanItemSchema = z.object({
     .transform((s) => s.replace(/\p{C}/gu, '')),
   detail: text(PATCH_PLAN_DETAIL_MAX_CHARS),
   evidenceRef: z.string().trim().min(1).max(PATCH_PLAN_EVIDENCE_REF_MAX_CHARS),
+  // W03: quoted from the failedWork evidence; the persister checks the quote.
+  failureClass: z.enum(PATCH_FAILURE_CLASSES).optional(),
+  attemptCount: z.number().int().min(1).optional(),
 }).strict().superRefine((item, ctx) => {
   const rules = PATCH_PLAN_CLASS_RULES[item.class];
+  if (item.class !== 'chase' && item.class !== 'escalation') {
+    for (const field of ['failureClass', 'attemptCount'] as const) {
+      if (item[field] !== undefined) {
+        ctx.addIssue({ code: 'custom', path: [field], message: `a ${item.class} item must not carry ${field}` });
+      }
+    }
+  }
   for (const field of ['deviceId', 'patchIds', 'jobResultIds', 'windowId'] as const) {
     const has = present(item[field]);
     if (rules[field] === 'required' && !has) {

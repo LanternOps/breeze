@@ -161,7 +161,11 @@
     "timesheet": "Zaman Çizelgesi",
     "vulnerabilities": "Güvenlik Açıkları",
     "workspace": "Yapay Zeka Asistanı",
-    "aiAgentsFleetDesign": "Filo Tasarımı"
+    "aiAgentsFleetDesign": "Filo Tasarımı",
+    "agreementTemplates": "Anlaşma şablonları",
+    "agreementTemplateDetail": "Anlaşma şablonu",
+    "agreementTemplateNew": "Yeni anlaşma şablonu",
+    "signedAgreements": "İmzalı anlaşmalar"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Uzaktan İzleme ve Yönetim",

@@ -40,6 +40,30 @@ export const SITE_SCOPE_EMPTY_NOTE =
  * A restricted caller with zero in-scope devices gets an empty array (caller
  * should short-circuit to empty results).
  */
+/**
+ * Execution plane W04 (#5715) — the FROZEN device set of a device-LESS agent
+ * run, for tools that narrow on the site axis only.
+ *
+ * `buildAgentAuthContext` pins `allowedDeviceIds` (and nothing else) for an
+ * `analysis` run: it has no device, so it has no site scope either. Every
+ * fleet-wide read tool narrows exclusively by `allowedSiteIds`, so without
+ * this helper such a run reads the WHOLE ORG — defeating
+ * `analysisMaxInputDevicesPerRun`, the frozen `staged_inputs.deviceIds` and
+ * spec §8's data-minimisation claim in one step.
+ *
+ * Deliberately returns `null` whenever a site axis IS present: a device-bound
+ * run (`full`/`verdict`/`triage`) legitimately reads its device's SITE today,
+ * and silently tightening that to the single device would change behaviour no
+ * caller asked to change. The condition below is reachable only by the
+ * device-less-run shape this wave introduced.
+ */
+export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
+  if (auth.allowedSiteIds) return null;
+  return auth.allowedDeviceIds && auth.allowedDeviceIds.length > 0
+    ? [...auth.allowedDeviceIds]
+    : null;
+}
+
 export async function resolveSiteAllowedDeviceIds(
   orgId: string,
   auth: AuthContext,

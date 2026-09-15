@@ -1551,7 +1551,8 @@
         "pending_reboots": "Ausstehende Neustarts",
         "failed_backups": "Fehlgeschlagene Backups",
         "service_down": "Dienst ausgefallen",
-        "unpatched_critical": "Kritische ungepatchte Schwachstellen"
+        "unpatched_critical": "Kritische ungepatchte Schwachstellen",
+        "expiring_certs": "Ablaufende Zertifikate"
       },
       "toasts": {
         "saved": "Zeitplan gespeichert",
@@ -1886,7 +1887,8 @@
           "pending_reboots": "Ausstehende Neustarts",
           "failed_backups": "Fehlgeschlagene Sicherungen",
           "service_down": "Dienst gestoppt",
-          "unpatched_critical": "Ungepatchte kritische Schwachstellen"
+          "unpatched_critical": "Ungepatchte kritische Schwachstellen",
+          "expiring_certs": "Bald ablaufende Zertifikate"
         },
         "severities": {
           "critical": "Kritisch",
@@ -1924,6 +1926,12 @@
         "dropped": "{{count}} Update wurde nicht in die Karte aufgenommen",
         "dropped_other": "{{count}} Updates wurden nicht in die Karte aufgenommen",
         "counts": "{{created}} zur Genehmigung ausstehend · {{suppressed}} bereits vorgeschlagen",
+        "failureClass": "Fehlerklasse: {{label}}",
+        "attempts": "{{count}} fehlgeschlagener Versuch",
+        "attempts_other": "{{count}} fehlgeschlagene Versuche",
+        "escalation": "Erfordert eine Person – dies wird nicht automatisch wiederholt.",
+        "escalations": "{{count}} Eskalation",
+        "escalations_other": "{{count}} Eskalationen",
         "classes": {
           "install": "Installation",
           "approval_advisory": "Genehmigungsempfehlung",
@@ -1945,7 +1953,12 @@
           "live_intent_exists": "Für dieses Update ist bereits eine Genehmigungskarte offen",
           "recently_rejected": "Dieses Update wurde kürzlich abgelehnt",
           "recently_cancelled": "Die Karte dieses Updates wurde kürzlich storniert",
-          "recently_completed": "Dieses Update wurde kürzlich installiert"
+          "recently_completed": "Dieses Update wurde kürzlich installiert",
+          "failure_class_mismatch": "Die angegebene Fehlerklasse stimmt nicht mit den Belegen überein",
+          "class_not_retryable": "Diese Art von Fehler wird nie automatisch wiederholt",
+          "chase_attempts_exhausted": "Das Wiederholungslimit für dieses Update wurde erreicht – stattdessen eskaliert",
+          "attempt_count_mismatch": "Die angegebene Versuchsanzahl stimmt nicht mit den Belegen überein",
+          "failure_history_truncated": "Der Fehlerverlauf war unvollständig, daher war die Anzahl der Wiederholungen nicht verlässlich"
         },
         "ineligible": {
           "not_outstanding": "Auf diesem Gerät nicht ausstehend",
@@ -1957,6 +1970,14 @@
           "awaiting_manual_approval": "Wartet auf manuelle Genehmigung",
           "no_ring_resolved": "Das Gerät hat keinen Update-Ring",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation"
+        },
+        "failureClasses": {
+          "transient": "Vorübergehend",
+          "needs_reboot": "Neustart erforderlich",
+          "disk_space": "Speicherplatz",
+          "store_corrupt": "Update-Speicher beschädigt",
+          "permanent": "Dauerhaft",
+          "unknown": "Unbekannt"
         }
       },
       "narrative": {
@@ -2429,6 +2450,10 @@
         "tenancy": {
           "label": "Mandantenverwaltung",
           "description": "Organisationen, Standorte und mandantenübergreifende Integrationen verwalten."
+        },
+        "workspace": {
+          "label": "Sandbox für Datenanalysen",
+          "description": "Flottendatensätze exportieren und Analysecode in einer isolierten Sandbox ohne Netzwerk- und ohne Gerätezugriff ausführen. Ergebnisse kommen als Vorschläge zurück, die eine Technikerin oder ein Techniker freigibt."
         }
       },
       "tools": {

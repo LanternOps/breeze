@@ -128,7 +128,8 @@
       "sections": {
         "contracts": "Contratti",
         "invoices": "Fatture",
-        "quotes": "Preventivi"
+        "quotes": "Preventivi",
+        "agreements": "Accordi"
       }
     },
     "documents": {

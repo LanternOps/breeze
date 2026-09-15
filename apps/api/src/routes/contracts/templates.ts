@@ -20,6 +20,7 @@ import {
   createUploadedVersion,
   getTemplateVersion,
   publishVersion,
+  getTemplateUsage,
   deriveTemplateOwnership,
   ContractTemplateServiceError,
   PartnerWideWriteDeniedError,
@@ -106,6 +107,17 @@ contractTemplateRoutes.get('/:id', scopes, readPerm, zValidator('param', idParam
     const { id } = c.req.valid('param');
     const { versions, ...template } = await getTemplate(authFrom(c), id);
     return c.json({ data: { ...serializeTemplate(template), versions: versions.map(serializeVersion) } });
+  } catch (err) {
+    return handleTemplateError(c, err);
+  }
+});
+
+// GET /:id/usage — spec §6 reciprocal link. Counts only; the editor renders
+// "Used on N quotes · M signed agreements" and the archive confirm repeats it.
+contractTemplateRoutes.get('/:id/usage', scopes, readPerm, zValidator('param', idParam), async (c) => {
+  try {
+    const { id } = c.req.valid('param');
+    return c.json({ data: await getTemplateUsage(authFrom(c), id) });
   } catch (err) {
     return handleTemplateError(c, err);
   }

@@ -22,9 +22,10 @@
  *    would defeat the fence.
  */
 import {
-  FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_SECTION_KEYS, TICKET_TRIAGE_CONFIDENCE_FLOOR,
-  TICKET_TRIAGE_PRIORITIES,
+  FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_SECTION_KEYS, PATCH_CHASE_MAX_ATTEMPTS,
+  TICKET_TRIAGE_CONFIDENCE_FLOOR, TICKET_TRIAGE_PRIORITIES,
 } from '@breeze/shared';
+import { ANALYSIS_WORKSPACE_PROMPT } from './analysisProfile';
 import type {
   AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind,
   AiAlertVerdictClassification, AiSweepKind, AiSweepSeverity,
@@ -450,6 +451,12 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
       + 'reboot anything. Every item you submit is a recommendation a technician reads and decides on. '
       + 'Finish by calling submit_patch_plan exactly once — that call IS the output of this run.',
     );
+  } else if (ctx.profile === 'analysis') {
+    // Execution plane W04 (spec §7 step 2). The text is a fixed constant in
+    // `analysisProfile.ts` — never templated from run content — so no staged
+    // file, ticket body or alert description can reach the part of the prompt
+    // that tells the model what the sandbox can and cannot do.
+    sections.push(ANALYSIS_WORKSPACE_PROMPT);
   } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'
@@ -1449,7 +1456,21 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
   }
   lines.push('');
 
-  lines.push(patchSectionHeader('Failed patch work', e.sections.failedWork));
+  // W03 (#5749): grouped by (device, patch, class) with an attempt count. The
+  // job result ids are what a chase/escalation item cites; the class and the
+  // count are quoted verbatim and checked by the persister.
+  const failedWork = e.sections.failedWork;
+  lines.push(patchSectionHeader('Failed patch work', failedWork));
+  if (failedWork.available) {
+    lines.push('(one line per device + patch + failure class, from the last 30 days; an attempt count is failed installs, not retries you may add)');
+    for (const row of failedWork.rows) {
+      const ids = (row.jobResultIds ?? []).map((id) => patchCell(id, 40)).join(', ');
+      lines.push(`${patchRowLine(row)}; jobResultIds: ${ids || '(none)'}`);
+    }
+  }
+  if (e.queuedOffline !== null) {
+    lines.push(`${e.queuedOffline} install(s) are queued for offline devices — waiting for a heartbeat, not failed. Never chase them.`);
+  }
   lines.push('');
   lines.push(patchSectionHeader('Devices waiting on a reboot', e.sections.rebootBacklog));
   for (const row of e.sections.rebootBacklog.rows) lines.push(patchRowLine(row));
@@ -1460,8 +1481,23 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- install: this device should receive these outstanding patches. It is a proposal a technician must approve; nothing installs because you wrote it.');
   lines.push('- approval_advisory: these updates need a manual approval decision by a partner admin. No deviceId. It creates nothing and approves nothing.');
   lines.push('- reboot_plan: only inside an existing maintenance window named by id in the evidence. You never choose a reboot time. This evidence names no windows, so do not submit reboot_plan items on this run.');
-  lines.push('- chase: failed patch work. Failed work was not measured on this run, so do not submit chase items.');
-  lines.push('- escalation: something a human must look at that fits no other class.');
+  if (failedWork.available) {
+    lines.push(
+      `- chase: retry ONE failed-work line above on its device. Copy its deviceId, patchId (as patchIds), jobResultIds, `
+      + 'failureClass and attemptCount verbatim. Failure classes are transient, needs_reboot, disk_space, store_corrupt, permanent and unknown; '
+      + `only transient, disk_space and store_corrupt may be chased, and only while attemptCount is below ${PATCH_CHASE_MAX_ATTEMPTS}. `
+      + 'A chase is a proposal a technician must approve; nothing retries because you wrote it.',
+    );
+    lines.push(
+      '- escalation: a failed-work line that must not be chased (needs_reboot, permanent, unknown, or attemptCount at the bound) — cite its '
+      + 'jobResultIds, failureClass and attemptCount verbatim and say why a human must look. Also anything else a human must look at that fits no other class.',
+    );
+    lines.push('- A reboot-required result is not a failure: a device waiting on a restart belongs in the reboot backlog, never in a chase.');
+    lines.push('- A queued install is waiting for an offline device, not failing: state it as coverage, never as a chase or an escalation.');
+  } else {
+    lines.push('- chase: failed patch work. Failed work was not measured on this run, so do not submit chase items.');
+    lines.push('- escalation: something a human must look at that fits no other class.');
+  }
   lines.push('- "maintenanceWindowResolves" says only whether a maintenance window applies to the device; the evidence carries no window times. Never state or imply a patch is approved.');
   lines.push('');
   lines.push('Call submit_patch_plan exactly once, then stop.');

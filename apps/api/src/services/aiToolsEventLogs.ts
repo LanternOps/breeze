@@ -13,7 +13,9 @@ import {
   resolveSingleOrgId,
   searchFleetLogs,
 } from './logSearch';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 import { sanitizeThrownToolError } from './aiToolErrors';
 
 type AiToolTier = 1 | 2 | 3 | 4;
@@ -25,7 +27,9 @@ type AiToolTier = 1 | 2 | 3 | 4;
  * to empty). The site axis is app-layer authz — Postgres RLS does NOT enforce it.
  */
 async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  // W04 (#5715): a device-LESS analysis run has no site axis, only a frozen
+  // device set — narrow to it rather than falling through to "unrestricted".
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return runFrozenDeviceIds(auth);
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) return null;
   return resolveSiteAllowedDeviceIds(orgId, auth);
