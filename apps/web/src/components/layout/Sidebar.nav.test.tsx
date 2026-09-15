@@ -96,6 +96,8 @@ describe('navSections structure (#1321, #1324)', () => {
       '/billing/quotes',
       '/billing/invoices',
       '/contracts',
+      // W03 — the agreement library left /contracts for its own area.
+      '/agreements/templates',
       '/settings/catalog',
     ]);
     expect(hrefsOf('service-desk')).toEqual(['/tickets', '/timesheet']);
