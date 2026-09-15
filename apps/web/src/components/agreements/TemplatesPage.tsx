@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText, Plus } from 'lucide-react';
 import '@/lib/i18n';
@@ -104,10 +104,14 @@ export default function TemplatesPage({ openCreate = false }: { openCreate?: boo
 
   // /agreements/templates/new renders this list with the create dialog already
   // open — openDialog resets every field, so this is exactly the "New" button.
+  // Deliberately keyed on `openCreate` alone: openDialog is recreated every
+  // render and re-running this on identity change would reopen the dialog the
+  // user just dismissed.
+  const openCreateRef = useRef(openCreate);
+  openCreateRef.current = openCreate;
   useEffect(() => {
-    if (openCreate) openDialog();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openCreate]);
+    if (openCreateRef.current) openDialog();
+  }, []);
 
   const submitCreate = async () => {
     const name = formName.trim();
