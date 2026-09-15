@@ -2044,7 +2044,7 @@ jobs:
             echo "::warning::golangci-lint install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
             sleep $((attempt * 10))
           done
-          echo "::error::Failed to install golangci-lint after ${attempts} attempts."
+          echo "::error::Failed to install golangci-lint after ${attempts} attempts — see the last attempt's output above. A repeated proxy.golang.org/sum.golang.org connection error is the known transient case this retry targets; any other error (e.g. an unresolvable module) means the pin itself is broken and retrying will never help."
           exit 1
 
       - name: golangci-lint (new issues only)
@@ -2512,7 +2512,7 @@ jobs:
               break
             fi
             if [ "${attempt}" -eq "${attempts}" ]; then
-              echo "::error::Failed to pull test-stack images after ${attempts} attempts."
+              echo "::error::Failed to pull test-stack images after ${attempts} attempts — see the last attempt's output above. A repeated Docker Hub ECONNRESET/connection-reset is the known transient case this retry targets; any other error (e.g. a bad image tag or registry auth failure) means retrying will never help."
               exit 1
             fi
             echo "::warning::docker compose pull failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
