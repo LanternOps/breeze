@@ -142,7 +142,16 @@ import { isSweepProfile, sweepLimits, sweepToolAllowlist } from './sweepProfile'
 import { isNarrativeProfile, narrativeLimits, narrativeToolAllowlist } from './narrativeProfile';
 import { isTriageProfile, triageLimits, triageToolAllowlist } from './triageProfile';
 import { isDesignProfile, designLimits, designToolAllowlist } from './designProfile';
+import { AI_AGENT_LIMIT_DEFAULTS } from '@breeze/shared';
 import { isPatchProfile, patchLimits, patchToolAllowlist } from './patchProfile';
+import { analysisLimits, analysisToolAllowlist, isAnalysisProfile } from './analysisProfile';
+import { getSandboxBackend, type SandboxUsage } from '../workspace/sandboxBackend';
+import { WorkspaceService } from '../workspace/workspaceService';
+import { WORKSPACE_MEMORY_GB } from '../workspace/workspacePaths';
+import { registerWorkspace, unregisterWorkspace } from '../workspace/workspaceRegistry';
+import { calculateComputeCents, settleComputeCents } from '../aiCostTracker';
+import { getLlmBillingSourceForOrg } from '../llm/llmConfigResolver';
+import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 import { PatchEvidenceUnavailableError, loadPatchEvidence, patchEvidenceRefs } from './patchEvidence';
 import {
   finalizeFleetDesign,
@@ -252,6 +261,9 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
         taskId: aiAgentRuns.taskId,
         taskStepKey: aiAgentRuns.taskStepKey,
         taskAttemptOrdinal: aiAgentRuns.taskAttemptOrdinal,
+        // Execution plane W04 — the frozen inputs and the compute reservation.
+        stagedInputs: aiAgentRuns.stagedInputs,
+        computeReservedCents: aiAgentRuns.computeReservedCents,
       })
       .from(aiAgentRuns)
       .where(eq(aiAgentRuns.id, runId))
@@ -527,6 +539,7 @@ async function loadRunContext(runId: string): Promise<RunContext | null> {
       design,
       patch,
       sessionId: null,
+      workspace: null,
     };
   });
 }
@@ -1166,6 +1179,13 @@ export function createAgentRunPostToolUse(args: {
             if (!patch) throw new Error('[aiAgentRunLoop] submit_patch_plan captured with no patch refs');
             outcome.patchPlan = validateOutcomeToolInput(toolName, input, patch);
             break;
+          // Execution plane W04 — the validated submission, stored verbatim.
+          // `proposedActions` stay PROPOSALS: nothing downstream of this line
+          // mints an intent from them (the run is device-less with
+          // maxActionsPerRun pinned to 0).
+          case 'submit_analysis':
+            outcome.analysis = validateOutcomeToolInput(toolName, input);
+            break;
           default: {
             const exhaustive: never = toolName;
             throw new Error(`[aiAgentRunLoop] unhandled outcome tool: ${String(exhaustive)}`);
@@ -1576,6 +1596,13 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // drill-down floor plus `submit_patch_plan`; `patchLimits` zeroes
   // `maxActionsPerRun`.
   const patchRun = isPatchProfile(run);
+  // Execution plane W04 (#5715) — the eighth arm. An analysis run is the
+  // first profile whose floor carries NON-read-only tools (the four
+  // `workspace_*`, Tier 1 but allowlist-gated), so
+  // `guardrailPolicy.toolAllowlist` below is load-bearing in a way it is not
+  // for the read-only floors. Same single computation feeds authority,
+  // `allowedTools` and `onlyTools`.
+  const analysis = isAnalysisProfile(run);
   const runLimits = verdict
     ? verdictLimits(limits)
     : sweep
@@ -1588,7 +1615,9 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             ? designLimits(limits)
             : patchRun
               ? patchLimits(limits)
-              : limits;
+              : analysis
+                ? analysisLimits(limits)
+                : limits;
   const profileAllowlist = verdict
     ? verdictToolAllowlist(effective.toolAllowlist)
     : sweep
@@ -1601,13 +1630,19 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
             ? designToolAllowlist(effective.toolAllowlist)
             : patchRun
               ? patchToolAllowlist(effective.toolAllowlist)
-              : null;
+              : analysis
+                ? analysisToolAllowlist(effective.toolAllowlist)
+                : null;
   // Computed here (not by the SDK-loop timer below) so the pre-hook's
   // act-mode playbook executor (Task 5, #3826) can enforce the SAME
   // wall-clock ceiling independently of the SDK's `abortController` — a
   // synchronous tool-use hook does not observe that abort while it's still
   // awaiting inside `executeBuiltInPlaybookForRun`.
-  const wallClockMs = Math.max(1, Math.round(limits.wallClockSeconds * 1000));
+  // `runLimits`, not `limits`: the analysis profile pins its own wall clock
+  // (`analysisWallClockSeconds`), and the sandbox's provider-side deadline is
+  // derived from what is left of THIS value. No other profile overrides the
+  // field, so this is a no-op for all of them.
+  const wallClockMs = Math.max(1, Math.round(runLimits.wallClockSeconds * 1000));
   const deadlineMs = Date.now() + wallClockMs;
 
   const llm = await resolveLlmConfigForOrg(run.orgId);
@@ -1655,6 +1690,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     deviceSiteId: ctx.device?.siteId ?? null,
   };
 
+  // Execution plane W04 — the admission-frozen inputs. Read DEFENSIVELY:
+  // `staged_inputs` is jsonb and is NULL for every non-analysis profile.
+  const stagedInputs = (run.stagedInputs ?? null) as AiAgentRunStagedInputs | null;
+
   // Throws AgentRunOwnershipError if the agent does not own this org.
   const agentAuth = buildAgentAuthContext(
     {
@@ -1669,9 +1708,46 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
       orgId: run.orgId,
       deviceId: run.deviceId,
       deviceSiteId: ctx.device?.siteId ?? null,
+      // W04: a device-LESS analysis run is pinned to its frozen device SET.
+      // Without this it would have NO allowedDeviceIds at all — i.e. every
+      // device in the org, which is what analysisMaxInputDevicesPerRun exists
+      // to prevent.
+      ...(analysis && stagedInputs ? { allowedDeviceIds: stagedInputs.deviceIds } : {}),
     },
     { id: run.orgId, partnerId: ctx.orgPartnerId },
   );
+
+  // Execution plane W04 — the workspace is constructed eagerly and the
+  // SANDBOX lazily: `new WorkspaceService(...)` costs nothing, and `ensure()`
+  // (which creates the microVM) only runs if the model actually calls a
+  // workspace tool. A run that concludes from datasets alone never starts a
+  // sandbox and settles at 0 cents.
+  if (analysis && stagedInputs) {
+    const workspace = new WorkspaceService({
+      orgId: run.orgId,
+      runId: run.id,
+      sessionId: null,
+      region: stagedInputs.region,
+      deadlineAt: new Date(deadlineMs),
+      allowedInputHandles: stagedInputs.handles,
+      limits: {
+        analysisMaxComputeSeconds:
+          runLimits.analysisMaxComputeSeconds ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeSeconds,
+        analysisMaxComputeCentsPerRun:
+          runLimits.analysisMaxComputeCentsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxComputeCentsPerRun,
+        analysisMaxStagedBytesPerRun:
+          runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun,
+        analysisMaxArtifactBytesPerRun:
+          runLimits.analysisMaxArtifactBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxArtifactBytesPerRun,
+        analysisMaxStepTimeoutSeconds:
+          runLimits.analysisMaxStepTimeoutSeconds ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
+        analysisMaxStepsPerRun:
+          runLimits.analysisMaxStepsPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      },
+    }, getSandboxBackend());
+    registerWorkspace(run.id, workspace);
+    ctx.workspace = workspace;
+  }
 
   // Execution-ledger session: created here — AFTER the ownership check above
   // can no longer throw, so an ownership_mismatch failure never leaks an
@@ -1726,8 +1802,10 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
     // array is "no frame" (see ToolExecutionContext.runTargets) — a full-profile
     // run with no device keeps today's behaviour exactly.
-    runTargets: run.deviceId ? [run.deviceId] : [],
-    stagedBytesRemaining: EXPORT_DEFAULT_MAX_BYTES,
+    runTargets: analysis && stagedInputs ? stagedInputs.deviceIds : (run.deviceId ? [run.deviceId] : []),
+    stagedBytesRemaining: analysis
+      ? (runLimits.analysisMaxStagedBytesPerRun ?? AI_AGENT_LIMIT_DEFAULTS.analysisMaxStagedBytesPerRun)
+      : EXPORT_DEFAULT_MAX_BYTES,
   });
   const postToolUse = createAgentRunPostToolUse({
     outcome, allowedPending, executionIdPending, actPinPending,
@@ -2033,6 +2111,16 @@ export async function executeAgentRun(runId: string): Promise<void> {
   // `cleanupExecutionLedger`) — defaults to 'failed' so a throw anywhere below,
   // including one before this is ever reassigned, closes it correctly.
   let ledgerOutcome: 'completed' | 'failed' = 'failed';
+  // Execution plane W04 — the outcome the workspace finalizer stamps its
+  // compute numbers onto. `driveSdkLoop` mutates the SAME object it returns,
+  // so assigning it here (rather than reading `result.outcome`, which does not
+  // exist on the throw path) gives the `finally` something to write to
+  // whichever way the run ends.
+  // Only reached when `driveSdkLoop` threw before its own outcome existed —
+  // the normal path finalizes the REAL outcome inside the try below.
+  const orphanWorkspaceOutcome: AgentRunOutcome = {
+    proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+  };
 
   try {
     const result = await driveSdkLoop(ctx, effective);
@@ -2041,6 +2129,13 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // normal finish) carries the same rollup — `finishRun` serializes
     // `result.outcome` verbatim into the DB row.
     outcome.runVerdict = computeRunVerdict(outcome);
+
+    // Execution plane W04 — teardown + settlement BEFORE `finishRun`, so the
+    // compute numbers are on the outcome the run row serializes (and the
+    // sandbox is gone before the run is announced as finished). The `finally`
+    // below calls this again for the throw path; the second call is a no-op
+    // because `ctx.workspace` is nulled here.
+    await finalizeWorkspaceForRun(ctx, outcome);
 
     // Phase 2 wave P2-1 (alert verdicts), Task 8 — review round 1
     // (IMPORTANT 3): verdict persistence + suggestion→intent linking runs
@@ -2146,6 +2241,10 @@ export async function executeAgentRun(runId: string): Promise<void> {
       || outcome.fleetDesign !== undefined
       // AI patch agent W01 — same rule for a patch run's ONE job.
       || outcome.patchPlan !== undefined
+      // Execution plane W04 — same rule for an analysis run's ONE job: a run
+      // that called `submit_analysis` and only then hit `error_max_turns` has
+      // produced exactly what it was admitted to produce.
+      || outcome.analysis !== undefined
       || result.summary.trim().length > 0;
 
     const ceiling = outcome.wallClockExceeded
@@ -2220,7 +2319,93 @@ export async function executeAgentRun(runId: string): Promise<void> {
     // between session creation and `finishRun` (see `cleanupExecutionLedger`'s
     // docstring). A crashed process (SIGKILL) is the one path this cannot
     // cover; `reapStalledAgentRuns` (`runService.ts`) covers that one instead.
+    // Execution plane W04 (spec §7 step 6, §5.6). Runs on EVERY path out of
+    // a run that built a workspace — normal finish, ceiling, SDK throw, the
+    // `!moved` early return inside `finishRun`. A SIGKILLed process is the one
+    // path this cannot cover; `jobs/workspaceReaper.ts` (W02) destroys by
+    // `provider_ref` for that one.
+    await finalizeWorkspaceForRun(ctx, orphanWorkspaceOutcome);
     await cleanupExecutionLedger(ctx, ledgerOutcome);
+  }
+}
+
+
+/**
+ * Execution plane W04 — destroy the run's sandbox, settle its compute against
+ * EVERY billing source, and stamp the run row. Best-effort throughout: a
+ * billing failure must never turn a completed analysis into a failed one —
+ * but it is never silent either, because an unsettled reservation holds the
+ * org's daily compute budget down until midnight.
+ *
+ * Order is load-bearing: finalize (destroy + usage) → settle → stamp the run
+ * row → unregister. Settling before the destroy would bill a sandbox that is
+ * still running; unregistering first would let a late tool call create a
+ * SECOND sandbox for a run that is over.
+ */
+async function finalizeWorkspaceForRun(
+  ctx: RunContext,
+  // The run's in-flight `AgentRunOutcome`. Passed explicitly rather than read
+  // off `ctx`: `RunContext` is the loaded, read-only description of the run,
+  // and the outcome is the mutable thing the loop is building — the same
+  // separation every other finalizer in this file keeps.
+  outcome: AgentRunOutcome,
+): Promise<void> {
+  const workspace = ctx.workspace;
+  if (!workspace) return;
+  const reservedCents = ctx.run.computeReservedCents ?? 0;
+  let cents = 0;
+  let usage: SandboxUsage | null = null;
+  let estimated = false;
+  try {
+    usage = await workspace.finalize();
+    estimated = workspace.usageEstimated;
+    if (!usage) {
+      // The ONLY zero case: no sandbox was ever created (the model concluded
+      // from datasets alone). `finalize()` returns non-null for every run
+      // whose sandbox existed, INCLUDING one that `workspace_cancel` or the
+      // compute cap destroyed early — those are the two ordinary endings of
+      // an analysis run, and billing them at $0 would be the defect.
+      cents = 0;
+    } else if (estimated) {
+      // Spec §9: usage unavailable ⇒ settle at the RESERVATION, the worst
+      // case. Never $0, and never a guess that undercharges.
+      cents = reservedCents;
+    } else {
+      cents = calculateComputeCents(getSandboxBackend().name, usage, WORKSPACE_MEMORY_GB);
+    }
+  } catch (error) {
+    console.error('[aiAgentRunLoop] workspace finalize failed', { runId: ctx.run.id, error });
+    captureException(error instanceof Error ? error : new Error(String(error)));
+    cents = reservedCents;
+    estimated = true;
+  } finally {
+    // Carried on the outcome so the run-detail DTO can tell a measured charge
+    // from a worst-case one. Set before `unregisterWorkspace` so the outcome
+    // is complete whichever path `finishRun` took.
+    outcome.computeCents = cents;
+    outcome.computeUsageEstimated = estimated;
+    unregisterWorkspace(ctx.run.id);
+    ctx.workspace = null;
+  }
+
+  try {
+    // EVERY billing source (spec §5.6): a BYOK partner pays Anthropic for
+    // tokens, but the microVM is ours. `settleComputeCents` performs the
+    // credit deduction itself, and only for `platform`. The source is
+    // re-resolved here rather than threaded from `driveSdkLoop`, because this
+    // runs on the throw path too — where that value may never have existed.
+    const billingSource: AiBillingSource = await getLlmBillingSourceForOrg(ctx.run.orgId);
+    await settleComputeCents(ctx.run.orgId, ctx.run.id, cents, billingSource);
+    // Stamp the measured provider numbers beside the cents the settle wrote.
+    await inSystemDbContext(() => db
+      .update(aiAgentRuns)
+      .set({ computeCpuMs: usage?.cpuMs ?? 0, computeWallMs: usage?.wallMs ?? 0 })
+      .where(eq(aiAgentRuns.id, ctx.run.id)));
+  } catch (error) {
+    console.error('[aiAgentRunLoop] compute settlement failed; reservation may be held', {
+      runId: ctx.run.id, cents, error,
+    });
+    captureException(error instanceof Error ? error : new Error(String(error)));
   }
 }
 

@@ -15,7 +15,23 @@ import type {
 } from './aiAgents';
 import type { AiSweepKind, AiSweepSeverity } from './aiAgentSchedules';
 import type { AiAgentRunNarrativeDto } from './orgNarrativeReport';
+import type { AnalysisFinding, AnalysisProposedAction } from './aiAgents';
 import type { TicketTriageProposal } from './ticketTriage';
+
+/**
+ * Execution plane W04 — the run-detail projection of `AnalysisOutcome`
+ * (`types/aiAgents.ts`). Structurally identical today and deliberately its
+ * own name: the outcome type is the MODEL's contract (validated by
+ * `analysisOutcomeSchema`), this one is the CLIENT's, and the two are free to
+ * diverge — W05 adds the resolved artifact list and the workspace step
+ * transcript to the client side without touching what the model may submit.
+ */
+export interface AnalysisOutcomeDto {
+  summary: string;
+  findings: AnalysisFinding[];
+  artifactHandles: string[];
+  proposedActions: AnalysisProposedAction[];
+}
 
 /**
  * Wave 6 PR 1 (#3828) — the execution-trace DTOs: what `GET /ai/agents/runs`
@@ -634,6 +650,34 @@ export interface AiAgentRunDetailDto {
    * (same rule as `alertVerdict`/`sweep`/`narrative`/`fleetDesign` above).
    */
   patch: AiAgentRunPatchDto | null;
+  /**
+   * Execution plane W04 — the outcome an `analysis`-profile run submitted via
+   * `submit_analysis`. Null for every other profile and for an analysis run
+   * that has not produced one. Additive nullable field — does NOT bump
+   * `AI_AGENT_RUN_DTO_SCHEMA_VERSION` (same rule as the siblings above).
+   *
+   * `proposedActions` inside it are PROPOSALS a technician turns into intents
+   * through the normal approval flow; nothing in the run executed them, and
+   * nothing downstream of this DTO may treat them as approved.
+   */
+  analysis: AnalysisOutcomeDto | null;
+  /**
+   * Execution plane W04 — sandbox compute billed to this run, in cents. 0 for
+   * every run that never created a sandbox (including every non-analysis
+   * profile), which is why it is a plain number rather than nullable: "no
+   * sandbox" and "a sandbox that cost nothing" are the same answer to the
+   * only question the UI asks.
+   */
+  computeCents: number;
+  /**
+   * Execution plane W04 — true when the provider could not report usage and
+   * the run settled at its RESERVATION rather than at measured usage (spec
+   * §9). The run page renders a worst-case 25¢ differently from a measured
+   * 12¢; without this flag the two are indistinguishable and a support
+   * question about a bill has no answer. Always present, `false` for every
+   * run that measured.
+   */
+  computeUsageEstimated: boolean;
   /**
    * #4248 W03 (AI Scorecard, OD-7 B) — how the narrative's EMAIL delivery
    * went, for a `narrative`-profile run that materialised an artifact. Null

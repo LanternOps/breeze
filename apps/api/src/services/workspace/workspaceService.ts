@@ -32,7 +32,6 @@ import {
 } from '../artifacts/artifactService';
 import { MAX_TOOL_RESULT_CHARS } from '../aiToolOutput';
 import { emitRunProgress } from '../aiAgents/runProgress';
-import { breezeRegion } from '../../config/env';
 import { calculateComputeCents } from '../aiCostTracker';
 import { captureException } from '../sentry';
 import { WorkspaceToolError } from './workspaceErrors';
@@ -40,6 +39,12 @@ import {
   isWorkspaceBreakerOpen, recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess,
 } from './workspaceBreaker';
 import type { SandboxBackend, SandboxHandle, SandboxUsage } from './sandboxBackend';
+import {
+  deploymentRegion, WORKSPACE_BOOTSTRAP_HASH, WORKSPACE_BOOTSTRAP_IMAGE, WORKSPACE_CPU,
+  WORKSPACE_DEADLINE_GRACE_SECONDS, WORKSPACE_IN_DIR, WORKSPACE_MAX_COLLECT_FILES,
+  WORKSPACE_MAX_FILE_BYTES, WORKSPACE_MAX_STAGED_FILES, WORKSPACE_MEMORY_GB, WORKSPACE_MEMORY_MB,
+  WORKSPACE_OUT_DIR, WORKSPACE_STDOUT_MAX_BYTES, WORKSPACE_TMP_DIR,
+} from './workspacePaths';
 
 /** The `analysis*` subset of `AiAgentLimits` this service actually enforces. */
 export interface AnalysisLimits {
@@ -70,44 +75,15 @@ export interface WorkspaceRunContext {
   allowedInputHandles: readonly string[];
 }
 
-// v1 fixed sandbox shape (spec §5.1). `memGb` is what compute pricing bills.
-export const WORKSPACE_CPU = 1 as const;
-export const WORKSPACE_MEMORY_MB = 2048 as const;
-export const WORKSPACE_MEMORY_GB = WORKSPACE_MEMORY_MB / 1024;
-/** Pinned bootstrap (spec §5.3 "Sandbox contents at create"); hash on the row. */
-export const WORKSPACE_BOOTSTRAP_IMAGE = 'breeze-analysis@sha256:bootstrap-v1';
-export const WORKSPACE_BOOTSTRAP_HASH = 'bootstrap-v1';
-
-export const WORKSPACE_IN_DIR = '/work/in';
-export const WORKSPACE_OUT_DIR = '/work/out';
-export const WORKSPACE_TMP_DIR = '/work/tmp';
-
-/** Provider-side deadline = remaining run wall clock + this (spec §5.4). */
-export const WORKSPACE_DEADLINE_GRACE_SECONDS = 60;
-export const WORKSPACE_MAX_STAGED_FILES = 200;
-export const WORKSPACE_MAX_COLLECT_FILES = 50;
-export const WORKSPACE_MAX_FILE_BYTES = 64 * 1024 * 1024;
-export const WORKSPACE_STDOUT_MAX_BYTES = 1024 * 1024;
-
-/**
- * The region THIS deployment serves. Each region is its own droplet, its own
- * Postgres and its own blob bucket, so the org's region and the deployment's
- * are the same value by construction — `ensure` asserts it anyway, because
- * spec §8 makes "analysis code executes in <region>" a customer-facing claim
- * and a mis-set env var is exactly how that claim would quietly become false.
- */
-export function deploymentRegion(): BlobRegion {
-  // `breezeRegion()` is W01's canonical resolver over env `BREEZE_REGION`
-  // (config/env.ts). Wrapped rather than inlined so this file has ONE region
-  // decision and so the typed refusal below is the same shape as every other
-  // workspace failure — a bad env var must reach the model as
-  // `region_mismatch`, not as a raw TypeError.
-  const raw = String(breezeRegion() ?? '').trim().toLowerCase();
-  if (raw !== 'eu' && raw !== 'us') {
-    throw new WorkspaceToolError('region_mismatch', 'This deployment has no valid region configured.');
-  }
-  return raw;
-}
+// The sandbox's fixed shape, its paths and the region assertion live in the
+// LEAF module `workspacePaths.ts` (see its header for why) and are re-exported
+// here so every existing importer of this file is unaffected.
+export {
+  WORKSPACE_CPU, WORKSPACE_MEMORY_MB, WORKSPACE_MEMORY_GB, WORKSPACE_BOOTSTRAP_IMAGE,
+  WORKSPACE_BOOTSTRAP_HASH, WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR,
+  WORKSPACE_DEADLINE_GRACE_SECONDS, WORKSPACE_MAX_STAGED_FILES, WORKSPACE_MAX_COLLECT_FILES,
+  WORKSPACE_MAX_FILE_BYTES, WORKSPACE_STDOUT_MAX_BYTES, deploymentRegion,
+} from './workspacePaths';
 
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
   if (getCurrentDbAccessContext()?.scope === 'system') return fn();

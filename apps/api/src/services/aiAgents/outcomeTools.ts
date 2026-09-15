@@ -39,10 +39,13 @@ import {
   narrativeSubmissionSchema,
   patchPlanOutcomeFromSubmission,
   patchPlanSubmissionSchema,
+  analysisOutcomeSchema,
+  ANALYSIS_FINDING_SEVERITIES,
   sweepFindingsOutcomeSchema,
   ticketTriageProposalSchema,
   type AiAgentRunProfile,
   type AlertVerdictOutcome,
+  type AnalysisOutcome,
   type FleetDesignOutcome,
   type FleetDesignOutcomeRefs,
   type FleetDesignSubmission,
@@ -68,6 +71,9 @@ export const OUTCOME_TOOL_NAMES = [
   // AI patch agent W01 (#5747) — the sixth profile-mapped outcome tool. See
   // `outcomeToolsForProfile`'s `'patch'` arm below.
   'submit_patch_plan',
+  // Execution plane W04 (#5715) — the seventh profile-mapped outcome tool.
+  // See `outcomeToolsForProfile`'s `'analysis'` arm below.
+  'submit_analysis',
   // #5205 W06. Unlike the four above, this one is NOT selected by run profile
   // — a task-linked run uses the `full` profile (spec §6.2) and
   // `outcomeToolsForProfile('full')` is deliberately `[]`. It is selected by
@@ -91,6 +97,7 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_ticket_proposal: 'mcp__breeze__submit_ticket_proposal',
   submit_fleet_design: 'mcp__breeze__submit_fleet_design',
   submit_patch_plan: 'mcp__breeze__submit_patch_plan',
+  submit_analysis: 'mcp__breeze__submit_analysis',
 };
 
 /**
@@ -178,6 +185,11 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // drill-down floor (`patchProfile.ts`) is not an outcome tool.
     case 'patch':
       return ['submit_patch_plan'];
+    // Execution plane W04 — the analysis run's ONE output channel. Unlike
+    // narrative/triage this profile also has a real tool floor, but the
+    // outcome is still the only thing anything downstream reads.
+    case 'analysis':
+      return ['submit_analysis'];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -246,15 +258,26 @@ export function validateOutcomeToolInput(
 // here — it is REQUIRED only for `submit_fleet_design`, which the
 // implementation enforces at runtime (a caller reaching that branch without
 // `refs` gets a thrown error, not a silently invalid outcome).
+/**
+ * Execution plane W04 — `submit_analysis`'s validated outcome IS the raw tool
+ * input (like `submit_ticket_proposal`, unlike `submit_narrative`): the
+ * `.strict()` shared schema rejects any smuggled key outright, and the
+ * `proposedActions` it carries stay PROPOSALS — nothing in the run loop turns
+ * them into intents (an analysis run is device-less with `maxActionsPerRun`
+ * pinned to 0).
+ */
+export function validateOutcomeToolInput(toolName: 'submit_analysis', input: unknown): AnalysisOutcome;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome;
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome;
 export function validateOutcomeToolInput(
   toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome | PatchPlanOutcome {
+  | FleetDesignOutcome | PatchPlanOutcome | AnalysisOutcome {
   switch (toolName) {
+    case 'submit_analysis':
+      return analysisOutcomeSchema.parse(input);
     case 'submit_task_step':
       return validateSubmitTaskStep(input);
     case 'submit_alert_verdict':
@@ -638,6 +661,49 @@ const SUBMIT_FLEET_DESIGN_SHAPE = {
  * its messages name the offending path when a class carries the wrong fields.
  */
 const PATCH_UUID = z.string().uuid();
+/**
+ * Execution plane W04 — the model-facing mirror of `analysisOutcomeSchema`
+ * (packages/shared/src/validators/aiAgents.ts). Same split as its siblings:
+ * the rich `.describe()` guidance lives here, the AUTHORITY is the shared
+ * schema's `.strict()` `.parse()` in `validateOutcomeToolInput`.
+ *
+ * `proposedActions` says "proposal" three times on purpose. It is the one
+ * field a prompt-injected model would try to weaponise, and the shared schema
+ * rejects any extra key (an `execute: true`) outright — but the model should
+ * not be spending turns discovering that.
+ */
+const SUBMIT_ANALYSIS_SHAPE = {
+  summary: z.string().min(1).max(4000).describe(
+    'What you analysed, what you found and what you did NOT find. Plain text a technician reads first.',
+  ),
+  findings: z.array(z.object({
+    title: z.string().min(1).max(120).describe('One short line a technician scans in a list.'),
+    severity: z.enum(ANALYSIS_FINDING_SEVERITIES).describe(
+      'high = needs attention now; medium = schedule it; low = worth noting; info = context only.',
+    ),
+    detail: z.string().min(1).max(2000).describe(
+      'What the data actually shows. State only what your computation demonstrates — never a cause you '
+      + 'did not confirm.',
+    ),
+    artifactHandles: z.array(z.string().uuid()).max(20).describe(
+      'Handles from workspace_collect that evidence this finding. Copy them verbatim.',
+    ),
+  }).strict()).max(50),
+  artifactHandles: z.array(z.string().uuid()).max(100).describe(
+    'Every artifact a technician should be able to open from this run.',
+  ),
+  proposedActions: z.array(z.object({
+    tool: z.string().max(80).describe('The Breeze tool a technician would use, e.g. manage_services.'),
+    action: z.string().max(80).optional(),
+    deviceId: z.string().uuid().optional().describe("Only a device from this run's frozen device set."),
+    args: z.record(z.string().max(80), z.unknown()),
+    rationale: z.string().min(1).max(600),
+  }).strict()).max(20).describe(
+    'PROPOSALS ONLY. Nothing here is executed by this run; a technician reviews each one and approves it '
+    + 'through the normal approval flow. Do not attempt an action yourself — you have no tool that can.',
+  ),
+};
+
 const SUBMIT_PATCH_PLAN_SHAPE = {
   summary: z.string().max(PATCH_PLAN_SUMMARY_MAX_CHARS).describe(
     'Two or three sentences a technician reads first: overall patch posture and what matters most.',
@@ -784,6 +850,16 @@ export function buildOutcomeSdkTools(
           },
         ) as SdkTool;
       }
+      case 'submit_analysis':
+        return tool(
+          'submit_analysis',
+          'Record the result of this analysis. Call exactly once, as your last action.',
+          SUBMIT_ANALYSIS_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_analysis', input); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
       default: {
         const exhaustive: never = name;
         throw new Error(`[buildOutcomeSdkTools] Unknown outcome tool: ${String(exhaustive)}`);

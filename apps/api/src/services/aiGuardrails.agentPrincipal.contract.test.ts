@@ -13,6 +13,7 @@ import {
   TIER3_ACTIONS,
   TOOL_ACTION_INPUT_KEYS,
   type AgentGuardrailPolicy,
+  TIER1_NON_READONLY_TOOLS,
 } from './aiGuardrails';
 import {
   isSecretBearingTool,
@@ -363,6 +364,18 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
 
   it('shadow mode admits no mutating tool, even an allowlisted one', () => {
     for (const toolName of Object.keys(TOOL_TIERS)) {
+      // Execution plane W04 (#5715): the four `workspace_*` tools are the ONE
+      // deliberate exception, and they are named here rather than derived so
+      // widening the exception takes an edit to this security suite. They are
+      // not read-only (that is what makes them allowlist-gated), but there is
+      // nothing for shadow mode to protect: the sandbox is inert, reachable
+      // only by the run that owns it, and a "proposal" to write a file into it
+      // is not something a human could meaningfully approve. See
+      // TIER1_NON_READONLY_TOOLS in aiGuardrails.ts and the ordering proof in
+      // aiGuardrails.workspace.contract.test.ts (the forced-allow sits AFTER
+      // every structural deny, so allowlist and protected-resource refusals
+      // still win).
+      if (TIER1_NON_READONLY_TOOLS.has(toolName)) continue;
       const shadow = checkAgentGuardrails(toolName, {}, {
         ...EMPTY, mode: 'shadow', toolAllowlist: [toolName],
       });
@@ -371,6 +384,12 @@ describe('checkAgentGuardrails — fail closed for every registered tool', () =>
         expect(shadow.allowed, `${toolName} mutated under shadow mode`).toBe(false);
       }
     }
+  });
+
+  it('the shadow-mode exception is exactly the four workspace tools, and no more', () => {
+    expect([...TIER1_NON_READONLY_TOOLS].sort()).toEqual([
+      'workspace_cancel', 'workspace_collect', 'workspace_run', 'workspace_stage',
+    ]);
   });
 
   it('finds a protected path nested inside a parameter object', () => {

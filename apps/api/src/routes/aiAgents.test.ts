@@ -1243,6 +1243,29 @@ const runDetailResponseSchema = z.object({
       unknown: z.number(),
       recipientsUnresolved: z.boolean(),
     }).strict().nullable(),
+    // Execution plane W04 (#5715): `null` for every non-analysis run. Handles
+    // only — the resolved artifact list and the workspace step transcript are
+    // W05's surface, deliberately not here.
+    analysis: z.object({
+      summary: z.string(),
+      findings: z.array(z.object({
+        title: z.string(),
+        severity: z.enum(['info', 'low', 'medium', 'high']),
+        detail: z.string(),
+        artifactHandles: z.array(z.string()),
+      }).strict()),
+      artifactHandles: z.array(z.string()),
+      proposedActions: z.array(z.object({
+        tool: z.string(),
+        action: z.string().optional(),
+        deviceId: z.string().optional(),
+        args: z.record(z.string(), z.unknown()),
+        rationale: z.string(),
+      }).strict()),
+    }).strict().nullable(),
+    // Always present: 0 for every run that never built a sandbox.
+    computeCents: z.number(),
+    computeUsageEstimated: z.boolean(),
   }).strict(),
 }).strict();
 

@@ -28,6 +28,15 @@ export interface AgentRunRef {
    * session keeps the conversation pointer alongside the run pointer.
    */
   sessionId?: string | null;
+  /**
+   * Execution plane W04 — the frozen device SET of a device-LESS analysis
+   * run (`ai_agent_runs.staged_inputs.deviceIds`). A run with a `deviceId`
+   * ignores this (that branch already pins the exact device). Without it a
+   * device-less run has NO `allowedDeviceIds` at all, i.e. every device in
+   * the org, which is precisely what `analysisMaxInputDevicesPerRun` exists
+   * to prevent.
+   */
+  allowedDeviceIds?: readonly string[];
 }
 
 export interface OrgRef {
@@ -120,6 +129,12 @@ export function buildAgentAuthContext(
           canAccessSite: siteAccessCheck(run.deviceSiteId ? [run.deviceSiteId] : []),
           allowedDeviceIds: [run.deviceId],
         }
+      : {}),
+    // W04: the device-LESS analysis run's frozen set. Only reachable when the
+    // run has no `deviceId` — the branch above already pinned that case, and
+    // an analysis run is device-less by construction.
+    ...(!run.deviceId && run.allowedDeviceIds
+      ? { allowedDeviceIds: [...run.allowedDeviceIds] }
       : {}),
   };
 }

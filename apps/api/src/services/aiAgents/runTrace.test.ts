@@ -1024,3 +1024,49 @@ describe('buildRunTrace — patch plan (AI patch agent W01)', () => {
     expect(buildRunTrace(baseRun(), AGENT, DEVICE, [], []).patch).toBeNull();
   });
 });
+
+describe('buildRunTrace — analysis projection (execution plane W04)', () => {
+  const HANDLE = '66666666-6666-4666-8666-666666666666';
+
+  it('projects the analysis outcome and the compute numbers', () => {
+    const detail = buildRunTrace(
+      baseRun({
+        deviceId: null,
+        computeCents: 13,
+        outcome: {
+          analysis: {
+            summary: 'three devices share a failing disk model',
+            findings: [{
+              title: 'SMART pre-fail on 3 devices',
+              severity: 'high',
+              detail: 'reallocated sector count climbing',
+              artifactHandles: [HANDLE],
+            }],
+            artifactHandles: [HANDLE],
+            proposedActions: [{
+              tool: 'manage_alerts', args: { alertId: 'a1' }, rationale: 'superseded',
+            }],
+          },
+          computeUsageEstimated: true,
+        },
+      }),
+      AGENT,
+      null,
+      [],
+      [],
+    );
+    expect(detail.analysis?.artifactHandles).toEqual([HANDLE]);
+    expect(detail.analysis?.findings[0]?.severity).toBe('high');
+    expect(detail.analysis?.proposedActions).toHaveLength(1);
+    expect(detail.computeCents).toBe(13);
+    expect(detail.computeUsageEstimated).toBe(true);
+  });
+
+  it('leaves analysis null and compute zero for a non-analysis run', () => {
+    const detail = buildRunTrace(baseRun(), AGENT, DEVICE, [], []);
+    expect(detail.analysis).toBeNull();
+    expect(detail.computeCents).toBe(0);
+    // Absent flag reads false, never undefined — the UI branches on it.
+    expect(detail.computeUsageEstimated).toBe(false);
+  });
+});

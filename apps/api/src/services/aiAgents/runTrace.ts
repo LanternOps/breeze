@@ -43,6 +43,7 @@ import {
   type AiAgentTriggerKind,
   type AiToolStatus,
   type TicketTriageSkip,
+  AnalysisOutcomeDto,
 } from '@breeze/shared';
 
 export interface RunTraceRunInput {
@@ -78,6 +79,12 @@ export interface RunTraceRunInput {
    * never committed.
    */
   reportRunId: string | null;
+  /**
+   * Execution plane W04 — `ai_agent_runs.compute_cents`, the settled sandbox
+   * charge. `null`/absent for every run that never built a workspace, which
+   * the projection reads as 0.
+   */
+  computeCents?: number | null;
   /**
    * The raw `ai_agent_runs.outcome` jsonb column — typed `Record<string,
    * unknown>` at the schema layer (see aiAgents.ts) because Postgres jsonb
@@ -494,6 +501,14 @@ export function buildRunTrace(
     // contract. The raw patch/job-result id lists never reach the wire.
     // Hostnames ride the same batched map the sweep uses.
     patch: projectPatch(run, outcome, deviceHostnames),
+    // Execution plane W04 (#5715): null for every non-analysis run and for an
+    // analysis run that never submitted. Read DEFENSIVELY — `outcome` is
+    // jsonb, and a row from before this wave simply lacks the key.
+    analysis: (outcome?.analysis as AnalysisOutcomeDto | undefined) ?? null,
+    // Stamped by `finalizeWorkspaceForRun`. `run.computeCents` is W02's
+    // column; a run that never built a sandbox reads 0.
+    computeCents: Number(run.computeCents ?? 0) || 0,
+    computeUsageEstimated: outcome?.computeUsageEstimated === true,
     // #4248 W03: counts only, never a recipient — see the DTO docstring.
     narrativeDelivery,
   };

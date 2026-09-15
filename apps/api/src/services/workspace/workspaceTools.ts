@@ -25,7 +25,7 @@ import { captureException } from '../sentry';
 import { WorkspaceToolError } from './workspaceErrors';
 import { getWorkspaceForRun } from './workspaceRegistry';
 import type { WorkspaceService } from './workspaceService';
-import { WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR } from './workspaceService';
+import { WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR } from './workspacePaths';
 
 function requiresRun(): WorkspaceToolError {
   return new WorkspaceToolError(

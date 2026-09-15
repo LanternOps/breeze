@@ -32,8 +32,8 @@ import { organizations } from '../../db/schema/orgs';
 import {
   checkBudget, checkComputeCredits, reserveComputeCents, settleComputeCents,
 } from '../aiCostTracker';
-import { WORKSPACE_TOOL_NAMES } from '../aiGuardrails';
-import { deploymentRegion } from '../workspace/workspaceService';
+import { WORKSPACE_TOOL_NAMES } from '../workspace/workspaceToolNames';
+import { deploymentRegion } from '../workspace/workspacePaths';
 import { isWorkspaceBreakerOpen } from '../workspace/workspaceBreaker';
 import { isToolAllowlisted } from './toolAllowlist';
 import { isDeviceInMaintenanceWindow } from '../deploymentEngine';

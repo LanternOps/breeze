@@ -24,3 +24,13 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS ai_external_processing boolea
 -- `allowedDeviceIds` on the agent's AuthContext. jsonb → export-policy
 -- `excludedOpen`. NULL for every non-analysis profile.
 ALTER TABLE ai_agent_runs ADD COLUMN IF NOT EXISTS staged_inputs jsonb;
+
+-- `profile` admits 'analysis'. The CHECK is a second copy of
+-- `AI_AGENT_RUN_PROFILES` (packages/shared): a profile added to the tuple and
+-- not here ships as a 23514 on the first admitted run, which is exactly what
+-- aiAgentsAnalysisProfile.migration.test.ts pins. Drop-then-add rather than a
+-- NOT VALID add, because the constraint is tiny and the table's existing rows
+-- all carry a previously-listed value.
+ALTER TABLE ai_agent_runs DROP CONSTRAINT IF EXISTS ai_agent_runs_profile_chk;
+ALTER TABLE ai_agent_runs ADD CONSTRAINT ai_agent_runs_profile_chk
+  CHECK (profile IN ('full', 'verdict', 'sweep', 'narrative', 'triage', 'design', 'patch', 'analysis'));

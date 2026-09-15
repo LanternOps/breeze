@@ -1,4 +1,4 @@
-import type { RemediationTriggerKind } from '@breeze/shared';
+import type { AnalysisOutcome, RemediationTriggerKind } from '@breeze/shared';
 /**
  * The run loop's internal shape contracts, split out of `runLoop.ts` (issue
  * #4451) so the loop itself and its per-profile finalizers (`runFinalizers.ts`)
@@ -38,6 +38,8 @@ import type { PatchEvidence } from './patchEvidence';
 import type { SweepEvidence } from './sweepEvidence';
 import type { SweepProposalRecord } from './sweepFindings';
 import type { TicketRunContext } from './ticketContext';
+import type { WorkspaceService } from '../workspace/workspaceService';
+import type { AiAgentRunStagedInputs } from '../../db/schema/aiAgents';
 
 export interface OutcomeProposedAction {
   tool: string;
@@ -302,6 +304,22 @@ export interface AgentRunOutcome {
    * action intent is minted in W01.
    */
   patchPlan?: PatchPlanOutcome;
+  /**
+   * Execution plane W04 — the validated `submit_analysis` input on an
+   * `analysis`-profile run. `proposedActions` inside it are PROPOSALS the
+   * run page renders for a technician; nothing in the loop converts them to
+   * intents (unlike sweep/triage), because an analysis run is device-LESS
+   * and `maxActionsPerRun` is 0.
+   */
+  analysis?: AnalysisOutcome;
+  /** Sandbox compute charged to this run, in cents (spec §5.6). */
+  computeCents?: number;
+  /**
+   * True when the provider could not report usage and the run settled at its
+   * RESERVATION rather than at measured usage (spec §9). Surfaced so a
+   * reviewer can tell a measured 12¢ from a worst-case 25¢.
+   */
+  computeUsageEstimated?: boolean;
 }
 
 export interface RunRow {
@@ -340,6 +358,18 @@ export interface RunRow {
   taskId: string | null;
   taskStepKey: string | null;
   taskAttemptOrdinal: number | null;
+  /**
+   * Execution plane W04 — the admission-frozen inputs of an `analysis` run
+   * (`ai_agent_runs.staged_inputs`), `null` for every other profile. jsonb:
+   * read DEFENSIVELY.
+   */
+  stagedInputs: AiAgentRunStagedInputs | null;
+  /**
+   * Execution plane W04 — the compute reservation admission took, in cents.
+   * `null` once settled and for every non-analysis run. It is what the
+   * workspace finalizer settles at when provider usage is unavailable.
+   */
+  computeReservedCents: number | null;
 }
 
 export interface AgentRow {
@@ -450,6 +480,14 @@ export interface RunContext {
    * it back to reconcile/close the session.
    */
   sessionId: string | null;
+  /**
+   * Execution plane W04 — the per-run sandbox workspace, for an
+   * `analysis`-profile run that has one. Constructed by `driveSdkLoop` (the
+   * sandbox itself is created lazily on the first `workspace_*` call) and
+   * torn down by `finalizeWorkspaceForRun` in `executeAgentRun`'s `finally`.
+   * `null` for every other profile and after teardown.
+   */
+  workspace: WorkspaceService | null;
 }
 
 export interface LoopResult {

@@ -13,6 +13,7 @@ import {
 import { aiTools } from '../aiTools';
 import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { verdictToolAllowlist } from './verdictProfile';
+import { analysisToolAllowlist } from './analysisProfile';
 import { sweepToolAllowlist } from './sweepProfile';
 import { narrativeToolAllowlist } from './narrativeProfile';
 import { triageToolAllowlist } from './triageProfile';
@@ -223,6 +224,10 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
       full: null,
       // A deliberately broad agent allowlist: the floor must not vary with it.
       verdict: verdictToolAllowlist(['manage_services', 'run_script']),
+      // Execution plane W04: the analysis floor carries read tools AND the
+      // four workspace tools, and still must not vary with the agent's own
+      // allowlist.
+      analysis: analysisToolAllowlist(['manage_services', 'run_script']),
       sweep: sweepToolAllowlist(['manage_services', 'run_script']),
       // The narrative floor is the outcome tool ALONE (empty drill-down
       // tier) — the same broad agent allowlist must not widen it either.

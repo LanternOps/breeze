@@ -17,6 +17,7 @@ import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
+import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
@@ -190,10 +191,7 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
  * allowlist and protected-resource checks pass. Pinned by
  * aiGuardrails.workspace.contract.test.ts.
  */
-export const WORKSPACE_TOOL_NAMES = [
-  'workspace_stage', 'workspace_run', 'workspace_collect', 'workspace_cancel',
-] as const;
-export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
+export { WORKSPACE_TOOL_NAMES, type WorkspaceToolName } from './workspace/workspaceToolNames';
 export const TIER1_NON_READONLY_TOOLS: ReadonlySet<string> = new Set<string>(WORKSPACE_TOOL_NAMES);
 
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher

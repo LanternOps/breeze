@@ -25,6 +25,7 @@ import {
   FLEET_DESIGN_CONFIDENCE_THRESHOLD, FLEET_DESIGN_SECTION_KEYS, TICKET_TRIAGE_CONFIDENCE_FLOOR,
   TICKET_TRIAGE_PRIORITIES,
 } from '@breeze/shared';
+import { ANALYSIS_WORKSPACE_PROMPT } from './analysisProfile';
 import type {
   AiAgentKind, AiAgentMode, AiAgentRunProfile, AiAgentTriggerKind,
   AiAlertVerdictClassification, AiSweepKind, AiSweepSeverity,
@@ -450,6 +451,12 @@ export function buildAgentRunSystemPrompt(ctx: AgentRunPromptContext): string {
       + 'reboot anything. Every item you submit is a recommendation a technician reads and decides on. '
       + 'Finish by calling submit_patch_plan exactly once — that call IS the output of this run.',
     );
+  } else if (ctx.profile === 'analysis') {
+    // Execution plane W04 (spec §7 step 2). The text is a fixed constant in
+    // `analysisProfile.ts` — never templated from run content — so no staged
+    // file, ticket body or alert description can reach the part of the prompt
+    // that tells the model what the sandbox can and cannot do.
+    sections.push(ANALYSIS_WORKSPACE_PROMPT);
   } else if (ctx.run.mode === 'shadow') {
     sections.push(
       '## Mode: shadow\n'

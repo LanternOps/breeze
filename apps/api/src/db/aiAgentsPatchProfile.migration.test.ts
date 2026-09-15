@@ -19,8 +19,15 @@ describe(`${FILE}`, () => {
     return (m?.[1] ?? '').split(',').map((v) => v.trim().replace(/^'|'$/g, '')).filter(Boolean).sort();
   };
 
-  it('ai_agent_runs_profile_chk lists exactly AI_AGENT_RUN_PROFILES', () => {
-    expect(listIn(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual([...AI_AGENT_RUN_PROFILES].sort());
+  // FROZEN at what THIS shipped migration says, not at the live tuple: a
+  // shipped migration is immutable, so the "the CHECK matches
+  // AI_AGENT_RUN_PROFILES" contract moves to the NEWEST migration that
+  // redefines the constraint — today
+  // aiAgentsAnalysisProfile.migration.test.ts (execution plane W04, #5715).
+  it('ai_agent_runs_profile_chk lists the seven profiles that existed when it shipped', () => {
+    expect(listIn(/ai_agent_runs_profile_chk\s+CHECK \(profile IN \(([^)]*)\)\)/)).toEqual(
+      ['design', 'full', 'narrative', 'patch', 'sweep', 'triage', 'verdict'],
+    );
   });
 
   it('ai_agent_schedules_kind_chk lists exactly AI_AGENT_SCHEDULE_KINDS', () => {
