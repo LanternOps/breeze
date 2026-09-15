@@ -4,7 +4,7 @@ import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessC
 import { requestLikeFromSnapshot, writeAuditEvent } from './auditEvents';
 import {
   invoices, invoiceLines, invoiceLineDevices, invoicePayments, invoiceStripePayments, organizations, partners,
-  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets,
+  catalogBundleComponents, catalogItems, contracts, contractLines, timeEntries, ticketParts, tickets, ticketCategories,
   accountingEntityMappings, accountingConnections
 } from '../db/schema';
 import { getConnection } from './stripeConnectService';
@@ -699,7 +699,37 @@ async function getInvoiceAccountingSync(invoiceId: string, partnerId: string): P
 
 export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
   const inv = await getOwnedInvoiceOr404(invoiceId); requireInvoiceAccess(actor, inv);
-  const lines = await db.select().from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.sortOrder);
+  const rawLines = await db.select({
+    id: invoiceLines.id,
+    invoiceId: invoiceLines.invoiceId,
+    orgId: invoiceLines.orgId,
+    parentLineId: invoiceLines.parentLineId,
+    sourceType: invoiceLines.sourceType,
+    sourceId: invoiceLines.sourceId,
+    sourceContractId: invoiceLines.sourceContractId,
+    catalogItemId: invoiceLines.catalogItemId,
+    ticketId: invoiceLines.ticketId,
+    name: invoiceLines.name,
+    description: invoiceLines.description,
+    quantity: invoiceLines.quantity,
+    unitPrice: invoiceLines.unitPrice,
+    costBasis: invoiceLines.costBasis,
+    revenueAllocation: invoiceLines.revenueAllocation,
+    taxable: invoiceLines.taxable,
+    customerVisible: invoiceLines.customerVisible,
+    lineTotal: invoiceLines.lineTotal,
+    isUnapprovedTime: invoiceLines.isUnapprovedTime,
+    sortOrder: invoiceLines.sortOrder,
+    createdAt: invoiceLines.createdAt,
+    ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
+  }).from(invoiceLines)
+    .leftJoin(tickets, eq(invoiceLines.ticketId, tickets.id))
+    .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+    .where(eq(invoiceLines.invoiceId, invoiceId))
+    .orderBy(invoiceLines.sortOrder);
+
   // #3205 W07 ruling 3: one grouped aggregate per invoice DETAIL view. Keep it
   // out of listInvoices and the customer projection.
   const evidenceCounts = await db
@@ -708,10 +738,22 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
     .where(eq(invoiceLineDevices.invoiceId, invoiceId))
     .groupBy(invoiceLineDevices.invoiceLineId);
   const deviceCountByLine = new Map(evidenceCounts.map((row) => [row.lineId, Number(row.n)]));
-  const linesWithDeviceCount = lines.map((line) => ({
-    ...line,
-    deviceCount: deviceCountByLine.get(line.id) ?? 0,
-  }));
+  const linesWithDeviceCount = rawLines.map((line) => {
+    let resolvedName = line.name;
+    if (!resolvedName && line.ticketId && (line.ticketNumber || line.ticketSubject)) {
+      const ticketRef = line.ticketNumber;
+      const cat = line.ticketCategory;
+      const prefix = ticketRef ? `[${ticketRef}]` : '';
+      const catPart = cat ? `${cat}: ` : '';
+      const subject = line.ticketSubject?.trim() || 'Labor';
+      resolvedName = `${prefix} ${catPart}${subject}`.trim();
+    }
+    return {
+      ...line,
+      name: resolvedName,
+      deviceCount: deviceCountByLine.get(line.id) ?? 0,
+    };
+  });
   // Whether this invoice's partner can collect online (gates the "Send payment
   // link" UI). Partner-axis read under a partner/system request scope, so the
   // actor's own connection row is RLS-visible. Best-effort: a lookup failure
@@ -735,6 +777,8 @@ export async function getInvoice(invoiceId: string, actor: InvoiceActor) {
 
 export type CustomerInvoiceLine = {
   ticketNumber: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   /**
    * Line title, mirroring invoice_lines.name (#3319). NULL for legacy lines
    * created before the name/description split, where `description` holds the
@@ -774,6 +818,8 @@ export type CustomerInvoiceHeader = Pick<InvoiceRow,
 
 type CustomerInvoiceLineSource = {
   ticketNumber?: string | null;
+  ticketSubject?: string | null;
+  ticketCategory?: string | null;
   name?: string | null;
   description?: string | null;
   quantity: string;
@@ -786,6 +832,8 @@ type CustomerInvoiceLineSource = {
 export function toCustomerInvoiceLine(line: CustomerInvoiceLineSource): CustomerInvoiceLine {
   return {
     ticketNumber: line.ticketNumber ?? null,
+    ticketSubject: line.ticketSubject ?? null,
+    ticketCategory: line.ticketCategory ?? null,
     // Carry BOTH fields (#3319). This previously collapsed to
     // `description ?? name`, which is the INVERSE of the fallback every other
     // renderer uses, so a line with both set showed the customer only the
@@ -830,7 +878,9 @@ export async function getCustomerInvoice(
   // App-layer org guard (defense-in-depth over RLS). 404, not 403 — don't leak existence to the portal.
   if (orgId !== undefined && inv.orgId !== orgId) throw new InvoiceServiceError('Invoice not found', 404, 'INVOICE_NOT_FOUND');
   const rows = await db.select({
-    ticketNumber: tickets.ticketNumber,
+    ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+    ticketSubject: tickets.subject,
+    ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
     name: invoiceLines.name,
     description: invoiceLines.description,
     quantity: invoiceLines.quantity,
@@ -840,7 +890,8 @@ export async function getCustomerInvoice(
   }).from(invoiceLines).leftJoin(tickets, and(
     eq(tickets.id, invoiceLines.ticketId),
     eq(tickets.orgId, inv.orgId),
-  )).where(and(
+  )).leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
+  .where(and(
     eq(invoiceLines.invoiceId, invoiceId),
     eq(invoiceLines.orgId, inv.orgId),
     eq(invoiceLines.customerVisible, true),
@@ -1066,7 +1117,7 @@ async function materializeLines(invoiceId: string, orgId: string, specs: DraftLi
   let sort = 0;
   await db.insert(invoiceLines).values(specs.map((s) => ({
     invoiceId, orgId, sourceType: s.sourceType, sourceId: s.sourceId, catalogItemId: s.catalogItemId,
-    parentLineId: null, ticketId: s.ticketId, description: s.description, quantity: s.quantity,
+    parentLineId: null, ticketId: s.ticketId, name: s.name ?? null, description: s.description, quantity: s.quantity,
     unitPrice: s.unitPrice, costBasis: s.costBasis, taxable: s.taxable, customerVisible: s.customerVisible,
     lineTotal: s.lineTotal, isUnapprovedTime: s.isUnapprovedTime, sortOrder: sort++
   })));
