@@ -1,3 +1,13 @@
+/**
+ * #5360 covers only breeze_partner_export_(device_child|site_child|material)_
+ * (insert|update|delete) trigger families, using partners_shared then orgs_exclusive.
+ * Configuration-material triggers (configuration_owner_*, direct_org_*,
+ * policy_child_*, assignment_*, custom_values_update, normalized_policy_child)
+ * from 2026-07-24-partner-export-configuration-material-state.sql and
+ * 2026-07-25-partner-export-canonical-configuration.sql are a documented follow-up
+ * outside this PR: they use breeze_partner_export_lock_partners_exclusive and
+ * breeze_partner_export_lock_orgs_under_exclusive_partners instead.
+ */
 import { describe, expect, it } from 'vitest';
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -99,7 +109,7 @@ function findUnlockedWrites(sql: string, tables: ReadonlySet<string>): string[] 
   const lines = code.split('\n');
   const insertOrdinals = new Map<string, number>();
   return analyzeMigrationDml(sql).flatMap((write, index) => {
-    if (!tables.has(write.table) || !['UPDATE', 'DELETE', 'INSERT'].includes(write.kind)) return [];
+    if (!tables.has(write.table) || !['UPDATE', 'DELETE', 'INSERT', 'MERGE'].includes(write.kind)) return [];
     if (write.kind === 'INSERT') {
       // Confine SELECT detection to this INSERT's source, stopping at VALUES
       // (including scalar subqueries in VALUES) or the end of the statement.
@@ -117,6 +127,10 @@ function findUnlockedWrites(sql: string, tables: ReadonlySet<string>): string[] 
     return partners[index]?.scoped && orgs[index]?.scoped ? [] : [`${write.kind} ${write.table}`];
   });
 }
+
+// Newest migration in the frozen baseline. Never raise this cutoff to exempt
+// a new migration; acquire the locks or repair forward instead.
+const BASELINE_CUTOFF = '2026-10-15-150600-network-baseline-recurring-authority.sql';
 
 // Exact shipped offender set, computed for #5360. MUST NEVER GROW: repair
 // forward or acquire both lock axes before writing; never exempt a new file.
@@ -144,6 +158,39 @@ describe('partner export migration lock contract (#5360)', () => {
       'software_inventory', 'device_warranty', 'hyperv_vms',
       'discovered_assets', 'network_baselines', 'network_topology',
     ]) expect(materialTables.has(table), table).toBe(true);
+  });
+
+  it('excludes configuration-family tables pending the documented configuration-lock follow-up', () => {
+    const configurationMigrations = [
+      '2026-07-24-partner-export-configuration-material-state.sql',
+      '2026-07-25-partner-export-canonical-configuration.sql',
+    ].map((name) => {
+      const migration = migrations.find((file) => file.name === name);
+      expect(migration, name).toBeDefined();
+      return migration!.sql;
+    });
+    // Follow-up documented above and in migrations/README.md: these triggers
+    // need the exclusive-partner helper pair, not this guard's shared locks.
+    expect([...deriveMaterialTables(configurationMigrations)]).toEqual([]);
+    for (const table of [
+      'configuration_policies', 'scripts', 'automations', 'backup_profiles',
+      'custom_field_definitions', 'backup_configs', 'backup_policies',
+      'config_policy_feature_links', 'config_policy_assignments', 'devices',
+      'config_policy_alert_rules', 'config_policy_automations', 'config_policy_compliance_rules',
+      'config_policy_patch_settings', 'config_policy_maintenance_settings',
+      'config_policy_event_log_settings', 'config_policy_sensitive_data_settings',
+      'config_policy_monitoring_settings', 'config_policy_monitoring_watches',
+      'config_policy_backup_settings',
+      'config_policy_remote_access_settings', 'config_policy_onedrive_settings',
+      'config_policy_onedrive_libraries',
+    ]) expect(materialTables.has(table), table).toBe(false);
+  });
+
+  it('freezes the baseline at the cutoff so a new migration cannot join it', () => {
+    expect(UNLOCKED_DML_BASELINE.filter((name) => name.localeCompare(BASELINE_CUTOFF) > 0),
+      'The #5360 baseline is frozen; never raise BASELINE_CUTOFF to exempt a new migration.',
+    ).toEqual([]);
+    expect(migrations.map(({ name }) => name)).toContain(BASELINE_CUTOFF);
   });
 
   it('permits exactly the frozen baseline of shipped offenders', () => {
@@ -190,6 +237,17 @@ describe('partner export lock scanner fixtures', () => {
   ])('detects set-based DML: %s', (sql) => {
     expect(scan(sql)).toHaveLength(1);
     expect(scan(locks + sql)).toEqual([]);
+  });
+
+  const merge = 'MERGE INTO discovered_assets AS target USING scratch AS source ' +
+    'ON target.id = source.id WHEN MATCHED THEN UPDATE SET source = NULL;';
+
+  it('rejects MERGE without prior locks', () => {
+    expect(scan(merge)).toEqual(['MERGE discovered_assets']);
+  });
+
+  it('accepts MERGE with both prior locks', () => {
+    expect(scan(locks + merge)).toEqual([]);
   });
 
   it('requires both axes earlier, even on the same line', () => {

@@ -100,7 +100,7 @@ with anything.
   **cannot** be silenced by adding it. See issue #4518.
 
 - **Set-based writes on partner-export material tables require pre-locks.**
-  Before any `UPDATE`, `DELETE`, or `INSERT … SELECT` against a table carrying
+  Before any `UPDATE`, `DELETE`, `MERGE`, or `INSERT … SELECT` against a table carrying
   `breeze_partner_export_(device_child|site_child|material)_(insert|update|delete)`
   triggers, acquire **all partners shared first, then all orgs exclusive**, each
   in ascending UUID order, over the union of rows every write will touch.
@@ -148,6 +148,14 @@ with anything.
   and `FOREACH … IN ARRAY ARRAY[...]` trigger-installation loops. Its literal
   baseline records exactly seven shipped offenders and **must never grow**.
   Shipped offenders need fix-forward repairs; new files must satisfy the rule.
+  Coverage is limited to the `device_child_*`, `site_child_*`, and `material_*`
+  insert/update/delete trigger families named above; the configuration-material
+  family (`breeze_partner_export_configuration_owner_*`, `direct_org_*`,
+  `policy_child_*`, `assignment_*`, `custom_values_update`, and
+  `normalized_policy_child` in the 2026-07-24 configuration-material-state and
+  2026-07-25 canonical-configuration migrations) is a documented follow-up outside
+  this PR because it uses `breeze_partner_export_lock_partners_exclusive` and
+  `breeze_partner_export_lock_orgs_under_exclusive_partners`.
 
 ## Never edit a shipped migration
 
