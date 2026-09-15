@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Prüflauf",
         "narrative": "Wochenbericht",
-        "design": "Flottendesign"
+        "design": "Flottendesign",
+        "patch": "Patch-Plan"
       },
       "kindsLabel": "Auszuführende Prüfungen",
       "kind": "Zeitplantyp",
       "weeklyOnlyHint": "Ein Wochenbericht wird genau einmal pro Woche ausgelöst: feste Minute und Stunde, * für Tag-des-Monats und Monat sowie ein einzelner Wochentag von 0 bis 6. Beispiel: 0 7 * * 1 läuft jeden Montag um 07:00 Uhr.",
       "monthlyOrRarerHint": "Ein Flottendesign wird höchstens einmal im Monat ausgelöst: feste Minute, Stunde und Tag-des-Monats (1–28), Monat als * oder eine durch Kommas getrennte Liste fester Monate, sowie * für den Wochentag. Beispiel: 0 6 1 1,4,7,10 * läuft vierteljährlich am 1. um 06:00 Uhr.",
+      "dailyOrRarerHint": "Ein Patch-Plan wird höchstens einmal am Tag ausgelöst: feste Minute und Stunde sowie * oder eine literale Liste für Tag-des-Monats, Monat und Wochentag. Beispiel: 0 2 * * * läuft jede Nacht um 02:00 Uhr.",
       "kindsRequired": "Wählen Sie mindestens eine Prüfung aus.",
       "enabled": "Aktiviert",
       "override": "Für diese Organisation überschreiben",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Sweep-Zeitpläne erfordern einen partnerweiten Agenten.",
         "agentKindNotTriage": "Nur ein Triage-Agent kann geplant werden.",
         "agentKindNotDesigner": "Ein Flottendesign-Zeitplan muss auf einen Flottendesigner-Agenten abzielen.",
+        "agentKindNotPatch": "Ein Patch-Plan-Zeitplan muss auf einen Patch-Agenten abzielen.",
         "kindsNotEmpty": "Ein Wochenbericht-Zeitplan führt keine Prüfungen aus. Entfernen Sie die ausgewählten Prüfungen vor dem Speichern.",
         "invalidCronForKind": "Ein Wochenbericht muss genau einmal pro Woche ausgelöst werden. Verwenden Sie feste Minute und Stunde, * für Tag-des-Monats und Monat sowie einen einzelnen Wochentag."
       }
@@ -1622,6 +1625,8 @@
       "never": "Nie ausgeführt",
       "at": "Letzte Ausführung {{at}}"
     },
+    "nextOccurrence": "Nächster Lauf {{at}}",
+    "runNowNoOrg": "Wählen Sie eine Organisation aus, um einen Patch-Plan auszuführen.",
     "disableDialog": {
       "title": "{{name}} deaktivieren?",
       "message": "Künftige Ausführungen werden gestoppt, angehängte Zeitpläne lösen nicht mehr aus, und Organisations-Überschreibungen dieses Agenten gelten nicht mehr. Eine bereits laufende Ausführung läuft bis zu ihrem Zeitlimit weiter.",
@@ -1653,6 +1658,7 @@
       "invalidSupervisedActionKeys": "Eine oder mehrere ausgewählte Aktionen können nicht per Richtlinie autorisiert werden.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Dieser Agent ist bereits aktiv.",
+      "noPatchAgent": "Für diese Organisation gilt kein Patch-Agent.",
       "actRecipientsUnreachable": "Die ausgewählten Benachrichtigungsrollen haben keine aktiven Mitglieder, sodass niemand gefragt werden könnte. Wählen Sie eine Rolle mit Mitgliedern, bevor Sie den Handlungsmodus aktivieren.",
       "invalidScriptIds": "Ein oder mehrere Skripte können für diesen Agenten nicht autorisiert werden.",
       "scriptRejected": "Skript {{id}}: {{reason}}",
@@ -1670,7 +1676,8 @@
       "disable": "Deaktivieren",
       "confirmDisable": "Deaktivierung bestätigen",
       "reenable": "Wieder aktivieren",
-      "runs": "Ausführungen"
+      "runs": "Ausführungen",
+      "runNow": "Jetzt ausführen"
     },
     "toasts": {
       "saved": "Agent gespeichert",
@@ -1678,7 +1685,9 @@
       "disabled": "Agent deaktiviert",
       "disableFailed": "Der Agent konnte nicht deaktiviert werden.",
       "reenabled": "Agent wieder aktiviert",
-      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden."
+      "reenableFailed": "Der Agent konnte nicht wieder aktiviert werden.",
+      "runNowQueued": "Patch-Plan-Lauf eingereiht",
+      "runNowFailed": "Der Patch-Plan-Lauf konnte nicht gestartet werden."
     },
     "issues": {
       "name": "Geben Sie dem Agenten einen Namen.",
@@ -1883,7 +1892,34 @@
           "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
           "no_eligible_approvers": "Keine berechtigten Genehmiger",
           "intent_error": "Genehmigung konnte nicht erstellt werden",
-          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht"
+          "max_actions_per_run": "Aktionslimit für diesen Lauf erreicht",
+          "intent_invalid_provenance": "Genehmigung konnte nicht validiert werden (interner Fehler)"
+        }
+      },
+      "patch": {
+        "title": "Patch-Plan",
+        "empty": "Der Agent hat keine Patch-Arbeit vorgeschlagen.",
+        "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
+        "posture": "{{compliance}}% konform · {{count}} Gerät gefährdet",
+        "posture_other": "{{compliance}}% konform · {{count}} Geräte gefährdet",
+        "patchCount": "{{count}} Update",
+        "patchCount_other": "{{count}} Updates",
+        "refused": "Nicht erfasst: {{reason}}",
+        "unconfirmed": "Dieser Plan wurde nie bestätigt — der Agent konnte seine Einträge nicht erneut mit den Belegen abgleichen, daher wurde nichts davon unten validiert.",
+        "unconfirmedItem": "Nicht bestätigt — dieser Eintrag wurde nie erneut geprüft.",
+        "classes": {
+          "install": "Installation",
+          "approval_advisory": "Genehmigungsempfehlung",
+          "reboot_plan": "Neustartplan",
+          "chase": "Fehlernachverfolgung",
+          "escalation": "Eskalation"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Gerät nicht in den Patch-Belegen",
+          "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
+          "patch_not_in_evidence": "Update nicht in den Patch-Belegen",
+          "window_not_resolved": "Wartungsfenster konnte nicht aufgelöst werden",
+          "job_result_not_in_evidence": "Patch-Job-Ergebnis nicht in den Belegen"
         }
       },
       "narrative": {

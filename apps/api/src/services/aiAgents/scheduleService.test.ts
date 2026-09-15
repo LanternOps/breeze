@@ -135,6 +135,7 @@ import {
   deleteSchedule,
   effectiveSchedule,
   listSchedules,
+  loadEnabledBaselineCadences,
   resolveEffectiveSchedulesForPartner,
   updateSchedule,
 } from './scheduleService';
@@ -551,6 +552,55 @@ describe('createSchedule — partner baseline', () => {
     },
   );
 
+  // AI patch agent (W01) — a `patch` schedule needs a `patch` agent, sweeps
+  // nothing, and fires at most once a day.
+  const patchInput = { ...input, kind: 'patch' as const, cron: '0 2 * * *', sweepKinds: [] as AiSweepKind[] };
+
+  it('inserts a patch baseline with no sweep kinds on a daily cron', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    dbState.insertReturning = baselineRow({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *' });
+
+    await createSchedule(partnerAuth(), patchInput);
+
+    expect(dbState.inserted).toMatchObject({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *', partnerId: PARTNER_ID, orgId: null });
+  });
+
+  it.each(['triage', 'designer', 'helpdesk'])(
+    'rejects a patch create against a partner-wide %s agent with agent_kind_not_patch',
+    async (kind) => {
+      dbState.agentRows = [[agentRow({ kind })]];
+
+      await expect(createSchedule(partnerAuth(), patchInput)).rejects.toMatchObject({ code: 'agent_kind_not_patch' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
+  it('keeps sweep/narrative on triage and design on designer when the target is a patch agent', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    await expect(createSchedule(partnerAuth(), input)).rejects.toMatchObject({ code: 'agent_kind_not_triage' });
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    await expect(createSchedule(partnerAuth(), designInput)).rejects.toMatchObject({ code: 'agent_kind_not_designer' });
+  });
+
+  it('rejects a patch baseline that carries sweep kinds (kinds_not_empty)', async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+
+    await expect(
+      createSchedule(partnerAuth(), { ...patchInput, sweepKinds: ['disk_pressure'] as AiSweepKind[] }),
+    ).rejects.toMatchObject({ code: 'kinds_not_empty' });
+    expect(dbState.inserted).toBeNull();
+  });
+
+  it.each(['0 * * * *', '0 2,14 * * *', '0,30 2 * * *'])(
+    'rejects a patch baseline on the sub-daily cron %s (invalid_cron_for_kind)',
+    async (cron) => {
+      dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+
+      await expect(createSchedule(partnerAuth(), { ...patchInput, cron })).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+      expect(dbState.inserted).toBeNull();
+    },
+  );
+
   it('still applies the hourly cadence floor to a SWEEP baseline', async () => {
     dbState.agentRows = [[agentRow()]];
 
@@ -952,6 +1002,24 @@ describe('updateSchedule', () => {
     expect(dbState.updatedValues).toBeNull();
   });
 
+  it('refuses a sub-daily cron on a patch baseline and accepts a daily one', async () => {
+    const patchBaseline = (over: Record<string, unknown> = {}) => baselineRow({ kind: 'patch', sweepKinds: [], cron: '0 2 * * *', ...over });
+    dbState.scheduleRows = [[patchBaseline()]];
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { cron: '*/15 * * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron' });
+    dbState.scheduleRows = [[patchBaseline()]];
+    await expect(
+      updateSchedule(partnerAuth(), BASELINE_ID, { cron: '0 2,14 * * *' }),
+    ).rejects.toMatchObject({ code: 'invalid_cron_for_kind' });
+    expect(dbState.updatedValues).toBeNull();
+
+    dbState.scheduleRows = [[patchBaseline()]];
+    dbState.updateReturning = patchBaseline({ cron: '30 3 * * *' });
+    const row = await updateSchedule(partnerAuth(), BASELINE_ID, { cron: '30 3 * * *' });
+    expect(row.cron).toBe('30 3 * * *');
+  });
+
   it('does NOT raise kinds_empty for an empty list on a narrative baseline', async () => {
     // `kinds_empty` is a SWEEP-only rule ("a baseline that sweeps nothing is
     // just a disabled schedule"). A narrative baseline sweeps nothing BY
@@ -1124,7 +1192,11 @@ describe('tenancy pins (compiled SQL)', () => {
     expect(agents.sql).toContain('"partner_id"');
     expect(agents.sql).toContain('"kind"');
     expect(agents.sql).toContain('"disabled_at" is null');
-    expect(agents.params).toEqual([PARTNER_ID, 'triage']);
+    // AI patch agent (W01): a closed list of SCHEDULABLE agent kinds (never
+    // "any kind") — before W01 this was `'triage'` alone, which hid every
+    // design and patch baseline from an org token. `helpdesk` has no
+    // schedule kind and stays out.
+    expect(agents.params).toEqual([PARTNER_ID, 'triage', 'designer', 'patch']);
 
     // Inside the escape the app predicate is the ONLY filter, so it must carry
     // the partner AND the agent allowlist, not just `org_id IS NULL`.
@@ -1252,5 +1324,61 @@ describe('resolveEffectiveSchedulesForPartner', () => {
 
     const { withSystemDbAccessContext } = await import('../../db');
     expect(withSystemDbAccessContext).not.toHaveBeenCalled();
+  });
+});
+
+// AI patch agent W01 (#5747), Task 10 — the agents LIST route's
+// next-occurrence column. One batched read for the whole page, on the same
+// two-branch tenancy posture `listSchedules` uses.
+describe('loadEnabledBaselineCadences', () => {
+  it('returns nothing, and issues no query, for an empty agent list', async () => {
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), []);
+    expect(rows).toEqual([]);
+    expect(dbState.reads).toHaveLength(0);
+  });
+
+  it("reads a partner caller's baselines under its OWN RLS context", async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    const rows = await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    // The fixture store ignores the column projection and hands back whole
+    // rows, so this asserts the three fields the caller reads, not the shape
+    // the real query narrows to.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agentId: AGENT_ID, cron: CRON, timezone: 'Europe/Berlin' });
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    expect(read?.system).toBe(false);
+  });
+
+  it("reads an org caller's partner baselines through the partner-axis escape", async () => {
+    dbState.agentRows = [[agentRow({ kind: 'patch' })]];
+    dbState.scheduleRows = [[baselineRow({ kind: 'patch' })]];
+
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+
+    expect(rows).toHaveLength(1);
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    // Org-scoped RLS is blind to partner-axis rows (#2822) — without the
+    // escape the card silently shows "—" for every partner-wide agent.
+    expect(read?.system).toBe(true);
+  });
+
+  it('pins the read to the listed agents, to baselines, and to enabled rows', async () => {
+    dbState.scheduleRows = [[baselineRow()]];
+
+    await loadEnabledBaselineCadences(partnerAuth(), [AGENT_ID]);
+
+    const read = dbState.reads.find((r) => r.table === 'ai_agent_schedules');
+    const sql = dialect.sqlToQuery(read?.where as SQL);
+    expect(sql.sql).toContain('"org_id" is null');
+    expect(sql.sql).toContain('"enabled"');
+    expect(sql.sql).toContain('"agent_id" in');
+  });
+
+  it('returns nothing for an org whose partner has no schedulable partner-wide agent', async () => {
+    dbState.agentRows = [[]];
+    const rows = await loadEnabledBaselineCadences(orgAuth(), [AGENT_ID]);
+    expect(rows).toEqual([]);
   });
 });

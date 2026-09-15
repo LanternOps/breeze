@@ -24,12 +24,21 @@ import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
   NARRATIVE_SECTION_KEYS,
+  PATCH_PLAN_DETAIL_MAX_CHARS,
+  PATCH_PLAN_ITEM_CLASSES,
+  PATCH_PLAN_MAX_ITEMS,
+  PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM,
+  PATCH_PLAN_MAX_PATCH_IDS_PER_ITEM,
+  PATCH_PLAN_SUMMARY_MAX_CHARS,
+  PATCH_PLAN_TITLE_MAX_CHARS,
   TICKET_TRIAGE_PRIORITIES,
   alertVerdictOutcomeSchema,
   fleetDesignOutcomeFromSubmission,
   fleetDesignSubmissionSchema,
   narrativeOutcomeFromSubmission,
   narrativeSubmissionSchema,
+  patchPlanOutcomeFromSubmission,
+  patchPlanSubmissionSchema,
   sweepFindingsOutcomeSchema,
   ticketTriageProposalSchema,
   type AiAgentRunProfile,
@@ -38,6 +47,8 @@ import {
   type FleetDesignOutcomeRefs,
   type FleetDesignSubmission,
   type NarrativeOutcome,
+  type PatchPlanOutcome,
+  type PatchPlanOutcomeRefs,
   type SweepFindingsOutcome,
   type TicketTriageProposal,
   type SubmitTaskStepPayload,
@@ -54,6 +65,9 @@ export const OUTCOME_TOOL_NAMES = [
   // Fleet Designer W01 (#5651) — the fifth profile-mapped outcome tool. See
   // `outcomeToolsForProfile`'s `'design'` arm below.
   'submit_fleet_design',
+  // AI patch agent W01 (#5747) — the sixth profile-mapped outcome tool. See
+  // `outcomeToolsForProfile`'s `'patch'` arm below.
+  'submit_patch_plan',
   // #5205 W06. Unlike the four above, this one is NOT selected by run profile
   // — a task-linked run uses the `full` profile (spec §6.2) and
   // `outcomeToolsForProfile('full')` is deliberately `[]`. It is selected by
@@ -76,7 +90,24 @@ export const OUTCOME_MCP_TOOL_NAMES: Record<OutcomeToolName, string> = {
   submit_narrative: 'mcp__breeze__submit_narrative',
   submit_ticket_proposal: 'mcp__breeze__submit_ticket_proposal',
   submit_fleet_design: 'mcp__breeze__submit_fleet_design',
+  submit_patch_plan: 'mcp__breeze__submit_patch_plan',
 };
+
+/**
+ * AI patch agent W01 — what `submit_patch_plan` validates against: the run's
+ * evidence refs (`patchEvidenceRefs`), plus the two server-owned outcome
+ * fields. Computed ONCE per run by `driveSdkLoop` and reused by the pre-hook,
+ * the SDK handler and the post-hook capture, so they can never disagree.
+ */
+export interface PatchPlanToolRefs {
+  refs: PatchPlanOutcomeRefs;
+  evidenceTruncated: boolean;
+  generatedAt: string;
+}
+
+function isPatchPlanToolRefs(value: unknown): value is PatchPlanToolRefs {
+  return !!value && typeof value === 'object' && 'refs' in value && 'evidenceTruncated' in value;
+}
 
 export function isOutcomeTool(toolName: string): toolName is OutcomeToolName {
   return (OUTCOME_TOOL_NAMES as readonly string[]).includes(toolName);
@@ -143,6 +174,10 @@ export function outcomeToolsForProfile(profile: AiAgentRunProfile): OutcomeToolN
     // returned here).
     case 'design':
       return ['submit_fleet_design'];
+    // AI patch agent W01 — a patch run's ONLY outcome tool; its read-only
+    // drill-down floor (`patchProfile.ts`) is not an outcome tool.
+    case 'patch':
+      return ['submit_patch_plan'];
     default: {
       const exhaustive: never = profile;
       throw new Error(`[outcomeToolsForProfile] Unknown run profile: ${String(exhaustive)}`);
@@ -193,6 +228,17 @@ export function validateOutcomeToolInput(toolName: 'submit_task_step', input: un
 export function validateOutcomeToolInput(
   toolName: 'submit_fleet_design', input: unknown, refs: FleetDesignOutcomeRefs,
 ): FleetDesignOutcome;
+/**
+ * AI patch agent W01 — `submit_patch_plan`'s validated outcome is the
+ * server-built `PatchPlanOutcome`. Like the design overload it takes a
+ * REQUIRED refs argument: the in-tool referential gate throws on a device or
+ * patch absent from the run's evidence, so the model retries within its turn
+ * budget (`patchPlanOutcomeFromSubmission`). Window / job-result references
+ * are left to `persistPatchPlan`, which refuses them with a disposition.
+ */
+export function validateOutcomeToolInput(
+  toolName: 'submit_patch_plan', input: unknown, refs: PatchPlanToolRefs,
+): PatchPlanOutcome;
 // The union overload the run loop's hooks call through: `toolName` there is
 // the `OutcomeToolName` the SDK handed them, not a literal, so none of the
 // narrow overloads above would apply. Callers that need the concrete type
@@ -201,13 +247,13 @@ export function validateOutcomeToolInput(
 // implementation enforces at runtime (a caller reaching that branch without
 // `refs` gets a thrown error, not a silently invalid outcome).
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs,
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome;
+  | FleetDesignOutcome | PatchPlanOutcome;
 export function validateOutcomeToolInput(
-  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs,
+  toolName: OutcomeToolName, input: unknown, refs?: FleetDesignOutcomeRefs | PatchPlanToolRefs,
 ): AlertVerdictOutcome | SweepFindingsOutcome | NarrativeOutcome | TicketTriageProposal | SubmitTaskStepPayload
-  | FleetDesignOutcome {
+  | FleetDesignOutcome | PatchPlanOutcome {
   switch (toolName) {
     case 'submit_task_step':
       return validateSubmitTaskStep(input);
@@ -223,7 +269,7 @@ export function validateOutcomeToolInput(
     case 'submit_ticket_proposal':
       return ticketTriageProposalSchema.parse(input);
     case 'submit_fleet_design': {
-      if (!refs) throw new Error('[validateOutcomeToolInput] submit_fleet_design needs design refs');
+      if (!refs || isPatchPlanToolRefs(refs)) throw new Error('[validateOutcomeToolInput] submit_fleet_design needs design refs');
       // `.parse` first (the message names the offending path — the model
       // reads it back as the tool error), then the referential pass, which
       // throws `FleetDesignReferenceError` with the same path discipline.
@@ -236,6 +282,16 @@ export function validateOutcomeToolInput(
       // The schema has already rejected anything `parseFunctionKey` would
       // reject by the time this line runs.
       return fleetDesignOutcomeFromSubmission(fleetDesignSubmissionSchema.parse(input) as FleetDesignSubmission, refs);
+    }
+    case 'submit_patch_plan': {
+      if (!isPatchPlanToolRefs(refs)) throw new Error('[validateOutcomeToolInput] submit_patch_plan needs patch refs');
+      // Structural first (the zod message names the path), then the
+      // referential gate against this run's evidence — both throw, so the
+      // model reads the reason back as a retryable tool error.
+      return patchPlanOutcomeFromSubmission(patchPlanSubmissionSchema.parse(input), refs.refs, {
+        evidenceTruncated: refs.evidenceTruncated,
+        generatedAt: refs.generatedAt,
+      });
     }
     default: {
       const exhaustive: never = toolName;
@@ -575,9 +631,49 @@ const SUBMIT_FLEET_DESIGN_SHAPE = {
   }).describe('What the designer is unsure about: low-confidence functions, unreachable devices, anything needing a human.'),
 };
 
+/**
+ * AI patch agent W01 — the model-facing raw shape for `submit_patch_plan`.
+ * Deliberately loose on the per-class field rules (the SDK needs a flat raw
+ * shape); `patchPlanSubmissionSchema` (packages/shared) is the authority and
+ * its messages name the offending path when a class carries the wrong fields.
+ */
+const PATCH_UUID = z.string().uuid();
+const SUBMIT_PATCH_PLAN_SHAPE = {
+  summary: z.string().max(PATCH_PLAN_SUMMARY_MAX_CHARS).describe(
+    'Two or three sentences a technician reads first: overall patch posture and what matters most.',
+  ),
+  posture: z.object({
+    compliancePct: z.number().min(0).max(100).describe('Percent of devices with no outstanding patch, from the evidence rollup.'),
+    devicesAtRisk: z.number().int().min(0).describe('Devices you consider at risk (e.g. outstanding critical updates).'),
+    oldestOutstandingDays: z.number().int().min(0).nullable().describe('Age in days of the oldest outstanding patch, or null when nothing is outstanding.'),
+  }).describe('Fleet posture numbers, copied or derived from the evidence rollup.'),
+  items: z.array(z.object({
+    class: z.enum(PATCH_PLAN_ITEM_CLASSES).describe(
+      'install = these outstanding patches should go on this device (a proposal a technician must approve); '
+      + 'approval_advisory = these updates need a manual approval decision by a partner admin (no deviceId, creates nothing); '
+      + 'reboot_plan = reboot inside an EXISTING maintenance window by id (never a time you choose); '
+      + 'chase = failed patch work to retry; escalation = something a human must look at.',
+    ),
+    severity: z.enum(AI_SWEEP_SEVERITIES).describe('How urgent this item is.'),
+    deviceId: PATCH_UUID.nullable().optional().describe(
+      'The device id, copied from the evidence. Required for install, chase and reboot_plan; forbidden for approval_advisory.',
+    ),
+    patchIds: z.array(PATCH_UUID.describe('A patch id copied from that device\'s outstanding patches in the evidence.'))
+      .max(PATCH_PLAN_MAX_PATCH_IDS_PER_ITEM).optional()
+      .describe('Required for install, chase and approval_advisory; forbidden for reboot_plan.'),
+    jobResultIds: z.array(PATCH_UUID.describe('A failed patch job result id copied from the evidence.'))
+      .max(PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM).optional()
+      .describe('Chase items only.'),
+    windowId: PATCH_UUID.nullable().optional().describe('reboot_plan only: an existing resolved maintenance window id from the evidence.'),
+    title: z.string().max(PATCH_PLAN_TITLE_MAX_CHARS).describe('One line — what an approval card would show.'),
+    detail: z.string().max(PATCH_PLAN_DETAIL_MAX_CHARS).describe('Why, citing the evidence numbers.'),
+    evidenceRef: z.string().max(200).describe('Which evidence section/row this item comes from, e.g. "topNonCompliant".'),
+  })).max(PATCH_PLAN_MAX_ITEMS).describe('The plan items, most important first. An empty array is valid.'),
+};
+
 export function buildOutcomeSdkTools(
   names: readonly OutcomeToolName[],
-  refs?: { design?: FleetDesignOutcomeRefs },
+  refs?: { design?: FleetDesignOutcomeRefs; patch?: PatchPlanToolRefs },
 ): SdkTool[] {
   return names.map((name) => {
     switch (name) {
@@ -667,6 +763,23 @@ export function buildOutcomeSdkTools(
           SUBMIT_FLEET_DESIGN_SHAPE,
           async (input) => {
             validateOutcomeToolInput('submit_fleet_design', input, design); // throws → model retries
+            return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
+          },
+        ) as SdkTool;
+      }
+      case 'submit_patch_plan': {
+        // Same wiring-time refusal as submit_fleet_design: there is no
+        // run-independent way to validate a patch plan's references.
+        const patch = refs?.patch;
+        if (!patch) throw new Error('[buildOutcomeSdkTools] submit_patch_plan requires patch refs');
+        return tool(
+          'submit_patch_plan',
+          'Record the patch plan for this organization. Every device and patch id must be copied from the '
+          + 'evidence. This records a plan for technicians — it installs, approves and reboots nothing. '
+          + 'Call exactly once, as your last action.',
+          SUBMIT_PATCH_PLAN_SHAPE,
+          async (input) => {
+            validateOutcomeToolInput('submit_patch_plan', input, patch); // throws → model retries
             return { content: [{ type: 'text', text: JSON.stringify({ status: 'recorded' }) }] };
           },
         ) as SdkTool;

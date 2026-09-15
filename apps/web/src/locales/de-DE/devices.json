@@ -284,7 +284,20 @@
     "couldnTLoadMore": "Konnte nicht mehr laden.",
     "viewAllActivity2": "Alle Aktivitäten anzeigen",
     "text": "→",
-    "viewProposal": "Vorschlag ansehen"
+    "viewProposal": "Vorschlag ansehen",
+    "trigger": {
+      "manual": "Manuelle Auslösung",
+      "schedule": "Zeitplan",
+      "sweep_finding": "Prüfbefund",
+      "alert": "Warnmeldung",
+      "monitor": "Überwachung",
+      "fleet_finding": "Flottenbefund",
+      "policy": "Richtlinie",
+      "automation": "Automatisierung",
+      "ticket": "Supportanfrage",
+      "anomaly": "Anomalie",
+      "api": "API-Aufruf"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Der Alarmverlauf konnte nicht abgerufen werden",

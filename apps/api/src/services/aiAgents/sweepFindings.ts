@@ -83,9 +83,11 @@
  */
 
 import { and, eq, inArray } from 'drizzle-orm';
+import { ZodError } from 'zod';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS,
   AI_SWEEP_KINDS,
+  sweepTriggerKey,
   type AiAgentRunSweepDto,
   type AiAgentRunSweepFindingDto,
   type AiSweepKind,
@@ -101,6 +103,7 @@ import {
 import { devices } from '../../db/schema/devices';
 import type { AuthContext } from '../../middleware/auth';
 import { createActionIntent } from '../actionIntents/intentService';
+import { captureException } from '../sentry';
 import { isToolAllowlisted } from './toolAllowlist';
 
 /**
@@ -321,6 +324,7 @@ export async function persistSweepFindings(
 
     try {
       const intent = await createActionIntent(agentAuth, {
+        trigger: { kind: 'sweep_finding', refId: run.id, key: sweepTriggerKey(finding.kind, sweepSubjectKey(finding) ?? '') },
         toolName: proposal.tool,
         input: proposalToolInput(proposal),
         source: 'ai_agent',
@@ -350,14 +354,32 @@ export async function persistSweepFindings(
         });
       }
     } catch (error) {
-      // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
-      // The message is LOGGED, never persisted (it can echo tool input).
-      record.disposition = 'error';
-      record.reason = 'intent_error';
-      console.warn('[sweepFindings] proposal intent not created', {
-        runId: run.id, findingIndex: index, tool: proposal.tool,
-        error: (error as Error).message,
-      });
+      if (error instanceof ZodError) {
+        // `createActionIntent` validates `trigger` with
+        // `remediationTriggerSchema.parse(...)` (intentService.ts) — a
+        // ZodError here means THIS file built a malformed trigger, a code
+        // defect, not a business-outcome denial like the ones below. Loud in
+        // Sentry, and a distinct reason so it is never confused with an
+        // ordinary refused/cancelled intent.
+        record.disposition = 'error';
+        record.reason = 'intent_invalid_provenance';
+        captureException(error, undefined, {
+          service: 'aiAgents', operation: 'sweepProposals.createActionIntent',
+          runId: run.id, findingIndex: String(index),
+        });
+        console.warn('[sweepFindings] proposal intent trigger failed schema validation', {
+          runId: run.id, findingIndex: index, tool: proposal.tool, error: error.message,
+        });
+      } else {
+        // agent_policy_denied, scope_argument_mismatch, org_resolution_failed, …
+        // The message is LOGGED, never persisted (it can echo tool input).
+        record.disposition = 'error';
+        record.reason = 'intent_error';
+        console.warn('[sweepFindings] proposal intent not created', {
+          runId: run.id, findingIndex: index, tool: proposal.tool,
+          error: (error as Error).message,
+        });
+      }
     }
 
     proposals.push(record);
@@ -512,4 +534,22 @@ export function projectSweep(
       };
     }),
   };
+}
+
+
+/** Subject of the finding from structured evidence/proposal, never its prose.
+ * This is provenance, not proof that a model-authored subject is trusted. */
+export function sweepSubjectKey(finding: SweepFinding): string | null {
+  const proposal = finding.proposedAction;
+  switch (finding.kind) {
+    case 'service_down':
+      return proposal?.tool === 'manage_services' ? proposal.serviceName
+        : typeof finding.evidence.name === 'string' ? finding.evidence.name : null;
+    case 'disk_pressure':
+      return typeof finding.evidence.mountPoint === 'string' ? finding.evidence.mountPoint : null;
+    case 'unpatched_critical':
+      return proposal?.tool === 'remediate_vulnerability'
+        ? [...proposal.deviceVulnerabilityIds].sort().join(',') || null : null;
+    default: return null;
+  }
 }

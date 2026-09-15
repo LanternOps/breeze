@@ -1,3 +1,4 @@
+import type { RemediationTrigger } from '@breeze/shared';
 import { and, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   db,
@@ -571,6 +572,7 @@ async function reconcileInCurrentContext(
 }
 
 export async function seedAutomationActionResults(input: {
+  trigger?: RemediationTrigger;
   runId: string;
   device: { id: string; orgId: string };
   actions: Array<{ actionIndex: number; actionType: string }>;
@@ -592,6 +594,9 @@ export async function seedAutomationActionResults(input: {
     if (device.org_id !== input.device.orgId) throw new Error('Automation action result device organization mismatch');
 
     await db.insert(automationActionResults).values(input.actions.map((action) => ({
+      triggerKind: input.trigger?.kind ?? null,
+      triggerRefId: input.trigger?.refId ?? null,
+      triggerKey: input.trigger?.key ?? null,
       runId: input.runId,
       deviceId: device.id,
       orgId: device.org_id,

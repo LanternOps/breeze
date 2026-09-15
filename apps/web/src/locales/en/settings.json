@@ -1515,12 +1515,14 @@
       "kinds": {
         "sweep": "Sweep",
         "narrative": "Weekly report",
-        "design": "Fleet design"
+        "design": "Fleet design",
+        "patch": "Patch plan"
       },
       "kindsLabel": "Checks to run",
       "kind": "Schedule type",
       "weeklyOnlyHint": "A weekly report fires exactly once a week: a literal minute and hour, * for day-of-month and month, and a single day of the week 0-6. For example 0 7 * * 1 runs every Monday at 07:00.",
       "monthlyOrRarerHint": "A fleet design fires at most once a month: a literal minute, hour and day-of-month (1-28), month as * or a comma list of literal months, and * for day-of-week. For example 0 6 1 1,4,7,10 * runs quarterly on the 1st at 06:00.",
+      "dailyOrRarerHint": "A patch plan fires at most once a day: a literal minute and hour, and * or a literal list for day-of-month, month and day-of-week. For example 0 2 * * * runs every night at 02:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
       "override": "Override for this org",
@@ -1561,6 +1563,7 @@
         "agentNotPartnerWide": "Sweep schedules require a partner-wide agent.",
         "agentKindNotTriage": "Only a triage agent can be scheduled.",
         "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
+        "agentKindNotPatch": "A patch plan schedule must target a Patch agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
         "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
       }
@@ -1622,6 +1625,8 @@
       "never": "Never run",
       "at": "Last run {{at}}"
     },
+    "nextOccurrence": "Next run {{at}}",
+    "runNowNoOrg": "Select an organization to run a patch plan.",
     "disableDialog": {
       "title": "Disable {{name}}?",
       "message": "Future runs stop, attached schedules stop firing, and organization overrides of this agent stop applying. A run already in flight continues to its time limit.",
@@ -1653,6 +1658,7 @@
       "invalidSupervisedActionKeys": "One or more selected actions can't be authorized by policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "That agent is already live.",
+      "noPatchAgent": "No patch agent applies to this organization.",
       "actRecipientsUnreachable": "The selected notification roles have no active members, so nobody could be asked. Pick a role that has members before enabling act mode.",
       "invalidScriptIds": "One or more scripts can't be authorized for this agent.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1670,7 +1676,8 @@
       "disable": "Disable",
       "confirmDisable": "Confirm disable",
       "reenable": "Re-enable",
-      "runs": "Runs"
+      "runs": "Runs",
+      "runNow": "Run now"
     },
     "toasts": {
       "saved": "Agent saved",
@@ -1678,7 +1685,9 @@
       "disabled": "Agent disabled",
       "disableFailed": "Could not disable the agent.",
       "reenabled": "Agent re-enabled",
-      "reenableFailed": "Could not re-enable the agent."
+      "reenableFailed": "Could not re-enable the agent.",
+      "runNowQueued": "Patch plan run queued",
+      "runNowFailed": "Could not start a patch plan run."
     },
     "issues": {
       "name": "Give the agent a name.",
@@ -1883,7 +1892,34 @@
           "not_allowlisted": "Tool not allowed for this agent",
           "no_eligible_approvers": "No eligible approvers",
           "intent_error": "Could not create the approval",
-          "max_actions_per_run": "Action limit reached for this run"
+          "max_actions_per_run": "Action limit reached for this run",
+          "intent_invalid_provenance": "The approval could not be validated (internal error)"
+        }
+      },
+      "patch": {
+        "title": "Patch plan",
+        "empty": "The agent proposed no patch work.",
+        "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
+        "posture": "{{compliance}}% compliant · {{count}} device at risk",
+        "posture_other": "{{compliance}}% compliant · {{count}} devices at risk",
+        "patchCount": "{{count}} update",
+        "patchCount_other": "{{count}} updates",
+        "refused": "Not recorded: {{reason}}",
+        "unconfirmed": "This plan was never confirmed — the agent could not re-check its items against the evidence, so nothing below has been validated.",
+        "unconfirmedItem": "Not confirmed — this item was never re-checked.",
+        "classes": {
+          "install": "Install",
+          "approval_advisory": "Approval advice",
+          "reboot_plan": "Reboot plan",
+          "chase": "Chase failure",
+          "escalation": "Escalation"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Device not in the patch evidence",
+          "device_not_in_org": "Device not in this organization",
+          "patch_not_in_evidence": "Update not in the patch evidence",
+          "window_not_resolved": "Maintenance window could not be resolved",
+          "job_result_not_in_evidence": "Patch job result not in the evidence"
         }
       },
       "narrative": {

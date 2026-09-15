@@ -2,7 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, type SweepFindingsOutcome } from '@breeze/shared';
+import {
+  AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, remediationTriggerSchema, type SweepFinding, type SweepFindingsOutcome,
+} from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000a1';
 const RUN_ID = '00000000-0000-4000-8000-0000000000a2';
@@ -83,10 +85,14 @@ const createActionIntent = vi.hoisted(() =>
     Promise<{ id: string; status: string; errorCode?: string | null }>>());
 vi.mock('../actionIntents/intentService', () => ({ createActionIntent }));
 
+const captureException = vi.hoisted(() => vi.fn());
+vi.mock('../sentry', () => ({ captureException }));
+
 import {
   persistSweepFindings,
   projectSweep,
   sweepFindingDeviceIds,
+  sweepSubjectKey,
   type SweepProposalRecord,
 } from './sweepFindings';
 
@@ -183,6 +189,7 @@ describe('persistSweepFindings', () => {
       source: 'ai_agent',
       orgId: ORG_ID,
       reason: 'Spooler is stopped',
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: 'sweep:service_down:Spooler' },
       idempotencyKey: `sweep:${RUN_ID}:0`,
       scope: { deviceId: DEVICE_A },
     });
@@ -241,6 +248,7 @@ describe('persistSweepFindings', () => {
       input: { deviceId: DEVICE_A, deviceVulnerabilityIds: [dvId] },
       scope: { deviceId: DEVICE_A },
       idempotencyKey: `sweep:${RUN_ID}:0`,
+      trigger: { kind: 'sweep_finding', refId: RUN_ID, key: `sweep:unpatched_critical:${dvId}` },
     }));
     expect(result.proposals[0]).toMatchObject({ tool: 'remediate_vulnerability', action: null });
   });
@@ -429,6 +437,31 @@ describe('persistSweepFindings', () => {
     expect(JSON.stringify(result.proposals)).not.toContain('agent_policy_denied');
   });
 
+  // Review fix (PR #5780, HIGH) — `createActionIntent` validates `trigger`
+  // with `remediationTriggerSchema.parse(...)` (intentService.ts). A
+  // `ZodError` there means THIS file built a malformed trigger — a code
+  // defect, not a business-outcome denial — and must be loud in Sentry with
+  // a distinct reason, never collapsed into the ordinary `intent_error`
+  // bucket used for genuine denials like `org_resolution_failed`.
+  it('reports a ZodError from createActionIntent as intent_invalid_provenance and captures it in Sentry', async () => {
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    const zodError = remediationTriggerSchema.safeParse({ kind: 'sweep_finding', key: '' }).error;
+    createActionIntent.mockRejectedValue(zodError);
+
+    const result = await persistSweepFindings(
+      runInput(),
+      outcomeWith(restartFinding(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(result.proposals[0]).toMatchObject({ disposition: 'error', reason: 'intent_invalid_provenance' });
+    expect(result.intentIds).toEqual([]);
+    expect(captureException).toHaveBeenCalledTimes(1);
+    expect(captureException).toHaveBeenCalledWith(zodError, undefined, expect.objectContaining({
+      runId: RUN_ID, findingIndex: '0',
+    }));
+  });
+
   it('records nothing and reads nothing for findings that propose no action', async () => {
     const result = await persistSweepFindings(
       runInput(),
@@ -481,6 +514,65 @@ describe('sweepFindingDeviceIds', () => {
         intentId: INTENT_A,
       }] as SweepProposalRecord[],
     })).toEqual([DEVICE_A]);
+  });
+});
+
+describe('sweepSubjectKey', () => {
+  it('reads disk_pressure from evidence.mountPoint', () => {
+    const finding: SweepFinding = {
+      kind: 'disk_pressure',
+      severity: 'high',
+      deviceId: DEVICE_A,
+      title: 'C: is 96% full',
+      detail: 'C: on WS-ACCT-04 is at 96.4%.',
+      evidence: { usedPercent: 96.4, mountPoint: 'C:' },
+    };
+
+    expect(sweepSubjectKey(finding)).toBe('C:');
+  });
+
+  it('sorts and joins unpatched_critical deviceVulnerabilityIds from the proposal', () => {
+    const finding: SweepFinding = {
+      kind: 'unpatched_critical',
+      severity: 'critical',
+      deviceId: DEVICE_A,
+      title: '2 critical CVEs unpatched',
+      detail: 'Two critical findings have an approved patch available.',
+      evidence: { criticalCount: 2 },
+      proposedAction: {
+        tool: 'remediate_vulnerability',
+        deviceId: DEVICE_A,
+        deviceVulnerabilityIds: ['dv-b', 'dv-a'],
+      },
+    };
+
+    expect(sweepSubjectKey(finding)).toBe('dv-a,dv-b');
+  });
+
+  it('falls back to evidence.name for a service_down finding without a manage_services proposal', () => {
+    const finding: SweepFinding = {
+      kind: 'service_down',
+      severity: 'critical',
+      deviceId: DEVICE_A,
+      title: 'Spooler is stopped',
+      detail: 'Spooler has been stopped for 3 days.',
+      evidence: { state: 'stopped', name: 'Spooler' },
+    };
+
+    expect(sweepSubjectKey(finding)).toBe('Spooler');
+  });
+
+  it('returns null for a kind the switch does not recognize', () => {
+    const finding: SweepFinding = {
+      kind: 'pending_reboots',
+      severity: 'medium',
+      deviceId: DEVICE_A,
+      title: 'Reboot pending',
+      detail: 'A reboot has been pending for 5 days.',
+      evidence: {},
+    };
+
+    expect(sweepSubjectKey(finding)).toBeNull();
   });
 });
 

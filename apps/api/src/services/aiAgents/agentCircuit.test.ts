@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { AI_AGENT_LIMIT_DEFAULTS, type AgentRunVerdict, type AiAgentRunStatus } from '@breeze/shared';
+import { AI_AGENT_LIMIT_DEFAULTS, AI_AGENT_RUN_PROFILES, type AgentRunVerdict, type AiAgentRunStatus } from '@breeze/shared';
 
 const ORG_ID = '00000000-0000-4000-8000-0000000000c1';
 const AGENT_ID = '00000000-0000-4000-8000-0000000000c2';
@@ -258,6 +258,27 @@ describe('classifyTerminal with run profile (P2-1)', () => {
     expect(classifyTerminal('completed', null, 'needs_attention', 'verdict')).toBe('neutral');
     expect(classifyTerminal('failed', 'sdk_error', null, 'verdict')).toBe('increment');
     expect(classifyTerminal('completed', null, null, 'full')).toBe('reset');
+  });
+});
+
+// AI patch agent (W01). `STREAK_NEUTRAL_PROFILES` has no compile-time guard,
+// so this is a per-profile row over EVERY `AI_AGENT_RUN_PROFILES` member: a
+// new profile that is not explicitly handled fails here instead of silently
+// inheriting `full`'s reset behaviour.
+describe('classifyTerminal per profile (AI patch agent W01)', () => {
+  it.each(AI_AGENT_RUN_PROFILES)('%s completion is streak-neutral unless it is full', (profile) => {
+    expect(classifyTerminal('completed', null, 'no_action', profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
+    expect(classifyTerminal('awaiting_approval', null, null, profile)).toBe(profile === 'full' ? 'reset' : 'neutral');
+  });
+
+  it('a patch plan is advice a human must accept, so even needs_attention is neutral', () => {
+    expect(classifyTerminal('completed', null, 'needs_attention', 'patch')).toBe('neutral');
+  });
+
+  it('a genuine failure still increments on a patch run', () => {
+    expect(classifyTerminal('failed', 'llm_unavailable', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'max_turns_exceeded', null, 'patch')).toBe('increment');
+    expect(classifyTerminal('failed', 'stalled', null, 'patch')).toBe('neutral');
   });
 });
 

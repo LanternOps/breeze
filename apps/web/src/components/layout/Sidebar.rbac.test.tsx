@@ -45,6 +45,7 @@ const PARTNER_BILLING: Perm[] = [
   { resource: 'quotes', action: 'read' }, { resource: 'quotes', action: 'write' }, { resource: 'quotes', action: 'send' },
   { resource: 'invoices', action: 'read' }, { resource: 'invoices', action: 'write' }, { resource: 'invoices', action: 'send' }, { resource: 'invoices', action: 'export' },
   { resource: 'contracts', action: 'read' }, { resource: 'contracts', action: 'write' }, { resource: 'contracts', action: 'manage' },
+  { resource: 'agreements', action: 'read' }, { resource: 'agreements', action: 'write' },
 ];
 const PARTNER_TECHNICIAN: Perm[] = [
   { resource: 'backup', action: 'read' }, { resource: 'backup', action: 'write' },

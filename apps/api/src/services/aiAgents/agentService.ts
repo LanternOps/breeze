@@ -25,6 +25,7 @@ import {
 } from './managedAutomation';
 import { hasResolvableAgentRecipient, validateAgentRecipients } from './recipients';
 import { assertScriptIdsAuthorizable } from './scriptAuthorization';
+import { ensureDefaultPatchSchedule } from './scheduleService';
 
 export class UnsupportedAgentModeError extends Error {
   readonly code = 'mode_not_supported';
@@ -580,6 +581,29 @@ export async function withAgentRowLocked<T>(
   return fn(row);
 }
 
+/**
+ * AI patch agent W01 (#5747, OD-9 A) — give an enabled partner-wide patch
+ * agent its default 02:00 schedule. Best effort by design: a failure here
+ * must NEVER fail the create/enable, so it runs in its own SAVEPOINT
+ * (`db.transaction`) with the savepoint's `tx` as the executor — a plain
+ * try/catch around an ambient-`db` statement would not be enough, because
+ * postgres-js rethrows a failed statement when the enclosing request
+ * transaction ends even if the caller caught it (see `fixWatch.ts`'s
+ * `demoteRecurredKeys`). `ensureDefaultPatchSchedule` itself decides
+ * applicability (partner-wide, enabled, not deleted) and idempotency.
+ */
+async function ensureDefaultPatchScheduleSafely(row: AiAgentRow): Promise<void> {
+  if (row.kind !== 'patch') return;
+  try {
+    await db.transaction(async (tx) => ensureDefaultPatchSchedule(row, tx));
+  } catch (error) {
+    console.warn('[aiAgents] could not create the default patch schedule — the agent change still stands', {
+      agentId: row.id, error,
+    });
+    captureException(error, undefined, { service: 'aiAgents', operation: 'ensureDefaultPatchSchedule', agentId: row.id });
+  }
+}
+
 export async function createAgent(
   auth: AuthContext,
   owner: AgentOwner,
@@ -664,6 +688,7 @@ export async function createAgent(
   // transaction, so a wiring failure must roll the agent insert back rather
   // than leave an audited agent with no trigger automation.
   await ensureManagedTriageAutomation(row);
+  await ensureDefaultPatchScheduleSafely(row);
   await recordAgentMutation(row, auth, 'created');
   return row;
 }
@@ -769,6 +794,11 @@ export async function updateAgent(
     if (input.enabled !== undefined && input.enabled !== existing.enabled) managedPatch.enabled = row.enabled;
     if (managedPatch.name !== undefined || managedPatch.enabled !== undefined) {
       await syncManagedAutomation(row.id, managedPatch);
+    }
+    // AI patch agent W01: the enabled false -> true transition is the moment
+    // a patch agent should start working — see ensureDefaultPatchScheduleSafely.
+    if (!existing.enabled && row.enabled) {
+      await ensureDefaultPatchScheduleSafely(row);
     }
     await recordAgentMutation(row, auth, 'updated');
     return row;

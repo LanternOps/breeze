@@ -32,8 +32,15 @@ import {
 export const contractTemplateRoutes = new Hono();
 
 const scopes = requireScope('partner', 'organization', 'system');
-const readPerm = requirePermission(PERMISSIONS.CONTRACTS_READ.resource, PERMISSIONS.CONTRACTS_READ.action);
-const writePerm = requirePermission(PERMISSIONS.CONTRACTS_WRITE.resource, PERMISSIONS.CONTRACTS_WRITE.action);
+// Agreement templates gate on agreements:* (W02, spec §4), NOT contracts:*.
+// No transitional `contracts:* OR agreements:*` check: migration
+// 2026-10-16-190000-agreements-permission.sql back-fills agreements:read/write
+// onto every role that already held the equivalent contracts grant, so the
+// straight swap is non-regressive on upgrade. A dual check would instead make
+// the split meaningless — every contracts holder would keep reaching the
+// library forever.
+const readPerm = requirePermission(PERMISSIONS.AGREEMENTS_READ.resource, PERMISSIONS.AGREEMENTS_READ.action);
+const writePerm = requirePermission(PERMISSIONS.AGREEMENTS_WRITE.resource, PERMISSIONS.AGREEMENTS_WRITE.action);
 
 const idParam = z.object({ id: z.string().guid() });
 const versionIdParam = idParam.extend({ versionId: z.string().guid() });

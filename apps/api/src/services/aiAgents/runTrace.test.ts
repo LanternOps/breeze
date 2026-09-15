@@ -998,3 +998,29 @@ describe('buildRunTrace — safe projection (#3828)', () => {
     });
   });
 });
+
+describe('buildRunTrace — patch plan (AI patch agent W01)', () => {
+  const D = '00000000-0000-4000-8000-0000000000d1';
+  it('projects the patch plan with hostnames and dispositions, and null for every other run', () => {
+    const run = {
+      ...baseRun(),
+      profile: 'patch',
+      deviceId: null,
+      scheduleId: null,
+      outcome: {
+        proposedActions: [], executedActions: [], deniedActions: [], toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1, summary: 'One device behind.', posture: { compliancePct: 90, devicesAtRisk: 1, oldestOutstandingDays: 12 },
+          items: [{ class: 'install', severity: 'high', deviceId: D, patchIds: ['p'], title: 'Install', detail: 'why', evidenceRef: 'e' }],
+          dispositions: [{ index: 0, class: 'install', deviceId: D, disposition: 'recorded' }],
+          evidenceTruncated: false, generatedAt: '2026-09-14T02:00:00.000Z',
+        },
+      },
+    } as unknown as Parameters<typeof buildRunTrace>[0];
+    const detail = buildRunTrace(run, AGENT, null, [], [], new Map([[D, 'WS-01']]));
+    expect(detail.patch).toMatchObject({ summary: 'One device behind.', recordedCount: 1 });
+    expect(detail.patch!.items[0]).toMatchObject({ deviceHostname: 'WS-01', disposition: 'recorded' });
+    expect(detail.findingsToReview).toBe(1);
+    expect(buildRunTrace(baseRun(), AGENT, DEVICE, [], []).patch).toBeNull();
+  });
+});

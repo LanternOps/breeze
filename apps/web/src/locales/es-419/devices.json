@@ -284,7 +284,20 @@
     "couldnTLoadMore": "No se pudo cargar más.",
     "viewAllActivity2": "Ver toda la actividad",
     "text": "→",
-    "viewProposal": "Ver propuesta"
+    "viewProposal": "Ver propuesta",
+    "trigger": {
+      "manual": "Acción manual",
+      "schedule": "Programación",
+      "sweep_finding": "Hallazgo del barrido",
+      "alert": "Alerta",
+      "monitor": "Supervisión",
+      "fleet_finding": "Hallazgo de la flota",
+      "policy": "Política",
+      "automation": "Automatización",
+      "ticket": "Solicitud de soporte",
+      "anomaly": "Anomalía",
+      "api": "Llamada a la API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "No se pudo recuperar el historial de alertas",

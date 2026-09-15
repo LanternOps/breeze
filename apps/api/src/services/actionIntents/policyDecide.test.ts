@@ -271,6 +271,11 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       maxDesignRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxDesignRunsPerDay,
       designBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.designBudgetCentsPerRun,
       designMaxTurns: AI_AGENT_LIMIT_DEFAULTS.designMaxTurns,
+      // v11 (AI patch agent W01) patch-profile caps — same reason again.
+      maxConcurrentPatchRuns: AI_AGENT_LIMIT_DEFAULTS.maxConcurrentPatchRuns,
+      maxPatchRunsPerDay: AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay,
+      patchBudgetCentsPerRun: AI_AGENT_LIMIT_DEFAULTS.patchBudgetCentsPerRun,
+      patchMaxTurns: AI_AGENT_LIMIT_DEFAULTS.patchMaxTurns,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

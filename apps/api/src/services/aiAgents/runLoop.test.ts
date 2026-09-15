@@ -20,6 +20,12 @@ const SITE_ID = '00000000-0000-4000-8000-0000000000c7';
 const USER_A = '00000000-0000-4000-8000-0000000000c8';
 const USER_B = '00000000-0000-4000-8000-0000000000c9';
 const INTENT_ID = '00000000-0000-4000-8000-0000000000d1';
+const SCHEDULE_ID = '00000000-0000-4000-8000-0000000000d2';
+// Distinct from the `TICKET_ID` scoped locally inside the ticket-context
+// describe block further down — this one is used by the top-level
+// "stamps the run cause" it.each (act mode), which needs a ticket id
+// without pulling in that block's `ticket`/`ticketComments` fixtures.
+const ACT_TRIGGER_TICKET_ID = '00000000-0000-4000-8000-0000000000d3';
 
 interface Hooks {
   getAuth?: () => unknown;
@@ -425,6 +431,10 @@ function seedRows(options: {
    *  DB column default. */
   profile?: AiAgentRunProfile;
   correlationGroupId?: string | null;
+  /** Review fix (PR #5780) — undefined (default) means no schedule, i.e.
+   *  every existing test is unaffected. Pass a schedule id to exercise a
+   *  schedule-triggered run's `triggerRefId` stamping. */
+  scheduleId?: string | null;
 } = {}) {
   const effective = options.effective ?? policy();
   const deviceId = options.deviceId === undefined ? DEVICE_ID : options.deviceId;
@@ -440,6 +450,7 @@ function seedRows(options: {
     alertId,
     ticketId,
     anomalyIncidentId,
+    scheduleId: options.scheduleId === undefined ? null : options.scheduleId,
     status: 'queued',
     modeAtStart: options.modeAtStart ?? 'shadow',
     triggerKind: options.triggerKind ?? 'alert',
@@ -843,6 +854,33 @@ describe('executeAgentRun', () => {
       const [watchRun, watchOutcome] = scheduleFixWatch.mock.calls[0]!;
       expect(watchRun).toMatchObject({ id: RUN_ID, orgId: ORG_ID, agentId: AGENT_ID, alertId: ALERT_ID, modeAtStart: 'act' });
       expect((watchOutcome as AgentRunOutcome).executedActions).toHaveLength(1);
+    });
+
+    // Review fix (PR #5780) — extended from `['alert', 'manual']` to also
+    // cover `schedule` (refId = `run.scheduleId`) and `ticket` (refId =
+    // `run.ticketId`), matching `stampRunCause`'s full branch set
+    // (runLoop.ts:2446-2448).
+    it.each([
+      ['alert', ALERT_ID],
+      ['manual', undefined],
+      ['schedule', SCHEDULE_ID],
+      ['ticket', ACT_TRIGGER_TICKET_ID],
+    ] as const)('stamps the run cause on %s act executions', async (triggerKind, expectedRefId) => {
+      seedRows({
+        effective: policy({ mode: 'act', toolAllowlist: ['manage_services'] }),
+        modeAtStart: 'act',
+        triggerKind,
+        alertId: triggerKind === 'alert' ? ALERT_ID : null,
+        scheduleId: triggerKind === 'schedule' ? SCHEDULE_ID : null,
+        ticketId: triggerKind === 'ticket' ? ACT_TRIGGER_TICKET_ID : null,
+      });
+      revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({ ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } } }));
+      verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+      scriptQuery({ toolCalls: [ACT_CALL], assistantText: 'Restarted.' });
+      await executeAgentRun(RUN_ID);
+      const action = (finalTransition()!.patch.outcome as AgentRunOutcome).executedActions[0];
+      expect(action?.triggerKind).toBe(triggerKind);
+      expect(action?.triggerRefId).toBe(expectedRefId);
     });
 
     it('deny revalidation NEVER dispatches — no ledger write, no proposal, recorded as a denial', async () => {
