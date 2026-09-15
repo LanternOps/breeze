@@ -70,7 +70,14 @@ vi.mock('./NetworkChangesPanel', () => ({
 }));
 
 vi.mock('./NetworkBaselinesPanel', () => ({
-  default: () => <div>Baselines tab</div>
+  default: ({ onViewChanges }: { onViewChanges: (baselineId: string) => void }) => (
+    <div>
+      Baselines tab
+      <button type="button" onClick={() => onViewChanges('baseline-1')}>
+        View changes for baseline
+      </button>
+    </div>
+  )
 }));
 
 // The discovery profiles render through ResponsiveTable, which puts both a
@@ -152,6 +159,19 @@ describe('DiscoveryPage', () => {
 
     expect(await screen.findByText('Baselines tab')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Baselines' })).toBeInTheDocument();
+  });
+
+  it('hands off "view changes" from a baseline to the Changes tab (#5433)', async () => {
+    window.history.pushState({}, '', '/discovery#baselines');
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+
+    render(<DiscoveryPage />);
+    await screen.findByText('Baselines tab');
+
+    fireEvent.click(screen.getByRole('button', { name: 'View changes for baseline' }));
+
+    expect(window.location.hash).toBe('#changes');
+    expect(await screen.findByText('Changes tab')).toBeInTheDocument();
   });
 
   it('toasts and shows a per-profile loading state while queuing a scan', async () => {
