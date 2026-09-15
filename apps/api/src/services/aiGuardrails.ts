@@ -177,6 +177,25 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'search_catalog',
 ]);
 
+/**
+ * Execution plane W04 (spec §5.3). The four sandbox-workspace tools are
+ * Tier 1 — they execute nothing on the fleet — but they are NOT read-only:
+ * they spend compute, write files into a sandbox, and are opt-in per agent.
+ * `isReadOnlyResolution` treats every Tier-1 tool as read-only, which would
+ * (a) make the capability picker list them as "always on" and never write
+ * them to the allowlist, and (b) skip the allowlist gate in
+ * `checkAgentGuardrails`. This set is the ONE exclusion that makes them
+ * allowlist-gated; the carve-out in `checkAgentGuardrails` then keeps them
+ * `allow` (never `propose`/`act`, allowed on device-less runs) once the
+ * allowlist and protected-resource checks pass. Pinned by
+ * aiGuardrails.workspace.contract.test.ts.
+ */
+export const WORKSPACE_TOOL_NAMES = [
+  'workspace_stage', 'workspace_run', 'workspace_collect', 'workspace_cancel',
+] as const;
+export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
+export const TIER1_NON_READONLY_TOOLS: ReadonlySet<string> = new Set<string>(WORKSPACE_TOOL_NAMES);
+
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER1_ACTIONS: Record<string, string[]> = {
@@ -958,6 +977,14 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   resolve_device_context: { resource: 'devices', action: 'write' },
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
+  // Execution plane W04 — sandbox workspace tools. They only function inside
+  // an `analysis` run (chat/MCP calls return `workspace_requires_run`); the
+  // mapping exists so the chat path reports that typed error rather than
+  // "No RBAC permission mapping".
+  workspace_stage: { resource: 'ai_agents', action: 'read' },
+  workspace_run: { resource: 'ai_agents', action: 'read' },
+  workspace_collect: { resource: 'ai_agents', action: 'read' },
+  workspace_cancel: { resource: 'ai_agents', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
@@ -1460,6 +1487,9 @@ export function isReadOnlyResolution(
   toolName: string,
   check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
 ): boolean {
+  // Execution plane W04: the one exclusion from "tier 1 implies read-only".
+  // See TIER1_NON_READONLY_TOOLS.
+  if (TIER1_NON_READONLY_TOOLS.has(toolName)) return false;
   return check.tier === 1
     || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
 }
@@ -1984,7 +2014,14 @@ export function checkAgentGuardrails(
   // every OTHER `manage_tickets` call with no ticket scope, still denies
   // exactly as before — this is not a blanket device-less carve-out.
   const ticketScoped = toolName === 'manage_tickets' && !!policy.scope?.ticketId;
-  if (!readOnly && policy.deviceId === null && !ticketScoped) {
+  // Execution plane W04 exemption: a workspace tool's "mutation" is bounded
+  // to the run's own sandbox and its frozen `staged_inputs`, not to a device
+  // — the device-less rule exists to keep an ORG-WIDE mutation from being
+  // proposed, and there is nothing org-wide here (the sandbox is inert and
+  // reachable only by this run). It is still allowlist- and
+  // protected-resource-gated below.
+  const workspaceTool = TIER1_NON_READONLY_TOOLS.has(toolName);
+  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
@@ -1996,6 +2033,15 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Execution plane W04: allowlisted + not protected ⇒ a workspace tool
+  // executes. Never `propose` (there is nothing a human could approve — the
+  // sandbox is inert) and never `act` (not in the act manifest). Placed AFTER
+  // every structural deny above and BEFORE the mode branches, so shadow mode
+  // cannot turn `workspace_stage` into a recorded proposal.
+  if (workspaceTool) {
+    return { ...base, allowed: true, requiresApproval: false, disposition: 'allow' };
+  }
 
   // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
   // executes (through the normal tool path — the pre/post hooks in
