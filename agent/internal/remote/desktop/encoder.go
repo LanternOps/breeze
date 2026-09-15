@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type Codec string
@@ -110,6 +112,27 @@ type encoderBackend interface {
 	EncodeTexture(bgraTexture uintptr) ([]byte, error)
 }
 
+// convertTimingProvider is implemented by CPU-path backends that perform a
+// pixel-format conversion (RGBA/BGRA → NV12/I420) before the actual encode
+// call, so the session can report captureMs/convertMs/encodeMs separately
+// (#5929). Zero-copy GPU backends do no conversion and don't implement it.
+type convertTimingProvider interface {
+	LastConvertDuration() time.Duration
+}
+
+// convertTimer is the shared implementation of convertTimingProvider.
+// Embed it in a backend and call record() around the conversion step.
+type convertTimer struct {
+	lastConvertNanos atomic.Int64
+}
+
+func (c *convertTimer) record(d time.Duration) { c.lastConvertNanos.Store(d.Nanoseconds()) }
+
+// LastConvertDuration returns the duration of the most recent conversion.
+func (c *convertTimer) LastConvertDuration() time.Duration {
+	return time.Duration(c.lastConvertNanos.Load())
+}
+
 type backendFactory func(cfg EncoderConfig) (encoderBackend, error)
 
 type taggedFactory struct {
@@ -156,6 +179,17 @@ func (v *VideoEncoder) Encode(frame []byte) ([]byte, error) {
 		return nil, errors.New("encoder not initialized")
 	}
 	return v.backend.Encode(frame)
+}
+
+// LastConvertDuration returns the most recent pixel-format conversion time of
+// the active backend, or 0 when the backend does no CPU conversion.
+func (v *VideoEncoder) LastConvertDuration() time.Duration {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if p, ok := v.backend.(convertTimingProvider); ok {
+		return p.LastConvertDuration()
+	}
+	return 0
 }
 
 func (v *VideoEncoder) SetCodec(codec Codec) error {
