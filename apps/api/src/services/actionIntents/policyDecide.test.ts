@@ -297,6 +297,8 @@ const POLICY_SNAPSHOT: AiAgentPolicySnapshot = {
       analysisMaxConcurrentRuns: AI_AGENT_LIMIT_DEFAULTS.analysisMaxConcurrentRuns,
       analysisMaxStepTimeoutSeconds: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepTimeoutSeconds,
       analysisMaxStepsPerRun: AI_AGENT_LIMIT_DEFAULTS.analysisMaxStepsPerRun,
+      maxUnattendedDevicesPerSweep: AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
+      sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
     },
     triggers: { alertSeverities: [], respectMaintenanceWindows: false },
     recipients: { userIds: ['recipient-1'], roleIds: [] },

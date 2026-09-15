@@ -1876,6 +1876,20 @@
         "empty": "Keine Befunde gemeldet.",
         "evidenceTruncated": "Die Belege wurden gekürzt — dem Agenten wurde nicht jede passende Zeile gezeigt.",
         "proposalCreated": "Genehmigung angefordert",
+        "actSummary": "Unbeaufsichtigt auf {{acted}} von {{proposed}} Geräten ausgeführt — der Rest wartet auf Freigabe.",
+        "outcomes": {
+          "auto_executing": "Läuft unbeaufsichtigt",
+          "executed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "declined": "Abgelehnt",
+          "expired": "Abgelaufen",
+          "unknown": "Ergebnis unbekannt"
+        },
+        "stoppedBy": {
+          "fleet_cap": "Tageslimit für die Flotte erreicht",
+          "day_cap": "Tageslimit für Aktionen erreicht",
+          "occurrence_cap": "Gerätelimit pro Durchlauf erreicht"
+        },
         "columns": {
           "kind": "Prüfung",
           "severity": "Schweregrad",
@@ -2394,7 +2408,8 @@
         "below_threshold": "Noch nicht genug bestätigte Ausführungen.",
         "too_recent": "Die erste bestätigte Ausführung liegt noch nicht lange genug zurück.",
         "has_failures": "In diesem Zeitraum wurde ein Fehlschlag oder ein erneutes Auftreten erfasst.",
-        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden."
+        "not_policy_decidable": "Dieser Vorgang kann niemals vorab genehmigt werden.",
+        "below_sweep_threshold": "Es braucht mehr bestätigte Behebungen, bei denen ein geplanter Durchlauf das Ziel ausgewählt hat."
       },
       "confirm": {
         "title": "Vorabgenehmigung beantragen",
