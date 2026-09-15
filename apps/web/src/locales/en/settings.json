@@ -2369,7 +2369,8 @@
         "below_threshold": "Not enough verified executions yet.",
         "too_recent": "The first verified execution is still too recent.",
         "has_failures": "A failure or a recurrence was recorded in this window.",
-        "not_policy_decidable": "This operation can never be pre-authorized."
+        "not_policy_decidable": "This operation can never be pre-authorized.",
+        "below_sweep_threshold": "Needs more verified fixes where a scheduled sweep chose the target."
       },
       "confirm": {
         "title": "Request pre-authorization",

@@ -2369,7 +2369,8 @@
         "below_threshold": "Non ci sono ancora abbastanza esecuzioni verificate.",
         "too_recent": "La prima esecuzione verificata è ancora troppo recente.",
         "has_failures": "In questo periodo è stato registrato un errore o una ricomparsa.",
-        "not_policy_decidable": "Questa operazione non può mai essere preautorizzata."
+        "not_policy_decidable": "Questa operazione non può mai essere preautorizzata.",
+        "below_sweep_threshold": "Servono più correzioni verificate in cui una scansione pianificata ha scelto il bersaglio."
       },
       "confirm": {
         "title": "Richiedi la preautorizzazione",

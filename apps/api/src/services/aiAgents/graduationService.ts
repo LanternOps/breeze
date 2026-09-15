@@ -51,6 +51,8 @@ import {
 // effectivePolicy.ts gives: this module is reachable from the intent-release
 // path (Task 15/16) and pulling the barrel would force every partial-mock
 // unit test of that path to stub the entire schema surface.
+import { actionIntents } from '../../db/schema/actionIntents';
+import { aiAgentFixWatches } from '../../db/schema/aiAgentFixWatches';
 import { aiAgentGraduation } from '../../db/schema/aiAgentGraduation';
 import { aiAgentOpEvidence } from '../../db/schema/aiAgentOpEvidence';
 import { aiAgents } from '../../db/schema/aiAgents';
@@ -194,10 +196,46 @@ function metricCount(metric: AiAgentEvidenceMetric): SQL<number> {
   return sql<number>`COUNT(*) ${metricFilter(metric)}::int`;
 }
 
-/** The four counters + the window's earliest `verified`, selected identically everywhere. */
+/**
+ * #4442 W05 — the SWEEP-lane `verified` counter.
+ *
+ * `AI_AGENT_EVIDENCE_SOURCE_KINDS` is deliberately NOT extended (spec §3.7):
+ * the counter joins back to provenance instead, which is why it needs TWO
+ * arms and why one arm alone would be silently wrong.
+ *
+ *  - arm A: the evidence row IS the intent's own row, and that intent carries
+ *    `trigger_kind = 'sweep_finding'`.
+ *  - arm B: after W02 the sweep lane's `verified` rows are written by
+ *    `recordWatchVerdictEvidence` — WATCH rows, whose `source_id` is
+ *    `${watchId}:${opKey}`, not a bare uuid. A single-arm (intent-only) join
+ *    would count ZERO and block every sweep key forever.
+ *
+ * The two regex guards are load-bearing, not defensive style: an unguarded
+ * `::uuid` cast over a malformed `source_id` raises 22P02 and takes the whole
+ * graduation sweep down with it. Both EXISTS sub-selects pin `org_id` on both
+ * sides — this ladder runs from a system-scoped worker, so the predicate IS
+ * the isolation boundary.
+ */
+const sweepVerifiedCount = sql<number>`COUNT(*) FILTER (WHERE ${aiAgentOpEvidence.metric} = 'verified' AND (
+  (${aiAgentOpEvidence.sourceKind} = 'intent'
+     AND ${aiAgentOpEvidence.sourceId} ~ '^[0-9a-fA-F-]{36}$'
+     AND EXISTS (SELECT 1 FROM ${actionIntents} i
+                  WHERE i.id = ${aiAgentOpEvidence.sourceId}::uuid
+                    AND i.org_id = ${aiAgentOpEvidence.orgId}
+                    AND i.trigger_kind = 'sweep_finding'))
+  OR (${aiAgentOpEvidence.sourceKind} = 'watch'
+     AND split_part(${aiAgentOpEvidence.sourceId}, ':', 1) ~ '^[0-9a-fA-F-]{36}$'
+     AND EXISTS (SELECT 1 FROM ${aiAgentFixWatches} w
+                  WHERE w.id = split_part(${aiAgentOpEvidence.sourceId}, ':', 1)::uuid
+                    AND w.org_id = ${aiAgentOpEvidence.orgId}
+                    AND w.subject_kind IS NOT NULL))
+))::int`;
+
+/** The five counters + the window's earliest `verified`, selected identically everywhere. */
 const WINDOW_SELECT = {
   executed: metricCount('executed'),
   verified: metricCount('verified'),
+  sweepVerified: sweepVerifiedCount,
   failed: metricCount('failed'),
   recurred: metricCount('recurred'),
   firstVerifiedAt: sql<unknown>`MIN(${aiAgentOpEvidence.occurredAt}) ${metricFilter('verified')}`,
@@ -206,6 +244,7 @@ const WINDOW_SELECT = {
 interface RawWindowRow {
   executed: number;
   verified: number;
+  sweepVerified: number;
   failed: number;
   recurred: number;
   firstVerifiedAt: unknown;
@@ -222,6 +261,7 @@ function toWindow(row: RawWindowRow | undefined): AiAgentGraduationWindow {
   return {
     executed: Number(row?.executed ?? 0),
     verified: Number(row?.verified ?? 0),
+    sweepVerified: Number(row?.sweepVerified ?? 0),
     failed: Number(row?.failed ?? 0),
     recurred: Number(row?.recurred ?? 0),
     firstVerifiedAt: toIso(row?.firstVerifiedAt),
@@ -245,6 +285,8 @@ export interface EligibilityInput {
   orgGrantedKeys: string[];
   /** The MAX-merged effective `limits.promoteThreshold`. */
   promoteThreshold: number;
+  /** #4442 W05 — the MAX-merged effective `limits.sweepPromoteThreshold`. */
+  sweepPromoteThreshold: number;
   /** The persisted state, or null when the tuple has no row yet. */
   storedState: AiAgentGraduationState | null;
   now: Date;
@@ -268,9 +310,14 @@ export function evaluateEligibility(input: EligibilityInput): {
   state: AiAgentGraduationState;
   blockedReason: AiAgentGraduationBlockedReason | null;
 } {
-  const { opKey, window, partnerCeilingKeys, orgGrantedKeys, promoteThreshold, storedState, now } = input;
+  const {
+    opKey, window, partnerCeilingKeys, orgGrantedKeys,
+    promoteThreshold, sweepPromoteThreshold, storedState, now,
+  } = input;
 
-  const blockedReason = firstBlockedReason(opKey, window, partnerCeilingKeys, promoteThreshold, now);
+  const blockedReason = firstBlockedReason(
+    opKey, window, partnerCeilingKeys, promoteThreshold, sweepPromoteThreshold, now,
+  );
   if (orgGrantedKeys.includes(opKey)) return { state: 'promoted', blockedReason };
   if (blockedReason === null) return { state: 'eligible', blockedReason: null };
   if (storedState === 'demoted' && window.verified === 0) return { state: 'demoted', blockedReason };
@@ -282,12 +329,16 @@ function firstBlockedReason(
   window: AiAgentGraduationWindow,
   partnerCeilingKeys: string[],
   promoteThreshold: number,
+  sweepPromoteThreshold: number,
   now: Date,
 ): AiAgentGraduationBlockedReason | null {
   if (!isPolicyDecidableKey(opKey)) return 'not_policy_decidable';
   if (!partnerCeilingKeys.includes(opKey)) return 'needs_partner_baseline';
   if (window.failed > 0 || window.recurred > 0) return 'has_failures';
   if (window.verified < promoteThreshold) return 'below_threshold';
+  // #4442 W05 — AFTER the ordinary bar and BEFORE `too_recent`: an operator
+  // who has met neither is told about the ordinary one first.
+  if (window.sweepVerified < sweepPromoteThreshold) return 'below_sweep_threshold';
   if (window.firstVerifiedAt === null) return 'too_recent';
   const firstVerifiedMs = new Date(window.firstVerifiedAt).getTime();
   if (Number.isNaN(firstVerifiedMs) || now.getTime() - firstVerifiedMs < MIN_AGE_MS) return 'too_recent';
@@ -302,6 +353,7 @@ interface GraduationPolicyContext {
   partnerCeilingKeys: string[];
   orgGrantedKeys: string[];
   promoteThreshold: number;
+  sweepPromoteThreshold: number;
 }
 
 /** No organization or no partner baseline: nothing is granted, nothing is a ceiling. */
@@ -310,6 +362,7 @@ function emptyPolicyContext(): GraduationPolicyContext {
     partnerCeilingKeys: [],
     orgGrantedKeys: [],
     promoteThreshold: AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+    sweepPromoteThreshold: AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
   };
 }
 
@@ -385,6 +438,10 @@ async function loadPolicyContext(orgId: string, agentId: string): Promise<Gradua
     orgGrantedKeys: merged.effective.actAssets.supervisedActionKeys ?? [],
     promoteThreshold:
       merged.effective.limits.promoteThreshold ?? AI_AGENT_LIMIT_DEFAULTS.promoteThreshold,
+    // Same `??` fallback: a pre-v13 in-flight policy predates the field.
+    sweepPromoteThreshold:
+      merged.effective.limits.sweepPromoteThreshold
+      ?? AI_AGENT_LIMIT_DEFAULTS.sweepPromoteThreshold,
   };
 }
 
@@ -453,6 +510,7 @@ async function evaluateInner(
     partnerCeilingKeys: context.partnerCeilingKeys,
     orgGrantedKeys: context.orgGrantedKeys,
     promoteThreshold: context.promoteThreshold,
+    sweepPromoteThreshold: context.sweepPromoteThreshold,
     storedState: stored?.state ?? null,
     now: new Date(),
   });
@@ -618,6 +676,7 @@ export async function loadGraduationRows(
         partnerCeilingKeys: context.partnerCeilingKeys,
         orgGrantedKeys: context.orgGrantedKeys,
         promoteThreshold: context.promoteThreshold,
+        sweepPromoteThreshold: context.sweepPromoteThreshold,
         storedState: row.state,
         now,
       });

@@ -2369,7 +2369,8 @@
         "below_threshold": "Pas encore assez d’exécutions vérifiées.",
         "too_recent": "La première exécution vérifiée est encore trop récente.",
         "has_failures": "Un échec ou une réapparition a été enregistré sur cette période.",
-        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée."
+        "not_policy_decidable": "Cette opération ne peut jamais être préautorisée.",
+        "below_sweep_threshold": "Il faut davantage de correctifs vérifiés pour lesquels un balayage planifié a choisi la cible."
       },
       "confirm": {
         "title": "Demander une préautorisation",

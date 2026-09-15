@@ -2369,7 +2369,8 @@
         "below_threshold": "Aún no hay suficientes ejecuciones verificadas.",
         "too_recent": "La primera ejecución verificada es demasiado reciente.",
         "has_failures": "En esta ventana se registró una falla o una reincidencia.",
-        "not_policy_decidable": "Esta operación nunca puede preautorizarse."
+        "not_policy_decidable": "Esta operación nunca puede preautorizarse.",
+        "below_sweep_threshold": "Faltan más correcciones verificadas en las que un barrido programado eligió el objetivo."
       },
       "confirm": {
         "title": "Solicitar preautorización",

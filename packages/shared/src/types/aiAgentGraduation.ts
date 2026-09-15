@@ -42,6 +42,11 @@ export type AiAgentGraduationState = (typeof AI_AGENT_GRADUATION_STATES)[number]
 /** Why a `tracking`/`demoted` key isn't `eligible` yet. */
 export const AI_AGENT_GRADUATION_BLOCKED_REASONS = [
   'needs_partner_baseline', 'below_threshold', 'too_recent', 'has_failures', 'not_policy_decidable',
+  // #4442 W05 — the sweep lane's own bar: `sweepPromoteThreshold` verified
+  // rows whose evidence came from a SWEEP-chosen target. Reported AFTER
+  // `below_threshold` so an operator short of both is told about the ordinary
+  // bar first.
+  'below_sweep_threshold',
 ] as const;
 export type AiAgentGraduationBlockedReason = (typeof AI_AGENT_GRADUATION_BLOCKED_REASONS)[number];
 
@@ -72,6 +77,13 @@ export const AI_AGENT_GRADUATION_BY_ORG_LIMIT = 400;
 export interface AiAgentGraduationWindow {
   executed: number;
   verified: number;
+  /**
+   * #4442 W05 — the subset of `verified` whose evidence traces back to a
+   * SCHEDULED SWEEP: either the intent row itself is `trigger_kind =
+   * 'sweep_finding'`, or the subject-anchored fix watch that graded it (W02)
+   * wrote the row. Always `<= verified`. Gated by `sweepPromoteThreshold`.
+   */
+  sweepVerified: number;
   failed: number;
   recurred: number;
   /** ISO timestamp of the window's earliest `verified` row, or null if none. */

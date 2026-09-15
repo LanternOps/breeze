@@ -2369,7 +2369,8 @@
         "below_threshold": "Henüz yeterli doğrulanmış çalıştırma yok.",
         "too_recent": "İlk doğrulanmış çalıştırma henüz çok yeni.",
         "has_failures": "Bu dönemde bir başarısızlık ya da yineleme kaydedildi.",
-        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez."
+        "not_policy_decidable": "Bu işlem hiçbir zaman önceden yetkilendirilemez.",
+        "below_sweep_threshold": "Hedefi zamanlanmış bir taramanın seçtiği daha fazla doğrulanmış düzeltme gerekiyor."
       },
       "confirm": {
         "title": "Ön yetki isteği oluştur",

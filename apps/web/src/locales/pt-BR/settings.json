@@ -2369,7 +2369,8 @@
         "below_threshold": "Ainda não há execuções verificadas suficientes.",
         "too_recent": "A primeira execução verificada ainda é recente demais.",
         "has_failures": "Uma falha ou uma reincidência foi registrada neste período.",
-        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada."
+        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada.",
+        "below_sweep_threshold": "São necessárias mais correções verificadas em que uma varredura agendada escolheu o alvo."
       },
       "confirm": {
         "title": "Solicitar pré-autorização",
