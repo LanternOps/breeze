@@ -1882,7 +1882,8 @@
           "executed": "Completato",
           "failed": "Non riuscito",
           "declined": "Rifiutato",
-          "expired": "Scaduto"
+          "expired": "Scaduto",
+          "unknown": "Esito sconosciuto"
         },
         "stoppedBy": {
           "fleet_cap": "raggiunto il limite giornaliero del parco",

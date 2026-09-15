@@ -243,6 +243,14 @@ export function sweepProposalOutcome(
     case 'expired':
       return 'expired';
     default:
+      // The cases above exhaustively cover `actionIntentStatusEnum` today, so
+      // this is dead code — until someone adds a ninth status and does not
+      // come here. Reporting an unknown TERMINAL state as `pending` would tell
+      // an operator to go approve something that has already finished, so the
+      // fallback is loud rather than silent.
+      console.warn('[runTrace] unmapped action-intent status on a sweep proposal', {
+        status: row.status, decidedVia: row.decidedVia,
+      });
       return 'pending';
   }
 }

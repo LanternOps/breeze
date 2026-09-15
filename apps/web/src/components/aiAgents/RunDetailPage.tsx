@@ -1099,6 +1099,21 @@ function SweepProposalContent({
         </span>
       );
     }
+    // An outcome this build does not recognise (API/web deploy skew, or a new
+    // intent status) must NOT fall through to the approvals link: that link is
+    // an instruction, and instructing an operator to approve something that
+    // may already have auto-executed or failed is worse than saying nothing.
+    // Same convention as the narrative-delivery `unknown` bucket above.
+    // `'pending'` is a RECOGNISED outcome that deliberately has no label of its
+    // own — it means exactly "waiting for approval", which the link below
+    // already says. Only a token this build has never heard of is unknown.
+    if (proposal.outcome && proposal.outcome !== 'pending') {
+      return (
+        <span data-testid={ids.proposalOutcome(index)} className="text-muted-foreground">
+          {t('aiAgentsPage.runs.sweep.outcomes.unknown')}
+        </span>
+      );
+    }
     // Still waiting on a human. When the occurrence computed a cohort and this
     // proposal fell outside it, name the cap — otherwise "waiting" reads as an
     // unexplained delay.

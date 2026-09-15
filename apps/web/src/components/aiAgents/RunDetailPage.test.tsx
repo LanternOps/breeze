@@ -2635,4 +2635,43 @@ describe('RunDetailPage — sweep act outcomes (#4442 W05)', () => {
     expect(screen.queryByTestId('ai-agent-run-sweep-act-summary')).not.toBeInTheDocument();
     expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-0')).toBeInTheDocument();
   });
+
+  it('an UNRECOGNISED outcome renders "outcome unknown", never the approvals link', async () => {
+    // Review fix: an outcome this build has never heard of (API/web deploy
+    // skew, or a new intent status) must not fall through to the approvals
+    // link — that link is an instruction, and telling an operator to approve
+    // something that may already have auto-executed is worse than saying
+    // nothing. Same convention as the narrative-delivery `unknown` bucket.
+    const skewed = {
+      ...ACT_SWEEP,
+      actSummary: null,
+      findings: [{
+        ...ACT_SWEEP.findings[0],
+        proposal: { ...ACT_SWEEP.findings[0].proposal, outcome: 'quarantined_pending_review' },
+      }],
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: skewed } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-outcome-0')).toHaveTextContent('Outcome unknown');
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-link-0')).not.toBeInTheDocument();
+  });
+
+  it('an explicit `pending` outcome still renders the approvals link — it is recognised, not unknown', async () => {
+    const pendingOnly = {
+      ...ACT_SWEEP,
+      actSummary: null,
+      findings: [{
+        ...ACT_SWEEP.findings[0],
+        proposal: { ...ACT_SWEEP.findings[0].proposal, outcome: 'pending', cohort: true, stoppedBy: null },
+      }],
+    };
+    mockEndpoints({ detail: { ...RUN_DETAIL, sweep: pendingOnly } });
+    render(<RunDetailPage runId="run-1" />);
+
+    await waitFor(() => expect(screen.getByTestId('ai-agent-run-sweep-finding-0')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-agent-run-sweep-proposal-link-0')).toBeInTheDocument();
+    expect(screen.queryByTestId('ai-agent-run-sweep-proposal-outcome-0')).not.toBeInTheDocument();
+  });
 });

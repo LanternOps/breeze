@@ -113,3 +113,50 @@ describe('selectCohort', () => {
     expect(selectCohort({ ...base, ordered: [] })).toEqual({ admitted: [], stoppedBy: null });
   });
 });
+
+// #4442 W05 review fix — every cap check is an `x > cap` comparison, and in
+// JS any comparison against NaN is false. An unguarded non-finite cap would
+// therefore never fire and admit the WHOLE candidate list unattended, with no
+// error anywhere. These pin the fail-closed guard.
+describe('selectCohort — non-finite caps fail CLOSED', () => {
+  const ordered = orderCohortCandidates([
+    c({ findingIndex: 0, deviceId: 'd1' }),
+    c({ findingIndex: 1, deviceId: 'd2' }),
+  ]);
+  const base = {
+    ordered,
+    existingExposedDevices: new Set<string>(),
+    allowance: 10,
+    policyDecisionsToday: 0,
+    maxPolicyDecisionsPerDay: 10,
+    maxUnattendedDevicesPerSweep: 3,
+  };
+
+  it('a NaN fleet allowance admits nothing', () => {
+    const res = selectCohort({ ...base, allowance: Number.NaN });
+    expect(res.admitted).toEqual([]);
+    expect(res.stoppedBy).toBe('fleet_cap');
+  });
+
+  it('a NaN per-occurrence cap admits nothing', () => {
+    const res = selectCohort({ ...base, maxUnattendedDevicesPerSweep: Number.NaN });
+    expect(res.admitted).toEqual([]);
+    expect(res.stoppedBy).toBe('occurrence_cap');
+  });
+
+  it('a NaN day cap admits nothing', () => {
+    const res = selectCohort({ ...base, maxPolicyDecisionsPerDay: Number.NaN });
+    expect(res.admitted).toEqual([]);
+    expect(res.stoppedBy).toBe('day_cap');
+  });
+
+  it('a NaN "already spent today" count is treated as FULLY spent, not as zero', () => {
+    const res = selectCohort({ ...base, policyDecisionsToday: Number.NaN });
+    expect(res.admitted).toEqual([]);
+    expect(res.stoppedBy).toBe('day_cap');
+  });
+
+  it('a negative allowance also admits nothing', () => {
+    expect(selectCohort({ ...base, allowance: -1 }).admitted).toEqual([]);
+  });
+});

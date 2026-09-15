@@ -499,11 +499,20 @@ export async function persistSweepFindings(
     record.subject = { kind: subject.kind, key: subject.key, observedAt: subject.observedAt };
     if (scheduleActMode) {
       // Recorded for EVERY surviving proposal, member or not: `false` is the
-      // signal the run detail needs to say "waiting for approval, and here is
-      // the cap that stopped the walk". Left undefined for a disarmed
-      // occurrence so a pre-act-mode run renders exactly as before.
+      // signal the run detail needs to say "waiting for approval". Left
+      // undefined for a disarmed occurrence so a pre-act-mode run renders
+      // exactly as before.
       record.cohort = cohortMembers.has(index);
-      record.stoppedBy = cohortStoppedBy;
+      // `stoppedBy` is the CAPACITY explanation, so it is attached only to a
+      // proposal the walk actually turned away — one that was cohort-ELIGIBLE
+      // and fell beyond the prefix. A proposal that was never eligible (its
+      // tool is not allowlisted, its arguments do not match the system's
+      // subject, its device no longer resolves) is waiting on a human for a
+      // reason that has nothing to do with the caps, and labelling it with
+      // one would be a plainly wrong explanation on the run detail.
+      record.stoppedBy = cohortEligible.has(index) && !cohortMembers.has(index)
+        ? cohortStoppedBy
+        : null;
     }
 
     if (!inOrg.has(deviceId)) {

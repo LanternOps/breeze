@@ -1549,6 +1549,135 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
     expect(JSON.stringify(body)).not.toContain('"patchIds"');
   });
 
+
+  it('reads intents by requesting_agent_run_id and reports a COMPLETED sweep intent that run.intentIds dropped', async () => {
+    // #4442 W05 — the exact regression act mode introduces. `run.intent_ids`
+    // is PENDING-only, so an intent that auto-executed and completed has
+    // already fallen out of it; reading by that column would silently drop
+    // the proposal this page most needs to report. The fixture therefore
+    // keeps `intentIds: []` while the intents read returns a real row.
+    const SWEEP_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    let intentWhere: unknown;
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: {
+          scheduleId: '88888888-8888-4888-8888-888888888888',
+          occurrenceKey: '2026-08-29T06:00:00Z',
+          sweepKinds: ['service_down'],
+        },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: SWEEP_INTENT_ID, cohort: true, stoppedBy: null,
+          }],
+        },
+      })]))
+      // The intents read — captured so the PREDICATE is asserted, not just
+      // the rows it happens to return.
+      .mockReturnValueOnce(selectChain(
+        [{
+          id: SWEEP_INTENT_ID,
+          status: 'completed',
+          actionName: 'manage_services:restart',
+          approvalScope: 'supervised',
+          decidedVia: 'policy',
+        }],
+        (predicate) => { intentWhere = predicate; },
+      ))
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    // Binding the RUN id (not an intent-id list) is what makes this
+    // non-vacuous: the old `inArray(id, run.intentIds)` read would bind
+    // nothing at all for `intentIds: []`.
+    const intentParams = sqlParams(intentWhere);
+    expect(intentParams).toContain(RUN_ID);
+    expect(intentParams).toContain(ORG_ID);
+    expect(intentParams).not.toContain(SWEEP_INTENT_ID);
+
+    // A policy-decided COMPLETED intent reports `executed`, and the cohort
+    // verdict rides along.
+    expect(parsed.data.sweep!.findings[0]!.proposal).toMatchObject({
+      intentId: SWEEP_INTENT_ID,
+      outcome: 'executed',
+      cohort: true,
+    });
+    expect(parsed.data.sweep!.actSummary).toEqual({
+      devicesActed: 1, devicesProposed: 1, stoppedBy: null,
+    });
+  });
+
+  it('reports an auto-executing sweep intent as auto_executing, not as pending', async () => {
+    const SWEEP_INTENT_ID = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+    selectMock
+      .mockReturnValueOnce(selectChain([runRow({
+        sessionId: null,
+        intentIds: [],
+        deviceId: null,
+        deviceHostname: null,
+        triggerKind: 'schedule',
+        scheduleId: '88888888-8888-4888-8888-888888888888',
+        triggerRef: { sweepKinds: ['service_down'] },
+        outcome: {
+          executedActions: [], proposedActions: [], deniedActions: [], toolExecutionCount: 0,
+          sweepFindings: {
+            summary: 'One service is down.',
+            findings: [{
+              kind: 'service_down', severity: 'critical', deviceId: DEVICE_ID,
+              title: 'Spooler is stopped', detail: 'Stopped for 3 days.',
+              evidence: { state: 'stopped' },
+              proposedAction: {
+                tool: 'manage_services', action: 'restart',
+                deviceId: DEVICE_ID, serviceName: 'Spooler',
+              },
+            }],
+          },
+          sweepProposals: [{
+            findingIndex: 0, tool: 'manage_services', action: 'restart',
+            deviceId: DEVICE_ID, disposition: 'intent_created',
+            intentId: SWEEP_INTENT_ID, cohort: true, stoppedBy: null,
+          }],
+        },
+      })]))
+      .mockReturnValueOnce(selectChain([{
+        id: SWEEP_INTENT_ID,
+        status: 'approved',
+        actionName: 'manage_services:restart',
+        approvalScope: 'supervised',
+        // POLICY, not a human — this is the act-mode case.
+        decidedVia: 'policy',
+      }]))
+      .mockReturnValueOnce(selectChain([{ id: DEVICE_ID, hostname: 'WKS-042' }]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+
+    expect(parsed.data.sweep!.findings[0]!.proposal!.outcome).toBe('auto_executing');
+  });
+
   it('resolves sweep finding hostnames with ONE batched org-pinned read and leaks no raw proposal args', async () => {
     const OTHER_DEVICE_ID = '99999999-9999-4999-8999-999999999999';
     let hostnameWhere: unknown;

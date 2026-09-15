@@ -1882,7 +1882,8 @@
           "executed": "Completado",
           "failed": "Falló",
           "declined": "Rechazado",
-          "expired": "Vencido"
+          "expired": "Vencido",
+          "unknown": "Resultado desconocido"
         },
         "stoppedBy": {
           "fleet_cap": "se alcanzó el límite diario de la flota",

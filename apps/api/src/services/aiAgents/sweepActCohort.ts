@@ -130,9 +130,29 @@ export function selectCohort(args: SelectCohortArgs): {
   stoppedBy: CohortStopReason | null;
 } {
   const {
-    ordered, existingExposedDevices, allowance,
-    policyDecisionsToday, maxPolicyDecisionsPerDay, maxUnattendedDevicesPerSweep,
+    ordered, existingExposedDevices,
+    allowance: rawAllowance,
+    policyDecisionsToday: rawPolicyDecisionsToday,
+    maxPolicyDecisionsPerDay: rawMaxPolicyDecisionsPerDay,
+    maxUnattendedDevicesPerSweep: rawMaxUnattendedDevicesPerSweep,
   } = args;
+
+  // Every cap check below is an `x > cap` comparison, and in JS ANY comparison
+  // against NaN is false — so a single non-finite cap would make that cap
+  // never fire and admit the whole candidate list unattended, silently. The
+  // live callers are all Zod-bounded integers today, but this module is pure
+  // and trusts its callers forever; a future caller (or a policy-snapshot
+  // migration) must not be able to turn a bound into a no-op. Non-finite
+  // reads as ZERO — fail closed, never open.
+  const finiteCap = (value: number): number => (Number.isFinite(value) ? value : 0);
+  const allowance = finiteCap(rawAllowance);
+  const maxPolicyDecisionsPerDay = finiteCap(rawMaxPolicyDecisionsPerDay);
+  const maxUnattendedDevicesPerSweep = finiteCap(rawMaxUnattendedDevicesPerSweep);
+  // A non-finite "already spent today" count is likewise treated as fully
+  // spent rather than as zero.
+  const seedDayCount = Number.isFinite(rawPolicyDecisionsToday)
+    ? rawPolicyDecisionsToday
+    : maxPolicyDecisionsPerDay;
 
   const admitted: CohortCandidate[] = [];
   // The projected union, seeded with the window. A candidate on a device
@@ -141,7 +161,7 @@ export function selectCohort(args: SelectCohortArgs): {
   // Devices THIS occurrence would newly touch — the per-occurrence cap counts
   // these, not the window's.
   const occurrenceDevices = new Set<string>();
-  let dayCount = policyDecisionsToday;
+  let dayCount = seedDayCount;
 
   for (const candidate of ordered) {
     const newDeviceForWindow = !projectedDevices.has(candidate.deviceId);

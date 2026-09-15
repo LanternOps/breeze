@@ -1169,4 +1169,39 @@ describe('persistSweepFindings — the readiness cohort (#4442 W05)', () => {
     expect(recordFor(DEVICE_B).cohort).toBe(false);
     expect(recordFor(DEVICE_B).stoppedBy).toBe('fleet_cap');
   });
+
+  it('does NOT label a proposal refused for an UNRELATED reason with a capacity cap', async () => {
+    // Review fix: `stoppedBy` is the CAPACITY explanation. A proposal whose
+    // tool is not allowlisted was never cohort-eligible — it is waiting on a
+    // human for a reason that has nothing to do with the caps, and stamping
+    // it with `fleet_cap` would be a plainly wrong explanation on the run
+    // detail.
+    process.env.BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED = 'true';
+    queueArmedSchedule([{ id: DEVICE_A }, { id: DEVICE_B }]);
+    computeExposureBudget.mockResolvedValueOnce({
+      distinctDevices: 0,
+      exposedDeviceIds: new Set<string>() as ReadonlySet<string>,
+      allowance: 1,
+      contractDeviceCount: 20,
+      maxFleetPercentPerDay: 5,
+      policyDecisionsToday: 0,
+      maxPolicyDecisionsPerDay: 200,
+      windowHours: 24 as const,
+    });
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      // DEVICE_B's proposal names a tool the agent may not use at all.
+      runInput({ toolAllowlist: ['remediate_vulnerability'] }),
+      outcomeWith(restartFinding(DEVICE_A), restartFinding(DEVICE_B)),
+      agentAuth,
+    );
+
+    for (const record of result.proposals) {
+      expect(record.reason).toBe('not_allowlisted');
+      expect(record.cohort).toBe(false);
+      // Never cohort-eligible -> no capacity explanation.
+      expect(record.stoppedBy).toBeNull();
+    }
+  });
 });

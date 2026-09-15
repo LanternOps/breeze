@@ -557,4 +557,32 @@ describe('#4442 W05 — the sweep-lane graduation counter against live rows', ()
 
     await expect(sweepVerifiedFor(s)).resolves.toBe(0);
   });
+
+  it('counts ANOTHER org\'s sweep evidence against nobody — both EXISTS arms are org-pinned', async () => {
+    // Review fix: the cohort's ledger query has a live cross-org case; the
+    // graduation counter had only a SQL-text assertion. The ladder runs from a
+    // system-scoped worker, so these two predicates ARE the isolation
+    // boundary — a text assertion cannot prove they bind the right org.
+    const s = await seedScenario();
+    const other = await seedScenario({ fleetSize: 1 });
+    const otherDevice = other.deviceIds[0]!;
+
+    // A perfectly valid sweep-lane verified row — in the OTHER tenant.
+    const otherIntentId = await mintOneSweepIntent(other, otherDevice);
+    const otherWatchId = await seedWatch(
+      other, otherDevice, otherIntentId, { kind: 'service_down', key: 'Spooler' },
+    );
+    await seedEvidence(other, {
+      sourceKind: 'watch', sourceId: `${otherWatchId}:${OP_KEY}`, metric: 'verified',
+    });
+    await seedEvidence(other, {
+      sourceKind: 'intent', sourceId: otherIntentId, metric: 'verified',
+    });
+
+    // This org has none of its own.
+    expect(await sweepVerifiedFor(s)).toBe(0);
+    // …and the other org's ladder does see them, so the zero above is
+    // isolation, not a query that counts nothing at all.
+    expect(await sweepVerifiedFor(other)).toBe(2);
+  });
 });

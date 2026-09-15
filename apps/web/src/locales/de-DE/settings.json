@@ -1882,7 +1882,8 @@
           "executed": "Abgeschlossen",
           "failed": "Fehlgeschlagen",
           "declined": "Abgelehnt",
-          "expired": "Abgelaufen"
+          "expired": "Abgelaufen",
+          "unknown": "Ergebnis unbekannt"
         },
         "stoppedBy": {
           "fleet_cap": "Tageslimit für die Flotte erreicht",

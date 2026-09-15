@@ -1882,7 +1882,8 @@
           "executed": "Tamamlandı",
           "failed": "Başarısız",
           "declined": "Reddedildi",
-          "expired": "Süresi doldu"
+          "expired": "Süresi doldu",
+          "unknown": "Sonuç bilinmiyor"
         },
         "stoppedBy": {
           "fleet_cap": "günlük filo sınırına ulaşıldı",
