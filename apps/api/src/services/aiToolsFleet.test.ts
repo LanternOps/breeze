@@ -194,7 +194,7 @@ vi.mock('../routes/patches/helpers', () => ({
   upsertPatchApproval: vi.fn(() => Promise.resolve()),
   resolvePartnerIdForOrg: vi.fn(() => Promise.resolve('partner-1')),
   resolvePatchApprovalPartnerIdForRing: vi.fn(() => Promise.resolve({ partnerId: 'partner-1' })),
-  declineAllRingApprovals: vi.fn(() => Promise.resolve({ ringIds: [null] })),
+  declineAllRingApprovals: vi.fn(() => Promise.resolve({ ringIds: [null], failedRingIds: [] })),
   resolvePatchReportOrgId: vi.fn((auth: any, requestedOrgId?: string) => requestedOrgId ? { orgId: requestedOrgId } : { orgId: auth?.orgId ?? 'org-1' }),
   writePatchAuditForOrgIds: vi.fn(),
   getPagination: vi.fn(() => ({ page: 1, limit: 50, offset: 0 })),
@@ -794,7 +794,7 @@ describe('manage_patches handler', () => {
     it('routes to declineAllRingApprovals instead of a single upsert', async () => {
       vi.mocked(upsertPatchApproval).mockClear();
       vi.mocked(declineAllRingApprovals).mockClear();
-      vi.mocked(declineAllRingApprovals).mockResolvedValueOnce({ ringIds: [null, 'ring-a', 'ring-b'] });
+      vi.mocked(declineAllRingApprovals).mockResolvedValueOnce({ ringIds: [null, 'ring-a', 'ring-b'], failedRingIds: [] });
 
       const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
       const result = JSON.parse(await tool.handler({ action: 'decline', patchId, allRings: true }, fullPartnerAuth));
@@ -803,6 +803,22 @@ describe('manage_patches handler', () => {
       expect(upsertPatchApproval).not.toHaveBeenCalled();
       expect(result.success).toBe(true);
       expect(result.declinedRingIds).toEqual([null, 'ring-a', 'ring-b']);
+      expect(result.failedRingIds).toEqual([]);
+    });
+
+    // A partial failure must not be reported as an unqualified success to the
+    // model — it would otherwise tell the user "declined everywhere" when a
+    // ring approval is still live.
+    it('reports a partial failure as success:false with the failed rings named', async () => {
+      vi.mocked(declineAllRingApprovals).mockClear();
+      vi.mocked(declineAllRingApprovals).mockResolvedValueOnce({ ringIds: [null], failedRingIds: ['ring-b'] });
+
+      const patchId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const result = JSON.parse(await tool.handler({ action: 'decline', patchId, allRings: true }, fullPartnerAuth));
+
+      expect(result.success).toBe(false);
+      expect(result.failedRingIds).toEqual(['ring-b']);
+      expect(result.message).toMatch(/1 failed/);
     });
   });
 
@@ -858,6 +874,26 @@ describe('manage_patches handler', () => {
 
       expect(result.error).toMatch(/no patch found/i);
       expect(upsertPatchApproval).not.toHaveBeenCalled();
+    });
+
+    // The ILIKE lookup can return several candidates while one of them is an
+    // EXACT title/externalId match — that should resolve, not be reported as
+    // ambiguous just because other, non-exact candidates also matched.
+    it('resolves the exact match when multiple candidates are returned', async () => {
+      vi.mocked(upsertPatchApproval).mockClear();
+      mockPatchNameLookup([
+        { id: 'patch-exact', title: 'Security Update', externalId: null },
+        { id: 'patch-other', title: 'Security Update for Widgets', externalId: null },
+      ]);
+
+      const result = JSON.parse(await tool.handler({ action: 'decline', patchName: 'Security Update' }, fullPartnerAuth));
+
+      expect(upsertPatchApproval).toHaveBeenCalledWith(
+        expect.objectContaining({ patchId: 'patch-exact', status: 'rejected' }),
+        fullPartnerAuth,
+      );
+      expect(result.success).toBe(true);
+      expect(result.patchId).toBe('patch-exact');
     });
   });
 

@@ -245,7 +245,7 @@ approvalsRoutes.post(
     }
 
     if (data.allRings) {
-      const { ringIds } = await declineAllRingApprovals(targetPartnerId, id, data.note ?? null, auth);
+      const { ringIds, failedRingIds } = await declineAllRingApprovals(targetPartnerId, id, data.note ?? null, auth);
 
       writeRouteAudit(c, {
         orgId: null,
@@ -256,11 +256,25 @@ approvalsRoutes.post(
           partnerId: targetPartnerId,
           note: data.note ?? null,
           allRings: true,
-          declinedRingCount: ringIds.length
+          declinedRingCount: ringIds.length,
+          failedRingCount: failedRingIds.length
         }
       });
 
-      return c.json({ id, status: 'declined', allRings: true, declinedRingIds: ringIds });
+      // `success: false` on an otherwise-200 response is how the web client's
+      // runAction (apps/web/src/lib/runAction.ts) recognizes a partial
+      // failure and surfaces it instead of toasting a false "declined".
+      return c.json({
+        id,
+        status: 'declined',
+        allRings: true,
+        declinedRingIds: ringIds,
+        failedRingIds,
+        success: failedRingIds.length === 0,
+        ...(failedRingIds.length > 0
+          ? { error: `Declined ${ringIds.length} of ${ringIds.length + failedRingIds.length} ring scope(s); ${failedRingIds.length} failed — retry to finish clearing the rest.` }
+          : {})
+      });
     }
 
     await upsertPatchApproval({

@@ -917,17 +917,21 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // leaves previously-approved ring rows live (patchApprovalEvaluator
         // matches either row). Only meaningful for decline.
         if (action === 'decline' && input.allRings === true) {
-          const { ringIds } = await declineAllRingApprovals(
+          const { ringIds, failedRingIds } = await declineAllRingApprovals(
             approveDeclinePartnerId,
             patchId,
             (input.notes as string) ?? null,
             auth,
           );
+          const success = failedRingIds.length === 0;
           return JSON.stringify({
-            success: true,
-            message: `Patch declined across all ${ringIds.length} approval scope(s) for this partner`,
+            success,
+            message: success
+              ? `Patch declined across all ${ringIds.length} approval scope(s) for this partner`
+              : `Patch declined for ${ringIds.length} of ${ringIds.length + failedRingIds.length} approval scope(s); ${failedRingIds.length} failed — retry to finish clearing the rest`,
             patchId,
             declinedRingIds: ringIds,
+            failedRingIds,
           });
         }
 

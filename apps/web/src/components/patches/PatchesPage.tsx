@@ -488,12 +488,24 @@ export default function PatchesPage() {
     if (!canManageRings) {
       throw new Error(t('patchesPage.errors.partnerLevel'));
     }
+    // #5585: bulk decline now includes already-approved rows (PatchList's
+    // selectedDeclinableIds), which is exactly the case a scoped decline
+    // silently under-delivers on — an approved patch can carry BOTH a
+    // blanket approval and one or more ring-specific approvals, and a plain
+    // `ringId: selectedRingId` decline only clears the scope currently being
+    // viewed while this handler still reports the row as fully "declined".
+    // Route an already-approved row through allRings so bulk decline can't
+    // leave a stale ring approval live behind a false success.
+    const approvalStatusById = new Map(patches.map(p => [p.id, p.approvalStatus]));
     const failed: string[] = [];
     for (const id of patchIds) {
+      const body = approvalStatusById.get(id) === 'approved'
+        ? { allRings: true }
+        : { ringId: selectedRingId ?? undefined };
       // runaction-exempt: aggregate/partial-success — inline bulkError UI (see NOTE above)
       const response = await fetchWithAuth(`/patches/${id}/decline`, {
         method: 'POST',
-        body: JSON.stringify({ ringId: selectedRingId ?? undefined })
+        body: JSON.stringify(body)
       });
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
