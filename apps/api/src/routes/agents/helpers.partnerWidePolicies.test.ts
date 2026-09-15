@@ -424,6 +424,16 @@ describe('partner-owned policies actually reach the agent payload', () => {
       [],
       [{ level: 'partner', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [watchRow],
+      // resolveMonitorDerivedWatches runs its OWN resolveMonitorsForDevice
+      // pass after the policy-tab lookup above (#5677's discriminated
+      // result correctly tells device-not-found apart from device-found-
+      // zero-monitors, so this scenario's device/org/group/assignment reads
+      // must be queued too, or the resolver reads past the end of the queue
+      // and mistakes that for a vanished device).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [], // no monitor assignments — resolves to zero monitor-derived watches
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -465,6 +475,12 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [], // no enabled watches for the winning settings row
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -480,6 +496,14 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       orgWithPartner,
       [],
       [], // no assignment/policy rows matched
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments — so the null result below
+      // is genuinely "no policy and no monitors", not a device_missing
+      // false positive from an exhausted queue.
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -499,6 +523,12 @@ describe('monitoring: a matched policy with zero enabled watches (#2949)', () =>
       [],
       [{ level: 'organization', assignmentPriority: 1, settingsId: 'set-1', checkIntervalSeconds: 90 }],
       [], // no enabled watches for the winning settings row
+      // resolveMonitorDerivedWatches's own resolveMonitorsForDevice pass —
+      // device found, zero monitor assignments (see #5677 comment above).
+      deviceRow,
+      orgWithPartner,
+      [],
+      [],
     ]);
 
     const result = await buildMonitoringConfigUpdate(DEVICE_ID);
