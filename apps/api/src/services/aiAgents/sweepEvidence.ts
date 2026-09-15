@@ -166,6 +166,105 @@ export function assembleSweepEvidence(raw: RawSweepEvidence): SweepEvidence {
 }
 
 // ---------------------------------------------------------------------------
+// #4442 W04 — the SYSTEM's own subject for an evidence row.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the SYSTEM observed, for one loaded evidence row: which device, and
+ * which sub-thing on it (a service name, a mount point, a set of
+ * device-vulnerability ids). Act mode's anti-substitution control: the gate
+ * matches a proposal's arguments against ONE of these, so evidence about
+ * service A can never authorize an unattended restart of service B on the
+ * same device.
+ *
+ * `observedAt` is the loader's own timestamp where the kind has one and
+ * `null` where it does not (`disk_pressure` and `unpatched_critical` are
+ * point-in-time aggregates with no per-row observation time). It is
+ * provenance for the approval card, NOT the staleness control — decide-time
+ * freshness is enforced by `probeSweepSubject`'s own
+ * `SWEEP_PROBE_FRESHNESS_MS` window against a LIVE re-read, which a stored
+ * timestamp could not do.
+ */
+export interface SweepEvidenceSubject {
+  kind: AiSweepKind;
+  deviceId: string;
+  key: string;
+  observedAt: string | null;
+}
+
+/** A non-empty display string off a loader field, else null. */
+function subjectKeyField(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * The SYSTEM's subject for ONE loader row — derived from NAMED fields the
+ * loader read off a column, never from model text. `null` for a kind whose
+ * findings have no single sub-subject (`stale_agents`, `pending_reboots`,
+ * `failed_backups`: the DEVICE is the subject and there is nothing narrower
+ * to pin), and `null` for a row with no device or an empty key rather than
+ * inventing one — a subject that cannot be named is not evidence that
+ * authorizes anything.
+ *
+ * Pure, and exhaustively tested per kind in `sweepEvidence.subjects.test.ts`.
+ * `sweepFindings.ts`'s `sweepSubjectKey` builds the PROPOSAL side of the same
+ * comparison and must agree with this function kind by kind — the pairing is
+ * asserted there.
+ */
+export function evidenceRowSubject(kind: AiSweepKind, row: SweepEvidenceRow): SweepEvidenceSubject | null {
+  const deviceId = row.deviceId;
+  if (!deviceId) return null;
+
+  const observedAt = (field: unknown): string | null => (typeof field === 'string' ? field : null);
+
+  switch (kind) {
+    case 'service_down': {
+      const key = subjectKeyField(row.fields.name);
+      return key === null ? null : { kind, deviceId, key, observedAt: observedAt(row.fields.checkedAt) };
+    }
+    case 'disk_pressure': {
+      const key = subjectKeyField(row.fields.mountPoint);
+      return key === null ? null : { kind, deviceId, key, observedAt: null };
+    }
+    case 'unpatched_critical': {
+      // The loader emits a comma-joined sample ordered by CVSS; the subject
+      // key is SORTED so it matches the proposal side, which sorts too
+      // (`sweepSubjectKey`). Order must not be part of the identity.
+      const raw = subjectKeyField(row.fields.deviceVulnerabilityIds);
+      if (raw === null) return null;
+      const ids = raw.split(',').map((id) => id.trim()).filter((id) => id.length > 0);
+      if (ids.length === 0) return null;
+      return { kind, deviceId, key: [...ids].sort().join(','), observedAt: null };
+    }
+    default:
+      return null;
+  }
+}
+
+/** The index key a proposal is looked up by. One place, so build and match
+ *  cannot drift on separator or field order. */
+export function sweepSubjectIndexKey(kind: AiSweepKind, deviceId: string, subjectKey: string): string {
+  return `${kind}|${deviceId}|${subjectKey}`;
+}
+
+/**
+ * Every subject in a LOADED evidence set, keyed `kind|deviceId|key`. Built
+ * from `evidence.kinds[*].rows` — i.e. the rows that survived the cap and the
+ * byte trim, never the pre-trim input: a row the model never saw is not
+ * evidence and must not authorize anything.
+ */
+export function indexEvidenceSubjects(evidence: SweepEvidence): ReadonlyMap<string, SweepEvidenceSubject> {
+  const index = new Map<string, SweepEvidenceSubject>();
+  for (const kind of AI_SWEEP_KINDS) {
+    for (const row of evidence.kinds[kind]?.rows ?? []) {
+      const subject = evidenceRowSubject(kind, row);
+      if (subject) index.set(sweepSubjectIndexKey(kind, subject.deviceId, subject.key), subject);
+    }
+  }
+  return index;
+}
+
+// ---------------------------------------------------------------------------
 // Column coercion — everything below returns a display scalar or null.
 // ---------------------------------------------------------------------------
 

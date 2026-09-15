@@ -1,6 +1,7 @@
 // apps/api/src/services/aiAgents/sweepFindings.test.ts
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { sweepSubjectIndexKey, type SweepEvidenceSubject } from './sweepEvidence';
 import type { SQL } from 'drizzle-orm';
 import {
   AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS, remediationTriggerSchema, type SweepFinding, type SweepFindingsOutcome,
@@ -129,8 +130,31 @@ function runInput(overrides: Partial<Parameters<typeof persistSweepFindings>[0]>
     toolAllowlist: ['manage_services', 'remediate_vulnerability'],
     maxActionsPerRun: 3,
     evidenceDeviceIds: new Set([DEVICE_A, DEVICE_B]) as ReadonlySet<string>,
+    // #4442 W04 — the SYSTEM's own subjects for the rows it loaded. The
+    // default covers the two service names this suite proposes restarts for,
+    // on both evidence devices; a test that proposes anything else must say
+    // so explicitly, which is the anti-substitution control working.
+    evidenceSubjects: subjectIndex(
+      { kind: 'service_down', deviceId: DEVICE_A, key: 'Spooler' },
+      { kind: 'service_down', deviceId: DEVICE_A, key: 'W32Time' },
+      { kind: 'service_down', deviceId: DEVICE_B, key: 'Spooler' },
+      { kind: 'service_down', deviceId: DEVICE_B, key: 'W32Time' },
+    ),
     ...overrides,
   };
+}
+
+/** Build a `kind|deviceId|key` subject index the way `indexEvidenceSubjects` does. */
+function subjectIndex(
+  ...subjects: Array<{ kind: SweepEvidenceSubject['kind']; deviceId: string; key: string; observedAt?: string | null }>
+): ReadonlyMap<string, SweepEvidenceSubject> {
+  const map = new Map<string, SweepEvidenceSubject>();
+  for (const s of subjects) {
+    map.set(sweepSubjectIndexKey(s.kind, s.deviceId, s.key), {
+      kind: s.kind, deviceId: s.deviceId, key: s.key, observedAt: s.observedAt ?? '2026-09-15T10:00:00.000Z',
+    });
+  }
+  return map;
 }
 
 function restartFinding(deviceId: string, serviceName = 'Spooler') {
@@ -201,6 +225,9 @@ describe('persistSweepFindings', () => {
       deviceId: DEVICE_A,
       disposition: 'intent_created',
       intentId: INTENT_A,
+      // #4442 W04 — the SYSTEM's matched evidence subject, recorded on every
+      // proposal that clears gate 1b.
+      subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T10:00:00.000Z' },
     }]);
 
     // The device existence gate is ONE batched, org-pinned, non-ephemeral
@@ -226,7 +253,9 @@ describe('persistSweepFindings', () => {
     const dvId = '00000000-0000-4000-8000-0000000000d1';
 
     const result = await persistSweepFindings(
-      runInput(),
+      runInput({
+        evidenceSubjects: subjectIndex({ kind: 'unpatched_critical', deviceId: DEVICE_A, key: dvId }),
+      }),
       outcomeWith({
         kind: 'unpatched_critical',
         severity: 'critical',
@@ -413,6 +442,7 @@ describe('persistSweepFindings', () => {
       deviceId: DEVICE_A,
       disposition: 'error',
       reason: 'no_eligible_approvers',
+      subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T10:00:00.000Z' },
     });
     // The cancelled intent id must never reach the record either.
     expect(JSON.stringify(result.proposals)).not.toContain(INTENT_B);
@@ -514,6 +544,96 @@ describe('sweepFindingDeviceIds', () => {
         intentId: INTENT_A,
       }] as SweepProposalRecord[],
     })).toEqual([DEVICE_A]);
+  });
+});
+
+// #4442 W04 Task 4 — gate 1b, the ANTI-SUBSTITUTION control. Device identity
+// alone is not enough: a `service_down` observation is about (device, service
+// NAME), and a proposal naming a different service on that same device cites
+// evidence that does not exist.
+describe('persistSweepFindings — the trusted subject (gate 1b)', () => {
+  it('attaches the SYSTEM subject to the record when the proposal matches an evidence row', async () => {
+    state.selectQueue.push([{ id: DEVICE_A }]);
+    createActionIntent.mockResolvedValue({ id: INTENT_A, status: 'pending_approval' });
+
+    const result = await persistSweepFindings(
+      runInput({
+        evidenceSubjects: subjectIndex({
+          kind: 'service_down', deviceId: DEVICE_A, key: 'Spooler', observedAt: '2026-09-15T09:30:00.000Z',
+        }),
+      }),
+      outcomeWith(restartFinding(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(result.proposals[0]).toMatchObject({
+      disposition: 'intent_created',
+      subject: { kind: 'service_down', key: 'Spooler', observedAt: '2026-09-15T09:30:00.000Z' },
+    });
+  });
+
+  it('refuses a proposal whose serviceName does not match ANY evidence subject for that device', async () => {
+    const result = await persistSweepFindings(
+      runInput({
+        evidenceSubjects: subjectIndex({ kind: 'service_down', deviceId: DEVICE_A, key: 'Spooler' }),
+      }),
+      outcomeWith(restartFinding(DEVICE_A, 'W32Time')),
+      agentAuth,
+    );
+
+    expect(createActionIntent).not.toHaveBeenCalled();
+    expect(result.proposals).toEqual([expect.objectContaining({
+      findingIndex: 0,
+      disposition: 'refused',
+      reason: 'subject_not_in_evidence',
+    })]);
+    expect(result.proposals[0]).not.toHaveProperty('subject');
+  });
+
+  it('refuses a proposal on the right service but the WRONG device — the subject is (device, key)', async () => {
+    const result = await persistSweepFindings(
+      runInput({
+        evidenceSubjects: subjectIndex({ kind: 'service_down', deviceId: DEVICE_B, key: 'Spooler' }),
+      }),
+      outcomeWith(restartFinding(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(result.proposals[0]).toMatchObject({ disposition: 'refused', reason: 'subject_not_in_evidence' });
+  });
+
+  it('refuses rather than silently marking act-ineligible when no subject can be matched at all', async () => {
+    const result = await persistSweepFindings(
+      runInput({ evidenceSubjects: subjectIndex() }),
+      outcomeWith(restartFinding(DEVICE_A)),
+      agentAuth,
+    );
+
+    expect(result.proposals[0]).toMatchObject({ disposition: 'refused', reason: 'subject_not_in_evidence' });
+    expect(createActionIntent).not.toHaveBeenCalled();
+  });
+
+  it('the device-evidence gate still fires FIRST — a device outside the evidence set is device_not_in_evidence', async () => {
+    const result = await persistSweepFindings(
+      runInput({ evidenceSubjects: subjectIndex() }),
+      outcomeWith(restartFinding(DEVICE_OUTSIDE_EVIDENCE)),
+      agentAuth,
+    );
+
+    expect(result.proposals[0]).toMatchObject({ reason: 'device_not_in_evidence' });
+  });
+
+  it('a finding that proposes nothing needs no subject and is not recorded at all', async () => {
+    const { proposedAction: _drop, ...findingOnly } = restartFinding(DEVICE_A);
+
+    const result = await persistSweepFindings(
+      runInput({ evidenceSubjects: subjectIndex() }),
+      outcomeWith(findingOnly as SweepFindingsOutcome['findings'][number]),
+      agentAuth,
+    );
+
+    expect(result.proposals).toEqual([]);
+    expect(createActionIntent).not.toHaveBeenCalled();
   });
 });
 

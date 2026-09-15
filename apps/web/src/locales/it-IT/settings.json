@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Dispositivo assente nelle evidenze della scansione",
+          "subject_not_in_evidence": "Elemento non presente nelle evidenze della scansione",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",

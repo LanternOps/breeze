@@ -564,6 +564,10 @@ const SWEEP_PROPOSAL_REASON_TOKENS = {
   intent_error: true,
   max_actions_per_run: true,
   intent_invalid_provenance: true,
+  // #4442 W04 — the anti-substitution refusal: the device was in the sweep
+  // evidence but the SUBJECT (service name, mount point, vulnerability ids)
+  // the proposal named was not.
+  subject_not_in_evidence: true,
 } satisfies Record<SweepProposalReason, true>;
 
 /**

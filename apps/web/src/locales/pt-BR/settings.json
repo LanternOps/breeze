@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Dispositivo ausente nas evidências da varredura",
+          "subject_not_in_evidence": "Item não consta nas evidências da varredura",
           "device_not_in_org": "O dispositivo não pertence a esta organização",
           "not_allowlisted": "Ferramenta não permitida para este agente",
           "no_eligible_approvers": "Sem aprovadores elegíveis",

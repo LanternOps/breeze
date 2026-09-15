@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Appareil absent des éléments du balayage",
+          "subject_not_in_evidence": "Élément absent des éléments du balayage",
           "device_not_in_org": "Appareil absent de cette organisation",
           "not_allowlisted": "Outil non autorisé pour cet agent",
           "no_eligible_approvers": "Aucun approbateur éligible",

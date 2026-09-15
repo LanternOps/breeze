@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Cihaz tarama kanıtlarında yok",
+          "subject_not_in_evidence": "Öğe tarama kanıtlarında yok",
           "device_not_in_org": "Cihaz bu organizasyona ait değil",
           "not_allowlisted": "Bu aracı için araç izinli değil",
           "no_eligible_approvers": "Uygun onaylayıcı yok",

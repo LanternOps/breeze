@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "El dispositivo no aparece en la evidencia del barrido",
+          "subject_not_in_evidence": "El elemento no está en las evidencias del barrido",
           "device_not_in_org": "El dispositivo no pertenece a esta organización",
           "not_allowlisted": "Herramienta no permitida para este agente",
           "no_eligible_approvers": "Sin aprobadores elegibles",

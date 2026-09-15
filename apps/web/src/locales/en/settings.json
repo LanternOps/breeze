@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Device not in the sweep evidence",
+          "subject_not_in_evidence": "Subject not in the sweep evidence",
           "device_not_in_org": "Device not in this organization",
           "not_allowlisted": "Tool not allowed for this agent",
           "no_eligible_approvers": "No eligible approvers",

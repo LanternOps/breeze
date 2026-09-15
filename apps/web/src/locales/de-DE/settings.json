@@ -1888,6 +1888,7 @@
         },
         "reasons": {
           "device_not_in_evidence": "Gerät nicht in den Belegen des Prüflaufs",
+          "subject_not_in_evidence": "Objekt nicht in den Belegen des Prüflaufs",
           "device_not_in_org": "Gerät gehört nicht zu dieser Organisation",
           "not_allowlisted": "Werkzeug für diesen Agenten nicht freigegeben",
           "no_eligible_approvers": "Keine berechtigten Genehmiger",
