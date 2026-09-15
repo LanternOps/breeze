@@ -101,4 +101,33 @@ describe('list_deliverable_templates handler (W05)', () => {
       { orgId: ORG },
     );
   });
+
+  // ── #5808 W03: the checklist wiring is visible, read-only ────────────────
+  it('exposes instructions and checklistTemplateId on each item', async () => {
+    // TemplateItemView is the full row, so both flow through — but the model
+    // only knows they exist if the DESCRIPTION says so, and a future narrowed
+    // projection would silently drop them.
+    tpl.listTemplateSets.mockResolvedValueOnce([{
+      id: SET,
+      ownerScope: 'partner',
+      items: [{ id: 'i1', name: 'Sign-in log review', instructions: 'Runbook prose', checklistTemplateId: 'tcl-1' }],
+    }]);
+    const out = await call('list_deliverable_templates', {});
+    expect(out.sets[0].items[0]).toMatchObject({
+      instructions: 'Runbook prose',
+      checklistTemplateId: 'tcl-1',
+    });
+  });
+
+  it('the tool description names both fields and marks them internal', async () => {
+    const desc = tools.get('list_deliverable_templates')!.definition.description ?? '';
+    expect(desc).toContain('instructions');
+    expect(desc).toContain('checklistTemplateId');
+    expect(desc).toMatch(/internal/i);
+  });
+
+  it('there is NO checklist MUTATION tool in this family (OD-7 A)', () => {
+    const suspicious = [...tools.keys()].filter((n) => /checklist/i.test(n) && !/list|get|read/i.test(n));
+    expect(suspicious).toEqual([]);
+  });
 });

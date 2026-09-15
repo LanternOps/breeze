@@ -26,6 +26,16 @@ const templateItemFieldTypes = {
   graceDays: z.number().int().min(0).max(365),
   artifactRequired: z.boolean(),
   completionMode: z.enum(['explicit', 'on_ticket_resolve']),
+  // #5808 W03. Both are copied onto the deliverable by applyTemplateSet.
+  // Neither carries a default, so they flow through `.partial()` into the
+  // update schema unchanged and a PATCH can clear either with an explicit null.
+  // The OWNER-AXIS rule on checklistTemplateId (a partner-wide item may point
+  // only at a partner-wide template of the same partner) is not expressible in
+  // Zod — it lives in services/checklistTemplateReference.ts.
+  // `.optional()` like `description` above: absent means "leave it alone", an
+  // explicit null clears it. Without it both would be REQUIRED on create.
+  instructions: z.string().max(10000).nullable().optional(),
+  checklistTemplateId: z.string().guid().nullable().optional(),
   sortOrder: z.number().int().min(0),
 };
 

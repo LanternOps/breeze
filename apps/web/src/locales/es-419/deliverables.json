@@ -70,7 +70,13 @@
     "owner": "Responsable",
     "ticketCategory": "Categoría del ticket",
     "portalVisible": "Mostrar en el portal del cliente",
-    "sortOrder": "Orden"
+    "sortOrder": "Orden",
+    "instructions": "Instrucciones internas",
+    "instructionsHint": "Interno — nunca se muestra al cliente.",
+    "checklistTemplate": "Plantilla de lista de verificación",
+    "checklistTemplateNone": "Ninguna",
+    "checklistTemplateAllOrgs": "Todas las orgs",
+    "checklistTemplateManage": "Administrar plantillas de lista de verificación"
   },
   "drawer": {
     "title": "Ocurrencias",
@@ -84,7 +90,10 @@
     "uploadEvidence": "Subir un archivo como evidencia",
     "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, hasta 10 MB. El archivo se archiva en la biblioteca de documentos de esta organización.",
     "evidenceDocument": "Documento",
-    "upload": "Subir"
+    "upload": "Subir",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostrar lista de verificación",
+    "hideChecklist": "Ocultar lista de verificación"
   },
   "evidence": {
     "reportRun": "Ejecución de informe",

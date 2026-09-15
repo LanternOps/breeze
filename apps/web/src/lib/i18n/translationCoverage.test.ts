@@ -76,7 +76,8 @@ const namespaceDuplicateBaselines = {
     // literal format token/example key, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 165 +4 +5).
     // #5573 W01 (service deliverables): "Status" and "Portal" are identical cognates in pt-BR.
-    'deliverables.json': 2,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in pt-BR.
     'devices.json': 175,
     'discovery.json': 17,
@@ -137,7 +138,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in pt-BR.
-    'settings.json': 124,
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox") and .script ("Script") — both are the standard loanwords in
+    // pt-BR, and translating them would read as invented jargon.
+    'settings.json': 126,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -203,7 +207,8 @@ const namespaceDuplicateBaselines = {
     // format tokens, not wording.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 120 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in es-419.
-    'deliverables.json': 1,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
     // +1: deviceInfoTab.functionSource.manual (Fleet Designer W02, #5652) — "Manual" is the identical cognate in es-419.
     'devices.json': 126,
     'discovery.json': 17,
@@ -259,7 +264,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in es-419.
-    'settings.json': 127,
+    // +1 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.script
+    // — "Script" is the standard loanword in es-419. (`status` is translated
+    // here as "Entorno aislado" and is NOT a duplicate.)
+    'settings.json': 128,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -333,7 +341,8 @@ const namespaceDuplicateBaselines = {
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Audit" and "Date" are identical cognates in fr-FR.
-    'deliverables.json': 6,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
     'devices.json': 152,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -406,7 +415,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // French.
-    'settings.json': 173,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in French (same acceptance as scriptRejected).
+    'settings.json': 174,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -474,7 +485,8 @@ const namespaceDuplicateBaselines = {
     // plus the unified-device-list branch).
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 146 +2 +4).
     // #5573 W01 (service deliverables): "Description", "Occurrences", "Document", "Type", "Date" and "Notes" are identical cognates in fr-CA.
-    'deliverables.json': 6,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 7,
     'devices.json': 152,
     'discovery.json': 15,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -549,7 +561,9 @@ const namespaceDuplicateBaselines = {
     // +2 W05 (#5612): scriptAuthoringPage.fields.protectedServices and
     // scriptAuthoringPage.class.services — "Services" spells identically in
     // Canadian French.
-    'settings.json': 179,
+    // +1: aiAgentsPage.runs.detail.workspace.script (#5716 execution plane W05) —
+    // "Script" is the loanword in Canadian French too.
+    'settings.json': 180,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -627,7 +641,8 @@ const namespaceDuplicateBaselines = {
     // in German.
     // Merged #4622 W04 + #5213 W02/W03 deltas (base 156 +2 +6).
     // #5573 W01 (service deliverables): "Status", "Portal", "Name" and "Audit" are identical cognates in de-DE.
-    'deliverables.json': 4,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 5,
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
     'discovery.json': 27,
@@ -684,7 +699,11 @@ const namespaceDuplicateBaselines = {
     // — "Service" is the same word in German.
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in de-DE.
-    'settings.json': 187,
+    // +2 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.region
+    // ("Region" is the same word in German) and .status ("Sandbox", the
+    // standard loanword). `exitCode` is deliberately "Exit" rather than the
+    // English "exit", so it is not among these.
+    'settings.json': 189,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -736,7 +755,8 @@ const namespaceDuplicateBaselines = {
     // widget's own copy.
     'common.json': 107, // +1 W06: lists.separator ", " is punctuation
     // #5573 W01 (service deliverables): "Deliverable" is the established loanword in it-IT and "Audit" is the identical cognate.
-    'deliverables.json': 2,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 3,
     'devices.json': 144,
     'discovery.json': 22,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
@@ -781,7 +801,10 @@ const namespaceDuplicateBaselines = {
     // spells identically to English here ("script" is the loanword).
     // +1 W05 (#5612): scriptAuthoringPage.class.firewall — "Firewall" is the
     // standard loanword in it-IT.
-    'settings.json': 165,
+    // +3 execution plane W05 (#5716): aiAgentsPage.runs.detail.workspace.status
+    // ("Sandbox"), .script ("Script") and .stdout ("Output") — all three are
+    // the standard loanwords in it-IT.
+    'settings.json': 168,
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
@@ -826,7 +849,8 @@ const namespaceDuplicateBaselines = {
     // "field_key" — literal format tokens/example keys, not wording.
     // Merged #4622 W04 + #5213 W02 deltas (base 83 +2 +3).
     // #5573 W01 (service deliverables): "Portal" is the identical cognate in tr-TR.
-    'deliverables.json': 1,
+    // +1 #5808 W03: drawer.checklistProgress "{{done}} / {{total}}" is pure interpolation, same as checklists.json card.progress.
+    'deliverables.json': 2,
     'devices.json': 88,
     'discovery.json': 9,
     // errors namespace (Task 3 of #3859): seeded as English copies pending

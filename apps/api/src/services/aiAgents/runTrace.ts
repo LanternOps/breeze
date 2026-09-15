@@ -41,6 +41,9 @@ import {
   type AiAgentRunStatus,
   type AiAgentRunTicketProposalDto,
   type AiAgentRunTraceEntryDto,
+  type AiAgentRunWorkspaceDto,
+  type AiAgentRunWorkspaceStepDto,
+  type AiRunArtifactDto,
   type AiAgentTriggerKind,
   type AiToolStatus,
   type TicketTriageSkip,
@@ -417,6 +420,84 @@ function mapIntentRow(row: RunTraceIntentRowInput): AiAgentRunIntentSummaryDto {
   };
 }
 
+const WORKSPACE_STEP_LANGUAGES = new Set(['bash', 'python', 'node']);
+
+/**
+ * Project `ai_run_workspaces.steps` (jsonb, written by the worker) into the
+ * wire shape (execution-plane spec §5.8). Defensive on purpose: this column is
+ * `excludedOpen` open-ended content, and the run page's whole value is that a
+ * technician can TRUST what it says ran. A malformed entry is dropped, never
+ * coerced — a step rendered with `exitCode: undefined` reads as success, which
+ * is the one lie this surface must not tell.
+ */
+export function mapWorkspaceSteps(raw: unknown): AiAgentRunWorkspaceStepDto[] {
+  if (!Array.isArray(raw)) return [];
+  const steps: AiAgentRunWorkspaceStepDto[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.ordinal !== 'number') continue;
+    if (typeof e.language !== 'string' || !WORKSPACE_STEP_LANGUAGES.has(e.language)) continue;
+    if (typeof e.durationMs !== 'number') continue;
+    if (e.exitCode !== null && typeof e.exitCode !== 'number') continue;
+    steps.push({
+      ordinal: e.ordinal,
+      language: e.language as 'bash' | 'python' | 'node',
+      scriptArtifactHandle:
+        typeof e.scriptArtifactHandle === 'string' ? e.scriptArtifactHandle : null,
+      exitCode: (e.exitCode as number | null) ?? null,
+      timedOut: e.timedOut === true,
+      durationMs: e.durationMs,
+      stdoutArtifactHandle:
+        typeof e.stdoutArtifactHandle === 'string' ? e.stdoutArtifactHandle : null,
+    });
+  }
+  return steps.sort((a, b) => a.ordinal - b.ordinal);
+}
+
+/**
+ * The `ai_run_workspaces` scalars the run page projects (spec §6.2).
+ * `provider_ref` is deliberately absent — it is a vendor handle the reaper
+ * needs and nothing outside the API has any use for.
+ */
+export interface RunWorkspaceRowInput {
+  backend: string;
+  region: 'eu' | 'us';
+  status: string;
+  bootstrapHash: string | null;
+  createdAt: Date;
+  readyAt: Date | null;
+  destroyedAt: Date | null;
+  cpuMs: number | null;
+  wallMs: number | null;
+  memAllocatedMb: number | null;
+  stagedBytes: number;
+  artifactBytes: number;
+  stepCount: number;
+  steps: unknown;
+}
+
+function mapWorkspace(row: RunWorkspaceRowInput | null): AiAgentRunWorkspaceDto | null {
+  if (!row) return null;
+  return {
+    backend: row.backend,
+    region: row.region,
+    status: row.status,
+    bootstrapHash: row.bootstrapHash,
+    createdAt: row.createdAt.toISOString(),
+    readyAt: row.readyAt?.toISOString() ?? null,
+    destroyedAt: row.destroyedAt?.toISOString() ?? null,
+    cpuMs: row.cpuMs,
+    wallMs: row.wallMs,
+    memAllocatedMb: row.memAllocatedMb,
+    // bigint columns come back as strings on some drivers; the wire type is a number.
+    stagedBytes: Number(row.stagedBytes),
+    artifactBytes: Number(row.artifactBytes),
+    stepCount: row.stepCount,
+    steps: mapWorkspaceSteps(row.steps),
+  };
+}
+
 export function buildRunTrace(
   run: RunTraceRunInput,
   // `null` when the agent row is RLS-invisible to the caller. A partner-wide
@@ -457,6 +538,13 @@ export function buildRunTrace(
   // for every run that produced no narrative artifact. Defaults null so every
   // existing caller is unchanged.
   narrativeDelivery: AiAgentRunNarrativeDeliveryDto | null = null,
+  // Execution plane W05 (spec §5.8) — the run's artifacts, newest first, and
+  // the sandbox it used. Both default to the empty answer so every existing
+  // caller (and every run outside the `analysis` profile, which is most of
+  // them) is unchanged. The DTOs are already-safe projections: `toArtifactDto`
+  // is what keeps `blobKey` inside the API.
+  artifacts: AiRunArtifactDto[] = [],
+  workspace: RunWorkspaceRowInput | null = null,
   // `progress` is intentionally NOT a parameter here: it is read from the
   // live Redis ring (`readRunProgress`, W03) by the route, not assembled
   // from persisted run state like everything else this function builds.
@@ -556,5 +644,8 @@ export function buildRunTrace(
     computeUsageEstimated: outcome?.computeUsageEstimated === true,
     // #4248 W03: counts only, never a recipient — see the DTO docstring.
     narrativeDelivery,
+    // Execution plane W05 (spec §5.8).
+    artifacts,
+    workspace: mapWorkspace(workspace),
   };
 }

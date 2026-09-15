@@ -1299,6 +1299,52 @@ const runDetailResponseSchema = z.object({
     // Always present: 0 for every run that never built a sandbox.
     computeCents: z.number(),
     computeUsageEstimated: z.boolean(),
+    // Execution plane W05 (#5716, spec §5.8) — the RESOLVED artifact list and
+    // the workspace step transcript. `.strict()` on both is the leak tripwire:
+    // `blobKey` and the sandbox's `provider_ref` must never reach the wire, and
+    // an added projection line that shipped one would fail here rather than in
+    // production.
+    artifacts: z.array(z.object({
+      id: z.string(),
+      kind: z.string(),
+      name: z.string(),
+      contentType: z.string(),
+      bytes: z.number(),
+      sha256: z.string(),
+      headPreview: z.string(),
+      tailPreview: z.string(),
+      sourceDeviceId: z.string().nullable(),
+      createdByTool: z.string(),
+      runId: z.string().nullable(),
+      sessionId: z.string().nullable(),
+      expiresAt: z.string(),
+      createdAt: z.string(),
+      downloadPath: z.string(),
+    }).strict()),
+    workspace: z.object({
+      backend: z.string(),
+      region: z.enum(['eu', 'us']),
+      status: z.string(),
+      bootstrapHash: z.string().nullable(),
+      createdAt: z.string(),
+      readyAt: z.string().nullable(),
+      destroyedAt: z.string().nullable(),
+      cpuMs: z.number().nullable(),
+      wallMs: z.number().nullable(),
+      memAllocatedMb: z.number().nullable(),
+      stagedBytes: z.number(),
+      artifactBytes: z.number(),
+      stepCount: z.number(),
+      steps: z.array(z.object({
+        ordinal: z.number(),
+        language: z.enum(['bash', 'python', 'node']),
+        scriptArtifactHandle: z.string().nullable(),
+        exitCode: z.number().nullable(),
+        timedOut: z.boolean(),
+        durationMs: z.number(),
+        stdoutArtifactHandle: z.string().nullable(),
+      }).strict()),
+    }).strict().nullable(),
   }).strict(),
 }).strict();
 
@@ -2185,6 +2231,92 @@ describe('GET /ai-agents/runs/:runId (execution-trace detail, #3828)', () => {
   // implementation here (importOriginal, see this file's own mock comment
   // above `alertVerdicts`), so this exercises the actual projection, not a
   // stub — the schema parse below is the assertion that matters.
+  // Execution plane W05 (#5716, spec §5.8).
+  it('returns the run artifacts newest first and the workspace transcript for an analysis run', async () => {
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({ profile: 'analysis', sessionId: null, intentIds: [] }),
+    ]));
+    // Both new reads are gated on the `analysis` profile, and they run in this
+    // order: artifacts, then the workspace row.
+    const artifactRow = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', orgId: ORG_ID, runId: RUN_ID, sessionId: null,
+      kind: 'output', name: 'failed-logons.csv', contentType: 'text/csv', bytes: 40_112,
+      sha256: 'f'.repeat(64), headPreview: 'user,when\n', tailPreview: '\n',
+      sourceDeviceId: null, createdByTool: 'workspace_collect',
+      expiresAt: new Date('2026-10-13T00:00:00Z'), createdAt: new Date('2026-09-13T10:03:00Z'),
+      // Present on the ROW and required to be absent from the RESPONSE —
+      // `toArtifactDto` is what keeps it inside the API, and this suite mocks
+      // that projection (its own coverage is artifactService.test.ts), so the
+      // mock below is what enforces the omission here.
+      blobKey: 'eu/2026/09/aaaa',
+    };
+    selectMock.mockReturnValueOnce(selectChain([artifactRow]));
+    toArtifactDtoMock.mockImplementation((record: typeof artifactRow) => ({
+      id: record.id,
+      runId: record.runId,
+      sessionId: record.sessionId,
+      kind: record.kind,
+      name: record.name,
+      contentType: record.contentType,
+      bytes: record.bytes,
+      sha256: record.sha256,
+      headPreview: record.headPreview,
+      tailPreview: record.tailPreview,
+      sourceDeviceId: record.sourceDeviceId,
+      createdByTool: record.createdByTool,
+      expiresAt: record.expiresAt.toISOString(),
+      createdAt: record.createdAt.toISOString(),
+      downloadPath: `/api/v1/ai/artifacts/${record.id}`,
+    }));
+    selectMock.mockReturnValueOnce(selectChain([
+      {
+        backend: 'vercel', region: 'eu', status: 'destroyed', bootstrapHash: 'sha256:abc',
+        createdAt: new Date('2026-09-13T10:00:00Z'), readyAt: new Date('2026-09-13T10:00:04Z'),
+        destroyedAt: new Date('2026-09-13T10:03:00Z'),
+        cpuMs: 41_000, wallMs: 176_000, memAllocatedMb: 2048,
+        stagedBytes: 1_048_576, artifactBytes: 40_112, stepCount: 1,
+        steps: [{
+          ordinal: 1, language: 'python', scriptArtifactHandle: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          exitCode: 0, timedOut: false, durationMs: 1820, stdoutArtifactHandle: null,
+        }],
+      },
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const parsed = runDetailResponseSchema.parse(JSON.parse(raw));
+
+    expect(parsed.data.artifacts).toHaveLength(1);
+    expect(parsed.data.artifacts[0]!.name).toBe('failed-logons.csv');
+    expect(parsed.data.artifacts[0]!.downloadPath)
+      .toBe('/api/v1/ai/artifacts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(parsed.data.workspace?.steps[0]!.language).toBe('python');
+    expect(parsed.data.computeCents).toBe(0);
+    // The blob key never leaves the API — asserted on the RAW body, because the
+    // strict schema above would have thrown on an extra key but says nothing
+    // about a value smuggled into an existing string field.
+    expect(raw).not.toContain('blobKey');
+    expect(raw).not.toContain('blob_key');
+    expect(raw).not.toContain('eu/2026/09/aaaa');
+  });
+
+  it('skips both execution-plane reads entirely for a non-analysis run', async () => {
+    // Every run outside the `analysis` profile is guaranteed to have neither a
+    // workspace nor artifacts, so the route must not spend two queries proving
+    // it — and the DTO must still carry the empty answers, never `undefined`.
+    selectMock.mockReturnValueOnce(selectChain([
+      runRow({ profile: 'triage', sessionId: null, intentIds: [], triggerKind: 'manual' }),
+    ]));
+
+    const res = await buildApp().request(`/ai-agents/runs/${RUN_ID}`);
+    expect(res.status).toBe(200);
+    expect(selectMock).toHaveBeenCalledTimes(1);
+    const parsed = runDetailResponseSchema.parse(await res.json());
+    expect(parsed.data.artifacts).toEqual([]);
+    expect(parsed.data.workspace).toBeNull();
+  });
+
   it('round-trips alertVerdict.suggestedAction.reason: superseded_concurrently through the strict wire schema', async () => {
     selectMock
       .mockReturnValueOnce(selectChain([

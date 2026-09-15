@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AiStreamEvent } from '@breeze/shared';
 import { processStreamEvent, type StreamableState, type ActivePlan } from './processStreamEvent';
 
 function makeState(): StreamableState {
   return {
     messages: [], pendingApproval: null, pendingPlan: null, activePlan: null,
     approvalMode: 'per_step', isPaused: false, isStreaming: true,
-    error: null, sessionId: 's1', sessions: [],
+    error: null, sessionId: 's1', sessions: [], chatRuns: {},
   };
 }
 
@@ -338,5 +341,134 @@ describe('unattended_release (#5612 W04)', () => {
       toolName: 'unattended_release',
       toolOutput: expect.objectContaining({ intentId: 'int-9', executionId: 'e9' }),
     });
+  });
+});
+
+describe('execution-plane run events (spec §5.5)', () => {
+  it('opens a run entry on the first progress event', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_progress', runId: 'r1', step: 'export_dataset', label: 'Exported 12,400 rows', ordinal: 1 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1).toEqual({
+      runId: 'r1',
+      status: 'running',
+      progress: [{ step: 'export_dataset', label: 'Exported 12,400 rows', ordinal: 1 }],
+      summary: null,
+      artifacts: [],
+    });
+  });
+
+  it('appends progress in ordinal order and never duplicates an ordinal', () => {
+    const state = makeState();
+    state.chatRuns = {
+      r1: { runId: 'r1', status: 'running', progress: [{ step: 'a', label: 'A', ordinal: 2 }], summary: null, artifacts: [] },
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_progress', runId: 'r1', step: 'b', label: 'B', ordinal: 1 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1!.progress.map((p) => p.ordinal)).toEqual([1, 2]);
+
+    // A redelivered event must not duplicate the entry: the bridge is
+    // best-effort and BullMQ can redeliver.
+    let second: Partial<StreamableState> = {};
+    const withBoth = { ...state, chatRuns: patch.chatRuns! };
+    processStreamEvent(
+      { type: 'run_progress', runId: 'r1', step: 'b', label: 'B', ordinal: 1 },
+      (fn) => { second = fn(withBoth); },
+      () => withBoth,
+      null,
+    );
+    expect(second.chatRuns!.r1!.progress).toHaveLength(2);
+  });
+
+  it('never downgrades a terminal run back to running on a late progress event', () => {
+    const state = makeState();
+    state.chatRuns = {
+      r1: { runId: 'r1', status: 'completed', progress: [], summary: 'done', artifacts: [] },
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_progress', runId: 'r1', step: 'late', label: 'Late', ordinal: 9 },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1!.status).toBe('completed');
+    expect(patch.chatRuns!.r1!.summary).toBe('done');
+  });
+
+  it('records the result, its artifacts and the terminal status', () => {
+    const state = makeState();
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      {
+        type: 'run_result', runId: 'r1', status: 'completed',
+        summary: 'Three accounts failed logon from outside the office.',
+        artifacts: [{ handle: 'a1', name: 'failed-logons.csv', bytes: 40112, contentType: 'text/csv' }],
+      },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1).toMatchObject({
+      status: 'completed',
+      summary: 'Three accounts failed logon from outside the office.',
+    });
+    expect(patch.chatRuns!.r1!.artifacts[0]!.name).toBe('failed-logons.csv');
+  });
+
+  it('keeps the progress already collected when the result arrives', () => {
+    const state = makeState();
+    state.chatRuns = {
+      r1: { runId: 'r1', status: 'running', progress: [{ step: 'a', label: 'A', ordinal: 1 }], summary: null, artifacts: [] },
+    };
+    let patch: Partial<StreamableState> = {};
+    processStreamEvent(
+      { type: 'run_result', runId: 'r1', status: 'failed', summary: null, artifacts: [] },
+      (fn) => { patch = fn(state); },
+      () => state,
+      null,
+    );
+    expect(patch.chatRuns!.r1!.progress).toHaveLength(1);
+    expect(patch.chatRuns!.r1!.status).toBe('failed');
+  });
+});
+
+describe('processStreamEvent exhaustiveness', () => {
+  it('has a default arm that type-errors on an unhandled event type', () => {
+    // The switch had no `default:` before this wave, so an event type added to
+    // the shared union and forgotten here did nothing at all — and "did
+    // nothing" is indistinguishable from "never arrived". This pins the guard's
+    // presence so nobody deletes it to get past a compile error.
+    // Read by repo-relative path, not `new URL(..., import.meta.url)`: under
+    // the jsdom environment `import.meta.url` is an http:// URL, and readFileSync
+    // rejects it ("The URL must be of scheme file").
+    const source = readFileSync(join(process.cwd(), 'src/stores/processStreamEvent.ts'), 'utf8');
+    expect(source).toContain('const _exhaustive: never = event;');
+  });
+
+  it('drops an unknown event without throwing or mutating state', () => {
+    // The compile-time half is the real guard; this is the runtime half, for an
+    // event hand-built by an older client that the types cannot see.
+    const state = makeState();
+    let called = false;
+    expect(() =>
+      processStreamEvent(
+        { type: 'not_a_real_event' } as unknown as AiStreamEvent,
+        () => { called = true; },
+        () => state,
+        null,
+      ),
+    ).not.toThrow();
+    expect(called).toBe(false);
   });
 });

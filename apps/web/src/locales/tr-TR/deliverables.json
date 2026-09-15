@@ -70,7 +70,13 @@
     "owner": "Sorumlu",
     "ticketCategory": "Bilet kategorisi",
     "portalVisible": "Müşteri portalında göster",
-    "sortOrder": "Sıralama"
+    "sortOrder": "Sıralama",
+    "instructions": "Dahili talimatlar",
+    "instructionsHint": "Dahili — müşteriye asla gösterilmez.",
+    "checklistTemplate": "Kontrol listesi şablonu",
+    "checklistTemplateNone": "Yok",
+    "checklistTemplateAllOrgs": "Tüm kuruluşlar",
+    "checklistTemplateManage": "Kontrol listesi şablonlarını yönet"
   },
   "drawer": {
     "title": "Oluşumlar",
@@ -84,7 +90,10 @@
     "uploadEvidence": "Kanıt olarak bir dosya yükle",
     "uploadEvidenceHint": "PDF, JPEG, PNG veya WebP, 10 MB'a kadar. Dosya bu kuruluşun belge kitaplığına kaydedilir.",
     "evidenceDocument": "Belge",
-    "upload": "Yükle"
+    "upload": "Yükle",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Kontrol listesini göster",
+    "hideChecklist": "Kontrol listesini gizle"
   },
   "evidence": {
     "reportRun": "Rapor çalıştırması",

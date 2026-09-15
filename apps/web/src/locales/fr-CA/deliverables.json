@@ -70,7 +70,13 @@
     "owner": "Responsable",
     "ticketCategory": "Catégorie de billet",
     "portalVisible": "Afficher dans le portail client",
-    "sortOrder": "Ordre d'affichage"
+    "sortOrder": "Ordre d'affichage",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "checklistTemplate": "Modèle de liste de vérification",
+    "checklistTemplateNone": "Aucun",
+    "checklistTemplateAllOrgs": "Toutes les orgs",
+    "checklistTemplateManage": "Gérer les modèles de liste de vérification"
   },
   "drawer": {
     "title": "Occurrences",
@@ -84,7 +90,10 @@
     "uploadEvidence": "Téléverser un fichier comme preuve",
     "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo. Le fichier est classé dans la bibliothèque de documents de cette organisation.",
     "evidenceDocument": "Document de preuve",
-    "upload": "Téléverser"
+    "upload": "Téléverser",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Afficher la liste de vérification",
+    "hideChecklist": "Masquer la liste de vérification"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",

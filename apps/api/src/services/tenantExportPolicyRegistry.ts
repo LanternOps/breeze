@@ -208,7 +208,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "custom_field_definitions": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","field_key","type","required","device_types","created_at","updated_at","script_write"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["options","default_value"]}),
   "customer_email_domains": tablePolicy("org_id", {"included":["id","partner_id","org_id","domain","auto_create_contact","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "delegant_m365_connections": tablePolicy("org_id", {"included":["id","org_id","customer_label","customer_display_name","delegant_org_id","delegant_connection_id","m365_tenant_id","status","last_verified_at","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "deliverable_template_items": tablePolicy("org_id", {"included":["id","set_id","org_id","partner_id","name","description","cadence","lead_days","grace_days","artifact_required","completion_mode","sort_order","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "deliverable_template_items": tablePolicy("org_id", {"included":["id","set_id","org_id","partner_id","name","description","cadence","lead_days","grace_days","artifact_required","completion_mode","instructions","checklist_template_id","sort_order","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "deliverable_template_sets": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "deployment_invites": tablePolicy("org_id", {"included":["id","partner_id","org_id","enrollment_key_id","custom_message","sent_at","clicked_at","enrolled_at","device_id","status"],"reviewedIncluded":["invited_email","invited_by_api_key_id"],"excludedSensitive":[],"excludedOpen":[]}),
   "deployments": tablePolicy("org_id", {"included":["id","org_id","name","type","target_type","status","created_by","created_at","started_at","completed_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["payload","target_config","schedule","rollout_config"]}),
@@ -539,7 +539,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "sensitive_data_scans": tablePolicy("org_id", {"included":["id","org_id","device_id","policy_id","requested_by","status","started_at","completed_at","idempotency_key","request_fingerprint","created_at"],"reviewedIncluded":[],"excludedSensitive":["policy_authority_generation"],"excludedOpen":["summary"]}),
   "service_deliverable_evidence": tablePolicy("org_id", {"included":["id","org_id","occurrence_id","kind","document_id","report_id","report_run_id","created_by_user_id","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "service_deliverable_occurrences": tablePolicy("org_id", {"included":["id","org_id","deliverable_id","name_snapshot","period_start","period_end","due_at","original_due_at","status","ticket_id","delivered_at","delivered_by_user_id","delivered_via","delivery_note","waived_at","waived_by_user_id","waived_reason","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "service_deliverables": tablePolicy("org_id", {"included":["id","org_id","contract_id","name","description","cadence","anchor_due_date","effective_from","effective_until","lead_days","grace_days","artifact_required","completion_mode","auto_evidence_report_id","owner_user_id","ticket_category_id","portal_visible","active","sort_order","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "service_deliverables": tablePolicy("org_id", {"included":["id","org_id","contract_id","name","description","cadence","anchor_due_date","effective_from","effective_until","lead_days","grace_days","artifact_required","completion_mode","auto_evidence_report_id","owner_user_id","ticket_category_id","instructions","checklist_template_id","portal_visible","active","sort_order","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   "service_principals": tablePolicy("org_id", {"included":["id","org_id","name","status","created_by","last_updated_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["scopes"]}),
   "service_process_check_results": tablePolicy("org_id", {"included":["id","org_id","device_id","watch_type","name","status","cpu_percent","memory_mb","pid","auto_restart_attempted","auto_restart_succeeded","timestamp"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   "sites": tablePolicy("org_id", {"included":["id","org_id","name","timezone","created_at","updated_at","partner_export_updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["address","contact","settings"]}),
@@ -579,8 +579,12 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // storage_key is an opaque `ticket-attachments/<id>` path (precedent:
   // ai_screenshots.storage_key, included); sha256 is a content digest, not a
   // credential, and matches nothing in SUSPICIOUS_NAME_PARTS.
+  // artifact_id (execution plane W05): a uuid pointing at an ai_run_artifacts
+  // row in the SAME org — a tenant identifier, exactly like ticket_id and
+  // comment_id beside it. The artifact's own bytes are classified on that
+  // table, not here.
   "ticket_attachments": tablePolicy("org_id", {
-    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at"],
+    included: ["id", "org_id", "ticket_id", "comment_id", "uploaded_by_user_id", "storage_backend", "storage_key", "content_type", "byte_size", "original_filename", "sha256", "created_at", "attached_at", "artifact_id"],
     reviewedIncluded: [],
     excludedSensitive: [],
     excludedOpen: ["data"],

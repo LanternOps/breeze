@@ -21,6 +21,10 @@ import { eq, and, isNull, inArray } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import { buildOrgAccessClosures } from '../middleware/auth';
 import type { AiStreamEvent, AiApprovalMode } from '@breeze/shared/types/ai';
+// TYPE-ONLY, and it must stay that way: chatRunBridge.ts imports this module at
+// runtime for `streamingSessionManager.get`, so a value import back would be a
+// real runtime cycle. TypeScript erases this one.
+import type { PendingRunResult } from './workspace/chatRunBridge';
 import { AsyncEventQueue } from '../utils/asyncQueue';
 import {
   recordUsageFromSdkResult,
@@ -580,6 +584,14 @@ export interface ActiveSession {
   currentPlanStepIndex: number;
   /** Resolver for the plan approval promise (in-memory, no DB polling) */
   planApprovalResolver: ((approved: boolean) => void) | null;
+  /**
+   * Results of `analysis` runs this session launched that have finished but
+   * whose summary has not yet been shown to the model (execution-plane spec
+   * §5.5). Filled by `services/workspace/chatRunBridge.ts` out of band; drained
+   * by `POST /ai/sessions/:id/messages` and prepended to the next user message.
+   * Optional so existing `ActiveSession` fixtures compile unchanged.
+   */
+  pendingRunResults?: PendingRunResult[];
   // ── AI for Office (client sessions) — set by routes/clientAi/sessions.ts ──
   /** Client org policy writeMode, refreshed on every client message; the
    *  client tool handler rejects mutating tools when 'readonly'. */
@@ -912,6 +924,7 @@ export class StreamingSessionManager {
       approvedPlanSteps: new Map(),
       currentPlanStepIndex: 0,
       planApprovalResolver: null,
+      pendingRunResults: [],
     };
 
     // Create session-scoped callbacks (close over session object)

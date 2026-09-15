@@ -42,6 +42,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { listChecklist } from './ticketChecklistService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -503,7 +504,23 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // defense-in-depth is folded into the single query (no extra round-trip).
         const ticket = await findTicketWithAccess(String(input.ticketId), auth);
         if (!ticket) return JSON.stringify({ error: 'Ticket not found' });
-        return JSON.stringify({ ticket });
+        // #5808 W03 — READ ONLY. Labels and progress, so "summarise where this
+        // ticket stands" works. No per-step detail and no doneByUserId: the
+        // attestation is a compliance record, not context for a summary. There
+        // is deliberately NO tick-off action (spec §6.5, OD-7 A) — an agent
+        // ticking a box it did not perform is a falsified record. The control
+        // that actually enforces that is W01's isInteractiveUserSession gate on
+        // the `done` branch, not the absence of a tool here: an MCP API key
+        // carries its creator's real user id.
+        const checklist = await listChecklist(ticket.id);
+        return JSON.stringify({
+          ticket,
+          checklist: checklist.total === 0 ? null : {
+            done: checklist.done,
+            total: checklist.total,
+            items: checklist.items.map((i) => ({ label: i.label, done: i.done })),
+          },
+        });
       }
 
       // ── create ────────────────────────────────────────────────────────────

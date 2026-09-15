@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AI_AGENT_RUN_LEAK_TRIPWIRE_KEYS } from '@breeze/shared';
-import { buildRunTrace, type RunTraceRunInput } from './runTrace';
+import { buildRunTrace, mapWorkspaceSteps, type RunTraceRunInput } from './runTrace';
 
 const RUN_ID = '11111111-1111-4111-8111-111111111111';
 const AGENT_ID = '22222222-2222-4222-8222-222222222222';
@@ -1074,5 +1074,34 @@ describe('buildRunTrace — analysis projection (execution plane W04)', () => {
     expect(detail.computeCents).toBe(0);
     // Absent flag reads false, never undefined — the UI branches on it.
     expect(detail.computeUsageEstimated).toBe(false);
+  });
+});
+
+describe('mapWorkspaceSteps (execution-plane spec §5.8)', () => {
+  it('projects well-formed steps in ordinal order', () => {
+    const steps = mapWorkspaceSteps([
+      { ordinal: 2, language: 'bash', scriptArtifactHandle: 'b', exitCode: 1, timedOut: false, durationMs: 40, stdoutArtifactHandle: null },
+      { ordinal: 1, language: 'python', scriptArtifactHandle: 'a', exitCode: 0, timedOut: false, durationMs: 1820, stdoutArtifactHandle: 'c' },
+    ]);
+    expect(steps.map((s) => s.ordinal)).toEqual([1, 2]);
+    expect(steps[0]!.language).toBe('python');
+  });
+
+  it('drops a malformed entry rather than rendering a half-step', () => {
+    // `ai_run_workspaces.steps` is jsonb written by the worker. A schema change
+    // or a partial write must degrade to "we cannot show this step", never to a
+    // step whose exit code is `undefined` rendered as success.
+    const steps = mapWorkspaceSteps([
+      { ordinal: 1, language: 'python', exitCode: 0, timedOut: false, durationMs: 10, scriptArtifactHandle: null, stdoutArtifactHandle: null },
+      { ordinal: 'two', language: 'perl' },
+      null,
+      'nonsense',
+    ]);
+    expect(steps).toHaveLength(1);
+  });
+
+  it('returns an empty list for a null or non-array column', () => {
+    expect(mapWorkspaceSteps(null)).toEqual([]);
+    expect(mapWorkspaceSteps({ steps: [] })).toEqual([]);
   });
 });

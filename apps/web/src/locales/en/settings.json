@@ -2060,7 +2060,9 @@
           "startedAt": "Started",
           "finishedAt": "Finished",
           "turnCount": "Turns",
-          "summary": "Summary"
+          "summary": "Summary",
+          "computeCost": "Compute",
+          "computeEstimated": "(estimated)"
         },
         "flags": {
           "budgetExceeded": "Budget exceeded",
@@ -2092,6 +2094,29 @@
             "skipped": "Verification skipped"
           },
           "viewApproval": "Review in Approvals"
+        },
+        "artifacts": {
+          "title": "Files this run produced",
+          "download": "Download",
+          "preview": "Preview",
+          "attachToTicket": "Attach to a ticket",
+          "attach": "Attach {{name}}",
+          "ticketIdPlaceholder": "Ticket ID",
+          "attachedToTicket": "Attached to the ticket",
+          "attachFailed": "Could not attach the file to that ticket"
+        },
+        "workspace": {
+          "title": "What ran in the workspace",
+          "region": "Region",
+          "status": "Sandbox",
+          "cpu": "CPU time",
+          "steps": "Steps",
+          "script": "Script",
+          "stdout": "Output",
+          "exitCode": "exit",
+          "timedOut": "timed out",
+          "noExitCode": "no exit code",
+          "artifactExpired": "expired"
         },
         "progress": {
           "title": "Progress"
@@ -4381,6 +4406,12 @@
       "organizationId": "Organization ID",
       "copyOrganizationId": "Copy Organization ID",
       "organizationIdHelp": "Use this ID when inviting users or configuring integrations."
+    },
+    "ai": {
+      "externalProcessing": "Allow sandboxed AI analysis",
+      "externalProcessingDescription": "Lets AI analysis runs execute code for this organization in an isolated sandbox with no network access, hosted in this organization's region. Off by default.",
+      "externalProcessingSaved": "Saved",
+      "externalProcessingSaveFailed": "Could not change this setting"
     },
     "breadcrumbs": {
       "settings": "Settings",

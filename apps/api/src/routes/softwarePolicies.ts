@@ -503,6 +503,9 @@ softwarePoliciesRoutes.get(
           violations: softwareComplianceStatus.violations,
           lastChecked: softwareComplianceStatus.lastChecked,
           remediationStatus: softwareComplianceStatus.remediationStatus,
+          installRemediationStatus: softwareComplianceStatus.installRemediationStatus,
+          lastInstallRemediationAttempt: softwareComplianceStatus.lastInstallRemediationAttempt,
+          installRemediationAttempts: softwareComplianceStatus.installRemediationAttempts,
         },
       })
       .from(softwareComplianceStatus)

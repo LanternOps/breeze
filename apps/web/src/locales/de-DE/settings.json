@@ -2060,7 +2060,9 @@
           "startedAt": "Gestartet",
           "finishedAt": "Beendet",
           "turnCount": "Runden",
-          "summary": "Zusammenfassung"
+          "summary": "Zusammenfassung",
+          "computeCost": "Rechenkosten",
+          "computeEstimated": "(geschätzt)"
         },
         "flags": {
           "budgetExceeded": "Budget überschritten",
@@ -2092,6 +2094,29 @@
             "skipped": "Verifizierung übersprungen"
           },
           "viewApproval": "In Genehmigungen prüfen"
+        },
+        "artifacts": {
+          "title": "Von diesem Lauf erzeugte Dateien",
+          "download": "Herunterladen",
+          "preview": "Vorschau",
+          "attachToTicket": "An ein Ticket anhängen",
+          "attach": "{{name}} anhängen",
+          "ticketIdPlaceholder": "Ticket-ID",
+          "attachedToTicket": "An das Ticket angehängt",
+          "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
+        },
+        "workspace": {
+          "title": "Was in der Sandbox ausgeführt wurde",
+          "region": "Region",
+          "status": "Sandbox",
+          "cpu": "CPU-Zeit",
+          "steps": "Schritte",
+          "script": "Skript",
+          "stdout": "Ausgabe",
+          "exitCode": "Exit",
+          "timedOut": "Zeitüberschreitung",
+          "noExitCode": "kein Exit-Code",
+          "artifactExpired": "abgelaufen"
         },
         "progress": {
           "title": "Fortschritt"
@@ -4328,6 +4353,12 @@
       "organizationId": "Organisations-ID",
       "copyOrganizationId": "Organisations-ID kopieren",
       "organizationIdHelp": "Verwenden Sie diese ID, wenn Sie Benutzer einladen oder Integrationen konfigurieren."
+    },
+    "ai": {
+      "externalProcessing": "Sandbox-KI-Analyse zulassen",
+      "externalProcessingDescription": "Ermöglicht es KI-Analyseläufen, für diese Organisation Code in einer isolierten Sandbox ohne Netzwerkzugriff auszuführen, gehostet in der Region dieser Organisation. Standardmäßig deaktiviert.",
+      "externalProcessingSaved": "Gespeichert",
+      "externalProcessingSaveFailed": "Diese Einstellung konnte nicht geändert werden"
     },
     "breadcrumbs": {
       "settings": "Einstellungen",

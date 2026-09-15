@@ -2060,7 +2060,9 @@
           "startedAt": "Avviata",
           "finishedAt": "Terminata",
           "turnCount": "Turni",
-          "summary": "Riepilogo"
+          "summary": "Riepilogo",
+          "computeCost": "Calcolo",
+          "computeEstimated": "(stimato)"
         },
         "flags": {
           "budgetExceeded": "Budget superato",
@@ -2092,6 +2094,29 @@
             "skipped": "Verifica saltata"
           },
           "viewApproval": "Rivedi in Approvazioni"
+        },
+        "artifacts": {
+          "title": "File prodotti da questa esecuzione",
+          "download": "Scarica",
+          "preview": "Anteprima",
+          "attachToTicket": "Allega a un ticket",
+          "attach": "Allega {{name}}",
+          "ticketIdPlaceholder": "ID ticket",
+          "attachedToTicket": "Allegato al ticket",
+          "attachFailed": "Impossibile allegare il file a quel ticket"
+        },
+        "workspace": {
+          "title": "Cosa è stato eseguito nella sandbox",
+          "region": "Regione",
+          "status": "Sandbox",
+          "cpu": "Tempo CPU",
+          "steps": "Passaggi",
+          "script": "Script",
+          "stdout": "Output",
+          "exitCode": "uscita",
+          "timedOut": "timeout",
+          "noExitCode": "nessun codice di uscita",
+          "artifactExpired": "scaduto"
         },
         "progress": {
           "title": "Avanzamento"
@@ -4376,6 +4401,12 @@
       "organizationId": "ID organizzazione",
       "copyOrganizationId": "Copia ID organizzazione",
       "organizationIdHelp": "Usa questo ID quando inviti utenti o configuri integrazioni."
+    },
+    "ai": {
+      "externalProcessing": "Consenti analisi IA in sandbox",
+      "externalProcessingDescription": "Consente alle esecuzioni di analisi IA di eseguire codice per questa organizzazione in una sandbox isolata senza accesso alla rete, ospitata nella regione di questa organizzazione. Disattivato per impostazione predefinita.",
+      "externalProcessingSaved": "Salvato",
+      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione"
     },
     "breadcrumbs": {
       "settings": "Impostazioni",

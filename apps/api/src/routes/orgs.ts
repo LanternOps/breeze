@@ -230,6 +230,10 @@ export const createOrganizationSchema = z.object({
 // makes no sense, so the create schema keeps the original set.
 export const updateOrganizationSchema = createOrganizationSchema.partial().omit({ partnerId: true }).extend({
   status: z.enum(['active', 'suspended', 'trial', 'churned', 'offboarding']).optional(),
+  // Execution plane W05 (spec §8). Consent for sandboxed analysis to run on
+  // rented compute. Settable on UPDATE only — an org is never created already
+  // consenting, and the create schema deliberately stays as it was.
+  aiExternalProcessing: z.boolean().optional(),
 });
 
 // #3967 — `organizations.slug` is unique PER PARTNER, case-insensitively, and
@@ -2281,6 +2285,12 @@ const updateOrgHandler = [requireScope('partner', 'system'), requireOrgWriteOrPl
   if (data.slug !== undefined) updates.slug = data.slug;
   if (data.type !== undefined) updates.type = data.type;
   if (data.status !== undefined) updates.status = data.status;
+  // Execution plane W05 (spec §8). The handler's writeRouteAudit already
+  // records `changedFields: Object.keys(data)`, so flipping this is attributable
+  // with no further change — which is the point for a consent flag.
+  if (data.aiExternalProcessing !== undefined) {
+    updates.aiExternalProcessing = data.aiExternalProcessing;
+  }
   if (data.settings !== undefined) {
     const count = await countMfaPolicyLockouts({ kind: 'organization', id }, data.settings);
     if (count) return c.json(mfaPolicyLockoutResponse(count), 409);
