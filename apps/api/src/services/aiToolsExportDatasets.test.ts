@@ -136,32 +136,65 @@ describe('dataset adapters', () => {
     expect(searchFleetLogs).not.toHaveBeenCalled();
   });
 
-  it('device_inventory restricts rows to the requested devices even though the generator ignores deviceIds', async () => {
+  it('device_inventory passes the requested deviceIds straight into the generator filter (#5776)', async () => {
+    // #5776: the generator now honours filters.deviceIds directly, so the
+    // adapter no longer post-filters by hostname (which is not unique within
+    // an org — see the "shares a hostname" test below).
     generateDeviceInventoryReport.mockResolvedValue({
-      rows: [
-        { hostname: 'host-d1', osType: 'windows' },
-        { hostname: 'host-d2', osType: 'windows' },
-        { hostname: 'host-d3', osType: 'windows' },
-      ],
-      rowCount: 3,
+      rows: [{ deviceId: 'd1', hostname: 'host-d1', osType: 'windows' }],
+      rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
       auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
     });
     const page = await pager(null);
+    expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
+      filters: { deviceIds: ['d1'] },
+    });
     expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
   });
 
   it('device_inventory falls back to the run target set when no deviceIds were supplied', async () => {
     generateDeviceInventoryReport.mockResolvedValue({
-      rows: [{ hostname: 'host-d1' }, { hostname: 'host-d9' }],
-      rowCount: 2,
+      rows: [{ deviceId: 'd1', hostname: 'host-d1' }],
+      rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
       auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'], siteId: null, pageSize: 500,
     });
     const page = await pager(null);
+    expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
+      filters: { deviceIds: ['d1'] },
+    });
     expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
+  });
+
+  it('device_inventory: two devices sharing a hostname — only the admitted device is exported', async () => {
+    // Simulates what the real `inArray(devices.id, ...)` query does: it
+    // returns only the row for the admitted device, even though DEVICE_B
+    // shares its hostname with the admitted DEVICE_A. Before #5776 the
+    // adapter resolved the restriction to a Set<hostname> and post-filtered
+    // `row.hostname` — since both devices share 'shared-host', that filter
+    // could not tell them apart and both/either could ride along. Asserting
+    // the generator call args here proves the restriction is now keyed on
+    // device id, not hostname.
+    generateDeviceInventoryReport.mockImplementation(async (_orgId, config) => {
+      const allowed = new Set((config.filters?.deviceIds ?? []) as string[]);
+      const all = [
+        { deviceId: 'device-a', hostname: 'shared-host' },
+        { deviceId: 'device-b', hostname: 'shared-host' },
+      ];
+      const rows = all.filter((r) => allowed.size === 0 || allowed.has(r.deviceId));
+      return { rows, rowCount: rows.length };
+    });
+
+    const pager = await DATASET_ADAPTERS.device_inventory.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['device-a'], runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]).toMatchObject({ deviceId: 'device-a', hostname: 'shared-host' });
   });
 
   it('custom_fields includes partner-wide definitions via the shared reader', async () => {
