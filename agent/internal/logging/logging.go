@@ -31,9 +31,14 @@ const (
 // stats", "Desktop WebRTC metrics"): they are Info-level, but the
 // desktop-helper ships at log_shipping_level=warn by default, so without this
 // they never reached Agent Logs (#5929). The override is session-scoped by
-// construction — only records emitted while a session is live carry it. It
-// does not change local logging: a record the local handler rejects still
-// never reaches Handle.
+// construction — only records emitted while a session is live carry it.
+//
+// It overrides log_shipping_level only, not log_level: slog checks
+// Enabled() before Handle() ever runs, so a record below the LOCAL level is
+// dropped before the marker can be seen and neither logs nor ships. The
+// desktop-helper hardcodes the local level to info, so it is unaffected; an
+// agent running direct-mode sessions with log_level=warn would still not
+// ship these lines.
 func ShipAlways() slog.Attr {
 	return slog.Bool(KeyShipAlways, true)
 }

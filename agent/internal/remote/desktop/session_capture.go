@@ -1030,6 +1030,9 @@ func (s *Session) captureAndSendFrameGPU(tp TextureProvider, frameDuration time.
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
+	// Zero-copy: no CPU colour conversion on this path. Reset so convertMs
+	// doesn't carry a stale value from an earlier CPU frame in the same session.
+	s.metrics.RecordConvert(0)
 
 	s.frameIdx++
 	// Log the first 5 frames sent (catches monitor switch + encoder re-init)
