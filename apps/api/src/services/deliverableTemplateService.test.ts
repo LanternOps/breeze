@@ -220,12 +220,31 @@ describe('deliverableTemplateService', () => {
     expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner).not.toHaveBeenCalled();
   });
 
-  it('updateTemplateItem validates a NON-null pointer against the set owner', async () => {
-    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]);
-    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+  it('updateTemplateItem validates a NON-null pointer against the set owner, resolving the org\'s partnerId', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]); // loadSetOr404
+    dbMocks.rows.push([{ partnerId: 'p1' }]); // organizations lookup for org1's partner
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]); // update returning
     await updateTemplateItem('s1', 'i1', { checklistTemplateId: 'tcl-1' }, partnerAdmin);
     expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
-      .toHaveBeenCalledWith('tcl-1', { orgId: 'org1', partnerId: null });
+      .toHaveBeenCalledWith('tcl-1', { orgId: 'org1', partnerId: 'p1' });
+  });
+
+  // #5921 follow-up: an org-owned set's own partner_id column is ALWAYS null
+  // (one-owner XOR constraint), so passing it straight through rejected every
+  // partner-wide checklist template on every org-owned set. The correct owner
+  // axis is the ORGANIZATION's own partnerId (same lookup as
+  // serviceDeliverableService.validateReferences), not the set's partner_id
+  // column.
+  it('an org-owned set resolves the ORGANIZATION\'s partnerId, not the set\'s own null partner_id, so a partner-wide template is usable', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]); // loadSetOr404
+    dbMocks.rows.push([{ partnerId: 'p1' }]); // organizations lookup for org1's partner
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]); // insert returning
+    await addTemplateItem('s1', {
+      name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true,
+      completionMode: 'on_ticket_resolve', sortOrder: 0, checklistTemplateId: 'tcl-partner-wide',
+    }, partnerAdmin);
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
+      .toHaveBeenCalledWith('tcl-partner-wide', { orgId: 'org1', partnerId: 'p1' });
   });
 });
 
