@@ -236,4 +236,57 @@ describe('ticket checklist template routes (#5783 W02)', () => {
     const res = await app.request('/ticket-checklist-templates/not-a-uuid', { headers: AUTH });
     expect(res.status).toBe(400);
   });
+
+  it('GET /:id returns one template', async () => {
+    serviceMocks.getChecklistTemplate.mockResolvedValueOnce({ id: TEMPLATE, name: 'X' });
+    const res = await app.request(`/ticket-checklist-templates/${TEMPLATE}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.getChecklistTemplate).toHaveBeenCalledWith(TEMPLATE, expect.anything());
+  });
+
+  it('DELETE /items/:itemId removes one item', async () => {
+    serviceMocks.removeChecklistTemplateItem.mockResolvedValueOnce(undefined);
+    const res = await app.request(`/ticket-checklist-templates/items/${ITEM}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.removeChecklistTemplateItem).toHaveBeenCalledWith(ITEM, expect.anything());
+    // The literal /items path must not be swallowed by the /:id template route.
+    expect(deleteChecklistTemplate).not.toHaveBeenCalled();
+  });
+
+  it('POST /:id/items/reorder passes the whole id list through', async () => {
+    serviceMocks.reorderChecklistTemplateItems.mockResolvedValueOnce([]);
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/items/reorder`, {
+      itemIds: [ITEM],
+    });
+    expect(res.status).toBe(200);
+    expect(serviceMocks.reorderChecklistTemplateItems).toHaveBeenCalledWith(
+      TEMPLATE,
+      [ITEM],
+      expect.anything(),
+    );
+  });
+
+  it('reorder 400s an empty id list without calling the service', async () => {
+    const res = await post(`/ticket-checklist-templates/${TEMPLATE}/items/reorder`, {
+      itemIds: [],
+    });
+    expect(res.status).toBe(400);
+    expect(serviceMocks.reorderChecklistTemplateItems).not.toHaveBeenCalled();
+  });
+
+  it('maps a 409 duplicate-name service error onto the envelope', async () => {
+    createChecklistTemplate.mockRejectedValueOnce(
+      new ChecklistTemplateServiceError(
+        'A checklist template with this name already exists',
+        409,
+        'DUPLICATE_CHECKLIST_TEMPLATE_NAME',
+      ),
+    );
+    const res = await post('/ticket-checklist-templates', { name: 'Dupe' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'DUPLICATE_CHECKLIST_TEMPLATE_NAME' });
+  });
 });

@@ -353,7 +353,16 @@ export async function createChecklistTemplate(
             sortOrder: item.sortOrder,
           })
           .returning()) as TicketChecklistTemplateItemRow[];
-        if (itemRow) items.push(itemView(itemRow));
+        // Throw rather than skip: silently returning a template with fewer
+        // steps than the caller asked for would be a 200 that lies.
+        if (!itemRow) {
+          throw new ChecklistTemplateServiceError(
+            'Item insert returned no row',
+            500,
+            'INSERT_FAILED',
+          );
+        }
+        items.push(itemView(itemRow));
       }
       return templateView(row, items);
     });

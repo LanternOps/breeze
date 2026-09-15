@@ -398,6 +398,10 @@ describe('ticket checklist template RLS (#5783 W02)', () => {
       const partner = await createPartner();
       const org = await createOrganization({ partnerId: partner.id });
       const ticketId = await seedTicket(org.id, partner.id);
+      // A SECOND ticket in the same org, with its own unticked row. The delete
+      // predicate must be scoped by ticket_id as well as done_at — without the
+      // ticket_id arm this row would be destroyed too, fleet-wide.
+      const bystanderId = await seedTicket(org.id, partner.id);
       const template = await seedTemplate({ orgId: org.id, name: uniqueName('Replace') });
       await seedTemplateItem(template, { orgId: org.id }, 'From template', 0);
 
@@ -411,6 +415,7 @@ describe('ticket checklist template RLS (#5783 W02)', () => {
             doneAt: new Date(),
           },
           { orgId: org.id, ticketId, label: 'Not done yet', position: 1 },
+          { orgId: org.id, ticketId: bystanderId, label: 'Other ticket unticked', position: 0 },
         ]),
       );
 
@@ -438,6 +443,15 @@ describe('ticket checklist template RLS (#5783 W02)', () => {
       expect(labels).toContain('Already done');
       expect(labels).not.toContain('Not done yet');
       expect(labels).toContain('From template');
+
+      // The bystander ticket is untouched.
+      const bystanderRows = await withDbAccessContext(SYSTEM_CTX, () =>
+        db
+          .select()
+          .from(ticketChecklistItems)
+          .where(eq(ticketChecklistItems.ticketId, bystanderId)),
+      );
+      expect(bystanderRows.map((r) => r.label)).toEqual(['Other ticket unticked']);
     });
   });
 

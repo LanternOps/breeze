@@ -53,6 +53,7 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   // `null` = not fetched yet. Only ACTIVE templates are kept: an inactive one
   // stays linked where it is already used but must not appear in a picker.
   const [templates, setTemplates] = useState<ChecklistTemplate[] | null>(null);
+  const [templatesFailed, setTemplatesFailed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickedTemplateId, setPickedTemplateId] = useState('');
   const [applyMode, setApplyMode] = useState<'append' | 'replace_unticked'>('append');
@@ -103,17 +104,24 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   const compactMode = mode === 'compact';
 
   /**
-   * Templates are fetched at most once per mount, and a failure is swallowed
-   * to `[]`: the picker is an optional affordance, so losing it must not turn
-   * a working checklist card into an error state. The checklist's own load
-   * failure is reported separately and is NOT swallowed.
+   * A failed template fetch is NOT equivalent to "this MSP has no templates".
+   * Collapsing the two would make the whole card vanish on an empty checklist
+   * after a 401/403/500 — the technician would see nothing where a working
+   * peer sees an "Apply template" affordance, with no signal that anything
+   * went wrong. That is the same trap `loadFailed` exists to avoid for the
+   * checklist itself, so the failure is recorded rather than swallowed.
    */
   const loadTemplates = useCallback(async () => {
     try {
       const rows = await listChecklistTemplates(fetchWithAuth);
       setTemplates(rows.filter((tpl) => tpl.isActive));
-    } catch {
+      setTemplatesFailed(false);
+    } catch (err) {
+      // console.error is the only trace this path can leave — the web app has
+      // no client-side Sentry.
+      console.error('[TicketChecklistCard] failed to load checklist templates', err);
       setTemplates([]);
+      setTemplatesFailed(true);
     }
   }, []);
 
@@ -277,7 +285,11 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   // which case the card is the only reachable way to get one. A ticket whose
   // checklist FAILED to load is neither, and must not disappear silently.
   const hasTemplates = Array.isArray(templates) && templates.length > 0;
-  if (!loading && !loadFailed && total === 0 && mode === 'full' && !hasTemplates) return null;
+  // `templatesFailed` keeps the card mounted: "we could not find out" must not
+  // render identically to "there are none".
+  if (!loading && !loadFailed && total === 0 && mode === 'full' && !hasTemplates && !templatesFailed) {
+    return null;
+  }
 
   const compact = compactMode;
 
@@ -471,7 +483,27 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
           template exists) — so the unknown state only shows the button on a
           checklist that already has items, where the card stays mounted either
           way and the fetch stays lazy. */}
-      {!compact && (pickerOpen || hasTemplates || (templates === null && total > 0)) && (
+      {!compact && templatesFailed && (
+        <div className="mt-2">
+          <p className="text-xs text-destructive" data-testid="ticket-checklist-templates-error">
+            {t('templates.errors.loadFailed')}
+          </p>
+          <button
+            type="button"
+            className="mt-1 text-xs underline"
+            data-testid="ticket-checklist-templates-retry"
+            onClick={() => {
+              void loadTemplates();
+            }}
+          >
+            {t('actions.retry')}
+          </button>
+        </div>
+      )}
+
+      {!compact &&
+        !templatesFailed &&
+        (pickerOpen || hasTemplates || (templates === null && total > 0)) && (
         <div className="mt-2">
           {pickerOpen ? (
             <div className="space-y-1.5 rounded-md border bg-muted/30 p-1.5" data-testid="ticket-checklist-template-picker">

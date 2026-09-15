@@ -338,6 +338,33 @@ describe('TicketChecklistCard', () => {
     });
   });
 
+  it('does NOT vanish when the TEMPLATE fetch fails on an empty checklist', async () => {
+    // A failed template fetch (401/403/500) must not render identically to
+    // "this MSP has no templates" — that would hide the card entirely and give
+    // the technician no signal that anything went wrong.
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/ticket-checklist-templates')) return jsonRes(null, 500);
+      return jsonRes({ items: [], done: 0, total: 0 });
+    });
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    expect(await screen.findByTestId('ticket-checklist-templates-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-checklist-apply-template')).toBeNull();
+  });
+
+  it('recovers the picker when the template retry succeeds', async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url.startsWith('/ticket-checklist-templates')) return jsonRes(null, 500);
+      return jsonRes({ items: [], done: 0, total: 0 });
+    });
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    await screen.findByTestId('ticket-checklist-templates-error');
+
+    fetchWithAuth.mockImplementation(fakeServer([], [template()]));
+    fireEvent.click(screen.getByTestId('ticket-checklist-templates-retry'));
+    expect(await screen.findByTestId('ticket-checklist-apply-template')).toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-checklist-templates-error')).toBeNull();
+  });
+
   it('compact mode does NOT offer Apply template', async () => {
     fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1' })], [template()]));
     render(<TicketChecklistCard ticketId="tk-1" mode="compact" />);

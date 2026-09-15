@@ -34,11 +34,15 @@ vi.mock('../db', () => {
 
 import { db as mockedDb } from '../db';
 import {
+  addChecklistTemplateItem,
   applyChecklistTemplateToTicket,
   createChecklistTemplate,
   deleteChecklistTemplate,
   listChecklistTemplates,
+  removeChecklistTemplateItem,
+  reorderChecklistTemplateItems,
   updateChecklistTemplate,
+  updateChecklistTemplateItem,
   visibleChecklistTemplateCondition,
   ChecklistTemplateServiceError,
 } from './ticketChecklistTemplateService';
@@ -82,7 +86,9 @@ const db = {
   where: spy('where'),
   orderBy: spy('orderBy'),
   insert: spy('insert'),
+  update: spy('update'),
   delete: spy('delete'),
+  execute: spy('execute'),
   transaction: spy('transaction'),
 };
 
@@ -193,6 +199,117 @@ describe('partner-wide write gating', () => {
     await expect(updateChecklistTemplate('FOREIGN', { name: 'Y' }, PARTNER_TECH)).rejects.toMatchObject(
       { status: 404, code: 'NOT_FOUND' },
     );
+  });
+
+  // Items go through the SAME requireWritable gate as the parent, and this is
+  // the likelier place to slip a step into a shared MSP procedure.
+
+  it('a partner tech may NOT add an item to a partner-wide template', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]);
+    await expect(
+      addChecklistTemplateItem('t-1', { label: 'Sneak', sortOrder: 0 }, PARTNER_TECH),
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('a partner ADMIN may add an item to a partner-wide template (positive control)', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]);
+    dbMocks.rows.push([{ id: 'ti-1', templateId: 't-1', label: 'Step', detail: null, sortOrder: 0 }]);
+    await expect(
+      addChecklistTemplateItem('t-1', { label: 'Step', sortOrder: 0 }, PARTNER_ADMIN),
+    ).resolves.toBeDefined();
+    // Owner columns are copied from the PARENT, never from input — that is what
+    // keeps the two branch FKs satisfiable.
+    expect(db.values).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: 't-1', orgId: null, partnerId: 'p-1' }),
+    );
+  });
+
+  it('a partner tech may NOT update an item of a partner-wide template', async () => {
+    dbMocks.rows.push([{ id: 'ti-1', templateId: 't-1', label: 'A' }]); // the item
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]); // its template
+    await expect(
+      updateChecklistTemplateItem('ti-1', { label: 'B' }, PARTNER_TECH),
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('a partner tech may NOT remove an item of a partner-wide template', async () => {
+    dbMocks.rows.push([{ id: 'ti-1', templateId: 't-1', label: 'A' }]);
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]);
+    await expect(removeChecklistTemplateItem('ti-1', PARTNER_TECH)).rejects.toBeInstanceOf(
+      PartnerWideWriteDeniedError,
+    );
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it('404s an item whose template is outside the caller’s org and partner', async () => {
+    dbMocks.rows.push([{ id: 'ti-1', templateId: 'FOREIGN', label: 'A' }]);
+    dbMocks.rows.push([]); // the template is not visible
+    await expect(
+      updateChecklistTemplateItem('ti-1', { label: 'B' }, PARTNER_TECH),
+    ).rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+  });
+});
+
+describe('reorderChecklistTemplateItems', () => {
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    resetDbCalls();
+  });
+
+  it('a partner tech may NOT reorder a partner-wide template', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: null, partnerId: 'p-1' }]);
+    await expect(
+      reorderChecklistTemplateItems('t-1', ['ti-1'], PARTNER_TECH),
+    ).rejects.toBeInstanceOf(PartnerWideWriteDeniedError);
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a PARTIAL list with 400 and writes nothing', async () => {
+    // The mismatch guard is what stops a partial or foreign id list from
+    // silently leaving items behind at a stale position.
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    dbMocks.rows.push([{ id: 'ti-1' }, { id: 'ti-2' }]);
+    await expect(
+      reorderChecklistTemplateItems('t-1', ['ti-1'], PARTNER_ADMIN),
+    ).rejects.toMatchObject({ status: 400, code: 'CHECKLIST_TEMPLATE_REORDER_MISMATCH' });
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a FOREIGN id even when the count matches', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    dbMocks.rows.push([{ id: 'ti-1' }, { id: 'ti-2' }]);
+    await expect(
+      reorderChecklistTemplateItems('t-1', ['ti-1', 'ti-999'], PARTNER_ADMIN),
+    ).rejects.toMatchObject({ status: 400, code: 'CHECKLIST_TEMPLATE_REORDER_MISMATCH' });
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a DUPLICATED id even when the count matches', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    dbMocks.rows.push([{ id: 'ti-1' }, { id: 'ti-2' }]);
+    await expect(
+      reorderChecklistTemplateItems('t-1', ['ti-1', 'ti-1'], PARTNER_ADMIN),
+    ).rejects.toMatchObject({ status: 400, code: 'CHECKLIST_TEMPLATE_REORDER_MISMATCH' });
+    expect(db.execute).not.toHaveBeenCalled();
+  });
+
+  it('writes the whole list in ONE statement when the set matches exactly', async () => {
+    dbMocks.rows.push([{ id: 't-1', orgId: 'o-1', partnerId: null }]);
+    dbMocks.rows.push([{ id: 'ti-1' }, { id: 'ti-2' }]);
+    dbMocks.rows.push([]); // the execute's own await
+    dbMocks.rows.push([]); // loadItems re-read
+    await reorderChecklistTemplateItems('t-1', ['ti-2', 'ti-1'], PARTNER_ADMIN);
+    // One statement, not one per row: two concurrent reorders then serialize at
+    // the row locks instead of interleaving into a half-order.
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    const { sql, params } = compile(db.execute.mock.calls.at(-1)?.[0]);
+    expect(sql).toContain('ticket_checklist_template_items');
+    expect(sql).toContain('sort_order');
+    // The template id is bound, so the UPDATE cannot reach another template's rows.
+    expect(params).toContain('t-1');
+    expect(params).toEqual(expect.arrayContaining(['ti-2', 'ti-1']));
   });
 });
 
