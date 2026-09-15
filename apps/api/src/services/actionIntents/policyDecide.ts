@@ -641,12 +641,21 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
         await degradeToHumanRequired(intentId, 'sweep_intent_stale');
         return;
       }
-      const verdict = await probeSweepSubject(
+      // `probeSweepSubject` opens NO DB context of its own (its documented
+      // precondition is that the caller already holds a system one), and this
+      // point in `attemptPolicyDecision` is deliberately contextless — the
+      // function's own invariant guard refuses to run inside a caller's
+      // context. Without this wrapper the probe reads under no RLS context at
+      // all, which is a DENY, and every sweep intent degrades
+      // `sweep_condition_unknown` — silently fail-closed, and the whole lane
+      // dead. Caught by sweepActOpKeyIntersection.integration.test.ts, which
+      // is the only place a real RLS context exists.
+      const verdict = await inSystemDbContext(() => probeSweepSubject(
         subject.kind,
         intent.orgId,
-        intent.scopeDeviceId,
+        intent.scopeDeviceId!,
         subject.subjectKey,
-      );
+      ));
       if (verdict === 'cleared') {
         // Deliberately no evidence row: a condition that recovered on its own
         // is not a failed remediation, and crediting one would corrupt the

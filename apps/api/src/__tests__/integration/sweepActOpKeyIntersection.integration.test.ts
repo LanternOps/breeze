@@ -61,7 +61,12 @@ function effectivePolicyFields(supervisedActionKeys: string[]) {
     model: null,
     toolAllowlist: [TOOL_NAME],
     protectedResources: { services: [], paths: [], registryKeys: [], deviceTags: [] },
-    limits: {},
+    // The fleet blast cap is a percentage of the org's contract devices; the
+    // fixture org has ONE device, so the 5% default would refuse the single
+    // authorization this file is about. Widened deliberately — the cap has its
+    // own tests (`exposureBudget.ts`), and refusing here would mask the gate
+    // actually under test.
+    limits: { maxFleetPercentPerDay: 100, maxPolicyDecisionsPerDay: 50 },
     triggers: {},
     recipients: { userIds: [], roleIds: [] },
     actAssets: { scriptIds: [], supervisedActionKeys },
@@ -397,7 +402,13 @@ describe('sweep act path — the auto-halt', () => {
 
     const decision = await intentDecision(secondIntent);
     expect(decision.policyDecisionState).toBe('human_required');
-    expect(decision.status).toBe('pending_approval');
+    // It went down the HUMAN path, which is the contract. This fixture seeds
+    // no user holding `devices:execute`, so that human path immediately
+    // cancels for want of an approver (`createActionIntent` commits then
+    // cancels — P2-1) — what matters is that it was never authorized and
+    // reserved no unattended exposure.
+    expect(decision.decidedVia).not.toBe('policy');
+    expect(decision.status).not.toBe('approved');
     expect(await exposureRowsFor(secondIntent)).toBe(0);
   });
 });
