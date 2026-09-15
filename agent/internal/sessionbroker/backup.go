@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/backupipc"
@@ -19,9 +20,13 @@ import (
 )
 
 const (
-	backupHelperSpawnTimeout = 15 * time.Second
-	backupHelperIdleTimeout  = 30 * time.Minute
+	backupHelperIdleTimeout = 30 * time.Minute
 )
+
+// backupHelperSpawnTimeout bounds how long spawnBackupHelper waits for a
+// freshly started helper to connect back over IPC before killing it. Package
+// var, not a const, so tests can shrink it; production leaves it at 15s.
+var backupHelperSpawnTimeout = 15 * time.Second
 
 // backupHelperStopGrace bounds how long StopBackupHelper waits for in-flight
 // backup runs to drain before killing the helper anyway (D3). It is a
@@ -86,9 +91,15 @@ func backupBinaryName(goos string) string {
 
 // backupHelper tracks the backup helper process and session.
 type backupHelper struct {
-	mu         sync.Mutex
-	session    *Session
-	process    *os.Process
+	mu      sync.Mutex
+	session *Session
+	process *os.Process
+	// cmd is the exec.Cmd that started process, retained solely so the
+	// helper can be reaped after a kill: os.Process alone exposes Wait, but
+	// exec.Cmd.Wait additionally releases the Cmd's own resources. Nil for a
+	// helper adopted from elsewhere (tests), in which case reapKilledHelper
+	// falls back to process.Wait.
+	cmd        *exec.Cmd
 	binaryPath string
 
 	// spawnDone is non-nil exactly while a spawn attempt for this helper is
@@ -268,6 +279,7 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 
 	bh.mu.Lock()
 	bh.process = cmd.Process
+	bh.cmd = cmd
 	reservation.pid = uint32(cmd.Process.Pid)
 	reservation.published = true
 	close(reservation.ready)
@@ -286,7 +298,15 @@ func (b *Broker) spawnBackupHelper(binaryPath string) (session *Session, err err
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	_ = cmd.Process.Kill()
+	bh.mu.Lock()
+	if bh.process == cmd.Process {
+		bh.killAndReapLocked()
+	} else {
+		// A newer spawn already owns bh.process; reap only our own child.
+		_ = cmd.Process.Kill()
+		reapKilledHelper(cmd, cmd.Process)
+	}
+	bh.mu.Unlock()
 	return nil, fmt.Errorf("backup helper failed to connect within %v", backupHelperSpawnTimeout)
 }
 
@@ -429,8 +449,7 @@ func (b *Broker) StopBackupHelper() {
 			}
 			if bh.process != nil {
 				log.Info("stopping backup helper", "pid", bh.process.Pid)
-				_ = bh.process.Kill()
-				bh.process = nil
+				bh.killAndReapLocked()
 			}
 			bh.session = nil
 			bh.mu.Unlock()
@@ -440,6 +459,48 @@ func (b *Broker) StopBackupHelper() {
 		time.Sleep(backupHelperStopPollInterval)
 	}
 }
+
+// killAndReapLocked kills the resident backup helper process and reaps it,
+// then clears the process/cmd fields. The caller must hold bh.mu.
+func (bh *backupHelper) killAndReapLocked() {
+	proc, cmd := bh.process, bh.cmd
+	bh.process = nil
+	bh.cmd = nil
+	if proc == nil {
+		return
+	}
+	_ = proc.Kill()
+	reapKilledHelper(cmd, proc)
+}
+
+// reapKilledHelper waits on a just-killed backup helper in the background so
+// the OS releases its process-table entry. Without it the killed child stays
+// a zombie for the whole lifetime of the (long-running) agent on POSIX, and
+// repeated spawn-timeout / binary-swap / shutdown cycles leak PID-table
+// entries (#5420). The wait runs in its own goroutine because Kill is
+// asynchronous: callers hold bh.mu (StopBackupHelperIfIdle holds it for the
+// whole call) and must not block on the child's exit.
+func reapKilledHelper(cmd *exec.Cmd, proc *os.Process) {
+	if cmd == nil && proc == nil {
+		return
+	}
+	go func() {
+		if cmd != nil {
+			_ = cmd.Wait()
+		} else {
+			_, _ = proc.Wait()
+		}
+		if hook := backupHelperReapedHook.Load(); hook != nil {
+			(*hook)(cmd, proc)
+		}
+	}()
+}
+
+// backupHelperReapedHook is a test-only observation point. It fires from the
+// reaping goroutine once the killed helper has actually been waited on, which
+// is what lets a test prove the child was reaped rather than left a zombie.
+// Production never sets it.
+var backupHelperReapedHook atomic.Pointer[func(*exec.Cmd, *os.Process)]
 
 // ActiveBackupRunCount returns the number of backup_run commands the backup
 // helper is currently tracking (see activeRuns on backupHelper) -- pending-
@@ -486,8 +547,7 @@ func (b *Broker) StopBackupHelperIfIdle() bool {
 	}
 	if bh.process != nil {
 		log.Info("stopping idle backup helper for binary swap", "pid", bh.process.Pid)
-		_ = bh.process.Kill()
-		bh.process = nil
+		bh.killAndReapLocked()
 	}
 	bh.session = nil
 	return true
