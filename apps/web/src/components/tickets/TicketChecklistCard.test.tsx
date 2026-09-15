@@ -44,11 +44,36 @@ const jsonRes = (data: unknown, status = 200) =>
 const checklistUrl = () => '/tickets/tk-1/checklist';
 const itemUrl = (id: string) => `/tickets/checklist/${id}`;
 
+function template(over: Record<string, unknown> = {}) {
+  return {
+    id: 'tpl-1',
+    orgId: 'o-1',
+    partnerId: null,
+    ownerScope: 'organization',
+    name: 'Device onboarding',
+    description: null,
+    instructions: null,
+    isActive: true,
+    items: [],
+    createdAt: '2026-09-01T00:00:00.000Z',
+    ...over,
+  };
+}
+
 /** A minimal stateful fake server backed by `items`, mirroring what the real
  *  checklist REST surface does for the shapes this component calls. */
-function fakeServer(items: Item[]) {
+function fakeServer(items: Item[], templates: ReturnType<typeof template>[] = []) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
+    if (url.startsWith('/ticket-checklist-templates') && method === 'GET') {
+      return jsonRes(templates);
+    }
+    if (url === `${checklistUrl()}/apply-template` && method === 'POST') {
+      const body = JSON.parse(init!.body as string) as { templateId: string };
+      const applied = item({ id: `applied-${body.templateId}`, label: 'Step from template', source: 'checklist_template' });
+      items.push(applied);
+      return jsonRes({ items, done: items.filter((i) => i.done).length, total: items.length });
+    }
     if (url === checklistUrl() && method === 'GET') {
       return jsonRes({ items, done: items.filter((i) => i.done).length, total: items.length });
     }
@@ -235,5 +260,88 @@ describe('TicketChecklistCard', () => {
     fireEvent.click(screen.getByTestId('ticket-checklist-retry'));
     expect(await screen.findByTestId('ticket-checklist-item-i-1')).toBeInTheDocument();
     expect(screen.queryByTestId('ticket-checklist-error')).toBeNull();
+  });
+
+  // ── Apply template (#5808 W02) ──────────────────────────────────────────
+
+  it('offers Apply template on an EMPTY checklist when templates exist', async () => {
+    // This is what gives W01's card a reachable entry point: an empty checklist
+    // otherwise renders nothing at all.
+    fetchWithAuth.mockImplementation(fakeServer([], [template()]));
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    expect(await screen.findByTestId('ticket-checklist-apply-template')).toBeInTheDocument();
+  });
+
+  it('renders NOTHING on an empty checklist when no templates are visible', async () => {
+    fetchWithAuth.mockImplementation(fakeServer([], []));
+    const { container } = render(<TicketChecklistCard ticketId="tk-1" />);
+    await waitFor(() => expect(screen.queryByTestId('ticket-checklist-card')).toBeNull());
+    expect(container.textContent).toBe('');
+  });
+
+  it('filters INACTIVE templates out of the picker', async () => {
+    fetchWithAuth.mockImplementation(
+      fakeServer([], [template({ id: 'tpl-off', isActive: false })]),
+    );
+    const { container } = render(<TicketChecklistCard ticketId="tk-1" />);
+    await waitFor(() => expect(screen.queryByTestId('ticket-checklist-card')).toBeNull());
+    expect(container.textContent).toBe('');
+  });
+
+  it('marks the All orgs templates in the picker', async () => {
+    fetchWithAuth.mockImplementation(
+      fakeServer([], [template({ id: 'tpl-shared', orgId: null, partnerId: 'p-1', ownerScope: 'partner' })]),
+    );
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-checklist-apply-template'));
+    const option = await screen.findByTestId('ticket-checklist-template-option-tpl-shared');
+    expect(option.textContent).toMatch(/All orgs/i);
+  });
+
+  it('POSTs the chosen template with the chosen mode', async () => {
+    fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1' })], [template()]));
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-checklist-apply-template'));
+    fireEvent.change(await screen.findByTestId('ticket-checklist-template-select'), {
+      target: { value: 'tpl-1' },
+    });
+    fireEvent.click(screen.getByTestId('ticket-checklist-apply-mode-replace'));
+    fireEvent.click(screen.getByTestId('ticket-checklist-apply-submit'));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        ([u]) => u === '/tickets/tk-1/checklist/apply-template',
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(call![1].body)).toEqual({
+        templateId: 'tpl-1',
+        mode: 'replace_unticked',
+      });
+    });
+  });
+
+  it('defaults the mode to append', async () => {
+    fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1' })], [template()]));
+    render(<TicketChecklistCard ticketId="tk-1" />);
+    fireEvent.click(await screen.findByTestId('ticket-checklist-apply-template'));
+    fireEvent.change(await screen.findByTestId('ticket-checklist-template-select'), {
+      target: { value: 'tpl-1' },
+    });
+    fireEvent.click(screen.getByTestId('ticket-checklist-apply-submit'));
+
+    await waitFor(() => {
+      const call = fetchWithAuth.mock.calls.find(
+        ([u]) => u === '/tickets/tk-1/checklist/apply-template',
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(call![1].body).mode).toBe('append');
+    });
+  });
+
+  it('compact mode does NOT offer Apply template', async () => {
+    fetchWithAuth.mockImplementation(fakeServer([item({ id: 'i-1' })], [template()]));
+    render(<TicketChecklistCard ticketId="tk-1" mode="compact" />);
+    await screen.findByTestId('ticket-checklist-item-i-1');
+    expect(screen.queryByTestId('ticket-checklist-apply-template')).toBeNull();
   });
 });

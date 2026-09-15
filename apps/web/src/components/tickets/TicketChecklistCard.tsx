@@ -6,12 +6,17 @@ import { handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
 import {
   addChecklistItem,
+  applyChecklistTemplate,
   deleteChecklistItem,
   listChecklist,
   patchChecklistItem,
   reorderChecklist,
   type ChecklistItem,
 } from '../../lib/api/ticketChecklist';
+import {
+  listChecklistTemplates,
+  type ChecklistTemplate,
+} from '../../lib/api/ticketChecklistTemplates';
 
 interface Props {
   ticketId: string;
@@ -45,6 +50,12 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState('');
   const [editDetail, setEditDetail] = useState('');
+  // `null` = not fetched yet. Only ACTIVE templates are kept: an inactive one
+  // stays linked where it is already used but must not appear in a picker.
+  const [templates, setTemplates] = useState<ChecklistTemplate[] | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickedTemplateId, setPickedTemplateId] = useState('');
+  const [applyMode, setApplyMode] = useState<'append' | 'replace_unticked'>('append');
 
   const friendly = useCallback(
     (code: string) => (FRIENDLY[code] ? t(/* i18n-dynamic */ FRIENDLY[code]) : undefined),
@@ -82,10 +93,39 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     setEditingId(null);
     setEditLabel('');
     setEditDetail('');
+    setPickerOpen(false);
+    setPickedTemplateId('');
+    setApplyMode('append');
   }, [ticketId]);
 
   const done = items.filter((i) => i.done).length;
   const total = items.length;
+  const compactMode = mode === 'compact';
+
+  /**
+   * Templates are fetched at most once per mount, and a failure is swallowed
+   * to `[]`: the picker is an optional affordance, so losing it must not turn
+   * a working checklist card into an error state. The checklist's own load
+   * failure is reported separately and is NOT swallowed.
+   */
+  const loadTemplates = useCallback(async () => {
+    try {
+      const rows = await listChecklistTemplates(fetchWithAuth);
+      setTemplates(rows.filter((tpl) => tpl.isActive));
+    } catch {
+      setTemplates([]);
+    }
+  }, []);
+
+  // An EMPTY checklist must know whether any template exists before it can
+  // decide between "render the Apply affordance" and "render nothing", so this
+  // one case fetches eagerly. A ticket that already has a checklist stays at
+  // one request until the technician actually opens the picker.
+  useEffect(() => {
+    if (!compactMode && !loading && !loadFailed && total === 0 && templates === null) {
+      void loadTemplates();
+    }
+  }, [compactMode, loading, loadFailed, total, templates, loadTemplates]);
 
   // Held in a ref so a caller passing an inline lambda cannot make this effect
   // re-fire on every render (the parent's own setState would then loop). The
@@ -204,11 +244,42 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
     }
   };
 
-  // A ticket with no checklist gains no clutter — but a ticket whose checklist
-  // FAILED to load is not that ticket, and must not disappear silently.
-  if (!loading && !loadFailed && total === 0 && mode === 'full') return null;
+  const openPicker = () => {
+    setPickerOpen(true);
+    if (templates === null) void loadTemplates();
+  };
 
-  const compact = mode === 'compact';
+  const submitApply = async () => {
+    if (!pickedTemplateId || busy) return;
+    setBusy(true);
+    try {
+      const summary = await runClientAction(
+        () =>
+          applyChecklistTemplate(fetchWithAuth, ticketId, {
+            templateId: pickedTemplateId,
+            mode: applyMode,
+          }),
+        { errorFallback: t('templates.errors.applyFailed') },
+      );
+      // Refresh from the returned summary rather than re-fetching.
+      setItems(summary.items);
+      setLoadFailed(false);
+      setPickerOpen(false);
+      setPickedTemplateId('');
+    } catch (err) {
+      handleActionError(err, t('templates.errors.applyFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // A ticket with no checklist gains no clutter — unless a template exists, in
+  // which case the card is the only reachable way to get one. A ticket whose
+  // checklist FAILED to load is neither, and must not disappear silently.
+  const hasTemplates = Array.isArray(templates) && templates.length > 0;
+  if (!loading && !loadFailed && total === 0 && mode === 'full' && !hasTemplates) return null;
+
+  const compact = compactMode;
 
   if (loadFailed) {
     return (
@@ -389,6 +460,91 @@ export default function TicketChecklistCard({ ticketId, mode = 'full', onCountsC
           >
             {t('card.add')}
           </button>
+        </div>
+      )}
+
+      {/* Apply a template. Compact mode is tick-and-read-only, so it never
+          offers this. */}
+      {/* While `templates === null` the answer is unknown. Offering the
+          affordance anyway would flash a button on an EMPTY checklist that the
+          very next render unmounts (the whole card returns null when no
+          template exists) — so the unknown state only shows the button on a
+          checklist that already has items, where the card stays mounted either
+          way and the fetch stays lazy. */}
+      {!compact && (pickerOpen || hasTemplates || (templates === null && total > 0)) && (
+        <div className="mt-2">
+          {pickerOpen ? (
+            <div className="space-y-1.5 rounded-md border bg-muted/30 p-1.5" data-testid="ticket-checklist-template-picker">
+              <select
+                className="w-full rounded-md border bg-background px-2 py-1 text-xs"
+                aria-label={t('templates.apply')}
+                data-testid="ticket-checklist-template-select"
+                value={pickedTemplateId}
+                onChange={(e) => setPickedTemplateId(e.target.value)}
+              >
+                <option value="">{t('templates.choosePlaceholder')}</option>
+                {(templates ?? []).map((tpl) => (
+                  <option
+                    key={tpl.id}
+                    value={tpl.id}
+                    data-testid={`ticket-checklist-template-option-${tpl.id}`}
+                  >
+                    {tpl.orgId === null ? `${tpl.name} — ${t('templates.allOrganizations')}` : tpl.name}
+                  </option>
+                ))}
+              </select>
+              <label className="flex items-center gap-1.5 text-[11px]">
+                <input
+                  type="radio"
+                  name="checklistApplyMode"
+                  value="append"
+                  checked={applyMode === 'append'}
+                  onChange={() => setApplyMode('append')}
+                  data-testid="ticket-checklist-apply-mode-append"
+                />
+                {t('templates.applyMode.append')}
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px]">
+                <input
+                  type="radio"
+                  name="checklistApplyMode"
+                  value="replace_unticked"
+                  checked={applyMode === 'replace_unticked'}
+                  onChange={() => setApplyMode('replace_unticked')}
+                  data-testid="ticket-checklist-apply-mode-replace"
+                />
+                {t('templates.applyMode.replaceUnticked')}
+              </label>
+              <div className="flex justify-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(false)}
+                  className="rounded px-1.5 py-0.5 text-xs hover:bg-muted"
+                  data-testid="ticket-checklist-apply-cancel"
+                >
+                  {t('actions.cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitApply()}
+                  disabled={!pickedTemplateId || busy}
+                  className="rounded-md border px-2 py-0.5 text-xs hover:bg-muted disabled:opacity-50"
+                  data-testid="ticket-checklist-apply-submit"
+                >
+                  {t('templates.applyCta')}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={openPicker}
+              className="text-xs underline text-muted-foreground hover:text-foreground"
+              data-testid="ticket-checklist-apply-template"
+            >
+              {t('templates.apply')}
+            </button>
+          )}
         </div>
       )}
     </div>
