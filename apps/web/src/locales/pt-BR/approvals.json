@@ -49,8 +49,12 @@
   "deciding": "Enviando…",
   "expiresIn": "Expira em {{minutes}} min",
   "expiresSoon": "Expira em menos de um minuto",
+  "expiresInHours": "Expira em {{hours}} h",
+  "expiresInDays": "Expira em {{days}} dias",
   "expired": "Expirada",
   "unknownOrganization": "Organização desconhecida",
+  "intentNoLongerPending": "Essa aprovação não está mais pendente.",
+  "dismiss": "Dispensar",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} aprovado para {{org}}",
   "pagination": {

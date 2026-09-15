@@ -107,6 +107,7 @@
     },
     "saved": "Monitor guardado",
     "deleted": "Monitor eliminado",
+    "detached": "Monitor separado",
     "loading": "Cargando monitor…",
     "noAttachments": "Aún no está desplegado en ninguna política.",
     "testResult": {
@@ -251,6 +252,7 @@
     "noOrgSelected": "Selecciona una organización para desplegar.",
     "policyName": "Nombre de la política",
     "attach": "Adjuntar",
+    "attached": "Monitor adjuntado",
     "cancel": "Cancelar",
     "detachConfirm": "¿Separar de {{policy}}?",
     "errors": {
