@@ -1914,6 +1914,12 @@
         "dropped": "{{count}} güncelleme karttan çıkarıldı",
         "dropped_other": "{{count}} güncelleme karttan çıkarıldı",
         "counts": "{{created}} onay bekliyor · {{suppressed}} zaten önerildi",
+        "failureClass": "Hata sınıfı: {{label}}",
+        "attempts": "{{count}} başarısız deneme",
+        "attempts_other": "{{count}} başarısız deneme",
+        "escalation": "Bir kişinin bakması gerekiyor — bu otomatik olarak yeniden denenmeyecek.",
+        "escalations": "{{count}} yükseltme",
+        "escalations_other": "{{count}} yükseltme",
         "classes": {
           "install": "Kurulum",
           "approval_advisory": "Onay tavsiyesi",
@@ -1935,7 +1941,11 @@
           "live_intent_exists": "Bu güncelleme için zaten açık bir onay kartı var",
           "recently_rejected": "Bu güncelleme yakın zamanda reddedildi",
           "recently_cancelled": "Bu güncellemenin kartı yakın zamanda iptal edildi",
-          "recently_completed": "Bu güncelleme yakın zamanda kuruldu"
+          "recently_completed": "Bu güncelleme yakın zamanda kuruldu",
+          "failure_class_mismatch": "Belirtilen hata sınıfı kanıtlarla eşleşmiyor",
+          "class_not_retryable": "Bu tür bir hata hiçbir zaman otomatik olarak yeniden denenmez",
+          "chase_attempts_exhausted": "Bu güncelleme için yeniden deneme sınırına ulaşıldı — bunun yerine yükseltildi",
+          "attempt_count_mismatch": "Belirtilen deneme sayısı kanıtlarla eşleşmiyor"
         },
         "ineligible": {
           "not_outstanding": "Bu cihazda bekleyen değil",
@@ -1947,6 +1957,14 @@
           "awaiting_manual_approval": "Manuel onay bekleniyor",
           "no_ring_resolved": "Cihazın güncelleme halkası yok",
           "device_not_in_org": "Cihaz bu organizasyona ait değil"
+        },
+        "failureClasses": {
+          "transient": "Geçici",
+          "needs_reboot": "Yeniden başlatma gerekli",
+          "disk_space": "Disk alanı",
+          "store_corrupt": "Güncelleme deposu bozuk",
+          "permanent": "Kalıcı",
+          "unknown": "Bilinmiyor"
         }
       },
       "narrative": {

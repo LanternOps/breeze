@@ -1914,6 +1914,12 @@
         "dropped": "{{count}} atualização foi deixada de fora do cartão",
         "dropped_other": "{{count}} atualizações foram deixadas de fora do cartão",
         "counts": "{{created}} aguardando aprovação · {{suppressed}} já propostas",
+        "failureClass": "Classe de falha: {{label}}",
+        "attempts": "{{count}} tentativa com falha",
+        "attempts_other": "{{count}} tentativas com falha",
+        "escalation": "Precisa de uma pessoa — isso não será repetido automaticamente.",
+        "escalations": "{{count}} escalonamento",
+        "escalations_other": "{{count}} escalonamentos",
         "classes": {
           "install": "Instalação",
           "approval_advisory": "Recomendação de aprovação",
@@ -1935,7 +1941,11 @@
           "live_intent_exists": "Já existe um cartão de aprovação aberto para esta atualização",
           "recently_rejected": "Esta atualização foi rejeitada recentemente",
           "recently_cancelled": "O cartão desta atualização foi cancelado recentemente",
-          "recently_completed": "Esta atualização foi instalada recentemente"
+          "recently_completed": "Esta atualização foi instalada recentemente",
+          "failure_class_mismatch": "A classe de falha citada não corresponde às evidências",
+          "class_not_retryable": "Esse tipo de falha nunca é repetido automaticamente",
+          "chase_attempts_exhausted": "O limite de novas tentativas desta atualização foi atingido — escalonado em vez disso",
+          "attempt_count_mismatch": "O número de tentativas citado não corresponde às evidências"
         },
         "ineligible": {
           "not_outstanding": "Não pendente neste dispositivo",
@@ -1947,6 +1957,14 @@
           "awaiting_manual_approval": "Aguardando aprovação manual",
           "no_ring_resolved": "O dispositivo não tem um anel de atualização",
           "device_not_in_org": "O dispositivo não pertence a esta organização"
+        },
+        "failureClasses": {
+          "transient": "Transitória",
+          "needs_reboot": "Requer reinicialização",
+          "disk_space": "Espaço em disco",
+          "store_corrupt": "Repositório de atualizações corrompido",
+          "permanent": "Permanente",
+          "unknown": "Desconhecida"
         }
       },
       "narrative": {

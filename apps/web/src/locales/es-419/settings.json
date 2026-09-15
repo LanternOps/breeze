@@ -1914,6 +1914,12 @@
         "dropped": "{{count}} actualización se dejó fuera de la tarjeta",
         "dropped_other": "{{count}} actualizaciones se dejaron fuera de la tarjeta",
         "counts": "{{created}} en espera de aprobación · {{suppressed}} ya propuestas",
+        "failureClass": "Clase de fallo: {{label}}",
+        "attempts": "{{count}} intento fallido",
+        "attempts_other": "{{count}} intentos fallidos",
+        "escalation": "Requiere una persona: esto no se reintentará automáticamente.",
+        "escalations": "{{count}} escalamiento",
+        "escalations_other": "{{count}} escalamientos",
         "classes": {
           "install": "Instalación",
           "approval_advisory": "Recomendación de aprobación",
@@ -1935,7 +1941,11 @@
           "live_intent_exists": "Ya hay una tarjeta de aprobación abierta para esta actualización",
           "recently_rejected": "Esta actualización se rechazó recientemente",
           "recently_cancelled": "La tarjeta de esta actualización se canceló recientemente",
-          "recently_completed": "Esta actualización se instaló recientemente"
+          "recently_completed": "Esta actualización se instaló recientemente",
+          "failure_class_mismatch": "La clase de fallo citada no coincide con la evidencia",
+          "class_not_retryable": "Este tipo de fallo nunca se reintenta automáticamente",
+          "chase_attempts_exhausted": "Se alcanzó el límite de reintentos para esta actualización; se escaló en su lugar",
+          "attempt_count_mismatch": "El número de intentos citado no coincide con la evidencia"
         },
         "ineligible": {
           "not_outstanding": "No está pendiente en este dispositivo",
@@ -1947,6 +1957,14 @@
           "awaiting_manual_approval": "En espera de aprobación manual",
           "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
           "device_not_in_org": "El dispositivo no pertenece a esta organización"
+        },
+        "failureClasses": {
+          "transient": "Transitorio",
+          "needs_reboot": "Requiere reinicio",
+          "disk_space": "Espacio en disco",
+          "store_corrupt": "Almacén de actualizaciones dañado",
+          "permanent": "Permanente",
+          "unknown": "Desconocido"
         }
       },
       "narrative": {
