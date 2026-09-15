@@ -24,7 +24,7 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
 import { alertRules, alertTemplates, devices, patchJobResults, patchJobs } from '../db/schema';
 import { createAlert } from './alertService';
-import { isDeviceInMaintenance } from './maintenanceService';
+import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
 import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
 
@@ -38,7 +38,15 @@ const { db } = dbModule;
  * with `runOutsideDbContext` because this module's writes (a global template
  * row with no org/partner axis, an org-owned rule, the alert itself) must
  * succeed regardless of the ambient request/job context the emitter is
- * called from — the same reasoning `isDeviceInMaintenance` uses.
+ * called from.
+ *
+ * Maintenance suppression reads the config-policy window through
+ * `checkDeviceMaintenanceWindow` (the same read `alertService` uses for
+ * config-policy alerts and `processRebootCandidate` uses in the sweep) —
+ * never `maintenanceService.isDeviceInMaintenance`, whose own
+ * `runOutsideDbContext(withSystemDbAccessContext(…))` would hold a second
+ * pooled connection under the caller's open system context (the sweep, the
+ * finalizer).
  */
 async function runWithSystemDbAccess<T>(fn: () => Promise<T>): Promise<T> {
   const withSystem = dbModule.withSystemDbAccessContext;
@@ -226,7 +234,7 @@ export async function emitPatchJobFailureAlert(
 ): Promise<string | null> {
   const { orgId, deviceId, patchJobId, failedCount, errorExcerpt } = input;
   try {
-    const maintenance = await isDeviceInMaintenance(deviceId);
+    const maintenance = await checkDeviceMaintenanceWindow(deviceId);
     if (maintenance.active && maintenance.suppressAlerts) {
       console.log(
         `[patchAlerts] skipping patch job failure alert for device ${deviceId}: `
@@ -365,7 +373,7 @@ export async function emitRebootPendingAlert(
     const days = rebootPendingDays(since, now);
     if (days < REBOOT_PENDING_ALERT_THRESHOLD_DAYS) return null;
 
-    const maintenance = await isDeviceInMaintenance(deviceId);
+    const maintenance = await checkDeviceMaintenanceWindow(deviceId);
     if (maintenance.active && maintenance.suppressAlerts) {
       console.log(
         `[patchAlerts] skipping reboot pending alert for device ${deviceId}: `

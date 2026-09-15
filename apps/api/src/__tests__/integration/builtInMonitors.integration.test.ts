@@ -166,6 +166,43 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     expect((await builtInsFor(partner.id)).map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high', 'patch_compliance_low']);
   });
 
+  // W04 (#5750): the production shape every existing partner is in — marker
+  // at version 1 with the three legacy rows (one of them deleted) — must gain
+  // ONLY patch_compliance_low, keep the surviving rows' ids, never resurrect
+  // the deleted one, and move the marker to version 2 with provisionedAt kept.
+  it('upgrades a version-1 partner in place: one new row, existing rows untouched, deleted one stays gone', async () => {
+    const partner = await newPartner();
+    await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    // Rewind to the v1 shape: drop the v2 row and stamp the legacy marker.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.delete(monitorDefinitions)
+        .where(and(eq(monitorDefinitions.partnerId, partner.id), eq(monitorDefinitions.builtinKey, 'patch_compliance_low')));
+      await db.delete(monitorDefinitions)
+        .where(and(eq(monitorDefinitions.partnerId, partner.id), eq(monitorDefinitions.builtinKey, 'cpu_high')));
+      await db.update(partners)
+        .set({ settings: sql`jsonb_build_object('builtInMonitors', jsonb_build_object('version', 1, 'provisionedAt', '2026-01-01T00:00:00.000Z'))` })
+        .where(eq(partners.id, partner.id));
+    });
+    const before = await builtInsFor(partner.id);
+    expect(before.map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high']);
+    const beforeIds = new Set(before.map((r) => r.id));
+
+    // The boot backfill sees a stale-version partner; the per-partner call upgrades it.
+    const backfill = await ensureBuiltInMonitorsForAllPartners();
+    expect(backfill.provisioned).toBeGreaterThanOrEqual(1);
+
+    const after = await builtInsFor(partner.id);
+    expect(after.map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high', 'patch_compliance_low']);
+    for (const row of after) {
+      if (row.builtinKey !== 'patch_compliance_low') expect(beforeIds.has(row.id)).toBe(true);
+    }
+    expect(await marker(partner.id)).toMatchObject({ version: 2, provisionedAt: '2026-01-01T00:00:00.000Z' });
+
+    // Idempotent: a second pass at version 2 is a no-op.
+    const again = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    expect(again).toEqual({ provisioned: false, monitorIds: [] });
+  });
+
   it('refuses an org-owned row carrying a builtin_key (CHECK)', async () => {
     const partner = await newPartner();
     const org = await createOrganization({ partnerId: partner.id });

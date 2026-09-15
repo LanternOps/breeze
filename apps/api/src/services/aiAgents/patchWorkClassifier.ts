@@ -24,6 +24,7 @@
 import { sql } from 'drizzle-orm';
 import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
 import { db } from '../../db';
+import { captureException } from '../sentry';
 
 export const PATCH_WORK_MONITOR_KIND = 'patch_compliance';
 
@@ -66,6 +67,7 @@ export async function resolveAlertCategory(alertId: string, orgId: string): Prom
     // Fail closed, loudly enough to diagnose: a classifier outage routes
     // every patch alert to triage, which is safe, but should not be silent.
     console.warn(`[patchWorkClassifier] read failed for alert ${alertId} (org ${orgId}); treating as not patch work:`, error);
+    captureException(error, undefined, { service: 'aiAgents', operation: 'resolveAlertCategory', alertId, orgId });
     return NOT_RESOLVED;
   }
 

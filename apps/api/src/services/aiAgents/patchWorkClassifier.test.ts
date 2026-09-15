@@ -19,7 +19,10 @@ vi.mock('../../db', () => ({
   },
 }));
 
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
+
 import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
+import { captureException } from '../sentry';
 import { classifyAlertAsPatchWork, resolveAlertCategory } from './patchWorkClassifier';
 
 function sqlText(node: unknown): string {
@@ -83,9 +86,10 @@ describe('classifyAlertAsPatchWork', () => {
     expect(await classifyAlertAsPatchWork(ALERT, ORG)).toBe(false);
   });
 
-  it('fails closed when the read throws — never propagates into admission', async () => {
+  it('fails closed when the read throws — never propagates into admission — and reports it to Sentry', async () => {
     results = [new Error('boom')];
     expect(await classifyAlertAsPatchWork(ALERT, ORG)).toBe(false);
+    expect(captureException).toHaveBeenCalledWith(expect.any(Error), undefined, expect.objectContaining({ operation: 'resolveAlertCategory', alertId: ALERT, orgId: ORG }));
   });
 
   it('pins org on every leg in ONE statement', async () => {
@@ -96,9 +100,14 @@ describe('classifyAlertAsPatchWork', () => {
     expect(text).toContain('LEFT JOIN alert_rules');
     expect(text).toContain('LEFT JOIN alert_templates');
     expect(text).toContain('LEFT JOIN monitor_definitions');
-    // alerts.org_id pinned, and the monitor leg pinned to the org OR partner-wide.
+    // alerts.org_id pinned, and EVERY joined leg pinned to the org or a
+    // partner-wide/global row — one dropped predicate is a cross-tenant read.
     expect(text).toContain('a.org_id =');
-    expect(boundParams(executed[0]).filter((p) => p === ORG).length).toBeGreaterThanOrEqual(2);
+    // (`sqlText` elides the bound parameter, so `= OR` is the param slot.)
+    expect(text).toContain('ON r.id = a.rule_id AND (r.org_id = OR r.org_id IS NULL)');
+    expect(text).toContain('ON t.id = r.template_id AND (t.org_id = OR t.org_id IS NULL)');
+    expect(text).toContain('ON m.id = a.monitor_id AND (m.org_id = OR m.org_id IS NULL)');
+    expect(boundParams(executed[0]).filter((p) => p === ORG).length).toBe(4);
     expect(boundParams(executed[0])).toContain(ALERT);
   });
 });

@@ -106,7 +106,9 @@ describe('executeAiTriageAction — patch-work routing (W04)', () => {
       },
       dedupeKey: 'patch-alert:alert-1',
     });
-    expect(result.outcome).toEqual({ status: 'queued', agentRunId: 'agent-run-1', message: 'ai_triage queued agent run' });
+    // The lane is named: a technician chasing this run is sent to the PATCH agent.
+    expect(result.outcome).toEqual({ status: 'queued', agentRunId: 'agent-run-1', message: 'ai_triage queued patch agent run' });
+    expect(result.log.details).toMatchObject({ routedTo: 'patch' });
   });
 
   it.each([
@@ -133,6 +135,7 @@ describe('executeAiTriageAction — patch-work routing (W04)', () => {
     });
     expect(gateInput(1)).not.toHaveProperty('profile');
     expect(result.outcome).toEqual({ status: 'queued', agentRunId: 'triage-run-1', message: 'ai_triage queued agent run' });
+    expect(result.log.details).toMatchObject({ routedTo: 'triage' });
   });
 
   it('falls back to triage on any other patch skip (e.g. a trigger filter) and records the skip', async () => {
@@ -195,6 +198,7 @@ describe('executeAiTriageAction — patch-work routing (W04)', () => {
     const result = await __testOnly.executeAiTriageAction({ type: 'ai_triage' }, 0, makeContext());
 
     expect(createAndEnqueueAgentRunMock).toHaveBeenCalledTimes(1);
-    expect(result.outcome.status).toBe('failed');
+    expect(result.outcome).toEqual({ status: 'failed', message: 'ai_triage: patch agent run was created but could not be enqueued' });
+    expect(result.log.details).toMatchObject({ routedTo: 'patch', agentRunId: 'agent-run-1' });
   });
 });

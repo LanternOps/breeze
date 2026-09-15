@@ -55,8 +55,8 @@ vi.mock('./alertService', () => ({
   createAlert: vi.fn().mockResolvedValue('alert-1'),
 }));
 
-vi.mock('./maintenanceService', () => ({
-  isDeviceInMaintenance: vi.fn().mockResolvedValue({
+vi.mock('./featureConfigResolver', () => ({
+  checkDeviceMaintenanceWindow: vi.fn().mockResolvedValue({
     active: false,
     source: 'none',
     suppressAlerts: false,
@@ -73,7 +73,7 @@ vi.mock('./sentry', () => ({
 import { db } from '../db';
 import { alertTemplates, alertRules, alerts } from '../db/schema';
 import { createAlert } from './alertService';
-import { isDeviceInMaintenance } from './maintenanceService';
+import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { captureException } from './sentry';
 import {
   PATCH_ALERT_CATEGORY,
@@ -121,7 +121,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   insertCalls = [];
   vi.mocked(createAlert).mockResolvedValue('alert-1');
-  vi.mocked(isDeviceInMaintenance).mockResolvedValue({
+  vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
     active: false,
     source: 'none',
     suppressAlerts: false,
@@ -198,7 +198,7 @@ describe('emitPatchJobFailureAlert', () => {
   });
 
   it('respects an active maintenance window with suppressAlerts (createAlert not called)', async () => {
-    vi.mocked(isDeviceInMaintenance).mockResolvedValue({
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
       active: true,
       source: 'standalone',
       suppressAlerts: true,
@@ -220,7 +220,7 @@ describe('emitPatchJobFailureAlert', () => {
   });
 
   it('does not suppress when maintenance is active but does not suppress alerts', async () => {
-    vi.mocked(isDeviceInMaintenance).mockResolvedValue({
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
       active: true,
       source: 'standalone',
       suppressAlerts: false,
@@ -395,7 +395,7 @@ describe('emitRebootPendingAlert', () => {
   });
 
   it('respects maintenance suppressAlerts even above threshold', async () => {
-    vi.mocked(isDeviceInMaintenance).mockResolvedValue({
+    vi.mocked(checkDeviceMaintenanceWindow).mockResolvedValue({
       active: true,
       source: 'standalone',
       suppressAlerts: true,

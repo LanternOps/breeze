@@ -202,7 +202,8 @@ describe('executeAiTriageAction', () => {
       message: 'ai_triage queued agent run',
     });
     expect(result.log.message).toBe('ai_triage queued agent run');
-    expect(result.log.details).toEqual({ agentRunId: 'agent-run-1' });
+    // W04 (#5750): the lane that produced the run is on the log details.
+    expect(result.log.details).toEqual({ agentRunId: 'agent-run-1', routedTo: 'triage' });
   });
 
   it('passes the device org — not the automation owner — as the run org', async () => {
@@ -321,6 +322,7 @@ describe('executeAiTriageAction', () => {
     expect(result.log.message).not.toContain('queued agent run');
     expect(result.log.details).toEqual({
       agentRunId: 'agent-run-1',
+      routedTo: 'triage',
       errorCode: 'enqueue_failed',
     });
   });

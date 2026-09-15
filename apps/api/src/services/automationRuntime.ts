@@ -2002,6 +2002,11 @@ async function executeAiTriageAction(
   };
 
   let result: Awaited<ReturnType<typeof createAndEnqueueAgentRun>> | null = null;
+  // Which lane actually produced `result` — the action type stays `ai_triage`
+  // (that is the automation action), but every message and log below names
+  // the lane so a technician reading "why did the patch agent not pick this
+  // up" is not sent to the triage agent's config.
+  let routedTo: 'patch' | 'triage' = 'triage';
   // Why triage got (or kept) the alert. Recorded on the triage run's
   // triggerRef so a technician can see that a patch alert fell back and why.
   let patchWorkFallback: Record<string, unknown> = { patchWorkFallbackReason: 'not_patch_work' };
@@ -2030,10 +2035,12 @@ async function executeAiTriageAction(
       ...(alertContext ? { alertContext: { ...alertContext, focusDeviceId: context.device.id } } : {}),
       dedupeKey: `patch-alert:${trigger.alertId}`,
     });
+    routedTo = 'patch';
 
     if (!result.created && result.skipped !== 'duplicate') {
       patchWorkFallback = patchFallbackFor(result.skipped);
       result = null;
+      routedTo = 'triage';
     }
   }
 
@@ -2068,7 +2075,9 @@ async function executeAiTriageAction(
     // the alert is never triaged. The manual trigger route answers 503 on this
     // exact signal; the automation's equivalent is a failed action.
     if (result.run.status === 'failed' || result.run.errorCode === 'enqueue_failed') {
-      const message = 'ai_triage agent run was created but could not be enqueued';
+      const message = routedTo === 'patch'
+        ? 'ai_triage: patch agent run was created but could not be enqueued'
+        : 'ai_triage agent run was created but could not be enqueued';
       return {
         outcome: { status: 'failed', message },
         log: logEntry(message, 'error', {
@@ -2077,6 +2086,7 @@ async function executeAiTriageAction(
           deviceId: context.device.id,
           details: {
             agentRunId: result.run.id,
+            routedTo,
             errorCode: result.run.errorCode ?? 'enqueue_failed',
           },
         }),
@@ -2089,24 +2099,24 @@ async function executeAiTriageAction(
     // is terminalised by the child's own terminal event. Reporting successful
     // enqueue as `succeeded` used to aggregate the run to `completed` for a
     // response that had not run — which W03 then wrote onto the episode.
-    const queuedMessage = 'ai_triage queued agent run';
+    const queuedMessage = routedTo === 'patch' ? 'ai_triage queued patch agent run' : 'ai_triage queued agent run';
     return {
       outcome: { status: 'queued', agentRunId: result.run.id, message: queuedMessage },
       log: logEntry(queuedMessage, 'info', {
         actionType: 'ai_triage',
         actionIndex,
         deviceId: context.device.id,
-        details: { agentRunId: result.run.id },
+        details: { agentRunId: result.run.id, routedTo },
       }),
     };
   }
 
   const hardFailure = AI_TRIAGE_SKIP_IS_FAILURE[result.skipped] ?? true;
-  const message = `ai_triage skipped: ${result.skipped}`;
+  const message = routedTo === 'patch' ? `ai_triage skipped (patch): ${result.skipped}` : `ai_triage skipped: ${result.skipped}`;
   return {
     outcome: hardFailure ? { status: 'failed', message } : { status: 'succeeded' },
     log: logEntry(message, hardFailure ? 'error' : 'info', {
-      actionType: 'ai_triage', actionIndex, deviceId: context.device.id,
+      actionType: 'ai_triage', actionIndex, deviceId: context.device.id, details: { routedTo },
     }),
   };
 }
