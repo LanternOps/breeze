@@ -1076,6 +1076,64 @@ describe('requirePermission', () => {
     expect(res.status).toBe(200);
   });
 
+  // #5733 — requirePermission must hand the TOKEN SCOPE to getUserPermissions.
+  // Without it the resolver only knows about partnerId/orgId, both null on a
+  // system token, so it fell through to "no membership" → 403 on every
+  // requirePermission route that also admits requireScope(... 'system').
+  it('forwards scope=system so getUserPermissions can resolve a platform admin (#5733)', async () => {
+    const systemAuth = {
+      ...baseAuth,
+      user: { ...baseAuth.user, isPlatformAdmin: true },
+      partnerId: null,
+      orgId: null,
+      scope: 'system' as const,
+    };
+    const systemPerms = {
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'platform-admin',
+      scope: 'system' as const,
+    };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(systemPerms);
+    vi.mocked(hasPermission).mockReturnValue(true);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).toHaveBeenCalledWith('user-123', {
+      partnerId: undefined,
+      orgId: undefined,
+      scope: 'system',
+    });
+  });
+
+  it('still answers 403 for a system token the resolver refuses (non-platform-admin)', async () => {
+    const systemAuth = { ...baseAuth, partnerId: null, orgId: null, scope: 'system' as const };
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', systemAuth);
+      await next();
+    });
+    app.use(requirePermission('organizations', 'read'));
+    app.get('/test', (c) => c.json({ ok: true }));
+
+    vi.mocked(getUserPermissions).mockResolvedValue(null);
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe('No permissions found');
+  });
+
   it('stores permissions in context after successful check', async () => {
     let capturedPerms: any;
     const app = new Hono();
