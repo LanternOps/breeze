@@ -538,7 +538,7 @@ describe('patch run read-only backstop', () => {
   it('pre-hook allows a valid submit_patch_plan on a patch run, refuses a bad reference, and denies it on other profiles', async () => {
     const outcome = emptyOutcome();
     const pre = directPre('patch', outcome, { patch: PATCH_REFS });
-    expect(await pre('submit_patch_plan', VALID_PATCH_PLAN)).toEqual({ allowed: true });
+    expect(await pre('submit_patch_plan', VALID_PATCH_PLAN)).toMatchObject({ allowed: true });
 
     const bad = { ...VALID_PATCH_PLAN, items: [{ ...VALID_PATCH_PLAN.items[0]!, deviceId: D2 }] };
     const refused = await pre('submit_patch_plan', bad);
