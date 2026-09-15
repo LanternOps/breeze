@@ -27,8 +27,7 @@ import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../mi
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
 import { isTenantToolName } from '@breeze/shared/validators';
-import { resolveTenantTools, resolveTenantToolByName } from '../services/toolSources/resolver';
-import { executeTenantTool } from '../services/toolSources/execute';
+import type { TenantToolDescriptor } from '../services/toolSources/resolver';
 import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../services/toolSources/guardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
@@ -1055,6 +1054,43 @@ function gatedActionsForTool(toolName: string, inputSchema: unknown): string[] {
 }
 
 // ============================================
+// Tenant (BYO MCP) tools — Task A10, live seams
+// ============================================
+
+// Dynamic import — same reason as mcpExecutionOrg.ts's `liveDeviceArgs`:
+// `toolSources/resolver.ts` touches `toolSourceTools` at MODULE-EVALUATION
+// time (its `RESOLVE_TOOL_ROW_SELECTION` object literal), and a dozen sibling
+// `mcpServer.*.test.ts` files replace `../db/schema` with a narrow object
+// literal that predates that table. A static top-level import here would
+// pull `toolSourceTools` into every one of their module graphs just from
+// importing `mcpServerRoutes` — before any of them ever exercises tools/list
+// or tools/call. Deferred to call time instead, so only a real request path
+// (or this file's own `mcpServer.test.ts`, which mocks the resolver/execute
+// modules directly) ever evaluates it.
+async function liveResolveTenantTools(auth: AuthContext): Promise<TenantToolDescriptor[]> {
+  const { resolveTenantTools } = await import('../services/toolSources/resolver');
+  return resolveTenantTools(auth);
+}
+
+async function liveResolveTenantToolByName(
+  auth: AuthContext,
+  toolName: string,
+): Promise<TenantToolDescriptor | null> {
+  const { resolveTenantToolByName } = await import('../services/toolSources/resolver');
+  return resolveTenantToolByName(auth, toolName);
+}
+
+async function liveExecuteTenantTool(
+  d: TenantToolDescriptor,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  opts: { surface: 'mcp'; orgId: string | null; actor?: { kind: 'api_key'; id: string } },
+): Promise<string> {
+  const { executeTenantTool } = await import('../services/toolSources/execute');
+  return executeTenantTool(d, toolInput, auth, opts);
+}
+
+// ============================================
 // tools/list
 // ============================================
 
@@ -1117,16 +1153,23 @@ async function handleToolsList(
 
   // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
   // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
-  // + the execute_admin lever), applied to each descriptor's own tier.
-  const tenant = await resolveTenantTools(auth);
-  const tenantResult = tenant
-    .filter(
-      (d) =>
-        d.tier <= 1 ||
-        (d.tier === 2 && hasWrite) ||
-        (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
-    )
-    .map((d) => d.definition);
+  // + the execute_admin lever), applied to each descriptor's own tier. A
+  // resolution failure (DB hiccup, etc.) degrades to no tenant tools rather
+  // than failing tools/list for the entire core registry.
+  let tenantResult: Array<{ name: string; description: string; input_schema: Record<string, unknown> }> = [];
+  try {
+    const tenant = await liveResolveTenantTools(auth);
+    tenantResult = tenant
+      .filter(
+        (d) =>
+          d.tier <= 1 ||
+          (d.tier === 2 && hasWrite) ||
+          (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
+      )
+      .map((d) => d.definition);
+  } catch (err) {
+    console.error('[MCP] Failed to resolve tenant tools for tools/list:', err);
+  }
 
   return jsonRpcResult(id, { tools: [...result, ...tenantResult] });
 }
@@ -1418,7 +1461,7 @@ async function handleTenantToolCall(
   c?: Context,
   sessionId?: string,
 ): Promise<JsonRpcResponse> {
-  const d = await resolveTenantToolByName(auth, toolName);
+  const d = await liveResolveTenantToolByName(auth, toolName);
   if (!d) {
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
@@ -1492,7 +1535,7 @@ async function handleTenantToolCall(
   }
 
   const startTime = Date.now();
-  const resultText = await executeTenantTool(d, toolInput, auth, {
+  const resultText = await liveExecuteTenantTool(d, toolInput, auth, {
     surface: 'mcp',
     orgId: executionOrgId,
     actor: apiKey ? { kind: 'api_key', id: apiKey.id } : undefined,
