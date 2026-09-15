@@ -1907,6 +1907,13 @@
         "refused": "No se registró: {{reason}}",
         "unconfirmed": "Este plan nunca se confirmó — el agente no pudo volver a verificar sus elementos con la evidencia, por lo que nada de lo siguiente se validó.",
         "unconfirmedItem": "No confirmado — este elemento nunca se volvió a verificar.",
+        "intentCreated": "Esperando aprobación — abrir tarjeta",
+        "suppressed": "Ya propuesto: {{reason}}",
+        "capReached": "No propuesto: {{reason}}",
+        "intentError": "No se pudo crear la tarjeta de aprobación: {{reason}}",
+        "dropped": "{{count}} actualización se dejó fuera de la tarjeta",
+        "dropped_other": "{{count}} actualizaciones se dejaron fuera de la tarjeta",
+        "counts": "{{created}} en espera de aprobación · {{suppressed}} ya propuestas",
         "classes": {
           "install": "Instalación",
           "approval_advisory": "Recomendación de aprobación",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "El dispositivo no pertenece a esta organización",
           "patch_not_in_evidence": "La actualización no aparece en la evidencia de parches",
           "window_not_resolved": "No se pudo resolver la ventana de mantenimiento",
-          "job_result_not_in_evidence": "El resultado del trabajo de parches no aparece en la evidencia"
+          "job_result_not_in_evidence": "El resultado del trabajo de parches no aparece en la evidencia",
+          "no_eligible_patches": "Actualmente no hay ninguna actualización elegible para este dispositivo",
+          "not_allowlisted": "El agente no tiene permitido proponer instalaciones",
+          "max_actions_per_run": "Se alcanzó el límite de acciones para esta ejecución",
+          "no_eligible_approvers": "Nadie puede aprobar esta acción",
+          "intent_error": "No se pudo crear la aprobación",
+          "live_intent_exists": "Ya hay una tarjeta de aprobación abierta para esta actualización",
+          "recently_rejected": "Esta actualización se rechazó recientemente",
+          "recently_cancelled": "La tarjeta de esta actualización se canceló recientemente",
+          "recently_completed": "Esta actualización se instaló recientemente"
+        },
+        "ineligible": {
+          "not_outstanding": "No está pendiente en este dispositivo",
+          "superseded": "Reemplazada por una actualización más reciente",
+          "blocked_by_source": "Excluida por las fuentes de actualización de la política",
+          "held_by_deferral": "Retenida por la ventana de aplazamiento",
+          "blocked_by_category": "Excluida por las reglas de categoría del anillo",
+          "blocked_by_app_rule": "Bloqueada por una regla de aplicación",
+          "awaiting_manual_approval": "En espera de aprobación manual",
+          "no_ring_resolved": "El dispositivo no tiene un anillo de actualización",
+          "device_not_in_org": "El dispositivo no pertenece a esta organización"
         }
       },
       "narrative": {

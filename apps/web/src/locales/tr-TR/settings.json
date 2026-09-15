@@ -1907,6 +1907,13 @@
         "refused": "Kaydedilmedi: {{reason}}",
         "unconfirmed": "Bu plan hiçbir zaman onaylanmadı — aracı öğelerini kanıtlarla yeniden karşılaştıramadı, bu nedenle aşağıdakilerin hiçbiri doğrulanmadı.",
         "unconfirmedItem": "Onaylanmadı — bu öğe hiçbir zaman yeniden kontrol edilmedi.",
+        "intentCreated": "Onay bekleniyor — kartı aç",
+        "suppressed": "Zaten önerildi: {{reason}}",
+        "capReached": "Önerilmedi: {{reason}}",
+        "intentError": "Onay kartı oluşturulamadı: {{reason}}",
+        "dropped": "{{count}} güncelleme karttan çıkarıldı",
+        "dropped_other": "{{count}} güncelleme karttan çıkarıldı",
+        "counts": "{{created}} onay bekliyor · {{suppressed}} zaten önerildi",
         "classes": {
           "install": "Kurulum",
           "approval_advisory": "Onay tavsiyesi",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "Cihaz bu organizasyona ait değil",
           "patch_not_in_evidence": "Güncelleme yama kanıtlarında yok",
           "window_not_resolved": "Bakım penceresi çözülemedi",
-          "job_result_not_in_evidence": "Yama işi sonucu kanıtlarda yok"
+          "job_result_not_in_evidence": "Yama işi sonucu kanıtlarda yok",
+          "no_eligible_patches": "Şu anda bu cihaz için uygun bir güncelleme yok",
+          "not_allowlisted": "Aracının kurulum önerme izni yok",
+          "max_actions_per_run": "Bu çalıştırma için eylem sınırına ulaşıldı",
+          "no_eligible_approvers": "Bu eylemi kimse onaylayamaz",
+          "intent_error": "Onay oluşturulamadı",
+          "live_intent_exists": "Bu güncelleme için zaten açık bir onay kartı var",
+          "recently_rejected": "Bu güncelleme yakın zamanda reddedildi",
+          "recently_cancelled": "Bu güncellemenin kartı yakın zamanda iptal edildi",
+          "recently_completed": "Bu güncelleme yakın zamanda kuruldu"
+        },
+        "ineligible": {
+          "not_outstanding": "Bu cihazda bekleyen değil",
+          "superseded": "Daha yeni bir güncellemeyle değiştirildi",
+          "blocked_by_source": "Politikanın güncelleme kaynakları tarafından hariç tutuldu",
+          "held_by_deferral": "Erteleme penceresi tarafından tutuluyor",
+          "blocked_by_category": "Halkanın kategori kuralları tarafından hariç tutuldu",
+          "blocked_by_app_rule": "Bir uygulama kuralı tarafından engellendi",
+          "awaiting_manual_approval": "Manuel onay bekleniyor",
+          "no_ring_resolved": "Cihazın güncelleme halkası yok",
+          "device_not_in_org": "Cihaz bu organizasyona ait değil"
         }
       },
       "narrative": {

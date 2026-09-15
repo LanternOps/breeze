@@ -1907,6 +1907,13 @@
         "refused": "Não registrado: {{reason}}",
         "unconfirmed": "Este plano nunca foi confirmado — o agente não conseguiu reverificar seus itens em relação às evidências, então nada abaixo foi validado.",
         "unconfirmedItem": "Não confirmado — este item nunca foi reverificado.",
+        "intentCreated": "Aguardando aprovação — abrir cartão",
+        "suppressed": "Já proposto: {{reason}}",
+        "capReached": "Não proposto: {{reason}}",
+        "intentError": "Não foi possível criar o cartão de aprovação: {{reason}}",
+        "dropped": "{{count}} atualização foi deixada de fora do cartão",
+        "dropped_other": "{{count}} atualizações foram deixadas de fora do cartão",
+        "counts": "{{created}} aguardando aprovação · {{suppressed}} já propostas",
         "classes": {
           "install": "Instalação",
           "approval_advisory": "Recomendação de aprovação",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "O dispositivo não pertence a esta organização",
           "patch_not_in_evidence": "Atualização ausente nas evidências de correções",
           "window_not_resolved": "Não foi possível resolver a janela de manutenção",
-          "job_result_not_in_evidence": "Resultado do trabalho de correção ausente nas evidências"
+          "job_result_not_in_evidence": "Resultado do trabalho de correção ausente nas evidências",
+          "no_eligible_patches": "Nenhuma atualização está atualmente elegível para este dispositivo",
+          "not_allowlisted": "O agente não tem permissão para propor instalações",
+          "max_actions_per_run": "Limite de ações atingido para esta execução",
+          "no_eligible_approvers": "Ninguém pode aprovar esta ação",
+          "intent_error": "Não foi possível criar a aprovação",
+          "live_intent_exists": "Já existe um cartão de aprovação aberto para esta atualização",
+          "recently_rejected": "Esta atualização foi rejeitada recentemente",
+          "recently_cancelled": "O cartão desta atualização foi cancelado recentemente",
+          "recently_completed": "Esta atualização foi instalada recentemente"
+        },
+        "ineligible": {
+          "not_outstanding": "Não pendente neste dispositivo",
+          "superseded": "Substituída por uma atualização mais recente",
+          "blocked_by_source": "Excluída pelas fontes de atualização da política",
+          "held_by_deferral": "Retida pela janela de adiamento",
+          "blocked_by_category": "Excluída pelas regras de categoria do anel",
+          "blocked_by_app_rule": "Bloqueada por uma regra de aplicativo",
+          "awaiting_manual_approval": "Aguardando aprovação manual",
+          "no_ring_resolved": "O dispositivo não tem um anel de atualização",
+          "device_not_in_org": "O dispositivo não pertence a esta organização"
         }
       },
       "narrative": {

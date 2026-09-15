@@ -1907,6 +1907,13 @@
         "refused": "Not recorded: {{reason}}",
         "unconfirmed": "This plan was never confirmed — the agent could not re-check its items against the evidence, so nothing below has been validated.",
         "unconfirmedItem": "Not confirmed — this item was never re-checked.",
+        "intentCreated": "Awaiting approval — open card",
+        "suppressed": "Already proposed: {{reason}}",
+        "capReached": "Not proposed: {{reason}}",
+        "intentError": "Approval card could not be created: {{reason}}",
+        "dropped": "{{count}} update was left out of the card",
+        "dropped_other": "{{count}} updates were left out of the card",
+        "counts": "{{created}} awaiting approval · {{suppressed}} already proposed",
         "classes": {
           "install": "Install",
           "approval_advisory": "Approval advice",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "Device not in this organization",
           "patch_not_in_evidence": "Update not in the patch evidence",
           "window_not_resolved": "Maintenance window could not be resolved",
-          "job_result_not_in_evidence": "Patch job result not in the evidence"
+          "job_result_not_in_evidence": "Patch job result not in the evidence",
+          "no_eligible_patches": "No update is currently eligible for this device",
+          "not_allowlisted": "The agent is not allowed to propose installs",
+          "max_actions_per_run": "Action limit reached for this run",
+          "no_eligible_approvers": "Nobody can approve this action",
+          "intent_error": "The approval could not be created",
+          "live_intent_exists": "An approval card for this update is already open",
+          "recently_rejected": "This update was rejected recently",
+          "recently_cancelled": "This update's card was cancelled recently",
+          "recently_completed": "This update was installed recently"
+        },
+        "ineligible": {
+          "not_outstanding": "Not outstanding on this device",
+          "superseded": "Superseded by a newer update",
+          "blocked_by_source": "Excluded by the policy's update sources",
+          "held_by_deferral": "Held by the deferral window",
+          "blocked_by_category": "Excluded by the ring's category rules",
+          "blocked_by_app_rule": "Blocked by an app rule",
+          "awaiting_manual_approval": "Awaiting manual approval",
+          "no_ring_resolved": "The device has no update ring",
+          "device_not_in_org": "Device not in this organization"
         }
       },
       "narrative": {

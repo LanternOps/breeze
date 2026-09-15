@@ -1907,6 +1907,13 @@
         "refused": "Non registrato: {{reason}}",
         "unconfirmed": "Questo piano non è mai stato confermato — l'agente non ha potuto riverificare le sue voci rispetto alle evidenze, quindi nulla di quanto segue è stato convalidato.",
         "unconfirmedItem": "Non confermato — questa voce non è mai stata riverificata.",
+        "intentCreated": "In attesa di approvazione — apri la scheda",
+        "suppressed": "Già proposto: {{reason}}",
+        "capReached": "Non proposto: {{reason}}",
+        "intentError": "Impossibile creare la scheda di approvazione: {{reason}}",
+        "dropped": "{{count}} aggiornamento è stato escluso dalla scheda",
+        "dropped_other": "{{count}} aggiornamenti sono stati esclusi dalla scheda",
+        "counts": "{{created}} in attesa di approvazione · {{suppressed}} già proposti",
         "classes": {
           "install": "Installazione",
           "approval_advisory": "Consiglio di approvazione",
@@ -1919,7 +1926,27 @@
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
           "patch_not_in_evidence": "Aggiornamento assente dalle evidenze delle patch",
           "window_not_resolved": "Impossibile risolvere la finestra di manutenzione",
-          "job_result_not_in_evidence": "Risultato del lavoro di patch assente dalle evidenze"
+          "job_result_not_in_evidence": "Risultato del lavoro di patch assente dalle evidenze",
+          "no_eligible_patches": "Nessun aggiornamento è attualmente idoneo per questo dispositivo",
+          "not_allowlisted": "L'agente non è autorizzato a proporre installazioni",
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "no_eligible_approvers": "Nessuno può approvare questa azione",
+          "intent_error": "Impossibile creare l'approvazione",
+          "live_intent_exists": "Una scheda di approvazione per questo aggiornamento è già aperta",
+          "recently_rejected": "Questo aggiornamento è stato rifiutato di recente",
+          "recently_cancelled": "La scheda di questo aggiornamento è stata annullata di recente",
+          "recently_completed": "Questo aggiornamento è stato installato di recente"
+        },
+        "ineligible": {
+          "not_outstanding": "Non in sospeso su questo dispositivo",
+          "superseded": "Sostituito da un aggiornamento più recente",
+          "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
+          "held_by_deferral": "Trattenuto dalla finestra di differimento",
+          "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "blocked_by_app_rule": "Bloccato da una regola dell'app",
+          "awaiting_manual_approval": "In attesa di approvazione manuale",
+          "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
         }
       },
       "narrative": {

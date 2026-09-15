@@ -239,7 +239,11 @@ async function mintInstallIntents(
   // Gate 5 — ONE suppression read for the whole run.
   const keyOf = (deviceId: string, patchId: string) => patchEpisodeIdempotencyKey(run.orgId, deviceId, patchId);
   const keys = [...new Set(survivors.flatMap(({ record, patchIds }) => patchIds.map((id) => keyOf(record.deviceId!, id))))];
-  const since = new Date(Date.now() - PATCH_EPISODE_SUPPRESSION_DAYS * 24 * 60 * 60 * 1000);
+  // The read is keyed on created_at; the rule is keyed on the DECISION time
+  // (`decidedAt ?? createdAt`). A card can sit for up to 24h before it is
+  // decided, so read two days past the suppression window — the rule, not the
+  // read, decides the boundary.
+  const since = new Date(Date.now() - (PATCH_EPISODE_SUPPRESSION_DAYS + 2) * 24 * 60 * 60 * 1000);
   const history = new Map<string, PatchEpisodeHistoryEntry[]>();
   for (const row of await findIntentsByIdempotencyKey({ orgId: run.orgId, keys, since })) {
     const list = history.get(row.idempotencyKey) ?? [];
