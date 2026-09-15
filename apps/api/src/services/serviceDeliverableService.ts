@@ -10,6 +10,8 @@ import { users } from '../db/schema/users';
 import { reports, reportRuns } from '../db/schema/reports';
 import { orgDocuments } from '../db/schema/orgDocuments';
 import { ticketCategories } from '../db/schema/tickets';
+import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
+import { ticketComments } from '../db/schema/portal';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
   RescheduleOccurrenceInput, EvidenceRef,
@@ -843,6 +845,8 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
       ownerUserId: serviceDeliverables.ownerUserId,
       ticketCategoryId: serviceDeliverables.ticketCategoryId,
       description: serviceDeliverables.description,
+      instructions: serviceDeliverables.instructions,
+      checklistTemplateId: serviceDeliverables.checklistTemplateId,
     }).from(serviceDeliverables).where(eq(serviceDeliverables.id, d.id)).limit(1);
 
   // Any failure other than Service Management `off` (and a stale owner or
@@ -871,6 +875,66 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
   await db.update(serviceDeliverableOccurrences)
     .set({ ticketId: created.ticketId, updatedAt: new Date() })
     .where(eq(serviceDeliverableOccurrences.id, occ.id));
+
+  // ── #5808 W03: seed the checklist, then snapshot the instructions ────────
+  //
+  // Both run on the ambient `db` handle, inside the SAME per-occurrence system
+  // transaction as the claim and the ticket creation (see this function's
+  // docstring). A failure here therefore rolls the claim back and the
+  // occurrence retries tomorrow, rather than being stranded `open` with a
+  // ticket and no checklist. Do NOT open a nested transaction here, and do not
+  // reach for a fresh pool handle.
+  if (cfg?.checklistTemplateId) {
+    const steps = await db.select({
+        id: ticketChecklistTemplateItems.id,
+        label: ticketChecklistTemplateItems.label,
+        detail: ticketChecklistTemplateItems.detail,
+      })
+      .from(ticketChecklistTemplateItems)
+      .where(eq(ticketChecklistTemplateItems.templateId, cfg.checklistTemplateId))
+      .orderBy(asc(ticketChecklistTemplateItems.sortOrder), asc(ticketChecklistTemplateItems.label));
+    if (steps.length > 0) {
+      await db.insert(ticketChecklistItems).values(steps.map((step, index) => ({
+        // The DELIVERABLE's org. NEVER the template's, which is NULL for a
+        // partner-wide template — a partner-wide template produces org-scoped
+        // rows inside each customer's own tenant, and no cross-tenant row is
+        // ever created.
+        orgId: d.orgId,
+        ticketId: created.ticketId,
+        label: step.label,
+        detail: step.detail,
+        position: index,
+        source: 'deliverable' as const,
+        sourceTemplateItemId: step.id,
+        // NULL, not DELIVERABLE_SWEEP_ACTOR.userId: that is the nil UUID
+        // '00000000-…-0000' and is not a users row, so writing it would 23503
+        // and abort this occurrence every single night.
+        createdBy: null,
+      })));
+    }
+  }
+
+  if (cfg?.instructions) {
+    // A point-in-time SNAPSHOT, matching the nameSnapshot precedent: editing
+    // the deliverable's instructions tomorrow must not silently rewrite what a
+    // technician was told to do last month.
+    //
+    // commentType 'internal' matches deliverableAutoEvidence.ts — the other
+    // comment this same sweep posts on this same ticket. `isPublic: false` is
+    // what keeps it out of the portal (routes/portal/tickets.ts filters on
+    // is_public = true), and originPrincipalKind 'system' keeps the helpdesk
+    // loop guard from ever re-admitting it as a human reply.
+    await db.insert(ticketComments).values({
+      ticketId: created.ticketId,
+      userId: null,
+      authorName: 'Breeze',
+      authorType: 'system',
+      commentType: 'internal',
+      content: `Internal instructions for this deliverable:\n\n${cfg.instructions}`,
+      isPublic: false,
+      originPrincipalKind: 'system',
+    });
+  }
   return 1;
 }
 /**

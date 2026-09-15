@@ -982,6 +982,96 @@ describe('serviceDeliverableService', () => {
       } finally { warn.mockRestore(); }
     });
 
+    // ── #5808 W03: checklist seeding + the instructions snapshot comment ──
+    //
+    // Both writes go on the ambient `db` handle, inside the SAME per-occurrence
+    // system transaction as the claim and the ticket creation, so a failure
+    // rolls the claim back and the occurrence retries tomorrow rather than
+    // being stranded `open` with a ticket and no checklist.
+    const insertCalls = () => chain.values.mock.calls.map((c) => c[0]);
+    const checklistRows = () =>
+      insertCalls().find((v) => Array.isArray(v) && (v as Array<Record<string, unknown>>)[0]?.label !== undefined) as
+        Array<Record<string, unknown>> | undefined;
+    const commentRow = () =>
+      insertCalls().find((v) => !Array.isArray(v) && (v as Record<string, unknown>)?.commentType !== undefined) as
+        Record<string, unknown> | undefined;
+
+    it('copies the template steps in sortOrder, stamped with the DELIVERABLE’s org', async () => {
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: 'tcl-1' });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);                                       // link UPDATE
+      queueResult([                                          // template items, already ordered by the query
+        { id: 'ti-1', label: 'A', detail: 'note', sortOrder: 0 },
+        { id: 'ti-2', label: 'B', detail: null, sortOrder: 1 },
+      ]);
+      expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      const rows = checklistRows()!;
+      expect(rows.map((r) => r.label)).toEqual(['A', 'B']);
+      expect(rows.map((r) => r.position)).toEqual([0, 1]);
+      expect(rows.map((r) => r.sourceTemplateItemId)).toEqual(['ti-1', 'ti-2']);
+      expect(rows.every((r) => r.ticketId === 't1')).toBe(true);
+      expect(rows.every((r) => r.source === 'deliverable')).toBe(true);
+      // The DELIVERABLE's org — never the template's, which is NULL for a
+      // partner-wide template and would violate the NOT NULL.
+      expect(rows.every((r) => r.orgId === 'org1')).toBe(true);
+      // NULL, not DELIVERABLE_SWEEP_ACTOR.userId: that is the nil UUID and is
+      // not a users row, so writing it would 23503 every single night.
+      expect(rows.every((r) => r.createdBy === null)).toBe(true);
+    });
+
+    it('posts the instructions as an INTERNAL, non-public comment snapshot', async () => {
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: 'Check X before Y', checklistTemplateId: null });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);                                       // link UPDATE
+      expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      const comment = commentRow()!;
+      expect(comment).toMatchObject({
+        ticketId: 't1',
+        isPublic: false,
+        userId: null,
+        authorType: 'system',
+        commentType: 'internal',
+        originPrincipalKind: 'system',
+      });
+      expect(String(comment.content)).toContain('Check X before Y');
+    });
+
+    it('posts NO comment when the deliverable has no instructions', async () => {
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: null });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);
+      await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
+      expect(commentRow()).toBeUndefined();
+    });
+
+    it('seeds nothing when the deliverable has no checklistTemplateId', async () => {
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: null });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);
+      await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
+      expect(checklistRows()).toBeUndefined();
+    });
+
+    it('seeds nothing when the referenced template has no items', async () => {
+      seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: null, checklistTemplateId: 'tcl-empty' });
+      createTicketMock.mockResolvedValue({ id: 't1' });
+      queueResult([]);
+      queueResult([]);                                       // template items: none
+      await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set());
+      expect(checklistRows()).toBeUndefined();
+    });
+
+    it('a ticketless occurrence (Service Management off) seeds NOTHING and does not throw', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        seedOpen([{ id: 'o1' }], { ...NO_CFG, instructions: 'Prose', checklistTemplateId: 'tcl-1' });
+        createTicketMock.mockRejectedValue(Object.assign(new Error('off'), { code: 'service_management_off' }));
+        expect(await openDueOccurrencesForDeliverable(SD, '2026-10-25', new Set())).toBe(1);
+      } finally { warn.mockRestore(); }
+      expect(checklistRows()).toBeUndefined();
+      expect(commentRow()).toBeUndefined();
+    });
+
     it('does not loop when the refusal names a reference that is already absent', async () => {
       seedOpen([{ id: 'o1' }], NO_CFG);
       createTicketMock.mockRejectedValue(Object.assign(new Error('wrong partner'), { code: 'ASSIGNEE_WRONG_PARTNER' }));
