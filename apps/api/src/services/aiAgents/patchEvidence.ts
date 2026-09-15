@@ -61,10 +61,10 @@
  *
  * ## Honest gaps (W01)
  *
- *  - No next-window time. There is no future-occurrence projector for
- *    config-policy maintenance (plan index correction 18); a row reports only
- *    whether a config-policy maintenance window RESOLVES for the device and
- *    whether it is ACTIVE NOW. W04 builds the projector.
+ *  - (closed by W04, #5750) The reboot backlog now carries each device's
+ *    NEXT resolved window (`maintenanceWindowProjection.ts`), reboot policy,
+ *    redundancy group and `unplannableReason` — see `enrichRebootBacklog`.
+ *    Rows elsewhere still report only whether a window RESOLVES / is ACTIVE.
  *  - `heldByDeferral` is `null`: the deferral predicate is private to
  *    `patchApprovalEvaluator` and W02 extracts it
  *    (`resolvePatchInstallEligibility`). Reported as a marked gap, not a guess.
@@ -358,9 +358,11 @@ export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs
       failedWorkByJobResult.set(id, group);
     }
   }
-  // W04: the reboot backlog's resolved windows. `windowIds` admits only the
-  // windows of PLANNABLE devices; every device is in `rebootPlanByDevice` so
-  // the persister can name the exact reason an unplannable one is refused.
+  // W04: the reboot backlog's resolved windows. `windowIds` carries every
+  // window the projector resolved (plannable or not) so the W01 membership
+  // gate passes a REAL window and `rebootPlanGate` can then name the exact
+  // reason an unplannable device is refused, rather than a generic
+  // `window_not_resolved`.
   const windowIds = new Set<string>();
   const rebootPlanByDevice = new Map<string, PatchRebootPlanRef>();
   for (const row of evidence.sections.rebootBacklog.rows) {
@@ -379,7 +381,7 @@ export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs
         : null,
     };
     rebootPlanByDevice.set(row.deviceId, ref);
-    if (ref.windowId && ref.unplannableReason === null) windowIds.add(ref.windowId);
+    if (ref.windowId) windowIds.add(ref.windowId);
   }
   return { deviceIds, patchIdsByDevice, windowIds, jobResultIds, failedWorkByJobResult, rebootPlanByDevice };
 }

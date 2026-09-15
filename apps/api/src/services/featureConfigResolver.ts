@@ -2294,10 +2294,10 @@ export function isInMaintenanceWindow(
  * Check if a device is currently in a maintenance window (from config policy).
  * Returns the maintenance window status, or inactive if no maintenance policy applies.
  */
-export async function checkDeviceMaintenanceWindow(deviceId: string): Promise<MaintenanceWindowStatus> {
+export async function checkDeviceMaintenanceWindow(deviceId: string, now?: Date): Promise<MaintenanceWindowStatus> {
   const settings = await resolveMaintenanceConfigForDevice(deviceId);
   if (!settings) {
     return { active: false, suppressAlerts: false, suppressPatching: false, suppressAutomations: false, suppressScripts: false, rebootIfPending: false, windowEndsAt: null };
   }
-  return isInMaintenanceWindow(settings);
+  return isInMaintenanceWindow(settings, now);
 }
