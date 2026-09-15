@@ -35,7 +35,7 @@ type convertTimingStub struct {
 
 func TestVideoEncoderLastConvertDuration(t *testing.T) {
 	stub := &convertTimingStub{}
-	stub.convertTimer.record(4 * time.Millisecond)
+	stub.record(4 * time.Millisecond)
 	enc := &VideoEncoder{backend: stub}
 	if got := enc.LastConvertDuration(); got != 4*time.Millisecond {
 		t.Fatalf("LastConvertDuration = %v, want 4ms", got)

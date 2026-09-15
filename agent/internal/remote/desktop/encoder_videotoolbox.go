@@ -407,7 +407,7 @@ func (v *videotoolboxEncoder) Encode(frame []byte) ([]byte, error) {
 	// Convert RGBA → NV12 (video-range).
 	convertStart := time.Now()
 	nv12 := rgbaToNV12(frame, width, height, stride)
-	v.convertTimer.record(time.Since(convertStart))
+	v.record(time.Since(convertStart))
 	defer putNV12Buffer(nv12)
 
 	req := &vtEncodeRequest{ch: make(chan vtEncodeResult, 1)}

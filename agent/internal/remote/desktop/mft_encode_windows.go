@@ -81,7 +81,7 @@ func (m *mftEncoder) Encode(frame []byte) ([]byte, error) {
 	} else {
 		nv12 = rgbaToNV12(frame, m.width, m.height, m.stride)
 	}
-	m.convertTimer.record(time.Since(convertStart))
+	m.record(time.Since(convertStart))
 	defer putNV12Buffer(nv12)
 
 	// Create MF sample with NV12 data

@@ -232,7 +232,7 @@ func (e *openH264Encoder) Encode(frame []byte) ([]byte, error) {
 	} else {
 		i420 = rgbaToI420(frame, e.width, e.height, stride)
 	}
-	e.convertTimer.record(time.Since(convertStart))
+	e.record(time.Since(convertStart))
 	defer putI420Buffer(i420)
 
 	// Force IDR if requested
