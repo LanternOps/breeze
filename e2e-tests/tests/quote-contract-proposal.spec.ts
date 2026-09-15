@@ -163,7 +163,10 @@ test.describe('quote + contract proposal lifecycle', () => {
     // executed contract_document to it, which step 5 below depends on.
     await page.getByTestId('quote-add-block-type-line_items').click();
     await page.getByTestId('quote-add-block-submit').click();
-    const addLineForm = page.locator('[data-testid^="quote-block-add-line-"]');
+    const addLineToggle = page.locator('[data-testid^="quote-block-add-line-toggle-"]');
+    await addLineToggle.waitFor({ timeout: 15_000 });
+    await addLineToggle.click();
+    const addLineForm = page.locator('[data-testid^="quote-block-add-line-"]:not([data-testid^="quote-block-add-line-toggle-"])');
     await addLineForm.waitFor({ timeout: 15_000 });
     const addLineTestId = await addLineForm.getAttribute('data-testid');
     const lineBlockId = addLineTestId!.replace('quote-block-add-line-', '');
@@ -209,11 +212,20 @@ test.describe('quote + contract proposal lifecycle', () => {
     // token (the admin UI never surfaces the link itself).
     await page.getByTestId('quote-send').click();
     await page.getByTestId('quote-send-confirm').waitFor();
+    await page.getByTestId('quote-send-to').fill('e2e-recipient@example.com');
+    const [scheduleResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/schedule-send$/.test(new URL(r.url()).pathname),
+      ),
+      page.getByTestId('quote-send-confirm').click(),
+    ]);
+    expect(scheduleResponse.ok()).toBeTruthy();
     const [sendResponse] = await Promise.all([
       page.waitForResponse(
         (r) => r.request().method() === 'POST' && /\/quotes\/[^/]+\/send$/.test(new URL(r.url()).pathname),
+        { timeout: 20_000 },
       ),
-      page.getByTestId('quote-send-confirm').click(),
+      page.getByTestId('quote-send-now').click(),
     ]);
     expect(sendResponse.ok()).toBeTruthy();
     const sendBody = (await sendResponse.json()) as {
@@ -299,9 +311,9 @@ test.describe('quote + contract proposal lifecycle', () => {
     // Contracts tab is the default — filter to the org used above so the
     // auto-created "<quoteNumber> — Monthly" contract from acceptQuote's
     // Phase 4 is easy to isolate even if other contracts exist for the org.
-    const contractsOrgFilter = page.getByTestId('contracts-filter-org');
-    await contractsOrgFilter.waitFor();
-    await contractsOrgFilter.selectOption(orgId);
+    const contractsSearch = page.getByTestId('contracts-search');
+    await contractsSearch.waitFor();
+    await contractsSearch.fill(quoteNumber!);
 
     const contractLinks = page.locator('[data-testid^="contract-row-link-"]');
     await expect(contractLinks.first()).toBeVisible({ timeout: 20_000 });
