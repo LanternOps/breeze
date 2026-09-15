@@ -246,6 +246,7 @@ import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
@@ -1413,6 +1414,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       name: 'queues',
       tasks: [
         shutdownEventDispatcher,
+        // Execution plane W05: the chat run bridge owns its own per-org ioredis
+        // subscribers. A leaked one keeps the process alive past SIGTERM, which
+        // is how a rolling deploy turns into a stuck pod.
+        shutdownChatRunBridge,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
