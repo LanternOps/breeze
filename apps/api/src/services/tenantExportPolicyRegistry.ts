@@ -591,6 +591,15 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // export. No json/jsonb/bytea column, so excludedOpen is empty, and no column
   // name matches SUSPICIOUS_NAME_PARTS, so reviewedIncluded is empty.
   "ticket_checklist_items": tablePolicy("org_id", {"included":["id","org_id","ticket_id","label","detail","position","done_at","done_by_user_id","source","source_template_item_id","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // ticket_checklist_template_items / ticket_checklist_templates (spec #5783
+  // §4.2, §4.3): the MSP's reusable procedure steps. Neither table has a
+  // json/jsonb/bytea column, so nothing lands in excludedOpen. `instructions`
+  // is internal MSP procedure prose, not a secret, and matches nothing in
+  // SUSPICIOUS_NAME_PARTS — the org's own export should carry the procedure
+  // that was run for them. Only org-owned rows are ever exported: partner-wide
+  // rows carry org_id NULL and are outside every org's tenant.
+  "ticket_checklist_template_items": tablePolicy("org_id", {"included":["id","template_id","org_id","partner_id","label","detail","sort_order","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  "ticket_checklist_templates": tablePolicy("org_id", {"included":["id","org_id","partner_id","name","description","instructions","is_active","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // ticket_drafts (P2-4, #4191): the reply/resolution-note text an agent
   // proposes for a ticket. content/kind/state are ordinary customer-facing
   // draft content and lifecycle state -> included, same treatment as

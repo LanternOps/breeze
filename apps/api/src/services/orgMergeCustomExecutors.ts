@@ -931,6 +931,46 @@ const mergeServiceDeliverables: CustomMergeExecutor = async (loser, survivor) =>
 };
 
 // ---------------------------------------------------------------------------
+// ticket_checklist_templates — `ticket_checklist_templates_org_name_uq
+// (org_id, name) WHERE org_id IS NOT NULL` (2026-10-16-191300, spec #5783
+// §4.2). A repoint-dedupe DELETE would be worse here than for a template set:
+// a checklist template is LIVE-REFERENCED by
+// service_deliverables.checklist_template_id and
+// deliverable_template_items.checklist_template_id (#5783 W03), both ON DELETE
+// SET NULL — so dropping a colliding loser would silently NULL those pointers
+// and empty every future occurrence's checklist, with no error and no signal.
+// Rename on collision instead, the service_deliverables move: the suffix is
+// deterministic, fires only on an actual collision, and `left(name, 182)` keeps
+// the result inside varchar(200).
+//
+// Partner-wide templates carry org_id NULL and are never merge participants;
+// the partial index's own `WHERE org_id IS NOT NULL` is mirrored by both
+// equality predicates below, which can never match a NULL org_id row.
+// ---------------------------------------------------------------------------
+const mergeTicketChecklistTemplates: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE ticket_checklist_templates AS t
+       SET name = left(t.name, 182) || ' (merged ' || left(${uuid(loser)}::text, 8) || ')',
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM ticket_checklist_templates AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.name = t.name
+       )`);
+  const moved = await run(buildRepoint('ticket_checklist_templates', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `ticket_checklist_templates: renamed ${renamed} checklist template from the merged-away org whose name already existed under the survivor (suffixed with the merged org id; nothing deleted, so no deliverable's checklist_template_id is orphaned)`,
+      ]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // api_keys / enrollment_keys — the design doc is explicit that the loser's
 // org-bound capabilities are "revoked, not repointed" (controller ruling R2).
 // Repointing alone would hand the survivor a live credential that the merged
@@ -1395,6 +1435,7 @@ export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,
   service_deliverables: mergeServiceDeliverables,
+  ticket_checklist_templates: mergeTicketChecklistTemplates,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
   ai_agents: mergeAiAgents,
