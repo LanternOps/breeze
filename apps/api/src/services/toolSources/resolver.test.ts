@@ -7,6 +7,7 @@ vi.mock('../../config/env', () => ({ toolSourcesEnabled: vi.fn() }));
 
 import { toolSourcesEnabled } from '../../config/env';
 import {
+  buildLoadTenantToolForExecutionQuery,
   buildResolveTenantToolsQuery,
   compileToolDescriptor,
   resolveTenantTools,
@@ -95,6 +96,48 @@ describe('buildResolveTenantToolsQuery — owner predicate (DB-less, real db.toS
     const { sql: text } = built.toSQL();
     expect(text).toContain('order by');
     expect(text).toContain('"tool_source_tools"."qualified_name"');
+  });
+});
+
+describe('buildLoadTenantToolForExecutionQuery — dispatch-time owner predicate (DB-less, real db.toSQL())', () => {
+  beforeEach(() => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(true);
+  });
+
+  it("re-applies the passed auth's owner predicate — refuses a tool whose owner does not match", () => {
+    const built = buildLoadTenantToolForExecutionQuery('tool-1', orgAuth(ORG_A));
+    expect(built).not.toBeNull();
+    const { sql: text, params } = built!.toSQL();
+
+    expect(text).toContain('"tool_source_tools"."id"');
+    expect(params).toContain('tool-1');
+    // The owner predicate from `ownerPredicate` is present in the compiled
+    // statement — a reload for a DIFFERENT org's auth would bind a different
+    // org id and so never match this tool's row.
+    expect(text).toContain('"tool_source_tools"."org_id"');
+    expect(text).toContain('"tool_source_tools"."org_id" is null');
+    expect(params).toContain(ORG_A);
+  });
+
+  it('resolves to no query when auth is passed but has no derivable owner id (nothing to authorize against)', () => {
+    const built = buildLoadTenantToolForExecutionQuery(
+      'tool-1',
+      { scope: 'organization', orgId: null, partnerId: null, user: { id: 'u' } } as unknown as AuthContext,
+    );
+    expect(built).toBeNull();
+  });
+
+  it('builds a query with no owner predicate when auth is omitted (admin/system path only)', () => {
+    const built = buildLoadTenantToolForExecutionQuery('tool-1');
+    expect(built).not.toBeNull();
+    const { sql: text, params } = built!.toSQL();
+    // The SELECT list always names org_id/partner_id (full-row select) — the
+    // owner predicate this test asserts is ABSENT lives in the WHERE clause,
+    // so assert on that shape instead: no `or (...)` branch and no bound
+    // owner-id param beyond the fixed id/enabled/status/limit four.
+    expect(text).not.toContain('"tool_source_tools"."org_id" is null');
+    expect(text.match(/\bor\b/)).toBeNull();
+    expect(params).toHaveLength(4);
   });
 });
 

@@ -3,10 +3,10 @@ import { z } from 'zod';
 import type { AuthContext } from '../../middleware/auth';
 import type { TenantToolDescriptor } from './resolver';
 
-vi.mock('./execute', () => ({ executeTenantTool: vi.fn() }));
+vi.mock('./execute', () => ({ executeTenantTool: vi.fn(), executeTenantToolDetailed: vi.fn() }));
 
 import { zodShapeFromJsonSchema, buildTenantSdkTools, tenantMcpToolNames } from './sdkBridge';
-import { executeTenantTool } from './execute';
+import { executeTenantToolDetailed } from './execute';
 
 function makeDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
   return {
@@ -83,8 +83,11 @@ describe('buildTenantSdkTools', () => {
     expect(tool!.description).toBe('[External: Hudu] Get an asset');
   });
 
-  it('handler calls executeTenantTool with the descriptor, args, resolved auth, and chat surface options, and wraps the text result', async () => {
-    vi.mocked(executeTenantTool).mockResolvedValue(JSON.stringify({ ok: true }));
+  it('handler calls executeTenantToolDetailed with the descriptor, args, resolved auth, and chat surface options, and wraps the text result', async () => {
+    vi.mocked(executeTenantToolDetailed).mockResolvedValue({
+      isError: false,
+      text: JSON.stringify({ ok: true }),
+    });
     const descriptor = makeDescriptor();
     const auth = makeAuth();
     const getAuth = vi.fn(() => auth);
@@ -93,7 +96,7 @@ describe('buildTenantSdkTools', () => {
 
     const result = await tool!.handler({ id: 'abc' }, {} as never);
 
-    expect(executeTenantTool).toHaveBeenCalledWith(
+    expect(executeTenantToolDetailed).toHaveBeenCalledWith(
       descriptor,
       { id: 'abc' },
       auth,
@@ -106,8 +109,24 @@ describe('buildTenantSdkTools', () => {
     });
   });
 
+  it('sets isError: true on the returned result when the tenant tool call fails', async () => {
+    vi.mocked(executeTenantToolDetailed).mockResolvedValue({
+      isError: true,
+      text: JSON.stringify({ error: 'remote MCP call failed' }),
+    });
+    const descriptor = makeDescriptor();
+    const [tool] = buildTenantSdkTools([descriptor], () => makeAuth(), () => 'org-1');
+
+    const result = await tool!.handler({ id: 'abc' }, {} as never);
+
+    expect(result).toEqual({
+      content: [{ type: 'text', text: JSON.stringify({ error: 'remote MCP call failed' }) }],
+      isError: true,
+    });
+  });
+
   it('reads auth/orgId lazily from the thunks on every call, not once at construction', async () => {
-    vi.mocked(executeTenantTool).mockResolvedValue('{}');
+    vi.mocked(executeTenantToolDetailed).mockResolvedValue({ isError: false, text: '{}' });
     let currentOrgId = 'org-1';
     const [tool] = buildTenantSdkTools(
       [makeDescriptor()],
@@ -118,8 +137,8 @@ describe('buildTenantSdkTools', () => {
     currentOrgId = 'org-2';
     await tool!.handler({}, {} as never);
 
-    expect(vi.mocked(executeTenantTool).mock.calls[0]![3]).toEqual({ surface: 'chat', orgId: 'org-1' });
-    expect(vi.mocked(executeTenantTool).mock.calls[1]![3]).toEqual({ surface: 'chat', orgId: 'org-2' });
+    expect(vi.mocked(executeTenantToolDetailed).mock.calls[0]![3]).toEqual({ surface: 'chat', orgId: 'org-1' });
+    expect(vi.mocked(executeTenantToolDetailed).mock.calls[1]![3]).toEqual({ surface: 'chat', orgId: 'org-2' });
   });
 });
 

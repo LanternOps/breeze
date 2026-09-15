@@ -287,28 +287,60 @@ export async function resolveTenantToolByName(
  * (disabled / removed / source gone inactive) is rechecked HERE rather than
  * trusting a descriptor resolved earlier in the same chat turn. Returns
  * `null` when the tool no longer qualifies, or its schema no longer compiles.
+ *
+ * `auth` is REQUIRED for any dispatch: this runs in system scope, so RLS
+ * cannot be the entitlement check, and a lookup by tool id alone would
+ * happily execute a tool belonging to a different tenant. That is reachable
+ * in practice — a device-bound chat session survives the device being MOVED
+ * to another org (`streamingSessionManager`, #3087) and re-narrows its
+ * `toolAuth` each turn, while the descriptors captured by the session's
+ * already-registered SDK tools still name the OLD owner. Re-applying the same
+ * owner predicate the resolver uses means a moved session's stale descriptor
+ * stops resolving instead of calling out with the previous tenant's
+ * credential. Pass `undefined` only from an admin/system path that has
+ * already established entitlement some other way.
  */
+/**
+ * Builds (without executing) the single-tool-by-id query
+ * `loadTenantToolForExecution` runs — split out for the same DB-less
+ * `.toSQL()` testability reason `buildResolveTenantToolsQuery` documents
+ * above: a mocked call-shape assertion would stay green even if this
+ * silently stopped re-applying the owner predicate on reload. Returns `null`
+ * only when `auth` is passed and its owner predicate isn't derivable (a
+ * scope missing its id), matching `loadTenantToolForExecution`'s own "no
+ * auth-derivable owner ⇒ resolve to nothing" contract. Omitting `auth`
+ * entirely (the admin/system path) always builds a query with no owner
+ * predicate.
+ */
+export function buildLoadTenantToolForExecutionQuery(toolId: string, auth?: AuthContext) {
+  const owner = auth ? ownerPredicate(auth) : undefined;
+  if (auth && !owner) return null;
+
+  return db
+    .select({ tool: toolSourceTools, source: toolSources })
+    .from(toolSourceTools)
+    .innerJoin(toolSources, eq(toolSourceTools.sourceId, toolSources.id))
+    .where(
+      and(
+        eq(toolSourceTools.id, toolId),
+        eq(toolSourceTools.enabled, true),
+        isNull(toolSourceTools.removedAt),
+        eq(toolSources.status, 'active'),
+        ...(owner ? [owner] : []),
+      ),
+    )
+    .limit(1);
+}
+
 export async function loadTenantToolForExecution(
   toolId: string,
+  auth?: AuthContext,
 ): Promise<{ descriptor: TenantToolDescriptor; source: ToolSourceRow } | null> {
   const rows = await runOutsideDbContext(() =>
-    withSystemDbAccessContext(
-      async () =>
-        db
-          .select({ tool: toolSourceTools, source: toolSources })
-          .from(toolSourceTools)
-          .innerJoin(toolSources, eq(toolSourceTools.sourceId, toolSources.id))
-          .where(
-            and(
-              eq(toolSourceTools.id, toolId),
-              eq(toolSourceTools.enabled, true),
-              isNull(toolSourceTools.removedAt),
-              eq(toolSources.status, 'active'),
-            ),
-          )
-          .limit(1),
-      'loadTenantToolForExecution',
-    ),
+    withSystemDbAccessContext(async () => {
+      const query = buildLoadTenantToolForExecutionQuery(toolId, auth);
+      return query ? await query : [];
+    }, 'loadTenantToolForExecution'),
   );
 
   const row = rows[0];

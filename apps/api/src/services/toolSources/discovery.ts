@@ -116,19 +116,6 @@ export async function discoverSource(
     throw new Error(`tool source not found: ${sourceId}`);
   }
 
-  const auth = decryptToolSourceAuth({
-    id: source.id,
-    authKind: source.authKind,
-    authConfigEncrypted: source.authConfigEncrypted,
-  });
-
-  const clientFactory = deps?.clientFactory ?? ((opts: McpClientOptions) => new McpClient(opts));
-  const client = clientFactory({
-    endpointUrl: source.endpointUrl,
-    credentialOrigin: source.credentialOrigin,
-    auth,
-  });
-
   let listing: Array<{
     name: string;
     description?: string;
@@ -136,12 +123,34 @@ export async function discoverSource(
     outputSchema?: Record<string, unknown>;
     annotations?: Record<string, unknown>;
   }>;
+  // `decryptToolSourceAuth` lives INSIDE this try, not just the client calls
+  // below: a decrypt failure (corrupt ciphertext, key rotation gap) is a
+  // failure of this source exactly like a transport/auth error, and must be
+  // captured onto the row the same way, or the row is left showing a stale
+  // `active` status forever while the BullMQ job keeps retrying and dying.
+  let decryptedAuth: ReturnType<typeof decryptToolSourceAuth> | undefined;
   try {
+    decryptedAuth = decryptToolSourceAuth({
+      id: source.id,
+      authKind: source.authKind,
+      authConfigEncrypted: source.authConfigEncrypted,
+    });
+
+    const clientFactory = deps?.clientFactory ?? ((opts: McpClientOptions) => new McpClient(opts));
+    const client = clientFactory({
+      endpointUrl: source.endpointUrl,
+      credentialOrigin: source.credentialOrigin,
+      auth: decryptedAuth,
+    });
+
     await client.initialize();
     listing = await client.listTools();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const redacted = redactSecrets(message, secretValuesOf(auth));
+    // A decrypt failure has no decrypted config to redact against — the
+    // error message is a crypto library message (metadata), never remote
+    // content, so there is nothing of the vendor's to redact.
+    const redacted = redactSecrets(message, decryptedAuth ? secretValuesOf(decryptedAuth) : []);
     await withSystemDbAccessContext(async () => {
       await db
         .update(toolSources)

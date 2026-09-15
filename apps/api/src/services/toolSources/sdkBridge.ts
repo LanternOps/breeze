@@ -8,9 +8,11 @@
  * registers via its `extraTools` argument, alongside the core registry.
  *
  * Execution runs through the SAME chokepoint every other tenant-tool surface
- * uses — `toolSources/execute.ts`'s `executeTenantTool` — so this module
- * never re-implements validation, rate limiting, or dispatch; it only shapes
- * input/output for the SDK.
+ * uses — `toolSources/execute.ts`'s `executeTenantToolDetailed` — so this
+ * module never re-implements validation, rate limiting, or dispatch; it only
+ * shapes input/output for the SDK and forwards `isError` so
+ * `wrapExtraToolWithHooks` (`aiAgentSdkTools.ts`) can see a tenant-tool
+ * failure the same way it sees a core-tool failure.
  *
  * The handler below is intentionally hook-free: `wrapExtraToolWithHooks`
  * (`aiAgentSdkTools.ts`) wraps every `extraTools` entry with
@@ -24,7 +26,7 @@ import { z } from 'zod';
 import type { SdkTool } from '../aiAgents/outcomeTools';
 import type { AuthContext } from '../../middleware/auth';
 import type { TenantToolDescriptor } from './resolver';
-import { executeTenantTool } from './execute';
+import { executeTenantToolDetailed } from './execute';
 import { compactToolResultForChat } from '../aiToolOutput';
 
 /**
@@ -75,17 +77,21 @@ export function buildTenantSdkTools(
       d.qualifiedName,
       `[External: ${d.sourceName}] ${d.description}`,
       zodShapeFromJsonSchema(d.inputSchema),
-      async (args: Record<string, unknown>) => ({
-        content: [
-          {
-            type: 'text' as const,
-            text: compactToolResultForChat(
-              d.qualifiedName,
-              await executeTenantTool(d, args, getAuth(), { surface: 'chat', orgId: getOrgId() }),
-            ),
-          },
-        ],
-      }),
+      async (args: Record<string, unknown>) => {
+        const { isError, text } = await executeTenantToolDetailed(d, args, getAuth(), {
+          surface: 'chat',
+          orgId: getOrgId(),
+        });
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: compactToolResultForChat(d.qualifiedName, text),
+            },
+          ],
+          ...(isError ? { isError: true } : {}),
+        };
+      },
     ) as SdkTool,
   );
 }

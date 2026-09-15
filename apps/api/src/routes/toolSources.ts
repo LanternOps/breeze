@@ -213,6 +213,10 @@ toolSourcesRoutes.post(
     const existing = await getToolSourceWithAccess(auth, id);
     if (!existing) return c.json({ error: 'Tool source not found' }, 404);
 
+    if (existing.orgId === null && !canManagePartnerWidePolicies(auth)) {
+      return c.json({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE }, 403);
+    }
+
     await enqueueToolSourceDiscovery(existing.id);
 
     writeRouteAudit(c, {

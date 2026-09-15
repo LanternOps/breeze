@@ -1090,6 +1090,23 @@ async function liveExecuteTenantTool(
   return executeTenantTool(d, toolInput, auth, opts);
 }
 
+/**
+ * Detailed (never-throws, `isError`-carrying) form of {@link liveExecuteTenantTool}
+ * — same lazy-import reasoning applies. `handleTenantToolCall` uses this
+ * instead of the string form so it can set `isError` on the JSON-RPC result
+ * and record the true outcome on the audit row, mirroring what the CORE
+ * (non-tenant) Tier-3 lifecycle already does via `Tier3ExecutionOutcome`.
+ */
+async function liveExecuteTenantToolDetailed(
+  d: TenantToolDescriptor,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  opts: { surface: 'mcp'; orgId: string | null; actor?: { kind: 'api_key'; id: string } },
+): Promise<{ isError: boolean; text: string }> {
+  const { executeTenantToolDetailed } = await import('../services/toolSources/execute');
+  return executeTenantToolDetailed(d, toolInput, auth, opts);
+}
+
 // ============================================
 // tools/list
 // ============================================
@@ -1535,7 +1552,7 @@ async function handleTenantToolCall(
   }
 
   const startTime = Date.now();
-  const resultText = await liveExecuteTenantTool(d, toolInput, auth, {
+  const { isError, text: resultText } = await liveExecuteTenantToolDetailed(d, toolInput, auth, {
     surface: 'mcp',
     orgId: executionOrgId,
     actor: apiKey ? { kind: 'api_key', id: apiKey.id } : undefined,
@@ -1550,11 +1567,14 @@ async function handleTenantToolCall(
     tier,
     toolInput,
     durationMs: Date.now() - startTime,
-    status: 'success',
+    status: isError ? 'failure' : 'success',
     result: resultText,
   });
 
-  return jsonRpcResult(id, { content: [{ type: 'text', text: resultText }] });
+  return jsonRpcResult(id, {
+    content: [{ type: 'text', text: resultText }],
+    ...(isError ? { isError: true } : {}),
+  });
 }
 
 /**

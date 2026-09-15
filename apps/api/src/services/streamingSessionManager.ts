@@ -887,7 +887,22 @@ export class StreamingSessionManager {
     // Tenant (BYO MCP) tools — Task A10. Script-builder / client-AI sessions
     // supply their own `mcpServerFactory` and keep their own (non-Breeze)
     // server, so they never resolve tenant tools.
-    const tenantDescriptors = mcpServerFactory ? [] : await resolveTenantTools(toolAuth);
+    //
+    // A throw here (a source unreachable, a decrypt failure, a Redis blip in
+    // the resolver's own guardrail checks) must not fail the WHOLE chat turn
+    // — the MCP surface deliberately degrades per-source (see
+    // toolSources/discovery.ts), so a session simply loses its tenant tools
+    // for this turn rather than erroring out entirely. Mirrors
+    // `loadApprovalMode`'s degrade-on-failure shape above.
+    let tenantDescriptors: TenantToolDescriptor[] = [];
+    if (!mcpServerFactory) {
+      try {
+        tenantDescriptors = await resolveTenantTools(toolAuth);
+      } catch (err) {
+        captureException(err);
+        console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);
+      }
+    }
     const tenantToolsByName = new Map(tenantDescriptors.map((d) => [d.qualifiedName, d]));
 
     // Build partial session object so callbacks can reference it.

@@ -37,6 +37,7 @@ const routeMocks = vi.hoisted(() => ({
   resolveTenantTools: vi.fn(),
   resolveTenantToolByName: vi.fn(),
   executeTenantTool: vi.fn(),
+  executeTenantToolDetailed: vi.fn(),
   // A real vi.fn() (not a plain testState-backed factory) so individual tests
   // can reprogram it via mockReturnValueOnce/mockReturnValue without a
   // vi.doMock + vi.resetModules round trip — this suite's mcpServerRoutes is
@@ -161,6 +162,7 @@ vi.mock('../services/toolSources/resolver', () => ({
 }));
 vi.mock('../services/toolSources/execute', () => ({
   executeTenantTool: (...args: any[]) => routeMocks.executeTenantTool(...args),
+  executeTenantToolDetailed: (...args: any[]) => routeMocks.executeTenantToolDetailed(...args),
 }));
 
 vi.mock('../services/auditEvents', () => ({
@@ -416,6 +418,9 @@ describe('MCP transport integration', () => {
     routeMocks.resolveTenantTools.mockReset().mockResolvedValue([]);
     routeMocks.resolveTenantToolByName.mockReset().mockResolvedValue(null);
     routeMocks.executeTenantTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
+    routeMocks.executeTenantToolDetailed
+      .mockReset()
+      .mockResolvedValue({ isError: false, text: JSON.stringify({ ok: true }) });
     routeMocks.writeAuditEvent.mockReset();
     routeMocks.rateLimiter.mockReset().mockResolvedValue({
       allowed: true,
@@ -1311,12 +1316,15 @@ describe('MCP transport integration', () => {
       expect(body.result.tools.map((t: { name: string }) => t.name)).toContain('hudu__get_asset');
     });
 
-    it('tools/call dispatches a tier-1 tenant tool through executeTenantTool for an ai:read key', async () => {
+    it('tools/call dispatches a tier-1 tenant tool through executeTenantToolDetailed for an ai:read key', async () => {
       delete process.env.IS_HOSTED;
       setTestApiKey({ scopes: ['ai:read'] });
       const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
       routeMocks.resolveTenantToolByName.mockResolvedValue(descriptor);
-      routeMocks.executeTenantTool.mockResolvedValue(JSON.stringify({ ok: true, asset: 'a-1' }));
+      routeMocks.executeTenantToolDetailed.mockResolvedValue({
+        isError: false,
+        text: JSON.stringify({ ok: true, asset: 'a-1' }),
+      });
 
       const res = await mcpServerRoutes.request('/message', {
         method: 'POST',
@@ -1332,8 +1340,9 @@ describe('MCP transport integration', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.result.content[0].text).toBe(JSON.stringify({ ok: true, asset: 'a-1' }));
+      expect(body.result.isError).toBeUndefined();
       expect(routeMocks.resolveTenantToolByName).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset');
-      expect(routeMocks.executeTenantTool).toHaveBeenCalledWith(
+      expect(routeMocks.executeTenantToolDetailed).toHaveBeenCalledWith(
         descriptor,
         { id: 'a-1' },
         expect.anything(),
@@ -1362,6 +1371,7 @@ describe('MCP transport integration', () => {
       const body = await res.json();
       expect(body.error?.message).toContain('ai:write scope');
       expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
+      expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
     });
 
     it('denies a tier-3 tenant tool over MCP with MCP_APPROVAL_REQUIRED, same as core', async () => {
@@ -1390,6 +1400,38 @@ describe('MCP transport integration', () => {
       const payload = JSON.parse(body.result.content[0].text);
       expect(payload.code).toBe('MCP_APPROVAL_REQUIRED');
       expect(routeMocks.executeTenantTool).not.toHaveBeenCalled();
+      expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed tenant tool call as isError and audits it as a failure, not a success', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(descriptor);
+      routeMocks.executeTenantToolDetailed.mockResolvedValue({
+        isError: true,
+        text: JSON.stringify({ error: 'remote MCP call failed' }),
+      });
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: { id: 'a-1' } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.result.isError).toBe(true);
+      expect(body.result.content[0].text).toBe(JSON.stringify({ error: 'remote MCP call failed' }));
+      expect(routeMocks.writeAuditEvent).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ result: 'failure' }),
+      );
     });
   });
 

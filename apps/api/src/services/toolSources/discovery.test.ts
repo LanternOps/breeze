@@ -53,6 +53,7 @@ vi.mock('./secrets', () => ({
 import { computeToolRevision, discoverSource, proposeTier } from './discovery';
 import { db } from '../../db';
 import { McpClient, McpClientError } from './mcpClient';
+import { decryptToolSourceAuth } from './secrets';
 
 function makeSourceRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -317,6 +318,22 @@ describe('discoverSource', () => {
     const sourceUpdateArgs = set.mock.calls[0]![0] as Record<string, unknown>;
     expect(sourceUpdateArgs.status).toBe('error');
     expect(sourceUpdateArgs.lastError).not.toContain('super-secret-token-value');
+  });
+
+  it('a decrypt failure sets the source status to error instead of leaving it active forever', async () => {
+    mockSourceLookup(makeSourceRow({ authKind: 'bearer', authConfigEncrypted: 'ENCRYPTED_BLOB' }));
+    const { set } = mockUpdateCapture();
+    vi.mocked(decryptToolSourceAuth).mockImplementationOnce(() => {
+      throw new Error('decryption failed: bad tag');
+    });
+
+    const outcome = await discoverSource(SOURCE_ID, { clientFactory: () => ({} as any) });
+
+    expect(outcome.status).toBe('error');
+    expect(outcome.error).toBeDefined();
+    const sourceUpdateArgs = set.mock.calls[0]![0] as Record<string, unknown>;
+    expect(sourceUpdateArgs.status).toBe('error');
+    expect(sourceUpdateArgs.lastError).toContain('decryption failed');
   });
 });
 

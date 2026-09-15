@@ -357,6 +357,42 @@ describe('toolSourcesRoutes', () => {
     });
   });
 
+  describe('POST /:id/discover', () => {
+    it('403s re-discovering a partner-wide source without full partner access', async () => {
+      setAuth(partnerAuth({ partnerOrgAccess: 'selected' }));
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(
+        makeRow({ orgId: null, partnerId: PARTNER_ID }),
+      );
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/discover`, { method: 'POST' });
+
+      expect(res.status).toBe(403);
+      expect(vi.mocked(enqueueToolSourceDiscovery)).not.toHaveBeenCalled();
+    });
+
+    it('queues discovery for a partner-wide source when the caller has full partner access', async () => {
+      setAuth(partnerAuth({ partnerOrgAccess: 'all' }));
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(
+        makeRow({ orgId: null, partnerId: PARTNER_ID }),
+      );
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/discover`, { method: 'POST' });
+
+      expect(res.status).toBe(202);
+      expect(vi.mocked(enqueueToolSourceDiscovery)).toHaveBeenCalledWith(SRC_ID);
+    });
+
+    it('queues discovery for an org-owned source for an ordinary org caller', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(makeRow({ orgId: ORG_ID, partnerId: null }));
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/discover`, { method: 'POST' });
+
+      expect(res.status).toBe(202);
+      expect(vi.mocked(enqueueToolSourceDiscovery)).toHaveBeenCalledWith(SRC_ID);
+    });
+  });
+
   describe('DELETE /:id', () => {
     it('403s deleting a partner-wide source without full partner access', async () => {
       setAuth(partnerAuth({ partnerOrgAccess: 'selected' }));
