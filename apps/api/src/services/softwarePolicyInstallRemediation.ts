@@ -1,10 +1,13 @@
-import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, notInArray, or, sql } from 'drizzle-orm';
 import { db } from '../db';
 import {
+  deploymentResults,
   softwareCatalog,
+  softwareDeployments,
   softwareInstallMethods,
   softwareVersions,
 } from '../db/schema';
+import { createSoftwareDeployment } from './softwareDeployment';
 
 /**
  * #5505 W03 — everything that must be decided BEFORE a policy-owned
@@ -159,5 +162,116 @@ export async function resolvePolicyInstallTarget(input: {
   return {
     ok: true,
     target: { kind: 'version', catalogId: catalogItem.id, softwareVersionId: version.id },
+  };
+}
+
+/**
+ * Mirrors IN_FLIGHT_LOOKBACK_MINUTES (softwareRemediationWorker.ts:36) so both
+ * verbs forget stuck work on the same horizon. Its job here is to bound the
+ * cost of the deliberately conservative "unfinished" definition below: without
+ * it, one permanently wedged deployment_results row would suppress every future
+ * policy install for that (policy, device) pair forever.
+ */
+export const POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES = 24 * 60;
+
+/**
+ * The CLOSED set of deployment_status values that mean "this device is done
+ * with that deployment". Deliberately a terminal list rather than a live list:
+ * a deployment_status enum member added later then counts as UNFINISHED and
+ * suppresses a duplicate install, which is the safe direction — the spec's
+ * top-ranked customer-facing risk is an install loop, not a delayed install.
+ * (deployment_status = draft|pending|running|paused|downloading|installing|
+ *  completed|failed|cancelled|rollback — db/schema/deployments.ts:15-26.
+ *  'rollback' is deliberately NOT terminal.)
+ */
+export const FINISHED_POLICY_INSTALL_RESULT_STATUSES = [
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
+/**
+ * The install-side dedup, and the reason W03 adds a column instead of reusing
+ * readInFlightUninstallKeys (softwareRemediationWorker.ts:168-195): that query
+ * pins device_commands.type to SOFTWARE_UNINSTALL, so it is structurally blind
+ * to installs. This asks the deployment row instead — is there already
+ * unfinished policy-owned work for this exact (policy, device)?
+ */
+export async function hasUnfinishedPolicyOwnedInstall(
+  policyId: string,
+  deviceId: string,
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - POLICY_INSTALL_IN_FLIGHT_LOOKBACK_MINUTES * 60 * 1000);
+  const [row] = await db
+    .select({ id: deploymentResults.id })
+    .from(deploymentResults)
+    .innerJoin(softwareDeployments, eq(softwareDeployments.id, deploymentResults.deploymentId))
+    .where(
+      and(
+        eq(softwareDeployments.softwarePolicyId, policyId),
+        eq(deploymentResults.deviceId, deviceId),
+        notInArray(deploymentResults.status, [...FINISHED_POLICY_INSTALL_RESULT_STATUSES]),
+        gte(softwareDeployments.createdAt, cutoff),
+      ),
+    )
+    .limit(1);
+  return row != null;
+}
+
+/**
+ * Create ONE policy-owned deployment for ONE device and dispatch it through the
+ * existing seam.
+ *
+ * `orgId` is the DEVICE's org, never the policy's: a partner-wide policy has
+ * org_id NULL, and every worker-created child row takes the device's org (the
+ * partner-wide playbook's rule, and the same rule the audit rows follow at
+ * softwareRemediationWorker.ts:264).
+ *
+ * `createdBy: null` is required and deliberate — createSoftwareDeployment
+ * declares it non-optional (softwareDeployment.ts:46) and there is no operator
+ * behind an automatic remediation. `scheduleType: 'immediate'` +
+ * `deploymentType: 'install'` is what makes createSoftwareDeployment take its
+ * dispatch branch (:1103) rather than leaving the row sitting for the scheduler.
+ *
+ * Exactly one of installMethodId / softwareVersionId is set, mirroring
+ * software_deployments_one_target_chk; passing both or neither throws at
+ * softwareDeployment.ts:998-1002.
+ *
+ * Nothing here touches the EDR secret-resolution branch
+ * (softwareDeployment.ts:554-584): that fires only when the resolved catalog
+ * item's integrationProvider is 'huntress' or 'sentinelone', and this path adds
+ * no special handling for it either way.
+ */
+export async function createPolicyOwnedInstallDeployment(input: {
+  policyId: string;
+  policyName: string;
+  orgId: string;
+  deviceId: string;
+  target: PolicyInstallTarget;
+}): Promise<{ deploymentId: string; status: 'pending' | 'failed'; message?: string }> {
+  const targetFields =
+    input.target.kind === 'install_method'
+      ? { installMethodId: input.target.installMethodId, versionMode: 'latest' as const }
+      : { softwareVersionId: input.target.softwareVersionId };
+
+  const result = await createSoftwareDeployment({
+    orgId: input.orgId,
+    ...targetFields,
+    deploymentType: 'install',
+    deviceIds: [input.deviceId],
+    scheduleType: 'immediate',
+    createdBy: null,
+    // software_deployments.name is varchar(255) and software_policies.name is
+    // varchar(200), so the prefixed form always fits.
+    name: `Policy: ${input.policyName}`,
+    targetType: 'devices',
+    targetIds: [input.deviceId],
+    softwarePolicyId: input.policyId,
+  });
+
+  return {
+    deploymentId: result.deploymentId,
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
   };
 }

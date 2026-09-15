@@ -18,7 +18,22 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
-import { resolvePolicyInstallTarget } from './softwarePolicyInstallRemediation';
+const { createSoftwareDeploymentMock } = vi.hoisted(() => ({
+  createSoftwareDeploymentMock: vi.fn(async (..._args: any[]) => ({
+    deploymentId: 'dep-1',
+    deployment: {},
+    status: 'pending' as const,
+    dispatchedDeviceIds: ['dev-1'],
+    deviceResults: [],
+  })),
+}));
+vi.mock('./softwareDeployment', () => ({ createSoftwareDeployment: createSoftwareDeploymentMock }));
+
+import {
+  createPolicyOwnedInstallDeployment,
+  hasUnfinishedPolicyOwnedInstall,
+  resolvePolicyInstallTarget,
+} from './softwarePolicyInstallRemediation';
 
 function chain(result: unknown): any {
   const p: any = Promise.resolve(result);
@@ -122,5 +137,77 @@ describe('resolvePolicyInstallTarget', () => {
     });
     expect(result).toEqual({ ok: false, reason: 'no_install_target_for_platform' });
     expect(selectMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('hasUnfinishedPolicyOwnedInstall', () => {
+  it('is true when a non-terminal policy-owned result row exists', async () => {
+    primeSelects([{ id: 'dr-1' }]);
+    await expect(hasUnfinishedPolicyOwnedInstall('pol-1', 'dev-1')).resolves.toBe(true);
+  });
+
+  it('is false when the join returns nothing', async () => {
+    primeSelects([]);
+    await expect(hasUnfinishedPolicyOwnedInstall('pol-1', 'dev-1')).resolves.toBe(false);
+  });
+
+  it('excludes exactly completed/failed/cancelled and nothing else', async () => {
+    // Asserted on the CONSTANT, not on a serialized drizzle condition: a deep
+    // search over a mocked condition also matches deploymentStatusEnum's own
+    // enumValues array, which makes such an assertion pass against unfixed code
+    // (memory: drizzle_condition_deep_search_matches_enum_values_vacuous).
+    const { FINISHED_POLICY_INSTALL_RESULT_STATUSES } = await import(
+      './softwarePolicyInstallRemediation'
+    );
+    expect([...FINISHED_POLICY_INSTALL_RESULT_STATUSES].sort()).toEqual([
+      'cancelled',
+      'completed',
+      'failed',
+    ]);
+  });
+});
+
+describe('createPolicyOwnedInstallDeployment', () => {
+  it('creates an immediate install stamped with the policy, under the DEVICE org, with a null actor', async () => {
+    await createPolicyOwnedInstallDeployment({
+      policyId: 'pol-1',
+      policyName: 'Standard workstation build',
+      orgId: 'device-org-1',
+      deviceId: 'dev-1',
+      target: { kind: 'install_method', catalogId: 'cat-1', installMethodId: 'im-1' },
+    });
+
+    expect(createSoftwareDeploymentMock).toHaveBeenCalledTimes(1);
+    const input = createSoftwareDeploymentMock.mock.calls[0]![0];
+    expect(input).toMatchObject({
+      orgId: 'device-org-1',
+      installMethodId: 'im-1',
+      versionMode: 'latest',
+      deploymentType: 'install',
+      deviceIds: ['dev-1'],
+      scheduleType: 'immediate',
+      createdBy: null,
+      softwarePolicyId: 'pol-1',
+      targetType: 'devices',
+      targetIds: ['dev-1'],
+    });
+    // XOR: exactly one target field reaches createSoftwareDeployment, or its
+    // guard at softwareDeployment.ts:998-1002 throws.
+    expect(input.softwareVersionId).toBeUndefined();
+    expect(String(input.name)).toContain('Standard workstation build');
+  });
+
+  it('passes a version target as softwareVersionId and never sets installMethodId', async () => {
+    await createPolicyOwnedInstallDeployment({
+      policyId: 'pol-1',
+      policyName: 'P',
+      orgId: 'device-org-1',
+      deviceId: 'dev-1',
+      target: { kind: 'version', catalogId: 'cat-1', softwareVersionId: 'sv-1' },
+    });
+    const input = createSoftwareDeploymentMock.mock.calls.at(-1)![0];
+    expect(input.softwareVersionId).toBe('sv-1');
+    expect(input.installMethodId).toBeUndefined();
+    expect(input.versionMode).toBeUndefined();
   });
 });
