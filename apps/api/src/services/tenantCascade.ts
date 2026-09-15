@@ -785,6 +785,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tickets',
   'time_entries',
   'time_series_metrics',
+  // Tool catalog (#5215 / #5216). Child before parent: tool_source_tools
+  // references tool_sources, so it must be deleted first. localeCompare agrees
+  // (verified: 'tool_source_tools'.localeCompare('tool_sources') === -1), so
+  // the alphabetical and FK-order properties do not fight here.
+  'tool_source_tools',
+  'tool_sources',
   'topology_layout',
   'topology_manual_nodes',
   'tunnel_allowlists',

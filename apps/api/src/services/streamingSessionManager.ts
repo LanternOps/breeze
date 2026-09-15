@@ -46,6 +46,8 @@ import { getLlmEgressProxy } from './llm/llmEgressProxy';
 import { recordLlmEgressEvent } from './llm/llmEgressRecorder';
 import { markAiBudgetReservationIndeterminate } from './aiBudgetReservations';
 import { getEffectiveAiBudget } from './effectiveSettings';
+import { resolveTenantTools, type TenantToolDescriptor } from './toolSources/resolver';
+import { buildTenantSdkTools, tenantMcpToolNames } from './toolSources/sdkBridge';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -602,6 +604,15 @@ export interface ActiveSession {
   /** Extra per-turn usage recorder invoked in the result case alongside
    *  recordUsageFromSdkResult (client sessions: per-user client_ai_usage buckets). */
   recordExtraUsage?: (usage: { inputTokens: number; outputTokens: number; costCents: number }) => Promise<void>;
+  /**
+   * Tenant (BYO MCP) tools this session's `toolAuth` could see at session
+   * CREATION time, keyed by qualified name (e.g. `hudu__get_asset`) — Task
+   * A10. `createSessionPreToolUse` (aiAgentSdk.ts) consults this to gate a
+   * tenant tool call the same way `TOOL_TIERS` gates a core one. Empty for
+   * every session a `mcpServerFactory` builds its own MCP server for
+   * (script builder, client AI) — those surfaces don't resolve tenant tools.
+   */
+  tenantTools: ReadonlyMap<string, TenantToolDescriptor>;
 }
 
 /**
@@ -873,6 +884,12 @@ export class StreamingSessionManager {
       ? buildDeviceBoundSessionAuth(authWithOrigin, dbSession.orgId)
       : authWithOrigin;
 
+    // Tenant (BYO MCP) tools — Task A10. Script-builder / client-AI sessions
+    // supply their own `mcpServerFactory` and keep their own (non-Breeze)
+    // server, so they never resolve tenant tools.
+    const tenantDescriptors = mcpServerFactory ? [] : await resolveTenantTools(toolAuth);
+    const tenantToolsByName = new Map(tenantDescriptors.map((d) => [d.qualifiedName, d]));
+
     // Build partial session object so callbacks can reference it.
     // query and processorPromise are filled in after creation.
     const now = Date.now();
@@ -925,6 +942,7 @@ export class StreamingSessionManager {
       currentPlanStepIndex: 0,
       planApprovalResolver: null,
       pendingRunResults: [],
+      tenantTools: tenantToolsByName,
     };
 
     // Create session-scoped callbacks (close over session object)
@@ -940,7 +958,13 @@ export class StreamingSessionManager {
       mcpServer = custom.server;
       mcpServerName = custom.name;
     } else {
-      mcpServer = createBreezeMcpServer(() => session.toolAuth, preToolUse, postToolUse, () => session);
+      mcpServer = createBreezeMcpServer(
+        () => session.toolAuth,
+        preToolUse,
+        postToolUse,
+        () => session,
+        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.orgId),
+      );
     }
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
@@ -1081,7 +1105,7 @@ export class StreamingSessionManager {
             maxTurns,
             maxBudgetUsd,
             tools: [],
-            allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
+            allowedTools: allowedTools ?? [...BREEZE_MCP_TOOL_NAMES, ...tenantMcpToolNames(tenantDescriptors)],
             mcpServers: { [mcpServerName]: mcpServer },
             includePartialMessages: true,
             abortController,

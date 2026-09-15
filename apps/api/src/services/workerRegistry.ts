@@ -1418,6 +1418,17 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
       };
     },
   },
+  {
+    // Tool Catalog W1 (#5215 / #5216), Task A6 — reconciles a tool source's
+    // remote MCP tool listing (tier proposal, revisions, removals). No-ops
+    // when TOOL_SOURCES_ENABLED is off.
+    name: 'toolSourceDiscoveryWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/toolSourceDiscoveryWorker');
+      return { init: m.initializeToolSourceDiscoveryWorkers, shutdown: m.shutdownToolSourceDiscoveryWorkers };
+    },
+  },
 ];
 
 function placementForRole(role: BreezeRole): WorkerPlacement | null {

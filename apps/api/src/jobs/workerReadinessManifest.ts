@@ -257,6 +257,11 @@ export const WORKER_READINESS_MANIFEST: readonly WorkerInitializerClassification
     optionalConsumers: ['eventDispatchMaintenance'],
   },
   consumers('agentCommandRelay'),
+  // Tool Catalog W1 (#5215 / #5216), Task A6 — one Worker, unconditional,
+  // attached under its registry name. Not flag-gated at the readiness layer:
+  // TOOL_SOURCES_ENABLED gates the job PROCESSOR body (discoverSource is
+  // skipped), not whether the Worker itself constructs and attaches.
+  consumers('toolSourceDiscoveryWorker'),
 ] as const;
 
 export function consumersForInitializer(initializer: string): readonly string[] {
