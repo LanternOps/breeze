@@ -187,6 +187,10 @@ type SessionManager struct {
 	// which can call SendSAS(FALSE). In direct mode it defaults to InvokeSAS().
 	OnSASRequest func() error
 
+	// clock is the watchdog's time source; nil means the real clock. Only
+	// tests set it (see watchdogClock).
+	clock *watchdogClock
+
 	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
 	// revocation lease for a session. Set by the layer that owns the agent's
 	// command WebSocket (the heartbeat), because this package has no transport
