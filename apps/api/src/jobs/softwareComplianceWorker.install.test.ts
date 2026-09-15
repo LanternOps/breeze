@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   addMock,
   dbSelectMock,
-  dbUpdateMock,
+  dbUpdateSetMock,
+  auditMock,
   resolveDeviceIdsMock,
   armingMock,
   upsertMock,
@@ -13,8 +14,13 @@ const {
 } = vi.hoisted(() => ({
   addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
   dbSelectMock: vi.fn(),
-  dbUpdateMock: vi.fn(() => ({ set: () => ({ where: async () => undefined }) })),
+  // Captures the `.set()` payload so the SQL attempt-counter increment is
+  // actually assertable. A mock that swallowed it would make
+  // `expect(dbUpdateMock).toHaveBeenCalled()` pass against a wrong column, a
+  // wrong expression, or no increment at all.
+  dbUpdateSetMock: vi.fn((_values: Record<string, unknown>) => ({ where: async () => undefined })),
   resolveDeviceIdsMock: vi.fn(async () => ['device-1']),
+  auditMock: vi.fn(async (_input: Record<string, unknown>) => undefined),
   armingMock: vi.fn((_policy: unknown, _verb: string) => ({ armed: true }) as {
     armed: boolean;
     reason?: string;
@@ -37,7 +43,7 @@ vi.mock('bullmq', () => ({
 }));
 vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
 vi.mock('../db', () => ({
-  db: { select: dbSelectMock, update: dbUpdateMock },
+  db: { select: dbSelectMock, update: () => ({ set: dbUpdateSetMock }) },
   runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
   withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
@@ -56,7 +62,7 @@ vi.mock('../services/softwarePolicyService', async (importOriginal) => {
     evaluateSoftwarePolicyArming: armingMock,
     upsertSoftwareComplianceStatuses: upsertMock,
     getSoftwareInventoryByDeviceIds: inventoryMock,
-    recordSoftwarePolicyAudit: vi.fn(async () => undefined),
+    recordSoftwarePolicyAudit: auditMock,
   };
 });
 
@@ -354,8 +360,111 @@ describe('processCheckPolicy — install remediation wiring', () => {
       [{ deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 }],
       1,
     );
-    // and it must stamp only the devices that actually got a job
-    expect(dbUpdateMock).toHaveBeenCalled();
+    // and it must stamp only the devices that actually got a job, incrementing
+    // the counter IN SQL rather than writing back the value read at the top of
+    // the pass. Asserting the captured `.set()` payload, not merely that update
+    // was called: the latter cannot fail against a wrong column or no increment.
+    const setPayload = dbUpdateSetMock.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(setPayload?.installRemediationStatus).toBe('pending');
+    expect(setPayload?.lastInstallRemediationAttempt).toBeInstanceOf(Date);
+    // An SQL fragment, not a number read at the top of the pass. Inspect the
+    // fragment's own chunks (it is self-referential, so it cannot be
+    // JSON.stringify'd) for the increment and the column it increments.
+    const attempts = setPayload?.installRemediationAttempts as { queryChunks?: unknown[] } | undefined;
+    expect(attempts?.queryChunks).toBeInstanceOf(Array);
+    const chunkText = (attempts?.queryChunks ?? [])
+      .map((chunk) => (typeof chunk === 'string' ? chunk : (chunk as { value?: unknown })?.value))
+      .filter((value) => typeof value === 'string' || Array.isArray(value))
+      .flat()
+      .join('');
+    expect(chunkText).toContain('+ 1');
+    expect(
+      (attempts?.queryChunks ?? []).some(
+        (chunk) => (chunk as { name?: string })?.name === 'install_remediation_attempts',
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * The two verbs are INDEPENDENT gates over the same violation set, and both
+   * results are merged into ONE complianceUpserts row. Without this case a
+   * regression where the install branch clobbers `remediationStatus` (or the
+   * uninstall branch clobbers the install columns) passes every other test —
+   * they are separate local variables joined at a single push.
+   */
+  it('queues BOTH verbs for one device in a single pass without either clobbering the other', async () => {
+    resolveDeviceIdsMock.mockResolvedValueOnce(['device-1']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [],
+    ]);
+    // Chrome absent → `missing`; an unapproved app present → `unauthorized`.
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', [
+      { name: 'Some Unapproved App', version: '1.0', vendor: 'Acme', catalogId: null },
+    ]]]));
+    scheduleUninstallMock.mockResolvedValueOnce(1);
+    scheduleInstallMock.mockResolvedValueOnce(['device-1']);
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(scheduleUninstallMock).toHaveBeenCalledWith(POLICY_ID, ['device-1']);
+    expect(scheduleInstallMock).toHaveBeenCalledWith(
+      POLICY_ID,
+      [{ deviceId: 'device-1', catalogIds: ['catalog-abc'], attempt: 1 }],
+      1,
+    );
+    expect(result.remediationQueued).toBe(1);
+    expect(result.installRemediationQueued).toBe(1);
+
+    // ONE row for the device, and neither verb erased the other's field.
+    const rows = upsertedRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.deviceId).toBe('device-1');
+    expect(rows[0]?.status).toBe('violation');
+    // Neither verb had a prior status to transition, so both stay unstated —
+    // the post-schedule UPDATEs own 'pending', not this upsert.
+    expect(rows[0]?.remediationStatus).toBeUndefined();
+    expect(rows[0]?.installRemediationStatus).toBeUndefined();
+  });
+
+  /**
+   * The clobber guard, and it only discriminates because the two axes carry
+   * DIFFERENT values in the same pass. With both undefined (as in the case
+   * above) a bug that writes one field's value into the other is invisible.
+   *
+   * Prior state: uninstall was 'completed' and the device is in violation again
+   * → uninstall transitions to 'none'. Install previously 'failed' with the
+   * attempt budget exhausted → install terminates at 'gave_up'. One row, two
+   * independently-derived values.
+   */
+  it('keeps the uninstall and install status axes distinct in the shared upsert row', async () => {
+    process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS = '3';
+    resolveDeviceIdsMock.mockResolvedValueOnce(['device-1']);
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [{
+        deviceId: 'device-1',
+        status: 'violation',
+        violations: [],
+        remediationStatus: 'completed',
+        lastRemediationAttempt: null,
+        installRemediationStatus: 'failed',
+        lastInstallRemediationAttempt: null,
+        installRemediationAttempts: 3,
+      }],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', [
+      { name: 'Some Unapproved App', version: '1.0', vendor: 'Acme', catalogId: null },
+    ]]]));
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const rows = upsertedRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.remediationStatus).toBe('none');
+    expect(rows[0]?.installRemediationStatus).toBe('gave_up');
   });
 
   it('does not queue an install when only the install verb is unarmed', async () => {
@@ -401,6 +510,64 @@ describe('processCheckPolicy — install remediation wiring', () => {
 
     expect(scheduleInstallMock).not.toHaveBeenCalled();
     expect(upsertedRows()[0]?.installRemediationStatus).toBe('gave_up');
+    // The give-up is the loop terminator, so its forensic trail is part of the
+    // contract, not decoration: assert the audit action VALUE (locked by D6),
+    // never just that some audit fired.
+    const gaveUp = auditMock.mock.calls
+      .map((call) => call[0])
+      .filter((input) => input?.action === 'install_gave_up');
+    expect(gaveUp).toHaveLength(1);
+    expect(gaveUp[0]).toMatchObject({
+      deviceId: 'device-1',
+      policyId: POLICY_ID,
+      actor: 'system',
+      details: { attempts: 3, maxAttempts: 3 },
+    });
+  });
+
+  /**
+   * The once-only guard. Firing this every pass would write one audit row per
+   * device per 15 minutes for as long as the policy stays armed. A device that
+   * is ALREADY 'gave_up' must re-derive the same status without re-auditing.
+   */
+  it('does not re-fire the give-up audit on a later pass for a device already gave_up', async () => {
+    process.env.SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS = '3';
+    primePass(['device-1'], [{
+      deviceId: 'device-1',
+      status: 'violation',
+      violations: [],
+      remediationStatus: null,
+      lastRemediationAttempt: null,
+      installRemediationStatus: 'gave_up',
+      lastInstallRemediationAttempt: null,
+      installRemediationAttempts: 3,
+    }]);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    // still terminal, still not queued — but silent this time
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+    expect(upsertedRows()[0]?.installRemediationStatus).toBe('gave_up');
+    expect(
+      auditMock.mock.calls.filter((call) => call[0]?.action === 'install_gave_up'),
+    ).toHaveLength(0);
+  });
+
+  it('audits the queued installs once per pass with the locked install_queued action', async () => {
+    primePass(['device-1'], []);
+    scheduleInstallMock.mockResolvedValueOnce(['device-1']);
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const queued = auditMock.mock.calls
+      .map((call) => call[0])
+      .filter((input) => input?.action === 'install_queued');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      policyId: POLICY_ID,
+      actor: 'system',
+      details: { targetCount: 1, queuedCount: 1, deferredCount: 0 },
+    });
   });
 
   it('resets the consecutive counter once the device has no missing violation left', async () => {

@@ -661,6 +661,14 @@ export function createSoftwareRemediationWorker(): Worker<SoftwareRemediationJob
             '[SoftwareRemediationWorker] install-remediate-device received but no processor is installed yet (feature #5505 W03) — parking',
             { policyId: job.data.policyId, deviceId: job.data.deviceId, catalogIds: job.data.catalogIds }
           );
+          // Sentry, not just a log line. A parked job reaching production means
+          // W02 was deployed ahead of W03 and some policy already has
+          // autoInstall armed — the device will sit at 'pending' until W03
+          // lands and reconciles it. That is a deploy-ordering signal someone
+          // has to see, and a console.warn in a worker is not seen.
+          captureException(
+            new Error('[SoftwareRemediationWorker] install-remediate-device parked: no processor until #5505 W03'),
+          );
           recordSoftwareRemediationDecision('install_processor_unavailable');
           return {
             policyId: job.data.policyId,
