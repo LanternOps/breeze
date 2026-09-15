@@ -140,7 +140,7 @@ export const reportRuns = pgTable('report_runs', {
    * (execution-plane spec §6.3). `ON DELETE SET NULL`: an expired artifact
    * leaves the run intact with nothing attached.
    *
-   * The FK is created in SQL only (2026-10-16-191700-artifact-attachments.sql),
+   * The FK is created in SQL only (2026-10-16-192900-artifact-attachments.sql),
    * not declared with `.references()`, to dodge an import cycle: `aiWorkspace`
    * imports `aiAgents`, which imports THIS module for `reportRuns`. Same
    * technique as `contracts.ts`'s catalog_item_id / site_id.

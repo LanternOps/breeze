@@ -7,7 +7,7 @@ import { reportRuns } from './reports';
 import { CORE_TENANT_EXPORT_POLICY } from '../../services/tenantExportPolicyRegistry';
 
 const MIGRATION = readFileSync(
-  join(__dirname, '..', '..', '..', 'migrations', '2026-10-16-191700-artifact-attachments.sql'),
+  join(__dirname, '..', '..', '..', 'migrations', '2026-10-16-192900-artifact-attachments.sql'),
   'utf8',
 );
 

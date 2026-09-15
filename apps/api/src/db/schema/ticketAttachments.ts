@@ -35,7 +35,7 @@ export const ticketAttachments = pgTable('ticket_attachments', {
    * artifact has since expired (ON DELETE SET NULL), which the content route
    * answers 410 for. Never dereference it without handling that.
    *
-   * The FK itself is created by 2026-10-16-191700-artifact-attachments.sql; the
+   * The FK itself is created by 2026-10-16-192900-artifact-attachments.sql; the
    * `.references()` here is the Drizzle-side declaration of that same
    * constraint. (Its sibling on `report_runs` is deliberately SQL-only — that
    * module IS in a real cycle, because `aiWorkspace` imports `aiAgents`, which

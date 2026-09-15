@@ -2,7 +2,7 @@
  * Artifact attachments — CHECK shape, RLS, expiry-to-null and erasure ordering
  * against real Postgres (execution-plane W05, spec §6.3).
  *
- * Migration under test: 2026-10-16-191700-artifact-attachments.sql
+ * Migration under test: 2026-10-16-192900-artifact-attachments.sql
  *
  * Proves:
  *   1. an artifact-backed ticket_attachments row inserts with no key and no
