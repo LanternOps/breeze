@@ -33,6 +33,14 @@ describe('AI_AGENT_LIMIT_DEFAULTS (sweep-profile limits, phase 2 P2-2)', () => {
   });
 });
 
+describe('AI_AGENT_LIMIT_DEFAULTS (patch-profile limits, AI patch agent W04 #5750)', () => {
+  it('sizes maxPatchRunsPerDay for the nightly occurrence plus reactive alert runs', () => {
+    // W04 routes patch-classified alerts into the same daily budget; 2 would
+    // let two alerts starve the scheduled occurrence.
+    expect(AI_AGENT_LIMIT_DEFAULTS.maxPatchRunsPerDay).toBe(6);
+  });
+});
+
 describe('AI_AGENT_LIMIT_DEFAULTS (narrative-profile limits, phase 2 P2-3)', () => {
   it('has the four narrative-profile fields', () => {
     expect(AI_AGENT_LIMIT_DEFAULTS.maxConcurrentNarrativeRuns).toBe(1);

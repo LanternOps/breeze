@@ -218,6 +218,22 @@ describe('aiAgents validators', () => {
     });
   });
 
+  describe('triggers.alertCategories (AI patch agent W04, #5750)', () => {
+    it('is absent (unrestricted) by default — never an empty allowlist', () => {
+      const created = createAiAgentSchema.parse({ kind: 'patch', name: 'Patch' });
+      expect(created.triggers.alertCategories).toBeUndefined();
+    });
+
+    it('accepts a narrowing list of alert template categories', () => {
+      const parsed = aiAgentPolicyFieldsSchema.parse({ triggers: { alertCategories: ['patching'] } });
+      expect(parsed.triggers.alertCategories).toEqual(['patching']);
+    });
+
+    it('rejects the empty array — [] would read as "matches nothing"', () => {
+      expect(aiAgentPolicyFieldsSchema.safeParse({ triggers: { alertCategories: [] } }).success).toBe(false);
+    });
+  });
+
   describe('triggers.anomalyTypes / metricNames / minAnomalyScore (wave 6 PR 4, #3828)', () => {
     it('are absent (unrestricted) by default — no default value is invented', () => {
       const created = createAiAgentSchema.parse({ kind: 'triage', name: 'Triage' });

@@ -118,6 +118,10 @@ export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({
 const triggersFields = z.object({
   alertSeverities: z.array(z.enum(ALERT_SEVERITIES)).min(1),
   alertRuleIds: z.array(z.string().guid()).min(1).max(200),
+  // AI patch agent W04 (#5750) — alert TEMPLATE category filter, same
+  // undefined-means-unrestricted / .min(1) convention as ticketCategories
+  // below. Free text capped to alert_templates.category's varchar(100).
+  alertCategories: z.array(z.string().trim().min(1).max(100)).min(1).max(50),
   siteIds: z.array(z.string().guid()).min(1).max(500),
   deviceGroupIds: z.array(z.string().guid()).min(1).max(500),
   deviceTags: z.array(z.string().trim().min(1).max(64)).min(1).max(100),

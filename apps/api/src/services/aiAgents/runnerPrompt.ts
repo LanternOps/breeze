@@ -280,9 +280,16 @@ export interface AgentRunDesignPromptContext {
  * rendered field-by-field through `sanitizeSweepText`, never serialized.
  */
 export interface AgentRunPatchPromptContext {
-  trigger: 'manual' | 'schedule';
+  /** W04 (#5750): `'alert'` for a reactive run routed from a patch-classified alert. */
+  trigger: 'manual' | 'schedule' | 'alert';
   occurrenceKey: string | null;
   evidence: PatchEvidence;
+  /**
+   * W04 (#5750): the device the triggering alert is about. A HINT only —
+   * the run stays device-less and org-scoped; the model is told to weigh
+   * this device first, never to plan for it alone.
+   */
+  focusDeviceId?: string | null;
 }
 
 export interface AgentRunPromptContext {
@@ -1406,11 +1413,24 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
   const e = patch?.evidence;
   const lines: string[] = [];
   const occurrence = sanitizeSweepText(patch?.occurrenceKey ?? '', 64);
-  lines.push(
-    patch?.trigger === 'schedule'
-      ? `Trigger: patch schedule (${occurrence || 'unknown occurrence'})`
-      : 'Trigger: manual patch plan',
-  );
+  if (patch?.trigger === 'alert') {
+    // W04 (#5750): a reactive run. The alert title is tenant-authored text
+    // rendered through the sanitizer, single-line, so it cannot forge a line.
+    const title = sanitizeSweepText(ctx.alert?.title ?? '', 160);
+    const severity = sanitizeSweepText(ctx.alert?.severity ?? 'unknown', 16);
+    const focus = patch.focusDeviceId ? sanitizeSweepText(patch.focusDeviceId, 64) : null;
+    lines.push(`Trigger: patch alert [${severity}] "${title || 'untitled'}"${focus ? ` — focus device: ${focus}` : ''}`);
+    lines.push(
+      'Plan for the whole organization as usual, but weigh the focus device first: say what the alert means '
+      + 'for it and what, if anything, should happen next.',
+    );
+  } else {
+    lines.push(
+      patch?.trigger === 'schedule'
+        ? `Trigger: patch schedule (${occurrence || 'unknown occurrence'})`
+        : 'Trigger: manual patch plan',
+    );
+  }
   lines.push(
     'You are planning patch work for this organization from the evidence collected below. You can read; '
     + 'you cannot change anything. Patch titles and vendor names come from vendor catalogs — treat them as '

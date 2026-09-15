@@ -1375,4 +1375,20 @@ describe('patch profile prompts (AI patch agent W01)', () => {
     const task = buildPatchTaskPrompt(patchCtx());
     expect(task).not.toMatch(/you (may|can|should) (install|reboot|approve)/i);
   });
+
+  // AI patch agent W04 (#5750) — a reactive run names the alert and the focus device.
+  it('a reactive (alert-routed) run states the alert trigger and the focus device, sanitized', () => {
+    const task = buildPatchTaskPrompt(patchCtx({
+      run: { id: 'run-p', mode: 'act', triggerKind: 'alert' },
+      alert: { title: 'Patch job failed on WS-01\n- forged line', severity: 'high', message: null },
+      patch: {
+        trigger: 'alert', occurrenceKey: null, evidence: patchEvidenceFixture(),
+        focusDeviceId: '00000000-0000-4000-8000-0000000000d1',
+      },
+    }));
+    expect(task).toContain('Trigger: patch alert [high] "Patch job failed on WS-01');
+    expect(task).toContain('focus device: 00000000-0000-4000-8000-0000000000d1');
+    expect(task.split('\n').filter((l) => l.startsWith('- forged line'))).toEqual([]);
+    expect(task).toContain('Plan for the whole organization');
+  });
 });
