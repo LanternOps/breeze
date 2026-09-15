@@ -683,6 +683,20 @@ async function loadRebootBacklog(orgId: string): Promise<{ rows: PatchEvidenceRo
 // ---------------------------------------------------------------------------
 
 /**
+ * The window cutoff as a bound ISO string, not `now() - interval` in SQL:
+ * the read runs as breeze_app under forced RLS, and the planner promotes a
+ * clause to an index condition only when it contains no leaky function —
+ * `now()`/`timestamp_mi_interval` are not leakproof, so an in-SQL cutoff
+ * demoted `created_at >=` to a post-scan filter over every failed row in the
+ * partial index (verified with EXPLAIN as breeze_app). A constant is
+ * promotable. ISO string, never a `Date`, in a raw fragment (postgres.js
+ * throws at bind for a Date).
+ */
+function failedWorkCutoffIso(): string {
+  return new Date(Date.now() - PATCH_FAILED_WORK_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
  * The org pin on BOTH legs (see the header): `patch_job_results` has no
  * tenant column, so the org is reached through the job AND re-pinned on the
  * device. Callers alias the tables `r`, `j` and `d`.
@@ -721,7 +735,7 @@ async function loadFailedWork(orgId: string): Promise<{ rows: PatchEvidenceRow[]
     JOIN patches p ON p.id = r.patch_id
     WHERE r.status = 'failed'
       AND r.patch_id IS NOT NULL
-      AND r.created_at >= now() - make_interval(days => ${PATCH_FAILED_WORK_WINDOW_DAYS})
+      AND r.created_at >= ${failedWorkCutoffIso()}::timestamp
     ORDER BY r.created_at DESC, r.id ASC
     LIMIT ${PATCH_FAILED_WORK_MAX_RAW_ROWS}
   `)];
@@ -789,7 +803,7 @@ async function loadQueuedOffline(orgId: string): Promise<number> {
     FROM patch_job_results r
     ${orgPinnedJobResults(orgId)}
     WHERE r.status = 'queued'
-      AND r.created_at >= now() - make_interval(days => ${PATCH_FAILED_WORK_WINDOW_DAYS})
+      AND r.created_at >= ${failedWorkCutoffIso()}::timestamp
   `)];
   return int(rows[0]?.n);
 }

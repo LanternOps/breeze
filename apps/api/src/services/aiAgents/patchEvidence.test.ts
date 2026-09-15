@@ -268,7 +268,12 @@ describe('loadPatchEvidence', () => {
     expect(t).toContain('d.is_ephemeral = false');
     expect(t).toContain("r.status = 'failed'");
     expect(t).toContain('r.patch_id IS NOT NULL');
-    expect(t).toMatch(/r\.created_at >= now\(\) - make_interval\(days =>/);
+    // A bound ISO cutoff, never `now() - interval` (leaky functions demote the
+    // clause under RLS) and never a Date (postgres.js throws at bind).
+    expect(t).not.toContain('now()');
+    expect(t).toMatch(/r\.created_at >= ::timestamp/); // sqlText renders a bound param as ''
+    expect(boundParams(executed[8]).some((p) => p instanceof Date)).toBe(false);
+    expect(boundParams(executed[8]).some((p) => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p))).toBe(true);
     expect(boundParams(executed[8]).filter((p) => p === ORG).length).toBe(2);
     // the queued-offline count carries the same two pins
     const q = text(9);
