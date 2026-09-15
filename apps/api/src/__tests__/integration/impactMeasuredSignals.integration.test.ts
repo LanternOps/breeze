@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ALERT_EXPOSURE_AGE_MINUTES,
+  MEASURED_MAX_WINDOW_DAYS,
   MEASURED_MIN_COHORT_N,
   TICKET_EXPOSURE_AGE_MINUTES,
 } from '@breeze/shared';
@@ -53,9 +54,12 @@ import {
 import { createOrganization, createPartner, createSite, createUser } from './db-utils';
 
 const THROUGH: UtcDay = lastCompleteUtcDay();
+/** 90-day span, matching `MEASURED_MAX_WINDOW_DAYS` -- this file proves the whole read at the app's longest window. */
 const FROM: UtcDay = shiftUtcDay(THROUGH, -89);
 /** Comfortably inside the window so L + H always fits. */
 const DAY: UtcDay = shiftUtcDay(THROUGH, -10);
+/** A below-max window, used only to prove `insufficient_followup` still fires there (#5879). */
+const SHORT_FROM: UtcDay = shiftUtcDay(THROUGH, -29);
 
 const MINUTE_MS = 60_000;
 const at = (day: UtcDay, hours: number, minutes = 0): Date =>
@@ -197,7 +201,20 @@ const dbContextFor = (t: Tenant) => ({
   accessiblePartnerIds: [],
 });
 
-const windowFor = (t: Tenant): MeasuredWindow => ({ orgIds: [t.orgId], from: FROM, through: THROUGH });
+const windowFor = (t: Tenant): MeasuredWindow => ({
+  orgIds: [t.orgId],
+  from: FROM,
+  through: THROUGH,
+  windowDays: MEASURED_MAX_WINDOW_DAYS,
+});
+
+/** A below-max window over the same tenant, for the #5879 regression test. */
+const shortWindowFor = (t: Tenant): MeasuredWindow => ({
+  orgIds: [t.orgId],
+  from: SHORT_FROM,
+  through: THROUGH,
+  windowDays: 30,
+});
 
 /** One alert, optionally exposed to the AI within the cohort-formation age. */
 async function seedAlert(t: Tenant, opts: {
@@ -491,7 +508,7 @@ describe('measured impact — ticket first-response signal', () => {
     expect(signal.cohorts.find((x) => x.key === 'high|lopsided')).toBeUndefined();
   });
 
-  it('reports insufficient_followup when the window cannot contain L + H', async () => {
+  it('reports insufficient_followup below the max window, when the window cannot contain L + H', async () => {
     const t = await createTenant();
     // Triggered late on the LAST day of the window: created_at + L + 4h runs
     // past the window's exclusive upper bound, so no row has enough follow-up.
@@ -506,13 +523,37 @@ describe('measured impact — ticket first-response signal', () => {
       });
     }
 
+    // shortWindowFor: a 30-day window, below MEASURED_MAX_WINDOW_DAYS -- "try a
+    // longer window" has somewhere to go here.
     const signal = await withDbAccessContext(dbContextFor(t), () =>
-      loadTicketFirstResponseSignal(orgAuth(t), windowFor(t)));
+      loadTicketFirstResponseSignal(orgAuth(t), shortWindowFor(t)));
 
     // NOT 'insufficient_data': there is plenty of data, the window is just too
     // short to answer the question yet. Conflating the two would tell a partner
     // their AI did nothing when the honest answer is "ask again later".
     expect(signal).toMatchObject({ cohorts: [], omitted: 'insufficient_followup' });
+  });
+
+  it('never suggests a longer window AT the max window (90 days) — reports insufficient_data instead (#5879)', async () => {
+    const t = await createTenant();
+    // Same "not enough follow-up time" shape as above, but at the app's LONGEST
+    // window: there is no longer window to try, so `insufficient_followup`
+    // (rendered as "Try a longer window") would be advice with nowhere to go.
+    const created = at(THROUGH, 23, 30);
+    for (let i = 0; i < N; i += 1) {
+      await seedTicket(t, {
+        priority: 'low',
+        category: 'latewindow',
+        createdAt: created,
+        firstResponseAt: null,
+        exposed: i % 2 === 0,
+      });
+    }
+
+    const signal = await withDbAccessContext(dbContextFor(t), () =>
+      loadTicketFirstResponseSignal(orgAuth(t), windowFor(t)));
+
+    expect(signal).toMatchObject({ cohorts: [], omitted: 'insufficient_data' });
   });
 
   it('excludes soft-deleted tickets', async () => {

@@ -16,6 +16,7 @@ import type { SQL } from 'drizzle-orm';
 import {
   ALERT_EXPOSURE_AGE_MINUTES,
   ALERT_OUTCOME_HORIZON_HOURS,
+  MEASURED_MAX_WINDOW_DAYS,
   MEASURED_MIN_COHORT_N,
   TICKET_EXPOSURE_AGE_MINUTES,
   TICKET_RESPONSE_HORIZON_HOURS,
@@ -41,6 +42,8 @@ export interface MeasuredWindow {
   orgIds: readonly string[];
   from: string;
   through: string;
+  /** The requested window length in days, used to pick the right omission reason (#5879). */
+  windowDays: number;
 }
 
 interface CohortRow {
@@ -141,16 +144,25 @@ function foldCohorts(rows: readonly CohortRow[], horizonMinutes: number): {
  * Distinguish "nothing happened in this window" from "the window is too short to
  * answer the question". Both produce an empty band, and conflating them would
  * tell a partner their AI did nothing when the real answer is "ask again later".
+ *
+ * `insufficient_followup` renders as "Try a longer window" (#5879) — advice with
+ * nowhere to go once the caller is already AT the longest window Breeze offers.
+ * At `MEASURED_MAX_WINDOW_DAYS` there is no longer window to try, so that shape
+ * collapses to `insufficient_data`: still honest (there genuinely isn't enough
+ * data), but it doesn't send the reader chasing a control that doesn't exist.
  */
 function signalFrom(
   folded: ReturnType<typeof foldCohorts>,
   exposureAgeMinutes: number,
   horizonHours: number,
+  windowDays: number,
 ): MeasuredSignal {
   if (folded.cohorts.length > 0) {
     return { cohorts: folded.cohorts, omitted: null, exposureAgeMinutes, horizonHours };
   }
-  const omitted = folded.eligibleRows > 0 && folded.followupRows < MEASURED_MIN_COHORT_N * 2
+  const wouldSuggestLongerWindow =
+    folded.eligibleRows > 0 && folded.followupRows < MEASURED_MIN_COHORT_N * 2;
+  const omitted = wouldSuggestLongerWindow && windowDays < MEASURED_MAX_WINDOW_DAYS
     ? 'insufficient_followup'
     : 'insufficient_data';
   return { cohorts: [], omitted, exposureAgeMinutes, horizonHours };
@@ -189,7 +201,12 @@ export async function loadAlertResolutionSignal(
     };
   });
 
-  return signalFrom(foldCohorts(rows, horizonMinutes), ALERT_EXPOSURE_AGE_MINUTES, ALERT_OUTCOME_HORIZON_HOURS);
+  return signalFrom(
+    foldCohorts(rows, horizonMinutes),
+    ALERT_EXPOSURE_AGE_MINUTES,
+    ALERT_OUTCOME_HORIZON_HOURS,
+    window.windowDays,
+  );
 }
 
 /** Ticket first response, keyed by `priority || '|' || category`. */
@@ -218,7 +235,12 @@ export async function loadTicketFirstResponseSignal(
     };
   });
 
-  return signalFrom(foldCohorts(rows, horizonMinutes), TICKET_EXPOSURE_AGE_MINUTES, TICKET_RESPONSE_HORIZON_HOURS);
+  return signalFrom(
+    foldCohorts(rows, horizonMinutes),
+    TICKET_EXPOSURE_AGE_MINUTES,
+    TICKET_RESPONSE_HORIZON_HOURS,
+    window.windowDays,
+  );
 }
 
 export interface TechnicianMinutesResult {

@@ -90,6 +90,16 @@ describe('loadMeasuredImpact — authorization', () => {
   });
 
   it('reads the technician-minutes arm for a partner-scope caller holding the permission', async () => {
+    loadTechnicianMinutes.mockResolvedValue({
+      cohorts: [{
+        key: 'high|billing',
+        label: 'high · billing',
+        aiTouched: { n: 30, medianRecordedMinutes: 25 },
+        untouched: { n: 40, medianRecordedMinutes: 35 },
+      }],
+      loggingCoverage: { aiTouched: 0.4, untouched: 0.35 },
+    });
+
     const dto = await loadMeasuredImpact(authFor(), TIME_ENTRY_PERMISSIONS, { window: 30 });
 
     expect(loadTechnicianMinutes).toHaveBeenCalledTimes(1);
@@ -97,6 +107,14 @@ describe('loadMeasuredImpact — authorization', () => {
       omitted: null,
       loggingCoverage: { aiTouched: expect.any(Number), untouched: expect.any(Number) },
     });
+  });
+
+  it('reports insufficient_data rather than an empty-but-not-omitted state when no cohort clears the display gate (#5879)', async () => {
+    // Default mock (see beforeEach): cohorts: [] with a real loggingCoverage --
+    // the shape that used to render `omitted: null` over zero rows.
+    const dto = await loadMeasuredImpact(authFor(), TIME_ENTRY_PERMISSIONS, { window: 30 });
+
+    expect(dto.technicianMinutes).toEqual({ omitted: 'insufficient_data' });
   });
 
   it('omits the WHOLE band for a site-restricted caller', async () => {
@@ -170,6 +188,19 @@ describe('loadMeasuredImpact — window', () => {
     expect(loadAlertResolutionSignal).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ orgIds: [ORG] }),
+    );
+  });
+
+  it('passes the requested window length through to the signal loaders (#5879)', async () => {
+    await loadMeasuredImpact(authFor(), TIME_ENTRY_PERMISSIONS, { window: 90 });
+
+    expect(loadAlertResolutionSignal).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ windowDays: 90 }),
+    );
+    expect(loadTicketFirstResponseSignal).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ windowDays: 90 }),
     );
   });
 });
