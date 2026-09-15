@@ -8,10 +8,12 @@ import { runAction, handleActionError } from '../../lib/runAction';
 import { useHashState } from '@/lib/useHashState';
 import {
   listContracts,
+  listContractCurrencyMismatches,
   monthlyValue,
   CONTRACT_STATUS_ROLES,
   type ContractStatus,
   type ContractSummary,
+  type ContractCurrencyMismatchReport,
 } from '../../lib/api/contracts';
 import { formatMoney, formatDate, sumByCurrency } from '../billing/invoiceTypes';
 import { StatusPill } from '../billing/shared/StatusPill';
@@ -299,6 +301,29 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
     [bulk, loadContracts, filters, t],
   );
 
+  // Spec §6: the currency-mismatch report stops being a tab and becomes a banner
+  // here. The report endpoint is cursor-paged with no total, so the banner asks
+  // for one page and says "50+" when there is a next cursor rather than
+  // inventing a number. A failed probe renders nothing — this is an affordance,
+  // not data. Skipped inside the org-record embed, where `#tab=…` means nothing.
+  const [mismatches, setMismatches] = useState<{ count: number; more: boolean } | null>(null);
+  useEffect(() => {
+    if (lockedOrgId) return;
+    let cancelled = false;
+    void (async () => {
+      const res = await listContractCurrencyMismatches({ limit: 50 }).catch(() => null);
+      if (!res?.ok) return;
+      const body = (await res.json().catch(() => null)) as { data?: ContractCurrencyMismatchReport } | null;
+      // `items` is optional-chained too: a stubbed or partial payload must not
+      // throw out of a decorative probe.
+      const items = body?.data?.items;
+      if (!cancelled && items?.length) {
+        setMismatches({ count: items.length, more: body?.data?.nextCursor != null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [lockedOrgId]);
+
   if (forbidden) {
     return (
       <div className="space-y-6" data-testid="contracts-page">
@@ -330,6 +355,23 @@ export function ContractsList({ lockedOrgId }: Props = {}) {
           </a>
         )}
       </div>
+
+      {mismatches && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+             data-testid="contracts-currency-mismatch-banner">
+          <span>
+            {mismatches.more
+              ? t('contracts.contractsList.currencyBanner.countPlus', { count: mismatches.count })
+              : t('contracts.contractsList.currencyBanner.count', { count: mismatches.count })}
+          </span>
+          {/* A plain hash link is enough: ContractsTabs' useHashState already
+              subscribes to hashchange, so this swaps the view with no navigation. */}
+          <a href="#tab=currency-mismatches" data-testid="contracts-currency-mismatch-open"
+             className="font-medium text-primary hover:underline">
+            {t('contracts.contractsList.currencyBanner.review')}
+          </a>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-3" data-testid="contracts-filters">

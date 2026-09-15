@@ -318,6 +318,11 @@
       "estimateExcluded": "Tahmini kullanılamayan {{count}} sözleşmeyi hariç tutar"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "countPlus": "{{count}}+ sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "review": "İncele"
+      },
       "title": "Sözleşmeler",
       "description": "Taslak faturaları belirli aralıklarla otomatik olarak oluşturan yinelenen anlaşmalar.",
       "newContract": "Yeni sözleşme",

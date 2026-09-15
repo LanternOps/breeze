@@ -318,6 +318,11 @@
       "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "countPlus": "{{count}}+ Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "review": "Prüfen"
+      },
       "title": "Verträge",
       "description": "Wiederkehrende Vereinbarungen, die in regelmäßigen Abständen automatisch Rechnungsentwürfe erstellen.",
       "newContract": "Neuer Vertrag",

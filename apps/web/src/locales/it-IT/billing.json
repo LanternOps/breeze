@@ -318,6 +318,11 @@
       "estimateExcluded": "Esclude {{count}} contratto/i la cui stima non è disponibile"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratti sono fatturati in una valuta diversa da quella della loro organizzazione.",
+        "countPlus": "{{count}}+ contratti sono fatturati in una valuta diversa da quella della loro organizzazione.",
+        "review": "Esaminali"
+      },
       "title": "Contratti",
       "description": "Accordi ricorrenti che generano automaticamente bozze di fattura secondo una cadenza.",
       "newContract": "Nuovo contratto",

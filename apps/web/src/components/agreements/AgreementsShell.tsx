@@ -48,7 +48,7 @@ export default function AgreementsShell({ tab, children }: AgreementsShellProps)
                   : 'border-transparent text-muted-foreground hover:text-foreground'
               }`}
             >
-              {t(item.labelKey)}
+              {t(/* i18n-dynamic */ item.labelKey)}
             </a>
           );
         })}

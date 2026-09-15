@@ -318,6 +318,11 @@
       "estimateExcluded": "Excludes {{count}} contract(s) whose estimate is unavailable"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contracts bill in a currency that differs from their organization's.",
+        "countPlus": "{{count}}+ contracts bill in a currency that differs from their organization's.",
+        "review": "Review them"
+      },
       "title": "Contracts",
       "description": "Recurring agreements that auto-generate draft invoices on a cadence.",
       "newContract": "New contract",

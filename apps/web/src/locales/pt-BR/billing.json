@@ -318,6 +318,11 @@
       "estimateExcluded": "Exclui {{count}} contrato(s) cuja estimativa está indisponível"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos são faturados em uma moeda diferente da moeda da organização.",
+        "countPlus": "{{count}}+ contratos são faturados em uma moeda diferente da moeda da organização.",
+        "review": "Revisar"
+      },
       "title": "Contratos",
       "description": "Acordos recorrentes que geram automaticamente faturas em rascunho conforme uma cadência.",
       "newContract": "Novo contrato",

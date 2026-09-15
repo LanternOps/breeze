@@ -225,10 +225,14 @@ export default function SignedAgreementsPage({
           <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
           {/* "No signed agreements yet" under an active filter is a lie. */}
           <p className="mt-2 text-sm font-medium">
-            {t(unlinkedOnly ? 'agreements.signedPage.emptyUnlinked.title' : 'agreements.signedPage.empty.title')}
+            {unlinkedOnly
+              ? t('agreements.signedPage.emptyUnlinked.title')
+              : t('agreements.signedPage.empty.title')}
           </p>
           <p className="text-sm text-muted-foreground">
-            {t(unlinkedOnly ? 'agreements.signedPage.emptyUnlinked.description' : 'agreements.signedPage.empty.description')}
+            {unlinkedOnly
+              ? t('agreements.signedPage.emptyUnlinked.description')
+              : t('agreements.signedPage.empty.description')}
           </p>
         </div>
       ) : (

@@ -318,6 +318,11 @@
       "estimateExcluded": "Exclut {{count}} contrat(s) dont l’estimation est indisponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "countPlus": "{{count}}+ contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "review": "Les examiner"
+      },
       "title": "Contrats",
       "description": "Accords récurrents qui génèrent automatiquement des factures brouillon selon une périodicité.",
       "newContract": "Nouveau contrat",

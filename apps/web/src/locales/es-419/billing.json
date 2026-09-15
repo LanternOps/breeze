@@ -318,6 +318,11 @@
       "estimateExcluded": "Excluye {{count}} contrato(s) cuya estimación no está disponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contratos se facturan en una moneda distinta a la de su organización.",
+        "countPlus": "{{count}}+ contratos se facturan en una moneda distinta a la de su organización.",
+        "review": "Revisarlos"
+      },
       "title": "Contratos",
       "description": "Acuerdos recurrentes que generan automáticamente borradores de facturas según una cadencia.",
       "newContract": "Nuevo contrato",
