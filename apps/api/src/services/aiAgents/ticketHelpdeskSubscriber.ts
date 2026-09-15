@@ -472,9 +472,12 @@ export async function handleTicketCreatedEvent(event: BreezeEvent): Promise<void
  * authored by an agent run) mints the Tier-2 time-entry PROPOSAL. Runs
  * before — and independently of — the admission logic below: the proposal
  * is about the technician's just-finished work, not about admitting a new
- * run. `proposeTimeEntryFromOutboxClaim` DB-verifies the claim, is
- * idempotent per (run, trigger), and never throws, so a redelivered event
- * cannot double-mint and a proposal failure never blocks admission.
+ * run. `proposeTimeEntryFromOutboxClaim` DB-verifies the claim and returns
+ * null for every permanent "no"; it THROWS only on an infrastructure error,
+ * which is exactly what this handler's retry contract wants (registry:
+ * "MUST throw on failure") — minting is idempotent per (run, trigger) and
+ * admission is idempotent per dedupe key, so the redelivery cannot
+ * double-mint or double-admit.
  */
 async function proposeTimeEntryIfClaimed(event: BreezeEvent, ticketId: string, orgId: string): Promise<void> {
   const claim = (event.payload as { aiDraft?: unknown } | null | undefined)?.aiDraft;

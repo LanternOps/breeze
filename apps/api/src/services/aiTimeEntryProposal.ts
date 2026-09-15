@@ -15,8 +15,17 @@
  *    APPROVING technician (`action_intents.decided_by_user_id`), never as the
  *    agent — `time_entries.user_id` is a `users` FK. See
  *    `USER_OWNED_RELEASE_ACTIONS` there.
- *  - A failure here must never fail the technician's send/resolve. Every
- *    public function in this file logs and returns `null`.
+ *  - The technician's send/resolve can never fail because of this lane:
+ *    ticketService only writes an outbox claim, and the mint happens in
+ *    the helpdesk event subscriber after that transaction has committed.
+ *    Inside the subscriber the contract is the registry's — a handler MUST
+ *    throw on a retry-worthy failure (5× BullMQ retry) and must NOT throw
+ *    on a permanent one. So: every business "no" (unresolvable lineage,
+ *    org mismatch, a claim the draft row disagrees with, a policy/
+ *    idempotency refusal from createActionIntent) is logged and returns
+ *    `null`; an infrastructure error (a DB blip, a pool timeout) PROPAGATES
+ *    so the retry fires. Minting is idempotent per (run, trigger), so a
+ *    retry can never double-mint.
  *
  * Billable and rate come from `getTicketTimeEntryDefaults`, the single
  * existing resolver (`org_ticket_settings.default_billable ??
@@ -33,7 +42,7 @@
 import { eq } from 'drizzle-orm';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { aiAgentRuns, aiAgents, devices, organizations, ticketCategories, ticketDrafts, tickets } from '../db/schema';
-import { createActionIntent } from './actionIntents/intentService';
+import { ActionIntentError, createActionIntent } from './actionIntents/intentService';
 import { AgentRunOwnershipError, buildAgentAuthContext } from './aiAgents/agentAuthContext';
 import { getTicketTimeEntryDefaults, type TimeEntryActor } from './timeEntryService';
 
@@ -79,6 +88,12 @@ const DEFAULTS_READ_ACTOR: TimeEntryActor = {
   partnerId: null,
   manageAll: false,
   accessibleOrgIds: null,
+};
+
+/** The draft kind each trigger is minted from — a claim naming the other kind is a forgery or a bug. */
+const TRIGGER_DRAFT_KIND: Record<AiTimeEntryProposalTrigger, typeof ticketDrafts.$inferSelect['kind']> = {
+  draft_sent: 'reply',
+  resolved_with_ai_note: 'resolution_note',
 };
 
 const TRIGGER_DESCRIPTION: Record<AiTimeEntryProposalTrigger, string> = {
@@ -165,11 +180,9 @@ async function loadRunLineage(agentRunId: string, ticketId: string): Promise<Run
 }
 
 /**
- * Mint the proposal. Returns `{ intentId }` or `null`; NEVER throws — the
- * two callers (`sendTicketDraft`, `changeTicketStatus`'s resolve path) have
- * already committed the technician's write and must not fail because of an
- * optional follow-up. Every early-out is logged with enough context to find
- * the run.
+ * Mint the proposal. Returns `{ intentId }`, or `null` for every PERMANENT
+ * reason (see the module header) — each logged with enough context to find
+ * the run. Infrastructure errors propagate to the caller's retry.
  *
  * `technicianUserId` is the human whose AI-assisted work the entry would
  * bill. It is recorded on the proposal (`proposedForUserId`) for the
@@ -241,11 +254,20 @@ export async function proposeTimeEntryForAiAssistedWork(args: {
     });
     return { intentId: intent.id };
   } catch (err) {
-    const detail = err instanceof AgentRunOwnershipError ? err.message : err instanceof Error ? err.message : String(err);
-    console.error('[aiTimeEntryProposal] proposal failed (non-fatal to the technician\'s action):', {
-      agentRunId, ticketId, trigger, error: detail,
-    });
-    return null;
+    // Permanent refusals only: a run whose lineage no longer proves
+    // ownership, or an intent-service policy/idempotency/scope refusal
+    // (agent_policy_denied, idempotency_conflict, agent_run_invalid, …).
+    // Anything else is an infrastructure failure and must reach the
+    // subscriber's retry — never mask a DB blip as a business "no".
+    if (err instanceof AgentRunOwnershipError || err instanceof ActionIntentError) {
+      console.warn('[aiTimeEntryProposal] proposal refused — no proposal', {
+        agentRunId, ticketId, trigger, technicianUserId,
+        code: err instanceof ActionIntentError ? err.code : 'agent_run_ownership_mismatch',
+        error: err.message,
+      });
+      return null;
+    }
+    throw err;
   }
 }
 
@@ -254,10 +276,12 @@ export async function proposeTimeEntryForAiAssistedWork(args: {
  * mint the proposal from an outbox event's `aiDraft` claim. Every claim is
  * verified against the draft row under a system read — the draft must exist,
  * belong to this ticket AND org, be `consumed`, and name the claimed run;
- * the technician is the row's `consumed_by`, never a payload field. Any
+ * the technician is the row's `consumed_by`, never a payload field, and the
+ * draft's `kind` must be the one the claimed trigger implies (a reply draft
+ * is `draft_sent`, a resolution note is `resolved_with_ai_note`). Any
  * mismatch is logged and dropped (returns null): the event is a redelivered
  * pointer, and a claim that does not match the database is not something to
- * retry into existence. Never throws.
+ * retry into existence. Infrastructure errors propagate (module header).
  */
 export async function proposeTimeEntryFromOutboxClaim(args: {
   orgId: string;
@@ -267,53 +291,48 @@ export async function proposeTimeEntryFromOutboxClaim(args: {
   const claim = parseClaim(args.claim);
   if (!claim) {
     console.warn('[aiTimeEntryProposal] malformed aiDraft claim on outbox event — dropping', {
-      orgId: args.orgId, ticketId: args.ticketId,
+      orgId: args.orgId, ticketId: args.ticketId, claim: args.claim,
     });
     return null;
   }
-  try {
-    const draft = await runOutsideDbContext(() =>
-      withSystemDbAccessContext(async () => {
-        const [row] = await db
-          .select({
-            id: ticketDrafts.id,
-            ticketId: ticketDrafts.ticketId,
-            orgId: ticketDrafts.orgId,
-            state: ticketDrafts.state,
-            runId: ticketDrafts.runId,
-            consumedBy: ticketDrafts.consumedBy,
-          })
-          .from(ticketDrafts)
-          .where(eq(ticketDrafts.id, claim.draftId))
-          .limit(1);
-        return row ?? null;
-      }),
-    );
-    if (
-      !draft
-      || draft.ticketId !== args.ticketId
-      || draft.orgId !== args.orgId
-      || draft.state !== 'consumed'
-      || draft.runId !== claim.runId
-      || !draft.consumedBy
-    ) {
-      console.warn('[aiTimeEntryProposal] aiDraft claim failed draft verification — dropping', {
-        orgId: args.orgId, ticketId: args.ticketId, draftId: claim.draftId, runId: claim.runId, trigger: claim.trigger,
-        found: !!draft, state: draft?.state ?? null,
-      });
-      return null;
-    }
-    return await proposeTimeEntryForAiAssistedWork({
-      ticketId: args.ticketId,
-      orgId: args.orgId,
-      agentRunId: claim.runId,
-      trigger: claim.trigger,
-      technicianUserId: draft.consumedBy,
-    });
-  } catch (err) {
-    console.error('[aiTimeEntryProposal] claim verification failed (non-fatal):', {
-      orgId: args.orgId, ticketId: args.ticketId, draftId: claim.draftId, error: err instanceof Error ? err.message : String(err),
+  const draft = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(async () => {
+      const [row] = await db
+        .select({
+          id: ticketDrafts.id,
+          ticketId: ticketDrafts.ticketId,
+          orgId: ticketDrafts.orgId,
+          kind: ticketDrafts.kind,
+          state: ticketDrafts.state,
+          runId: ticketDrafts.runId,
+          consumedBy: ticketDrafts.consumedBy,
+        })
+        .from(ticketDrafts)
+        .where(eq(ticketDrafts.id, claim.draftId))
+        .limit(1);
+      return row ?? null;
+    }),
+  );
+  if (
+    !draft
+    || draft.ticketId !== args.ticketId
+    || draft.orgId !== args.orgId
+    || draft.state !== 'consumed'
+    || draft.runId !== claim.runId
+    || draft.kind !== TRIGGER_DRAFT_KIND[claim.trigger]
+    || !draft.consumedBy
+  ) {
+    console.warn('[aiTimeEntryProposal] aiDraft claim failed draft verification — dropping', {
+      orgId: args.orgId, ticketId: args.ticketId, draftId: claim.draftId, runId: claim.runId, trigger: claim.trigger,
+      found: !!draft, state: draft?.state ?? null, kind: draft?.kind ?? null,
     });
     return null;
   }
+  return proposeTimeEntryForAiAssistedWork({
+    ticketId: args.ticketId,
+    orgId: args.orgId,
+    agentRunId: claim.runId,
+    trigger: claim.trigger,
+    technicianUserId: draft.consumedBy,
+  });
 }

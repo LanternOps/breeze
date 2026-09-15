@@ -41,7 +41,11 @@ vi.mock('./timeEntryService', () => ({
 }));
 vi.mock('./actionIntents/intentService', () => ({
   createActionIntent: mocks.createActionIntent,
+  ActionIntentError: class ActionIntentError extends Error {
+    constructor(message: string, public code: string) { super(message); this.name = 'ActionIntentError'; }
+  },
 }));
+import { ActionIntentError } from './actionIntents/intentService';
 
 import { aiAgentRuns, aiAgents, devices, organizations, ticketDrafts, tickets } from '../db/schema';
 import {
@@ -185,10 +189,16 @@ describe('proposeTimeEntryForAiAssistedWork (#4177)', () => {
     expect(created[0]!.input.idempotencyKey).toBe(`ai-time-entry:${RUN_ID}:resolved_with_ai_note`);
   });
 
-  it('returns null and does not throw when intent creation fails', async () => {
-    mocks.createActionIntent.mockRejectedValueOnce(new Error('boom'));
+  it('returns null (no throw) when the intent service REFUSES — a permanent business no', async () => {
+    mocks.createActionIntent.mockRejectedValueOnce(new ActionIntentError('denied', 'agent_policy_denied'));
     mockRunLineage(); mockCategory({ defaultTimeEntryMinutes: null }); mockTicketDefaults({ isBillable: false });
     await expect(proposeTimeEntryForAiAssistedWork(args)).resolves.toBeNull();
+  });
+
+  it('propagates an infrastructure error so the subscriber\'s retry fires (never masks a DB blip as a business no)', async () => {
+    mocks.createActionIntent.mockRejectedValueOnce(new Error('connection terminated unexpectedly'));
+    mockRunLineage(); mockCategory({ defaultTimeEntryMinutes: null }); mockTicketDefaults({ isBillable: false });
+    await expect(proposeTimeEntryForAiAssistedWork(args)).rejects.toThrow('connection terminated unexpectedly');
   });
 
   it('returns null without minting when the run does not belong to the ticket\'s org', async () => {
@@ -209,7 +219,7 @@ describe('proposeTimeEntryForAiAssistedWork (#4177)', () => {
 describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a pointer, the draft row is the fact', () => {
   const DRAFT_ID = '77777777-7777-4777-8777-777777777777';
   const claim = { draftId: DRAFT_ID, runId: RUN_ID, trigger: 'draft_sent' };
-  const consumedDraft = { id: DRAFT_ID, ticketId: TICKET_ID, orgId: ORG_ID, state: 'consumed', runId: RUN_ID, consumedBy: USER_ID };
+  const consumedDraft = { id: DRAFT_ID, ticketId: TICKET_ID, orgId: ORG_ID, kind: 'reply', state: 'consumed', runId: RUN_ID, consumedBy: USER_ID };
 
   function primeMint() {
     mockRunLineage(); mockCategory({ defaultTimeEntryMinutes: null }); mockTicketDefaults({ isBillable: false });
@@ -233,12 +243,26 @@ describe('proposeTimeEntryFromOutboxClaim (#4177) — the outbox claim is a poin
     ['wrong org', [{ ...consumedDraft, orgId: '99999999-9999-4999-8999-999999999999' }]],
     ['not consumed', [{ ...consumedDraft, state: 'active' }]],
     ['run mismatch', [{ ...consumedDraft, runId: '99999999-9999-4999-8999-999999999999' }]],
+    ['kind/trigger mismatch (resolution note claimed as draft_sent)', [{ ...consumedDraft, kind: 'resolution_note' }]],
     ['no consumer', [{ ...consumedDraft, consumedBy: null }]],
   ])('drops the claim without minting when the draft row disagrees: %s', async (_label, rows) => {
     const created = captureCreateActionIntent();
     queueSelect(ticketDrafts, rows as unknown[]);
     await expect(proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim })).resolves.toBeNull();
     expect(created).toHaveLength(0);
+  });
+
+  it('a resolution-note draft mints under the resolved_with_ai_note trigger', async () => {
+    const created = captureCreateActionIntent();
+    queueSelect(ticketDrafts, [{ ...consumedDraft, kind: 'resolution_note' }]);
+    primeMint();
+    await expect(proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim: { ...claim, trigger: 'resolved_with_ai_note' } })).resolves.toEqual({ intentId: 'intent-1' });
+    expect(created[0]!.input.idempotencyKey).toBe(`ai-time-entry:${RUN_ID}:resolved_with_ai_note`);
+  });
+
+  it('propagates a DB error during draft verification (retry-worthy)', async () => {
+    mocks.withSystemDbAccessContext.mockImplementationOnce(async () => { throw new Error('pool timeout'); });
+    await expect(proposeTimeEntryFromOutboxClaim({ orgId: ORG_ID, ticketId: TICKET_ID, claim })).rejects.toThrow('pool timeout');
   });
 
   it.each([

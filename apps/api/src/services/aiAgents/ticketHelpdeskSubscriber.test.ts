@@ -860,6 +860,14 @@ describe('AI time-entry proposal claim forwarding (#4177, W04)', () => {
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
   });
 
+  it('an infrastructure error from the proposal lane propagates so the subscriber retry fires', async () => {
+    proposeTimeEntryFromOutboxClaim.mockRejectedValueOnce(new Error('pool timeout'));
+    await expect(
+      handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: COMMENT_ID, isPublic: true, aiDraft: claim } })),
+    ).rejects.toThrow('pool timeout');
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
   it('a malformed event (no ticketId) is dropped before the claim is ever forwarded', async () => {
     await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { commentId: COMMENT_ID, aiDraft: claim } }));
     expect(proposeTimeEntryFromOutboxClaim).not.toHaveBeenCalled();
