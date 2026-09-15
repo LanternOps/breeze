@@ -7,10 +7,10 @@ import {
 } from './pushUnavailableCopy';
 
 describe('pushUnavailableCopy', () => {
-  it('names the simulator for not_physical_device', () => {
+  it('names the simulator or emulator for not_physical_device', () => {
     const copy = pushUnavailableCopy('not_physical_device');
-    expect(copy.notificationsRow).toMatch(/simulator/i);
-    expect(copy.pairedDevicesHint).toMatch(/simulator/i);
+    expect(copy.notificationsRow).toMatch(/simulator or emulator/i);
+    expect(copy.pairedDevicesHint).toMatch(/simulators and emulators/i);
   });
 
   it('falls back to a generic device message for unknown reasons and null', () => {

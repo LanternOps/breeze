@@ -1,0 +1,2 @@
+# Override the root *.png ignore so Play listing assets are versioned with the build they depict.
+!*.png

@@ -19,9 +19,9 @@ export function pushUnavailableCopy(reason: string | null): PushUnavailableCopy 
   switch (reason) {
     case 'not_physical_device':
       return {
-        notificationsRow: "Push notifications aren't available in the simulator.",
+        notificationsRow: "Push notifications aren't available in a simulator or emulator.",
         pairedDevicesHint:
-          "Simulators can't register for pushes, so this device isn't listed. Phones that register for pushes appear here.",
+          "Simulators and emulators can't register for pushes, so this device isn't listed. Phones that register for pushes appear here.",
       };
     default:
       return {
