@@ -154,11 +154,27 @@ func (c *Console) Run(ctx context.Context) error {
 	powerAndHold := func(action string) error {
 		releaseLock = func() {}
 		err := c.power(action)
+		if err != nil {
+			// The hold below means this error never reaches cobra's
+			// error printer and never becomes a non-zero exit any
+			// more, so print it here or it is lost entirely — an
+			// operator at a bare-metal console would otherwise just
+			// see the console stop responding. Same norm as
+			// postProgress: print the non-fatal error, don't swallow
+			// it. Holding anyway is still right; a second recovery
+			// attempt is exactly as unsafe when the machine has
+			// failed to go down.
+			c.IO.Print("Power %s failed: %v — the machine may not shut down; power it off manually.\n", action, err)
+		}
 		if c.Deps.Power != nil {
 			// Only hold when something really was asked to power the
-			// machine down. With no Power seam (a --allow-host dev run)
-			// nothing is coming down, so blocking forever would just
-			// wedge the process for no reason.
+			// machine down. A Deps with no Power seam never asked for
+			// anything (c.power is a no-op then), so blocking forever
+			// would wedge the process for no reason. The real binary
+			// always sets Power — see recovery_console_cmd.go, which
+			// wires it unconditionally, --allow-host included — so this
+			// guard exists for embedders and tests, not for any
+			// production path.
 			holdAfterPower()
 		}
 		return err

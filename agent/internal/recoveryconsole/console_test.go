@@ -551,6 +551,128 @@ func TestConsole_HoldsAfterPowerSoTheLockHolderPidStaysAlive(t *testing.T) {
 	}
 }
 
+// TestConsole_PowerFailurePrintsBeforeHolding covers the one operator-
+// visible cost of holding forever: because Run no longer returns after
+// committing to power the machine down, a failing `systemctl poweroff`
+// no longer reaches cobra's error printer and no longer exits 1 — so
+// without an explicit line here the console would just stop responding,
+// silently, in front of an operator standing at a bare-metal recovery
+// console. Holding is still correct (a second recovery attempt is exactly
+// as unsafe when the machine fails to go down), but holding SILENTLY is
+// not. Same norm as postProgress, which prints its non-fatal errors
+// rather than swallowing them.
+func TestConsole_PowerFailurePrintsBeforeHolding(t *testing.T) {
+	holdCalls := stubHoldAfterPower(t)
+
+	io := &fakeIO{FailReadLine: true}
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	d := deps.build("0.111.1")
+	d.Power = func(action string) error {
+		deps.powerCalls = append(deps.powerCalls, action)
+		return errors.New("Failed to power off system via logind: Connection timed out")
+	}
+
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: io, Deps: d, Cmdline: cmdline}
+
+	if err := c.Run(context.Background()); err == nil {
+		t.Fatal("Run() error = nil, want the power error")
+	}
+
+	transcript := io.transcript.String()
+	for _, want := range []string{"poweroff", "Connection timed out"} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("transcript missing %q — a failed power action must be printed, not swallowed by the hold; got:\n%s", want, transcript)
+		}
+	}
+	if *holdCalls != 1 {
+		t.Errorf("holdAfterPower called %d times, want 1 (a failed power action must still hold — a second recovery attempt is exactly as unsafe when the machine fails to go down)", *holdCalls)
+	}
+}
+
+// realHoldAfterPower captures the package's genuine holdAfterPower before
+// TestMain replaces it, so one test can still exercise the real closure.
+// Package-level vars are initialised before TestMain runs, and Go orders
+// this after holdAfterPower's own initialisation because it depends on it.
+var realHoldAfterPower = holdAfterPower
+
+// TestHoldAfterPowerDoesNotReturn proves the real (unstubbed) closure
+// actually blocks. It cannot prove "forever" in finite time, but it does
+// catch the regressions that matter: a "simplification" to a single
+// non-looping time.Sleep, or to something that returns immediately — both
+// of which would silently restore the #5890 race, since every other test
+// runs against the TestMain no-op and would stay green.
+//
+// It deliberately does NOT assert the sleep-loop-vs-`select {}` choice
+// documented on holdAfterPower (that `select {}` as the last runnable
+// goroutine trips Go's all-goroutines-asleep panic, exiting the process).
+// That property is unobservable from inside a test binary that always has
+// other goroutines running; the doc comment carries it instead.
+func TestHoldAfterPowerDoesNotReturn(t *testing.T) {
+	returned := make(chan struct{})
+	go func() {
+		realHoldAfterPower()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("holdAfterPower returned; it must block until the kernel halts the machine, or the losing console instance reclaims the recovery lock as stale (issue #5890)")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestConsole_NoPowerSeamDoesNotHold covers the other side of the
+// `c.Deps.Power != nil` guard: a Deps that never asked for the machine to
+// go down must not block forever. Without this, dropping the guard (always
+// hold) or inverting it would pass every other test, because they all run
+// against TestMain's no-op stub.
+func TestConsole_NoPowerSeamDoesNotHold(t *testing.T) {
+	holdCalls := stubHoldAfterPower(t)
+
+	deps := &fakeDeps{
+		exchangeFn: happyExchange(t),
+		collectFn:  func(ctx context.Context) (*layout.Manifest, error) { return singleDiskLayout(), nil },
+		rebuildFn: func(ctx context.Context, opts rebuild.Options) (*rebuild.Result, error) {
+			if opts.DryRun {
+				return samplePlan(), nil
+			}
+			return &rebuild.Result{Status: "completed"}, nil
+		},
+	}
+	d := deps.build("0.111.1")
+	d.Power = nil
+
+	cmdline := "breeze.media=1 breeze.ci=1 breeze.server=https://breeze.example breeze.code=abc-def-ghj breeze.target=/dev/sda breeze.confirm=6002248 breeze.after=poweroff"
+	c := &Console{IO: &fakeIO{FailReadLine: true}, Deps: d, Cmdline: cmdline}
+
+	// Bounded, so an inverted guard fails the test instead of hanging the
+	// whole package run.
+	done := make(chan error, 1)
+	go func() { done <- c.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not return within 5s with no Power seam — the hold must be skipped when nothing was asked to power down")
+	}
+
+	if *holdCalls != 0 {
+		t.Errorf("holdAfterPower called %d times, want 0 (nothing asked the machine to power down)", *holdCalls)
+	}
+}
+
 func TestVersionAtLeast(t *testing.T) {
 	cases := []struct {
 		have, want string
