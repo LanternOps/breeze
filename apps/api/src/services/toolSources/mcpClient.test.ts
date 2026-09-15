@@ -291,6 +291,47 @@ describe('McpClient', () => {
     expect(mcpHeaders2.Authorization).toBe('Bearer tok-abc');
   });
 
+  // Two tenants may register the same authorization server and the same client
+  // id with DIFFERENT secrets. If the token cache keyed on (tokenUrl, clientId)
+  // alone, tenant B would be handed an access token minted from tenant A's
+  // secret — a silent cross-tenant credential leak.
+  it('does not share a cached oauth2 token between two configs with the same clientId but different secrets', async () => {
+    let issued = 0;
+    let rpcId = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.includes('shared-token-endpoint')) {
+        issued += 1;
+        return jsonResponse({ access_token: `tok-${issued}`, expires_in: 3600 });
+      }
+      rpcId += 1;
+      return jsonResponse({ jsonrpc: '2.0', id: rpcId, result: { tools: [] } });
+    });
+
+    const makeClient = (clientSecret: string) =>
+      new McpClient({
+        endpointUrl: BASE_URL,
+        credentialOrigin: ORIGIN,
+        auth: {
+          authKind: 'oauth2_client_credentials',
+          tokenUrl: 'https://auth.example.com/shared-token-endpoint',
+          clientId: 'shared-cid',
+          clientSecret,
+        },
+        fetchImpl,
+      });
+
+    await makeClient('tenant-a-secret').listTools();
+    await makeClient('tenant-b-secret').listTools();
+
+    const tokenCalls = fetchImpl.mock.calls.filter(([url]) => String(url).includes('shared-token-endpoint'));
+    expect(tokenCalls).toHaveLength(2);
+
+    const authHeaders = fetchImpl.mock.calls
+      .filter(([url]) => !String(url).includes('shared-token-endpoint'))
+      .map((call) => headersOf(call as [string, { headers?: unknown }]).Authorization);
+    expect(authHeaders[0]).not.toBe(authHeaders[1]);
+  });
+
   it('exports McpClientError with a readonly code', () => {
     const err = new McpClientError('boom', 'transport');
     expect(err.code).toBe('transport');

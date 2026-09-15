@@ -19,6 +19,7 @@
  * there; `safeFetch` itself asserts it is not called inside a held DB
  * context (see `urlSafety.ts`).
  */
+import { createHash } from 'node:crypto';
 import { safeFetch } from '../urlSafety';
 import type { SafeFetchInit } from '../urlSafety';
 import type { ToolSourceAuthConfig } from './secrets';
@@ -78,8 +79,31 @@ interface JsonRpcResponse {
   error?: { code?: number; message?: string; data?: unknown };
 }
 
-/** Module-level cache of OAuth2 client-credentials tokens, keyed by (tokenUrl, clientId). */
+/**
+ * Module-level cache of OAuth2 client-credentials tokens.
+ *
+ * The key covers the WHOLE credential, not just (tokenUrl, clientId): two
+ * tenants may legitimately register the same authorization server and the same
+ * client id with DIFFERENT secrets or scopes (a shared SaaS vendor, separate
+ * subscriptions). Keying on the identifier alone would hand tenant B an access
+ * token minted from tenant A's secret — a cross-tenant credential leak with no
+ * error anywhere. The secret is hashed so the cache key itself is not a place
+ * a credential can be read out of (heap dumps, debugger, log of Map keys).
+ */
 const oauthTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
+
+function oauthCacheKey(cfg: {
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string;
+  scope?: string;
+}): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([cfg.tokenUrl, cfg.clientId, cfg.clientSecret, cfg.scope ?? '']),
+    )
+    .digest('hex');
+}
 
 /** 30s of slack so a token about to expire mid-request is refreshed instead of reused. */
 const OAUTH_EXPIRY_SKEW_MS = 30_000;
@@ -88,7 +112,7 @@ export async function getOAuth2ClientCredentialsToken(
   cfg: { tokenUrl: string; clientId: string; clientSecret: string; scope?: string },
   fetchImpl: (url: string, init: SafeFetchInit) => Promise<Response>
 ): Promise<{ accessToken: string; expiresAt: number }> {
-  const cacheKey = `${cfg.tokenUrl}::${cfg.clientId}`;
+  const cacheKey = oauthCacheKey(cfg);
   const cached = oauthTokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached;
 
