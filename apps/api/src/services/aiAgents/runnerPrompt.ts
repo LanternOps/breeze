@@ -1500,7 +1500,23 @@ export function buildPatchTaskPrompt(ctx: AgentRunPromptContext): string {
   lines.push('- Copy every deviceId and patchId verbatim from the evidence above. Anything else is refused.');
   lines.push('- install: this device should receive these outstanding patches. It is a proposal a technician must approve; nothing installs because you wrote it.');
   lines.push('- approval_advisory: these updates need a manual approval decision by a partner admin. No deviceId. It creates nothing and approves nothing.');
-  lines.push('- reboot_plan: only inside an existing maintenance window named by id in the evidence. You never choose a reboot time. This evidence names no windows, so do not submit reboot_plan items on this run.');
+  // W04 (#5750): the reboot rules, stated plainly and only when there is a
+  // window to plan against. The evidence's `unplannableReason` is the
+  // authority — a device carrying one gets an escalation, never a plan.
+  const anyPlannableWindow = e.sections.rebootBacklog.rows.some(
+    (row) => typeof row.fields.nextWindowId === 'string' && row.fields.unplannableReason === null,
+  );
+  if (anyPlannableWindow) {
+    lines.push(
+      '- reboot_plan: assign a device from "Devices waiting on a reboot" to the window the evidence already resolved for it — '
+      + 'copy its nextWindowId verbatim as windowId, and only that one. You never choose a time. A device whose line carries an '
+      + 'unplannableReason (no window in the horizon, a reboot policy that is not maintenance_window, or an unknown redundancy '
+      + 'group) gets an escalation, not a reboot_plan. Never put two devices with the same redundancyGroup into the same window — '
+      + 'the second is refused. A reboot_plan is a finding for a technician; nothing reboots because you wrote it.',
+    );
+  } else {
+    lines.push('- reboot_plan: only inside an existing maintenance window named by id in the evidence. You never choose a reboot time. This evidence names no windows, so do not submit reboot_plan items on this run — escalate a device that needs one instead.');
+  }
   if (failedWork.available) {
     lines.push(
       `- chase: retry ONE failed-work line above on its device. Copy its deviceId, patchId (as patchIds), jobResultIds, `

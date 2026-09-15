@@ -90,13 +90,22 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 
-import { PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM, type PatchFailedWorkRef, type PatchFailureClass, type PatchPlanOutcomeRefs } from '@breeze/shared';
+import {
+  PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM,
+  PATCH_REBOOT_UNPLANNABLE_REASONS,
+  type PatchFailedWorkRef,
+  type PatchFailureClass,
+  type PatchPlanOutcomeRefs,
+  type PatchRebootPlanRef,
+  type PatchRebootUnplannableReason,
+} from '@breeze/shared';
 
 // Late-bound namespace import — see sweepEvidence.ts on why (vi.mock).
 import * as dbModule from '../../db';
 import { OUTSTANDING_DEVICE_PATCH_STATUSES } from '../../db/schema';
 import { isCategoryAllowed, parseRingAutoApprove } from '../patchApprovalEvaluator';
-import { isInMaintenanceWindow, resolveMaintenanceConfigForDevice } from '../featureConfigResolver';
+import { isInMaintenanceWindow, resolveMaintenanceConfigForDevice, resolvePatchConfigForDevice } from '../featureConfigResolver';
+import { resolveNextMaintenanceWindows } from '../maintenanceWindowProjection';
 import { classifyPatchFailure } from '../patchFailureClass';
 import { captureException } from '../sentry';
 import { sanitizeSweepText } from './runnerPrompt';
@@ -114,6 +123,14 @@ const MAX_CATEGORY_NAMES = 10;
 export const PATCH_FAILED_WORK_WINDOW_DAYS = 30;
 /** W03: the raw failed-row fetch cap; hitting it flags the section truncated. */
 export const PATCH_FAILED_WORK_MAX_RAW_ROWS = 2000;
+/**
+ * W04 (#5750): an AI `device_function_assessments` row counts as a redundancy
+ * group only at or above this confidence; a manual row (confidence NULL)
+ * always counts — a technician stated a fact.
+ */
+export const PATCH_REDUNDANCY_MIN_CONFIDENCE = 0.7;
+/** W04: the device-tag prefix that names a redundancy group when no assessment does. */
+export const PATCH_REDUNDANCY_TAG_PREFIX = 'role:';
 
 export const PATCH_EVIDENCE_ROW_SECTIONS = ['ringPosture', 'topNonCompliant', 'failedWork', 'rebootBacklog'] as const;
 export type PatchEvidenceSectionKey = (typeof PATCH_EVIDENCE_ROW_SECTIONS)[number];
@@ -341,7 +358,30 @@ export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs
       failedWorkByJobResult.set(id, group);
     }
   }
-  return { deviceIds, patchIdsByDevice, windowIds: new Set(), jobResultIds, failedWorkByJobResult };
+  // W04: the reboot backlog's resolved windows. `windowIds` admits only the
+  // windows of PLANNABLE devices; every device is in `rebootPlanByDevice` so
+  // the persister can name the exact reason an unplannable one is refused.
+  const windowIds = new Set<string>();
+  const rebootPlanByDevice = new Map<string, PatchRebootPlanRef>();
+  for (const row of evidence.sections.rebootBacklog.rows) {
+    if (!row.deviceId) continue;
+    const f = row.fields;
+    const unplannable = f.unplannableReason;
+    const ref: PatchRebootPlanRef = {
+      deviceId: row.deviceId,
+      windowId: typeof f.nextWindowId === 'string' ? f.nextWindowId : null,
+      windowStartsAt: typeof f.nextWindowStartsAt === 'string' ? f.nextWindowStartsAt : null,
+      windowEndsAt: typeof f.nextWindowEndsAt === 'string' ? f.nextWindowEndsAt : null,
+      rebootPolicy: typeof f.rebootPolicy === 'string' ? f.rebootPolicy : null,
+      redundancyGroup: typeof f.redundancyGroup === 'string' ? f.redundancyGroup : null,
+      unplannableReason: typeof unplannable === 'string' && (PATCH_REBOOT_UNPLANNABLE_REASONS as readonly string[]).includes(unplannable)
+        ? unplannable as PatchRebootUnplannableReason
+        : null,
+    };
+    rebootPlanByDevice.set(row.deviceId, ref);
+    if (ref.windowId && ref.unplannableReason === null) windowIds.add(ref.windowId);
+  }
+  return { deviceIds, patchIdsByDevice, windowIds, jobResultIds, failedWorkByJobResult, rebootPlanByDevice };
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +898,117 @@ async function stampMaintenance(orgId: string, sections: PatchEvidenceRow[][]): 
   }
 }
 
+// ---------------------------------------------------------------------------
+// W04 (#5750): reboot backlog enrichment — next window, reboot policy, redundancy
+// ---------------------------------------------------------------------------
+
+/**
+ * The redundancy group a device belongs to, for the "no two of these in one
+ * window" rule: a confident (or manual) `device_function_assessments`
+ * function key, else a `role:<x>` device tag, else null — and null is
+ * UNPLANNABLE, never "no constraint".
+ */
+export function redundancyGroupFor(row: {
+  tags: unknown;
+  function_key: unknown;
+  confidence: unknown;
+  source: unknown;
+}): string | null {
+  if (typeof row.function_key === 'string' && row.function_key.trim() !== '') {
+    const confidence = num(row.confidence);
+    const confident = row.source === 'manual'
+      || (confidence !== null && confidence >= PATCH_REDUNDANCY_MIN_CONFIDENCE);
+    if (confident) return row.function_key.trim();
+  }
+  for (const tag of strArray(row.tags)) {
+    if (tag.startsWith(PATCH_REDUNDANCY_TAG_PREFIX)) {
+      const group = tag.slice(PATCH_REDUNDANCY_TAG_PREFIX.length).trim();
+      if (group !== '') return group;
+    }
+  }
+  return null;
+}
+
+/**
+ * Why a pending-reboot device cannot be given a `reboot_plan`, or null when
+ * it can. Order matters only for which reason is named first; every one of
+ * them is a hard refusal in `patchPlan.ts`.
+ */
+export function rebootUnplannableReason(input: {
+  windowId: string | null;
+  rebootPolicy: string;
+  redundancyGroup: string | null;
+}): PatchRebootUnplannableReason | null {
+  if (input.windowId === null) return 'no_window_in_horizon';
+  if (input.rebootPolicy !== 'maintenance_window') return 'reboot_policy_not_window_gated';
+  if (input.redundancyGroup === null) return 'redundancy_unknown';
+  return null;
+}
+
+/**
+ * Stamps every reboot-backlog row with what the plan gate needs. The
+ * projector is the ONLY source of a window (never a synthesised time); the
+ * reboot policy is resolved through the same path `patchRebootHandler`
+ * reads (`resolvePatchConfigForDevice`), defaulting to `if_required` like
+ * the schema does; the redundancy group is ONE org-pinned read over the
+ * assessments projection and the device tags. A failure in any one source
+ * degrades to nulls (which the gate refuses as unresolved) and is reported —
+ * the run keeps going.
+ */
+async function enrichRebootBacklog(orgId: string, rows: PatchEvidenceRow[]): Promise<void> {
+  const shown = rows.slice(0, PATCH_EVIDENCE_MAX_ROWS_PER_SECTION);
+  const deviceIds = [...new Set(shown.map((r) => r.deviceId).filter((id): id is string => typeof id === 'string'))];
+  for (const row of shown) {
+    row.fields.nextWindowId = null;
+    row.fields.nextWindowStartsAt = null;
+    row.fields.nextWindowEndsAt = null;
+    row.fields.nextWindowSource = null;
+    row.fields.rebootPolicy = null;
+    row.fields.redundancyGroup = null;
+    row.fields.unplannableReason = null;
+  }
+  if (deviceIds.length === 0) return;
+
+  const windows = (await settled(orgId, 'rebootWindows', () => resolveNextMaintenanceWindows(deviceIds, orgId))) ?? new Map();
+
+  const policies = new Map<string, string>();
+  for (const deviceId of deviceIds) {
+    try {
+      const settings = await resolvePatchConfigForDevice(deviceId);
+      policies.set(deviceId, str(settings?.rebootPolicy) ?? 'if_required');
+    } catch (error) {
+      reportLoaderFailure(orgId, 'rebootPolicy', error);
+      policies.set(deviceId, 'if_required');
+    }
+  }
+
+  const groups = new Map<string, string | null>();
+  const redundancyRows = await settled(orgId, 'redundancy', async () => [...await dbModule.db.execute<{
+    id: string; tags: unknown; function_key: unknown; confidence: unknown; source: unknown;
+  }>(sql`
+    SELECT d.id, d.tags, a.function_key, a.confidence, a.source
+    FROM devices d
+    LEFT JOIN device_function_assessments a ON a.device_id = d.id AND a.org_id = d.org_id AND a.active = true
+    WHERE d.org_id = ${orgId}
+      AND d.id IN (${sql.join(deviceIds.map((id) => sql`${id}::uuid`), sql`, `)})
+  `)]);
+  for (const r of redundancyRows ?? []) groups.set(r.id, redundancyGroupFor(r));
+
+  for (const row of shown) {
+    if (!row.deviceId) continue;
+    const window = windows.get(row.deviceId) ?? null;
+    const rebootPolicy = policies.get(row.deviceId) ?? 'if_required';
+    const redundancyGroup = groups.get(row.deviceId) ?? null;
+    row.fields.nextWindowId = window?.windowId ?? null;
+    row.fields.nextWindowStartsAt = window ? window.startsAt.toISOString() : null;
+    row.fields.nextWindowEndsAt = window ? window.endsAt.toISOString() : null;
+    row.fields.nextWindowSource = window?.source ?? null;
+    row.fields.rebootPolicy = rebootPolicy;
+    row.fields.redundancyGroup = redundancyGroup;
+    row.fields.unplannableReason = rebootUnplannableReason({ windowId: window?.windowId ?? null, rebootPolicy, redundancyGroup });
+  }
+}
+
 function reportLoaderFailure(orgId: string, loader: string, error: unknown): void {
   console.warn('[patchEvidence] loader failed; section reported as unavailable', { orgId, loader, error });
   captureException(error, undefined, { service: 'aiAgents', operation: 'loadPatchEvidence', loader, orgId });
@@ -898,6 +1049,7 @@ export async function loadPatchEvidence(orgId: string, partnerId: string | null)
   const queuedOffline = await settled(orgId, 'queuedOffline', () => loadQueuedOffline(orgId));
 
   await stampMaintenance(orgId, [top?.rows ?? [], reboot?.rows ?? []]);
+  if (reboot) await enrichRebootBacklog(orgId, reboot.rows);
 
   return assemblePatchEvidence({
     rollup: { ...rollup, snapshot },

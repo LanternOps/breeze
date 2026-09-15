@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { PATCH_CHASE_MAX_ATTEMPTS, type PatchFailedWorkRef, type PatchPlanOutcome, type PatchPlanOutcomeRefs } from '@breeze/shared';
+import { PATCH_CHASE_MAX_ATTEMPTS, type PatchFailedWorkRef, type PatchPlanOutcome, type PatchPlanOutcomeRefs, type PatchRebootPlanRef } from '@breeze/shared';
 
 const state = vi.hoisted(() => ({
   rows: [] as unknown[][],
@@ -511,6 +511,104 @@ describe('persistPatchPlan — W03 chase gates', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// W04 (#5750): reboot plan items against resolved windows
+// ---------------------------------------------------------------------------
+describe('persistPatchPlan — W04 reboot_plan gates', () => {
+  const WIN_A = '00000000-0000-4000-8000-00000000c001@2026-09-16T02:00:00.000Z';
+  const WIN_B = '00000000-0000-4000-8000-00000000c002@2026-09-17T02:00:00.000Z';
+  const D3 = '00000000-0000-4000-8000-0000000000d3';
+  const D4 = '00000000-0000-4000-8000-0000000000d4';
+  const D5 = '00000000-0000-4000-8000-0000000000d5';
+  const rebootRef = (deviceId: string, over: Partial<PatchRebootPlanRef> = {}): PatchRebootPlanRef => ({
+    deviceId, windowId: WIN_A, windowStartsAt: '2026-09-16T02:00:00.000Z', windowEndsAt: '2026-09-16T04:00:00.000Z',
+    rebootPolicy: 'maintenance_window', redundancyGroup: 'dc', unplannableReason: null, ...over,
+  });
+  const w04refs: PatchPlanOutcomeRefs = {
+    deviceIds: new Set([D1, D2, D3, D4, D5]),
+    patchIdsByDevice: new Map(),
+    windowIds: new Set([WIN_A, WIN_B]),
+    jobResultIds: new Set(),
+    rebootPlanByDevice: new Map([
+      [D1, rebootRef(D1)],
+      [D2, rebootRef(D2)],                                   // same group + window as D1 → collision
+      [D3, rebootRef(D3, { windowId: WIN_B, windowStartsAt: '2026-09-17T02:00:00.000Z', windowEndsAt: '2026-09-17T04:00:00.000Z' })],
+      [D4, rebootRef(D4, { rebootPolicy: 'if_required', unplannableReason: 'reboot_policy_not_window_gated' })],
+      [D5, rebootRef(D5, { redundancyGroup: null, unplannableReason: 'redundancy_unknown' })],
+    ]),
+  };
+  const ok = () => { state.rows = [[{ id: D1 }, { id: D2 }, { id: D3 }, { id: D4 }, { id: D5 }]]; };
+
+  it('accepts a reboot_plan whose windowId is the one the evidence resolved for THAT device, carrying the window and group', async () => {
+    ok();
+    const { dispositions, intentIds } = await persistPatchPlan(run, plan([{ ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN_A }]), w04refs, agentAuth);
+    expect(dispositions[0]).toEqual({
+      index: 0, class: 'reboot_plan', deviceId: D1, disposition: 'recorded',
+      windowStartsAt: '2026-09-16T02:00:00.000Z', windowEndsAt: '2026-09-16T04:00:00.000Z', redundancyGroup: 'dc',
+    });
+    expect(intentIds).toEqual([]);
+  });
+
+  it('refuses a windowId the evidence did not resolve, and one resolved for a DIFFERENT device', async () => {
+    ok();
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'reboot_plan', deviceId: D1, windowId: '00000000-0000-4000-8000-00000000c009@2026-09-16T02:00:00.000Z' },
+      { ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN_B },
+    ]), w04refs, agentAuth);
+    expect(dispositions.map((d) => d.reason)).toEqual(['window_not_resolved', 'window_not_resolved']);
+  });
+
+  it('refuses a reboot_plan for a device whose policy is if_required or always (the system reboots those with no window check)', async () => {
+    ok();
+    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'reboot_plan', deviceId: D4, windowId: WIN_A }]), w04refs, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'reboot_policy_not_window_gated' });
+  });
+
+  it('refuses a reboot_plan for a device whose redundancy group is unknown', async () => {
+    ok();
+    const { dispositions } = await persistPatchPlan(run, plan([{ ...base, class: 'reboot_plan', deviceId: D5, windowId: WIN_A }]), w04refs, agentAuth);
+    expect(dispositions[0]).toMatchObject({ disposition: 'refused', reason: 'redundancy_unknown' });
+  });
+
+  it('refuses the SECOND of two accepted items that put the same redundancy group in the same window; a different window is fine', async () => {
+    ok();
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN_A },
+      { ...base, class: 'reboot_plan', deviceId: D2, windowId: WIN_A },
+      { ...base, class: 'reboot_plan', deviceId: D3, windowId: WIN_B },
+    ]), w04refs, agentAuth);
+    expect(dispositions.map((d) => [d.disposition, d.reason ?? null])).toEqual([
+      ['recorded', null], ['refused', 'redundancy_collision'], ['recorded', null],
+    ]);
+  });
+
+  it('mints NO intent for any reboot_plan item and dispatches nothing', async () => {
+    ok();
+    await persistPatchPlan(run, plan([
+      { ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN_A },
+      { ...base, class: 'reboot_plan', deviceId: D3, windowId: WIN_B },
+    ]), w04refs, agentAuth);
+    expect(w02.createActionIntent).not.toHaveBeenCalled();
+    expect(w02.resolveEligibility).not.toHaveBeenCalled();
+  });
+
+  it('an escalation for an unplannable device is recorded (visible), never refused for being unplannable', async () => {
+    ok();
+    const { dispositions } = await persistPatchPlan(run, plan([
+      { ...base, class: 'escalation', deviceId: D4 },
+      { ...base, class: 'escalation', deviceId: D5 },
+    ]), w04refs, agentAuth);
+    expect(dispositions.map((d) => d.disposition)).toEqual(['recorded', 'recorded']);
+  });
+
+  it('never dispatches a reboot or creates a window — asserted on the source', () => {
+    const src = readFileSync(join(__dirname, 'patchPlan.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(src).not.toMatch(/executeReboot|queueCommandForExecution|schedule_reboot|maintenanceWindows\)|insert\(/);
+  });
+});
+
 describe('projectPatch', () => {
   it('returns null when there is no patchPlan at all', () => {
     expect(projectPatch({ scheduleId: null, triggerRef: {} }, {}, new Map())).toBeNull();
@@ -563,6 +661,23 @@ describe('projectPatch', () => {
     expect(dto.items[0]).toMatchObject({ index: 0, deviceHostname: 'WS-01', patchCount: 1, disposition: 'recorded', reason: null });
     expect(dto.items[1]).toMatchObject({ deviceHostname: null, disposition: 'refused', reason: 'window_not_resolved' });
     expect(JSON.stringify(dto)).not.toContain(P1);
+  });
+});
+
+describe('projectPatch — W04 reboot plan fields', () => {
+  it('projects windowId and the recorded window/redundancy fields for a reboot_plan item, null elsewhere', () => {
+    const WIN_A = '00000000-0000-4000-8000-00000000c001@2026-09-16T02:00:00.000Z';
+    const outcome = plan([
+      { ...base, class: 'reboot_plan', deviceId: D1, windowId: WIN_A },
+      { ...base, class: 'escalation', deviceId: D2 },
+    ]);
+    outcome.dispositions = [
+      { index: 0, class: 'reboot_plan', deviceId: D1, disposition: 'recorded', windowStartsAt: '2026-09-16T02:00:00.000Z', windowEndsAt: '2026-09-16T04:00:00.000Z', redundancyGroup: 'dc' },
+      { index: 1, class: 'escalation', deviceId: D2, disposition: 'recorded' },
+    ];
+    const dto = projectPatch({ scheduleId: null, triggerRef: null }, { patchPlan: outcome }, new Map())!;
+    expect(dto.items[0]).toMatchObject({ windowId: WIN_A, windowStartsAt: '2026-09-16T02:00:00.000Z', windowEndsAt: '2026-09-16T04:00:00.000Z', redundancyGroup: 'dc' });
+    expect(dto.items[1]).toMatchObject({ windowId: null, windowStartsAt: null, windowEndsAt: null, redundancyGroup: null });
   });
 });
 
