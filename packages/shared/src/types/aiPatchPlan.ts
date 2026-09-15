@@ -225,11 +225,12 @@ export interface PatchPlanOutcomeRefs {
   /** W03: every failed `patch_job_results.id` the failedWork section showed. */
   jobResultIds: ReadonlySet<string>;
   /**
-   * W03: the failedWork groups, keyed `<deviceId>:<patchId>` — what a chase
-   * item's cited `failureClass`/`attemptCount` are checked against, and the
-   * job result ids that belong to each group. Absent on a W01/W02 bundle.
+   * W03: every shown failed job result id → its failedWork GROUP (device,
+   * patch, class, attempt count, sibling ids) — what a chase item's cited
+   * `failureClass`/`attemptCount` are checked against. Absent on a W01/W02
+   * bundle.
    */
-  failedWorkByDevicePatch?: ReadonlyMap<string, PatchFailedWorkRef>;
+  failedWorkByJobResult?: ReadonlyMap<string, PatchFailedWorkRef>;
 }
 
 /** W03: one failedWork evidence group as the persister sees it. */

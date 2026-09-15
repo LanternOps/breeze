@@ -1307,7 +1307,7 @@ describe('patch profile prompts (AI patch agent W01)', () => {
     expect(task).toContain('## Compliance rollup');
     expect(task).toContain('## Update rings (partner-wide)');
     expect(task).toContain('## Devices with the most outstanding patches (3 total)');
-    expect(task).toContain('## Failed patch work\n(not measured: not_collected_until_w03)');
+    expect(task).toContain('## Failed patch work\n(not measured: not_collected)');
     expect(task).toContain('## Devices waiting on a reboot\n(not measured: loader_failed)');
     expect(task).toContain('WS-01');
     expect(task).toContain('Cumulative Update KB5041234');

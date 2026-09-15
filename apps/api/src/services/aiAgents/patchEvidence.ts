@@ -68,19 +68,36 @@
  *  - `heldByDeferral` is `null`: the deferral predicate is private to
  *    `patchApprovalEvaluator` and W02 extracts it
  *    (`resolvePatchInstallEligibility`). Reported as a marked gap, not a guess.
- *  - `failedWork` ships as an unavailable shell; W03 fills it from
- *    `patch_job_results` (org reached through `patch_jobs.org_id` AND
- *    `devices.org_id` — that table has no tenant column of its own).
+ *  - (closed by W03) `failedWork` is now read from `patch_job_results`.
+ *
+ * ## Failed work (W03, #5749)
+ *
+ * `patch_job_results` has NO `org_id` and NO `partner_id`. The loader reaches
+ * the org through `patch_jobs.org_id = $orgId` AND re-pins `devices.org_id =
+ * $orgId` — under the system context a `device_id`-only join is a
+ * cross-tenant read. Only `status = 'failed'` rows with a `patch_id` count:
+ * `queued` is the delivery clock (an offline device waiting for its next
+ * heartbeat, #5128 W3), reported separately as `queuedOffline` so the model
+ * states it as coverage instead of inventing a chase; `patch_id IS NULL` is a
+ * whole-device summary row. A reboot-required SUCCESSFUL install is
+ * `completed`, never a failure row (#4228). Rows are classified in
+ * TypeScript by the pure `classifyPatchFailure` (server fields only) and
+ * grouped by `(device, patch, class)` with an attempt count; the raw window
+ * is bounded (`PATCH_FAILED_WORK_WINDOW_DAYS`, `PATCH_FAILED_WORK_MAX_RAW_ROWS`)
+ * and a capped window flags the section truncated so an attempt count is
+ * never presented as complete. `patch_job_results.output` is never selected;
+ * the one free-text field, `error_message`, is bounded to 256 chars.
  */
 import { sql, type SQL } from 'drizzle-orm';
 
-import type { PatchPlanOutcomeRefs } from '@breeze/shared';
+import { PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM, type PatchFailedWorkRef, type PatchFailureClass, type PatchPlanOutcomeRefs } from '@breeze/shared';
 
 // Late-bound namespace import — see sweepEvidence.ts on why (vi.mock).
 import * as dbModule from '../../db';
 import { OUTSTANDING_DEVICE_PATCH_STATUSES } from '../../db/schema';
 import { isCategoryAllowed, parseRingAutoApprove } from '../patchApprovalEvaluator';
 import { isInMaintenanceWindow, resolveMaintenanceConfigForDevice } from '../featureConfigResolver';
+import { classifyPatchFailure } from '../patchFailureClass';
 import { captureException } from '../sentry';
 import { sanitizeSweepText } from './runnerPrompt';
 
@@ -93,6 +110,10 @@ export const PATCH_EVIDENCE_MAX_PATCHES_PER_DEVICE = 8;
  *  every emitted text field ≤ 256 chars. */
 const MAX_TEXT_CHARS = 255;
 const MAX_CATEGORY_NAMES = 10;
+/** W03: how far back failed `patch_job_results` count as attempt history. */
+export const PATCH_FAILED_WORK_WINDOW_DAYS = 30;
+/** W03: the raw failed-row fetch cap; hitting it flags the section truncated. */
+export const PATCH_FAILED_WORK_MAX_RAW_ROWS = 2000;
 
 export const PATCH_EVIDENCE_ROW_SECTIONS = ['ringPosture', 'topNonCompliant', 'failedWork', 'rebootBacklog'] as const;
 export type PatchEvidenceSectionKey = (typeof PATCH_EVIDENCE_ROW_SECTIONS)[number];
@@ -116,6 +137,8 @@ export interface PatchEvidenceRow {
   fields: Record<string, Scalar>;
   /** topNonCompliant only: a most-severe-first sample of outstanding patches. */
   patches?: PatchEvidencePatch[];
+  /** failedWork only (W03): the failed `patch_job_results.id`s in this group, newest first, capped. */
+  jobResultIds?: string[];
 }
 
 export interface PatchEvidenceSection {
@@ -160,13 +183,23 @@ export interface PatchEvidence {
   truncated: boolean;
   /** Sections that could not be measured. */
   unavailable: PatchEvidenceSectionKey[];
+  /**
+   * W03: `patch_job_results` rows in `queued` — installs waiting for an
+   * OFFLINE device's next heartbeat. A coverage note, never failed work.
+   * `null` = not measured.
+   */
+  queuedOffline: number | null;
 }
 
-type RawSection = { rows: PatchEvidenceRow[]; total: number } | { unavailable: string };
+type RawSection =
+  | { rows: PatchEvidenceRow[]; total: number; /** the loader hit its own raw cap */ truncated?: boolean }
+  | { unavailable: string };
 
 export interface RawPatchEvidence {
   rollup: PatchEvidenceRollup | null;
-  sections: Record<Exclude<PatchEvidenceSectionKey, 'failedWork'>, RawSection>;
+  /** `failedWork` is optional so a W01/W02-shaped fixture still assembles (as not collected). */
+  sections: Record<Exclude<PatchEvidenceSectionKey, 'failedWork'>, RawSection> & { failedWork?: RawSection };
+  queuedOffline?: number | null;
 }
 
 /** The compliance rollup could not be read — there is nothing to plan for. */
@@ -191,6 +224,11 @@ function cleanRow(row: PatchEvidenceRow): PatchEvidenceRow {
     fields[key] = typeof value === 'string' ? sanitizeSweepText(value, MAX_TEXT_CHARS * 8) : value;
   }
   const out: PatchEvidenceRow = { deviceId: row.deviceId, hostname: cleanText(row.hostname), fields };
+  if (row.jobResultIds) {
+    out.jobResultIds = row.jobResultIds
+      .filter((id): id is string => typeof id === 'string')
+      .slice(0, PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM);
+  }
   if (row.patches) {
     out.patches = row.patches.slice(0, PATCH_EVIDENCE_MAX_PATCHES_PER_DEVICE).map((p) => ({
       patchId: p.patchId,
@@ -217,13 +255,7 @@ export function assemblePatchEvidence(raw: RawPatchEvidence): PatchEvidence {
   let truncated = false;
 
   for (const key of PATCH_EVIDENCE_ROW_SECTIONS) {
-    if (key === 'failedWork') {
-      // W03 fills this from patch_job_results. Shipping the shell now fixes
-      // the bundle shape (and the prompt's section list) so W03 is additive.
-      sections.failedWork = { available: false, reason: 'not_collected_until_w03', rows: [], total: 0, truncated: false };
-      continue;
-    }
-    const entry = raw.sections[key];
+    const entry: RawSection = raw.sections[key] ?? { unavailable: 'not_collected' };
     if ('unavailable' in entry) {
       sections[key] = { available: false, reason: entry.unavailable, rows: [], total: 0, truncated: false };
       unavailable.push(key);
@@ -231,15 +263,16 @@ export function assemblePatchEvidence(raw: RawPatchEvidence): PatchEvidence {
     }
     const overflowed = entry.rows.length > PATCH_EVIDENCE_MAX_ROWS_PER_SECTION;
     const patchesCapped = entry.rows.some((r) => (r.patches?.length ?? 0) > PATCH_EVIDENCE_MAX_PATCHES_PER_DEVICE);
+    const loaderCapped = entry.truncated === true;
     if (overflowed) truncated = true;
     sections[key] = {
       available: true,
       reason: null,
       rows: entry.rows.slice(0, PATCH_EVIDENCE_MAX_ROWS_PER_SECTION).map(cleanRow),
       total: entry.total,
-      truncated: overflowed || patchesCapped,
+      truncated: overflowed || patchesCapped || loaderCapped,
     };
-    if (patchesCapped) truncated = true;
+    if (patchesCapped || loaderCapped) truncated = true;
   }
 
   // Byte ceiling: each pass drops ONE whole row — the last row of whichever
@@ -258,30 +291,51 @@ export function assemblePatchEvidence(raw: RawPatchEvidence): PatchEvidence {
     truncated = true;
   }
 
-  return { rollup: raw.rollup, sections, truncated, unavailable };
+  return { rollup: raw.rollup, sections, truncated, unavailable, queuedOffline: raw.queuedOffline ?? null };
 }
 
 /**
  * The referential refs `submit_patch_plan` and `persistPatchPlan` check every
  * item against — built from the ASSEMBLED bundle (what the model was shown),
- * never from a second query. W01 resolves no maintenance-window ids and no
- * failed job results, so those two sets are always empty.
+ * never from a second query. No maintenance-window ids resolve yet (W04), so
+ * `windowIds` is always empty. W03: a failedWork row admits its device and
+ * its patch (a chase names both) and every shown job result id, each mapped
+ * to its group so the persister can check a quoted class / attempt count.
  */
 export function patchEvidenceRefs(evidence: PatchEvidence): PatchPlanOutcomeRefs {
   const deviceIds = new Set<string>();
   const patchIdsByDevice = new Map<string, Set<string>>();
+  const admitPatch = (deviceId: string, patchId: string) => {
+    const set = patchIdsByDevice.get(deviceId) ?? new Set<string>();
+    set.add(patchId);
+    patchIdsByDevice.set(deviceId, set);
+  };
   for (const key of ['topNonCompliant', 'rebootBacklog'] as const) {
     for (const row of evidence.sections[key].rows) {
       if (!row.deviceId) continue;
       deviceIds.add(row.deviceId);
-      if (row.patches && row.patches.length > 0) {
-        const set = patchIdsByDevice.get(row.deviceId) ?? new Set<string>();
-        for (const p of row.patches) set.add(p.patchId);
-        patchIdsByDevice.set(row.deviceId, set);
-      }
+      for (const p of row.patches ?? []) admitPatch(row.deviceId, p.patchId);
     }
   }
-  return { deviceIds, patchIdsByDevice, windowIds: new Set(), jobResultIds: new Set() };
+  const jobResultIds = new Set<string>();
+  const failedWorkByJobResult = new Map<string, PatchFailedWorkRef>();
+  for (const row of evidence.sections.failedWork.rows) {
+    const patchId = row.fields.patchId;
+    const failureClass = row.fields.failureClass;
+    const attemptCount = row.fields.attemptCount;
+    if (!row.deviceId || typeof patchId !== 'string' || typeof failureClass !== 'string' || typeof attemptCount !== 'number') continue;
+    deviceIds.add(row.deviceId);
+    admitPatch(row.deviceId, patchId);
+    const ids = row.jobResultIds ?? [];
+    const group: PatchFailedWorkRef = {
+      deviceId: row.deviceId, patchId, failureClass: failureClass as PatchFailureClass, attemptCount, jobResultIds: [...ids],
+    };
+    for (const id of ids) {
+      jobResultIds.add(id);
+      failedWorkByJobResult.set(id, group);
+    }
+  }
+  return { deviceIds, patchIdsByDevice, windowIds: new Set(), jobResultIds, failedWorkByJobResult };
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +678,122 @@ async function loadRebootBacklog(orgId: string): Promise<{ rows: PatchEvidenceRo
   };
 }
 
+// ---------------------------------------------------------------------------
+// W03 (#5749): failed work
+// ---------------------------------------------------------------------------
+
+/**
+ * The org pin on BOTH legs (see the header): `patch_job_results` has no
+ * tenant column, so the org is reached through the job AND re-pinned on the
+ * device. Callers alias the tables `r`, `j` and `d`.
+ */
+function orgPinnedJobResults(orgId: string): SQL {
+  return sql`JOIN patch_jobs j ON j.id = r.job_id AND j.org_id = ${orgId}
+    JOIN devices d ON d.id = r.device_id AND d.org_id = ${orgId}
+      AND d.is_ephemeral = false
+      AND d.status <> 'decommissioned'`;
+}
+
+interface FailedWorkGroup {
+  deviceId: string;
+  hostname: string | null;
+  patchId: string;
+  patchTitle: string | null;
+  failureClass: PatchFailureClass;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  errorExcerpt: string | null;
+  jobResultIds: string[];
+}
+
+async function loadFailedWork(orgId: string): Promise<{ rows: PatchEvidenceRow[]; total: number; truncated: boolean }> {
+  // ONE statement, newest first, bounded by the window and the raw cap. The
+  // classifier is a pure TypeScript function; a SQL CASE ladder would be a
+  // second implementation of it.
+  const raw = [...await dbModule.db.execute<{
+    id: string; device_id: string; hostname: unknown; patch_id: string; title: unknown; status: unknown;
+    error_message: unknown; exit_code: unknown; created_at: unknown; completed_at: unknown; total_count: unknown;
+  }>(sql`
+    SELECT r.id, r.device_id, d.hostname, r.patch_id, p.title, r.status, r.error_message, r.exit_code,
+           r.created_at, r.completed_at, COUNT(*) OVER () AS total_count
+    FROM patch_job_results r
+    ${orgPinnedJobResults(orgId)}
+    JOIN patches p ON p.id = r.patch_id
+    WHERE r.status = 'failed'
+      AND r.patch_id IS NOT NULL
+      AND r.created_at >= now() - make_interval(days => ${PATCH_FAILED_WORK_WINDOW_DAYS})
+    ORDER BY r.created_at DESC, r.id ASC
+    LIMIT ${PATCH_FAILED_WORK_MAX_RAW_ROWS}
+  `)];
+
+  const groups = new Map<string, FailedWorkGroup>();
+  for (const row of raw) {
+    const status = str(row.status) ?? '';
+    // Defensive: the WHERE already pins `failed`; a non-failed row here is a
+    // loader defect, and the classifier throws rather than launder it.
+    const failureClass = classifyPatchFailure({ status, errorMessage: str(row.error_message), exitCode: num(row.exit_code) });
+    const key = `${row.device_id}:${row.patch_id}:${failureClass}`;
+    const attemptAt = iso(row.completed_at) ?? iso(row.created_at);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        deviceId: row.device_id,
+        hostname: str(row.hostname),
+        patchId: row.patch_id,
+        patchTitle: str(row.title),
+        failureClass,
+        attemptCount: 0,
+        lastAttemptAt: attemptAt,
+        // Newest row first (ORDER BY created_at DESC), so the first excerpt
+        // seen is the most recent attempt's.
+        errorExcerpt: cleanText(str(row.error_message)),
+        jobResultIds: [],
+      };
+      groups.set(key, group);
+    }
+    group.attemptCount += 1;
+    if (attemptAt && (!group.lastAttemptAt || attemptAt > group.lastAttemptAt)) group.lastAttemptAt = attemptAt;
+    if (group.jobResultIds.length < PATCH_PLAN_MAX_JOB_RESULT_IDS_PER_ITEM) group.jobResultIds.push(row.id);
+  }
+
+  const ordered = [...groups.values()].sort((a, b) =>
+    b.attemptCount - a.attemptCount
+    || (b.lastAttemptAt ?? '').localeCompare(a.lastAttemptAt ?? '')
+    || a.deviceId.localeCompare(b.deviceId)
+    || a.patchId.localeCompare(b.patchId));
+
+  return {
+    rows: ordered.map((g): PatchEvidenceRow => ({
+      deviceId: g.deviceId,
+      hostname: g.hostname,
+      fields: {
+        patchId: g.patchId,
+        patchTitle: g.patchTitle,
+        failureClass: g.failureClass,
+        attemptCount: g.attemptCount,
+        lastAttemptAt: g.lastAttemptAt,
+        errorExcerpt: g.errorExcerpt,
+      },
+      jobResultIds: g.jobResultIds,
+    })),
+    total: ordered.length,
+    // The raw window was cut, so some group's attempt count is a floor.
+    truncated: raw.length >= PATCH_FAILED_WORK_MAX_RAW_ROWS || int(raw[0]?.total_count) > raw.length,
+  };
+}
+
+/** Installs waiting for an OFFLINE device — `queued` is the delivery clock, not a failure. */
+async function loadQueuedOffline(orgId: string): Promise<number> {
+  const rows = [...await dbModule.db.execute<{ n: unknown }>(sql`
+    SELECT COUNT(*)::int AS n
+    FROM patch_job_results r
+    ${orgPinnedJobResults(orgId)}
+    WHERE r.status = 'queued'
+      AND r.created_at >= now() - make_interval(days => ${PATCH_FAILED_WORK_WINDOW_DAYS})
+  `)];
+  return int(rows[0]?.n);
+}
+
 /**
  * Stamps `maintenanceWindowResolves` / `inMaintenanceNow` onto the rows that
  * will actually be shown (capped first — never one lookup per uncapped row).
@@ -704,6 +874,8 @@ export async function loadPatchEvidence(orgId: string, partnerId: string | null)
     : (await settled(orgId, 'ringPosture', () => loadRingPosture(orgId, partnerId))) ?? { unavailable: 'loader_failed' };
   const top = await settled(orgId, 'topNonCompliant', () => loadTopNonCompliant(orgId));
   const reboot = await settled(orgId, 'rebootBacklog', () => loadRebootBacklog(orgId));
+  const failed = await settled(orgId, 'failedWork', () => loadFailedWork(orgId));
+  const queuedOffline = await settled(orgId, 'queuedOffline', () => loadQueuedOffline(orgId));
 
   await stampMaintenance(orgId, [top?.rows ?? [], reboot?.rows ?? []]);
 
@@ -713,6 +885,8 @@ export async function loadPatchEvidence(orgId: string, partnerId: string | null)
       ringPosture: rings,
       topNonCompliant: top ?? { unavailable: 'loader_failed' },
       rebootBacklog: reboot ?? { unavailable: 'loader_failed' },
+      failedWork: failed ?? { unavailable: 'loader_failed' },
     },
+    queuedOffline,
   });
 }
