@@ -22,6 +22,7 @@ import {
   upsertSoftwareComplianceStatuses,
   withStableViolationTimestamps,
   type SoftwarePolicyComplianceStatus,
+  type SoftwarePolicyInstallRemediationStatus,
   type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
@@ -240,6 +241,117 @@ export function shouldQueueAutoRemediation(input: {
   }
 
   return { queue: true };
+}
+
+/** Why an install was not queued for a device on this pass. */
+export type InstallRemediationSkipReason =
+  | AutoRemediationDeferralReason
+  | 'no_missing_violations'
+  | 'no_catalog_id'
+  | 'attempts_exhausted'
+  | 'pass_cap';
+
+export type InstallRemediationDecision =
+  | { queue: true; catalogIds: string[]; attempt: number }
+  | { queue: false; reason: InstallRemediationSkipReason };
+
+/**
+ * The whole install gate for one device, as a pure function (feature #5505 W02).
+ *
+ * GATE ORDER IS DELIBERATE and is the part most worth reading twice:
+ *
+ *  1. `missing` violations at all? A device whose only violations are
+ *     `unauthorized` is not an install candidate — the uninstall verb owns it.
+ *  2. Any of them carry a catalogId? A rule without one can be DETECTED as
+ *     missing but cannot be installed: there is nothing to install. Spec §4
+ *     requires the worker to skip it and say so rather than fail silently, so
+ *     this maps to a visible 'skipped'. Checked before the timing gates because
+ *     it is a policy-authoring defect the technician has to see now, not in two
+ *     hours when the cooldown lapses.
+ *  3. Consecutive attempts exhausted? Checked BEFORE grace/cooldown so an
+ *     exhausted device reports the honest terminal reason ('gave_up') instead
+ *     of disappearing behind an incidental cooldown. This is the terminator for
+ *     spec Risks §1: a policy whose rule never matches what the installer
+ *     registers in Add/Remove Programs would otherwise reinstall forever.
+ *  4. Timing (in_progress / grace / cooldown), via the SAME
+ *     shouldQueueAutoRemediation the uninstall verb uses, with the grace clock
+ *     pointed at the `missing` violations (contract D10).
+ *  5. Per-pass cap LAST. The cap must only be consumed by devices that would
+ *     genuinely have queued; checking it earlier would let devices sitting in
+ *     cooldown eat the budget and starve devices that are actually ready.
+ *
+ * Pure and total: no I/O, no clock read, no env read. Every input is supplied
+ * by the caller so the whole matrix is testable without a database.
+ */
+export function decideInstallRemediation(input: {
+  violations: SoftwarePolicyViolation[];
+  previousInstallStatus: string | null;
+  lastInstallAttempt: Date | null;
+  attempts: number;
+  now: Date;
+  gracePeriodHours: number;
+  cooldownMinutes: number;
+  maxAttempts: number;
+  capRemaining: number;
+}): InstallRemediationDecision {
+  const missingViolations = input.violations.filter(
+    (violation) => !!violation && violation.type === 'missing'
+  );
+  if (missingViolations.length === 0) {
+    return { queue: false, reason: 'no_missing_violations' };
+  }
+
+  const catalogIds: string[] = [];
+  for (const violation of missingViolations) {
+    const raw = violation.rule?.catalogId;
+    if (typeof raw !== 'string') continue;
+    const catalogId = raw.trim();
+    if (catalogId.length === 0) continue;
+    if (!catalogIds.includes(catalogId)) catalogIds.push(catalogId);
+  }
+  if (catalogIds.length === 0) {
+    return { queue: false, reason: 'no_catalog_id' };
+  }
+
+  const attempts = Number.isFinite(input.attempts) ? Math.max(0, Math.floor(input.attempts)) : 0;
+  if (attempts >= input.maxAttempts) {
+    return { queue: false, reason: 'attempts_exhausted' };
+  }
+
+  const timing = shouldQueueAutoRemediation({
+    violations: input.violations,
+    violationType: 'missing',
+    previousRemediationStatus: input.previousInstallStatus,
+    lastRemediationAttempt: input.lastInstallAttempt,
+    now: input.now,
+    gracePeriodHours: input.gracePeriodHours,
+    cooldownMinutes: input.cooldownMinutes,
+  });
+  if (!timing.queue && timing.reason) {
+    return { queue: false, reason: timing.reason };
+  }
+
+  if (input.capRemaining <= 0) {
+    return { queue: false, reason: 'pass_cap' };
+  }
+
+  return { queue: true, catalogIds, attempt: attempts + 1 };
+}
+
+/**
+ * What (if anything) a skip should write to install_remediation_status.
+ *
+ * Timing deferrals write NOTHING, mirroring the uninstall path: a device inside
+ * grace or cooldown has no new status to report, and overwriting a live
+ * 'pending' with 'skipped' would tell a technician Breeze abandoned an install
+ * that is in fact still in flight.
+ */
+export function installStatusForSkip(
+  reason: InstallRemediationSkipReason
+): SoftwarePolicyInstallRemediationStatus | undefined {
+  if (reason === 'attempts_exhausted') return 'gave_up';
+  if (reason === 'no_catalog_id' || reason === 'pass_cap') return 'skipped';
+  return undefined;
 }
 
 type ScanPoliciesJobData = {
