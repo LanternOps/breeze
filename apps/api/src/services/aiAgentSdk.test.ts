@@ -8,7 +8,9 @@ const RELEASED_INTENT_DECISION = { approvalScope: 'four_eyes', decidedVia: 'sess
 const RELEASED_CONTEXT = { releaseDecision: RELEASED_INTENT_DECISION };
 import { createSessionPostToolUse, createSessionPreToolUse, runPreFlightChecks, safeParseJson } from './aiAgentSdk';
 import { db } from '../db';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
+import { checkTenantToolRateLimit } from './toolSources/guardrails';
+import type { TenantToolDescriptor } from './toolSources/resolver';
 import { waitForApproval } from './aiAgent';
 import type { ActionIntentSnapshot } from './actionIntents/intentService';
 import type { IntentReleaseRevalidation } from './actionIntents/revalidateRelease';
@@ -82,6 +84,14 @@ vi.mock('./aiGuardrails', () => ({
   checkGuardrails: vi.fn(),
   checkToolPermission: vi.fn(),
   checkToolRateLimit: vi.fn(),
+  checkPermissionRequirements: vi.fn(),
+}));
+
+// Real guardrailCheckForTenantTool/tenantToolPermissionRequirement (pure,
+// no side effects) — only checkTenantToolRateLimit (redis) is mocked.
+vi.mock('./toolSources/guardrails', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./toolSources/guardrails')>()),
+  checkTenantToolRateLimit: vi.fn(),
 }));
 
 const mockWriteAuditEvent = vi.fn();
@@ -299,8 +309,29 @@ function makeActiveSession(overrides: Record<string, unknown> = {}) {
     toolUseIdQueue: ['tool-use-1'],
     auditSnapshot: null,
     allowedTools: undefined,
+    tenantTools: new Map(),
     ...overrides,
   } as any;
+}
+
+function makeTenantToolDescriptor(overrides: Partial<TenantToolDescriptor> = {}): TenantToolDescriptor {
+  return {
+    id: 'tool-1',
+    sourceId: 'source-1',
+    sourceName: 'Hudu',
+    sourceKind: 'mcp',
+    ownerRef: { orgId: 'org-1', partnerId: null },
+    qualifiedName: 'hudu__get_asset',
+    name: 'get_asset',
+    description: 'Get an asset',
+    inputSchema: { type: 'object' },
+    tier: 1,
+    revision: 'rev-1',
+    rateLimitPerMinute: 60,
+    validate: () => ({ success: true }),
+    definition: { name: 'hudu__get_asset', description: 'Get an asset', input_schema: { type: 'object' } },
+    ...overrides,
+  };
 }
 
 // Typed as the real snapshot so an omitted field is a COMPILE error rather
@@ -728,6 +759,58 @@ describe('createSessionPreToolUse', () => {
       status: 'executing',
     }));
     expect(waitForApproval).not.toHaveBeenCalled();
+  });
+
+  describe('Task A10: tenant (BYO MCP) tools', () => {
+    beforeEach(() => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue(null);
+      vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    });
+
+    it('a non-registered, non-tenant tool name is denied as Unknown tool', async () => {
+      const session = makeActiveSession();
+      const result = await createSessionPreToolUse(session)('not_a_real_tool', {});
+      expect(result).toEqual({ allowed: false, error: 'Unknown tool: not_a_real_tool' });
+    });
+
+    it('allows a tier-1 tenant tool after checkPermissionRequirements resolves null', async () => {
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', { id: 'a-1' });
+
+      expect(result).toEqual({ allowed: true, intentId: undefined, context: undefined });
+      expect(checkPermissionRequirements).toHaveBeenCalledWith(
+        session.auth,
+        [{ resource: 'external_tools', action: 'use' }],
+      );
+      expect(checkTenantToolRateLimit).toHaveBeenCalledWith(descriptor, session.auth.user.id);
+      // Never routed through the core-tool RBAC/rate-limit checks.
+      expect(checkToolPermission).not.toHaveBeenCalled();
+      expect(checkToolRateLimit).not.toHaveBeenCalled();
+    });
+
+    it('denies a tenant tool when checkPermissionRequirements returns a denial string', async () => {
+      vi.mocked(checkPermissionRequirements).mockResolvedValue('Insufficient permissions: requires external_tools.use');
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__get_asset', tier: 1 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__get_asset', {});
+
+      expect(result).toEqual({ allowed: false, error: 'Insufficient permissions: requires external_tools.use' });
+    });
+
+    it('denies a tier-3 tenant tool with the "next release" message rather than routing into the intents flow', async () => {
+      const descriptor = makeTenantToolDescriptor({ qualifiedName: 'hudu__create_asset', tier: 3 });
+      const session = makeActiveSession({ tenantTools: new Map([[descriptor.qualifiedName, descriptor]]) });
+
+      const result = await createSessionPreToolUse(session)('hudu__create_asset', {});
+
+      expect(result).toEqual({
+        allowed: false,
+        error: 'This external tool requires approval; approval support for external tools ships in the next release.',
+      });
+    });
   });
 
   describe('#3130: read-only Tier 2 auto-executes under per_step', () => {

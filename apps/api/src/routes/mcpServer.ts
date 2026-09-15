@@ -25,7 +25,11 @@ import { breezeRegion, MCP_OAUTH_ENABLED, OAUTH_ISSUER } from '../config/env';
 import { apiKeyAuthMiddleware, requireApiKeyScope } from '../middleware/apiKeyAuth';
 import { bearerTokenAuthMiddleware, resolvePartnerAccessibleOrgIds } from '../middleware/bearerTokenAuth';
 import { getToolDefinitions, executeTool, getToolTier } from '../services/aiTools';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirement, checkPermissionRequirements, TIER3_ACTIONS } from '../services/aiGuardrails';
+import { isTenantToolName } from '@breeze/shared/validators';
+import { resolveTenantTools, resolveTenantToolByName } from '../services/toolSources/resolver';
+import { executeTenantTool } from '../services/toolSources/execute';
+import { tenantToolPermissionRequirement, checkTenantToolRateLimit } from '../services/toolSources/guardrails';
 import { db } from '../db';
 import { readWithPartnerAxisVisibility } from '../db/partnerAxisRead';
 import { devices, alerts, scripts, automations, partners, organizations } from '../db/schema';
@@ -1111,7 +1115,20 @@ async function handleToolsList(
   // that can never push reads as if some bootstrap tool might be listed.
   // `handleToolsCall` denies them with MCP_APPROVAL_REQUIRED to match.
 
-  return jsonRpcResult(id, { tools: result });
+  // Tenant (BYO MCP) tools — Task A10. Same scope formula as the core
+  // registry above (tier 1 = ai:read; tier 2 = ai:write; tier 3 = ai:execute
+  // + the execute_admin lever), applied to each descriptor's own tier.
+  const tenant = await resolveTenantTools(auth);
+  const tenantResult = tenant
+    .filter(
+      (d) =>
+        d.tier <= 1 ||
+        (d.tier === 2 && hasWrite) ||
+        (d.tier === 3 && hasExecute && (!requireExecuteAdmin || hasExecuteAdmin)),
+    )
+    .map((d) => d.definition);
+
+  return jsonRpcResult(id, { tools: [...result, ...tenantResult] });
 }
 
 // ============================================
@@ -1132,6 +1149,15 @@ async function handleToolsCall(
 
   if (!requestedToolName) {
     return jsonRpcError(id, -32602, 'Missing required parameter: name');
+  }
+
+  // Tenant (BYO MCP) tools — Task A10. Named `<slug>__<name>` (never true of
+  // any core registry name — asserted by aiToolsRegistryParity.test.ts), so
+  // the dispatch is unambiguous by name shape alone. Handled by its own path
+  // entirely: it never touches getToolTier/checkGuardrails/checkToolPermission,
+  // which know nothing about tenant tools.
+  if (isTenantToolName(requestedToolName)) {
+    return handleTenantToolCall(id, requestedToolName, toolInput, auth, scopes, apiKey, c, sessionId);
   }
 
   // Resolve deprecated tool names ONCE, here, before any name-keyed gate below
@@ -1369,6 +1395,123 @@ async function handleToolsCall(
     },
     execute,
   );
+}
+
+/**
+ * `tools/call` dispatch for a tenant (BYO MCP) tool — Task A10. Mirrors the
+ * core `handleToolsCall` path's ORDER of checks (resolve → MCP approval gate
+ * → scope gates → RBAC → rate limit → execution-org resolution → execute →
+ * audit), but against the tenant descriptor's own tier and the tenant
+ * (`toolSources/*`) guardrail adapters rather than the core registry's.
+ *
+ * Tier 3 external tools are denied over MCP exactly like a core Tier 3 tool
+ * (`isMcpApprovalRequired`) — this transport has no interactive approval
+ * surface; PR B's action-intents flow does not extend to MCP.
+ */
+async function handleTenantToolCall(
+  id: string | number,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  auth: AuthContext,
+  scopes: string[],
+  apiKey?: McpApiKeyContext,
+  c?: Context,
+  sessionId?: string,
+): Promise<JsonRpcResponse> {
+  const d = await resolveTenantToolByName(auth, toolName);
+  if (!d) {
+    return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
+  }
+  const tier = d.tier;
+
+  // Same unconditional interactive-approval-only gate as core (see
+  // MCP_APPROVAL_REQUIRED_EXTRA_TOOLS's block comment) — checked BEFORE the
+  // scope gates below, same as core.
+  if (isMcpApprovalRequired(toolName, tier)) {
+    return jsonRpcResult(id, {
+      content: [{ type: 'text', text: JSON.stringify(MCP_APPROVAL_REQUIRED_ERROR) }],
+      isError: true,
+    });
+  }
+
+  const hasExecute = scopes.includes('ai:execute');
+  const requireExecuteAdmin = shouldRequireExecuteAdminInProd();
+  const hasExecuteAdmin = scopes.includes('ai:execute_admin');
+  const hasWrite = hasExecute || scopes.includes('ai:write');
+
+  if (tier >= 3 && !hasExecute) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute scope`);
+  }
+  if (tier >= 3 && requireExecuteAdmin && !hasExecuteAdmin) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:execute_admin scope in production`);
+  }
+  if (tier === 2 && !hasWrite) {
+    return jsonRpcError(id, -32603, `Tool "${toolName}" requires ai:write scope`);
+  }
+
+  // RBAC permission check
+  try {
+    const permError = await checkPermissionRequirements(auth, [tenantToolPermissionRequirement(tier)]);
+    if (permError) {
+      return jsonRpcError(id, -32603, permError);
+    }
+  } catch (err) {
+    console.error('[MCP] Permission check failed for tenant tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify permissions');
+  }
+
+  // Per-source rate limit
+  try {
+    const rateLimitErr = await checkTenantToolRateLimit(d, auth.user.id);
+    if (rateLimitErr) {
+      return jsonRpcError(id, -32000, rateLimitErr);
+    }
+  } catch (err) {
+    console.error('[MCP] Tenant tool rate limit check failed for:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to verify rate limits');
+  }
+
+  // Authoritative execution org — same resolver core tools use. Tenant tools
+  // have no `deviceArgs` of their own, so device-target resolution is a no-op
+  // and this always falls back to the attribution-only path.
+  let executionOrgId: string | null;
+  try {
+    ({ orgId: executionOrgId } = await resolveMcpExecutionContext({
+      auth,
+      apiKey: apiKey ?? null,
+      toolName,
+      toolInput,
+      deviceArgsForTool: async () => undefined,
+    }));
+  } catch (err) {
+    if (err instanceof McpExecutionOrgError) {
+      return jsonRpcError(id, -32602, 'Invalid params');
+    }
+    console.error('[MCP] Failed to resolve execution org for tenant tool:', toolName, err);
+    return jsonRpcError(id, -32000, 'Unable to resolve execution organization');
+  }
+
+  const startTime = Date.now();
+  const resultText = await executeTenantTool(d, toolInput, auth, {
+    surface: 'mcp',
+    orgId: executionOrgId,
+    actor: apiKey ? { kind: 'api_key', id: apiKey.id } : undefined,
+  });
+
+  writeMcpToolAuditEvent(c, {
+    apiKey,
+    auth,
+    sessionId,
+    orgId: executionOrgId,
+    toolName,
+    tier,
+    toolInput,
+    durationMs: Date.now() - startTime,
+    status: 'success',
+    result: resultText,
+  });
+
+  return jsonRpcResult(id, { content: [{ type: 'text', text: resultText }] });
 }
 
 /**
