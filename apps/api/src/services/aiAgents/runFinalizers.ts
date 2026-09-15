@@ -218,6 +218,20 @@ export async function finalizeSweep(ctx: RunContext, result: LoopResult): Promis
           ?? AI_AGENT_LIMIT_DEFAULTS.maxActionsPerRun,
         evidenceDeviceIds,
         evidenceSubjects,
+        // #4442 W05 — the three caps the readiness cohort walks against. The
+        // first two mirror what `runAuthorizeTransaction` enforces per intent;
+        // the cohort only bounds over-subscription across the occurrence. `??`
+        // tolerates a pre-v13 in-flight policy snapshot, which predates the
+        // per-occurrence device cap entirely.
+        maxFleetPercentPerDay:
+          ctx.run.policySnapshot.effective.limits.maxFleetPercentPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxFleetPercentPerDay,
+        maxPolicyDecisionsPerDay:
+          ctx.run.policySnapshot.effective.limits.maxPolicyDecisionsPerDay
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxPolicyDecisionsPerDay,
+        maxUnattendedDevicesPerSweep:
+          ctx.run.policySnapshot.effective.limits.maxUnattendedDevicesPerSweep
+          ?? AI_AGENT_LIMIT_DEFAULTS.maxUnattendedDevicesPerSweep,
       },
       outcome.sweepFindings,
       result.agentAuth,
