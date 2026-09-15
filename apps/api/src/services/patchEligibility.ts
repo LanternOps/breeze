@@ -79,7 +79,10 @@ export interface PatchInstallEligibility {
   resolvedAt: string;
 }
 
-const OUTSTANDING = new Set<string>(OUTSTANDING_DEVICE_PATCH_STATUSES);
+// Built lazily, not at module scope: effectDigest.ts imports this module, so
+// every unit suite that mocks '../db/schema' without this export would
+// otherwise fail at import time.
+const isOutstanding = (status: string): boolean => (OUTSTANDING_DEVICE_PATCH_STATUSES as readonly string[]).includes(status);
 
 /** The core: config injected, three reads, a reason for every exclusion. */
 export async function evaluatePatchInstallEligibility(args: {
@@ -167,7 +170,7 @@ export async function evaluatePatchInstallEligibility(args: {
     seen.add(row.patchId);
     // Without a requested list the query itself is status-filtered; with one,
     // every listed row came back and its status decides.
-    if (requested && !OUTSTANDING.has(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
+    if (requested && !isOutstanding(row.status)) { deny(row.patchId, 'not_outstanding'); continue; }
     if (args.excludeSuperseded && row.supersededBy) { deny(row.patchId, 'superseded'); continue; }
     pendingPatches.push(row);
   }
