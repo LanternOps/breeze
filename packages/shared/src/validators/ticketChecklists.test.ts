@@ -3,6 +3,11 @@ import {
   checklistItemCreateSchema,
   checklistItemPatchSchema,
   checklistReorderSchema,
+  createChecklistTemplateSchema,
+  updateChecklistTemplateSchema,
+  createChecklistTemplateItemSchema,
+  updateChecklistTemplateItemSchema,
+  applyChecklistTemplateSchema,
 } from './ticketChecklists';
 
 const UUID = '3f2f1d8e-1111-4222-8333-444455556666';
@@ -84,5 +89,100 @@ describe('checklistReorderSchema', () => {
 
   it('rejects unknown keys', () => {
     expect(checklistReorderSchema.safeParse({ itemIds: [UUID], ticketId: UUID }).success).toBe(false);
+  });
+});
+
+describe('createChecklistTemplateSchema', () => {
+  it('defaults ownerScope to organization', () => {
+    expect(createChecklistTemplateSchema.parse({ name: 'Device onboarding' }).ownerScope).toBe(
+      'organization',
+    );
+  });
+
+  it('accepts ownerScope partner', () => {
+    expect(
+      createChecklistTemplateSchema.parse({ name: 'X', ownerScope: 'partner' }).ownerScope,
+    ).toBe('partner');
+  });
+
+  it('rejects an unknown ownerScope', () => {
+    expect(
+      createChecklistTemplateSchema.safeParse({ name: 'X', ownerScope: 'global' }).success,
+    ).toBe(false);
+  });
+
+  it('defaults items to an empty array', () => {
+    expect(createChecklistTemplateSchema.parse({ name: 'X' }).items).toEqual([]);
+  });
+
+  it('rejects an unknown key', () => {
+    expect(createChecklistTemplateSchema.safeParse({ name: 'X', partnerId: UUID }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('updateChecklistTemplateSchema', () => {
+  it('OMITS ownerScope — ownership is create-only', () => {
+    // CLAUDE.md Partner-Wide First step 2: an update schema derived via
+    // .partial() MUST omit ownerScope, or a PATCH could re-home a template onto
+    // the other axis and silently hand one org's private procedure to every org
+    // under the partner (or vice versa).
+    expect(updateChecklistTemplateSchema.safeParse({ ownerScope: 'partner' }).success).toBe(false);
+  });
+
+  it('OMITS orgId and items for the same reason', () => {
+    expect(updateChecklistTemplateSchema.safeParse({ orgId: UUID }).success).toBe(false);
+    expect(updateChecklistTemplateSchema.safeParse({ items: [] }).success).toBe(false);
+  });
+
+  it('accepts a partial name/description/instructions/isActive patch', () => {
+    expect(updateChecklistTemplateSchema.parse({ isActive: false })).toEqual({ isActive: false });
+    expect(updateChecklistTemplateSchema.parse({ name: 'Renamed' })).toEqual({ name: 'Renamed' });
+  });
+});
+
+describe('createChecklistTemplateItemSchema', () => {
+  it('defaults sortOrder to 0', () => {
+    expect(createChecklistTemplateItemSchema.parse({ label: 'Step' }).sortOrder).toBe(0);
+  });
+
+  it('rejects an empty label', () => {
+    expect(createChecklistTemplateItemSchema.safeParse({ label: '' }).success).toBe(false);
+  });
+});
+
+describe('updateChecklistTemplateItemSchema', () => {
+  it('does NOT reset sortOrder when only the label is patched', () => {
+    // `.partial()` does not strip a `.default()`, so deriving the update shape
+    // from the defaulted create fields would make PATCH { label } silently
+    // reset sortOrder to 0.
+    expect(updateChecklistTemplateItemSchema.parse({ label: 'Renamed' })).toEqual({
+      label: 'Renamed',
+    });
+  });
+});
+
+describe('applyChecklistTemplateSchema', () => {
+  it('defaults mode to append', () => {
+    expect(applyChecklistTemplateSchema.parse({ templateId: UUID }).mode).toBe('append');
+  });
+
+  it('accepts replace_unticked', () => {
+    expect(
+      applyChecklistTemplateSchema.parse({ templateId: UUID, mode: 'replace_unticked' }).mode,
+    ).toBe('replace_unticked');
+  });
+
+  it('rejects a destructive mode that does not exist', () => {
+    // There is deliberately no 'replace_all': ticked rows are an attestation
+    // record and are never dropped by applying a template (spec §3.3).
+    expect(
+      applyChecklistTemplateSchema.safeParse({ templateId: UUID, mode: 'replace_all' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a non-uuid templateId', () => {
+    expect(applyChecklistTemplateSchema.safeParse({ templateId: 'nope' }).success).toBe(false);
   });
 });
