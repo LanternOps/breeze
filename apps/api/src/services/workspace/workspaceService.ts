@@ -36,6 +36,9 @@ import { breezeRegion } from '../../config/env';
 import { calculateComputeCents } from '../aiCostTracker';
 import { captureException } from '../sentry';
 import { WorkspaceToolError } from './workspaceErrors';
+import {
+  isWorkspaceBreakerOpen, recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess,
+} from './workspaceBreaker';
 import type { SandboxBackend, SandboxHandle, SandboxUsage } from './sandboxBackend';
 
 /** The `analysis*` subset of `AiAgentLimits` this service actually enforces. */
@@ -219,6 +222,16 @@ export class WorkspaceService {
     }
     if (this.handle) return;
 
+    // R5 / spec §9 — fast path. Admission checks this too, but a run admitted
+    // just before the breaker opened would otherwise still make a doomed
+    // create call, and the reaper would then have a row to clean up.
+    if (await isWorkspaceBreakerOpen(this.backendName)) {
+      throw new WorkspaceToolError(
+        'workspace_unavailable',
+        'Compute workspaces are temporarily unavailable. Conclude with what you have.',
+      );
+    }
+
     const region = deploymentRegion();
     if (region !== this.ctx.region) {
       throw new WorkspaceToolError(
@@ -266,6 +279,7 @@ export class WorkspaceService {
       });
     } catch (error) {
       await this.patchRow({ status: 'destroyed', destroyedAt: new Date() });
+      await recordWorkspaceCreateFailure(this.backendName);
       captureException(error instanceof Error ? error : new Error(String(error)));
       throw new WorkspaceToolError(
         'workspace_unavailable',
@@ -275,6 +289,7 @@ export class WorkspaceService {
 
     this.handle = handle;
     this.everCreated = true;
+    await recordWorkspaceCreateSuccess(this.backendName);
     this.readyAt = new Date();
     // Exec by argv, never a shell string — even for the directory bootstrap.
     await this.backend.exec(handle, ['mkdir', '-p', WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR], {

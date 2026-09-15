@@ -9,7 +9,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
-  ExecResult, FileStat, SandboxBackend, SandboxHandle, SandboxUsage,
+  ExecResult, FileStat, SandboxBackend, SandboxCreateSpec, SandboxHandle, SandboxUsage,
 } from './sandboxBackend';
 
 const dbCalls: { inserted: Record<string, unknown>[]; updated: Record<string, unknown>[] } = {
@@ -41,6 +41,12 @@ vi.mock('../aiCostTracker', () => ({
 }));
 
 vi.mock('../aiAgents/runProgress', () => ({ emitRunProgress: vi.fn(async () => {}) }));
+
+vi.mock('./workspaceBreaker', () => ({
+  isWorkspaceBreakerOpen: vi.fn(async () => false),
+  recordWorkspaceCreateFailure: vi.fn(async () => {}),
+  recordWorkspaceCreateSuccess: vi.fn(async () => {}),
+}));
 
 const artifacts = new Map<string, {
   id: string; orgId: string; runId: string | null; name: string; bytes: number; body: Buffer;
@@ -81,7 +87,7 @@ import {
 
 class RecordingBackend implements SandboxBackend {
   readonly name = 'fake' as const;
-  readonly creates: Array<Record<string, unknown>> = [];
+  readonly creates: SandboxCreateSpec[] = [];
   readonly execs: Array<{ cmd: string[]; timeoutMs: number }> = [];
   readonly writes: Array<{ path: string; bytes: Buffer }> = [];
   destroyCount = 0;
@@ -90,7 +96,7 @@ class RecordingBackend implements SandboxBackend {
   files = new Map<string, Buffer>();
   nextExec: Partial<ExecResult> = {};
 
-  async create(spec: Record<string, unknown>): Promise<SandboxHandle> {
+  async create(spec: SandboxCreateSpec): Promise<SandboxHandle> {
     this.creates.push(spec);
     if (this.createError) throw this.createError;
     return { backend: 'fake', providerRef: 'sbx-1', region: 'eu', createdAt: new Date() };
@@ -182,6 +188,27 @@ describe('WorkspaceService lifecycle', () => {
     expect(dbCalls.inserted).toHaveLength(1);
     expect(dbCalls.inserted[0]!.status).toBe('creating');
     expect(dbCalls.updated.some((u) => u.status === 'ready')).toBe(true);
+  });
+
+  it('refuses with workspace_unavailable while the breaker is open, without calling the provider', async () => {
+    const { isWorkspaceBreakerOpen } = await import('./workspaceBreaker');
+    vi.mocked(isWorkspaceBreakerOpen).mockResolvedValueOnce(true);
+    const backend = new RecordingBackend();
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(backend.creates).toHaveLength(0);
+    expect(dbCalls.inserted).toHaveLength(0);
+  });
+
+  it('records a create failure against the breaker and a success against it', async () => {
+    const { recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess } = await import('./workspaceBreaker');
+    const failing = new RecordingBackend();
+    failing.createError = new Error('quota');
+    await expect(new WorkspaceService(ctxFor(), failing).ensure()).rejects.toBeInstanceOf(WorkspaceToolError);
+    expect(recordWorkspaceCreateFailure).toHaveBeenCalledWith('fake');
+
+    await new WorkspaceService(ctxFor(), new RecordingBackend()).ensure();
+    expect(recordWorkspaceCreateSuccess).toHaveBeenCalledWith('fake');
   });
 
   it('refuses when the run region is not this deployment region', async () => {
