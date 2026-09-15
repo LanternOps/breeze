@@ -4,9 +4,19 @@ import type { AiAgentEffectiveScheduleDto } from '@breeze/shared';
 
 const fetchWithAuth = vi.fn();
 const showToast = vi.fn();
+// #4442 W04 — the Act mode arm toggle is gated on the same client-side
+// counterpart to `canManagePartnerWidePolicies` that CustomFieldsPage.tsx and
+// ScriptForm.tsx already read (`useAuthStore(s => s.user?.canManagePartnerWide)`).
+// A real store isn't mounted in this test file, so the mock exposes a mutable
+// object tests can flip per-case; absent/undefined must mean "capable",
+// matching every other reader of this field (a session persisted before it
+// existed is treated as capable — the server enforces regardless).
+let currentUser: { canManagePartnerWide?: boolean } | undefined = { canManagePartnerWide: true };
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: (...args: unknown[]) => fetchWithAuth(...args),
+  useAuthStore: (selector: (state: { user: typeof currentUser }) => unknown) =>
+    selector({ user: currentUser }),
 }));
 // Resolved relative to THIS file (components/settings/), the same module
 // runAction.ts reaches via '../components/shared/Toast' — vitest matches on
@@ -51,7 +61,10 @@ const BASELINE: AiAgentEffectiveScheduleDto = {
   },
   createdAt: '2026-08-01T00:00:00.000Z',
   updatedAt: '2026-08-01T00:00:00.000Z',
-  effective: { enabled: true, sweepKinds: ['disk_pressure', 'stale_agents'] },
+  // #4442 W04 — not armed by default, the same "absent means not armed"
+  // reading the service applies to a stored NULL.
+  actMode: null,
+  effective: { enabled: true, sweepKinds: ['disk_pressure', 'stale_agents'], actMode: false },
   override: null,
 };
 
@@ -94,6 +107,7 @@ const orgProps = {
 beforeEach(() => {
   fetchWithAuth.mockReset();
   showToast.mockReset();
+  currentUser = { canManagePartnerWide: true };
 });
 
 describe('AiAgentSchedulesSection', () => {
@@ -149,6 +163,10 @@ describe('AiAgentSchedulesSection', () => {
       timezone: 'Europe/Paris',
       sweepKinds: ['disk_pressure', 'stale_agents'],
       enabled: true,
+      // #4442 W04 — the baseline draft always reports its current arm state,
+      // the same PUT-style convention `enabled` already follows; the create
+      // form's default is off.
+      actMode: false,
     });
   });
 
@@ -217,6 +235,8 @@ describe('AiAgentSchedulesSection', () => {
       timezone: 'America/New_York',
       sweepKinds: ['disk_pressure', 'stale_agents'],
       enabled: false,
+      // BASELINE.actMode is null (not armed) and this save never touched it.
+      actMode: false,
     });
   });
 
@@ -307,14 +327,19 @@ describe('AiAgentSchedulesSection', () => {
       baselineScheduleId: 's-1',
       enabled: true,
       sweepKinds: ['disk_pressure'],
+      // #4442 W04 — the override draft's own act-mode choice, tighten-only:
+      // `false` (disarm) or `null` (inherit, the default) — never `true`.
+      // The baseline here (BASELINE) isn't armed, and the disarm switch was
+      // never touched, so this create inherits.
+      actMode: null,
     });
   });
 
   it('patches an existing override rather than posting a duplicate', async () => {
     const withOverride: AiAgentEffectiveScheduleDto = {
       ...BASELINE,
-      effective: { enabled: true, sweepKinds: ['disk_pressure'] },
-      override: { id: 'o-1', enabled: true, sweepKinds: ['disk_pressure'] },
+      effective: { enabled: true, sweepKinds: ['disk_pressure'], actMode: false },
+      override: { id: 'o-1', enabled: true, sweepKinds: ['disk_pressure'], actMode: null },
     };
     mockList([withOverride], () => json({ data: withOverride }));
     render(<AiAgentSchedulesSection {...orgProps} />);
@@ -332,7 +357,7 @@ describe('AiAgentSchedulesSection', () => {
     expect(url).toBe('/ai/agents/schedules/o-1');
     expect(method).toBe('PATCH');
     // Never cron/timezone/ownerScope/baselineScheduleId — the API rejects them.
-    expect(body).toEqual({ enabled: false, sweepKinds: ['disk_pressure'] });
+    expect(body).toEqual({ enabled: false, sweepKinds: ['disk_pressure'], actMode: null });
   });
 
   it('translates the server 422 code instead of toasting the raw machine token', async () => {
@@ -384,7 +409,7 @@ describe('AiAgentSchedulesSection', () => {
     kind: 'narrative',
     cron: '0 7 * * 1',
     sweepKinds: [],
-    effective: { enabled: true, sweepKinds: [] },
+    effective: { enabled: true, sweepKinds: [], actMode: false },
   };
 
   it('offers the schedule kind on create only, never on an edit', async () => {
@@ -467,6 +492,7 @@ describe('AiAgentSchedulesSection', () => {
       cron: '0 7 * * 1',
       timezone: 'Europe/Paris',
       enabled: true,
+      actMode: false,
     });
     // Not merely empty — absent. `[]` would parse, but the key has no meaning
     // on this branch and shipping it invites a future reader to populate it.
@@ -513,6 +539,7 @@ describe('AiAgentSchedulesSection', () => {
       baselineScheduleId: 'n-1',
       enabled: false,
       sweepKinds: [],
+      actMode: null,
     });
   });
 
@@ -541,7 +568,7 @@ describe('AiAgentSchedulesSection', () => {
     kind: 'design',
     cron: '0 6 1 1,4,7,10 *',
     sweepKinds: [],
-    effective: { enabled: true, sweepKinds: [] },
+    effective: { enabled: true, sweepKinds: [], actMode: false },
   };
 
   it('offers only design for a designer agent, defaulting to the quarterly cron', async () => {
@@ -610,6 +637,7 @@ describe('AiAgentSchedulesSection', () => {
       cron: '0 6 1 1,4,7,10 *',
       timezone: 'Europe/Paris',
       enabled: true,
+      actMode: false,
     });
     expect(body).not.toHaveProperty('sweepKinds');
   });
@@ -629,7 +657,7 @@ describe('AiAgentSchedulesSection', () => {
     kind: 'patch',
     cron: '0 2 * * *',
     sweepKinds: [],
-    effective: { enabled: true, sweepKinds: [] },
+    effective: { enabled: true, sweepKinds: [], actMode: false },
   };
 
   it('offers only patch for a patch agent and defaults to the 02:00 daily cron', async () => {
@@ -683,6 +711,7 @@ describe('AiAgentSchedulesSection', () => {
       cron: '0 2 * * *',
       timezone: 'Europe/Paris',
       enabled: true,
+      actMode: false,
     });
     expect(body).not.toHaveProperty('sweepKinds');
   });
@@ -1019,5 +1048,146 @@ describe('AiAgentSchedulesSection "All orgs" chip (#4187 UI critique 3)', () => 
     expect(chip.className).toContain('rounded-full');
     expect(chip.className).toMatch(/dark:/);
     expect(chip.className).not.toContain('bg-primary/10');
+  });
+});
+
+// ── #4442 W04 — the schedule-level "act mode" arm switch ───────────────────
+//
+// `ai_agent_schedules.act_mode` is a NULLABLE, THREE-VALUED boolean: on a
+// PARTNER baseline `true` = armed and `false`/`null` = not armed; on an ORG
+// override `false` = explicitly disarmed and `true`/`null` = inherit. The
+// editor must make the "org arms it" body structurally unauthorable, not
+// merely rejected — the server also refuses it (`act_mode_org_cannot_arm`),
+// but that refusal is the last line of defence, not the UI's contract.
+describe('AiAgentSchedulesSection act mode (#4442 W04)', () => {
+  it('shows the partner baseline editor an Act mode toggle, off by default on create', async () => {
+    mockList([]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-add'));
+
+    const toggle = await screen.findByTestId('ai-agent-schedule-act-mode');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByTestId('ai-agent-schedule-act-mode-scope-note')).toBeNull();
+  });
+
+  it('seeds the Act mode toggle from a stored armed baseline', async () => {
+    const armed: AiAgentEffectiveScheduleDto = {
+      ...BASELINE,
+      actMode: true,
+      effective: { ...BASELINE.effective, actMode: true },
+    };
+    mockList([armed]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(screen.getByTestId('ai-agent-schedule-act-mode')).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('sends the toggled baseline value on save, and PATCHes actMode:true when armed', async () => {
+    mockList([BASELINE], () => json({ data: BASELINE }));
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-act-mode'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { body } = lastMutation();
+    expect(body).toMatchObject({ actMode: true });
+  });
+
+  it('renders the single-operation scope note only while act mode is armed on the baseline', async () => {
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(screen.queryByTestId('ai-agent-schedule-act-mode-scope-note')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-act-mode'));
+    const note = screen.getByTestId('ai-agent-schedule-act-mode-scope-note');
+    // The single supported operation and its own gate must be named, not
+    // implied — an operator arming this expecting vulnerability remediation
+    // (or any other unattended fix) has been misled.
+    expect(note.textContent).toContain('manage_services:restart');
+    expect(note.textContent?.toLowerCase()).toContain('restart');
+  });
+
+  it('disables the Act mode toggle with an explanatory description when the caller cannot manage partner-wide policies', async () => {
+    currentUser = { canManagePartnerWide: false };
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    const toggle = screen.getByTestId('ai-agent-schedule-act-mode');
+    expect(toggle).toBeDisabled();
+
+    const describedBy = toggle.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const hint = screen.getByTestId('ai-agent-schedule-act-mode-disabled-hint');
+    expect(hint.id).toBe(describedBy);
+    expect(hint.textContent).toBeTruthy();
+  });
+
+  it('leaves the Act mode toggle enabled when canManagePartnerWide is absent (pre-field session)', async () => {
+    currentUser = undefined;
+    mockList([BASELINE]);
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    expect(screen.getByTestId('ai-agent-schedule-act-mode')).not.toBeDisabled();
+  });
+
+  it('offers an org override only a disable switch for act mode, never a way to arm it', async () => {
+    const armedBaseline: AiAgentEffectiveScheduleDto = {
+      ...BASELINE,
+      actMode: true,
+      effective: { ...BASELINE.effective, actMode: true },
+    };
+    mockList([armedBaseline], () => json({ data: { ...armedBaseline, id: 'o-1' } }, true, 201));
+    render(<AiAgentSchedulesSection {...orgProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-override-s-1'));
+
+    // No arm control at all on this side — the only control is the
+    // tighten-only disable switch.
+    expect(screen.queryByTestId('ai-agent-schedule-act-mode')).toBeNull();
+    const disableSwitch = screen.getByTestId('ai-agent-schedule-act-mode-disable');
+    expect(disableSwitch).toHaveAttribute('aria-checked', 'false');
+    // The baseline is armed and this org hasn't disabled it, so the scope
+    // note applies to this org right now.
+    expect(screen.getByTestId('ai-agent-schedule-act-mode-scope-note')).toBeInTheDocument();
+
+    fireEvent.click(disableSwitch);
+    expect(disableSwitch).toHaveAttribute('aria-checked', 'true');
+    // Disabled for this org: the scope note no longer applies here.
+    expect(screen.queryByTestId('ai-agent-schedule-act-mode-scope-note')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+    await waitFor(() => expect(mutations()).toHaveLength(1));
+    const { body } = lastMutation();
+    // Tighten-only: the wire body can carry `false` (disarm) here, but there
+    // is no control in this editor that could ever produce `true`.
+    expect(body).toMatchObject({ actMode: false });
+    expect(body?.actMode).not.toBe(true);
+  });
+
+  it('surfaces an error toast and keeps the toggled value when the act-mode PATCH fails, instead of silently reverting', async () => {
+    mockList([BASELINE], () => json({ error: 'nope' }, false, 500));
+    render(<AiAgentSchedulesSection {...partnerProps} />);
+
+    fireEvent.click(await screen.findByTestId('ai-agent-schedule-edit-s-1'));
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-act-mode'));
+    expect(screen.getByTestId('ai-agent-schedule-act-mode')).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(screen.getByTestId('ai-agent-schedule-save'));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })),
+    );
+    // Not silently reverted: the editor stays open with the toggle still on,
+    // so the operator isn't misled into believing the failed arm attempt
+    // simply didn't happen.
+    expect(screen.getByTestId('ai-agent-schedule-act-mode')).toHaveAttribute('aria-checked', 'true');
   });
 });

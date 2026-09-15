@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Un piano patch viene attivato al massimo una volta al giorno: minuto e ora letterali, e * o un elenco letterale per giorno-del-mese, mese e giorno della settimana. Ad esempio, 0 2 * * * viene eseguito ogni notte alle 02:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
+      "actMode": {
+        "label": "Modalità azione",
+        "hint": "Se attivata, questa pianificazione può applicare automaticamente alcune correzioni invece di attendere l'approvazione.",
+        "disabledHint": "Per attivare la modalità azione è necessario l'accesso completo del partner a tutte le organizzazioni.",
+        "scopeNote": "Le correzioni non supervisionate si limitano al riavvio di un servizio arrestato, e solo sui dispositivi la cui organizzazione ha già ricevuto l'autorizzazione manage_services:restart. Tutto il resto attende ancora l'approvazione.",
+        "disableForOrg": "Disattiva la modalità azione per questa organizzazione",
+        "disableForOrgHint": "Questa organizzazione eredita sempre l'impostazione della modalità azione della baseline del partner, a meno che non venga disattivata qui — non può mai essere attivata in modo indipendente."
+      },
       "override": "Personalizza per questa organizzazione",
       "editOverride": "Modifica l'eccezione di questa organizzazione",
       "overrideHint": "L'eccezione di questa organizzazione rispetto alla baseline del partner. Segue sempre la cadenza della baseline.",
@@ -1565,7 +1573,8 @@
         "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
         "agentKindNotPatch": "Una pianificazione di piano patch deve avere come destinazione un agente Patch.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
-        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
+        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana.",
+        "actModeOrgCannotArm": "La modalità azione è attiva sulla baseline del partner; un'eccezione dell'organizzazione può solo disattivarla, mai attivarla."
       }
     },
     "title": "Agenti AI",

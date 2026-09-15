@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Yama planı günde en fazla bir kez çalışır: sabit dakika ve saat, ayın-günü, ay ve haftanın günü için ise * veya sabit bir liste. Örneğin 0 2 * * * her gece saat 02:00'de çalışır.",
       "kindsRequired": "En az bir denetim seçin.",
       "enabled": "Etkin",
+      "actMode": {
+        "label": "Eylem modu",
+        "hint": "Etkinleştirildiğinde, bu zamanlama onay beklemek yerine belirli düzeltmeleri otomatik olarak uygulayabilir.",
+        "disabledHint": "Eylem modunu etkinleştirmek için tüm kuruluşlara tam iş ortağı erişimi gerekir.",
+        "scopeNote": "Gözetimsiz düzeltmeler yalnızca durmuş bir hizmeti yeniden başlatmakla sınırlıdır ve yalnızca kuruluşuna manage_services:restart izni zaten verilmiş cihazlarda uygulanır. Bunun dışındaki her şey onay beklemeye devam eder.",
+        "disableForOrg": "Bu kuruluş için eylem modunu devre dışı bırak",
+        "disableForOrgHint": "Bu kuruluş, burada devre dışı bırakılmadıkça her zaman iş ortağı temel çizgisinin eylem modu ayarını devralır — bağımsız olarak asla etkinleştirilemez."
+      },
       "override": "Bu kuruluş için geçersiz kıl",
       "editOverride": "Bu kuruluşun geçersiz kılmasını düzenle",
       "overrideHint": "Bu kuruluşun, iş ortağı temel çizgisini geçersiz kılması. Her zaman temel çizginin sıklığıyla çalışır.",
@@ -1565,7 +1573,8 @@
         "agentKindNotDesigner": "Bir filo tasarımı zamanlaması bir Filo tasarımcısı aracısını hedeflemelidir.",
         "agentKindNotPatch": "Bir yama planı zamanlaması bir Yama aracısını hedeflemelidir.",
         "kindsNotEmpty": "Haftalık rapor zamanlaması denetim çalıştırmaz. Kaydetmeden önce seçili denetimleri kaldırın.",
-        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın."
+        "invalidCronForKind": "Haftalık rapor haftada tam olarak bir kez çalışmalıdır. Sabit dakika ve saat, ayın-günü ve ay için * ve tek bir haftanın günü kullanın.",
+        "actModeOrgCannotArm": "Eylem modu iş ortağı temel çizgisinde etkin; bir kuruluş geçersiz kılması bunu yalnızca devre dışı bırakabilir, asla etkinleştiremez."
       }
     },
     "title": "Yapay Zeka Aracıları",

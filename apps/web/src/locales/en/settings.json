@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "A patch plan fires at most once a day: a literal minute and hour, and * or a literal list for day-of-month, month and day-of-week. For example 0 2 * * * runs every night at 02:00.",
       "kindsRequired": "Select at least one check.",
       "enabled": "Enabled",
+      "actMode": {
+        "label": "Act mode",
+        "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "disabledHint": "Arming act mode requires full partner access to all organizations.",
+        "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
+        "disableForOrg": "Disable act mode for this organization",
+        "disableForOrgHint": "This organization always inherits the partner baseline's act mode setting unless disabled here — it can never be armed independently."
+      },
       "override": "Override for this org",
       "editOverride": "Edit this org's override",
       "overrideHint": "This organization's override of the partner baseline. It always runs on the baseline's cadence.",
@@ -1565,7 +1573,8 @@
         "agentKindNotDesigner": "A design schedule must target a Fleet designer agent.",
         "agentKindNotPatch": "A patch plan schedule must target a Patch agent.",
         "kindsNotEmpty": "A weekly report schedule runs no checks. Clear the selected checks before saving.",
-        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week."
+        "invalidCronForKind": "A weekly report must fire exactly once a week. Use a literal minute and hour, * for day-of-month and month, and a single day of the week.",
+        "actModeOrgCannotArm": "Act mode is armed on the partner baseline; an organization override may only disable it, never arm it."
       }
     },
     "title": "AI Agents",

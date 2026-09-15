@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Um plano de correções é disparado no máximo uma vez por dia: minuto e hora literais, e * ou uma lista literal para dia-do-mês, mês e dia da semana. Por exemplo, 0 2 * * * é executado toda noite às 02:00.",
       "kindsRequired": "Selecione pelo menos uma verificação.",
       "enabled": "Ativado",
+      "actMode": {
+        "label": "Modo de ação",
+        "hint": "Quando ativado, este agendamento pode aplicar certas correções automaticamente em vez de aguardar aprovação.",
+        "disabledHint": "Ativar o modo de ação exige acesso total do parceiro a todas as organizações.",
+        "scopeNote": "As correções não supervisionadas se limitam a reiniciar um serviço parado, e somente em dispositivos cuja organização já recebeu a permissão manage_services:restart. Todo o resto continua aguardando aprovação.",
+        "disableForOrg": "Desativar o modo de ação para esta organização",
+        "disableForOrgHint": "Esta organização sempre herda a configuração de modo de ação da linha de base do parceiro, a menos que seja desativada aqui — ela nunca pode ser ativada de forma independente."
+      },
       "override": "Substituir para esta organização",
       "editOverride": "Editar a exceção desta organização",
       "overrideHint": "A exceção desta organização à linha de base do parceiro. Ela sempre segue a cadência da linha de base.",
@@ -1565,7 +1573,8 @@
         "agentKindNotDesigner": "Um agendamento de projeto de frota deve ter como destino um agente Projetista de frota.",
         "agentKindNotPatch": "Um agendamento de plano de correções deve ter como destino um agente de Correções.",
         "kindsNotEmpty": "Um agendamento de relatório semanal não executa verificações. Limpe as verificações selecionadas antes de salvar.",
-        "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana."
+        "invalidCronForKind": "Um relatório semanal precisa ser disparado exatamente uma vez por semana. Use minuto e hora literais, * para dia-do-mês e mês, e um único dia da semana.",
+        "actModeOrgCannotArm": "O modo de ação está ativado na linha de base do parceiro; uma exceção da organização só pode desativá-lo, nunca ativá-lo."
       }
     },
     "title": "Agentes de IA",

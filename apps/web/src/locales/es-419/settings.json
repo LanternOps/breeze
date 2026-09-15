@@ -1525,6 +1525,14 @@
       "dailyOrRarerHint": "Un plan de parches se dispara como máximo una vez al día: minuto y hora literales, y * o una lista literal para día-del-mes, mes y día de la semana. Por ejemplo, 0 2 * * * se ejecuta todas las noches a las 02:00.",
       "kindsRequired": "Selecciona al menos una comprobación.",
       "enabled": "Habilitado",
+      "actMode": {
+        "label": "Modo de actuación",
+        "hint": "Cuando está activado, este programa puede aplicar ciertas correcciones automáticamente en lugar de esperar aprobación.",
+        "disabledHint": "Activar el modo de actuación requiere acceso total del partner a todas las organizaciones.",
+        "scopeNote": "Las correcciones no supervisadas se limitan a reiniciar un servicio detenido, y solo en dispositivos cuya organización ya cuenta con el permiso manage_services:restart. Todo lo demás sigue esperando aprobación.",
+        "disableForOrg": "Desactivar el modo de actuación para esta organización",
+        "disableForOrgHint": "Esta organización siempre hereda la configuración de modo de actuación de la línea base del partner, salvo que se desactive aquí — nunca puede activarse de forma independiente."
+      },
       "override": "Anular para esta organización",
       "editOverride": "Editar la excepción de esta organización",
       "overrideHint": "La excepción de esta organización sobre la línea base del partner. Siempre se ejecuta con la cadencia de la línea base.",
@@ -1565,7 +1573,8 @@
         "agentKindNotDesigner": "Una programación de diseño de flota debe dirigirse a un agente Diseñador de flota.",
         "agentKindNotPatch": "Una programación de plan de parches debe dirigirse a un agente de Parches.",
         "kindsNotEmpty": "Una programación de informe semanal no ejecuta comprobaciones. Quita las comprobaciones seleccionadas antes de guardar.",
-        "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana."
+        "invalidCronForKind": "Un informe semanal debe dispararse exactamente una vez por semana. Usa minuto y hora literales, * para día-del-mes y mes, y un solo día de la semana.",
+        "actModeOrgCannotArm": "El modo de actuación está activado en la línea base del partner; una anulación de la organización solo puede desactivarlo, nunca activarlo."
       }
     },
     "title": "Agentes de IA",
