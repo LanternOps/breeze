@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { parseSweepTriggerKey, type AiAgentKind, type AiAgentPolicySnapshot } from '@breeze/shared';
+import type { AiAgentKind, AiAgentPolicySnapshot } from '@breeze/shared';
 import {
   db,
   getCurrentDbAccessContext,
@@ -16,7 +16,7 @@ import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { resolveRecipientUserIds } from '../aiAgents/recipients';
-import { isActEligibleSweepKind, probeSweepSubject } from '../aiAgents/sweepSubjectProbe';
+import { evaluateSweepDecideGate } from '../aiAgents/sweepActMode';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import { canonicalPolicyKey } from './canonicalPolicyKey';
@@ -224,11 +224,14 @@ type DegradeReason =
   //     is not a failure (spec §3.4): NO evidence row is written, so nothing
   //     auto-demotes the operator's graduation ladder for it.
   //   `sweep_condition_unknown` — the probe could not answer. Fail closed.
-  //   `sweep_intent_stale`      — the observation, or the intent, is older than
-  //     SWEEP_ACT_TTL_MS.
+  //   `sweep_intent_stale`      — the intent is older than the act TTL.
+  //   `sweep_subject_unresolvable` — the trigger key names no probeable subject.
+  // The evaluation itself lives in `aiAgents/sweepActMode.ts`; only the reason
+  // strings are here, because `degradeToHumanRequired` owns the vocabulary.
   | 'sweep_condition_cleared'
   | 'sweep_condition_unknown'
   | 'sweep_intent_stale'
+  | 'sweep_subject_unresolvable'
   | CapCheckFailure;
 
 async function degradeToHumanRequired(intentId: string, reason: DegradeReason, details?: Record<string, unknown>): Promise<void> {
@@ -457,20 +460,6 @@ async function notifyRecipientsOfPolicyAuthorization(args: {
  * job for real at-least-once recovery. See the plan header's Design
  * authority for why the deterministic/transient distinction is load-bearing.
  */
-/**
- * #4442 W04 — how old a sweep-minted intent (or the observation behind it) may
- * be and still be auto-executed.
- *
- * 30 minutes, which is <= the schedule's own cadence by construction: the
- * create/update schemas pin sweep crons to a literal minute field
- * (`isHourlyFloorCron`), so a sweep fires at most once an hour and a stale
- * intent can never outlive the next occurrence's fresh view of the same
- * subject. It matches `SWEEP_PROBE_FRESHNESS_MS` (sweepSubjectProbe.ts) on
- * purpose: the two windows answer the same question from opposite ends —
- * "how old may the intent be" and "how old may the observation be".
- */
-export const SWEEP_ACT_TTL_MS = 30 * 60_000;
-
 export async function attemptPolicyDecision(intentId: string): Promise<void> {
   // Review fix (#3827) — invariant guard: `inSystemDbContext` (above) SKIPS
   // opening a fresh `withSystemDbAccessContext` transaction whenever the
@@ -610,63 +599,17 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
       return;
     }
 
-    // #4442 W04 — sweep-lane freshness + LIVE condition re-evaluation.
-    //
-    // Placed AFTER the snapshot-key check and BEFORE readAiKillState(), so it
-    // costs nothing for an intent that was going to be refused anyway.
-    //
-    // Freshness anchors on the INTENT and on the probe's own observation
-    // window, NOT on run.finished_at: a sweep intent is minted inside
-    // finalizeSweep, which runs BEFORE finishRun writes finished_at, and this
-    // function is reached from createActionIntent's post-commit trigger — so
-    // run.finished_at is null at exactly the moment this would read it.
-    //
-    // The probe runs OUTSIDE runAuthorizeTransaction's advisory lock. It is a
-    // read; holding the per-org lock across it would serialise every org's
-    // authorizations behind a network round trip.
-    //
-    // `probeSweepSubject` never throws — it captures a query failure and
-    // returns `unknown` (its own contract, W02) — so a transient fault lands
-    // on the fail-closed side here rather than authorizing.
-    if (intent.triggerKind === 'sweep_finding') {
-      const subject = parseSweepTriggerKey(intent.triggerKey);
-      // `isActEligibleSweepKind` (W02) is the single source of truth for which
-      // kinds have a probe at all. A kind with none can never be re-verified,
-      // so it is unresolvable here rather than silently skipping the lane.
-      if (!subject || !isActEligibleSweepKind(subject.kind) || !intent.scopeDeviceId) {
-        await degradeToHumanRequired(intentId, 'agent_policy_denied', { reason: 'sweep subject unresolvable' });
-        return;
-      }
-      if (Date.now() - intent.createdAt.getTime() > SWEEP_ACT_TTL_MS) {
-        await degradeToHumanRequired(intentId, 'sweep_intent_stale');
-        return;
-      }
-      // `probeSweepSubject` opens NO DB context of its own (its documented
-      // precondition is that the caller already holds a system one), and this
-      // point in `attemptPolicyDecision` is deliberately contextless — the
-      // function's own invariant guard refuses to run inside a caller's
-      // context. Without this wrapper the probe reads under no RLS context at
-      // all, which is a DENY, and every sweep intent degrades
-      // `sweep_condition_unknown` — silently fail-closed, and the whole lane
-      // dead. Caught by sweepActOpKeyIntersection.integration.test.ts, which
-      // is the only place a real RLS context exists.
-      const verdict = await inSystemDbContext(() => probeSweepSubject(
-        subject.kind,
-        intent.orgId,
-        intent.scopeDeviceId!,
-        subject.subjectKey,
-      ));
-      if (verdict === 'cleared') {
-        // Deliberately no evidence row: a condition that recovered on its own
-        // is not a failed remediation, and crediting one would corrupt the
-        // graduation ladder in the opposite direction.
-        await degradeToHumanRequired(intentId, 'sweep_condition_cleared');
-        return;
-      }
-      if (verdict !== 'present') {
-        await degradeToHumanRequired(intentId, 'sweep_condition_unknown');
-        return;
-      }
+    // #4442 W04 — the trigger-scoped decide gate (freshness + a LIVE
+    // re-evaluation of the condition the intent was minted for). Evaluated
+    // AFTER the snapshot-key check and BEFORE readAiKillState(), so it costs
+    // nothing for an intent that was going to be refused anyway. The gate
+    // itself lives in `aiAgents/sweepActMode.ts` — this file is bound by the
+    // "no safety bypass" source contract (`verdictProfile.contract.test.ts`),
+    // and asking one generic question keeps it that way.
+    const triggerRefusal = await evaluateSweepDecideGate(intent);
+    if (triggerRefusal) {
+      await degradeToHumanRequired(intentId, triggerRefusal);
+      return;
     }
 
     // Kill state, warmed BEFORE the guardrail re-run so its synchronous cache

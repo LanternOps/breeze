@@ -208,8 +208,8 @@ import {
   attemptPolicyDecision,
   computePolicySnapshotDigest,
   PolicyDecisionTransientError,
-  SWEEP_ACT_TTL_MS,
 } from './policyDecide';
+import { SWEEP_ACT_TTL_MS } from '../aiAgents/sweepActMode';
 
 // ---------------------------------------------------------------------------
 // Fixtures

@@ -24,6 +24,7 @@
  * system and otherwise opens its own, matching every other module here.
  */
 import { and, eq, isNull } from 'drizzle-orm';
+import { parseSweepTriggerKey } from '@breeze/shared';
 
 import { sweepActEnabled } from '../../config/env';
 import {
@@ -32,6 +33,7 @@ import {
 import { aiAgentRuns } from '../../db/schema/aiAgents';
 import { aiAgentSchedules } from '../../db/schema/aiAgentSchedules';
 import { effectiveSchedule } from './scheduleService';
+import { isActEligibleSweepKind, probeSweepSubject } from './sweepSubjectProbe';
 
 /** Same skip-if-already-system shape as the rest of this directory. */
 function inSystemDbContext<T>(fn: () => Promise<T>): Promise<T> {
@@ -117,4 +119,91 @@ export async function checkSweepScheduleBrake(
 
   const armed = await resolveEffectiveScheduleActMode(scheduleId, intent.orgId);
   return armed ? { ok: true } : { ok: false, reason: 'sweep act mode is no longer armed for this organization' };
+}
+
+/**
+ * #4442 W04 — the DECIDE-TIME gate for a sweep-minted intent: freshness plus a
+ * LIVE re-evaluation of the condition the finding was about.
+ *
+ * Lives here rather than inline in `policyDecide.ts` because that file is
+ * bound by the "no safety bypass" contract (`verdictProfile.contract.test.ts`):
+ * none of the four safety-critical files may special-case a run profile, and
+ * the contract is enforced textually, on the source. The evaluation is a
+ * property of the INTENT's trigger rather than the run's profile, but keeping
+ * the sweep vocabulary out of that file entirely is the cheaper and clearer
+ * way to satisfy it — `policyDecide.ts` asks one generic question and acts on
+ * the answer.
+ *
+ * Returns `null` when the intent is not sweep-minted (the caller then takes no
+ * new branch at all), or the `DegradeReason` string the caller must degrade
+ * with. Never authorizes anything itself.
+ */
+export type SweepDecideRefusal =
+  | 'sweep_intent_stale'
+  | 'sweep_condition_cleared'
+  | 'sweep_condition_unknown'
+  | 'sweep_subject_unresolvable';
+
+/**
+ * How old a sweep-minted intent may be and still be auto-executed.
+ *
+ * 30 minutes, which is <= the schedule's own cadence by construction: the
+ * create/update schemas pin sweep crons to a literal minute field
+ * (`isHourlyFloorCron`), so a sweep fires at most once an hour and a stale
+ * intent can never outlive the next occurrence's fresh view of the same
+ * subject. It matches `SWEEP_PROBE_FRESHNESS_MS` (`sweepSubjectProbe.ts`) on
+ * purpose: the two windows answer the same question from opposite ends — how
+ * old may the INTENT be, and how old may the OBSERVATION be.
+ */
+export const SWEEP_ACT_TTL_MS = 30 * 60_000;
+
+export async function evaluateSweepDecideGate(intent: {
+  triggerKind: string | null;
+  triggerKey: string | null;
+  scopeDeviceId: string | null;
+  orgId: string;
+  createdAt: Date;
+}): Promise<SweepDecideRefusal | null> {
+  if (intent.triggerKind !== 'sweep_finding') return null;
+
+  const subject = parseSweepTriggerKey(intent.triggerKey);
+  const kind = subject?.kind;
+  // `isActEligibleSweepKind` is the single source of truth for which kinds
+  // have a probe at all (W02). A kind with none can never be re-verified, so
+  // it is unresolvable here rather than silently skipping the lane.
+  if (!subject || kind === undefined || !isActEligibleSweepKind(kind) || !intent.scopeDeviceId) {
+    return 'sweep_subject_unresolvable';
+  }
+
+  // Freshness anchors on the INTENT and on the probe's own observation window,
+  // NOT on run.finished_at: a sweep intent is minted inside `finalizeSweep`,
+  // which runs BEFORE `finishRun` writes finished_at, and the decide attempt is
+  // reached from createActionIntent's post-commit trigger — so run.finished_at
+  // is null at exactly the moment this would read it.
+  if (Date.now() - intent.createdAt.getTime() > SWEEP_ACT_TTL_MS) return 'sweep_intent_stale';
+
+  // The probe opens NO DB context of its own (documented precondition), and
+  // the caller reaches this from a deliberately CONTEXTLESS stack — without
+  // this wrapper the read runs under no RLS context, which is a DENY, and
+  // every sweep intent degrades `sweep_condition_unknown`: fail-closed, silent
+  // and with the whole lane dead. It is also deliberately OUTSIDE the
+  // authorize transaction's advisory lock: this is a read, and holding the
+  // per-org lock across it would serialise every org's authorizations behind a
+  // network round trip.
+  //
+  // `probeSweepSubject` never throws — a query failure is captured and graded
+  // `unknown` (W02's own contract) — so a transient fault lands on the
+  // fail-closed side rather than authorizing.
+  const verdict = await inSystemDbContext(() => probeSweepSubject(
+    kind,
+    intent.orgId,
+    intent.scopeDeviceId!,
+    subject.subjectKey,
+  ));
+  // A CLEARED condition writes no evidence row: recovery is not a failed
+  // remediation, and crediting one would corrupt the graduation ladder in the
+  // opposite direction (spec §3.4).
+  if (verdict === 'cleared') return 'sweep_condition_cleared';
+  if (verdict !== 'present') return 'sweep_condition_unknown';
+  return null;
 }
