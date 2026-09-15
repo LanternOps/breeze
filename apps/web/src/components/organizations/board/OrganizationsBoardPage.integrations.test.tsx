@@ -148,6 +148,12 @@ describe('OrganizationsBoardPage — W03', () => {
     }));
     render(<OrganizationsBoardPage />);
     await waitFor(() => expect(screen.getByTestId(`org-board-row-${A_ID}`)).toBeInTheDocument());
+    // The row itself renders from the org-list fetch alone, independent of readiness — waiting only for
+    // it would make the absence assertions below vacuous (they'd equally pass before readiness has
+    // loaded). Wait for a readiness-derived positive signal first (both default orgRow fixtures have no
+    // outstanding chips, so ReadinessChips renders "complete" once its batch lands) to prove readiness
+    // actually resolved with integrations withheld, not merely that it hasn't loaded yet.
+    await waitFor(() => expect(screen.getAllByTestId('org-board-chips-complete').length).toBeGreaterThan(0));
     expect(screen.queryByTestId('org-board-col-integrations')).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-board-band-unlinked')).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-board-filter-unlinked')).not.toBeInTheDocument();
