@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { clearRefreshState } from '../test-helpers';
+import { AgreementsPage } from '../pages/AgreementsPage';
 
 // Every page in this flow is a single `client:load` Astro island (ContractsTabs,
 // QuotesPage, QuoteWorkspace, ContractWorkspace, PublicQuoteView) — Astro SSRs
@@ -42,13 +43,15 @@ test.describe('quote + contract proposal lifecycle', () => {
     // Six real UI surfaces (contracts, quote editor, quote send, public
     // portal, accept, contract detail) chained serially against a live stack.
     test.setTimeout(240_000);
+    const agreements = new AgreementsPage(page);
 
-    // ── 1. Admin: author + publish a partner-wide contract template ─────
+    // ── 1. Admin: author + publish a partner-wide agreement template ────
+    // W03 moved the library out of /contracts into its own area; the spec
+    // navigates there the way a technician does, through the sidebar.
     await page.goto('/contracts');
     await page.getByTestId('contracts-tabs').waitFor();
     await waitForHydration(page, 'contracts-tabs');
-    await page.getByTestId('contracts-tab-templates').click();
-    await page.getByTestId('contract-templates-tab').waitFor();
+    await agreements.gotoTemplatesViaSidebar();
 
     await page.getByTestId('contract-templates-create-btn').click();
     await page.getByTestId('contract-template-create-dialog').waitFor();
@@ -81,8 +84,13 @@ test.describe('quote + contract proposal lifecycle', () => {
     const templateId = createdTemplate.data.id;
     expect(templateId).toBeTruthy();
 
-    // Creating swaps straight into TemplateEditor for the new template.
-    await page.getByTestId('contract-template-editor').waitFor({ timeout: 15_000 });
+    // Creating navigates straight to the new template's own route (W03).
+    await page.getByTestId('agreement-template-editor').waitFor({ timeout: 15_000 });
+
+    // W03 spec §6: the editor states what the template is used by. A brand-new
+    // template is used by nothing, so this asserts the LINE renders (with
+    // zeros) — the counts themselves are unit-tested.
+    await expect(agreements.usage()).toBeVisible({ timeout: 15_000 });
 
     // Author the body via the TipTap toolbar: a bold auto variable
     // ({{client.name}}) plus a bulleted manual variable ({{governing_state}})
