@@ -113,7 +113,7 @@ export const softwareDeployments = pgTable('software_deployments', {
   // #5505 W03 (contract D7): set when this deployment was created BY a software
   // policy's autoInstall remediation rather than by an operator. Stamped by the
   // INSERT in createSoftwareDeployment, never patched afterwards. ON DELETE SET
-  // NULL (migration 2026-10-16-192100) is load-bearing: a partner-wide policy is
+  // NULL (migration 2026-10-16-193100) is load-bearing: a partner-wide policy is
   // referenced by deployments in every child org, so a NO ACTION FK would abort
   // an org or partner erasure with 23503. The remediation worker dedupes
   // in-flight policy-owned work on this column.
