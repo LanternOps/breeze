@@ -5,7 +5,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 const fetchWithAuth = vi.fn();
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: (...a: unknown[]) => fetchWithAuth(...a) }));
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
-vi.mock('@/lib/navigation', () => ({ navigateTo: vi.fn() }));
+const navigateTo = vi.fn();
+vi.mock('@/lib/navigation', () => ({ navigateTo: (...a: unknown[]) => navigateTo(...a) }));
 
 // Partner scope by default so the ownerScope selector renders.
 type Claims = { scope: string | null; orgId: string | null; partnerId: string | null };
@@ -22,10 +23,7 @@ vi.mock('../../lib/api/contractTemplates', async (importOriginal) => {
   return { ...orig, ...api };
 });
 
-// TemplateEditor is exercised in its own test; stub it so opening one is inert.
-vi.mock('./TemplateEditor', () => ({ default: () => <div data-testid="contract-template-editor-stub" /> }));
-
-import TemplatesTab from './TemplatesTab';
+import TemplatesPage from './TemplatesPage';
 
 const resp = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -87,7 +85,7 @@ describe('TemplatesTab — library list', () => {
   });
 
   it('renders a row per template with an "All orgs" badge on partner-owned ones', async () => {
-    render(<TemplatesTab />);
+    render(<TemplatesPage />);
     await screen.findByTestId('contract-templates-tab');
 
     const rows = await screen.findAllByTestId('contract-template-row');
@@ -102,7 +100,7 @@ describe('TemplatesTab — library list', () => {
   });
 
   it('does not call createContractTemplate when org-scoped create has no org selected', async () => {
-    render(<TemplatesTab />);
+    render(<TemplatesPage />);
     await screen.findByTestId('contract-templates-tab');
 
     fireEvent.click(screen.getByTestId('contract-templates-create-btn'));
@@ -119,7 +117,7 @@ describe('TemplatesTab — library list', () => {
   });
 
   it('creates an org-owned template with orgId once an org is picked', async () => {
-    render(<TemplatesTab />);
+    render(<TemplatesPage />);
     await screen.findByTestId('contract-templates-tab');
 
     fireEvent.click(screen.getByTestId('contract-templates-create-btn'));
@@ -141,7 +139,7 @@ describe('TemplatesTab — library list', () => {
   });
 
   it('creates a partner-wide template with no orgId', async () => {
-    render(<TemplatesTab />);
+    render(<TemplatesPage />);
     await screen.findByTestId('contract-templates-tab');
 
     fireEvent.click(screen.getByTestId('contract-templates-create-btn'));
@@ -158,11 +156,38 @@ describe('TemplatesTab — library list', () => {
 
   it('hides the ownerScope selector for org-scoped users', async () => {
     getJwtClaims.mockReturnValue({ scope: 'organization', orgId: 'org-1', partnerId: null });
-    render(<TemplatesTab />);
+    render(<TemplatesPage />);
     await screen.findByTestId('contract-templates-tab');
 
     fireEvent.click(screen.getByTestId('contract-templates-create-btn'));
     await screen.findByTestId('contract-template-create-dialog');
     expect(screen.queryByTestId('contract-template-owner-partner')).not.toBeInTheDocument();
+  });
+  it('navigates to the template route instead of swapping in an editor', async () => {
+    render(<TemplatesPage />);
+    const rows = await screen.findAllByTestId('contract-template-row');
+    fireEvent.click(within(rows[0]).getByTestId('contract-template-open'));
+    expect(navigateTo).toHaveBeenCalledWith('/agreements/templates/11111111-1111-1111-1111-111111111111');
+    // The editor must NOT mount here — it lives on its own route now (spec §6).
+    expect(screen.queryByTestId('agreement-template-editor')).not.toBeInTheDocument();
+  });
+
+  it('navigates to the new template after creating one', async () => {
+    api.createContractTemplate.mockResolvedValue(resp({ data: { id: 'tpl-new' } }));
+    render(<TemplatesPage />);
+    await screen.findByTestId('contract-templates-tab');
+
+    fireEvent.click(screen.getByTestId('contract-templates-create-btn'));
+    await screen.findByTestId('contract-template-create-dialog');
+    fireEvent.change(screen.getByTestId('contract-template-name'), { target: { value: 'Partner MSA' } });
+    fireEvent.click(screen.getByTestId('contract-template-owner-partner'));
+    fireEvent.click(screen.getByTestId('contract-template-create-submit'));
+
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith('/agreements/templates/tpl-new'));
+  });
+
+  it('opens the create dialog on mount when openCreate is set (the /new route)', async () => {
+    render(<TemplatesPage openCreate />);
+    expect(await screen.findByTestId('contract-template-create-dialog')).toBeInTheDocument();
   });
 });

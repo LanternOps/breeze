@@ -7,7 +7,6 @@ import { getJwtClaims } from '@/lib/authScope';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { StatusPill } from '../billing/shared/StatusPill';
-import TemplateEditor from './TemplateEditor';
 import {
   listContractTemplates,
   createContractTemplate,
@@ -25,7 +24,14 @@ interface Organization {
 
 const STATUS_ROLE = { active: 'success', archived: 'neutral' } as const;
 
-export default function TemplatesTab() {
+/** The agreement-template library at /agreements/templates (spec §6).
+ *
+ *  Moved from components/contracts/TemplatesTab.tsx: a row click now NAVIGATES
+ *  to /agreements/templates/:id instead of swapping a local `selectedId` into an
+ *  inline editor, which is what made a template unlinkable (spec §1).
+ *  `openCreate` is how /agreements/templates/new renders this list with its
+ *  create dialog already open. */
+export default function TemplatesPage({ openCreate = false }: { openCreate?: boolean }) {
   const { t } = useTranslation('billing');
   const { scope, partnerId } = getJwtClaims();
   const isPartnerScope = scope === 'partner' && !!partnerId;
@@ -36,7 +42,6 @@ export default function TemplatesTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [selectedId, setSelectedId] = useState<string>();
 
   // Create dialog state.
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -97,6 +102,13 @@ export default function TemplatesTab() {
     setDialogOpen(true);
   };
 
+  // /agreements/templates/new renders this list with the create dialog already
+  // open — openDialog resets every field, so this is exactly the "New" button.
+  useEffect(() => {
+    if (openCreate) openDialog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openCreate]);
+
   const submitCreate = async () => {
     const name = formName.trim();
     if (!name) {
@@ -123,8 +135,8 @@ export default function TemplatesTab() {
         onUnauthorized: UNAUTHORIZED,
       });
       setDialogOpen(false);
-      await load();
-      if (created?.data?.id) setSelectedId(created.data.id);
+      // No reload — the page is about to unmount into the new template's editor.
+      if (created?.data?.id) void navigateTo(`/agreements/templates/${created.data.id}`);
     } catch (err) {
       handleActionError(err, t('contracts.templatesTab.createError'));
     } finally {
@@ -146,18 +158,6 @@ export default function TemplatesTab() {
     }
   };
 
-  if (selectedId) {
-    return (
-      <TemplateEditor
-        templateId={selectedId}
-        onClose={() => {
-          setSelectedId(undefined);
-          void load();
-        }}
-      />
-    );
-  }
-
   const ownerLabel = (tpl: ContractTemplateWithLatest): string => {
     if (tpl.ownerScope === 'partner') return t('contracts.templatesTab.allOrgs');
     return orgNames[tpl.orgId] ?? t('contracts.templatesTab.ownerOrg');
@@ -165,11 +165,9 @@ export default function TemplatesTab() {
 
   return (
     <div className="space-y-4" data-testid="contract-templates-tab">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">{t('contracts.templatesTab.title')}</h2>
-          <p className="text-sm text-muted-foreground">{t('contracts.templatesTab.description')}</p>
-        </div>
+      {/* No title/description block: AgreementsShell renders the relationship
+          sentence and DashboardLayout owns the page title (spec §6). */}
+      <div className="flex items-start justify-end gap-3">
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <input
@@ -229,14 +227,14 @@ export default function TemplatesTab() {
               {templates.map((tpl) => (
                 <tr key={tpl.id} data-testid="contract-template-row" className="border-t hover:bg-muted/20">
                   <td className="px-3 py-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(tpl.id)}
+                    <a
+                      href={`/agreements/templates/${tpl.id}`}
+                      onClick={(e) => { e.preventDefault(); void navigateTo(`/agreements/templates/${tpl.id}`); }}
                       className="font-medium text-primary hover:underline"
                       data-testid="contract-template-open"
                     >
                       {tpl.name}
-                    </button>
+                    </a>
                     {tpl.description && (
                       <div className="text-xs text-muted-foreground">{tpl.description}</div>
                     )}

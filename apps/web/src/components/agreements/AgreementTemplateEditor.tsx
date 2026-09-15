@@ -11,6 +11,8 @@ import { ConfirmDialog } from '../shared/ConfirmDialog';
 import RichTextEditor from '../common/RichTextEditor';
 import {
   getContractTemplate,
+  getTemplateUsage,
+  archiveContractTemplate,
   createTemplateVersion,
   uploadTemplateVersion,
   publishTemplateVersion,
@@ -18,6 +20,7 @@ import {
   AUTO_CONTRACT_VARIABLES,
   type ContractTemplateDetail,
   type TemplateVersionSummary,
+  type TemplateUsage,
 } from '../../lib/api/contractTemplates';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -39,10 +42,14 @@ const SAMPLE_VALUES: Record<string, string> = {
 
 interface Props {
   templateId: string;
-  onClose?: () => void;
 }
 
-export default function TemplateEditor({ templateId, onClose }: Props) {
+/** The agreement-template editor at /agreements/templates/:id (spec §6).
+ *
+ *  Moved from components/contracts/TemplateEditor.tsx. `onClose` is gone: the
+ *  editor is its own route now, so Back is a real link and archiving navigates
+ *  rather than calling back up into a parent that no longer exists. */
+export default function AgreementTemplateEditor({ templateId }: Props) {
   const { t } = useTranslation('billing');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -53,6 +60,11 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   const [showPreview, setShowPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [newVersionConfirmOpen, setNewVersionConfirmOpen] = useState(false);
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
+  // Spec §6 reciprocal link. Decoration: a failed fetch renders NO line at all —
+  // a wrong or em-dashed count in a header that also feeds an archive
+  // confirmation is worse than no count.
+  const [usage, setUsage] = useState<TemplateUsage | null>(null);
   // The body value we last seeded from the server. `body !== lastLoaded` means the
   // user has typed un-saved changes — used to guard the re-seed in load() and to
   // block Publish (which would publish the OLD stored draft while silently
@@ -97,6 +109,32 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const res = await getTemplateUsage(templateId).catch(() => null);
+      if (!res?.ok) return;                       // usage is decoration; a failure is silent
+      const body = (await res.json().catch(() => null)) as { data?: TemplateUsage } | null;
+      if (!cancelled && body?.data) setUsage(body.data);
+    })();
+    return () => { cancelled = true; };
+  }, [templateId]);
+
+  const confirmArchive = async () => {
+    setArchiveConfirmOpen(false);
+    try {
+      await runAction({
+        request: () => archiveContractTemplate(templateId),
+        errorFallback: t('contracts.templatesTab.archiveError'),
+        successMessage: t('contracts.templatesTab.archiveSuccess'),
+        onUnauthorized: UNAUTHORIZED,
+      });
+      void navigateTo('/agreements/templates');
+    } catch (err) {
+      handleActionError(err, t('contracts.templatesTab.archiveError'));
+    }
+  };
 
   const archived = detail?.status === 'archived';
   // Un-saved edits in the body buffer. Publishing while dirty would publish the
@@ -216,25 +254,27 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
   }
 
   return (
-    <div className="space-y-4" data-testid="contract-template-editor">
+    <div className="space-y-4" data-testid="agreement-template-editor">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              data-testid="contract-template-editor-back"
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              {t('contracts.templateEditor.back')}
-            </button>
-          )}
+          <a
+            href="/agreements/templates"
+            data-testid="agreement-template-editor-back"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t('agreements.templateEditor.backToTemplates')}
+          </a>
           <h2 className="text-lg font-semibold">{detail.name}</h2>
           <StatusPill
             role={archived ? 'neutral' : 'success'}
             label={t(/* i18n-dynamic */ `contracts.templatesTab.status.${detail.status}`)}
           />
+          {usage && (
+            <span className="text-xs text-muted-foreground" data-testid="agreement-template-usage">
+              {t('agreements.templateEditor.usage', { quotes: usage.quoteCount, signed: usage.signedCount })}
+            </span>
+          )}
         </div>
         {!archived && (
           <div className="flex items-center gap-2">
@@ -245,6 +285,14 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
               className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
             >
               {t('contracts.templateEditor.newVersion')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setArchiveConfirmOpen(true)}
+              data-testid="agreement-template-archive"
+              className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+            >
+              {t('contracts.templatesTab.archive')}
             </button>
             <button
               type="button"
@@ -424,6 +472,22 @@ export default function TemplateEditor({ templateId, onClose }: Props) {
         message={t('contracts.templateEditor.newVersionConfirm.message')}
         confirmLabel={t('contracts.templateEditor.newVersionConfirm.confirm')}
         confirmTestId="template-new-version-confirm"
+      />
+
+      {/* dialogTestId, not a wrapper element: Dialog portals into document.body,
+          so a wrapping div around <ConfirmDialog> would render empty. */}
+      <ConfirmDialog
+        open={archiveConfirmOpen}
+        onClose={() => setArchiveConfirmOpen(false)}
+        onConfirm={() => void confirmArchive()}
+        title={t('agreements.templateEditor.archiveConfirm.title')}
+        message={t('agreements.templateEditor.archiveConfirm.message', {
+          quotes: usage?.quoteCount ?? 0,
+          signed: usage?.signedCount ?? 0,
+        })}
+        confirmLabel={t('agreements.templateEditor.archiveConfirm.confirm')}
+        confirmTestId="agreement-template-archive-confirm"
+        dialogTestId="agreement-template-archive-confirm-dialog"
       />
     </div>
   );

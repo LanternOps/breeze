@@ -26,7 +26,7 @@ vi.mock('../../lib/api/contractTemplates', async (importOriginal) => {
   return { ...orig, ...api };
 });
 
-import TemplateEditor from './TemplateEditor';
+import AgreementTemplateEditor from './AgreementTemplateEditor';
 
 const resp = (payload: unknown, status = 200) =>
   ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
@@ -78,7 +78,7 @@ function activeTemplate(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe('TemplateEditor — stripped-markup warning toast (#3520)', () => {
+describe('AgreementTemplateEditor — stripped-markup warning toast (#3520)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.getContractTemplate.mockResolvedValue(okRes(activeTemplate()));
@@ -89,8 +89,8 @@ describe('TemplateEditor — stripped-markup warning toast (#3520)', () => {
       okRes({ ...draftVersion, id: 'ver-2', versionNumber: 2 }, removedTagsWarning(['blockquote', 'pre'])),
     );
 
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: '<blockquote>q</blockquote><pre>code</pre>' } });
@@ -111,8 +111,8 @@ describe('TemplateEditor — stripped-markup warning toast (#3520)', () => {
       okRes({ ...draftVersion, id: 'ver-3', versionNumber: 2 }, []),
     );
 
-    render(<TemplateEditor templateId="tpl-1" />);
-    await screen.findByTestId('contract-template-editor');
+    render(<AgreementTemplateEditor templateId="tpl-1" />);
+    await screen.findByTestId('agreement-template-editor');
 
     const editor = screen.getByTestId('template-body-editor') as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: '<p>Clean text</p>' } });
