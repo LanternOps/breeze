@@ -160,7 +160,7 @@ describe('submit_sweep_findings outcome tool (P2-2)', () => {
     // A finding naming a kind outside AI_SWEEP_KINDS is not a finding.
     expect(() => validateOutcomeToolInput('submit_sweep_findings', {
       summary: 'x',
-      findings: [{ kind: 'expiring_certs', severity: 'low', title: 't', detail: 'd', evidence: {} }],
+      findings: [{ kind: 'not_a_sweep_kind', severity: 'low', title: 't', detail: 'd', evidence: {} }],
     })).toThrow();
   });
 

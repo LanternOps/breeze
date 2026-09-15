@@ -5,7 +5,7 @@
  * ## Why the evidence is SYSTEM-EXECUTED
  *
  * A sweep run's model never assembles its own evidence by calling tools in a
- * free-form loop: the six `AI_SWEEP_KINDS` each map to ONE hand-written,
+ * free-form loop: each of the `AI_SWEEP_KINDS` maps to ONE hand-written,
  * org-pinned query here, and the run is handed the result. That removes the
  * whole class of "the model wandered off and read something it shouldn't"
  * from a job that runs unattended on a cron schedule — there is no recipe for
@@ -53,9 +53,12 @@
  * here, matching `loadAnomalyContext`/`loadTicketContext`. That makes the
  * `org_id = $orgId` predicate in every statement below the ONLY thing keeping
  * one tenant's sweep out of another tenant's rows. Every statement pins the
- * org on BOTH sides of its join, and every statement excludes ephemeral
- * (Quick Support) devices, which are one-off support enrolments that no
- * scheduled hygiene sweep should ever report on.
+ * org on BOTH sides of its join, and every device-based statement excludes
+ * ephemeral (Quick Support) devices, which are one-off support enrolments
+ * that no scheduled hygiene sweep should ever report on. `expiring_certs`
+ * (#5754) is the one kind that reads no device table at all — it reads
+ * `network_monitors` alone, so its single `org_id` predicate is the entire
+ * boundary and there is no ephemeral filter to apply.
  *
  * `assembleSweepEvidence` is the pure core (fixture-testable, no DB) that
  * `loadSweepEvidence` wraps with the actual reads.
@@ -232,7 +235,7 @@ function totalFrom(rows: ReadonlyArray<{ total_count?: number | string | null }>
 
 // ---------------------------------------------------------------------------
 // Per-kind loaders. Raw SQL (not the Drizzle builder) for two reasons: three
-// of the six need `DISTINCT ON` / `array_agg(...)[1:5]`, which the builder
+// of them need `DISTINCT ON` / `array_agg(...)[1:5]`, which the builder
 // cannot express; and a hand-written statement is the only form whose tenancy
 // predicate a unit test can actually READ back (see sweepEvidence.test.ts).
 // ---------------------------------------------------------------------------
@@ -464,6 +467,69 @@ async function loadUnpatchedCritical(orgId: string): Promise<LoadedKind> {
   };
 }
 
+/**
+ * #5751 W03 (#5754). The only kind that is not about a DEVICE: a public
+ * endpoint's certificate belongs to a monitor, so this reads
+ * `network_monitors` alone — no `devices` join, and therefore no ephemeral
+ * filter to apply — and emits `deviceId: null`. `sweepFindings.ts`'s gate 1
+ * (`device_not_in_evidence`) then refuses any proposal naming a device, which
+ * is exactly the fail-closed posture a finding-only kind wants.
+ *
+ * Three predicates carry the weight:
+ *  - `tls_state = 'observed'` — a `handshake_failed` or `not_tls` row has no
+ *    usable expiry, and a NULL `tls_not_after` must never read as "fine".
+ *  - a 7-day staleness bound — a reading nobody has refreshed in a week is
+ *    not current evidence about a live endpoint.
+ *  - `org_id = $1`, which under the run's SYSTEM DB context is the WHOLE
+ *    isolation boundary here, there being no join to pin on a second side.
+ *
+ * Partner-wide `network_monitors` rows (`org_id IS NULL`, #5291 W04) are
+ * deliberately NOT reached in v1 — spec §2 scopes certificate evidence to
+ * org-owned monitors. Widening to `OR (org_id IS NULL AND partner_id = …)` is
+ * a filed follow-up, not an oversight.
+ *
+ * `nm.config` is jsonb (`excludedOpen`) and is never selected.
+ */
+async function loadExpiringCerts(orgId: string): Promise<LoadedKind> {
+  const rows = await dbModule.db.execute<{
+    monitor_id: string | null; monitor_name: string | null; target: string | null;
+    tls_observed_host: string | null; tls_not_after: Date | string | null;
+    tls_issuer: string | null; tls_observed_at: Date | string | null;
+    total_count: number | string | null;
+  }>(sql`
+    SELECT nm.id AS monitor_id, nm.name AS monitor_name, nm.target,
+           nm.tls_observed_host, nm.tls_not_after, nm.tls_issuer, nm.tls_observed_at,
+           COUNT(*) OVER () AS total_count
+    FROM network_monitors nm
+    WHERE nm.org_id = ${orgId}
+      AND nm.is_active = true
+      AND nm.tls_state = 'observed'
+      AND nm.tls_observed_at > now() - interval '7 days'
+      AND nm.tls_not_after <= now() + interval '45 days'
+    ORDER BY nm.tls_not_after ASC
+    LIMIT ${FETCH_LIMIT}
+  `);
+  const list = [...rows];
+  return {
+    // Ordered soonest-expiring first, so the tail the assembler trims is
+    // always the least urgent certificate.
+    rows: list.map((row) => ({
+      // A public endpoint belongs to no device.
+      deviceId: null,
+      hostname: null,
+      fields: {
+        monitorName: textOrNull(row.monitor_name),
+        target: textOrNull(row.target),
+        observedHost: textOrNull(row.tls_observed_host),
+        notAfter: isoOrNull(row.tls_not_after),
+        issuer: textOrNull(row.tls_issuer),
+        observedAt: isoOrNull(row.tls_observed_at),
+      },
+    })),
+    total: totalFrom(list),
+  };
+}
+
 const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<LoadedKind>> = {
   disk_pressure: loadDiskPressure,
   stale_agents: loadStaleAgents,
@@ -471,6 +537,7 @@ const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<LoadedKind>> = {
   failed_backups: loadFailedBackups,
   service_down: loadServiceDown,
   unpatched_critical: loadUnpatchedCritical,
+  expiring_certs: loadExpiringCerts,
 };
 
 /**

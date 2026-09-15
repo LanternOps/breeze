@@ -262,6 +262,95 @@ describe('loadSweepEvidence', () => {
     expect(sql).toContain('ORDER BY COUNT(*) DESC');
   });
 
+  // #5751 W03 (#5754). The seventh kind is the only one that is NOT about a
+  // device: a public endpoint's certificate belongs to a monitor, so it reads
+  // `network_monitors` alone, joins no `devices`, and emits `deviceId: null`.
+  // It is therefore deliberately absent from the it.each above, whose
+  // assertions ("contains devices", "is_ephemeral = false") do not apply.
+  describe('expiring_certs', () => {
+    it('pins the org, counts and fetches MAX+1 like every other kind', async () => {
+      await loadSweepEvidence('org-9', ['expiring_certs']);
+      const sql = text(0);
+      expect(sql).toContain('FROM network_monitors');
+      // `network_monitors` has no join here, so this single predicate IS the
+      // whole isolation boundary under the run's SYSTEM DB context.
+      expect(sql.match(/org_id = /g) ?? []).toHaveLength(1);
+      expect(sql).toContain('COUNT(*) OVER () AS total_count');
+      const params = boundParams(executed[0]);
+      expect(params).toContain(SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1);
+      expect(params.filter((v) => v === 'org-9')).toHaveLength(1);
+    });
+
+    it('reads only observed certificates expiring soon, soonest first', async () => {
+      await loadSweepEvidence('org-1', ['expiring_certs']);
+      const sql = text(0);
+      expect(sql).toContain('nm.is_active = true');
+      // A handshake_failed or not_tls row has no usable expiry, and a NULL
+      // tls_not_after must never read as "fine".
+      expect(sql).toContain("nm.tls_state = 'observed'");
+      // A reading nobody has refreshed in a week is not current evidence.
+      expect(sql).toContain("nm.tls_observed_at > now() - interval '7 days'");
+      expect(sql).toContain("nm.tls_not_after <= now() + interval '45 days'");
+      expect(sql).toContain('ORDER BY nm.tls_not_after ASC');
+    });
+
+    it('never selects the jsonb config column, which is excludedOpen', async () => {
+      await loadSweepEvidence('org-1', ['expiring_certs']);
+      expect(text(0)).not.toContain('nm.config');
+    });
+
+    it('maps a row to display scalars with deviceId null and the OBSERVED host', async () => {
+      results = [[{
+        monitor_id: 'mon-1',
+        monitor_name: 'Portal TLS',
+        target: 'https://a.example',
+        tls_observed_host: 'b.example:443',
+        tls_not_after: new Date('2026-10-01T00:00:00.000Z'),
+        tls_issuer: 'CN=Example CA',
+        tls_observed_at: new Date('2026-09-14T00:00:00.000Z'),
+        total_count: 3,
+      }]];
+      const evidence = await loadSweepEvidence('org-1', ['expiring_certs']);
+      const row0 = evidence.kinds.expiring_certs?.rows[0]!;
+
+      // A public endpoint's certificate belongs to no device. sweepFindings'
+      // gate 1 (device_not_in_evidence) then refuses any proposal naming a
+      // device — the fail-closed behaviour a finding-only kind wants.
+      expect(row0.deviceId).toBeNull();
+      expect(row0.fields).toEqual({
+        monitorName: 'Portal TLS',
+        target: 'https://a.example',
+        // The host the certificate was actually served from, which after a
+        // redirect differs from the target — a finding naming the target
+        // would name the wrong endpoint.
+        observedHost: 'b.example:443',
+        notAfter: '2026-10-01T00:00:00.000Z',
+        issuer: 'CN=Example CA',
+        observedAt: '2026-09-14T00:00:00.000Z',
+      });
+      expect(evidence.kinds.expiring_certs?.total).toBe(3);
+    });
+
+    it('reports the real COUNT(*) OVER () total, not rows.length, past the cap', async () => {
+      results = [Array.from({ length: SWEEP_EVIDENCE_MAX_ROWS_PER_KIND + 1 }, (_, i) => ({
+        monitor_id: `mon-${i}`, monitor_name: `m-${i}`, target: 'https://a.example',
+        tls_observed_host: 'a.example', tls_not_after: new Date('2026-10-01T00:00:00.000Z'),
+        tls_issuer: 'CN=CA', tls_observed_at: new Date('2026-09-14T00:00:00.000Z'),
+        total_count: 400,
+      }))];
+      const evidence = await loadSweepEvidence('org-1', ['expiring_certs']);
+      expect(evidence.kinds.expiring_certs?.rows).toHaveLength(SWEEP_EVIDENCE_MAX_ROWS_PER_KIND);
+      expect(evidence.kinds.expiring_certs?.truncated).toBe(true);
+      expect(evidence.kinds.expiring_certs?.total).toBe(400);
+    });
+
+    it('reports total 0 — not undefined — when nothing is expiring', async () => {
+      results = [[]];
+      const evidence = await loadSweepEvidence('org-1', ['expiring_certs']);
+      expect(evidence.kinds.expiring_certs).toEqual({ rows: [], total: 0, truncated: false });
+    });
+  });
+
   it('maps a disk row to display scalars only (no raw columns, no jsonb, no total_count leak)', async () => {
     results = [[{ device_id: 'dev-1', hostname: 'HOST-1', mount_point: '/', used_percent: 92.4567, free_gb: 3.21, total_gb: 250, total_count: 41 }]];
     const evidence = await loadSweepEvidence('org-1', ['disk_pressure']);
