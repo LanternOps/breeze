@@ -1,7 +1,7 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { AuditResult } from '@breeze/shared';
 import { db } from '../../db';
-import { organizations, patchPolicies } from '../../db/schema';
+import { organizations, patchApprovals, patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
 import type { AuthContext as MiddlewareAuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
@@ -111,6 +111,40 @@ export async function upsertPatchApproval(values: {
       status = EXCLUDED.status, approved_by = EXCLUDED.approved_by, approved_at = EXCLUDED.approved_at,
       defer_until = EXCLUDED.defer_until, notes = EXCLUDED.notes, updated_at = NOW()
   `);
+}
+
+// Declines a patch across EVERY ring approval row for the partner, not just
+// the blanket (ringId=null) one. Root cause of #5585: the evaluator matches
+// either the ring-specific row OR the blanket row (patchApprovalEvaluator.ts),
+// so a blanket-only decline left previously approved ring rows live and their
+// devices kept the patch approved. Also always upserts the blanket row itself
+// so a patch with no prior approval anywhere still gets an explicit rejection,
+// matching single-ring decline's always-upsert behavior.
+export async function declineAllRingApprovals(
+  partnerId: string,
+  patchId: string,
+  note: string | null,
+  auth: Pick<MiddlewareAuthContext, 'scope' | 'partnerOrgAccess'>
+): Promise<{ ringIds: (string | null)[] }> {
+  const rows = await db
+    .select({ ringId: patchApprovals.ringId })
+    .from(patchApprovals)
+    .where(and(eq(patchApprovals.partnerId, partnerId), eq(patchApprovals.patchId, patchId)));
+
+  const ringIds = new Set<string | null>(rows.map((r) => r.ringId));
+  ringIds.add(null);
+
+  for (const ringId of ringIds) {
+    await upsertPatchApproval({
+      partnerId,
+      patchId,
+      ringId,
+      status: 'rejected',
+      notes: note,
+    }, auth);
+  }
+
+  return { ringIds: [...ringIds] };
 }
 
 export async function resolvePatchApprovalPartnerIdForRing(
