@@ -2007,7 +2007,9 @@
           "startedAt": "Démarré",
           "finishedAt": "Terminé",
           "turnCount": "Tours",
-          "summary": "Résumé"
+          "summary": "Résumé",
+          "computeCost": "Calcul",
+          "computeEstimated": "(estimé)"
         },
         "flags": {
           "budgetExceeded": "Budget dépassé",
@@ -2039,6 +2041,29 @@
             "skipped": "Vérification ignorée"
           },
           "viewApproval": "Consulter dans Approbations"
+        },
+        "artifacts": {
+          "title": "Fichiers produits par cette exécution",
+          "download": "Télécharger",
+          "preview": "Aperçu",
+          "attachToTicket": "Joindre à un ticket",
+          "attach": "Joindre {{name}}",
+          "ticketIdPlaceholder": "ID du ticket",
+          "attachedToTicket": "Joint au ticket",
+          "attachFailed": "Impossible de joindre le fichier à ce ticket"
+        },
+        "workspace": {
+          "title": "Ce qui s’est exécuté dans le bac à sable",
+          "region": "Région",
+          "status": "Bac à sable",
+          "cpu": "Temps CPU",
+          "steps": "Étapes",
+          "script": "Script",
+          "stdout": "Sortie",
+          "exitCode": "sortie",
+          "timedOut": "délai dépassé",
+          "noExitCode": "aucun code de sortie",
+          "artifactExpired": "expiré"
         },
         "progress": {
           "title": "Progression"
@@ -4274,6 +4299,12 @@
       "organizationId": "Organisation ID",
       "copyOrganizationId": "Copier l’ID de l’organisation",
       "organizationIdHelp": "Utilisez ce ID lors d’une invitation ou d’une configuration d’intégrations."
+    },
+    "ai": {
+      "externalProcessing": "Autoriser l’analyse IA en bac à sable",
+      "externalProcessingDescription": "Permet aux exécutions d’analyse IA d’exécuter du code pour cette organisation dans un bac à sable isolé, sans accès réseau, hébergé dans la région de cette organisation. Désactivé par défaut.",
+      "externalProcessingSaved": "Enregistré",
+      "externalProcessingSaveFailed": "Impossible de modifier ce paramètre"
     },
     "breadcrumbs": {
       "settings": "Paramètres",

@@ -2007,7 +2007,9 @@
           "startedAt": "Iniciada",
           "finishedAt": "Concluída",
           "turnCount": "Turnos",
-          "summary": "Resumo"
+          "summary": "Resumo",
+          "computeCost": "Computação",
+          "computeEstimated": "(estimado)"
         },
         "flags": {
           "budgetExceeded": "Orçamento excedido",
@@ -2039,6 +2041,29 @@
             "skipped": "Verificação ignorada"
           },
           "viewApproval": "Revisar em Aprovações"
+        },
+        "artifacts": {
+          "title": "Arquivos gerados por esta execução",
+          "download": "Baixar",
+          "preview": "Visualizar",
+          "attachToTicket": "Anexar a um chamado",
+          "attach": "Anexar {{name}}",
+          "ticketIdPlaceholder": "ID do chamado",
+          "attachedToTicket": "Anexado ao chamado",
+          "attachFailed": "Não foi possível anexar o arquivo a esse chamado"
+        },
+        "workspace": {
+          "title": "O que foi executado na sandbox",
+          "region": "Região",
+          "status": "Sandbox",
+          "cpu": "Tempo de CPU",
+          "steps": "Etapas",
+          "script": "Script",
+          "stdout": "Saída",
+          "exitCode": "saída",
+          "timedOut": "tempo esgotado",
+          "noExitCode": "sem código de saída",
+          "artifactExpired": "expirado"
         },
         "progress": {
           "title": "Progresso"
@@ -4327,6 +4352,12 @@
       "organizationId": "ID da organização",
       "copyOrganizationId": "Copiar ID da organização",
       "organizationIdHelp": "Use esse ID ao convidar usuários ou configurar integrações."
+    },
+    "ai": {
+      "externalProcessing": "Permitir análise de IA em sandbox",
+      "externalProcessingDescription": "Permite que execuções de análise de IA rodem código para esta organização em uma sandbox isolada, sem acesso à rede, hospedada na região desta organização. Desativado por padrão.",
+      "externalProcessingSaved": "Salvo",
+      "externalProcessingSaveFailed": "Não foi possível alterar esta configuração"
     },
     "breadcrumbs": {
       "settings": "Configurações",

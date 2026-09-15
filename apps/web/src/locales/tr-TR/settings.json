@@ -2007,7 +2007,9 @@
           "startedAt": "Başladı",
           "finishedAt": "Tamamlandı",
           "turnCount": "Tur sayısı",
-          "summary": "Özet"
+          "summary": "Özet",
+          "computeCost": "Hesaplama",
+          "computeEstimated": "(tahmini)"
         },
         "flags": {
           "budgetExceeded": "Bütçe aşıldı",
@@ -2039,6 +2041,29 @@
             "skipped": "Doğrulama atlandı"
           },
           "viewApproval": "Onaylar'da incele"
+        },
+        "artifacts": {
+          "title": "Bu çalıştırmanın oluşturduğu dosyalar",
+          "download": "İndir",
+          "preview": "Önizleme",
+          "attachToTicket": "Bilete ekle",
+          "attach": "{{name}} dosyasını ekle",
+          "ticketIdPlaceholder": "Bilet No",
+          "attachedToTicket": "Bilete eklendi",
+          "attachFailed": "Dosya bu bilete eklenemedi"
+        },
+        "workspace": {
+          "title": "Korumalı alanda ne çalıştı",
+          "region": "Bölge",
+          "status": "Korumalı alan",
+          "cpu": "İşlemci süresi",
+          "steps": "Adımlar",
+          "script": "Betik",
+          "stdout": "Çıktı",
+          "exitCode": "çıkış",
+          "timedOut": "zaman aşımı",
+          "noExitCode": "çıkış kodu yok",
+          "artifactExpired": "süresi doldu"
         },
         "progress": {
           "title": "İlerleme"
@@ -4327,6 +4352,12 @@
       "organizationId": "Kuruluş Kimliği",
       "copyOrganizationId": "Kuruluş Kimliğini Kopyala",
       "organizationIdHelp": "Kullanıcıları davet ederken veya entegrasyonları yapılandırırken bu kimliği kullanın."
+    },
+    "ai": {
+      "externalProcessing": "Korumalı alanda yapay zeka analizine izin ver",
+      "externalProcessingDescription": "Yapay zeka analiz çalıştırmalarının bu kuruluş için kodu, ağ erişimi olmayan ve bu kuruluşun bölgesinde barındırılan izole bir korumalı alanda çalıştırmasına olanak tanır. Varsayılan olarak kapalıdır.",
+      "externalProcessingSaved": "Kaydedildi",
+      "externalProcessingSaveFailed": "Bu ayar değiştirilemedi"
     },
     "breadcrumbs": {
       "settings": "Ayarlar",

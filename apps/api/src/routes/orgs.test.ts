@@ -7138,3 +7138,29 @@ describe('org status is not manually settable to lifecycle states', () => {
     });
   }
 });
+
+// Execution plane W05 (#5716, spec §8) — the per-org consent switch for
+// sandboxed analysis.
+describe('aiExternalProcessing consent flag', () => {
+  it('is accepted on UPDATE', () => {
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: true }).success).toBe(true);
+    expect(updateOrganizationSchema.safeParse({ aiExternalProcessing: false }).success).toBe(true);
+  });
+
+  it('rejects a non-boolean rather than coercing it', () => {
+    // A consent flag that accepts the string "false" and stores `true` is the
+    // worst possible failure mode for this particular field.
+    const r = updateOrganizationSchema.safeParse({ aiExternalProcessing: 'true' });
+    expect(r.success).toBe(false);
+  });
+
+  it('is NOT settable at CREATE — an org is never born already consenting', () => {
+    const r = createOrganizationSchema.safeParse({
+      name: 'X', slug: 'x', aiExternalProcessing: true,
+    });
+    // Either the field is stripped or the parse fails; what must never happen is
+    // a created org carrying consent nobody granted.
+    expect(r.success ? (r.data as Record<string, unknown>).aiExternalProcessing : undefined)
+      .toBeUndefined();
+  });
+});

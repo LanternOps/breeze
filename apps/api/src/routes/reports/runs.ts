@@ -23,7 +23,6 @@ import {
 import { downloadQuerySchema, listRunsSchema } from './schemas';
 // Execution plane W05 (spec §6.3) — attach an analysis artifact by reference.
 import { z } from 'zod';
-import { resolveArtifact } from '../../services/artifacts/artifactService';
 import {
   decodeSiteScope,
   intersectSiteScopes,
@@ -535,6 +534,13 @@ runsRoutes.post(
     }
     const { metadata } = access;
 
+    // Imported LAZILY: `artifactService` reads `aiRunArtifacts` off the
+    // `db/schema` barrel, and this module is in the static graph of the whole
+    // reports route surface. A top-level import puts that table into every
+    // reports suite's module graph and breaks the ones whose partial
+    // `vi.mock('../../db/schema')` factories do not declare it. Same reason
+    // routes/tickets/attachments.ts and ticketAttachmentStorage defer it.
+    const { resolveArtifact } = await import('../../services/artifacts/artifactService');
     const artifact = await resolveArtifact(handle, { orgId: metadata.orgId });
     if (!artifact) {
       return c.json(

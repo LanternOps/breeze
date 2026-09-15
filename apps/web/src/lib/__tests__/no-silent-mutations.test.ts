@@ -43,6 +43,11 @@ const TARGET_GLOBS = [
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
+  // Execution plane W05 (#5716) — the per-org AI external-processing consent
+  // switch and the attach-artifact-to-ticket control. Both mutate through
+  // runAction; the count assertion below was bumped by exactly these two.
+  'src/components/settings/OrgAiProcessingToggle.tsx',
+  'src/components/aiAgents/AttachArtifactToTicket.tsx',
   // Account board (W02): org create and restore go through runAction in the
   // page; the drag/arrow-key reorder PATCH lives in its own hook. Both are
   // listed because TARGET_GLOBS is a literal file list, not directory-wide.
@@ -627,7 +632,7 @@ describe('no silent mutations in targeted set', () => {
     // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
     // Monitor Activity tab (#5287 W03 / #5290) adds MonitorActivityTab.tsx, so
     // the count is now 132.
-    expect(absoluteFiles.length).toBe(132);
+    expect(absoluteFiles.length).toBe(134);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
