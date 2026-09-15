@@ -67,8 +67,9 @@ export interface DatasetRequest {
   filters: Record<string, unknown>;
   deviceIds: string[] | null;
   /** Devices frozen at admission, or null outside a run frame. Only the
-   *  inventory adapters read it (their generator has no deviceIds filter);
-   *  every other adapter is already narrowed by `deviceIds` + its builder. */
+   *  inventory adapters read it directly (as a `deviceIds` fallback into their
+   *  generator); every other adapter is already narrowed by `deviceIds` + its
+   *  builder. */
   runTargets: string[] | null;
   siteId: string | null;
   pageSize: number;
@@ -259,54 +260,28 @@ const agentLogsAdapter: DatasetAdapter = {
  *  `device_inventory` at 100 rows — the REPORT GENERATORS are the complete
  *  builders behind both, and the ones `generate_report action: 'generate'`
  *  itself calls. Each returns its full result in one call, so one page. The
- *  writer's row/byte caps still apply to what that page yields.
- *
- *  ASYMMETRY TO KNOW: `generateSoftwareInventoryReport` honours
- *  `filters.deviceIds` (reportGenerationService.ts:~404); `generateDeviceInventoryReport`
- *  (:284-330) does NOT — it reads `siteIds` and `osTypes` only. Passing
- *  `deviceIds` to it is silently ignored, so a device-restricted export would
- *  return the whole org. The device adapter therefore post-filters what comes
- *  back. Its rows carry `hostname`, not a device id, so the restriction is
- *  resolved to hostnames through `verifyDeviceAccess` — the same gate the other
- *  adapters use. Hostnames are NOT guaranteed unique within an org (re-images,
- *  manual assets, cross-site duplicates), so this is a real, narrow §8
- *  data-minimisation gap, not just an inconvenience — tracked as
- *  https://github.com/LanternOps/breeze/issues/5776. FOLLOW-UP: give
- *  `generateDeviceInventoryReport` a real `filters.deviceIds` branch and a
- *  `deviceId` column, then delete this post-filter. */
-async function restrictionHostnames(req: DatasetRequest): Promise<Set<string> | null> {
-  // `deviceIds` when the caller named devices; otherwise the run's frozen set
-  // (spec §8 data minimisation). Null = no restriction, i.e. a direct call with
-  // no run frame and no device argument.
-  const ids = req.deviceIds ?? req.runTargets;
-  if (!ids || ids.length === 0) return null;
-  const hostnames = new Set<string>();
-  await runWithConcurrency(ids, EXPORT_DEVICE_CONCURRENCY, async (deviceId) => {
-    const verifyDeviceAccess = await getVerifyDeviceAccess();
-    const access = await verifyDeviceAccess(deviceId, req.auth);
-    if ('error' in access) return;
-    if (access.device.hostname) hostnames.add(access.device.hostname);
-  });
-  return hostnames;
-}
-
+ *  writer's row/byte caps still apply to what that page yields. */
 const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
-    const allowedHostnames = await restrictionHostnames(req);
+    // #5776: `generateDeviceInventoryReport` now honours `filters.deviceIds`
+    // (same as `generateSoftwareInventoryReport`), so the run-target
+    // restriction goes straight into the query instead of a hostname-based
+    // post-filter — hostnames are not unique within an org, so filtering rows
+    // by hostname could admit a device outside the run's frozen target set.
+    const restrictTo = req.deviceIds ?? req.runTargets;
     return singlePagePager(async () => {
       const result = await generateDeviceInventoryReport(req.orgId, {
         filters: {
+          ...(restrictTo && restrictTo.length > 0 ? { deviceIds: restrictTo } : {}),
           ...(req.siteId ? { siteIds: [req.siteId] } : {}),
           ...(Array.isArray(req.filters.osTypes) ? { osTypes: req.filters.osTypes } : {}),
         },
       }, authority);
-      const rows = (result.rows ?? []) as Array<Record<string, unknown>>;
-      if (!allowedHostnames) return rows;
-      return rows.filter((row) => typeof row.hostname === 'string' && allowedHostnames.has(row.hostname));
+      return (result.rows ?? []) as Array<Record<string, unknown>>;
     });
   },
 };

@@ -273,10 +273,17 @@ export function assertReportExecutionPreflight(
 
 /**
  * One `device_inventory` row. Both branches (#4622: agent devices and manual
- * assets) project onto exactly these twelve columns — a report consumer reads
- * one header row, so a second shape would silently truncate.
+ * assets) project onto exactly these thirteen columns — a report consumer
+ * reads one header row, so a second shape would silently truncate.
+ *
+ * `deviceId` is null on manual-asset rows: they live in `manualAssets`, not
+ * `devices`, and have no device id to give. #5776 — this column (plus the
+ * `filters.deviceIds` branch below) replaces the hostname-based post-filter
+ * `export_dataset`'s device_inventory adapter used to enforce run-target
+ * restriction with, since hostnames are not unique within an org.
  */
 type DeviceInventoryRow = {
+  deviceId: string | null;
   hostname: string | null;
   displayName: string | null;
   osType: string | null;
@@ -304,6 +311,10 @@ export async function generateDeviceInventoryReport(
   const conditions: SQL[] = [eq(devices.orgId, orgId), eq(devices.isEphemeral, false)];
 
   const filters = config.filters as Record<string, unknown> | undefined;
+  if (filters?.deviceIds && Array.isArray(filters.deviceIds) && filters.deviceIds.length > 0) {
+    conditions.push(inArray(devices.id, filters.deviceIds));
+  }
+
   if (filters?.siteIds && Array.isArray(filters.siteIds) && filters.siteIds.length > 0) {
     conditions.push(inArray(devices.siteId, filters.siteIds));
   }
@@ -320,6 +331,7 @@ export async function generateDeviceInventoryReport(
 
   const data = await db
     .select({
+      deviceId: devices.id,
       hostname: devices.hostname,
       displayName: devices.displayName,
       osType: devices.osType,
@@ -345,11 +357,12 @@ export async function generateDeviceInventoryReport(
   // than given columns of their own: a report consumer (CSV, PDF, the portal
   // table) reads one header row, and a second shape would silently truncate.
   //
-  // An OS-type filter drops the branch entirely: a hand-entered asset has no OS
-  // to match, so keeping it would widen a report the requester explicitly
-  // narrowed.
+  // An OS-type or device-id filter drops the branch entirely: a hand-entered
+  // asset has no OS and no device id to match, so keeping it would widen a
+  // report the requester explicitly narrowed.
   const includeManualAssets = filters?.includeManualAssets !== false
-    && !(Array.isArray(filters?.osTypes) && filters.osTypes.length > 0);
+    && !(Array.isArray(filters?.osTypes) && filters.osTypes.length > 0)
+    && !(Array.isArray(filters?.deviceIds) && filters.deviceIds.length > 0);
 
   if (includeManualAssets) {
     const manualConditions: SQL[] = [
@@ -379,6 +392,7 @@ export async function generateDeviceInventoryReport(
 
     for (const asset of manualData) {
       rows.push({
+        deviceId: null,
         hostname: asset.name,
         displayName: asset.name,
         osType: null,
