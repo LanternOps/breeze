@@ -15,6 +15,8 @@ export default defineConfig({
     }
   },
   test: {
+    // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+    clearMocks: false,
     globals: true,
     // Node by default (most portal suites are pure lib logic). Component test files
     // opt into jsdom per-file via a `// @vitest-environment jsdom` header comment.

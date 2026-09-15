@@ -8,6 +8,8 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
+          // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+          clearMocks: false,
           include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
           exclude: ['src/__tests__/**/*.integration.test.ts', 'src/web/**'],
         },
@@ -15,6 +17,8 @@ export default defineConfig({
       {
         test: {
           name: 'web',
+          // explicit: vitest 5 flips the default to true; flip per package in a follow-up
+          clearMocks: false,
           environment: 'happy-dom',
           include: ['src/web/**/*.test.ts'],
         },
