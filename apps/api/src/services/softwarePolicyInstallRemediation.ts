@@ -1,0 +1,163 @@
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { db } from '../db';
+import {
+  softwareCatalog,
+  softwareInstallMethods,
+  softwareVersions,
+} from '../db/schema';
+
+/**
+ * #5505 W03 — everything that must be decided BEFORE a policy-owned
+ * software_deployments row exists.
+ *
+ * The whole module runs inside the software remediation worker's SYSTEM db
+ * context (softwareRemediationWorker.ts:14-22), where breeze_has_org_access
+ * short-circuits true and RLS scopes nothing. Every predicate below is
+ * therefore load-bearing on its own: a rule's catalogId is operator-authored
+ * jsonb living in software_policies.rules, and nothing else checks it.
+ */
+
+/** Why a (policy, device, rule) triple produced no install deployment. */
+export type PolicyInstallSkipReason =
+  /** The rule can be DETECTED as missing but names nothing to install. */
+  | 'no_catalog_id'
+  /** The catalogId does not resolve to an item this device's tenant may use. */
+  | 'catalog_item_not_reachable'
+  /** Reachable item, but nothing installable on this device's OS. */
+  | 'no_install_target_for_platform';
+
+export type PolicyInstallTarget =
+  | { kind: 'install_method'; catalogId: string; installMethodId: string }
+  | { kind: 'version'; catalogId: string; softwareVersionId: string };
+
+export type PolicyInstallTargetResolution =
+  | { ok: true; target: PolicyInstallTarget }
+  | { ok: false; reason: PolicyInstallSkipReason };
+
+/**
+ * software_install_methods.platform is 'windows' | 'macos' only
+ * (db/schema/software.ts:264) — there is no linux install method by
+ * construction, so a linux device can only ever be served by a version row.
+ */
+const INSTALL_METHOD_PLATFORM_BY_OS_TYPE: Readonly<Record<string, 'windows' | 'macos'>> = {
+  windows: 'windows',
+  macos: 'macos',
+};
+
+/**
+ * `supported_os` is an optional array of the same three values as
+ * devices.os_type (routes/software.ts:465,523). Null, non-array or empty means
+ * the uploader declared no restriction, which stays permissive — this filter
+ * may only ever narrow what an operator already allowed, never widen it.
+ */
+function versionSupportsOs(supportedOs: unknown, osType: string): boolean {
+  if (!Array.isArray(supportedOs) || supportedOs.length === 0) return true;
+  return supportedOs.some((value) => typeof value === 'string' && value === osType);
+}
+
+/**
+ * Resolve a catalog item the DEVICE's tenant is actually entitled to install.
+ *
+ * Mirrors the route-layer widening at routes/software.ts:867-870, but keyed on
+ * the DEVICE's org rather than on a request's auth: an org-owned item must
+ * belong to this device's org, and a partner-owned item (built-in integration
+ * package or partner-wide custom package) is reachable only when this device's
+ * org belongs to that partner. Anything else — including another org's item
+ * under the same partner — resolves to nothing.
+ */
+async function readReachableCatalogItem(
+  catalogId: string,
+  deviceOrgId: string,
+): Promise<{ id: string } | null> {
+  const [row] = await db
+    .select({ id: softwareCatalog.id })
+    .from(softwareCatalog)
+    .where(
+      and(
+        eq(softwareCatalog.id, catalogId),
+        or(
+          eq(softwareCatalog.orgId, deviceOrgId),
+          and(
+            isNull(softwareCatalog.orgId),
+            sql`EXISTS (
+              SELECT 1 FROM organizations o
+              WHERE o.id = ${deviceOrgId}
+                AND o.partner_id = ${softwareCatalog.partnerId}
+            )`,
+          ),
+        ),
+      ),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Resolve a policy rule's catalogId to exactly one deployment target for this
+ * device, or say precisely why it cannot.
+ *
+ * Package-manager install methods win over uploaded versions when both exist:
+ * a manager deploy always resolves the current package at install time, so it
+ * cannot go stale the way a pinned version row can.
+ *
+ * The platform filter is deliberately done HERE rather than relying on
+ * softwareDeployment.ts:413-429, which (a) only covers the install-method path
+ * and never the version path, and (b) fires downstream, after a deployment row
+ * and a failed deployment_results row already exist — which a compliance pass
+ * every 15 minutes would turn into an unbounded stream of guaranteed-failing
+ * deployments for every cross-platform device under the policy.
+ */
+export async function resolvePolicyInstallTarget(input: {
+  catalogId: string | null | undefined;
+  deviceOrgId: string;
+  deviceOsType: string;
+}): Promise<PolicyInstallTargetResolution> {
+  if (!input.catalogId) {
+    return { ok: false, reason: 'no_catalog_id' };
+  }
+
+  const catalogItem = await readReachableCatalogItem(input.catalogId, input.deviceOrgId);
+  if (!catalogItem) {
+    return { ok: false, reason: 'catalog_item_not_reachable' };
+  }
+
+  const platform = INSTALL_METHOD_PLATFORM_BY_OS_TYPE[input.deviceOsType];
+  if (platform) {
+    const [method] = await db
+      .select({ id: softwareInstallMethods.id })
+      .from(softwareInstallMethods)
+      .where(
+        and(
+          eq(softwareInstallMethods.catalogId, catalogItem.id),
+          eq(softwareInstallMethods.platform, platform),
+          eq(softwareInstallMethods.enabled, true),
+        ),
+      )
+      .limit(1);
+    if (method) {
+      return {
+        ok: true,
+        target: { kind: 'install_method', catalogId: catalogItem.id, installMethodId: method.id },
+      };
+    }
+  }
+
+  // At most one row can match: software_versions_one_latest_per_catalog_idx is
+  // a unique partial index on (catalog_id) WHERE is_latest = true.
+  const [version] = await db
+    .select({ id: softwareVersions.id, supportedOs: softwareVersions.supportedOs })
+    .from(softwareVersions)
+    .where(
+      and(eq(softwareVersions.catalogId, catalogItem.id), eq(softwareVersions.isLatest, true)),
+    )
+    .limit(1);
+
+  if (!version || !versionSupportsOs(version.supportedOs, input.deviceOsType)) {
+    return { ok: false, reason: 'no_install_target_for_platform' };
+  }
+
+  return {
+    ok: true,
+    target: { kind: 'version', catalogId: catalogItem.id, softwareVersionId: version.id },
+  };
+}
