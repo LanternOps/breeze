@@ -245,6 +245,13 @@ describe('action_intents immutability trigger (live DB)', () => {
     // 2026-10-16-120300 (AI script authoring W04, #5612): the unattended
     // lane's typed decision evidence. Written once at INSERT; the seeded
     // intent starts with it NULL, so setting any blob is the blocked direction.
+    // 2026-10-16-193700 (tool catalog W01 PR B, #5216): external tool
+    // binding. Unconditional guards; the seeded intent starts with both NULL,
+    // so setting either is the blocked direction. Single-column patches are
+    // valid probes because the BEFORE UPDATE trigger raises before
+    // `action_intents_external_tool_chk` gets to complain about the pairing.
+    tool_source_tool_id: { toolSourceToolId: randomUUID() },
+    tool_revision: { toolRevision: 'rev-2' },
     script_reviewer_evidence: {
       scriptReviewerEvidence: {
         proposalId: randomUUID(), reviewId: randomUUID(), contentDigest: 'a'.repeat(64), scannerVersion: '2026-09-11.1',
