@@ -1,0 +1,159 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const {
+  addMock,
+  dbSelectMock,
+  dbUpdateMock,
+  resolveDeviceIdsMock,
+  armingMock,
+  upsertMock,
+  inventoryMock,
+  scheduleUninstallMock,
+  scheduleInstallMock,
+} = vi.hoisted(() => ({
+  addMock: vi.fn(async () => ({ id: 'queued-job-1' })),
+  dbSelectMock: vi.fn(),
+  dbUpdateMock: vi.fn(() => ({ set: () => ({ where: async () => undefined }) })),
+  resolveDeviceIdsMock: vi.fn(async () => ['device-1']),
+  armingMock: vi.fn((_policy: unknown, _verb: string) => ({ armed: true }) as {
+    armed: boolean;
+    reason?: string;
+    message?: string;
+  }),
+  upsertMock: vi.fn(async () => undefined),
+  inventoryMock: vi.fn(async () => new Map<string, unknown[]>([['device-1', []]])),
+  scheduleUninstallMock: vi.fn(async () => 0),
+  scheduleInstallMock: vi.fn(async () => [] as string[]),
+}));
+
+vi.mock('bullmq', () => ({
+  Queue: class { add = addMock; addBulk = vi.fn(); getRepeatableJobs = vi.fn(async () => []); },
+  Worker: class { on = vi.fn(); close = vi.fn(); },
+  Job: class {},
+}));
+vi.mock('../services/redis', () => ({ getBullMQConnection: vi.fn(() => ({})) }));
+vi.mock('../db', () => ({
+  db: { select: dbSelectMock, update: dbUpdateMock },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => fn()),
+  withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+}));
+vi.mock('../services/featureConfigResolver', () => ({
+  resolveDeviceIdsForSoftwarePolicy: resolveDeviceIdsMock,
+}));
+vi.mock('./softwareRemediationWorker', () => ({
+  scheduleSoftwareRemediation: scheduleUninstallMock,
+  scheduleSoftwareInstallRemediation: scheduleInstallMock,
+}));
+vi.mock('../services/softwarePolicyService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/softwarePolicyService')>();
+  return {
+    ...actual,
+    evaluateSoftwarePolicyArming: armingMock,
+    upsertSoftwareComplianceStatuses: upsertMock,
+    getSoftwareInventoryByDeviceIds: inventoryMock,
+    recordSoftwarePolicyAudit: vi.fn(async () => undefined),
+  };
+});
+
+import { processCheckPolicy } from './softwareComplianceWorker';
+
+const POLICY_ID = 'policy-1';
+
+/**
+ * A policy that is armed for BOTH verbs by every inline criterion the worker
+ * used to check for itself: mode allowlist, enforceMode true, autoUninstall
+ * true, autoInstall true.
+ */
+const FULLY_ARMED_POLICY = {
+  id: POLICY_ID,
+  orgId: 'org-1',
+  partnerId: null,
+  name: 'Desired state policy',
+  isActive: true,
+  approvalGeneration: 1,
+  mode: 'allowlist',
+  enforceMode: true,
+  remediationOptions: { autoUninstall: true, autoInstall: true },
+  rules: { software: [{ name: 'Google Chrome', catalogId: 'catalog-abc' }] },
+};
+
+/**
+ * FIFO for db.select(): policy reload → devices(orgByDevice) → compliance state.
+ *
+ * The three call sites end differently — the policy reload finishes with
+ * `.limit(1)`, the other two are awaited straight off `.where(...)` — so the
+ * object `.where()` returns has to be BOTH a thenable and carry `.limit`.
+ */
+function primeSelects(rows: unknown[][]) {
+  for (const result of rows) {
+    const terminal = () => Object.assign(
+      Promise.resolve(result),
+      { limit: () => Promise.resolve(result) },
+    );
+    dbSelectMock.mockReturnValueOnce({
+      from: () => ({
+        where: terminal,
+        limit: () => Promise.resolve(result),
+      }),
+    });
+  }
+}
+
+function primeStandardPass() {
+  primeSelects([
+    [FULLY_ARMED_POLICY],                                   // policy reload
+    [{ id: 'device-1', orgId: 'org-1' }],                   // orgByDevice
+    [],                                                     // readComplianceStateByDevice
+  ]);
+  inventoryMock.mockResolvedValueOnce(new Map([['device-1', []]]));
+}
+
+describe('processCheckPolicy — arming comes from the shared helper only (contract D11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    armingMock.mockReturnValue({ armed: true });
+    resolveDeviceIdsMock.mockResolvedValue(['device-1']);
+    scheduleUninstallMock.mockResolvedValue(0);
+    scheduleInstallMock.mockResolvedValue([]);
+  });
+
+  it('asks evaluateSoftwarePolicyArming for BOTH verbs, once each', async () => {
+    primeStandardPass();
+
+    await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    const verbs = armingMock.mock.calls.map((call) => call[1]);
+    expect(verbs).toContain('uninstall');
+    expect(verbs).toContain('install');
+  });
+
+  /**
+   * THE DIVERGENCE GUARD. The policy row below satisfies every criterion the
+   * worker's old inline gate checked, but the shared helper says NOT ARMED. If
+   * the worker re-derives arming for itself — today, or after some future edit
+   * re-inlines it — it queues anyway and this fails. There is exactly one
+   * arming truth.
+   */
+  it('queues NOTHING when the shared helper says unarmed, even on a policy the old inline gate would have passed', async () => {
+    armingMock.mockReturnValue({
+      armed: false,
+      reason: 'enforce_mode_off',
+      message: 'test double: unarmed',
+    });
+    primeSelects([
+      [FULLY_ARMED_POLICY],
+      [{ id: 'device-1', orgId: 'org-1' }],
+      [],
+    ]);
+    inventoryMock.mockResolvedValueOnce(new Map([['device-1', [
+      { name: 'Some Unapproved App', version: '1.0', vendor: 'Acme', catalogId: null },
+    ]]]));
+
+    const result = await processCheckPolicy({ type: 'check-policy', policyId: POLICY_ID });
+
+    expect(result.violations).toBeGreaterThan(0);        // it DID detect
+    expect(scheduleUninstallMock).not.toHaveBeenCalled(); // and refused to act
+    expect(scheduleInstallMock).not.toHaveBeenCalled();
+  });
+});

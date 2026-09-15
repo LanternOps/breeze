@@ -15,6 +15,7 @@ import {
 import { getBullMQConnection } from '../services/redis';
 import {
   evaluateSoftwarePolicyAgainstInventory,
+  evaluateSoftwarePolicyArming,
   getSoftwareInventoryByDeviceIds,
   normalizeSoftwarePolicyRules,
   recordSoftwarePolicyAudit,
@@ -138,14 +139,19 @@ async function readComplianceStateByDevice(
   return byDevice;
 }
 
+/**
+ * Timing options only. `autoUninstall` used to be read here as
+ * `autoUninstallEnabled`, which meant the worker carried its own copy of the
+ * arming rule alongside evaluateSoftwarePolicyArming — the duplication that let
+ * the two drift (contract D11). Arming now comes exclusively from that helper;
+ * this function answers only "how long to wait", never "may we act".
+ */
 function readRemediationOptions(raw: unknown): {
-  autoUninstallEnabled: boolean;
   gracePeriodHours: number;
   cooldownMinutes: number;
 } {
   if (!raw || typeof raw !== 'object') {
     return {
-      autoUninstallEnabled: false,
       gracePeriodHours: 0,
       cooldownMinutes: REMEDIATION_COOLDOWN_DEFAULT_MINUTES,
     };
@@ -160,7 +166,6 @@ function readRemediationOptions(raw: unknown): {
     : REMEDIATION_COOLDOWN_DEFAULT_MINUTES;
 
   return {
-    autoUninstallEnabled: options.autoUninstall === true,
     gracePeriodHours,
     cooldownMinutes,
   };
@@ -386,6 +391,12 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
 
   const normalizedRules = normalizeSoftwarePolicyRules(policy.rules);
   const remediationOptions = readRemediationOptions(policy.remediationOptions);
+  // Contract D11: ONE arming truth, shared with softwareRemediationWorker.ts and
+  // the AI compliance tool. Evaluated once per pass — the policy row cannot
+  // change mid-loop, and the generation gate above already refused a job whose
+  // policy was edited after enqueue.
+  const uninstallArming = evaluateSoftwarePolicyArming(policy, 'uninstall');
+  const installArming = evaluateSoftwarePolicyArming(policy, 'install');
   const existingByDevice = await readComplianceStateByDevice(policy.id, deviceIds);
   const inventoryByDevice = await getSoftwareInventoryByDeviceIds(deviceIds);
 
@@ -446,10 +457,12 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
           },
         });
 
+        // Two INDEPENDENT gates over the same violation set (spec §2). A policy
+        // may arm both, one, or neither, and a device may be queued for both
+        // verbs in one pass — removing an unauthorised app and installing a
+        // required one are not in conflict.
         if (
-          policy.enforceMode
-          && policy.mode !== 'audit'
-          && remediationOptions.autoUninstallEnabled
+          uninstallArming.armed
           && violationsWithStableTimestamps.some((violation) => violation.type === 'unauthorized')
         ) {
           const remediationDecision = shouldQueueAutoRemediation({
