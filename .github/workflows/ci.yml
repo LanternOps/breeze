@@ -2013,13 +2013,45 @@ jobs:
         working-directory: agent
         run: go vet ./...
 
+      # #5892: the pinned binary is ~130MB and `go install` re-fetches its own
+      # dependency graph from proxy.golang.org/sum.golang.org every run, which
+      # both wastes time and is the most common source of the transient
+      # network failures that redden this job for reasons unrelated to actual
+      # lint findings. Cache it keyed on the pinned version so a cache hit
+      # skips the install (and its network calls) entirely.
+      - name: Cache golangci-lint binary
+        id: golangci-lint-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-v2.12.2-${{ runner.os }}
+
+      - name: Install golangci-lint
+        if: steps.golangci-lint-cache.outputs.cache-hit != 'true'
+        run: |
+          # #5892: on a cache miss, `go install` can still fail transiently
+          # with proxy.golang.org / sum.golang.org connection errors. Retry
+          # with backoff before failing the job outright.
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2; then
+              echo "golangci-lint installed (attempt ${attempt})."
+              exit 0
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              break
+            fi
+            echo "::warning::golangci-lint install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to install golangci-lint after ${attempts} attempts."
+          exit 1
+
       - name: golangci-lint (new issues only)
         working-directory: agent
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-          golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
+        run: golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
 
   # ─── Go agent race tests (broad) ──────────────────────────────────────
   # test-agent runs the suite CGO-off (no race detector). This job races the
@@ -2468,6 +2500,24 @@ jobs:
 
       - name: Start test-stack containers
         run: |
+          # #5892: `docker compose pull` can fail transiently with ECONNRESET
+          # from Docker Hub, reddening this job for reasons unrelated to the
+          # actual tests. Retry the pull with backoff, separately from `up
+          # -d`, so a flaky pull doesn't need the whole step to fail once
+          # before a rerun.
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if docker compose -f docker-compose.test.yml pull; then
+              echo "Test-stack images pulled (attempt ${attempt})."
+              break
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              echo "::error::Failed to pull test-stack images after ${attempts} attempts."
+              exit 1
+            fi
+            echo "::warning::docker compose pull failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
           docker compose -f docker-compose.test.yml up -d
           timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
           timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'
