@@ -172,6 +172,10 @@ export function projectPatch(
       detail: str(item.detail),
       disposition: record?.disposition ?? null,
       reason: record?.reason ?? null,
+      intentId: typeof record?.intentId === 'string' ? record.intentId : null,
+      droppedPatchIds: Array.isArray(record?.droppedPatchIds)
+        ? record.droppedPatchIds.filter((d) => d && typeof d.patchId === 'string' && typeof d.reason === 'string')
+        : [],
     };
   });
 
@@ -183,6 +187,8 @@ export function projectPatch(
     items: projected,
     recordedCount: projected.filter((i) => i.disposition === 'recorded').length,
     refusedCount: projected.filter((i) => i.disposition === 'refused').length,
+    intentCreatedCount: projected.filter((i) => i.disposition === 'intent_created').length,
+    suppressedCount: projected.filter((i) => i.disposition === 'suppressed').length,
     evidenceTruncated: p.evidenceTruncated === true,
   };
 }

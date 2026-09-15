@@ -75,7 +75,7 @@ vi.mock('../services/redis', () => ({
   isBullMQAvailable: vi.fn(() => true),
 }));
 
-vi.mock('../services/patchApprovalEvaluator', () => ({
+vi.mock('../services/patchEligibility', () => ({
   resolveApprovedPatchesForDevice: vi.fn(),
 }));
 
@@ -118,7 +118,7 @@ import {
   PatchCompletionCheckError,
   __testOnly,
 } from './patchJobExecutor';
-import { resolveApprovedPatchesForDevice } from '../services/patchApprovalEvaluator';
+import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
 import { queueCommandForExecution } from '../services/commandQueue';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import { isOfflineQueueEnabled } from '../services/commandOfflinePolicy';

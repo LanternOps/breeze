@@ -1215,11 +1215,18 @@ const runDetailResponseSchema = z.object({
         patchCount: z.number(),
         title: z.string(),
         detail: z.string(),
-        disposition: z.enum(['recorded', 'refused']).nullable(),
+        disposition: z.enum(['recorded', 'intent_created', 'refused', 'suppressed', 'cap_reached', 'error']).nullable(),
         reason: z.string().nullable(),
+        // W02 (#5748): the approval card an install item minted, and the
+        // patch ids the eligibility resolver dropped from it — ids + a display
+        // reason only, never a patch title or the raw `patchIds` list.
+        intentId: z.string().nullable(),
+        droppedPatchIds: z.array(z.object({ patchId: z.string(), reason: z.string() }).strict()),
       }).strict()),
       recordedCount: z.number(),
       refusedCount: z.number(),
+      intentCreatedCount: z.number(),
+      suppressedCount: z.number(),
       evidenceTruncated: z.boolean(),
     }).strict().nullable(),
     // #4248 W03 (OD-7 B): per-run narrative email delivery counts. `null`

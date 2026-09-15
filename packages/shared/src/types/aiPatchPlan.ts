@@ -74,10 +74,65 @@ export const PATCH_PLAN_REFUSAL_REASONS = [
   'patch_not_in_evidence',
   'window_not_resolved',
   'job_result_not_in_evidence',
+  // W02 (#5748) — the minting branch after the membership gates.
+  /** Every patch the item named is ineligible for that device right now. */
+  'no_eligible_patches',
+  /** `manage_patches:install` is not in the agent's effective allowlist. */
+  'not_allowlisted',
+  /** The run's post-run action cap (`run.maxActionsPerRun`) was already spent. */
+  'max_actions_per_run',
+  /** `createActionIntent` committed then cancelled: nobody can approve. */
+  'no_eligible_approvers',
+  /** `createActionIntent` threw — the message is logged, never stored. */
+  'intent_error',
+  // `suppressed` dispositions — `PatchEpisodeSuppressionReason` values.
+  'live_intent_exists',
+  'recently_rejected',
+  'recently_cancelled',
+  'recently_completed',
 ] as const;
 export type PatchPlanRefusalReason = (typeof PATCH_PLAN_REFUSAL_REASONS)[number];
 
-export type PatchPlanItemDisposition = 'recorded' | 'refused';
+/**
+ * Why `resolvePatchInstallEligibility` (apps/api `services/patchEligibility.ts`)
+ * excluded one patch for one device. Recorded per dropped id on an install
+ * item's disposition (`droppedPatchIds`) and rendered verbatim on the run
+ * trace — display values, never an `Error.message`.
+ */
+export const PATCH_INELIGIBLE_REASONS = [
+  /** `device_patches.status` is not outstanding (installed, failed, or the `missing` tombstone), or there is no row at all. */
+  'not_outstanding',
+  /** `patches.superseded_by` is set — a newer update replaces this one. */
+  'superseded',
+  /** The policy's `sources` filter excludes this patch's source. */
+  'blocked_by_source',
+  'held_by_deferral',
+  'blocked_by_category',
+  'blocked_by_app_rule',
+  /** No manual approval and no auto-approve rule admits it. */
+  'awaiting_manual_approval',
+  /** The device resolves to no update ring, so only a manual approval could admit it — and none does. */
+  'no_ring_resolved',
+  'device_not_in_org',
+] as const;
+export type PatchIneligibleReason = (typeof PATCH_INELIGIBLE_REASONS)[number];
+
+/**
+ * `recorded` — the item was accepted as a finding (every non-`install` class,
+ * W01). `intent_created` — an `install` item became a pending device-scoped
+ * approval card (W02). `refused` — a gate rejected it before any intent was
+ * attempted. `suppressed` — the same (device, patch) problem already has a
+ * live or recently-decided card (W02, OD-4 A). `cap_reached` — the run's
+ * action budget was spent. `error` — an intent WAS attempted and did not end
+ * up pending (mirrors `SweepProposalDisposition`).
+ */
+export type PatchPlanItemDisposition =
+  | 'recorded'
+  | 'intent_created'
+  | 'refused'
+  | 'suppressed'
+  | 'cap_reached'
+  | 'error';
 
 /** The persister's record for one submitted item (by index). */
 export interface PatchPlanItemRecord {
@@ -86,6 +141,16 @@ export interface PatchPlanItemRecord {
   deviceId: string | null;
   disposition: PatchPlanItemDisposition;
   reason?: PatchPlanRefusalReason;
+  /** W02: the pending `action_intents.id` when `disposition === 'intent_created'`. */
+  intentId?: string;
+  /**
+   * W02: the patch ids the resolver dropped from the card, each with why. A
+   * multi-patch card carries ONE idempotency key (the first surviving id's);
+   * every surviving id is listed in `mintedPatchIds` so the next occurrence's
+   * suppression read can still see them.
+   */
+  droppedPatchIds?: Array<{ patchId: string; reason: PatchIneligibleReason }>;
+  mintedPatchIds?: string[];
 }
 
 /** `ai_agent_runs.outcome.patchPlan` — server-built from a validated submission. */
@@ -121,6 +186,10 @@ export interface AiAgentRunPatchItemDto {
   detail: string;
   disposition: PatchPlanItemDisposition | null;
   reason: PatchPlanRefusalReason | null;
+  /** W02: the approval card this item minted, when it did. */
+  intentId: string | null;
+  /** W02: patch ids the eligibility resolver dropped from the card, with why. */
+  droppedPatchIds: Array<{ patchId: string; reason: PatchIneligibleReason }>;
 }
 
 /**
@@ -136,5 +205,9 @@ export interface AiAgentRunPatchDto {
   items: AiAgentRunPatchItemDto[];
   recordedCount: number;
   refusedCount: number;
+  /** W02: items that became a pending approval card. */
+  intentCreatedCount: number;
+  /** W02: items withheld because the same problem already has a live/recent card. */
+  suppressedCount: number;
   evidenceTruncated: boolean;
 }
