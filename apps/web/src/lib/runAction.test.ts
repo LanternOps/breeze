@@ -272,16 +272,31 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ message: 'boom', type: 'error' });
   });
-  it('validation 400 without code: translated VALIDATION_FAILED headline + field text as detail (Step 4 of #3859)', async () => {
+  it('validation 400 without code: keeps specific field text as message, translated headline as detail (Step 4 of #3859, #1976 contract)', async () => {
     await expect(runAction({
       request: async () => res({ error: 'name is required' }, 400),
       errorFallback: 'fb',
     })).rejects.toBeInstanceOf(ActionError);
+    // #1976: the specific field text stays the high-contrast message; the
+    // translated VALIDATION_FAILED headline rides as the low-contrast detail.
     expect(showToast).toHaveBeenCalledWith({
-      message: 'Check the highlighted fields',
-      detail: 'name is required',
+      message: 'name is required',
+      detail: 'Check the highlighted fields',
       type: 'error',
     });
+  });
+
+  it('validation 400 with no specific field text: translated headline becomes the message', async () => {
+    // extractApiError falls back to errorFallback when the body carries no
+    // usable field text; there is nothing specific to preserve, so the
+    // translated headline is the message and there is no detail line.
+    await expect(runAction({
+      request: async () => res({}, 400),
+      errorFallback: 'fb',
+    })).rejects.toBeInstanceOf(ActionError);
+    const call = showToast.mock.calls.at(-1)?.[0];
+    expect(call.message).toBe('Check the highlighted fields');
+    expect(call.detail).toBeUndefined();
   });
 
   it('validation envelope does NOT fire when a code is present (code path wins)', async () => {

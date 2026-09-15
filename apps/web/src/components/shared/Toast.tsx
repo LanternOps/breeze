@@ -157,7 +157,7 @@ export default function ToastContainer() {
             <span className={`flex-1 text-sm ${isError ? '' : 'text-foreground'}`}>
               {toast.message}
               {toast.detail && (
-                <span className="mt-0.5 block text-xs opacity-80">{toast.detail}</span>
+                <span className="mt-0.5 line-clamp-3 block text-xs opacity-80">{toast.detail}</span>
               )}
             </span>
             {toast.type === 'undo' && toast.onUndo && (

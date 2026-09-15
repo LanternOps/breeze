@@ -95,11 +95,13 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
         friendlyApplied = true;
       }
     }
-    // Validation envelope (Phase-3 Step 4 of #3859): a 400 with no `code` and no
-    // per-call friendly() is a validation failure whose message is the raw field
-    // text from extractApiError. Promote a translated VALIDATION_FAILED headline
-    // and keep the specific field text as the toast detail line, so specifics
-    // aren't lost. Scoped to 400-without-code as agreed on #5692.
+    // Validation envelope (Phase-3 Step 4 of #3859): on a 400 with no `code` and
+    // no per-call friendly(), the message from extractApiError is the specific
+    // field text. Per #1976 that specific text must stay the high-contrast
+    // `message` (the user sees exactly which field failed); the translated
+    // VALIDATION_FAILED headline rides as the low-contrast `detail` second line.
+    // Only when there is no specific field text does the translated headline
+    // become the message itself. Scoped to 400-without-code as agreed on #5692.
     let detail: string | undefined;
     if (
       response.status === 400 &&
@@ -107,8 +109,14 @@ export async function runAction<T = unknown>(opts: RunActionOptions<T>): Promise
       !friendlyApplied &&
       i18n.exists('errors:VALIDATION_FAILED')
     ) {
-      detail = message;
-      message = i18n.t('errors:VALIDATION_FAILED');
+      const headline = i18n.t('errors:VALIDATION_FAILED');
+      const specific = message && message !== opts.errorFallback ? message : undefined;
+      if (specific) {
+        message = specific;
+        detail = headline;
+      } else {
+        message = headline;
+      }
     }
     if (response.status === 403 && isTrustDenial(data)) {
       // Best-effort UI handoff: if a mounted TrustProbationBanner picks this
