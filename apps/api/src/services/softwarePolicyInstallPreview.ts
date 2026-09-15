@@ -2,7 +2,21 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, softwareComplianceStatus, type SoftwarePolicyRulesDefinition } from '../db/schema';
 import { resolveDeviceIdsForSoftwarePolicy } from './featureConfigResolver';
-import { resolvePolicyInstallTarget } from './softwarePolicyInstallRemediation';
+
+/**
+ * W03's resolver is loaded lazily, on the first preview request only.
+ * `softwarePolicyInstallRemediation` statically reaches the deployment-dispatch
+ * graph (softwareDeployment -> routes/agentWs -> the discovery/command workers),
+ * and this module is imported by an HTTP route file. Importing it statically
+ * would drag that whole write-side graph into every consumer of
+ * routes/softwarePolicies.ts for a read-only preview that most requests never
+ * reach. The module cache makes the cost a one-time load, and the mocked-module
+ * registry still intercepts it in tests.
+ */
+async function loadResolvePolicyInstallTarget() {
+  const mod = await import('./softwarePolicyInstallRemediation');
+  return mod.resolvePolicyInstallTarget;
+}
 
 /**
  * #5505 W06 — the dry-run device count behind the "this will install missing
@@ -79,6 +93,8 @@ export async function computeInstallPreviewEligibleDeviceCount(input: {
       group.deviceIds.push(row.id);
     }
   }
+
+  const resolvePolicyInstallTarget = await loadResolvePolicyInstallTarget();
 
   let total = 0;
   for (const group of groups.values()) {
