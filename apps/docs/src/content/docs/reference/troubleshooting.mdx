@@ -335,6 +335,7 @@ one, include the following so it can be triaged without a back-and-forth:
   | Agent enrollment | `enroll-last-error.txt` and the `BreezeAgent` Event Log entries |
   | Agent (Linux) | `sudo journalctl -u breeze-agent -n 200` |
   | Agent (macOS) | `/Library/Application Support/Breeze/logs/agent.log` |
+  | Desktop/user helper (macOS) | `~/Library/Logs/Breeze/desktop-helper.log` (per logged-in user) |
   | Server / API | `docker compose -f deploy/docker-compose.prod.yml --env-file .env.prod logs -f api` |
 
 <Aside type="caution">

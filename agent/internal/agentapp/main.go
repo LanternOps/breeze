@@ -1857,16 +1857,21 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// macOS/Linux.
 	detachHelperConsole()
 
-	// Log to file in the same logs folder as the main agent
-	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
-	os.MkdirAll(logDir, 0700)
+	// Log to file in the same logs folder as the main agent (e.g.
+	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
+	// run as the logged-in user and the shared directory is root-owned
+	// 0700 and re-hardened on every agent log open/rotation. There they
+	// get ~/Library/Logs/Breeze instead (#5877).
+	logDir := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		logFileName = "desktop-helper.log"
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
 		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
 		if hasConsole() {
@@ -1880,6 +1885,18 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		redirectStderr(f)
 	}
 	logging.Init("text", "info", output)
+	// Always record where diagnostics are going; the pre-#5877 code fell
+	// back to stdout silently, so an unwritable directory looked like an
+	// empty log with no explanation anywhere.
+	if openErr != nil {
+		attrs := []any{"path", logPath, "error", openErr}
+		if mkdirErr != nil {
+			attrs = append(attrs, "mkdirError", mkdirErr)
+		}
+		slog.Warn("helper log file unavailable; logging to stdout only", attrs...)
+	} else {
+		slog.Info("helper log file opened", "path", logPath)
+	}
 
 	// Load agent config for IPC socket path and helper-scoped log shipping
 	// credentials. Use LoadHelperConfig, NOT Load: this process runs as the
