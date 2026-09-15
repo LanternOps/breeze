@@ -933,6 +933,7 @@ func (s *Session) captureAndSendFrame(frameDuration time.Duration) {
 	}
 
 	s.metrics.RecordEncode(encodeTime, len(h264Data))
+	s.metrics.RecordConvert(enc.LastConvertDuration())
 
 	// Drop oversized P-frames (MFT keyframe bursts) — same guard as GPU path.
 	// Never drop IDR keyframes: the decoder MUST receive them or all subsequent

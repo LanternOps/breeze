@@ -104,6 +104,14 @@ func runDesktopHelper() {
 			AuthMonitor:  authMon,
 		})
 		defer logging.StopShipper()
+	} else {
+		// Say so once, loudly: without a shipper nothing this process logs
+		// ever reaches Agent Logs, and the WebRTC session diagnostics are the
+		// only evidence for remote-desktop triage (#5929). Report which keys
+		// are missing, never their values.
+		log.Warn("Log shipping disabled: helper config is missing required keys",
+			"missing", missingShipperKeys(cfg),
+		)
 	}
 
 	startupProbe := collectProbeOutput(false, true)

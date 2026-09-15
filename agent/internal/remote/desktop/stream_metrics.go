@@ -15,6 +15,7 @@ type StreamMetrics struct {
 
 	LastCaptureNanos atomic.Int64
 	LastScaleNanos   atomic.Int64
+	LastConvertNanos atomic.Int64 // colour conversion (RGBA/BGRA → NV12/I420) inside Encode
 	LastEncodeNanos  atomic.Int64
 	LastFrameSize    atomic.Int64
 
@@ -38,6 +39,13 @@ func (m *StreamMetrics) RecordSkip() {
 
 func (m *StreamMetrics) RecordScale(d time.Duration) {
 	m.LastScaleNanos.Store(d.Nanoseconds())
+}
+
+// RecordConvert stores the most recent pixel-format conversion duration. It
+// is a slice of the encode wall-clock, reported separately so a slow CPU
+// colour conversion is not misread as a slow encoder.
+func (m *StreamMetrics) RecordConvert(d time.Duration) {
+	m.LastConvertNanos.Store(d.Nanoseconds())
 }
 
 func (m *StreamMetrics) RecordEncode(d time.Duration, size int) {
@@ -68,6 +76,7 @@ type MetricsSnapshot struct {
 	FramesDropped  uint64
 	CaptureMs      float64
 	ScaleMs        float64
+	ConvertMs      float64
 	EncodeMs       float64
 	LastFrameSize  int
 	BandwidthKBps  float64
@@ -91,6 +100,7 @@ func (m *StreamMetrics) Snapshot() MetricsSnapshot {
 		FramesDropped:  m.FramesDropped.Load(),
 		CaptureMs:      float64(time.Duration(m.LastCaptureNanos.Load()).Microseconds()) / 1000.0,
 		ScaleMs:        float64(time.Duration(m.LastScaleNanos.Load()).Microseconds()) / 1000.0,
+		ConvertMs:      float64(time.Duration(m.LastConvertNanos.Load()).Microseconds()) / 1000.0,
 		EncodeMs:       float64(time.Duration(m.LastEncodeNanos.Load()).Microseconds()) / 1000.0,
 		LastFrameSize:  int(m.LastFrameSize.Load()),
 		BandwidthKBps:  bw,
