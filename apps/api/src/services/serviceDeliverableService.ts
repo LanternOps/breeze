@@ -11,6 +11,7 @@ import { reports, reportRuns } from '../db/schema/reports';
 import { orgDocuments } from '../db/schema/orgDocuments';
 import { ticketCategories } from '../db/schema/tickets';
 import { ticketChecklistItems, ticketChecklistTemplateItems } from '../db/schema/ticketChecklists';
+import { checklistCountsForTickets } from './ticketChecklistService';
 import { ticketComments } from '../db/schema/portal';
 import type {
   CreateDeliverableInput, UpdateDeliverableInput, DeliverOccurrenceInput, WaiveOccurrenceInput,
@@ -50,6 +51,18 @@ export interface DeliverableSummary extends ServiceDeliverableRow {
 export interface OccurrenceView extends ServiceDeliverableOccurrenceRow {
   late: boolean;
   evidence: Array<{ id: string; kind: 'document' | 'report_run'; documentId: string | null; reportId: string | null; reportRunId: string | null; createdAt: string }>;
+  /**
+   * #5808 W03 — MSP-only checklist progress for the occurrence's ticket. `null`
+   * when the occurrence has no ticket or its ticket has no checklist.
+   *
+   * Present on EVERY OccurrenceView, not just the list: the drawer replaces a
+   * row in place with whatever a mutation returns, so a mutation view that
+   * omitted this would blank the chip the moment an occurrence is delivered.
+   *
+   * The customer portal builds its own DTOs in services/portal/serviceReadModel.ts
+   * and must never gain this field (spec §5).
+   */
+  checklist: { done: number; total: number } | null;
 }
 
 /**
@@ -387,9 +400,14 @@ function toEvidenceView(e: EvidenceListRow): OccurrenceView['evidence'][number] 
   return { id: e.id, kind: e.kind, documentId: e.documentId, reportId: e.reportId, reportRunId: e.reportRunId, createdAt: e.createdAt.toISOString() };
 }
 
-function toView(loaded: LoadedOccurrence, evidence: EvidenceListRow[], today: string): OccurrenceView {
+function toView(
+  loaded: LoadedOccurrence,
+  evidence: EvidenceListRow[],
+  today: string,
+  checklist: { done: number; total: number } | null = null,
+): OccurrenceView {
   const { artifactRequired: _a, completionMode: _c, graceDays: _g, leadDays: _l, ...row } = loaded;
-  return { ...row, late: isLate(row, today), evidence: evidence.map(toEvidenceView) };
+  return { ...row, late: isLate(row, today), evidence: evidence.map(toEvidenceView), checklist };
 }
 
 async function loadView(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<OccurrenceView> {
@@ -397,7 +415,11 @@ async function loadView(orgId: string, occurrenceId: string, executor: DbExecuto
   const evidence = await executor.select(evidenceColumns).from(serviceDeliverableEvidence)
     .where(and(eq(serviceDeliverableEvidence.occurrenceId, occurrenceId), eq(serviceDeliverableEvidence.orgId, orgId)))
     .orderBy(asc(serviceDeliverableEvidence.createdAt));
-  return toView(loaded, evidence, todayISO());
+  // The chip has to survive a mutation: the drawer swaps the row in place with
+  // whatever comes back here, so omitting the summary would blank it on every
+  // deliver/waive/reschedule.
+  const counts = loaded.ticketId ? await checklistCountsForTickets([loaded.ticketId]) : null;
+  return toView(loaded, evidence, todayISO(), counts?.get(loaded.ticketId!) ?? null);
 }
 
 async function countEvidence(orgId: string, occurrenceId: string, executor: DbExecutor): Promise<number> {
@@ -500,8 +522,18 @@ export async function listOccurrences(
     list.push(e);
     byOccurrence.set(e.occurrenceId, list);
   }
+  // ONE grouped query for every occurrence's checklist progress, folded into
+  // the payload the drawer already fetches. The alternative — 24 self-fetching
+  // checklist cards on drawer open — is 24 requests for a chip.
+  const ticketIds = rows.map((r) => r.ticketId).filter((v): v is string => !!v);
+  const counts = ticketIds.length > 0 ? await checklistCountsForTickets(ticketIds) : null;
   const today = todayISO();
-  return rows.map((r) => toView(r, byOccurrence.get(r.id) ?? [], today));
+  return rows.map((r) => toView(
+    r,
+    byOccurrence.get(r.id) ?? [],
+    today,
+    r.ticketId ? counts?.get(r.ticketId) ?? null : null,
+  ));
 }
 
 export async function deliverOccurrence(

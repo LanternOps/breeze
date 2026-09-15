@@ -39,6 +39,14 @@ vi.mock('./checklistTemplateReference', () => refMocks);
 const { createTicketMock } = vi.hoisted(() => ({ createTicketMock: vi.fn() }));
 vi.mock('./sentry', () => ({ captureException: vi.fn() }));
 vi.mock('./ticketService', () => ({ createTicket: createTicketMock }));
+// #5808 W03 — the occurrence list carries a per-occurrence checklist summary,
+// from ONE grouped query. Mocked so these cases can assert the query is issued
+// exactly once and only for occurrences that actually have a ticket.
+const countsMock = vi.hoisted(() => vi.fn());
+vi.mock('./ticketChecklistService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./ticketChecklistService')>()),
+  checklistCountsForTickets: countsMock,
+}));
 
 import { db } from '../db';
 import {
@@ -97,6 +105,7 @@ describe('serviceDeliverableService', () => {
     results.length = 0;
     vi.clearAllMocks();
     refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+    countsMock.mockReset().mockResolvedValue(new Map());
   });
 
   describe('org access', () => {
@@ -633,6 +642,49 @@ describe('serviceDeliverableService', () => {
       expect(views.map((v) => [v.id, v.late])).toEqual([['o1', true], ['o2', true], ['o3', false], ['o4', false], ['o5', false]]);
       expect(views[1]?.evidence).toHaveLength(1);
       expect(views[0]?.evidence).toEqual([]);
+    });
+
+    // ── #5808 W03: the { done, total } chip source ─────────────────────────
+    it('returns a per-occurrence checklist summary from ONE grouped query', async () => {
+      // A drawer renders up to 24 occurrences. Twenty-four self-fetching
+      // checklist cards would be 24 requests on open; this is the alternative.
+      queueResult([{ id: 'd1' }]);
+      queueResult([
+        occ({ id: 'o1', ticketId: 'tk-1' }),
+        occ({ id: 'o2', ticketId: 'tk-2' }),
+        occ({ id: 'o3', ticketId: null }),
+      ]);
+      queueResult([]); // evidence
+      countsMock.mockResolvedValue(new Map([['tk-1', { done: 2, total: 5 }]]));
+      const views = await listOccurrences('org1', 'd1', { limit: 24 }, actor);
+      expect(countsMock).toHaveBeenCalledTimes(1);
+      expect(countsMock).toHaveBeenCalledWith(['tk-1', 'tk-2']); // nulls filtered out
+      expect(views[0]!.checklist).toEqual({ done: 2, total: 5 });
+      expect(views[1]!.checklist).toBeNull();   // ticket exists but has no checklist
+      expect(views[2]!.checklist).toBeNull();   // ticketless occurrence
+    });
+
+    it('a MUTATION view carries the summary too, so the chip survives a deliver', async () => {
+      // OccurrenceDrawer swaps the row in place with whatever a mutation
+      // returns. A mutation view that omitted `checklist` would blank the chip
+      // the moment an occurrence is delivered — the drawer would look like the
+      // checklist vanished.
+      queueResult([occ({ id: 'o1', status: 'open', ticketId: 'tk-1' })]); // load
+      queueResult([{ id: 'o1' }]);                                        // status update
+      queueResult([occ({ id: 'o1', status: 'waived', ticketId: 'tk-1' })]); // reload
+      queueResult([]);                                                    // evidence
+      countsMock.mockResolvedValue(new Map([['tk-1', { done: 3, total: 4 }]]));
+      const view = await waiveOccurrence('org1', 'o1', { reason: 'n/a' }, actor);
+      expect(view.checklist).toEqual({ done: 3, total: 4 });
+    });
+
+    it('does not query counts at all when no occurrence has a ticket', async () => {
+      queueResult([{ id: 'd1' }]);
+      queueResult([occ({ id: 'o1', ticketId: null })]);
+      queueResult([]);
+      const views = await listOccurrences('org1', 'd1', { limit: 24 }, actor);
+      expect(countsMock).not.toHaveBeenCalled();
+      expect(views[0]!.checklist).toBeNull();
     });
   });
 
