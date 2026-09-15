@@ -41,10 +41,15 @@ type virtualClock struct {
 	// harness can wait until the watchdog has taken its timestamp for a tick
 	// before moving the clock on — otherwise the next advance races the read.
 	observed chan struct{}
+	// onViolation reports a harness misuse from the watchdog's own goroutine.
+	// t.Errorf is safe there (unlike t.Fatal, which may only be called from
+	// the test goroutine).
+	onViolation func(msg string)
 }
 
-func newVirtualClock() *virtualClock {
+func newVirtualClock(onViolation func(string)) *virtualClock {
 	return &virtualClock{
+		onViolation: onViolation,
 		// Truncate strips the monotonic reading, so every comparison between a
 		// virtual instant and a MonotonicDeadline-derived one (which carries a
 		// real monotonic reading) falls back to wall-clock arithmetic — the
@@ -61,10 +66,21 @@ func (c *virtualClock) Now() time.Time {
 	return c.now
 }
 
-// watchdogNow is the hook handed to the watchdog: Now plus the observed signal.
+// watchdogNow is the hook handed to the watchdog: Now plus the observed
+// signal. The signal is a NON-blocking send: the harness pairs every tick with
+// exactly one awaitClockRead, so the buffer is always empty here — but that
+// pairing is a convention across fireTick/step/settle, not something the type
+// enforces. A blocking send would wedge the watchdog goroutine inside this
+// function, before it can ever reach the select that watches session.done, so
+// a future helper that fires an undrained tick would hang the package instead
+// of failing. Fail loudly instead; onViolation is the test's Errorf.
 func (c *virtualClock) watchdogNow() time.Time {
 	now := c.Now()
-	c.observed <- struct{}{}
+	select {
+	case c.observed <- struct{}{}:
+	default:
+		c.onViolation("virtual clock read with an undrained observed signal: a tick was fired without a paired awaitClockRead")
+	}
 	return now
 }
 
@@ -101,7 +117,8 @@ type helperHarness struct {
 // test here; the wiring is.
 func newHelperHarness(t *testing.T, id string, answer func(sessionID string) *ipc.DesktopLeaseUpdate) *helperHarness {
 	t.Helper()
-	h := &helperHarness{t: t, clock: newVirtualClock(), mgr: NewSessionManager()}
+	h := &helperHarness{t: t, mgr: NewSessionManager()}
+	h.clock = newVirtualClock(func(msg string) { t.Errorf("%s", msg) })
 	h.mgr.clock = h.clock.watchdogClock()
 
 	// The real helper wiring: renewals leave as ipc.TypeDesktopLeaseRenew over
@@ -157,6 +174,14 @@ func (h *helperHarness) awaitClockRead() {
 }
 
 // renewedExpiry is the agent's healthy answer: a fresh lease TTL from now.
+//
+// Note for anyone extending this harness: the answer travels through
+// MonotonicDeadline, so the stored expiresAt carries a real monotonic reading.
+// applyRenewal's forward-only ratchet therefore compares two monotonic-bearing
+// instants, which Go resolves on the monotonic component alone — i.e. on real
+// call order, not on the virtual expiry each answer names. An out-of-order /
+// stale-renewal rejection test cannot be written against this harness; it
+// needs ApplyRevocationLease called directly with constructed times.
 func (h *helperHarness) renewedExpiry(sessionID string) *ipc.DesktopLeaseUpdate {
 	return &ipc.DesktopLeaseUpdate{
 		SessionID:       sessionID,
@@ -167,9 +192,14 @@ func (h *helperHarness) renewedExpiry(sessionID string) *ipc.DesktopLeaseUpdate 
 // fireTick sends one watchdog tick at the current virtual time and waits for
 // the watchdog to take its timestamp for it. It reports whether the session
 // was still alive to receive the tick. The tick channel is unbuffered, so a
-// send completing proves the watchdog finished the previous tick in full —
-// its decision for that tick is already made; a send that can only complete
-// via session.done means that decision was "stop".
+// send completing proves the watchdog looped back to its select, i.e. it
+// finished the PREVIOUS tick in full and decided "continue"; when the select
+// below instead resolves via session.done, that previous decision was "stop".
+//
+// So a stop surfaces one call late by construction. run() relies on exactly
+// that: the elapsed value it returns excludes the tick it is firing, which is
+// the one whose decision it is actually reading. Do not "fix" that into an
+// off-by-one.
 func (h *helperHarness) fireTick() bool {
 	h.t.Helper()
 	select {

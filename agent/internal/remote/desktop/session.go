@@ -188,7 +188,9 @@ type SessionManager struct {
 	OnSASRequest func() error
 
 	// clock is the watchdog's time source; nil means the real clock. Only
-	// tests set it (see watchdogClock).
+	// tests set it (see watchdogClock), and only BEFORE starting the watchdog
+	// goroutine — the go statement is what publishes it safely. Reassigning it
+	// while a watchdog is running would be a data race.
 	clock *watchdogClock
 
 	// RequestRevocationLeaseRenew, if set, asks the control plane to renew the
