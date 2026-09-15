@@ -128,7 +128,7 @@ describe('workspace_launch_analysis (spec §5.5)', () => {
       error: 'external_processing_disabled',
       message:
         'This organization has not enabled external processing, so analysis runs are turned off. '
-        + 'An administrator can enable it under Settings → Organization → AI.',
+        + 'An administrator can enable it under Settings → Organization → Security.',
     });
   });
 

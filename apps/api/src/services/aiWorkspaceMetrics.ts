@@ -99,7 +99,13 @@ export type ChatRunDeliveryOutcome =
    * The watch's org/session did not match the live session found under that
    * session id — a cross-tenant delivery was refused.
    */
-  | 'session_mismatch';
+  | 'session_mismatch'
+  /**
+   * A published event whose payload did not match the shape this consumer
+   * expects — contract drift between the producer and the bridge. Like
+   * `session_mismatch`, any non-zero rate is a bug, not a capacity signal.
+   */
+  | 'malformed_payload';
 
 /**
  * Drop a measurement that would poison a counter or histogram for the life of

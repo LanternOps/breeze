@@ -3,6 +3,7 @@ import { pgTable, uuid, varchar, text, integer, char, timestamp, index } from 'd
 import { tickets, ticketComments } from './portal';
 import { organizations } from './orgs';
 import { users, bytea } from './users';
+import { aiRunArtifacts } from './aiWorkspace';
 
 /**
  * Ticket comment attachments (W08, #3902). Shape 1 (direct org_id). Bytes are
@@ -34,12 +35,14 @@ export const ticketAttachments = pgTable('ticket_attachments', {
    * artifact has since expired (ON DELETE SET NULL), which the content route
    * answers 410 for. Never dereference it without handling that.
    *
-   * The FK is created in SQL only (2026-10-16-191700-artifact-attachments.sql),
-   * not declared with `.references()`: `aiWorkspace` -> `aiAgents` -> `portal`
-   * reaches back here, and a `.references()` would close a schema import cycle
-   * that `tsc` reports as TS7022. Same technique as `contracts.ts`.
+   * The FK itself is created by 2026-10-16-191700-artifact-attachments.sql; the
+   * `.references()` here is the Drizzle-side declaration of that same
+   * constraint. (Its sibling on `report_runs` is deliberately SQL-only — that
+   * module IS in a real cycle, because `aiWorkspace` imports `aiAgents`, which
+   * imports `reports` for `reportRuns`. Nothing reaches back into this module,
+   * so no such workaround is needed here; verified by `tsc`.)
    */
-  artifactId: uuid('artifact_id'),
+  artifactId: uuid('artifact_id').references(() => aiRunArtifacts.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   attachedAt: timestamp('attached_at', { withTimezone: true }),
 }, (t) => [

@@ -9,23 +9,44 @@ vi.mock('../streamingSessionManager', () => ({
   streamingSessionManager: { get: sessionGet },
 }));
 vi.mock('../sentry', () => ({ captureException }));
+const incChatRunDelivery = vi.hoisted(() => vi.fn());
+vi.mock('../aiWorkspaceMetrics', () => ({ incChatRunDelivery }));
 // The Redis client is never constructed in this suite: `deliverRunEvent` is the
 // pure half, and `watchRunForSession` is exercised through the exported registry.
 vi.mock('../redis', () => ({ resolveRedisUrl: () => 'redis://127.0.0.1:6379' }));
+const redisInstances = vi.hoisted(() => [] as Array<{
+  channels: string[];
+  unsubscribed: number;
+  quit: number;
+}>);
 vi.mock('ioredis', () => ({
   default: class {
-    subscribe() {}
+    private readonly rec = { channels: [] as string[], unsubscribed: 0, quit: 0 };
+
+    constructor() {
+      redisInstances.push(this.rec);
+    }
+
+    subscribe(channel: string) {
+      this.rec.channels.push(channel);
+    }
+
     on() {}
+
     unsubscribe() {
+      this.rec.unsubscribed += 1;
       return Promise.resolve();
     }
+
     quit() {
+      this.rec.quit += 1;
       return Promise.resolve();
     }
   },
 }));
 
 import {
+  shutdownChatRunBridge,
   deliverRunEvent,
   drainPendingRunResults,
   unwatchRun,
@@ -61,6 +82,7 @@ function fakeSession(overrides: { orgId?: string; breezeSessionId?: string } = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  redisInstances.length = 0;
   unwatchRun(RUN);
   __setRunReaderForTests(readRunForDelivery);
   readRunForDelivery.mockResolvedValue({
@@ -207,5 +229,109 @@ describe('chatRunBridge (spec §5.5)', () => {
       summary: null,
       artifacts: [],
     });
+  });
+});
+
+/**
+ * The subscriber lifecycle — the half that holds process-lifetime state. A bug
+ * here degrades silently in production: either a leaked Redis subscription per
+ * org forever, or a subscription closed under a run still in flight, which
+ * loses every remaining delivery for that org with nothing to show for it.
+ */
+describe('chatRunBridge subscriber lifecycle', () => {
+  const RUN_B = '55555555-5555-4555-8555-555555555555';
+  const ORG_B = '66666666-6666-4666-8666-666666666666';
+
+  beforeEach(() => {
+    unwatchRun(RUN);
+    unwatchRun(RUN_B);
+    redisInstances.length = 0;
+  });
+
+  it("opens ONE subscriber per org, on that org's live channel", () => {
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    watchRunForSession({ runId: RUN_B, sessionId: SESSION, orgId: ORG });
+
+    expect(redisInstances).toHaveLength(1);
+    expect(redisInstances[0]!.channels).toEqual([`breeze:events:live:${ORG}`]);
+  });
+
+  it('keeps the subscriber while another run in the same org is still watched', () => {
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    watchRunForSession({ runId: RUN_B, sessionId: SESSION, orgId: ORG });
+
+    unwatchRun(RUN);
+    // Refcount, not a flag: closing here would silently lose every delivery for
+    // RUN_B, which is still in flight.
+    expect(redisInstances[0]!.unsubscribed).toBe(0);
+    expect(redisInstances[0]!.quit).toBe(0);
+
+    unwatchRun(RUN_B);
+    expect(redisInstances[0]!.unsubscribed).toBe(1);
+    expect(redisInstances[0]!.quit).toBe(1);
+  });
+
+  it('opens a separate subscriber per org and closes them independently', () => {
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    watchRunForSession({ runId: RUN_B, sessionId: SESSION, orgId: ORG_B });
+    expect(redisInstances).toHaveLength(2);
+
+    unwatchRun(RUN);
+    expect(redisInstances[0]!.quit).toBe(1);
+    expect(redisInstances[1]!.quit).toBe(0);
+  });
+
+  it('unwatching a run that was never watched is a no-op', () => {
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    unwatchRun('99999999-9999-4999-8999-999999999999');
+    expect(redisInstances[0]!.quit).toBe(0);
+  });
+
+  it('shutdown quits every subscriber', async () => {
+    // A leaked ioredis subscriber keeps the process alive past SIGTERM — how a
+    // rolling deploy becomes a stuck pod.
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+    watchRunForSession({ runId: RUN_B, sessionId: SESSION, orgId: ORG_B });
+    expect(redisInstances).toHaveLength(2);
+
+    await shutdownChatRunBridge();
+
+    expect(redisInstances.every((r) => r.quit === 1)).toBe(true);
+    expect(redisInstances).toHaveLength(2);
+  });
+
+  it('caps the queued run results a walked-away technician can accumulate', async () => {
+    // Without the cap, every finished run prepends another block to the next
+    // message the technician sends — an unbounded prompt prefix.
+    const { session } = fakeSession();
+    sessionGet.mockReturnValue(session);
+
+    for (let i = 0; i < 8; i++) {
+      const id = `run-${i}`;
+      watchRunForSession({ runId: id, sessionId: SESSION, orgId: ORG });
+      // eslint-disable-next-line no-await-in-loop
+      await deliverRunEvent({ type: 'ai.agent.run.completed', payload: { runId: id } });
+    }
+
+    expect(session.pendingRunResults).toHaveLength(5);
+    // The OLDEST are dropped, so the most recent results are the ones the model
+    // actually sees.
+    const drained = drainPendingRunResults(session as never)!;
+    expect(drained).toContain('run-7');
+    expect(drained).not.toContain('run-0');
+  });
+
+  it('tags a malformed progress payload instead of dropping it with no signal', async () => {
+    const { session, published } = fakeSession();
+    sessionGet.mockReturnValue(session);
+    watchRunForSession({ runId: RUN, sessionId: SESSION, orgId: ORG });
+
+    await deliverRunEvent({
+      type: 'ai.agent.run.progress',
+      payload: { runId: RUN, step: 'export_dataset', label: 'x', ordinal: 'two' },
+    });
+
+    expect(published).toEqual([]);
+    expect(incChatRunDelivery).toHaveBeenCalledWith('malformed_payload');
   });
 });

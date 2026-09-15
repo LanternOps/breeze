@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CheckCircle, Clock, Download, Loader2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { AiAgentRunStatus } from '@breeze/shared';
 import { fetchWithAuth } from '@/stores/auth';
 import type { ChatRunState } from '@/stores/processStreamEvent';
 
@@ -16,7 +17,7 @@ interface PolledArtifact {
 }
 
 interface PolledRun {
-  status: string;
+  status: AiAgentRunStatus;
   summary: string | null;
   computeCents: number;
   costCents: number;
@@ -31,7 +32,28 @@ interface AiRunCardProps {
   run: ChatRunState | undefined;
 }
 
-const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'expired', 'skipped']);
+/**
+ * Which run statuses mean "this will never change again", as a TOTAL map over
+ * `AiAgentRunStatus`. Deliberately a map and not a hand-written `Set<string>`:
+ * a status added upstream is a compile error here, instead of silently reading
+ * as non-terminal — which would leave every open tab polling that run every
+ * five seconds forever and never show the "open the full run" link.
+ */
+const TERMINAL_BY_STATUS: Record<AiAgentRunStatus, boolean> = {
+  queued: false,
+  running: false,
+  // Still going: it is waiting on a human, not finished.
+  awaiting_approval: false,
+  completed: true,
+  failed: true,
+  cancelled: true,
+  expired: true,
+  skipped: true,
+};
+
+function isTerminal(status: string): boolean {
+  return TERMINAL_BY_STATUS[status as AiAgentRunStatus] === true;
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -60,12 +82,12 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
   const stopped = useRef(false);
 
   const status = polled?.status ?? run?.status ?? initialStatus;
-  const isTerminal = TERMINAL.has(status);
+  const runIsTerminal = isTerminal(status);
   /**
    * True only when a `run_result` event actually reached this tab — i.e. a turn
    * was open when the run landed. False for the common case (ask, walk away).
    */
-  const deliveredLive = run !== undefined && TERMINAL.has(run.status);
+  const deliveredLive = run !== undefined && isTerminal(run.status);
 
   useEffect(() => {
     stopped.current = false;
@@ -75,15 +97,23 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
       if (stopped.current) return;
       try {
         const res = await fetchWithAuth(`/ai/agents/runs/${runId}`);
-        if (!res.ok) return;
-        const body = (await res.json()) as { data?: PolledRun };
-        if (stopped.current || !body.data) return;
-        setPolled(body.data);
-        if (TERMINAL.has(body.data.status)) {
-          // A finished run never changes again; keep polling and every open
-          // chat with an old run card becomes a background request forever.
-          stopped.current = true;
-          return;
+        // A non-OK response falls THROUGH to the reschedule below, deliberately.
+        // Returning here would exit before the `setTimeout` and stop polling
+        // permanently on a single 500 — or on a 403 after an org-access change —
+        // freezing the card on its spinner with no error and no retry, which is
+        // strictly worse than the transient-failure behaviour promised below.
+        if (res.ok) {
+          const body = (await res.json()) as { data?: PolledRun };
+          if (stopped.current) return;
+          if (body.data) {
+            setPolled(body.data);
+            if (isTerminal(body.data.status)) {
+              // A finished run never changes again; keep polling and every open
+              // chat with an old run card becomes a background request forever.
+              stopped.current = true;
+              return;
+            }
+          }
         }
       } catch {
         // A transient failure is not worth a visible error on a card whose
@@ -174,13 +204,13 @@ export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps)
         is the SSE state, so this note never appears for a run the technician
         watched land.
       */}
-      {isTerminal && !deliveredLive && (
+      {runIsTerminal && !deliveredLive && (
         <p data-testid="ai-run-card-offline-notice" className="mt-2 text-xs text-muted-foreground">
           {t('aiRunCard.resultOnRunPage')}
         </p>
       )}
 
-      {isTerminal && (
+      {runIsTerminal && (
         <a
           data-testid="ai-run-card-open"
           href={`/ai-agents/runs/${runId}`}

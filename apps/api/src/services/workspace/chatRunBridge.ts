@@ -153,7 +153,16 @@ class ChatRunBridge {
       let parsed: { type?: string; payload?: Record<string, unknown> };
       try {
         parsed = JSON.parse(message);
-      } catch {
+      } catch (err) {
+        // LOGGED, not swallowed — `services/eventDispatcher.ts` (the pattern
+        // this class follows) logs here too, and dropping that would make a
+        // future malformed-publisher bug completely invisible: no line, no
+        // counter, nothing. Length only, never the payload: it can carry
+        // customer data.
+        console.error(
+          `[ChatRunBridge] failed to parse event for org ${orgId} (${message.length} bytes):`,
+          err instanceof Error ? err.message : err,
+        );
         return;
       }
       if (!parsed.type || !parsed.payload) return;
@@ -265,7 +274,14 @@ export async function deliverRunEvent(event: {
 
   if (event.type === 'ai.agent.run.progress') {
     const { step, label, ordinal } = event.payload;
-    if (typeof step !== 'string' || typeof label !== 'string' || typeof ordinal !== 'number') return;
+    if (typeof step !== 'string' || typeof label !== 'string' || typeof ordinal !== 'number') {
+      // Every other outcome in this function is metric-tagged; this one has to
+      // be too, or contract drift between `runProgress.ts` and this consumer
+      // ships with zero signal. Unreachable while the only publisher is
+      // `emitRunProgress`, which is exactly when a defensive branch goes stale.
+      incChatRunDelivery('malformed_payload');
+      return;
+    }
     session.eventBus.publish({ type: 'run_progress', runId, step, label, ordinal });
     incChatRunDelivery('progress');
     return;

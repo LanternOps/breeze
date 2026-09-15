@@ -8,7 +8,7 @@ import { Steps, Aside } from '@astrojs/starlight/components';
 An **analysis run** is what you start when the question needs more than a lookup: "pull yesterday's security logs from the finance servers and tell me which accounts failed logon from outside the office, with the list attached." Breeze exports the data it needs, writes and runs code against it in an isolated workspace, and hands back findings plus files you can download, attach to a ticket, or put in a report.
 
 <Aside type="caution" title="This runs on rented compute, and it is off until you say otherwise">
-  Analysis code executes in a sandbox hosted in your organization's region — not on your devices, and not on your own servers. It is **off by default for every organization** and an administrator has to turn it on per organization under **Settings → Organization → AI**. Until then the capability is simply absent: nothing breaks, and nobody can start a run. Self-hosted Breeze does not have this feature at all.
+  Analysis code executes in a sandbox hosted in your organization's region — not on your devices, and not on your own servers. It is **off by default for every organization** and an administrator has to turn it on per organization under **Settings → Organization → Security**. Until then the capability is simply absent: nothing breaks, and nobody can start a run. Self-hosted Breeze does not have this feature at all.
 </Aside>
 
 ## What the workspace can and cannot do
@@ -63,7 +63,7 @@ A report run can attach the same file the same way, by reference rather than by 
 
 1. Your operator enables the feature for the deployment.
 
-2. An administrator turns on **Allow sandboxed AI analysis** for each organization that wants it, under **Settings → Organization → AI**.
+2. An administrator turns on **Allow sandboxed AI analysis** for each organization that wants it, under **Settings → Organization → Security**.
 
 3. The organization's AI policy must include the **workspace** capability. Until it does, runs are refused with a message saying so.
 

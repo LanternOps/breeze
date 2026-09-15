@@ -74,7 +74,7 @@ const REFUSAL_MESSAGES: Record<AnalysisAdmissionRefusal, string> = {
   analysis_not_available: 'Sandboxed analysis runs are not available on this deployment.',
   external_processing_disabled:
     'This organization has not enabled external processing, so analysis runs are turned off. '
-    + 'An administrator can enable it under Settings → Organization → AI.',
+    + 'An administrator can enable it under Settings → Organization → Security.',
   workspace_capability_missing:
     "This organization's AI policy does not include the workspace capability, so analysis runs cannot be started.",
   analysis_region_unavailable:

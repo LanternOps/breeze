@@ -103,6 +103,46 @@ describe('AiRunCard (spec §5.5)', () => {
     expect(fetchWithAuth).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps polling after a transient HTTP error instead of stopping forever', async () => {
+    // `if (!res.ok) return` used to exit BEFORE the reschedule, so a single 500
+    // — or a 403 after an org-access change — froze the card on its spinner
+    // permanently, with no error, no retry and no way to tell. That is strictly
+    // worse than the "the next tick retries" the catch block promises.
+    vi.useFakeTimers();
+    try {
+      fetchWithAuth.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+      fetchWithAuth.mockResolvedValue(detail());
+      render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(fetchWithAuth).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a cancelled run as terminal and stops polling', async () => {
+    // TERMINAL was a hand-copied Set<string> with no compile-time link to
+    // AiAgentRunStatus. A status the card does not recognise as terminal means
+    // every open tab polls that run every five seconds forever.
+    fetchWithAuth.mockResolvedValue(detail({ status: 'cancelled', summary: null, artifacts: [] }));
+    const { findByTestId } = render(<AiRunCard runId={RUN} initialStatus="queued" run={undefined} />);
+    await findByTestId('ai-run-card-open');
+    await waitFor(() => expect(fetchWithAuth).toHaveBeenCalledTimes(1));
+    await new Promise((r) => { setTimeout(r, 50); });
+    expect(fetchWithAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat awaiting_approval as terminal — that run is still going', async () => {
+    fetchWithAuth.mockResolvedValue(detail({ status: 'awaiting_approval' }));
+    const { queryByTestId, getByTestId } = render(
+      <AiRunCard runId={RUN} initialStatus="queued" run={undefined} />,
+    );
+    await waitFor(() => expect(getByTestId('ai-run-card-status').textContent).toContain('awaiting_approval'));
+    expect(queryByTestId('ai-run-card-open')).toBeNull();
+  });
+
   it('escapes artifact names rather than interpreting them as markup', async () => {
     fetchWithAuth.mockResolvedValue(detail({
       artifacts: [{
