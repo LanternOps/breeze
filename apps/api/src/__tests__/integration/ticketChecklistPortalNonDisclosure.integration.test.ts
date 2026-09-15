@@ -93,7 +93,13 @@ async function seedDeliverableWithChecklist(orgId: string) {
     .insert(serviceDeliverables)
     .values({
       orgId, name: `Nondisclosure deliverable ${randomUUID()}`, cadence: 'monthly',
-      anchorDueDate: '2026-10-31', effectiveFrom: '2026-10-01', portalVisible: true, artifactRequired: false,
+      // effectiveFrom must be in the PAST relative to the real wall clock, not
+      // relative to AS_OF: the sweep is driven by AS_OF, but the portal read
+      // model filters on `lte(effectiveFrom, today)` using the actual current
+      // date (serviceReadModel.ts:222). A future effectiveFrom makes the
+      // deliverable invisible to the portal, which would make every negative
+      // assertion here pass against an EMPTY payload.
+      anchorDueDate: '2026-10-31', effectiveFrom: '2020-01-01', portalVisible: true, artifactRequired: false,
       checklistTemplateId: template!.id, instructions: SECRET_INSTRUCTIONS,
     })
     .returning({ id: serviceDeliverables.id });
@@ -120,6 +126,10 @@ describe('ticket checklist portal non-disclosure (#5808 W03)', () => {
     const res = await app.request('/portal/service', { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(200);
     const text = await res.text();
+    // Positive control FIRST: a payload that does not actually contain the
+    // deliverable would satisfy every `not.toContain` below vacuously.
+    expect(JSON.parse(text).groups.flatMap((g: { deliverables: unknown[] }) => g.deliverables))
+      .not.toHaveLength(0);
     expect(text).not.toContain(SECRET_STEP);
     expect(text).not.toContain(SECRET_INSTRUCTIONS);
     expect(text).not.toContain('"instructions"');
@@ -138,6 +148,7 @@ describe('ticket checklist portal non-disclosure (#5808 W03)', () => {
     const res = await app.request(`/portal/service/${deliverableId}/occurrences`, { headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(200);
     const text = await res.text();
+    expect(JSON.parse(text).occurrences).not.toHaveLength(0);   // positive control
     expect(text).not.toContain(SECRET_STEP);
     expect(text).not.toContain(SECRET_INSTRUCTIONS);
     expect(text).not.toContain('"instructions"');
@@ -253,17 +264,23 @@ describe('ticket checklist portal non-disclosure (#5808 W03)', () => {
     const overviewRes = await app.request('/portal/service', { headers: { Authorization: `Bearer ${token}` } });
     expect(overviewRes.status).toBe(200);
     const overview = await overviewRes.json();
-    const lastDelivered = overview.groups?.[0]?.deliverables?.[0]?.lastDelivered;
-    expect(lastDelivered?.note).toBe('Reviewed and clean.');
+    // No optional chaining on the way in: a mis-navigated DTO path would
+    // otherwise yield undefined and quietly satisfy the negative assertions.
+    const portalDeliverables = overview.groups.flatMap((g: { deliverables: Array<{ id: string; lastDelivered: { note: string | null } | null }> }) => g.deliverables);
+    const published = portalDeliverables.find((d: { id: string }) => d.id === deliverableId);
+    expect(published).toBeDefined();
+    expect(published.lastDelivered).not.toBeNull();
+    expect(published.lastDelivered.note).toBe('Reviewed and clean.');
     expect(JSON.stringify(overview)).not.toContain(SECRET_INSTRUCTIONS);
-    expect(lastDelivered?.note).not.toMatch(/\d+\s*\/\s*\d+/);
+    expect(published.lastDelivered.note).not.toMatch(/\d+\s*\/\s*\d+/);
 
     const occRes = await app.request(`/portal/service/${deliverableId}/occurrences`, { headers: { Authorization: `Bearer ${token}` } });
     expect(occRes.status).toBe(200);
     const occDto = await occRes.json();
     const matching = occDto.occurrences.find((o: { id: string }) => o.id === occurrenceId);
-    expect(matching?.note).toBe('Reviewed and clean.');
-    expect(matching?.note).not.toMatch(/\d+\s*\/\s*\d+/);
+    expect(matching).toBeDefined();
+    expect(matching.note).toBe('Reviewed and clean.');
+    expect(matching.note).not.toMatch(/\d+\s*\/\s*\d+/);
   });
 
   it('an ORG-scoped token cannot reach the MSP checklist routes at all (requireScope("partner","system"))', async () => {
