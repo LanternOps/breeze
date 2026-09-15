@@ -78,6 +78,33 @@ describe('ReportTemplates — saved reports merged into curated cards', () => {
     expect(screen.getAllByRole('button', { name: 'Use template' })).toHaveLength(6);
   });
 
+  it('dedupes two saved-report rows that share the same id instead of rendering both', async () => {
+    mockSavedReports([
+      {
+        id: '5d0f4c1e-9c3b-4a7e-9c2f-1c9a6f1d2b33',
+        name: 'Ad Hoc Report',
+        type: 'executive_summary',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: { dateRange: { preset: 'last_30_days' } }
+      },
+      {
+        id: '5d0f4c1e-9c3b-4a7e-9c2f-1c9a6f1d2b33',
+        name: 'Ad Hoc Report',
+        type: 'executive_summary',
+        schedule: 'one_time',
+        format: 'pdf',
+        config: { dateRange: { preset: 'last_30_days' } }
+      }
+    ]);
+    render(<ReportTemplates />);
+
+    // A duplicate row (same id twice, e.g. a pagination overlap) must not
+    // produce two React elements sharing a key — first occurrence wins.
+    expect(await screen.findByText('Ad Hoc Report')).toBeTruthy();
+    expect(screen.getAllByText('Ad Hoc Report')).toHaveLength(1);
+  });
+
   it('still lists a saved report with a novel name as its own card', async () => {
     mockSavedReports([
       {
