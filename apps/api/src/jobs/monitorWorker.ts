@@ -26,7 +26,7 @@ import {
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
 import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
-import { loadAssetSiteId, selectNetworkExecutor } from '../services/networkExecutorSelection';
+import { selectMonitorExecutor } from '../services/networkExecutorSelection';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -194,7 +194,7 @@ async function jobOrgIsAuthorized(
  * Redis or the agent WebSocket, so the pooled connection is released before
  * the connectivity check and dispatch (#1105).
  */
-async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckMonitorInputs> {
+async function loadCheckMonitorInputs(data: CheckMonitorJobData, selectedAgentId?: string): Promise<CheckMonitorInputs> {
   const [monitor] = await db
     .select()
     .from(networkMonitors)
@@ -216,7 +216,7 @@ async function loadCheckMonitorInputs(data: CheckMonitorJobData): Promise<CheckM
   // The probe device comes from the RUNNING org (data.orgId), never from
   // monitor.orgId - which is NULL for a partner-wide check and would silently
   // match no device at all.
-  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId });
+  const agentId = await selectExecutionAgentForMonitor({ orgId: data.orgId, assetId: monitor.assetId }, selectedAgentId);
   return { status: 'ok', monitor, agentId };
 }
 
@@ -242,7 +242,7 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
       return { dispatched: false, agentId: null };
   }
 
-  const { monitor, agentId } = inputs;
+  const { agentId } = inputs;
 
   // Phase 2 — connectivity check and the agent WebSocket dispatch, both with
   // NO DB context open (#1105). dispatchCommandToAgent does Redis/WS I/O via
@@ -253,7 +253,13 @@ export async function processCheckMonitor(data: CheckMonitorJobData): Promise<{
     return { dispatched: false, agentId: null };
   }
 
-  const command = buildMonitorCommand(monitor);
+  // Revalidate after connectivity I/O, in a fresh short DB context. Pin the
+  // previous executor so a changed scope cannot silently select a replacement.
+  const current = await runWithSystemDbAccess(() => loadCheckMonitorInputs(data, agentId));
+  if (current.status !== 'ok' || current.agentId !== agentId) {
+    return { dispatched: false, agentId: null };
+  }
+  const command = buildMonitorCommand(current.monitor);
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
 
   if (outcome.status !== 'sent') {
@@ -279,9 +285,9 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
  */
 export async function selectExecutionAgentForMonitor(
   monitor: { orgId: string; assetId: string | null },
+  agentId?: string,
 ): Promise<string | null> {
-  const siteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
-  const pick = await selectNetworkExecutor({ orgId: monitor.orgId, siteId });
+  const pick = await selectMonitorExecutor(monitor, { agentId });
   return 'agentId' in pick ? pick.agentId : null;
 }
 

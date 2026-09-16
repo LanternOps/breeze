@@ -1,8 +1,8 @@
 /**
  * THE executor picker for asset-bound network work (spec §5, SR5-08).
  *
- * Extracted verbatim from jobs/monitorWorker.ts so the monitor worker, the
- * monitors `/test` route and the manual probe cannot drift. Before this there
+ * Shared by the monitor worker, the monitors `/test` route and the manual
+ * probe so their selection rules cannot drift. Before this there
  * were two copies with different rules: the worker was site-strict and excluded
  * ephemeral devices, the route fell back org-wide and did not — so "Test" could
  * direct a root-level agent in another site, or a stranger's Quick Support
@@ -16,7 +16,7 @@
  * network.
  */
 
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { devices, discoveredAssets } from '../db/schema';
 
@@ -37,12 +37,17 @@ export async function selectNetworkExecutor(input: {
   siteId: string | null;
   /** Optional extra allowlist for a site-restricted CALLER on the org-wide branch. */
   restrictToSiteIds?: string[] | null;
+  /** Pin a previous selection when revalidating immediately before dispatch. */
+  agentId?: string;
 }): Promise<NetworkExecutorPick> {
   const conditions = [
     eq(devices.orgId, input.orgId),
     eq(devices.isEphemeral, false),
     eq(devices.status, 'online'),
+    isNull(devices.agentTokenSuspendedAt),
   ];
+
+  if (input.agentId) conditions.push(eq(devices.agentId, input.agentId));
 
   if (input.siteId) {
     // Site-bound: the executing agent MUST live in the target's site. There is
@@ -63,4 +68,17 @@ export async function selectNetworkExecutor(input: {
     .limit(1);
 
   return agent?.agentId ? { agentId: agent.agentId } : { error: 'no_agent_in_site' };
+}
+
+/** A bound asset with a missing site is unavailable, never implicitly unbound. */
+export async function selectMonitorExecutor(
+  monitor: { orgId: string; assetId: string | null },
+  options: { allowedSiteIds?: string[] | null; agentId?: string } = {},
+): Promise<NetworkExecutorPick | { error: 'site_access_denied' }> {
+  const siteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
+  if (monitor.assetId && !siteId) return { error: 'no_agent_in_site' };
+  if (options.allowedSiteIds && (!siteId || !options.allowedSiteIds.includes(siteId))) {
+    return { error: 'site_access_denied' };
+  }
+  return selectNetworkExecutor({ orgId: monitor.orgId, siteId, agentId: options.agentId });
 }
