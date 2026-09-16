@@ -14,7 +14,7 @@ export const topologyDiagnosticLimitsSchema = z.object({
   maxConcurrentSteps: z.number().int().min(1).max(2), maxTargetAddresses: z.number().int().min(0).max(4), maxResolvers: z.number().int().min(0).max(2),
   queueTimeoutSeconds: z.number().int().min(1).max(30), executionTimeoutSeconds: z.number().int().min(1).max(90), lifetimeSeconds: z.number().int().min(1).max(120),
 }).strict();
-export const topologyDiagnosticOriginSchema = z.object({ deviceId: id, agentId: key, nodeId: id, bindingId: id, siteId: id, contextKey: key, interfaceId: id.nullable(), interfaceEpoch: key.nullable(), sourceId: id, producerEpoch: key, sequence: topologySequenceSchema }).strict().refine(v => (v.interfaceId === null) === (v.interfaceEpoch === null), 'Interface ID/epoch must occur together');
+export const topologyDiagnosticOriginSchema = z.object({ deviceId: id, agentId: key, nodeId: id, bindingId: id, siteId: id, contextKey: key, interfaceId: id.nullable(), interfaceEpoch: key.nullable(), interfaceKey: key.nullable(), sourceId: id, producerEpoch: key, sequence: topologySequenceSchema }).strict().refine(v => (v.interfaceId === null) === (v.interfaceEpoch === null) && (v.interfaceId === null) === (v.interfaceKey === null), 'Interface ID/epoch must occur together');
 export const topologyDiagnosticDestinationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('observed_gateway'), address: topologyIpSchema, zone: key.nullable(), interfaceId: id, evidenceId: id }).strict(),
   z.object({ kind: z.literal('observed_resolver'), address: topologyIpSchema, zone: key.nullable(), port: topologyPortSchema, localStub: z.boolean(), evidenceId: id }).strict(),

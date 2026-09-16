@@ -25,7 +25,7 @@ export function networkContextFixture(): Extract<NetworkContextV1, { reportKind:
 export function diagnosticPlanFixture(): TopologyDiagnosticPlan {
   return {
     version: 1, recipeId: 'gateway_basic', recipeVersion: 1, scope: { orgId: ids.org, siteId: ids.site }, subject: { kind: 'node', id: ids.node },
-    origin: { deviceId: ids.device, agentId: 'fixture-agent', nodeId: ids.node, bindingId: ids.binding, siteId: ids.site, contextKey: 'default', interfaceId: ids.interface, interfaceEpoch: '1', sourceId: ids.source, producerEpoch: 'fixture-epoch-1', sequence: '1' },
+    origin: { deviceId: ids.device, agentId: 'fixture-agent', nodeId: ids.node, bindingId: ids.binding, siteId: ids.site, contextKey: 'default', interfaceId: ids.interface, interfaceEpoch: '1', interfaceKey: 'if-1', sourceId: ids.source, producerEpoch: 'fixture-epoch-1', sequence: '1' },
     family: 'ipv4', graphRevision: '1', settingsRevision: '1', contextRevision: '1', templateVersions: { partner: null, org: null, defaults: 1, resolver: 1 },
     destinations: [{ id: ids.destination, target: { kind: 'observed_gateway', address: '192.0.2.1', zone: null, interfaceId: ids.interface, evidenceId: ids.snapshot } }],
     steps: [{ id: ids.step, method: 'icmp', destinationId: ids.destination, required: true, packetCount: 3, timeoutMs: 2000, payloadBytes: 64 }],
