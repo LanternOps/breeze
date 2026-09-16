@@ -164,7 +164,7 @@ func parseDarwinRoutes(messages []route.Message, keys map[int]string) ([]RouteRo
 	failures = append(failures, e)
 	return normalized, errors.Join(failures...)
 }
-func (r *DarwinReader) Routes(ctx context.Context, _ Context) (Section[RouteRow], error) {
+func (r *DarwinReader) Routes(ctx context.Context, scope Context) (Section[RouteRow], error) {
 	keys, e := r.keys(ctx)
 	if e != nil {
 		return Section[RouteRow]{}, e
@@ -174,7 +174,7 @@ func (r *DarwinReader) Routes(ctx context.Context, _ Context) (Section[RouteRow]
 		return Section[RouteRow]{}, e
 	}
 	rows, e := parseDarwinRoutes(messages, keys)
-	return Section[RouteRow]{Rows: rows}, e
+	return Section[RouteRow]{Rows: filterRouteFamily(rows, scope)}, e
 }
 func (r *DarwinReader) Rules(context.Context, Context) (Section[RuleRow], error) {
 	return Section[RuleRow]{}, ErrUnsupported
@@ -188,10 +188,22 @@ func (r *DarwinReader) Resolvers(ctx context.Context, _ Context) (ResolverSectio
 	if err != nil {
 		return s, err
 	}
+	native, err := r.InterfacesOS()
+	if err != nil {
+		return s, err
+	}
+	names := map[string]int{}
+	for _, item := range native {
+		names[item.Name] = item.Index
+	}
 	for i := range s.Rows {
 		row := &s.Rows[i]
 		if row.InterfaceKey != nil {
 			index, err := strconv.Atoi(strings.TrimPrefix(*row.InterfaceKey, "darwin-ifindex:"))
+			if strings.HasPrefix(*row.InterfaceKey, "darwin-ifname:") {
+				index = names[strings.TrimPrefix(*row.InterfaceKey, "darwin-ifname:")]
+				err = nil
+			}
 			key, ok := keys[index]
 			if err != nil || !ok {
 				s.Outcome = Partial
@@ -212,7 +224,7 @@ func (r *DarwinReader) Resolvers(ctx context.Context, _ Context) (ResolverSectio
 	}
 	return s, nil
 }
-func (r *DarwinReader) Neighbors(ctx context.Context, _ Context) (Section[NeighborRow], error) {
+func (r *DarwinReader) Neighbors(ctx context.Context, scope Context) (Section[NeighborRow], error) {
 	keys, e := r.keys(ctx)
 	if e != nil {
 		return Section[NeighborRow]{}, e
@@ -245,6 +257,10 @@ func (r *DarwinReader) Neighbors(ctx context.Context, _ Context) (Section[Neighb
 		}
 		rows = append(rows, NeighborRow{RowKey: key + ":" + ip.String(), Address: ip.String(), Family: Family(ip), Zone: zone, InterfaceKey: key, MAC: mac, State: "unknown"})
 	}
-	return Section[NeighborRow]{Rows: rows}, nil
+	return Section[NeighborRow]{Rows: filterNeighborFamily(rows, scope)}, nil
 }
 func darwinIndexKey(index int) string { return "darwin-ifindex:" + strconv.Itoa(index) }
+
+func (r *DarwinReader) SetIdentityResolver(resolve func(string) (string, error)) {
+	r.Identities = NewInterfaceIdentities(resolve)
+}

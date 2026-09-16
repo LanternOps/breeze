@@ -64,7 +64,7 @@ func TestReceiptMustMatchPending(t *testing.T) {
 	if _, e := s.AllocateSequence(); e != nil {
 		t.Fatal(e)
 	}
-	r := Report{Version: 1, ProducerEpoch: "e", Sequence: "1", ReportKind: "full", SnapshotID: "snapshot-1", ContentDigest: "digest"}
+	r := Report{Version: 1, ProducerEpoch: "e", Sequence: "1", ReportKind: "full", SnapshotID: "snapshot-1", ContentDigest: "digest", ContextManifest: &Manifest{Outcome: Complete, Contexts: []Context{}}}
 	if e := s.StoreReport(r); e != nil {
 		t.Fatal(e)
 	}

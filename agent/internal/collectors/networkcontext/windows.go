@@ -241,7 +241,7 @@ func windowsRouteRows(native []windows.MibIpForwardRow2, keys map[uint32]string)
 	}
 	return NormalizeRoutes(rows)
 }
-func (r *WindowsReader) Routes(ctx context.Context, _ Context) (Section[RouteRow], error) {
+func (r *WindowsReader) Routes(ctx context.Context, scope Context) (Section[RouteRow], error) {
 	a, e := r.Adapters(ctx)
 	if e != nil {
 		return Section[RouteRow]{}, e
@@ -251,7 +251,7 @@ func (r *WindowsReader) Routes(ctx context.Context, _ Context) (Section[RouteRow
 		return Section[RouteRow]{}, e
 	}
 	rows, e := windowsRouteRows(native, windowsAdapterKeys(a))
-	return Section[RouteRow]{Rows: rows}, e
+	return Section[RouteRow]{Rows: filterRouteFamily(rows, scope)}, e
 }
 func (r *WindowsReader) Rules(context.Context, Context) (Section[RuleRow], error) {
 	return Section[RuleRow]{}, ErrUnsupported
@@ -282,7 +282,7 @@ type windowsNeighborTable struct {
 	Rows  [1]windowsNeighbor
 }
 
-func (r *WindowsReader) Neighbors(ctx context.Context, _ Context) (Section[NeighborRow], error) {
+func (r *WindowsReader) Neighbors(ctx context.Context, scope Context) (Section[NeighborRow], error) {
 	a, e := r.Adapters(ctx)
 	if e != nil {
 		return Section[NeighborRow]{}, e
@@ -311,7 +311,7 @@ func (r *WindowsReader) Neighbors(ctx context.Context, _ Context) (Section[Neigh
 		}
 		ip, _, e := winIP(value.Address)
 		if e != nil {
-			return Section[NeighborRow]{Rows: rows}, e
+			return Section[NeighborRow]{Rows: filterNeighborFamily(rows, scope)}, e
 		}
 		var mac, zone *string
 		if value.PhysicalAddressLength == 6 {
@@ -326,7 +326,7 @@ func (r *WindowsReader) Neighbors(ctx context.Context, _ Context) (Section[Neigh
 		}
 		rows = append(rows, NeighborRow{RowKey: key + ":" + ip.String(), Address: ip.String(), Family: Family(ip), Zone: zone, InterfaceKey: key, MAC: mac, State: state, IsRouter: ptr(value.Flags&1 != 0)})
 	}
-	return Section[NeighborRow]{Rows: rows}, nil
+	return Section[NeighborRow]{Rows: filterNeighborFamily(rows, scope)}, nil
 }
 func winSockaddr(ip netip.Addr, index uint32) windows.RawSockaddrInet {
 	var raw windows.RawSockaddrInet

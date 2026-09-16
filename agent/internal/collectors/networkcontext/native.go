@@ -103,3 +103,28 @@ func interfaceRows(ctx context.Context, identities *InterfaceIdentities, interfa
 	normalized, err := NormalizeInterfaces(rows)
 	return normalized, keys, err
 }
+
+func filterRouteFamily(rows []RouteRow, scope Context) []RouteRow {
+	if len(scope.Families) != 1 {
+		return rows
+	}
+	out := []RouteRow{}
+	for _, r := range rows {
+		if r.Family == scope.Families[0] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+func filterNeighborFamily(rows []NeighborRow, scope Context) []NeighborRow {
+	if len(scope.Families) != 1 {
+		return rows
+	}
+	out := []NeighborRow{}
+	for _, r := range rows {
+		if r.Family == scope.Families[0] {
+			out = append(out, r)
+		}
+	}
+	return out
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/authstate"
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
@@ -82,6 +83,8 @@ const pendingActivationClockSkew = 10 * time.Minute
 const selfInitiatedRenewalLeadTime = 24 * time.Hour
 
 type HeartbeatPayload struct {
+	NetworkContextV1    *networkcontext.Report     `json:"networkContextV1,omitempty"`
+	NetworkContextReset *NetworkContextReset       `json:"networkContextReset,omitempty"`
 	Metrics             *collectors.SystemMetrics  `json:"metrics,omitempty"`
 	MetricsAvailable    *bool                      `json:"metricsAvailable,omitempty"`
 	Status              string                     `json:"status"`
@@ -250,11 +253,12 @@ type DesktopAccessState struct {
 }
 
 type HeartbeatResponse struct {
-	Commands     []Command      `json:"commands"`
-	ConfigUpdate map[string]any `json:"configUpdate,omitempty"`
-	UpgradeTo    string         `json:"upgradeTo,omitempty"`
-	RenewCert    bool           `json:"renewCert,omitempty"`
-	RotateToken  bool           `json:"rotateToken,omitempty"`
+	NetworkContextReceipt *networkcontext.Receipt `json:"networkContextReceipt,omitempty"`
+	Commands              []Command               `json:"commands"`
+	ConfigUpdate          map[string]any          `json:"configUpdate,omitempty"`
+	UpgradeTo             string                  `json:"upgradeTo,omitempty"`
+	RenewCert             bool                    `json:"renewCert,omitempty"`
+	RotateToken           bool                    `json:"rotateToken,omitempty"`
 	// Issue #2621 — the server sees this agent authenticating with the STAGED
 	// credentials of an unconfirmed rotation. Finish phase two.
 	ConfirmTokenRotation   bool                   `json:"confirmTokenRotation,omitempty"`
@@ -334,6 +338,8 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	networkContextMu      sync.Mutex
+	networkContext        *networkContextManager
 	config                *config.Config
 	secureToken           *secmem.SecureString
 	client                *http.Client
@@ -2932,6 +2938,10 @@ func (h *Heartbeat) applyConfigUpdate(update map[string]any) {
 		return
 	}
 
+	if raw, ok := update["networkContext"]; ok {
+		h.applyNetworkContextConfig(raw)
+	}
+
 	// Apply event_log_settings if present
 	elRaw, hasEL := update["event_log_settings"]
 	if !hasEL {
@@ -4499,6 +4509,8 @@ func (h *Heartbeat) sendHeartbeat() {
 		payload.DroppedLogs = dropped
 	}
 
+	h.attachNetworkContext(&payload)
+
 	// Attach IP history update when assignments changed since last heartbeat.
 	if ipUpdate, ipErr := h.collectIPHistory(); ipErr != nil {
 		log.Error("failed to collect ip history", "error", ipErr.Error())
@@ -4798,6 +4810,7 @@ func (h *Heartbeat) acknowledgeRollbackObservation(id string) {
 }
 
 func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
+	h.ackNetworkContext(response.NetworkContextReceipt)
 	// Bare-metal recovery W04a: only clear the marker once the server has
 	// actually acked it — a failed/lost beat must resend it next time.
 	if response.RecoveryMarkerAck && h.recoveryMarker() != nil {

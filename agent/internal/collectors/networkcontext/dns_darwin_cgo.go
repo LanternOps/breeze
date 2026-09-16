@@ -27,7 +27,6 @@ import (
 	"context"
 	"encoding/xml"
 	"io"
-	"net"
 	"net/netip"
 	"strings"
 	"unsafe"
@@ -142,9 +141,7 @@ func parseSystemConfigurationDNS(raw []byte) (ResolverSection, error) {
 		for _, kind := range []string{"/IPv4", "/IPv6"} {
 			if state, ok := values[base+kind].(map[string]any); ok {
 				if name, ok := state["InterfaceName"].(string); ok {
-					if native, e := net.InterfaceByName(name); e == nil {
-						iface = ptr(darwinIndexKey(native.Index))
-					}
+					iface = ptr("darwin-ifname:" + name)
 				}
 			}
 		}

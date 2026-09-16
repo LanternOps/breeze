@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,13 +26,14 @@ type Receipt struct {
 	Reason               string    `json:"reason,omitempty"`
 }
 type ProducerState struct {
-	SourceIdentity       string    `json:"sourceIdentity"`
-	ProducerEpoch        string    `json:"producerEpoch"`
-	Sequence             uint64    `json:"sequence"`
-	BaseSnapshotID       string    `json:"baseSnapshotId"`
-	ContentDigest        string    `json:"contentDigest"`
-	NextFullValidationAt time.Time `json:"nextFullValidationAt"`
-	Pending              *Report   `json:"pending,omitempty"`
+	InterfaceKeys        map[string]string `json:"interfaceKeys,omitempty"`
+	SourceIdentity       string            `json:"sourceIdentity"`
+	ProducerEpoch        string            `json:"producerEpoch"`
+	Sequence             uint64            `json:"sequence"`
+	BaseSnapshotID       string            `json:"baseSnapshotId"`
+	ContentDigest        string            `json:"contentDigest"`
+	NextFullValidationAt time.Time         `json:"nextFullValidationAt"`
+	Pending              *Report           `json:"pending,omitempty"`
 }
 
 // State owns a private durable state file. Never reset corrupt state to sequence
@@ -53,10 +55,11 @@ func OpenState(path string) (*State, error) {
 		return nil, e
 	}
 	if len(b) > MaxEnvelopeBytes*2 {
-		return nil, ErrMalformed
+		return s, ErrMalformed
 	}
 	if e = json.Unmarshal(b, &s.data); e != nil {
-		return nil, fmt.Errorf("producer state: %w", ErrMalformed)
+		s.data = ProducerState{}
+		return s, fmt.Errorf("producer state: %w", ErrMalformed)
 	}
 	if !validKey(s.data.ProducerEpoch) || !validKey(s.data.SourceIdentity) {
 		return nil, ErrEpochRequired
@@ -86,7 +89,7 @@ func (s *State) InstallEpoch(source, epoch string) error {
 		}
 		return nil
 	}
-	return s.save(ProducerState{SourceIdentity: source, ProducerEpoch: epoch})
+	return s.save(ProducerState{SourceIdentity: source, ProducerEpoch: epoch, InterfaceKeys: s.data.InterfaceKeys})
 }
 func (s *State) AllocateSequence() (uint64, error) {
 	s.mu.Lock()
@@ -109,6 +112,10 @@ func (s *State) Snapshot() ProducerState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := s.data
+	out.InterfaceKeys = map[string]string{}
+	for k, v := range s.data.InterfaceKeys {
+		out.InterfaceKeys[k] = v
+	}
 	if out.Pending != nil {
 		b, _ := json.Marshal(out.Pending)
 		out.Pending = nil
@@ -184,15 +191,7 @@ func atomicStateWrite(path string, b []byte) error {
 	if e = f.Close(); e != nil {
 		return e
 	}
-	if e = os.Rename(name, path); e != nil {
-		return e
-	}
-	d, e := os.Open(dir)
-	if e != nil {
-		return e
-	}
-	defer d.Close()
-	return d.Sync()
+	return replaceStateFile(name, path)
 }
 func appendSections[T any](dst []json.RawMessage, sections []Section[T]) ([]json.RawMessage, error) {
 	for _, s := range sections {
@@ -234,7 +233,7 @@ func BuildReport(snapshot Snapshot, state ProducerState) (Report, error) {
 	if e = SetDigests(&report, state.SourceIdentity); e != nil {
 		return Report{}, e
 	}
-	if e = requireSize(report); e != nil {
+	if e = boundReport(&report, state.SourceIdentity); e != nil {
 		return Report{}, e
 	}
 	if state.BaseSnapshotID != "" && state.ContentDigest == report.ContentDigest && snapshot.CapturedAt.Before(state.NextFullValidationAt) {
@@ -245,4 +244,92 @@ func BuildReport(snapshot Snapshot, state ProducerState) (Report, error) {
 		report.Sections = nil
 	}
 	return report, nil
+}
+
+// ResolveInterfaceIdentity persists hardware-backed identity independently of
+// producer epochs. Missing hardware evidence is ambiguous across restarts and
+// deliberately gets a new key instead of merging an index-reused adapter.
+func (s *State) ResolveInterfaceIdentity(evidence string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parts := strings.Split(evidence, "\x00")
+	if len(parts) < 2 {
+		return "", ErrMalformed
+	}
+	if parts[1] == "" {
+		return "adapter:" + uuid.NewString(), nil
+	}
+	if key := s.data.InterfaceKeys[evidence]; key != "" {
+		return key, nil
+	}
+	if len(s.data.InterfaceKeys) >= 4096 {
+		return "", ErrLimit
+	}
+	next := s.data
+	next.InterfaceKeys = map[string]string{}
+	for evidence, key := range s.data.InterfaceKeys {
+		next.InterfaceKeys[evidence] = key
+	}
+	key := "adapter:" + uuid.NewString()
+	next.InterfaceKeys[evidence] = key
+	if err := s.save(next); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// Remove low-priority rows first while retaining all completeness scopes. No
+// oversized snapshot is mislabeled complete after bounded transmission.
+func boundReport(report *Report, source string) error {
+	for attempts := 0; attempts < 128; attempts++ {
+		if err := requireSize(*report); err == nil {
+			return nil
+		}
+		trimmed := false
+		for _, kind := range []string{"neighbors", "rules", "routes", "resolvers", "interfaces"} {
+			for i := len(report.Sections) - 1; i >= 0; i-- {
+				s, e := canonicalObject(report.Sections[i])
+				if e != nil {
+					return e
+				}
+				if s["kind"] != kind {
+					continue
+				}
+				rows, ok := s["rows"].([]any)
+				if !ok {
+					return ErrMalformed
+				}
+				if len(rows) == 0 {
+					continue
+				}
+				keep := len(rows) / 2
+				omitted := len(rows) - keep
+				if previous, ok := s["omittedRowCount"].(json.Number); ok {
+					n, _ := previous.Int64()
+					omitted += int(n)
+				}
+				s["rows"] = rows[:keep]
+				s["rowCount"] = keep
+				s["omittedRowCount"] = omitted
+				s["outcome"] = Partial
+				s["reasonCode"] = "limit_exceeded"
+				report.Sections[i], e = stableJSON(s)
+				if e != nil {
+					return e
+				}
+				trimmed = true
+				break
+			}
+			if trimmed {
+				break
+			}
+		}
+		if !trimmed {
+			return ErrLimit
+		}
+		if e := SetDigests(report, source); e != nil {
+			return e
+		}
+	}
+	return ErrLimit
 }

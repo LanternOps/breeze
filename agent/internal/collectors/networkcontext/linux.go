@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -310,16 +311,16 @@ func parseLinuxRoutes(messages []syscall.NetlinkMessage, keys map[int]string) ([
 	failures = append(failures, e)
 	return normalized, errors.Join(failures...)
 }
-func (r *LinuxReader) Routes(ctx context.Context, _ Context) (Section[RouteRow], error) {
+func (r *LinuxReader) Routes(ctx context.Context, scope Context) (Section[RouteRow], error) {
 	keys, e := r.keys(ctx)
 	if e != nil {
 		return Section[RouteRow]{}, e
 	}
 	messages, readErr := r.Dump(ctx, syscall.RTM_GETROUTE)
 	rows, e := parseLinuxRoutes(messages, keys)
-	return Section[RouteRow]{Rows: rows}, errors.Join(readErr, e)
+	return Section[RouteRow]{Rows: filterRouteFamily(rows, scope)}, errors.Join(readErr, e)
 }
-func (r *LinuxReader) Rules(ctx context.Context, _ Context) (Section[RuleRow], error) {
+func (r *LinuxReader) Rules(ctx context.Context, scope Context) (Section[RuleRow], error) {
 	messages, readErr := r.Dump(ctx, syscall.RTM_GETRULE)
 	rows := []RuleRow{}
 	var failures []error
@@ -333,6 +334,12 @@ func (r *LinuxReader) Rules(ctx context.Context, _ Context) (Section[RuleRow], e
 			continue
 		}
 		h := m.Data[:12]
+		if len(scope.Families) == 1 && ((h[0] == syscall.AF_INET && scope.Families[0] != "ipv4") || (h[0] == syscall.AF_INET6 && scope.Families[0] != "ipv6")) {
+			continue
+		}
+		if h[0] != syscall.AF_INET && h[0] != syscall.AF_INET6 {
+			continue
+		}
 		attrs, e := linuxAttrs(m.Data[12:])
 		if e != nil {
 			failures = append(failures, e)
@@ -391,6 +398,8 @@ func (r *LinuxReader) Rules(ctx context.Context, _ Context) (Section[RuleRow], e
 				row.UnsupportedSelectorKinds = append(row.UnsupportedSelectorKinds, fmt.Sprintf("attribute_%d", kind))
 			}
 		}
+		sort.Slice(row.Selectors, func(i, j int) bool { return stableString(row.Selectors[i]) < stableString(row.Selectors[j]) })
+		sort.Strings(row.UnsupportedSelectorKinds)
 		row.RowKey = rowIdentity(row)
 		rows = append(rows, row)
 	}
@@ -442,7 +451,7 @@ func (r *LinuxReader) Resolvers(ctx context.Context, _ Context) (ResolverSection
 	}
 	return s, nil
 }
-func (r *LinuxReader) Neighbors(ctx context.Context, _ Context) (Section[NeighborRow], error) {
+func (r *LinuxReader) Neighbors(ctx context.Context, scope Context) (Section[NeighborRow], error) {
 	keys, e := r.keys(ctx)
 	if e != nil {
 		return Section[NeighborRow]{}, e
@@ -494,5 +503,9 @@ func (r *LinuxReader) Neighbors(ctx context.Context, _ Context) (Section[Neighbo
 		}
 		rows = append(rows, NeighborRow{RowKey: key + ":" + ip.String(), Address: ip.String(), Family: Family(ip), Zone: zone, InterfaceKey: key, MAC: mac, State: state, IsRouter: ptr(h[10]&0x80 != 0)})
 	}
-	return Section[NeighborRow]{Rows: rows}, errors.Join(failures...)
+	return Section[NeighborRow]{Rows: filterNeighborFamily(rows, scope)}, errors.Join(failures...)
+}
+
+func (r *LinuxReader) SetIdentityResolver(resolve func(string) (string, error)) {
+	r.Identities = NewInterfaceIdentities(resolve)
 }

@@ -95,25 +95,42 @@ func Collect(parent context.Context, reader Reader) (Snapshot, error) {
 		if e != nil {
 			errs = append(errs, e)
 		}
-		r, e := readSection(ctx, scope, reader.Routes)
-		out.Routes = append(out.Routes, finishSection(r, "routes", scope.ContextKey, 2048, e))
-		if e != nil {
-			errs = append(errs, e)
-		}
-		p, e := readSection(ctx, scope, reader.Rules)
-		out.Rules = append(out.Rules, finishSection(p, "rules", scope.ContextKey, 512, e))
-		if e != nil {
-			errs = append(errs, e)
-		}
+
 		d, e := readSection(ctx, scope, reader.Resolvers)
 		out.Resolvers = append(out.Resolvers, finishSection(d, "resolvers", scope.ContextKey, 128, e))
 		if e != nil {
 			errs = append(errs, e)
 		}
-		n, e := readSection(ctx, scope, reader.Neighbors)
-		out.Neighbors = append(out.Neighbors, finishSection(n, "neighbors", scope.ContextKey, 4096, e))
-		if e != nil {
-			errs = append(errs, e)
+		routeBudget, ruleBudget, neighborBudget := 2048, 512, 4096
+		for _, family := range scope.Families {
+			if family != "ipv4" && family != "ipv6" {
+				return Snapshot{}, ErrMalformed
+			}
+			scoped := Context{ContextKey: scope.ContextKey, Families: []string{family}}
+			r, e := readSection(ctx, scoped, reader.Routes)
+			r.AddressFamily = family
+			r = finishSection(r, "routes", scope.ContextKey, routeBudget, e)
+			routeBudget -= len(r.Rows)
+			out.Routes = append(out.Routes, r)
+			if e != nil {
+				errs = append(errs, e)
+			}
+			p, e := readSection(ctx, scoped, reader.Rules)
+			p.AddressFamily = family
+			p = finishSection(p, "rules", scope.ContextKey, ruleBudget, e)
+			ruleBudget -= len(p.Rows)
+			out.Rules = append(out.Rules, p)
+			if e != nil {
+				errs = append(errs, e)
+			}
+			n, e := readSection(ctx, scoped, reader.Neighbors)
+			n.AddressFamily = family
+			n = finishSection(n, "neighbors", scope.ContextKey, neighborBudget, e)
+			neighborBudget -= len(n.Rows)
+			out.Neighbors = append(out.Neighbors, n)
+			if e != nil {
+				errs = append(errs, e)
+			}
 		}
 	}
 	return out, errors.Join(errs...)

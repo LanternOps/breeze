@@ -123,6 +123,7 @@ func NormalizeInterfaces(rows []InterfaceRow) ([]InterfaceRow, error) {
 	out := make([]InterfaceRow, 0, len(rows))
 	seen := map[string]bool{}
 	addressCount := 0
+	limited := false
 	for _, r := range rows {
 		if !validKey(r.InterfaceKey) || !validKey(r.Name) || seen[r.InterfaceKey] {
 			return nil, ErrMalformed
@@ -144,10 +145,11 @@ func NormalizeInterfaces(rows []InterfaceRow) ([]InterfaceRow, error) {
 			a.Address, a.Zone = raw, zone
 			r.Addresses[i] = a
 		}
-		addressCount += len(r.Addresses)
-		if addressCount > 1024 {
-			return nil, ErrLimit
+		if len(r.Addresses) > 1024-addressCount {
+			r.Addresses = r.Addresses[:1024-addressCount]
+			limited = true
 		}
+		addressCount += len(r.Addresses)
 		sort.Slice(r.Addresses, func(i, j int) bool { return rowIdentity(r.Addresses[i]) < rowIdentity(r.Addresses[j]) })
 		var e error
 		if r.CurrentMAC != "" {
@@ -165,6 +167,9 @@ func NormalizeInterfaces(rows []InterfaceRow) ([]InterfaceRow, error) {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RowKey < out[j].RowKey })
+	if limited {
+		return out, ErrLimit
+	}
 	return out, nil
 }
 

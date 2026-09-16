@@ -200,3 +200,34 @@ func SetDigests(report *Report, sourceIdentity string) error {
 	report.ContentDigest = digestBytes(b)
 	return nil
 }
+
+// MarshalJSON preserves required empty arrays for full reports and omits all
+// full-only properties for unchanged reports (the latter schema is strict).
+func (r Report) MarshalJSON() ([]byte, error) {
+	type alias Report
+	b, err := json.Marshal(alias(r))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(b, &fields); err != nil {
+		return nil, err
+	}
+	if r.ReportKind == "full" {
+		if len(r.Capabilities) == 0 {
+			fields["capabilities"] = json.RawMessage("[]")
+		}
+		if r.Sections == nil || len(r.Sections) == 0 {
+			fields["sections"] = json.RawMessage("[]")
+		}
+		if r.ContextManifest == nil {
+			return nil, ErrMalformed
+		}
+		delete(fields, "baseSnapshotId")
+	} else {
+		delete(fields, "capabilities")
+		delete(fields, "sections")
+		delete(fields, "contextManifest")
+	}
+	return json.Marshal(fields)
+}
