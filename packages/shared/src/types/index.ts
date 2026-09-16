@@ -890,3 +890,6 @@ export * from './aiArtifacts';
 // ============================================
 
 export * from './toolSources';
+
+// Intelligent network topology canonical wire contracts (#5996)
+export * from './topology';
