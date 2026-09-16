@@ -55,12 +55,13 @@ func (f *fakeProbe) LookupRoute(_ context.Context, r networkcontext.RouteLookupR
 func (f *fakeProbe) Resolvers(context.Context) ([]networkcontext.ResolverRow, error) {
 	return []networkcontext.ResolverRow{{Address: "192.0.2.53", Port: 53, InterfaceKey: ptr("if1")}}, nil
 }
-func (f *fakeProbe) Resolve(context.Context, string, string, []networkcontext.ResolverRow, networkcontext.RouteSelection, int) ([]netip.Addr, error) {
+func (f *fakeProbe) Resolve(context.Context, string, string, []networkcontext.ResolverRow, networkcontext.RouteSelection, int) (DNSResolution, error) {
 	f.resolveCalls++
 	if _, exists := f.journal.Result(f.command.StepKey(dnsStepID)); !exists {
 		panic("DNS before intent")
 	}
-	return f.answers, nil
+	route, _ := f.LookupRoute(context.Background(), networkcontext.RouteLookupRequest{})
+	return DNSResolution{Addresses: f.answers, Resolver: networkcontext.ResolverRow{Address: "192.0.2.53", Port: 53}, Route: route}, nil
 }
 func (f *fakeProbe) ICMP(context.Context, netip.Addr, networkcontext.RouteSelection, int, int) (Details, error) {
 	return Details{}, nil
@@ -99,6 +100,9 @@ func TestHTTPPinsValidatedAddressAndJournalsEverySideEffect(t *testing.T) {
 	}
 	if result.Steps[1].State != "succeeded" || *result.Steps[1].Attribution.ActualMethod != "http" {
 		t.Fatal(result)
+	}
+	if got := result.Steps[0].Attribution; got.Quality != "observed" || got.ResolvedIP == nil || *got.ResolvedIP != "192.0.2.53" || got.LocalAddress == nil || got.Port == nil || *got.Port != 53 || got.Family == nil {
+		t.Fatal(got)
 	}
 	again := Run(context.Background(), command, journal, io)
 	if io.resolveCalls != 1 || io.httpCalls != 1 || again.Steps[1].State != "succeeded" {

@@ -187,10 +187,15 @@ func (c Command) StepKey(stepID string) StepKey {
 
 // ProbeIO receives only validated literal addresses. The hostname is retained
 // separately for TLS verification; implementations must never resolve it again.
+type DNSResolution struct {
+	Addresses []netip.Addr
+	Resolver  networkcontext.ResolverRow
+	Route     networkcontext.RouteSelection
+}
 type ProbeIO interface {
 	LookupRoute(context.Context, networkcontext.RouteLookupRequest) (networkcontext.RouteSelection, error)
 	Resolvers(context.Context) ([]networkcontext.ResolverRow, error)
-	Resolve(context.Context, string, string, []networkcontext.ResolverRow, networkcontext.RouteSelection, int) ([]netip.Addr, error)
+	Resolve(context.Context, string, string, []networkcontext.ResolverRow, networkcontext.RouteSelection, int) (DNSResolution, error)
 	ICMP(context.Context, netip.Addr, networkcontext.RouteSelection, int, int) (Details, error)
 	TCP(context.Context, netip.Addr, uint16, networkcontext.RouteSelection) (Details, error)
 	HTTPS(context.Context, netip.Addr, TargetDefinition, networkcontext.RouteSelection, string, int) (Details, error)

@@ -156,7 +156,7 @@ func (m *networkContextManager) attach(now time.Time, stop <-chan struct{}) (*ne
 			m.mu.Lock()
 			eventsAvailable := m.eventsAvailable
 			m.mu.Unlock()
-			snapshot.Capabilities = append(snapshot.Capabilities, networkcontext.Capability{Name: "change_notifications", Version: 1, Supported: eventsAvailable})
+			snapshot.Capabilities = append(snapshot.Capabilities, networkcontext.Capability{Name: "change_notifications", Version: 1, Supported: eventsAvailable}, networkcontext.Capability{Name: "network_diagnostic", Version: 1, Supported: true})
 			if readErr != nil {
 				log.Warn("network context collection incomplete", "error", readErr)
 			}

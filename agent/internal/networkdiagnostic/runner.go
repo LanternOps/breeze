@@ -230,11 +230,20 @@ func executeStep(parent context.Context, command Command, step PlanStep, result 
 		if len(approved) == 0 {
 			return failStep(result, "skipped", "target_not_configured")
 		}
-		ips, e := io.Resolve(ctx, host, step.QueryType, approved, route, step.Retries)
+		resolution, e := io.Resolve(ctx, host, step.QueryType, approved, route, step.Retries)
 		result.Attribution.ActualMethod = ptr("dns")
 		if e != nil {
 			return probeFailure(result, e)
 		}
+		resolverIP, parseErr := netip.ParseAddr(resolution.Resolver.Address)
+		if parseErr != nil {
+			return failStep(result, "execution_error", "invalid_resolver_attribution")
+		}
+		applyRoute(&result, resolution.Route, resolverIP, resolution.Resolver.Port)
+		if resolution.Resolver.IsLocalStub {
+			result.Attribution.Quality = "requested_unverified"
+		}
+		ips := resolution.Addresses
 		if len(ips) > 2 {
 			return failStep(result, "execution_error", "address_limit_exceeded")
 		}

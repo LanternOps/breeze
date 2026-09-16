@@ -22,8 +22,9 @@ import (
 )
 
 type NativeIO struct {
-	Reader networkcontext.Reader
-	Origin Origin
+	Reader           networkcontext.Reader
+	Origin           Origin
+	queryDNSOverride func(context.Context, dnsmessage.Name, dnsmessage.Type, networkcontext.ResolverRow, networkcontext.RouteSelection) ([]netip.Addr, error)
 }
 
 func (n *NativeIO) LookupRoute(ctx context.Context, request networkcontext.RouteLookupRequest) (networkcontext.RouteSelection, error) {
@@ -199,13 +200,13 @@ func (n *NativeIO) HTTPS(ctx context.Context, ip netip.Addr, target TargetDefini
 	}
 	return details, nil
 }
-func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, resolvers []networkcontext.ResolverRow, _ networkcontext.RouteSelection, retries int) ([]netip.Addr, error) {
+func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, resolvers []networkcontext.ResolverRow, _ networkcontext.RouteSelection, retries int) (DNSResolution, error) {
 	if !hostnamePattern.MatchString(hostname) || len(resolvers) > 2 || retries < 0 || retries > 1 {
-		return nil, ErrBlocked
+		return DNSResolution{}, ErrBlocked
 	}
 	name, e := dnsmessage.NewName(hostname + ".")
 	if e != nil {
-		return nil, e
+		return DNSResolution{}, e
 	}
 	typ := dnsmessage.TypeA
 	if queryType == "AAAA" {
@@ -215,7 +216,7 @@ func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, reso
 	for _, resolver := range resolvers {
 		ip, e := netip.ParseAddr(resolver.Address)
 		if e != nil {
-			return nil, e
+			return DNSResolution{}, e
 		}
 		var route networkcontext.RouteSelection
 		if resolver.IsLocalStub && ip.IsLoopback() {
@@ -223,7 +224,7 @@ func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, reso
 			// listener. Its route is local, not the requested external interface.
 			fresh, err := n.Resolvers(ctx)
 			if err != nil {
-				return nil, err
+				return DNSResolution{}, err
 			}
 			matched := false
 			for _, current := range fresh {
@@ -233,7 +234,7 @@ func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, reso
 				}
 			}
 			if !matched {
-				return nil, ErrUnsupportedContext
+				return DNSResolution{}, ErrUnsupportedContext
 			}
 			route, e = n.LookupRoute(ctx, networkcontext.RouteLookupRequest{ContextKey: n.Origin.ContextKey, Destination: ip})
 		} else {
@@ -243,22 +244,26 @@ func (n *NativeIO) Resolve(ctx context.Context, hostname, queryType string, reso
 			}
 		}
 		if e != nil {
-			return nil, e
+			return DNSResolution{}, e
 		}
 		for attempt := 0; attempt <= retries; attempt++ {
 			attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			answers, e := n.queryDNS(attemptCtx, name, typ, resolver, route)
+			query := n.queryDNS
+			if n.queryDNSOverride != nil {
+				query = n.queryDNSOverride
+			}
+			answers, e := query(attemptCtx, name, typ, resolver, route)
 			cancel()
 			if e == nil {
-				return answers, nil
+				return DNSResolution{Addresses: answers, Resolver: resolver, Route: route}, nil
 			}
 			last = e
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return DNSResolution{}, ctx.Err()
 			}
 		}
 	}
-	return nil, last
+	return DNSResolution{}, last
 }
 func (n *NativeIO) queryDNS(ctx context.Context, name dnsmessage.Name, typ dnsmessage.Type, resolver networkcontext.ResolverRow, route networkcontext.RouteSelection) ([]netip.Addr, error) {
 	var token [2]byte
@@ -296,34 +301,9 @@ func (n *NativeIO) queryDNS(ctx context.Context, name dnsmessage.Name, typ dnsme
 	if e != nil {
 		return nil, e
 	}
-	var response dnsmessage.Message
-	if e = response.Unpack(buffer[:count]); e != nil {
-		return nil, e
-	}
-	if response.ID != id || !response.Response || response.RCode != dnsmessage.RCodeSuccess || response.Truncated {
-		return nil, errors.New("invalid_dns_response")
-	}
-	ips := []netip.Addr{}
-	for _, answer := range response.Answers {
-		if answer.Header.Class != dnsmessage.ClassINET {
-			continue
-		}
-		switch body := answer.Body.(type) {
-		case *dnsmessage.AResource:
-			if typ == dnsmessage.TypeA {
-				ips = append(ips, netip.AddrFrom4(body.A))
-			}
-		case *dnsmessage.AAAAResource:
-			if typ == dnsmessage.TypeAAAA {
-				ips = append(ips, netip.AddrFrom16(body.AAAA))
-			}
-		}
-		if len(ips) > 2 {
-			return nil, errors.New("address_limit_exceeded")
-		}
-	}
-	return ips, nil
+	return parseDNSResponse(buffer[:count], id, name, typ)
 }
+
 func (n *NativeIO) ICMP(ctx context.Context, ip netip.Addr, route networkcontext.RouteSelection, count, payloadBytes int) (Details, error) {
 	if count < 1 || count > 5 || payloadBytes < 0 || payloadBytes > 1024 {
 		return Details{}, ErrBlocked
