@@ -2440,6 +2440,25 @@
         "monitoring": "Supervision",
         "link": "Association",
         "danger": "Zone de danger"
+      },
+      "identity": {
+        "description": "Choisissez comment identifier cet actif.",
+        "displayName": "Nom affiché",
+        "type": "Type d’appareil",
+        "typeFixed": "Ce type enregistré ne peut pas être sélectionné à nouveau. Vous pouvez choisir un autre type.",
+        "typeDetected": "Détecté : {{type}}",
+        "typeConsequence": "Modifie le modèle SNMP suggéré et la présentation de l’appareil.",
+        "resetToDetected": "Rétablir le type détecté",
+        "tags": "Étiquettes",
+        "tagsHint": "Séparez les étiquettes par des virgules.",
+        "notes": "Remarques",
+        "conflict": "Cet actif a été modifié ailleurs. Les dernières données ont été rechargées et votre brouillon a été supprimé.",
+        "typeGroups": {
+          "endpoints": "Terminaux",
+          "networkGear": "Équipements réseau",
+          "peripherals": "Périphériques",
+          "other": "Autres"
+        }
       }
     }
   },

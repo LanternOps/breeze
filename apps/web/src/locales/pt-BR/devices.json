@@ -2440,6 +2440,25 @@
         "monitoring": "Monitoramento",
         "link": "Vínculo",
         "danger": "Zona de perigo"
+      },
+      "identity": {
+        "description": "Escolha como este ativo é identificado.",
+        "displayName": "Nome de exibição",
+        "type": "Tipo de dispositivo",
+        "typeFixed": "Este tipo salvo não pode ser selecionado novamente. Você pode escolher outro tipo.",
+        "typeDetected": "Detectado: {{type}}",
+        "typeConsequence": "Altera o modelo SNMP sugerido e a visualização do dispositivo.",
+        "resetToDetected": "Restaurar o tipo detectado",
+        "tags": "Etiquetas",
+        "tagsHint": "Separe as etiquetas por vírgulas.",
+        "notes": "Anotações",
+        "conflict": "Este ativo foi alterado em outro lugar. Os dados mais recentes foram recarregados e seu rascunho foi descartado.",
+        "typeGroups": {
+          "endpoints": "Dispositivos finais",
+          "networkGear": "Equipamentos de rede",
+          "peripherals": "Periféricos",
+          "other": "Outros"
+        }
       }
     }
   },

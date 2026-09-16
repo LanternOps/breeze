@@ -2440,6 +2440,25 @@
         "monitoring": "Monitoraggio",
         "link": "Collegamento",
         "danger": "Zona di pericolo"
+      },
+      "identity": {
+        "description": "Scegli come identificare questa risorsa.",
+        "displayName": "Nome visualizzato",
+        "type": "Tipo di dispositivo",
+        "typeFixed": "Questo tipo salvato non può essere selezionato di nuovo. Puoi scegliere un altro tipo.",
+        "typeDetected": "Rilevato: {{type}}",
+        "typeConsequence": "Modifica il modello SNMP suggerito e la vista del dispositivo.",
+        "resetToDetected": "Ripristina il tipo rilevato",
+        "tags": "Etichette",
+        "tagsHint": "Separa le etichette con virgole.",
+        "notes": "Annotazioni",
+        "conflict": "Questa risorsa è stata modificata altrove. I dati più recenti sono stati ricaricati e la bozza è stata eliminata.",
+        "typeGroups": {
+          "endpoints": "Dispositivi terminali",
+          "networkGear": "Apparati di rete",
+          "peripherals": "Periferiche",
+          "other": "Altro"
+        }
       }
     }
   },

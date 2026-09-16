@@ -2440,6 +2440,25 @@
         "monitoring": "Überwachung",
         "link": "Verknüpfung",
         "danger": "Gefahrenbereich"
+      },
+      "identity": {
+        "description": "Legen Sie fest, wie dieses Asset identifiziert wird.",
+        "displayName": "Anzeigename",
+        "type": "Gerätetyp",
+        "typeFixed": "Dieser gespeicherte Typ kann nicht erneut ausgewählt werden. Sie können einen anderen Typ wählen.",
+        "typeDetected": "Erkannt: {{type}}",
+        "typeConsequence": "Ändert die vorgeschlagene SNMP-Vorlage und die Geräteansicht.",
+        "resetToDetected": "Auf erkannten Typ zurücksetzen",
+        "tags": "Schlagwörter",
+        "tagsHint": "Schlagwörter durch Kommas trennen.",
+        "notes": "Notizen",
+        "conflict": "Dieses Asset wurde anderweitig geändert. Die aktuellen Daten wurden neu geladen und Ihr Entwurf verworfen.",
+        "typeGroups": {
+          "endpoints": "Endgeräte",
+          "networkGear": "Netzwerkgeräte",
+          "peripherals": "Peripheriegeräte",
+          "other": "Sonstige"
+        }
       }
     }
   },

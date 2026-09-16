@@ -2440,6 +2440,25 @@
         "monitoring": "İzleme",
         "link": "Bağlantı",
         "danger": "Tehlikeli işlemler"
+      },
+      "identity": {
+        "description": "Bu varlığın nasıl tanımlanacağını seçin.",
+        "displayName": "Görünen ad",
+        "type": "Cihaz türü",
+        "typeFixed": "Kaydedilen bu tür yeniden seçilemez. Farklı bir tür seçebilirsiniz.",
+        "typeDetected": "Algılanan: {{type}}",
+        "typeConsequence": "Önerilen SNMP şablonunu ve cihaz görünümünü değiştirir.",
+        "resetToDetected": "Algılanan türe sıfırla",
+        "tags": "Etiketler",
+        "tagsHint": "Etiketleri virgülle ayırın.",
+        "notes": "Notlar",
+        "conflict": "Bu varlık başka bir yerde değiştirildi. En güncel veriler yeniden yüklendi ve taslağınız silindi.",
+        "typeGroups": {
+          "endpoints": "Uç noktalar",
+          "networkGear": "Ağ cihazları",
+          "peripherals": "Çevre birimleri",
+          "other": "Diğer"
+        }
       }
     }
   },

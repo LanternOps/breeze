@@ -2343,6 +2343,25 @@
         "monitoring": "Monitoring",
         "link": "Link",
         "danger": "Danger"
+      },
+      "identity": {
+        "description": "Choose how this asset is identified.",
+        "displayName": "Display name",
+        "type": "Device type",
+        "typeFixed": "This saved type cannot be selected again. You can choose a different type.",
+        "typeDetected": "Detected: {{type}}",
+        "typeConsequence": "Changes the suggested SNMP template and the device layout.",
+        "resetToDetected": "Reset to detected",
+        "tags": "Tags",
+        "tagsHint": "Separate tags with commas.",
+        "notes": "Notes",
+        "conflict": "This asset changed elsewhere. The latest data has been reloaded and your draft discarded.",
+        "typeGroups": {
+          "endpoints": "Endpoints",
+          "networkGear": "Network gear",
+          "peripherals": "Peripherals",
+          "other": "Other"
+        }
       }
     },
     "backToDevices": "Back to devices",
