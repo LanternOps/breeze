@@ -36,7 +36,10 @@ export const reportTypeEnum = pgEnum('report_type', [
   'ai_fleet_design',
   // Hardware Lifecycle report: device replacement plan from purchase +
   // warranty dates (ported from the LanternOps portal PDF).
-  'hardware_lifecycle'
+  'hardware_lifecycle',
+  // Service-plan evidence W02 (#5784): Huntress incidents for an occurrence's
+  // period, with an explicit coverage window; see services/threatDetectionReport.ts.
+  'threat_detection_review'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

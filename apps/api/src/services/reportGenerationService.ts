@@ -47,7 +47,11 @@ export type ReportType =
   | 'ai_fleet_design'
   // Hardware Lifecycle: generated on demand from devices/manual assets +
   // warranty; see services/hardwareLifecycleReport.ts.
-  | 'hardware_lifecycle';
+  | 'hardware_lifecycle'
+  // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
+  // period, with an explicit coverage window. Generated on demand and by the
+  // managed-evidence system path; see services/threatDetectionReport.ts.
+  | 'threat_detection_review';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -826,7 +830,7 @@ async function dispatchReportGeneration(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
-  _evidence?: EvidenceRunContext,
+  evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
     throw new UnexecutableReportScopeError(
@@ -888,6 +892,14 @@ async function dispatchReportGeneration(
     case 'hardware_lifecycle': {
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, requestAuthority());
+    }
+    // #5784 W02. Accepts `authority` as-is: it is a managed evidence type, so a
+    // system authority legitimately reaches this arm. The dynamic import keeps
+    // the generator off the hot path and avoids the module cycle back to
+    // `assertReportExecutionPreflight`.
+    case 'threat_detection_review': {
+      const { generateThreatDetectionReport } = await import('./threatDetectionReport');
+      return generateThreatDetectionReport(orgId, config, authority, evidence);
     }
     default: {
       const exhaustive: never = type;
@@ -956,6 +968,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
+    // sites gets an empty-but-shaped result rather than a throw.
+    case 'threat_detection_review':
       return emptyRowsReport();
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before
