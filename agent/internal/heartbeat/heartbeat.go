@@ -41,6 +41,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/monitoring"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/netcache"
+	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
@@ -338,20 +339,23 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
-	networkContextMu      sync.Mutex
-	networkContext        *networkContextManager
-	config                *config.Config
-	secureToken           *secmem.SecureString
-	client                *http.Client
-	clientMu              sync.RWMutex
-	stopChan              chan struct{}
-	metricsCol            *collectors.MetricsCollector
-	hardwareCol           *collectors.HardwareCollector
-	softwareCol           *collectors.SoftwareCollector
-	softwareObservationFn func() (collectors.SoftwareInventoryObservationV2, error)
-	inventoryCol          *collectors.InventoryCollector
-	vpnCol                *collectors.VPNCollector
-	changeTrackerCol      *collectors.ChangeTrackerCollector
+	topologyDiagnosticMu      sync.Mutex
+	topologyDiagnosticJournal *networkdiagnostic.Journal
+	topologyDiagnosticActive  map[string]activeTopologyDiagnostic
+	networkContextMu          sync.Mutex
+	networkContext            *networkContextManager
+	config                    *config.Config
+	secureToken               *secmem.SecureString
+	client                    *http.Client
+	clientMu                  sync.RWMutex
+	stopChan                  chan struct{}
+	metricsCol                *collectors.MetricsCollector
+	hardwareCol               *collectors.HardwareCollector
+	softwareCol               *collectors.SoftwareCollector
+	softwareObservationFn     func() (collectors.SoftwareInventoryObservationV2, error)
+	inventoryCol              *collectors.InventoryCollector
+	vpnCol                    *collectors.VPNCollector
+	changeTrackerCol          *collectors.ChangeTrackerCollector
 	// changeTrackerMu serializes the change tracker's collect → send → commit
 	// cycle. sendInventory is dispatched both on the 15-minute tick and by the
 	// "Refresh Inventory" command (handlers.go), so two cycles can genuinely
@@ -6389,7 +6393,7 @@ func (h *Heartbeat) inFlightCommandStats(now time.Time) (inFlight, overdue int) 
 // script has already finished on its own.
 func isLifecycleCommand(cmdType string) bool {
 	switch cmdType {
-	case tools.CmdScriptCancel, tools.CmdScriptListRunning:
+	case tools.CmdScriptCancel, tools.CmdScriptListRunning, tools.CmdNetworkDiagnosticCancel:
 		return true
 	}
 	return false
