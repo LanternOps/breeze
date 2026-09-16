@@ -194,7 +194,7 @@ export default function MonitoringAssetsDashboard({ initialAssetId, onOpenChecks
   // silently dropping the parameter.
   useEffect(() => {
     if (!initialAssetId) return;
-    void navigateTo(settingsHref(initialAssetId));
+    void navigateTo(settingsHref(initialAssetId), { replace: true });
   }, [initialAssetId]);
 
   const handleToggleSnmpActive = async (assetId: string, nextActive: boolean) => {

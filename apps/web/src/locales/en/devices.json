@@ -2338,6 +2338,7 @@
       "subtitle": "Manage each section independently.",
       "navLabel": "Asset settings sections",
       "unsavedChanges": "Unsaved changes",
+      "refreshFailed": "Saved, but the page could not refresh. Reload to see the change.",
       "sections": {
         "identity": "Identity",
         "monitoring": "Monitoring",
@@ -2355,7 +2356,7 @@
         "tags": "Tags",
         "tagsHint": "Separate tags with commas.",
         "notes": "Notes",
-        "conflict": "This asset changed elsewhere. The latest data has been reloaded and your draft discarded.",
+        "conflict": "This asset changed elsewhere. Review the latest values before saving again.",
         "typeGroups": {
           "endpoints": "Endpoints",
           "networkGear": "Network gear",
@@ -2367,7 +2368,7 @@
         "description": "Configure SNMP collection and network checks.",
         "loadFailed": "Couldn't load monitoring settings. Try again.",
         "checksLoadFailed": "Couldn't load network checks. Try again.",
-        "conflict": "Monitoring settings changed elsewhere. The latest settings have been reloaded and your draft discarded.",
+        "conflict": "Monitoring settings changed elsewhere. Review the latest values before saving again.",
         "communityRequired": "Enter a community string to enable SNMP v1 or v2c.",
         "usernameRequired": "Enter a username to enable SNMP v3.",
         "invalidInterval": "Polling interval must be a whole number between 30 and 86400 seconds.",
@@ -2396,6 +2397,7 @@
         "port": "SNMP port",
         "template": "SNMP template",
         "templatesUnavailable": "Templates couldn't be loaded. The current template will be kept.",
+        "suggestionsUnavailable": "Suggestions unavailable",
         "noTemplate": "No template",
         "suggestion": "Suggested: {{template}} — {{reason}}",
         "useSuggestion": "Use suggestion",

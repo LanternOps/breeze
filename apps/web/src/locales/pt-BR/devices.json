@@ -2430,6 +2430,7 @@
       "subtitle": "Gerencie cada seção separadamente.",
       "navLabel": "Seções de configurações do ativo",
       "unsavedChanges": "Alterações não salvas",
+      "refreshFailed": "Salvo, mas não foi possível atualizar a página. Recarregue-a para ver a alteração.",
       "sections": {
         "identity": "Identidade",
         "monitoring": "Monitoramento",
@@ -2447,7 +2448,7 @@
         "tags": "Etiquetas",
         "tagsHint": "Separe as etiquetas por vírgulas.",
         "notes": "Anotações",
-        "conflict": "Este ativo foi alterado em outro lugar. Os dados mais recentes foram recarregados e seu rascunho foi descartado.",
+        "conflict": "Este ativo foi alterado em outro lugar. Revise os valores mais recentes antes de salvar novamente.",
         "typeGroups": {
           "endpoints": "Dispositivos finais",
           "networkGear": "Equipamentos de rede",
@@ -2459,7 +2460,7 @@
         "description": "Configure a coleta SNMP e as verificações de rede.",
         "loadFailed": "Não foi possível carregar as configurações de monitoramento. Tente novamente.",
         "checksLoadFailed": "Não foi possível carregar as verificações de rede. Tente novamente.",
-        "conflict": "As configurações de monitoramento foram alteradas em outro lugar. As configurações mais recentes foram recarregadas e seu rascunho foi descartado.",
+        "conflict": "As configurações de monitoramento foram alteradas em outro lugar. Revise os valores mais recentes antes de salvar novamente.",
         "communityRequired": "Digite uma string de comunidade para habilitar SNMP v1 ou v2c.",
         "usernameRequired": "Digite um nome de usuário para habilitar SNMP v3.",
         "invalidInterval": "O intervalo de consulta deve ser um número inteiro entre 30 e 86400 segundos.",
@@ -2488,6 +2489,7 @@
         "port": "Porta SNMP",
         "template": "Modelo SNMP",
         "templatesUnavailable": "Não foi possível carregar os modelos. O modelo atual será mantido.",
+        "suggestionsUnavailable": "Sugestões indisponíveis",
         "noTemplate": "Sem modelo",
         "suggestion": "Sugestão: {{template}} — {{reason}}",
         "useSuggestion": "Usar sugestão",

@@ -66,6 +66,7 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
       expect(cell.textContent).toMatch(/Responding · SNMP \d+m ago/);
       expect((await row()).queryByText('Online')).not.toBeInTheDocument();
       expect(cell.textContent).not.toBe('Online');
+      expect(cell.textContent).not.toMatch(/\bOnline\b/);
     });
 
     it('renders an explicit unknown when the API has no reachability yet (pre-W01)', async () => {
@@ -127,6 +128,7 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
       expect(writes()[0]![0]).toBe('/monitoring/assets/asset-1/snmp');
       expect((writes()[0]![1] as RequestInit).method).toBe('PATCH');
       expect(JSON.parse((writes()[0]![1] as RequestInit).body as string)).toEqual({ isActive: false });
+      await waitFor(() => expect(fetchMock.mock.calls.filter(([url, init]) => url.startsWith('/monitoring/assets') && !init?.method)).toHaveLength(2));
     });
 
     it('resumes a paused poller with isActive:true', async () => {
@@ -157,7 +159,7 @@ describe.each(['responsive-table-desktop', 'responsive-table-cards'])('%s', (sur
       render(<MonitoringAssetsDashboard initialAssetId="asset-9" />);
 
       await waitFor(() =>
-        expect(navigateMock).toHaveBeenCalledWith('/devices/network/asset-9#overview/settings/monitoring'),
+        expect(navigateMock).toHaveBeenCalledWith('/devices/network/asset-9#overview/settings/monitoring', { replace: true }),
       );
     });
 

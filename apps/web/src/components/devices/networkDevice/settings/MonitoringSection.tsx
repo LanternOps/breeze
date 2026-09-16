@@ -5,6 +5,7 @@ import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList
 import CreateMonitorForm from '@/components/monitors/CreateMonitorForm';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { showToast } from '@/components/shared/Toast';
+import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import { formatRelativeTime } from '@/lib/dateTimeFormat';
 import { ActionError } from '@/lib/runAction';
@@ -54,7 +55,7 @@ const collectionStates = new Set(['ok', 'failing', 'no_template', 'no_agent', 'a
 export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
   asset: DiscoveredAsset;
   assetId: string;
-  onSaved: () => void | Promise<void>;
+  onSaved: () => void | boolean | Promise<void | boolean>;
   onAnnounce: (message: string) => void;
 }) {
   const { t } = useTranslation('devices');
@@ -63,7 +64,8 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
   const [checks, setChecks] = useState<AssetNetworkCheck[]>([]);
   const [templates, setTemplates] = useState<SnmpTemplateOption[]>([]);
   const [suggestion, setSuggestion] = useState<TemplateSuggestion | null>(null);
-  const [detailError, setDetailError] = useState(false);
+  const [detailError, setDetailError] = useState<string>();
+  const [suggestionsError, setSuggestionsError] = useState(false);
   const [checksError, setChecksError] = useState(false);
   const [templatesError, setTemplatesError] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -83,7 +85,10 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     // turn an existing SNMP configuration into a create, or erase its draft.
     const read = async (url: string) => {
       const response = await fetchWithAuth(url);
-      if (!response.ok) throw new Error(`Read failed: ${response.status}`);
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        throw Object.assign(new Error(extractApiError(body, t('networkDeviceDetailPage.settings.monitoring.loadFailed'))), { status: response.status });
+      }
       return response.json();
     };
     const [detailResult, checksResult, templatesResult, suggestResult] = await Promise.allSettled([
@@ -94,20 +99,33 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     ]);
     if (request !== generation.current) return;
     const nextDetail = detailResult.status === 'fulfilled' ? detailResult.value as AssetMonitoringDetail | null : null;
-    setDetail(nextDetail);
-    setDraft(draftFrom(nextDetail?.snmpDevice));
-    setDetailError(!nextDetail);
+    if (nextDetail) {
+      setDetail(nextDetail);
+      setDraft(draftFrom(nextDetail.snmpDevice));
+      setDetailError(undefined);
+    } else {
+      setDetailError(detailResult.status === 'rejected' && detailResult.reason instanceof Error
+        ? detailResult.reason.message : t('networkDeviceDetailPage.settings.monitoring.loadFailed'));
+    }
     setChecks(checksResult.status === 'fulfilled' ? asList<AssetNetworkCheck>(checksResult.value) : []);
     setChecksError(checksResult.status === 'rejected');
     setTemplates(templatesResult.status === 'fulfilled' ? asList<SnmpTemplateOption>(templatesResult.value, 'templates') : []);
     setTemplatesError(templatesResult.status === 'rejected');
-    // W03 is optional. 404s, rejected requests and null bodies mean no suggestion.
+    // W03 is optional only when its route is absent. Other failures remain visible.
+    const suggestionFailed = suggestResult.status === 'rejected' && suggestResult.reason?.status !== 404;
+    setSuggestionsError(suggestionFailed);
+    if (suggestionFailed && suggestResult.status === 'rejected') {
+      console.warn('[network-settings] template suggestion failed', assetId, suggestResult.reason);
+    }
     setSuggestion(suggestResult.status === 'fulfilled' ? suggestResult.value ?? null : null);
     setLoading(false);
-  }, [assetId]);
+  }, [assetId, t]);
 
   useEffect(() => {
     setLoading(true);
+    setDetail(null);
+    setDraft(draftFrom());
+    setDetailError(undefined);
     setError(undefined);
     setConflict(false);
     setDisableOpen(false);
@@ -120,7 +138,14 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
   const snmp = detail?.snmpDevice;
   const baseline = useMemo(() => draftFrom(snmp), [snmp]);
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
-  const blocked = loading || saving || detailError;
+  const blocked = loading || saving || Boolean(detailError);
+  const hasStoredCommunity = Boolean(snmp?.community);
+
+  const notifySaved = async () => {
+    if (await onSaved() === false) {
+      showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+    }
+  };
 
   const perform = async (action: () => Promise<void>, fallback: string) => {
     if (actionPending.current || blocked) return;
@@ -146,11 +171,11 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
 
   const handleSave = () => {
     if (blocked || !dirty) return;
-    if (!snmp && draft.snmpVersion !== 'v3' && !draft.community.trim()) {
+    if (draft.snmpVersion !== 'v3' && !hasStoredCommunity && !draft.community.trim()) {
       setError(t('networkDeviceDetailPage.settings.monitoring.communityRequired'));
       return;
     }
-    if (!snmp && draft.snmpVersion === 'v3' && !draft.username.trim()) {
+    if (draft.snmpVersion === 'v3' && !draft.username.trim()) {
       setError(t('networkDeviceDetailPage.settings.monitoring.usernameRequired'));
       return;
     }
@@ -181,7 +206,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
       const result = await (snmp ? patchSnmp(assetId, payload) : putSnmp(assetId, payload));
       await refresh();
       if (result && 'templateSuggestion' in result) setSuggestion(result.templateSuggestion ?? null);
-      await onSaved();
+      await notifySaved();
       onAnnounce(t('networkDeviceDetailPage.settings.toasts.snmpSaved'));
     }, t('networkDeviceDetailPage.settings.toasts.snmpSaveFailed'));
   };
@@ -196,17 +221,28 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     <SettingsSectionShell section="monitoring"
       title={t('networkDeviceDetailPage.settings.sections.monitoring')}
       description={t('networkDeviceDetailPage.settings.monitoring.description')}
-      dirty={dirty} saving={saving} saveDisabled={loading || detailError}
+      dirty={dirty} saving={saving} saveDisabled={loading || Boolean(detailError)}
       onSave={handleSave}
       onCancel={() => { setDraft(baseline); setError(undefined); setConflict(false); }}>
       <div className="space-y-5">
-        {loading ? <p role="status" className="text-sm text-muted-foreground">{t('common:states.loading')}</p>
-          : detailError ? <p role="alert" className="text-sm text-destructive">{t('networkDeviceDetailPage.settings.monitoring.loadFailed')}</p>
-            : <SnmpConfigForm draft={draft} onChange={(patch) => setDraft((value) => ({ ...value, ...patch }))}
-                templates={templates} templatesError={templatesError} suggestion={suggestion}
-                onUseSuggestion={() => { if (suggestion) setDraft((value) => ({ ...value, templateId: suggestion.templateId })); }}
-                hasStoredCommunity={Boolean(snmp?.community)} hasStoredAuthPassword={Boolean(snmp?.authPassword)}
-                hasStoredPrivPassword={Boolean(snmp?.privPassword)} disabled={saving} />}
+        {loading && <p role="status" className="text-sm text-muted-foreground">{t('common:states.loading')}</p>}
+        {!loading && detailError && (
+          <div className="flex flex-wrap items-center gap-3">
+            <p role="alert" className="text-sm text-destructive">{detailError}</p>
+            <button type="button" className={buttonClass} disabled={saving}
+              data-testid="network-settings-monitoring-retry" onClick={() => void refresh()}>
+              {t('common:actions.retry')}
+            </button>
+          </div>
+        )}
+        {!loading && detail && <SnmpConfigForm draft={draft} onChange={(patch) => setDraft((value) => ({ ...value, ...patch }))}
+          templates={templates} templatesError={templatesError} suggestion={suggestion}
+          onUseSuggestion={() => { if (suggestion) setDraft((value) => ({ ...value, templateId: suggestion.templateId })); }}
+          hasStoredCommunity={hasStoredCommunity} hasStoredAuthPassword={Boolean(snmp?.authPassword)}
+          hasStoredPrivPassword={Boolean(snmp?.privPassword)} disabled={saving} />}
+        {!loading && suggestionsError && <p className="text-xs text-muted-foreground">
+          {t('networkDeviceDetailPage.settings.monitoring.suggestionsUnavailable')}
+        </p>}
         {error && <p role="alert" data-testid="network-settings-monitoring-error" className="text-sm text-destructive">{error}</p>}
         {conflict && <p role="alert" data-testid="network-settings-monitoring-conflict" className="text-sm text-destructive">{t('networkDeviceDetailPage.settings.monitoring.conflict')}</p>}
         {!loading && snmp && (
@@ -219,14 +255,14 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
               onClick={() => void perform(async () => {
                 await patchSnmp(assetId, { isActive: !snmp.isActive });
                 await refresh();
-                await onSaved();
+                await notifySaved();
                 onAnnounce(snmp.isActive ? t('networkDeviceDetailPage.settings.toasts.pollingPaused') : t('networkDeviceDetailPage.settings.toasts.pollingResumed'));
               }, t('networkDeviceDetailPage.settings.toasts.snmpSaveFailed'))}>
               {snmp.isActive ? t('networkDeviceDetailPage.settings.monitoring.pause') : t('networkDeviceDetailPage.settings.monitoring.resume')}
             </button>
           </>
         )}
-        {!loading && (snmp || checks.length > 0 || (detail?.networkMonitors?.totalCount ?? 0) > 0) && (
+        {!loading && (snmp?.isActive || checks.some((check) => check.isActive) || (detail?.networkMonitors?.activeCount ?? 0) > 0) && (
           <div><button type="button" className={`${buttonClass} text-destructive`} disabled={blocked}
             data-testid="network-settings-monitoring-disable" onClick={() => setDisableOpen(true)}>
             {t('networkDeviceDetailPage.settings.monitoring.disable')}
@@ -268,7 +304,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
           await disableMonitoring(assetId);
           setDisableOpen(false);
           await refresh();
-          await onSaved();
+          await notifySaved();
           onAnnounce(t('networkDeviceDetailPage.settings.toasts.monitoringDisabled'));
         }, t('networkDeviceDetailPage.settings.toasts.monitoringDisableFailed'))} />
       <ConfirmDialog open={Boolean(removeCheck)} onClose={() => { if (!saving) setRemoveCheck(null); }} isLoading={saving}
@@ -280,7 +316,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
           await deleteCheck(removeCheck.id);
           setRemoveCheck(null);
           await refresh();
-          await onSaved();
+          await notifySaved();
           onAnnounce(t('networkDeviceDetailPage.settings.toasts.checkRemoved'));
         }, t('networkDeviceDetailPage.settings.toasts.checkRemoveFailed'))} />
       {addingCheck && <CreateMonitorForm assetId={assetId} defaultTarget={asset.ip}
@@ -288,7 +324,7 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
           setAddingCheck(false);
           void perform(async () => {
             await refresh();
-            await onSaved();
+            await notifySaved();
             onAnnounce(t('networkDeviceDetailPage.settings.toasts.checkCreated'));
           }, t('networkDeviceDetailPage.settings.toasts.checkCreateFailed'));
         }} />}

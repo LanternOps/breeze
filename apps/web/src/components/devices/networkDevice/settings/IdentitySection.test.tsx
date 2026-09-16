@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IdentitySection } from './IdentitySection';
+import { showToast } from '@/components/shared/Toast';
 import { fetchWithAuth } from '@/stores/auth';
 import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList';
 
@@ -25,6 +26,7 @@ const props = { asset, assetId: asset.id, onSaved: vi.fn(), onAnnounce: vi.fn() 
 const patchBody = () => JSON.parse((fetchMock.mock.calls.at(-1)![1] as RequestInit).body as string);
 
 beforeEach(() => {
+  vi.mocked(showToast).mockClear();
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(ok());
   props.onSaved = vi.fn();
@@ -114,14 +116,14 @@ describe('IdentitySection', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('discards a pending type edit if a background refresh returns a different type', () => {
+  it('preserves a pending type edit if a background refresh returns a different type', () => {
     const { rerender } = render(<IdentitySection {...props} />);
     fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
 
     rerender(<IdentitySection {...props} asset={{ ...asset, type: 'printer' }} />);
 
-    expect(screen.getByTestId('network-settings-identity-type')).toHaveValue('printer');
-    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+    expect(screen.getByTestId('network-settings-identity-type')).toHaveValue('router');
+    expect(screen.getByTestId('network-settings-identity-conflict')).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -188,4 +190,35 @@ describe('IdentitySection', () => {
     expect(screen.getByTestId('network-settings-identity-name')).toHaveValue('Main Switch');
     expect(await screen.findByTestId('network-settings-identity-conflict')).toBeInTheDocument();
   });
+});
+
+it('shows a refresh error after a successful mutation when onSaved returns false', async () => {
+  render(<IdentitySection {...props} onSaved={vi.fn().mockResolvedValue(false)} />);
+  fireEvent.change(screen.getByTestId('network-settings-identity-name'), { target: { value: 'Edited' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+    type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+  }));
+});
+
+it('preserves a name draft across equal refreshes and flags a changed baseline', () => {
+  const { rerender } = render(<IdentitySection {...props} />);
+  fireEvent.change(screen.getByTestId('network-settings-identity-name'), { target: { value: 'Edited' } });
+  rerender(<IdentitySection {...props} asset={{ ...asset, tags: [...asset.tags!] }} />);
+  expect(screen.getByTestId('network-settings-identity-name')).toHaveValue('Edited');
+  expect(screen.queryByTestId('network-settings-identity-conflict')).not.toBeInTheDocument();
+  rerender(<IdentitySection {...props} asset={{ ...asset, label: 'Changed elsewhere' }} />);
+  expect(screen.getByTestId('network-settings-identity-name')).toHaveValue('Edited');
+  expect(screen.getByTestId('network-settings-identity-conflict')).toBeInTheDocument();
+});
+
+it('shows a refresh failure without claiming the asset reloaded after a 409', async () => {
+  fetchMock.mockResolvedValue(ok({ error: 'Asset changed' }, 409));
+  render(<IdentitySection {...props} onSaved={vi.fn().mockResolvedValue(false)} />);
+  fireEvent.change(screen.getByTestId('network-settings-identity-name'), { target: { value: 'Edited' } });
+  fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+    type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+  }));
+  expect(screen.getByTestId('network-settings-identity-conflict')).not.toHaveTextContent(/reloaded/i);
 });

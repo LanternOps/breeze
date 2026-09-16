@@ -28,7 +28,7 @@ export function LinkSection({
   asset: DiscoveredAsset;
   assetId: string;
   extras: NetworkAssetExtras;
-  onSaved: () => void | Promise<void>;
+  onSaved: () => void | boolean | Promise<void | boolean>;
   onAnnounce: (message: string) => void;
 }) {
   const { t } = useTranslation('devices');
@@ -43,7 +43,9 @@ export function LinkSection({
     setUnlinking(true);
     try {
       await unlink(assetId);
-      await onSaved();
+      if (await onSaved() === false) {
+        showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+      }
       onAnnounce(t('networkDeviceDetailPage.toasts.unlinked'));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return; // auth redirect owns it
@@ -100,7 +102,11 @@ export function LinkSection({
           )}
           {/* Site-scoped on purpose: the link route requires same-org AND
               same-site, so an unscoped list would offer guaranteed 403s. */}
-          <LinkManuallyControl assetId={assetId} siteId={extras.siteId ?? null} onLinked={onSaved} />
+          <LinkManuallyControl assetId={assetId} siteId={extras.siteId ?? null} onLinked={async () => {
+            if (await onSaved() === false) {
+              showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+            }
+          }} />
         </div>
       )}
 

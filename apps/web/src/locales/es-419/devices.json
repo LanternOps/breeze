@@ -2430,6 +2430,7 @@
       "subtitle": "Administra cada sección por separado.",
       "navLabel": "Secciones de configuración del activo",
       "unsavedChanges": "Cambios sin guardar",
+      "refreshFailed": "Se guardó, pero no se pudo actualizar la página. Vuelve a cargarla para ver el cambio.",
       "sections": {
         "identity": "Identidad",
         "monitoring": "Monitoreo",
@@ -2447,7 +2448,7 @@
         "tags": "Etiquetas",
         "tagsHint": "Separa las etiquetas con comas.",
         "notes": "Notas",
-        "conflict": "Este activo se modificó en otro lugar. Se recargaron los datos más recientes y se descartó tu borrador.",
+        "conflict": "Este activo se modificó en otro lugar. Revisa los valores más recientes antes de volver a guardar.",
         "typeGroups": {
           "endpoints": "Equipos finales",
           "networkGear": "Equipos de red",
@@ -2459,7 +2460,7 @@
         "description": "Configura la recopilación SNMP y las comprobaciones de red.",
         "loadFailed": "No se pudo cargar la configuración de monitoreo. Inténtalo de nuevo.",
         "checksLoadFailed": "No se pudieron cargar las comprobaciones de red. Inténtalo de nuevo.",
-        "conflict": "La configuración de monitoreo cambió en otro lugar. Se recargó la configuración más reciente y se descartó tu borrador.",
+        "conflict": "La configuración de monitoreo se modificó en otro lugar. Revisa los valores más recientes antes de volver a guardar.",
         "communityRequired": "Ingresa una cadena de comunidad para habilitar SNMP v1 o v2c.",
         "usernameRequired": "Ingresa un nombre de usuario para habilitar SNMP v3.",
         "invalidInterval": "El intervalo de sondeo debe ser un número entero entre 30 y 86400 segundos.",
@@ -2488,6 +2489,7 @@
         "port": "Puerto SNMP",
         "template": "Plantilla SNMP",
         "templatesUnavailable": "No se pudieron cargar las plantillas. Se conservará la plantilla actual.",
+        "suggestionsUnavailable": "Sugerencias no disponibles",
         "noTemplate": "Sin plantilla",
         "suggestion": "Sugerencia: {{template}} — {{reason}}",
         "useSuggestion": "Usar sugerencia",

@@ -2430,6 +2430,7 @@
       "subtitle": "Her bölümü ayrı ayrı yönetin.",
       "navLabel": "Varlık ayarları bölümleri",
       "unsavedChanges": "Kaydedilmemiş değişiklikler",
+      "refreshFailed": "Kaydedildi, ancak sayfa yenilenemedi. Değişikliği görmek için sayfayı yeniden yükleyin.",
       "sections": {
         "identity": "Kimlik",
         "monitoring": "İzleme",
@@ -2447,7 +2448,7 @@
         "tags": "Etiketler",
         "tagsHint": "Etiketleri virgülle ayırın.",
         "notes": "Notlar",
-        "conflict": "Bu varlık başka bir yerde değiştirildi. En güncel veriler yeniden yüklendi ve taslağınız silindi.",
+        "conflict": "Bu varlık başka bir yerde değiştirildi. Yeniden kaydetmeden önce en güncel değerleri gözden geçirin.",
         "typeGroups": {
           "endpoints": "Uç noktalar",
           "networkGear": "Ağ cihazları",
@@ -2459,7 +2460,7 @@
         "description": "SNMP veri toplamayı ve ağ kontrollerini yapılandırın.",
         "loadFailed": "İzleme ayarları yüklenemedi. Tekrar deneyin.",
         "checksLoadFailed": "Ağ kontrolleri yüklenemedi. Tekrar deneyin.",
-        "conflict": "İzleme ayarları başka bir yerde değiştirildi. En son ayarlar yeniden yüklendi ve taslağınız silindi.",
+        "conflict": "İzleme ayarları başka bir yerde değiştirildi. Yeniden kaydetmeden önce en güncel değerleri gözden geçirin.",
         "communityRequired": "SNMP v1 veya v2c’yi etkinleştirmek için bir topluluk dizesi girin.",
         "usernameRequired": "SNMP v3’ü etkinleştirmek için bir kullanıcı adı girin.",
         "invalidInterval": "Yoklama aralığı 30 ile 86400 saniye arasında bir tam sayı olmalıdır.",
@@ -2488,6 +2489,7 @@
         "port": "SNMP bağlantı noktası",
         "template": "SNMP şablonu",
         "templatesUnavailable": "Şablonlar yüklenemedi. Mevcut şablon korunacak.",
+        "suggestionsUnavailable": "Öneriler kullanılamıyor",
         "noTemplate": "Şablon yok",
         "suggestion": "Öneri: {{template}} — {{reason}}",
         "useSuggestion": "Öneriyi kullan",

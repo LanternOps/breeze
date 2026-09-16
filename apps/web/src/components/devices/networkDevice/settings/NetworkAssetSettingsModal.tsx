@@ -28,7 +28,7 @@ export type NetworkAssetSettingsModalProps = {
   section: SettingsSection | null;
   assetId: string;
   onClose: () => void;
-  onSaved: () => void | Promise<void>;
+  onSaved: () => void | boolean | Promise<void | boolean>;
   asset: DiscoveredAsset;
   extras: NetworkAssetExtras;
   onSectionChange: (section: SettingsSection) => void;

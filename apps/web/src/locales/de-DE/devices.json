@@ -2430,6 +2430,7 @@
       "subtitle": "Verwalten Sie jeden Bereich unabhängig.",
       "navLabel": "Bereiche der Asset-Einstellungen",
       "unsavedChanges": "Ungespeicherte Änderungen",
+      "refreshFailed": "Gespeichert, aber die Seite konnte nicht aktualisiert werden. Laden Sie die Seite neu, um die Änderung zu sehen.",
       "sections": {
         "identity": "Identität",
         "monitoring": "Überwachung",
@@ -2447,7 +2448,7 @@
         "tags": "Schlagwörter",
         "tagsHint": "Schlagwörter durch Kommas trennen.",
         "notes": "Notizen",
-        "conflict": "Dieses Asset wurde anderweitig geändert. Die aktuellen Daten wurden neu geladen und Ihr Entwurf verworfen.",
+        "conflict": "Dieses Asset wurde an anderer Stelle geändert. Prüfen Sie die aktuellen Werte, bevor Sie erneut speichern.",
         "typeGroups": {
           "endpoints": "Endgeräte",
           "networkGear": "Netzwerkgeräte",
@@ -2459,7 +2460,7 @@
         "description": "SNMP-Datenerfassung und Netzwerkprüfungen konfigurieren.",
         "loadFailed": "Die Überwachungseinstellungen konnten nicht geladen werden. Versuchen Sie es erneut.",
         "checksLoadFailed": "Die Netzwerkprüfungen konnten nicht geladen werden. Versuchen Sie es erneut.",
-        "conflict": "Die Überwachungseinstellungen wurden andernorts geändert. Die aktuellen Einstellungen wurden geladen und Ihr Entwurf verworfen.",
+        "conflict": "Die Überwachungseinstellungen wurden an anderer Stelle geändert. Prüfen Sie die aktuellen Werte, bevor Sie erneut speichern.",
         "communityRequired": "Geben Sie einen Community-String ein, um SNMP v1 oder v2c zu aktivieren.",
         "usernameRequired": "Geben Sie einen Benutzernamen ein, um SNMP v3 zu aktivieren.",
         "invalidInterval": "Das Abfrageintervall muss eine ganze Zahl zwischen 30 und 86400 Sekunden sein.",
@@ -2488,6 +2489,7 @@
         "port": "SNMP-Port",
         "template": "SNMP-Vorlage",
         "templatesUnavailable": "Vorlagen konnten nicht geladen werden. Die aktuelle Vorlage bleibt erhalten.",
+        "suggestionsUnavailable": "Vorschläge nicht verfügbar",
         "noTemplate": "Keine Vorlage",
         "suggestion": "Vorschlag: {{template}} — {{reason}}",
         "useSuggestion": "Vorschlag übernehmen",

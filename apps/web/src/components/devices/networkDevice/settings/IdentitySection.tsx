@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { typeConfig, type DiscoveredAsset, type DiscoveredAssetType } from '@/components/discovery/DiscoveredAssetList';
@@ -11,7 +11,7 @@ import { useNetworkAssetMutations, type IdentityPatch } from './useNetworkAssetM
 type IdentitySectionProps = {
   asset: DiscoveredAsset;
   assetId: string;
-  onSaved: () => void | Promise<void>;
+  onSaved: () => void | boolean | Promise<void | boolean>;
   onAnnounce: (message: string) => void;
 };
 
@@ -21,18 +21,27 @@ export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: Identit
   const { t } = useTranslation('devices');
   const { patchIdentity } = useNetworkAssetMutations();
 
+  const tags = (asset.tags ?? []).join(', ');
   const baseline = useMemo(() => ({
     label: asset.label ?? '',
-    tags: (asset.tags ?? []).join(', '),
+    tags,
     notes: asset.notes ?? '',
     type: asset.type,
-  }), [asset.label, asset.tags, asset.notes, asset.type]);
+  }), [asset.label, tags, asset.notes, asset.type]);
 
   const [draft, setDraft] = useState(baseline);
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
-  // A background refresh (or a save) lands a new asset — re-baseline the draft.
-  useEffect(() => { setDraft(baseline); }, [baseline]);
+  const previousBaseline = useRef(baseline);
+  useEffect(() => {
+    const previous = previousBaseline.current;
+    if (previous === baseline) return;
+    previousBaseline.current = baseline;
+    const hadEdits = draft.label.trim() !== previous.label.trim()
+      || draft.notes !== previous.notes || draft.tags !== previous.tags || draft.type !== previous.type;
+    if (hadEdits && !saving) setConflict(true);
+    else setDraft(baseline);
+  }, [baseline, draft, saving]);
 
   const dirty =
     draft.label.trim() !== baseline.label.trim()
@@ -54,7 +63,9 @@ export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: Identit
     setConflict(false);
     try {
       await patchIdentity(assetId, patch);
-      await onSaved();
+      if (await onSaved() === false) {
+        showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+      }
       onAnnounce(t('networkDeviceDetailPage.settings.toasts.identitySaved'));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;   // auth redirect owns it
@@ -63,7 +74,9 @@ export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: Identit
         // rather than letting a stale Save overwrite their change on retry.
         setConflict(true);
         setDraft(baseline);
-        await onSaved();
+        if (await onSaved() === false) {
+          showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+        }
         return;
       }
       if (!(err instanceof ActionError)) {
@@ -82,7 +95,9 @@ export function IdentitySection({ asset, assetId, onSaved, onAnnounce }: Identit
       // overrides is its whole point, so a pending one must not survive it.
       await patchIdentity(assetId, { resetTypeToAuto: true });
       setDraft((d) => ({ ...d, type: baseline.type }));
-      await onSaved();
+      if (await onSaved() === false) {
+        showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+      }
       onAnnounce(t('networkDeviceDetailPage.toasts.typeReset'));
     } catch (err) {
       if (err instanceof ActionError && err.status === 401) return;

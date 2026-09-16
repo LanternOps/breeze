@@ -2430,6 +2430,7 @@
       "subtitle": "Gestisci ogni sezione separatamente.",
       "navLabel": "Sezioni delle impostazioni della risorsa",
       "unsavedChanges": "Modifiche non salvate",
+      "refreshFailed": "Salvato, ma non è stato possibile aggiornare la pagina. Ricaricala per vedere la modifica.",
       "sections": {
         "identity": "Identità",
         "monitoring": "Monitoraggio",
@@ -2447,7 +2448,7 @@
         "tags": "Etichette",
         "tagsHint": "Separa le etichette con virgole.",
         "notes": "Annotazioni",
-        "conflict": "Questa risorsa è stata modificata altrove. I dati più recenti sono stati ricaricati e la bozza è stata eliminata.",
+        "conflict": "Questa risorsa è stata modificata altrove. Controlla i valori più recenti prima di salvare di nuovo.",
         "typeGroups": {
           "endpoints": "Dispositivi terminali",
           "networkGear": "Apparati di rete",
@@ -2459,7 +2460,7 @@
         "description": "Configura la raccolta SNMP e i controlli di rete.",
         "loadFailed": "Impossibile caricare le impostazioni di monitoraggio. Riprova.",
         "checksLoadFailed": "Impossibile caricare i controlli di rete. Riprova.",
-        "conflict": "Le impostazioni di monitoraggio sono state modificate altrove. Le impostazioni più recenti sono state ricaricate e la bozza è stata scartata.",
+        "conflict": "Le impostazioni di monitoraggio sono state modificate altrove. Controlla i valori più recenti prima di salvare di nuovo.",
         "communityRequired": "Inserisci una stringa di comunità per abilitare SNMP v1 o v2c.",
         "usernameRequired": "Inserisci un nome utente per abilitare SNMP v3.",
         "invalidInterval": "L’intervallo di polling deve essere un numero intero tra 30 e 86400 secondi.",
@@ -2488,6 +2489,7 @@
         "port": "Porta SNMP",
         "template": "Modello SNMP",
         "templatesUnavailable": "Impossibile caricare i modelli. Verrà mantenuto il modello attuale.",
+        "suggestionsUnavailable": "Suggerimenti non disponibili",
         "noTemplate": "Nessun modello",
         "suggestion": "Suggerimento: {{template}} — {{reason}}",
         "useSuggestion": "Usa suggerimento",

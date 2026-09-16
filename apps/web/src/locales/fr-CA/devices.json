@@ -2430,6 +2430,7 @@
       "subtitle": "Gérez chaque section séparément.",
       "navLabel": "Sections des paramètres de l’actif",
       "unsavedChanges": "Modifications non enregistrées",
+      "refreshFailed": "Enregistré, mais la page n’a pas pu être actualisée. Rechargez-la pour voir la modification.",
       "sections": {
         "identity": "Identité",
         "monitoring": "Surveillance",
@@ -2447,7 +2448,7 @@
         "tags": "Étiquettes",
         "tagsHint": "Séparez les étiquettes par des virgules.",
         "notes": "Remarques",
-        "conflict": "Cet actif a été modifié ailleurs. Les données les plus récentes ont été rechargées et votre brouillon a été supprimé.",
+        "conflict": "Cet actif a été modifié ailleurs. Vérifiez les dernières valeurs avant d’enregistrer à nouveau.",
         "typeGroups": {
           "endpoints": "Terminaux",
           "networkGear": "Équipements réseau",
@@ -2459,7 +2460,7 @@
         "description": "Configurez la collecte SNMP et les vérifications réseau.",
         "loadFailed": "Impossible de charger les paramètres de surveillance. Réessayez.",
         "checksLoadFailed": "Impossible de charger les vérifications réseau. Réessayez.",
-        "conflict": "Les paramètres de surveillance ont été modifiés ailleurs. Les paramètres les plus récents ont été rechargés et votre brouillon a été supprimé.",
+        "conflict": "Les paramètres de surveillance ont été modifiés ailleurs. Vérifiez les dernières valeurs avant d’enregistrer à nouveau.",
         "communityRequired": "Saisissez une chaîne de communauté pour activer SNMP v1 ou v2c.",
         "usernameRequired": "Saisissez un nom d’utilisateur pour activer SNMP v3.",
         "invalidInterval": "L’intervalle d’interrogation doit être un nombre entier entre 30 et 86400 secondes.",
@@ -2488,6 +2489,7 @@
         "port": "Port SNMP",
         "template": "Modèle SNMP",
         "templatesUnavailable": "Impossible de charger les modèles. Le modèle actuel sera conservé.",
+        "suggestionsUnavailable": "Suggestions non disponibles",
         "noTemplate": "Aucun modèle",
         "suggestion": "Suggestion : {{template}} — {{reason}}",
         "useSuggestion": "Utiliser la suggestion",

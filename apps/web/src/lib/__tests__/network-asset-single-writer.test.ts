@@ -100,9 +100,19 @@ type Violation = { line: number; shape: string; method: string };
 export function findAssetWrites(source: string, fileName = 'x.tsx'): Violation[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const violations: Violation[] = [];
+  const fetchNames = new Set(['fetchWithAuth']);
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    if (!/(?:^|\/)stores\/auth$/.test(statement.moduleSpecifier.text)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      if ((binding.propertyName ?? binding.name).text === 'fetchWithAuth') fetchNames.add(binding.name.text);
+    }
+  }
 
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetchWithAuth') {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && fetchNames.has(node.expression.text)) {
       const shape = node.arguments[0] ? urlShape(node.arguments[0]) : null;
       if (shape) {
         const guard = GUARDED.find((g) => g.shape === shape);
@@ -124,6 +134,15 @@ export function findAssetWrites(source: string, fileName = 'x.tsx'): Violation[]
 }
 
 describe('guard self-checks', () => {
+  it('flags an aliased import of fetchWithAuth', () => {
+    for (const module of ['@/stores/auth', '../../stores/auth']) {
+      expect(findAssetWrites(`import { fetchWithAuth as request } from '${module}';
+        request(\`/discovery/assets/\${id}\`, { method: 'PATCH' });`)).toHaveLength(1);
+    }
+  });
+
+  it.todo('string-concat and variable URLs are not resolved');
+
   it('flags a mutating call against a guarded shape', () => {
     expect(findAssetWrites("fetchWithAuth(`/discovery/assets/${id}`, { method: 'PATCH' });")).toHaveLength(1);
     expect(findAssetWrites("fetchWithAuth(`/monitoring/assets/${id}/snmp`, { method: 'PUT' });")).toHaveLength(1);

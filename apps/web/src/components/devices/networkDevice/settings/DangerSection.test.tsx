@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DangerSection } from './DangerSection';
+import { showToast } from '@/components/shared/Toast';
 import { fetchWithAuth } from '@/stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList';
@@ -27,6 +28,7 @@ const props = { asset, assetId: asset.id, onSaved: vi.fn(), onClose: vi.fn(), on
 const lastCall = () => fetchMock.mock.calls.at(-1)!;
 
 beforeEach(() => {
+  vi.mocked(showToast).mockClear();
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(res());
   navigateMock.mockReset();
@@ -142,4 +144,12 @@ describe('DangerSection — delete', () => {
     });
     expect(screen.getByTestId('network-settings-delete-confirm')).not.toHaveAttribute('aria-disabled', 'true');
   });
+});
+
+it('shows a refresh error after a successful mutation when onSaved returns false', async () => {
+  render(<DangerSection {...props} onSaved={vi.fn().mockResolvedValue(false)} />);
+  fireEvent.click(screen.getByTestId('network-settings-dismiss'));
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+    type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+  }));
 });

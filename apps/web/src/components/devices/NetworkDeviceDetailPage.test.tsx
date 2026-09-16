@@ -433,6 +433,22 @@ describe('NetworkDeviceDetailPage', () => {
     expect(window.location.hash).toBe('#overview/settings/identity');
   });
 
+  it.each([
+    ['#overview/settings/identity', 'danger', '#overview/settings/danger', 'overview'],
+    ['#monitoring/settings/link', 'identity', '#monitoring/settings/identity', 'monitoring'],
+  ])('clicking a rail section rewrites the hash and keeps the tab (%s)', async (initialHash, section, expectedHash, tab) => {
+    window.location.hash = initialHash;
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-asset-settings-modal');
+
+    fireEvent.click(screen.getByTestId(`network-settings-nav-${section}`));
+
+    await waitFor(() => expect(window.location.hash).toBe(expectedHash));
+    expect(screen.getByTestId(`network-settings-panel-${section}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`network-detail-${tab}`)).toBeInTheDocument();
+  });
+
   it('opens straight to a section from a deep link', async () => {
     window.location.hash = '#overview/settings/monitoring';
     fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));

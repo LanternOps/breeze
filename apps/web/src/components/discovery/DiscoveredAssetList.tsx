@@ -341,6 +341,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   }, [fetchAssets]);
 
   const handleApprove = async (asset: DiscoveredAsset) => {
+    setError(undefined);
     try {
       await approve(asset.id);
       await fetchAssets();
@@ -351,6 +352,7 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   };
 
   const handleDismiss = async (asset: DiscoveredAsset) => {
+    setError(undefined);
     try {
       await dismiss(asset.id);
       await fetchAssets();

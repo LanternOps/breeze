@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LinkSection } from './LinkSection';
+import { showToast } from '@/components/shared/Toast';
 import { fetchWithAuth } from '@/stores/auth';
 import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList';
 
@@ -32,6 +33,7 @@ const props = {
 const writes = () => fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method);
 
 beforeEach(() => {
+  vi.mocked(showToast).mockClear();
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(res());
   props.onSaved = vi.fn();
@@ -135,4 +137,13 @@ describe('LinkSection — unlinked asset', () => {
     expect((writes()[0]![1] as RequestInit).method).toBe('POST');
     expect(JSON.parse((writes()[0]![1] as RequestInit).body as string)).toEqual({ deviceId: 'dev-9' });
   });
+});
+
+it('shows a refresh error after a successful mutation when onSaved returns false', async () => {
+  render(<LinkSection {...props} asset={{ ...asset, linkedDeviceId: 'dev-9' }} onSaved={vi.fn().mockResolvedValue(false)} />);
+  fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
+    fireEvent.click(await screen.findByTestId('network-settings-link-unlink-confirm'));
+  await waitFor(() => expect(showToast).toHaveBeenCalledWith({
+    type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+  }));
 });

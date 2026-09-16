@@ -28,7 +28,7 @@ export function DangerSection({
 }: {
   asset: DiscoveredAsset;
   assetId: string;
-  onSaved: () => void | Promise<void>;
+  onSaved: () => void | boolean | Promise<void | boolean>;
   onClose: () => void;
   onAnnounce: (message: string) => void;
 }) {
@@ -63,7 +63,9 @@ export function DangerSection({
     const okResult = await run('approve', () => approve(assetId),
       t('networkDeviceDetailPage.settings.toasts.approveFailed'));
     if (!okResult) return;
-    await onSaved();
+    if (await onSaved() === false) {
+      showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+    }
     onAnnounce(t('networkDeviceDetailPage.settings.toasts.approved'));
   };
 
@@ -71,7 +73,9 @@ export function DangerSection({
     const okResult = await run('dismiss', () => dismiss(assetId),
       t('networkDeviceDetailPage.settings.toasts.dismissFailed'));
     if (!okResult) return;
-    await onSaved();
+    if (await onSaved() === false) {
+      showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+    }
     onAnnounce(t('networkDeviceDetailPage.settings.toasts.dismissed'));
   };
 
