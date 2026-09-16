@@ -1,9 +1,11 @@
 # #1728 Network Topology Redesign — Plan Index
 
+> **Status: Superseded 2026-09-15 — historical and non-dispatchable.** Do not execute tasks or dispatch workers from this plan. The [intelligent topology specification](../../specs/monitoring/2026-09-15-intelligent-network-topology-design.md) supersedes this plan and the June design. Use the [replacement five-milestone implementation plan](2026-09-15-intelligent-network-topology-INDEX.md), now authored and registered with `register_feature`; its frontmatter links the authoritative feature tracker. The instructions below are retained only as historical context.
+
 Umbrella index for the four phase plans implementing the design spec
 `docs/superpowers/specs/monitoring/2026-06-22-network-topology-redesign-design.md`.
 
-**Execute strictly in order.** Each phase is independently mergeable, but later
+**Historical sequencing (retired):** Each phase was independently mergeable, but later
 phases depend on earlier ones at the type/schema level.
 
 | Phase | Plan file | Tasks | Deliverable |
