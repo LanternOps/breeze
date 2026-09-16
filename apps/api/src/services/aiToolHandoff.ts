@@ -201,7 +201,7 @@ function truncate(reason: string): string {
  * (`actionIntents/resultSecrets.ts`), so nothing else in it is ever spliced
  * into the transcript.
  */
-function terminalReason(snapshot: IntentOutcomeSnapshot): string {
+export function intentTerminalReason(snapshot: IntentOutcomeSnapshot): string {
   const resultError = snapshot.result?.error;
   if (typeof resultError === 'string' && resultError.trim().length > 0) {
     return truncate(resultError.trim());
@@ -242,7 +242,7 @@ export function describeIntentOutcome(snapshot: IntentOutcomeSnapshot | null): H
   return {
     handoff: APPROVED_FAILED_STATUS,
     message:
-      `Approved, but the action FAILED and did NOT take effect. Reason: ${terminalReason(snapshot)}. ` +
+      `Approved, but the action FAILED and did NOT take effect. Reason: ${intentTerminalReason(snapshot)}. ` +
       'You must tell the user it did not succeed and report this reason to them. ' +
       'Do not claim it succeeded, and do not retry it without addressing the reason.',
   };
