@@ -23,6 +23,8 @@ const (
 	ErrCodeNoSuchInstance = "noSuchInstance"
 	ErrCodeEndOfMib       = "endOfMib"
 	ErrCodeTimeout        = "timeout"
+	ErrCodeSNMPError      = "snmpError"
+	ErrCodeWalkFailed     = "walkFailed"
 	ErrCodeTruncated      = "truncated"
 )
 

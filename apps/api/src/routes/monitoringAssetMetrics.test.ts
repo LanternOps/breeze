@@ -402,6 +402,31 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     }
   });
 
+  it('caps instances per base OID so one large table does not starve a sibling', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const bases = ['1.3.6.1.2.1.2.2.1.10', '1.3.6.1.2.1.2.2.1.16'];
+    const perBaseCap = Math.max(1, Math.floor(MAX_SERIES / bases.length));
+    vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(metricsChain(bases.flatMap((baseOid, index) =>
+      Array.from({ length: index === 0 ? 70 : 5 }, (_, i) => metricRow({
+        oid: `${baseOid}.${i + 1}`, baseOid, instance: String(i + 1),
+        bucket: '2026-09-15T10:00:00.000Z', avgValue: '1', maxValue: '1',
+      })))) as any);
+
+    const res = await get(`?oid=${bases.join(',')}`);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.series.filter((s: any) => s.oid.startsWith(`${bases[1]}.`))).toHaveLength(5);
+    expect(body.series.filter((s: any) => s.oid.startsWith(`${bases[0]}.`))).toHaveLength(perBaseCap);
+    expect(body.truncatedSeries).toBe(true);
+    expect(seriesLimit).toHaveBeenCalledWith(MAX_SERIES * bases.length + 1);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      assetId: ASSET_ID, seriesCount: perBaseCap + 5, cap: perBaseCap,
+    }));
+    warn.mockRestore();
+  });
+
   it('matches an instance oid as well as a base oid', async () => {
     vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
     vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow({ templateId: TEMPLATE_ID })]) as any);

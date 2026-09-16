@@ -1198,6 +1198,7 @@ export async function processOrphanedCommandResult(
   const snmpData = result.result as {
     deviceId?: string;
     metrics?: SnmpMetricResult[];
+    protocol?: number;
   } | undefined;
 
   if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
@@ -1215,7 +1216,7 @@ export async function processOrphanedCommandResult(
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
         await runOutsideDbContext(() =>
-          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId)
+          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId, snmpData.protocol)
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);

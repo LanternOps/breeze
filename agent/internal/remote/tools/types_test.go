@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -31,5 +34,21 @@ func TestCommandResultExitZeroIsWireVisible(t *testing.T) {
 	}
 	if ec.(float64) != 0 {
 		t.Errorf("exitCode = %v, want 0", ec)
+	}
+}
+
+func TestGetPayloadObjectSlice_WarnsOnDroppedEntries(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	got := GetPayloadObjectSlice(map[string]any{"oidSpecs": []any{nil, "bad", map[string]any{"oid": "1.3.6"}}}, "oidSpecs")
+	if len(got) != 1 || got[0]["oid"] != "1.3.6" {
+		t.Fatalf("objects = %v, want one valid object", got)
+	}
+	for _, want := range []string{"level=WARN", "dropped malformed payload object entries", "key=oidSpecs", "dropped=2"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }

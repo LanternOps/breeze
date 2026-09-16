@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -108,9 +109,11 @@ func parseSnmpPollRequest(payload map[string]any) (snmppoll.SNMPDevice, *tools.C
 func parseOIDSpecs(payload map[string]any, legacyOIDs []string) []snmppoll.OIDSpec {
 	raw := tools.GetPayloadObjectSlice(payload, "oidSpecs")
 	specs := make([]snmppoll.OIDSpec, 0, len(raw))
+	dropped := 0
 	for _, entry := range raw {
 		oid := strings.TrimSpace(tools.GetPayloadString(entry, "oid", ""))
 		if oid == "" {
+			dropped++
 			continue
 		}
 		name := tools.GetPayloadString(entry, "name", "")
@@ -127,8 +130,15 @@ func parseOIDSpecs(payload map[string]any, legacyOIDs []string) []snmppoll.OIDSp
 		}
 		specs = append(specs, snmppoll.OIDSpec{OID: oid, Name: name, Mode: mode, Cadence: cadence})
 	}
+	if dropped > 0 {
+		slog.Warn("snmp_poll: dropped malformed oidSpecs entries", "dropped", dropped)
+	}
 	if len(specs) > 0 {
 		return specs
+	}
+	if value, present := payload["oidSpecs"]; present {
+		entries, _ := value.([]any)
+		slog.Warn("snmp_poll: oidSpecs present but unusable; falling back to legacy GETs", "rawLen", len(entries), "legacyOids", legacyOIDs)
 	}
 	return snmppoll.SpecsFromOIDs(legacyOIDs)
 }

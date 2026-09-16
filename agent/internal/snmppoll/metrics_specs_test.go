@@ -2,6 +2,8 @@ package snmppoll
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,7 +24,7 @@ type fakePDUSource struct {
 	walkPDUs  map[string][]gosnmp.SnmpPDU
 	walkErrs  map[string]error
 	walkCalls []string
-	// walkDelay advances the clock the caller sees, per row, for deadline tests.
+	// onWalkRow advances the clock the caller sees, per row, for deadline tests.
 	onWalkRow func()
 }
 
@@ -36,9 +38,6 @@ func (f *fakePDUSource) GetMulti(oids []string) ([]gosnmp.SnmpPDU, error) {
 
 func (f *fakePDUSource) WalkBounded(rootOID string, fn gosnmp.WalkFunc) error {
 	f.walkCalls = append(f.walkCalls, rootOID)
-	if err, ok := f.walkErrs[rootOID]; ok && err != nil {
-		return err
-	}
 	for _, pdu := range f.walkPDUs[rootOID] {
 		if f.onWalkRow != nil {
 			f.onWalkRow()
@@ -47,7 +46,7 @@ func (f *fakePDUSource) WalkBounded(rootOID string, fn gosnmp.WalkFunc) error {
 			return err
 		}
 	}
-	return nil
+	return f.walkErrs[rootOID]
 }
 
 var stamp = time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
@@ -340,7 +339,7 @@ func TestCollectWithSource_ByteBudgetTruncates(t *testing.T) {
 }
 
 func TestCollectWithSource_UnimplementedTableBecomesNoSuchObject(t *testing.T) {
-	// gosnmp's walk loop breaks on NoSuchObject/NoSuchInstance/EndOfMibView
+	// The bounded page loop breaks on NoSuchObject/NoSuchInstance/EndOfMibView
 	// WITHOUT calling the callback, so an unimplemented table looks exactly like
 	// an empty one here. It must not be silently empty.
 	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{}}
@@ -413,5 +412,93 @@ func TestCollectWithSource_MixedSpecsIssueOneGetBatchAndOneWalkEach(t *testing.T
 	}
 	if len(metrics) != 4 {
 		t.Errorf("got %d metrics, want 2 scalars + 2 instances", len(metrics))
+	}
+}
+
+func TestCollectWithSource_WalkTransportErrorCodes(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"gosnmp timeout", errors.New("request timeout (after 1 retries)"), "timeout"},
+		{"network timeout", fmt.Errorf("read: %w", os.ErrDeadlineExceeded), "timeout"},
+		{"not increasing", errors.New("OID not increasing"), "walkFailed"},
+		{"not connected", errors.New("SNMP client is not connected"), "walkFailed"},
+		{"connection refused", errors.New("connection refused"), "walkFailed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakePDUSource{walkErrs: map[string]error{walkSpec().OID: tt.err}}
+			metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, DefaultPollLimits, stamp)
+			if err != nil || len(metrics) != 1 || metrics[0].Error != tt.want {
+				t.Fatalf("metrics = %+v, error = %v, want one %s row", metrics, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollectWithSource_DefaultsEachPollLimit(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		limits PollLimits
+	}{
+		{"rows per OID only", PollLimits{MaxRowsPerOID: 2}},
+		{"negative omitted fields", PollLimits{MaxRowsPerOID: 2, MaxRowsPerPoll: -1, MaxBytesPerPoll: -1, MaxDuration: -1}},
+		{"poll rows only", PollLimits{MaxRowsPerPoll: 2}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{walkSpec().OID: walkRows(suppliesLevel, 5)}}
+			metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, tt.limits, stamp)
+			if err != nil || len(metrics) != 3 || metrics[0].Error != "" || metrics[1].Error != "" || metrics[2].Error != ErrCodeTruncated {
+				t.Fatalf("metrics = %+v, error = %v, want two values and truncation", metrics, err)
+			}
+		})
+	}
+}
+
+func TestCollectWithSource_SNMPStatusErrorPreservesPartialRows(t *testing.T) {
+	for _, count := range []int{0, 3} {
+		t.Run(itoa(count), func(t *testing.T) {
+			src := &fakePDUSource{
+				walkPDUs: map[string][]gosnmp.SnmpPDU{walkSpec().OID: walkRows(suppliesLevel, count)},
+				walkErrs: map[string]error{walkSpec().OID: &SnmpStatusError{Status: gosnmp.NoAccess, Index: 1}},
+			}
+			metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, DefaultPollLimits, stamp)
+			if err != nil || len(metrics) != count+1 || metrics[count].Error != "snmpError" {
+				t.Fatalf("metrics = %+v, error = %v, want %d values and snmpError", metrics, err, count)
+			}
+			for _, row := range metrics[:count] {
+				if row.Error != "" || row.Value == nil {
+					t.Fatalf("lost partial value: %+v", row)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectWithSource_WallClockBudgetTruncates(t *testing.T) {
+	now := stamp
+	specs := []OIDSpec{walkSpec(), {OID: "1.3.6.1.2.1.43.11.1.1.6", Name: "description", Mode: ModeWalk}}
+	src := &fakePDUSource{
+		walkPDUs:  map[string][]gosnmp.SnmpPDU{specs[0].OID: walkRows(suppliesLevel, 50), specs[1].OID: walkRows(".1.3.6.1.2.1.43.11.1.1.6", 5)},
+		onWalkRow: func() { now = now.Add(time.Second) },
+	}
+	limits := DefaultPollLimits
+	limits.MaxDuration = 3 * time.Second
+	metrics, err := collectWithSource(src, specs, limits, stamp, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := 0
+	truncated := map[string]bool{}
+	for _, row := range metrics {
+		if row.Error == ErrCodeTruncated {
+			truncated[row.BaseOID] = true
+		} else {
+			values++
+		}
+	}
+	if values != 2 || !truncated[specs[0].OID] || !truncated[specs[1].OID] || len(src.walkCalls) != 1 {
+		t.Fatalf("values=%d, truncated=%v, walk calls=%v; want 2 values, both specs truncated, only first started", values, truncated, src.walkCalls)
 	}
 }

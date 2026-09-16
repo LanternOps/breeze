@@ -1,6 +1,9 @@
 package heartbeat
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +29,11 @@ func TestParseSnmpPollRequest_LegacyPayloadBecomesAllGets(t *testing.T) {
 	if len(device.Specs) != 2 {
 		t.Fatalf("Specs = %v, want 2 specs", device.Specs)
 	}
-	for _, spec := range device.Specs {
+	for i, spec := range device.Specs {
+		// The legacy label is the undotted OID, not a template display name.
+		if spec.Name != device.OIDs[i] {
+			t.Errorf("Specs[%d].Name = %q, want legacy OID %q", i, spec.Name, device.OIDs[i])
+		}
 		if spec.Mode != snmppoll.ModeGet {
 			t.Errorf("legacy OID %q parsed as mode %q, want %q — a pre-W02 server never asked for a walk",
 				spec.OID, spec.Mode, snmppoll.ModeGet)
@@ -65,25 +72,94 @@ func TestParseSnmpPollRequest_OidSpecsWin(t *testing.T) {
 }
 
 func TestParseSnmpPollRequest_SpecDefaultsFillGaps(t *testing.T) {
-	payload := basePayload()
-	payload["oidSpecs"] = []any{
-		map[string]any{"oid": "1.3.6.1.2.1.2.2.1.2"},                   // no name, no mode, no cadence
-		map[string]any{"oid": "1.3.6.1.2.1.1.3.0", "mode": "sideways"}, // unknown mode
-		map[string]any{"name": "no oid at all"},                        // unusable
+	for _, tc := range []struct {
+		name      string
+		raw       []any
+		firstMode string
+		firstName string
+	}{
+		{
+			name: "partial specs",
+			raw: []any{
+				map[string]any{"oid": "1.3.6.1.2.1.2.2.1.2"},
+				map[string]any{"oid": "1.3.6.1.2.1.1.3.0", "mode": "sideways"},
+				map[string]any{"name": "no oid at all"},
+			},
+			firstMode: snmppoll.ModeWalk,
+			firstName: "1.3.6.1.2.1.2.2.1.2",
+		},
+		{name: "present but empty", raw: []any{}, firstMode: snmppoll.ModeGet, firstName: "1.3.6.1.2.1.1.3.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := basePayload()
+			payload["oidSpecs"] = tc.raw
+			device, _ := parseSnmpPollRequest(payload)
+			if len(device.Specs) != 2 {
+				t.Fatalf("Specs = %+v, want 2 entries", device.Specs)
+			}
+			if device.Specs[0].Mode != tc.firstMode || device.Specs[0].Name != tc.firstName {
+				t.Errorf("spec 0 = %+v, want %s with name %s", device.Specs[0], tc.firstMode, tc.firstName)
+			}
+			if device.Specs[1].Mode != snmppoll.ModeGet {
+				t.Errorf("spec 1 = %+v, want get", device.Specs[1])
+			}
+			if device.Specs[0].Cadence != snmppoll.CadenceFast {
+				t.Errorf("missing cadence = %q, want fast", device.Specs[0].Cadence)
+			}
+		})
 	}
+}
 
+func TestParseSnmpPollRequest_UnusableSpecsWarnAndFallBack(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		raw    any
+		rawLen string
+	}{
+		{"missing oid", []any{map[string]any{"name": "x"}}, "rawLen=1"},
+		{"empty", []any{}, "rawLen=0"},
+		{"wrong array type", "invalid", "rawLen=0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(previous)
+			payload := basePayload()
+			payload["oidSpecs"] = tc.raw
+			device, result := parseSnmpPollRequest(payload)
+			if result != nil || len(device.Specs) != 2 {
+				t.Fatalf("parse = %+v, %v; want 2 legacy specs", device, result)
+			}
+			for _, spec := range device.Specs {
+				if spec.Mode != snmppoll.ModeGet {
+					t.Errorf("fallback mode = %q, want get", spec.Mode)
+				}
+			}
+			for _, want := range []string{"level=WARN", "snmp_poll: oidSpecs present but unusable; falling back to legacy GETs", tc.rawLen, "legacyOids="} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs = %q, want %q", logs.String(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseSnmpPollRequest_WarnsOnDroppedSpecs(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+	payload := basePayload()
+	payload["oidSpecs"] = []any{map[string]any{"name": "x"}, map[string]any{"oid": " "}, map[string]any{"oid": "1.3.6.1.2.1.1.3.0"}}
 	device, _ := parseSnmpPollRequest(payload)
-	if len(device.Specs) != 2 {
-		t.Fatalf("Specs = %+v, want the 2 usable entries", device.Specs)
+	if len(device.Specs) != 1 {
+		t.Fatalf("Specs = %+v, want one usable entry", device.Specs)
 	}
-	if device.Specs[0].Mode != snmppoll.ModeWalk || device.Specs[0].Name != "1.3.6.1.2.1.2.2.1.2" {
-		t.Errorf("spec 0 = %+v, want walk with the OID as its name", device.Specs[0])
-	}
-	if device.Specs[1].Mode != snmppoll.ModeGet {
-		t.Errorf("unknown mode %q should fall back to the .0 default get, got %q", "sideways", device.Specs[1].Mode)
-	}
-	if device.Specs[0].Cadence != snmppoll.CadenceFast {
-		t.Errorf("missing cadence = %q, want fast", device.Specs[0].Cadence)
+	for _, want := range []string{"level=WARN", "snmp_poll: dropped malformed oidSpecs entries", "dropped=2"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs = %q, want %q", logs.String(), want)
+		}
 	}
 }
 

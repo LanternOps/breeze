@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -813,6 +814,9 @@ func GetPayloadObjectSlice(payload map[string]any, key string) []map[string]any 
 		if obj, ok := v.(map[string]any); ok {
 			result = append(result, obj)
 		}
+	}
+	if dropped := len(slice) - len(result); dropped > 0 {
+		slog.Warn("dropped malformed payload object entries", "key", key, "dropped", dropped)
 	}
 	return result
 }

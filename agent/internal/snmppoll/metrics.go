@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"math/big"
+	"net"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -96,10 +98,7 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 		return nil, errors.New("device has no OIDs configured")
 	}
 
-	limits := device.Limits
-	if limits.MaxRowsPerOID <= 0 {
-		limits = DefaultPollLimits
-	}
+	limits := normalizePollLimits(device.Limits)
 
 	client, err := NewClient(device.ClientConfig())
 	if err != nil {
@@ -111,7 +110,12 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 }
 
 // collectWithSource is CollectMetrics with the transport and the clock supplied.
-func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp time.Time) ([]SNMPMetric, error) {
+func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp time.Time, clocks ...func() time.Time) ([]SNMPMetric, error) {
+	limits = normalizePollLimits(limits)
+	now := time.Now
+	if len(clocks) > 0 && clocks[0] != nil {
+		now = clocks[0]
+	}
 	getSpecs := make([]OIDSpec, 0, len(specs))
 	walkSpecs := make([]OIDSpec, 0, len(specs))
 	for _, spec := range specs {
@@ -142,12 +146,13 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 	budget := &walkBudget{
 		bytes:    totalMetricBytes(metrics),
 		rows:     len(metrics),
-		deadline: time.Now().Add(limits.MaxDuration),
+		deadline: now().Add(limits.MaxDuration),
+		now:      now,
 		limits:   limits,
 	}
 
 	for _, spec := range walkSpecs {
-		if budget.exhausted(time.Now()) {
+		if budget.exhausted() {
 			// Explicit, not omitted: a spec that never ran must not read as
 			// "never polled" in the OID table.
 			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
@@ -162,16 +167,20 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 			// Per-OID, not per-poll: one unimplemented or slow table must not
 			// discard the scalars and the other columns that did answer. The
 			// code set is closed, so the underlying error goes to the log.
-			slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "error", err)
-			metrics = append(metrics, errorMetric(spec, "", ErrCodeTimeout, stamp))
+			code := walkErrorCode(err)
+			var statusErr *SnmpStatusError
+			if errors.As(err, &statusErr) {
+				slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "status", statusErr.Status.String(), "error", err)
+			} else {
+				slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "error", err)
+			}
+			metrics = append(metrics, errorMetric(spec, "", code, stamp))
 		case truncated:
 			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
 		case len(rows) == 0:
-			// gosnmp's walk swallows NoSuchObject/NoSuchInstance/EndOfMibView
-			// PDUs (v1.44.0 walk.go:129-133) without calling the callback, so a
-			// table the device does not implement arrives here as zero rows and
-			// a nil error. Emitting nothing would leave the server's per-OID
-			// state stuck on never_polled forever.
+			// An empty subtree or an exception varbind ends the page loop
+			// without value rows. Protocol error statuses instead return an
+			// error above; neither outcome should look like never-polled.
 			metrics = append(metrics, errorMetric(spec, "", ErrCodeNoSuchObject, stamp))
 		}
 	}
@@ -198,13 +207,14 @@ type walkBudget struct {
 	rows     int
 	bytes    int
 	deadline time.Time
+	now      func() time.Time
 	limits   PollLimits
 }
 
-func (b *walkBudget) exhausted(now time.Time) bool {
+func (b *walkBudget) exhausted() bool {
 	return b.rows >= b.limits.MaxRowsPerPoll ||
 		b.bytes >= b.limits.MaxBytesPerPoll ||
-		!now.Before(b.deadline)
+		!b.now().Before(b.deadline)
 }
 
 // jsonOverheadPerMetric is a flat allowance for the JSON keys, quoting and
@@ -249,7 +259,7 @@ func collectWalkSpec(src pduSource, spec OIDSpec, budget *walkBudget, stamp time
 	walkErr := src.WalkBounded(spec.OID, func(pdu gosnmp.SnmpPDU) error {
 		// Checked BEFORE the row is kept, so MaxRowsPerOID = 512 yields exactly
 		// 512 rows and the 513th trips truncation.
-		if perOID >= budget.limits.MaxRowsPerOID || budget.exhausted(time.Now()) {
+		if perOID >= budget.limits.MaxRowsPerOID || budget.exhausted() {
 			truncated = true
 			return errWalkStop
 		}
@@ -532,4 +542,38 @@ func isTextSafeOctetString(value []byte) bool {
 // at.
 func hexOctets(value []byte) string {
 	return hex.EncodeToString(value)
+}
+
+func normalizePollLimits(limits PollLimits) PollLimits {
+	if limits.MaxRowsPerOID <= 0 {
+		limits.MaxRowsPerOID = DefaultPollLimits.MaxRowsPerOID
+	}
+	if limits.MaxRowsPerPoll <= 0 {
+		limits.MaxRowsPerPoll = DefaultPollLimits.MaxRowsPerPoll
+	}
+	if limits.MaxBytesPerPoll <= 0 {
+		limits.MaxBytesPerPoll = DefaultPollLimits.MaxBytesPerPoll
+	}
+	if limits.MaxDuration <= 0 {
+		limits.MaxDuration = DefaultPollLimits.MaxDuration
+	}
+	return limits
+}
+
+func walkErrorCode(err error) string {
+	var statusErr *SnmpStatusError
+	if errors.As(err, &statusErr) {
+		return ErrCodeSNMPError
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ErrCodeTimeout
+	}
+	// gosnmp v1.44 returns an untyped error after its retries are exhausted.
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if cause.Error() == "request timeout" || strings.HasPrefix(cause.Error(), "request timeout (after ") {
+			return ErrCodeTimeout
+		}
+	}
+	return ErrCodeWalkFailed
 }

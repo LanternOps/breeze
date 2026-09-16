@@ -133,9 +133,8 @@ monitoringAssetMetricsRoutes.get(
       or(inArray(baseExpr, oids), inArray(snmpMetrics.oid, oids))!,
       sql`${snmpMetrics.value} ~ '^-?[0-9]+([.][0-9]+)?$'`,
     );
-    // One lookahead series detects truncation without fetching its points.
-    // The global cap equals the per-base cap, so this LIMIT also bounds each
-    // base OID's instances; retain the explicit per-base guard below.
+    const perBaseCap = Math.max(1, Math.floor(MAX_SERIES / oids.length));
+    // Widen the bounded lookahead so a large base can leave room for siblings.
     const candidates = await db
       .selectDistinctOn([baseExpr, instanceExpr], {
         baseOid: sql<string>`${baseExpr}`,
@@ -144,18 +143,23 @@ monitoringAssetMetricsRoutes.get(
       .from(snmpMetrics)
       .where(metricFilter)
       .orderBy(baseExpr, instanceExpr)
-      .limit(MAX_SERIES + 1);
+      .limit(MAX_SERIES * oids.length + 1);
     const selected: typeof candidates = [];
     const instanceCounts = new Map<string, number>();
     let truncatedSeries = false;
     for (const candidate of candidates) {
       const count = instanceCounts.get(candidate.baseOid) ?? 0;
-      if (selected.length >= MAX_SERIES || count >= MAX_INSTANCES_PER_OID) {
+      if (selected.length >= MAX_SERIES || count >= perBaseCap) {
         truncatedSeries = true;
         continue;
       }
       selected.push(candidate);
       instanceCounts.set(candidate.baseOid, count + 1);
+    }
+    if (truncatedSeries) {
+      console.warn('[MonitoringAssetMetrics] truncated series', {
+        assetId, seriesCount: selected.length, cap: perBaseCap,
+      });
     }
 
     const rows = selected.length === 0 ? [] : await db

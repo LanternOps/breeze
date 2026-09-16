@@ -89,21 +89,22 @@ const dialect = new PgDialect();
 const DEVICE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const ORG_ID = '11111111-1111-1111-1111-111111111111';
 
-/** A printer template: two scalars, two table columns, one of them slow. */
+/** A printer template: two scalars, two table columns, plus a repeated OID. */
 const TEMPLATE_OIDS = [
   { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', type: 'timeticks', description: 'Uptime' },
   { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', type: 'string', description: 'Name' },
   { oid: '1.3.6.1.2.1.43.11.1.1.9', name: 'prtMarkerSuppliesLevel', type: 'table', description: 'Level' },
   { oid: '1.3.6.1.2.1.43.11.1.1.6', name: 'prtMarkerSuppliesDescription', type: 'table', description: 'Supply', cadence: 'slow' },
 ];
+TEMPLATE_OIDS.push({ ...TEMPLATE_OIDS[0]! });
 const EXPECTED_OIDS = TEMPLATE_OIDS.map((o) => o.oid);
 
-function deviceRow(pollSeq: number) {
+function deviceRow(pollSeq: number, consecutiveFailures = 0) {
   return {
     id: DEVICE_ID, orgId: ORG_ID, assetId: null, templateId: 'tpl-1',
     ipAddress: '10.0.0.1', port: 161, snmpVersion: 'v2c',
     community: 'public', username: null, authProtocol: null, authPassword: null,
-    privProtocol: null, privPassword: null, pollSeq,
+    privProtocol: null, privPassword: null, pollSeq, consecutiveFailures,
   };
 }
 
@@ -153,7 +154,7 @@ describe('legacy `oids` is frozen', () => {
 });
 
 describe('`oidSpecs` and `limits`', () => {
-  it('carries a spec per template entry on a slow poll, walking the columns', async () => {
+  it('carries each OID once on a slow poll, walking the columns', async () => {
     expect((await dispatchedPayload(0)).oidSpecs).toEqual([
       { oid: '1.3.6.1.2.1.1.3.0', name: 'sysUpTime', mode: 'get', cadence: 'fast' },
       { oid: '1.3.6.1.2.1.1.5.0', name: 'sysName', mode: 'get', cadence: 'fast' },
@@ -166,6 +167,16 @@ describe('`oidSpecs` and `limits`', () => {
     const payload = await dispatchedPayload(5);
     expect((payload.oidSpecs as Array<{ name: string }>).map((s) => s.name))
       .toEqual(['sysUpTime', 'sysName', 'prtMarkerSuppliesLevel']);
+    expect(payload.oids).toEqual(EXPECTED_OIDS);
+  });
+
+  it('includes slow specs on a fast poll after a failed dispatch', async () => {
+    selectResults = [[deviceRow(5, 1)], [{ oids: TEMPLATE_OIDS }], [{ agentId: 'agent-1' }]];
+    await processPollDevice({ type: 'poll-device', deviceId: DEVICE_ID, orgId: ORG_ID });
+    const payload = agentRelayMock.dispatchCommandToAgent.mock.calls.at(-1)![1].payload;
+    expect(payload.oidSpecs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'prtMarkerSuppliesDescription', cadence: 'slow' }),
+    ]));
     expect(payload.oids).toEqual(EXPECTED_OIDS);
   });
 
