@@ -108,3 +108,13 @@ describe('DevicesPage header ownership', () => {
     expect(screen.getByTestId('lifecycle-refresh')).toBeInTheDocument();
   });
 });
+
+describe('DevicesPage tab-row action', () => {
+  it('keeps Export CSV on the tab row (not an orphan toolbar) and only on the register tab', () => {
+    render(<DevicesPage devices={[laptop]} error={null} lifecycle={lifecycle} />);
+    const tabs = screen.getByTestId('devices-tabs');
+    expect(tabs).toContainElement(screen.getByTestId('portal-devices-export'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Hardware lifecycle' }));
+    expect(screen.queryByTestId('portal-devices-export')).toBeNull();
+  });
+});

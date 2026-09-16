@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { defaultBranding, loadPortalBranding, loadPortalBrandingWithStatus } from './server';
+import { defaultBranding, loadPortalBranding, loadPortalBrandingWithStatus, loadPortalProfile } from './server';
 
 // Regression guard for the fix-round-1 finding on Task 3.4: loadPortalBranding
 // is awaited by the middleware on every '/' visit and auth-only-path redirect
@@ -172,5 +172,45 @@ describe('loadPortalBrandingWithStatus — per-request memoization', () => {
     }));
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('loadPortalProfile — header account context', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns null (never throws) without a session cookie and makes no request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const profile = await loadPortalProfile(new Request('https://portal.example/devices', {
+      headers: { host: 'portal.example' }
+    }));
+    expect(profile).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the signed-in customer and memoizes per request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ user: { id: 'u1', organizationName: 'Acme Co', name: 'Jane Doe', email: 'jane@acme.test' } }),
+      { status: 200 }
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const request = new Request('https://portal.example/devices', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    });
+    const first = await loadPortalProfile(request);
+    const second = await loadPortalProfile(request);
+    expect(first?.organizationName).toBe('Acme Co');
+    expect(second).toBe(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null on a failed load instead of breaking the page', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 500 })));
+    const profile = await loadPortalProfile(new Request('https://portal.example/devices', {
+      headers: { host: 'portal.example', cookie: 'breeze_portal_session=test-session-token' }
+    }));
+    expect(profile).toBeNull();
   });
 });

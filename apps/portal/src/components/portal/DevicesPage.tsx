@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { Device } from '@/lib/api';
+import { publicApiPath, type Device } from '@/lib/api';
+import { Download } from 'lucide-react';
 import type { HardwareLifecycleSummary } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { DeviceList } from './DeviceList';
-import { PageHeader } from './ui';
+import { BTN_SECONDARY, PageHeader } from './ui';
 import { LifecyclePage } from '../lifecycle/LifecyclePage';
 
 type Tab = 'devices' | 'lifecycle';
@@ -65,12 +66,14 @@ export function DevicesPage({
       {/* One title for the page; the tabs are its sub-navigation and each
           panel renders embedded (no H1 of its own). */}
       <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
+      {/* Tabs on the left, the open tab's action on the right, one rule under
+          both — the action belongs to the row that names the view, not to a
+          toolbar of its own. */}
       <div
-        role="tablist"
-        aria-label="Device views"
         data-testid="devices-tabs"
-        className="-mt-2 mb-7 flex gap-6 border-b border-border"
+        className="-mt-2 mb-7 flex items-end justify-between gap-4 border-b border-border"
       >
+        <div role="tablist" aria-label="Device views" className="flex gap-6">
         {tabs.map((t) => {
           const selected = t.key === tab;
           return (
@@ -97,6 +100,17 @@ export function DevicesPage({
             </button>
           );
         })}
+        </div>
+        {tab === 'devices' && (
+          <a
+            href={publicApiPath('/portal/devices/export.csv')}
+            data-testid="portal-devices-export"
+            className={cn(BTN_SECONDARY, 'mb-2')}
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            Export CSV
+          </a>
+        )}
       </div>
       {tab === 'devices' ? (
         // Keyed so a tab switch remounts the register and its hash-driven

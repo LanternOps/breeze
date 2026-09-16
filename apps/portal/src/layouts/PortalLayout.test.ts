@@ -44,12 +44,24 @@ describe('portal layout column alignment', () => {
 
   it('caps the header to the same column as main so the actions sit above the content, not the viewport edge', () => {
     const header = src.match(/<header class="([^"]+)"/)?.[1] ?? '';
-    expect(header).toContain('max-w-5xl');
+    expect(header).toContain('max-w-6xl');
   });
 
   it('left-aligns the content column against the sidebar instead of centering it in the leftover space', () => {
     const main = src.match(/<main id="portal-main" class="([^"]+)"/)?.[1] ?? '';
-    expect(main).toContain('max-w-5xl');
+    expect(main).toContain('max-w-6xl');
     expect(main).not.toContain('mx-auto');
+  });
+});
+
+describe('portal layout header account context', () => {
+  const src = readFileSync(new URL('./PortalLayout.astro', import.meta.url), 'utf8');
+
+  it('gives the desktop header a left side: who is signed in, for which account', () => {
+    // Below lg the brand sits there; at lg+ the rail carries the brand and the
+    // header used to be an 80px band with nothing but the actions at far right.
+    expect(src).toContain('loadPortalProfile(Astro.request)');
+    expect(src).toContain('data-testid="portal-account-context"');
+    expect(src).toMatch(/profile\.organizationName/);
   });
 });

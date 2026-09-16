@@ -17,8 +17,8 @@ import {
 interface DeviceListProps {
   devices: Device[];
   error?: string | null;
-  /** Rendered as a tab panel under DevicesPage's own header: no H1 of its
-   *  own, the Export action sits in a toolbar row above the register. */
+  /** Rendered as a tab panel under DevicesPage's own header: no H1 and no
+   *  Export action of its own — DevicesPage puts Export on the tab row. */
   embedded?: boolean;
 }
 
@@ -218,9 +218,7 @@ export function DeviceList({ devices, error, embedded = false }: DeviceListProps
 
   return (
     <div>
-      {embedded ? (
-        <div className="mb-4 flex justify-end">{exportAction}</div>
-      ) : (
+      {!embedded && (
         <PageHeader
           title="Devices"
           lede="The machines your IT team looks after for you."

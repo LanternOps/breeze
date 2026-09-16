@@ -1,7 +1,7 @@
 ---
 import '../styles/globals.css';
 import { ClientRouter } from 'astro:transitions';
-import { loadPortalBranding } from '../lib/server';
+import { loadPortalBranding, loadPortalProfile } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
@@ -26,6 +26,7 @@ const { title, docAccent } = Astro.props;
 // active-nav comparison below stays base-agnostic.
 const pathname = stripBase(Astro.url.pathname);
 const branding = await loadPortalBranding(Astro.request);
+const profile = await loadPortalProfile(Astro.request);
 // #2345 — Tickets is hidden when the org's branding has enableTickets: false.
 // Fail-open when the flag is absent (shared-domain portals get no branding row);
 // the API's 403 gate on /portal/tickets/* is the real enforcement.
@@ -123,7 +124,7 @@ const isActive = (href: string) => {
             rail): the actions sit above the content's right edge, not the
             viewport's, so a wide screen reads as page + margin rather than
             three islands. */}
-        <header class="flex h-16 w-full max-w-5xl items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
+        <header class="flex h-16 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:h-20 sm:px-8">
           <div class="flex min-w-0 items-center gap-3">
             <details class="relative shrink-0 lg:hidden">
               <summary class="cursor-pointer list-none rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent">
@@ -165,6 +166,18 @@ const isActive = (href: string) => {
                 {branding.name || 'Customer Portal'}
               </span>
             )}
+            {/* At lg+ the rail carries the brand, so the header's left side names
+                the account instead: the customer's firm, and who is signed in.
+                Without it the desktop header was an 80px band with nothing but
+                the actions at far right. */}
+            {profile && (
+              <div data-testid="portal-account-context" class="hidden min-w-0 lg:block">
+                <p class="truncate text-sm font-semibold text-foreground">{profile.organizationName}</p>
+                <p class="truncate text-xs text-muted-foreground">
+                  Signed in as {profile.name || profile.email}
+                </p>
+              </div>
+            )}
           </div>
 
           <div class="flex items-center gap-1">
@@ -197,7 +210,7 @@ const isActive = (href: string) => {
           </div>
         </header>
 
-        <main id="portal-main" class="settle-in w-full max-w-5xl flex-1 px-5 pb-16 pt-2 sm:px-8">
+        <main id="portal-main" class="settle-in w-full max-w-6xl flex-1 px-5 pb-16 pt-2 sm:px-8">
           <slot />
 
           {/* The support contact used to live only in the desktop sidebar, and
