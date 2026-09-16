@@ -146,6 +146,14 @@ export function toolSourcesEnabled(): boolean {
   return envFlag('TOOL_SOURCES_ENABLED', false);
 }
 
+// Topology rollout deployment kill switch. Partner and organization flags are
+// still resolved for ordinary rollouts; setting this optional switch forces
+// every effective topology feature off. Read at call time so rollback does not
+// require a module reload and tests can change it per case.
+export function topologyGloballyDisabled(): boolean {
+  return envFlag('TOPOLOGY_DISABLED', false);
+}
+
 // Task A7. Sub-flag of toolSourcesEnabled(): whether a tool source's outbound
 // fetch may target a private/loopback/link-local address. Default OFF, and
 // refused outright on the hosted platform (validate.ts superRefine) — a
