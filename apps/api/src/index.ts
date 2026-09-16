@@ -102,6 +102,7 @@ import { analyticsRoutes } from './routes/analytics';
 import { fleetFindingsRoutes } from './routes/fleetFindings';
 import { discoveryRoutes } from './routes/discovery';
 import { discoveryAssetProbeRoutes } from './routes/discoveryAssetProbe';
+import { monitoringAssetMetricsRoutes } from './routes/monitoringAssetMetrics';
 import { networkBaselineRoutes } from './routes/networkBaselines';
 import { networkChangeRoutes } from './routes/networkChanges';
 import { portalRoutes } from './routes/portal';
@@ -978,6 +979,9 @@ api.route('/user-risk', userRiskRoutes);
 api.route('/snmp', snmpRoutes);
 api.route('/monitors', monitorRoutes);
 api.route('/monitoring', monitoringRoutes);
+// Metric history in its own module (routes/monitoring.ts is already 1,071
+// lines). `/assets/:id` cannot shadow `/assets/:id/metrics`.
+api.route('/monitoring', monitoringAssetMetricsRoutes);
 api.route('/audit-baselines', auditBaselineRoutes);
 api.route('/software', softwareRoutes);
 api.route('/software-policies', softwarePoliciesRoutes);

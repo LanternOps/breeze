@@ -10,6 +10,16 @@ import {
   topologyManualNodes,
 } from '../db/schema';
 
+// W01 (spec §4.4): topology node `status` now comes from the reachability
+// service. The derivation is pinned by services/assetReachability.test.ts; this
+// suite owns the WIRING, so the batched loader is mocked and driven per-test
+// rather than teaching this file's db chain rig three more query shapes.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({
@@ -118,6 +128,7 @@ describe('GET /discovery/topology — manual nodes + edge provenance (#1728 phas
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     app = new Hono();
     app.route('/discovery', discoveryRoutes);
   });
@@ -256,6 +267,44 @@ describe('GET /discovery/topology — manual nodes + edge provenance (#1728 phas
     expect(body.nodes).toContainEqual(
       expect.objectContaining({ id: 'asset-a', kind: 'discovered' }),
     );
+    // W01 (spec §4.4) — with no observation inside any freshness window the
+    // node is 'unknown', NOT 'online'. The old expression read `is_online`
+    // (true on this fixture) and would have said online off a stale sweep.
+    expect(body.nodes.find((n: { id: string }) => n.id === 'asset-a').status).toBe('unknown');
+  });
+
+  it('derives node status from reachability, not is_online (W01, spec §4.4)', async () => {
+    const assetRow = {
+      id: 'asset-a', orgId: 'org-1', siteId: 'site-1', assetType: 'switch',
+      label: 'Core Switch', hostname: 'sw-core', ipAddress: '10.0.0.1',
+      macAddress: 'aa:bb:cc:dd:ee:ff', isOnline: false, approvalStatus: 'approved',
+    };
+    // is_online is FALSE, but a network check answered 30 s ago.
+    reachabilityByAsset.set('asset-a', {
+      state: 'responding', source: 'network_check', observedAt: '2026-09-16T11:59:30.000Z',
+      lastKnown: null, detail: {},
+    });
+
+    const { discoveredAssets } = await import('../db/schema');
+    vi.mocked(db.select).mockImplementation(((...args: any[]) => {
+      if (args.length > 0) {
+        return { from: vi.fn(() => ({ where: vi.fn(() => Promise.resolve([])) })) } as any;
+      }
+      return {
+        from: vi.fn((table: any) => ({
+          where: vi.fn(() => Promise.resolve(table === discoveredAssets ? [assetRow] : [])),
+        })),
+      } as any;
+    }) as any);
+
+    const res = await app.request('/discovery/topology', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.nodes.find((n: { id: string }) => n.id === 'asset-a').status).toBe('online');
   });
 
   it('omits denied and null-site topology records deterministically', async () => {

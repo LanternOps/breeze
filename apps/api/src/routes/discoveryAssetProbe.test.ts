@@ -278,8 +278,8 @@ describe('POST /discovery/assets/:id/probe', () => {
     expect(res.status).toBe(200);
 
     expect(capturedUpdates).toHaveLength(1);
-    expect(capturedUpdates[0].values).toMatchObject({ lastProbeStatus: 'pending' });
-    const stampedRef = capturedUpdates[0].values.lastProbeRef;
+    expect(capturedUpdates[0]!.values).toMatchObject({ lastProbeStatus: 'pending' });
+    const stampedRef = capturedUpdates[0]!.values.lastProbeRef;
     expect(typeof stampedRef).toBe('string');
     // Real buildProbeCommandId/parseProbeCommandId: the ref round-trips to the
     // asset id, proving it's a meaningful correlation key, not just a string.
