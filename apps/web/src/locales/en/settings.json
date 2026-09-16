@@ -1544,6 +1544,7 @@
       "actMode": {
         "label": "Act mode",
         "hint": "When armed, this schedule may apply certain fixes automatically instead of waiting for approval.",
+        "deploymentDisabledHint": "Act mode is unavailable because BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED is off for this deployment. Contact your administrator to enable it.",
         "disabledHint": "Arming act mode requires full partner access to all organizations.",
         "scopeNote": "Unattended fixes are limited to restarting a stopped service, and only on devices whose organization has already been granted manage_services:restart. Everything else still waits for approval.",
         "disableForOrg": "Disable act mode for this organization",

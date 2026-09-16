@@ -57,7 +57,7 @@ beforeEach(() => {
   // The store is a module singleton with a `loaded` short-circuit, so a
   // previous test's answer would otherwise decide this one's.
   useFeaturesStore.setState({
-    features: { billing: false, support: false, aiOperatorTasks: false, toolSources: false },
+    features: { billing: false, support: false, aiOperatorTasks: false, aiAgentsSweepAct: false, toolSources: false },
     loaded: false,
   });
   localStorage.clear();

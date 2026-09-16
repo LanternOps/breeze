@@ -1544,6 +1544,7 @@
       "actMode": {
         "label": "Modalità azione",
         "hint": "Se attivata, questa pianificazione può applicare automaticamente alcune correzioni invece di attendere l'approvazione.",
+        "deploymentDisabledHint": "La modalità azione non è disponibile perché BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED è disattivato per questa installazione. Contatta il tuo amministratore per attivarlo.",
         "disabledHint": "Per attivare la modalità azione è necessario l'accesso completo del partner a tutte le organizzazioni.",
         "scopeNote": "Le correzioni non supervisionate si limitano al riavvio di un servizio arrestato, e solo sui dispositivi la cui organizzazione ha già ricevuto l'autorizzazione manage_services:restart. Tutto il resto attende ancora l'approvazione.",
         "disableForOrg": "Disattiva la modalità azione per questa organizzazione",

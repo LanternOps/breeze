@@ -61,6 +61,7 @@ import {
   type AiSweepKind,
 } from '@breeze/shared';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useFeaturesStore } from '../../stores/featuresStore';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { EmptyState } from '../shared/EmptyState';
 import { handleActionError, runAction } from '@/lib/runAction';
@@ -136,6 +137,7 @@ const SCHEDULE_ERROR_COPY: Record<string, ((t: (key: string) => string) => strin
   // structurally incapable of authoring `actMode: true` — but mapped for the
   // same reason `override_exists` is: a concurrent second tab, or a future
   // API change, must not toast the raw machine token.
+  sweep_act_mode_disabled: (t) => t('aiAgentsPage.schedules.actMode.deploymentDisabledHint'),
   act_mode_org_cannot_arm: (t) => t('aiAgentsPage.schedules.errors.actModeOrgCannotArm'),
 };
 
@@ -376,7 +378,13 @@ export default function AiAgentSchedulesSection({
   // Absent means capable (a session persisted before the field existed),
   // matching every other reader of it; the server enforces regardless.
   const canManagePartnerWide = useAuthStore((s) => s.user?.canManagePartnerWide) !== false;
-  const canArmActMode = canManageBaselines && canManagePartnerWide;
+  const sweepActEnabled = useFeaturesStore((s) => s.features.aiAgentsSweepAct);
+  const loadFeatures = useFeaturesStore((s) => s.load);
+  useEffect(() => { void loadFeatures(); }, [loadFeatures]);
+  const canArmActMode = canManageBaselines && canManagePartnerWide && sweepActEnabled;
+  const actModeDisabledHint = t(sweepActEnabled
+    ? 'aiAgentsPage.schedules.actMode.disabledHint'
+    : 'aiAgentsPage.schedules.actMode.deploymentDisabledHint');
   // See `SCHEDULE_KINDS_FOR_AGENT_KIND`'s docstring — a real lookup keyed by
   // the agent kind, defaulting to the sweep/narrative pair.
   const availableScheduleKinds = scheduleKindsFor(agentKind);
@@ -620,14 +628,14 @@ export default function AiAgentSchedulesSection({
               enabled: draft.enabled,
               // #4442 W04 — always sent, the same PUT-style convention
               // `enabled` follows: the current arm state, not a diff.
-              actMode: draft.actMode,
+              actMode: sweepActEnabled && draft.actMode,
             }
           : {
               cron: draft.cron.trim(),
               timezone: draft.timezone,
               ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
               enabled: draft.enabled,
-              actMode: draft.actMode,
+              actMode: sweepActEnabled && draft.actMode,
             }
         : draft.id === null
           ? {
@@ -939,21 +947,21 @@ export default function AiAgentSchedulesSection({
             <button
               type="button"
               role="switch"
-              aria-checked={drafted.actMode}
+              aria-checked={sweepActEnabled && drafted.actMode}
               aria-labelledby={actModeLabelId}
               aria-describedby={canArmActMode ? undefined : actModeDisabledHintId}
               disabled={!canArmActMode}
-              title={canArmActMode ? undefined : t('aiAgentsPage.schedules.actMode.disabledHint')}
+              title={canArmActMode ? undefined : actModeDisabledHint}
               onClick={() => editDraft({ ...drafted, actMode: !drafted.actMode })}
               data-testid="ai-agent-schedule-act-mode"
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                drafted.actMode ? 'bg-amber-500/80' : 'bg-muted'
+                sweepActEnabled && drafted.actMode ? 'bg-amber-500/80' : 'bg-muted'
               }`}
             >
               <span
                 aria-hidden="true"
                 className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-                  drafted.actMode ? 'translate-x-6' : 'translate-x-1'
+                  sweepActEnabled && drafted.actMode ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>
@@ -994,14 +1002,14 @@ export default function AiAgentSchedulesSection({
             id={actModeDisabledHintId}
             data-testid="ai-agent-schedule-act-mode-disabled-hint"
           >
-            {t('aiAgentsPage.schedules.actMode.disabledHint')}
+            {actModeDisabledHint}
           </p>
         )}
         {/* Sweeps v1 covers exactly one unattended operation — named here
             every time arming is live, so an operator who arms it expecting
             broader remediation (vulnerability patching, disk cleanup, …)
             cannot miss the actual scope. */}
-        {(drafted.mode === 'baseline' ? drafted.actMode : drafted.baselineActMode && !drafted.actModeDisabled) && (
+        {sweepActEnabled && (drafted.mode === 'baseline' ? drafted.actMode : drafted.baselineActMode && !drafted.actModeDisabled) && (
           <p
             className="mt-1 text-xs text-amber-700 dark:text-amber-400"
             data-testid="ai-agent-schedule-act-mode-scope-note"
