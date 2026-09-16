@@ -70,7 +70,7 @@ export const graphQuerySchema = z.object({
   focusNodeId: canonicalIdSchema.optional(),
   hops: z.coerce.number().int().min(0).max(2).default(1),
   includeHealth: queryBooleanSchema.default(false),
-  limit: z.coerce.number().int().min(1).max(500).default(500),
+  limit: z.coerce.number().int().min(1).max(1_000).default(500),
 }).strict();
 
 const evidenceSummarySchema = z.object({
@@ -93,7 +93,15 @@ const healthSummarySchema = z.object({
   resultId: canonicalIdSchema.nullable(),
   reasons: z.array(healthReasonSchema).max(100),
   freshness: freshnessSchema,
-}).strict();
+}).strict().superRefine((health, ctx) => {
+  if ((health.status === 'unknown' || health.freshness === 'unknown') && health.reasons.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['reasons'],
+      message: 'Unknown health status or freshness requires at least one reason',
+    });
+  }
+});
 
 const nodeBindingSchema = z.object({
   id: canonicalIdSchema,
@@ -224,6 +232,19 @@ const coverageReasonSchema = z.object({
   message: z.string().min(1).max(500),
 }).strict();
 
+const graphCoverageSchema = z.object({
+  state: z.enum(['complete', 'limited', 'unknown']),
+  reasons: z.array(coverageReasonSchema).max(100),
+}).strict().superRefine((coverage, ctx) => {
+  if (coverage.state !== 'complete' && coverage.reasons.length === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['reasons'],
+      message: 'Limited or unknown graph coverage requires at least one reason',
+    });
+  }
+});
+
 export const graphResponseSchema = z.object({
   schemaVersion: z.literal(1),
   siteId: canonicalIdSchema,
@@ -246,10 +267,7 @@ export const graphResponseSchema = z.object({
     positions: z.array(positionSchema).max(1_000),
   }).strict(),
   counts: graphCountsSchema,
-  coverage: z.object({
-    state: z.enum(['complete', 'limited', 'unknown']),
-    reasons: z.array(coverageReasonSchema).max(100),
-  }).strict(),
+  coverage: graphCoverageSchema,
   frontier: z.array(z.object({
     token: boundedTokenSchema,
     label: boundedLabelSchema,

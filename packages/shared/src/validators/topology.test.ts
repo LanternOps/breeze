@@ -188,10 +188,14 @@ describe('graphQuerySchema', () => {
     })).toEqual({ view: 'logical', focusNodeId: NODE_ID, hops: 2, includeHealth: true, limit: 1 });
   });
 
-  it('rejects malformed IDs, out-of-range hops and graph limits', () => {
+  it('accepts the maximum graph limit and rejects values above it', () => {
+    expect(graphQuerySchema.parse({ limit: 1000 }).limit).toBe(1000);
+    expect(graphQuerySchema.safeParse({ limit: 1001 }).success).toBe(false);
+  });
+
+  it('rejects malformed IDs and out-of-range hops', () => {
     expect(graphQuerySchema.safeParse({ focusNodeId: PRESENTATION_ID }).success).toBe(false);
     expect(graphQuerySchema.safeParse({ hops: 3 }).success).toBe(false);
-    expect(graphQuerySchema.safeParse({ limit: 501 }).success).toBe(false);
   });
 
   it('rejects unknown query keys instead of stripping them', () => {
@@ -290,6 +294,41 @@ describe('graphResponseSchema', () => {
     expect(graphResponseSchema.safeParse({
       ...graphResponse, counts: { ...graphResponse.counts, totalNodes: '4' },
     }).success).toBe(false);
+  });
+
+  it('requires an explanation when health status or freshness is unknown', () => {
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse,
+      nodes: [{ ...node, health: { ...health, status: 'unknown', reasons: [] } }],
+    }).success).toBe(false);
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse,
+      nodes: [{ ...node, health: { ...health, freshness: 'unknown', reasons: [] } }],
+    }).success).toBe(false);
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse,
+      nodes: [{
+        ...node,
+        health: {
+          ...health,
+          status: 'unknown',
+          freshness: 'unknown',
+          reasons: [{ code: 'not_evaluated', message: 'No health result has been evaluated' }],
+        },
+      }],
+    }).success).toBe(true);
+  });
+
+  it('requires an explanation for limited or unknown graph coverage', () => {
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse, coverage: { state: 'limited', reasons: [] },
+    }).success).toBe(false);
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse, coverage: { state: 'unknown', reasons: [] },
+    }).success).toBe(false);
+    expect(graphResponseSchema.safeParse({
+      ...graphResponse, coverage: { state: 'complete', reasons: [] },
+    }).success).toBe(true);
   });
 
   it('enforces the 1,000-node and 2,000-relationship response bounds', () => {

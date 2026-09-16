@@ -81,7 +81,10 @@ export function buildTopologyGraphNode(overrides: Partial<GraphNode> = {}): Grap
       scope: 'node',
       originNodeId: TOPOLOGY_FIXTURE_IDS.nodeA,
       resultId: TOPOLOGY_FIXTURE_IDS.healthResultA,
-      reasons: [],
+      reasons: [{
+        code: 'not_evaluated',
+        message: 'No health result has been evaluated for this fixture',
+      }],
       freshness: 'unknown',
     },
     availableActions: [],
