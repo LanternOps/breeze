@@ -46,6 +46,8 @@ interface MappingProposal {
 }
 
 interface CuratedMapping {
+  confidence: MappingConfidence;
+  proposedRemoteName: string | null;
   breezeEntityType: MappingEntityType;
   breezeEntityId: string;
   remoteEntityType: "Customer" | "Item";
@@ -213,17 +215,8 @@ export default function QuickbooksMappingWorkbench({
                   linkStatus: mapping.linkStatus,
                   syncStatus: mapping.syncStatus,
                   proposedRemoteId: mapping.remoteEntityId,
-                  // The mapping payload carries no display name. Keep the one
-                  // we already have when the id is unchanged; otherwise drop it
-                  // so the picker labels the option with the id rather than
-                  // another record's name.
-                  proposedRemoteName:
-                    mapping.remoteEntityId && mapping.remoteEntityId === p.proposedRemoteId
-                      ? p.proposedRemoteName
-                      : null,
-                  // A persisted remote id IS a link, not a guess — the same
-                  // rule the API applies in confidenceForMapping().
-                  confidence: mapping.remoteEntityId ? "existing_link" : "none",
+                  proposedRemoteName: mapping.proposedRemoteName,
+                  confidence: mapping.confidence,
                   lastError: mapping.lastError,
                 }
               : p,

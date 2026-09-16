@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Capture queue.add calls without opening a socket, mirroring invoiceWorker.test.ts.
-const { queueAddMock } = vi.hoisted(() => ({ queueAddMock: vi.fn() }));
+const { queueAddMock, queueGetJobMock, selectWhereMock } = vi.hoisted(() => ({ queueAddMock: vi.fn(), queueGetJobMock: vi.fn(), selectWhereMock: vi.fn() }));
 vi.mock('bullmq', () => ({
-  Queue: class { add = queueAddMock; },
+  Queue: class { add = queueAddMock; getJob = queueGetJobMock; },
   Worker: class {},
   Job: class {},
 }));
@@ -23,7 +23,7 @@ const { runOutsideDbContextMock, withSystemDbAccessContextMock } = vi.hoisted(()
   withSystemDbAccessContextMock: vi.fn((fn: () => unknown) => fn()),
 }));
 vi.mock('../db', () => ({
-  db: {},
+  db: { select: () => ({ from: () => ({ where: selectWhereMock }) }) },
   runOutsideDbContext: runOutsideDbContextMock,
   withSystemDbAccessContext: withSystemDbAccessContextMock,
 }));
@@ -464,5 +464,107 @@ describe('payment jobs', () => {
     queueAddMock.mockRejectedValueOnce(new Error('redis down'));
     await expect(enqueueAccountingPaymentPush(MAPPING_ID, PARTNER_ID)).resolves.toBe(false);
     expect(captureExceptionMock).toHaveBeenCalled();
+  });
+});
+
+const { syncMappingMock } = vi.hoisted(() => ({ syncMappingMock: vi.fn() }));
+vi.mock('../services/accounting/accountingMappingService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/accounting/accountingMappingService')>();
+  return { ...actual, syncMappedEntity: syncMappingMock };
+});
+import { AccountingMappingError, type AccountingMappingErrorCode } from '../services/accounting/accountingMappingService';
+import { enqueueAccountingMappingSync, processMappingSweep } from './accountingSyncWorker';
+import { PgDialect } from 'drizzle-orm/pg-core';
+
+const mappingJob = { type: 'sync-mapping' as const, breezeEntityType: 'org' as const, breezeEntityId: INV_ID, partnerId: PARTNER_ID };
+describe('mapping jobs and recovery sweep', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queueAddMock.mockResolvedValue({ id: 'job' });
+    queueGetJobMock.mockResolvedValue(undefined);
+    syncMappingMock.mockResolvedValue({});
+    getConnectionMock.mockResolvedValue(connectionRow({ pushMode: 'manual' }));
+  });
+  it('syncs mappings outside the DB context with a system runner even in manual mode', async () => {
+    await processAccountingSyncJob(mappingJob);
+    expect(syncMappingMock).toHaveBeenCalledWith({ partnerId: PARTNER_ID, provider: 'quickbooks', breezeEntityType: 'org', breezeEntityId: INV_ID }, expect.any(Function));
+    expect(runOutsideDbContextMock).toHaveBeenCalled();
+    const runner = syncMappingMock.mock.calls[0]![1];
+    await runner(async () => undefined);
+    expect(withSystemDbAccessContextMock).toHaveBeenCalledWith(expect.any(Function), 'accountingSync.sync-mapping');
+  });
+  it.each<AccountingMappingErrorCode>(['currency_mismatch', 'income_account_required', 'item_price_required', 'mapping_not_ready', 'mapping_conflict', 'entity_not_found', 'not_connected', 'reauth_required'])('does not retry terminal %s', async code => {
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError(code, 409, 'refused'));
+    await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+  it('does not retry a remote write whose local persistence failed', async () => {
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('record_failed', 502, 'remote write landed'));
+    await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+  it('rethrows provider errors for the existing retry policy', async () => {
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('quickbooks_error', 502, 'retry'));
+    await expect(processAccountingSyncJob(mappingJob)).rejects.toThrow('retry');
+  });
+  it('retries when an explicit client sync holds the mapping lease', async () => {
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('sync_in_progress', 409, 'lease busy'));
+    await expect(processAccountingSyncJob(mappingJob)).rejects.toThrow('lease busy');
+  });
+  it('rethrows unexpected failures so BullMQ retries', async () => {
+    syncMappingMock.mockRejectedValueOnce(new Error('lock busy'));
+    await expect(processAccountingSyncJob(mappingJob)).rejects.toThrow('lock busy');
+  });
+  it('lets the coordinator handle a disconnected mapping without suppressing its refusal', async () => {
+    getConnectionMock.mockResolvedValueOnce(null);
+    syncMappingMock.mockRejectedValueOnce(new AccountingMappingError('not_connected', 404, 'reconnect'));
+    await expect(processAccountingSyncJob(mappingJob)).resolves.toBeUndefined();
+    expect(syncMappingMock).toHaveBeenCalledOnce();
+    expect(captureExceptionMock).toHaveBeenCalled();
+  });
+  it('enqueues with a tenant-qualified stable ID and queue retry policy', async () => {
+    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID)).resolves.toBe(true);
+    expect(queueAddMock).toHaveBeenCalledWith('sync-mapping', mappingJob, { jobId: `accounting-mapping-${PARTNER_ID}-org-${INV_ID}`, attempts: 5, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: true, removeOnFail: true });
+  });
+  it('reports enqueue outages so the sweep can recover', async () => {
+    queueAddMock.mockRejectedValueOnce(new Error('redis down'));
+    await expect(enqueueAccountingMappingSync('org', INV_ID, PARTNER_ID)).resolves.toBe(false);
+  });
+  it('sweeps only stale pending decisions and skips jobs already in flight', async () => {
+    const now = new Date('2026-09-16T12:00:00Z');
+    selectWhereMock.mockResolvedValueOnce([mappingJob, { ...mappingJob, breezeEntityId: MAPPING_ID }]);
+    queueGetJobMock.mockResolvedValueOnce({ getState: async () => 'active' });
+    await expect(processMappingSweep(now)).resolves.toEqual({ enqueued: 1, failed: 0 });
+    expect(queueAddMock).toHaveBeenCalledTimes(1);
+    expect(queueAddMock.mock.calls[0]![1].breezeEntityId).toBe(MAPPING_ID);
+    const query = new PgDialect().sqlToQuery(selectWhereMock.mock.calls[0]![0]);
+    expect(query.sql).toContain('"sync_status" =');
+    expect(query.sql).toContain('"updated_at" <');
+    expect(query.params).toEqual(expect.arrayContaining(['pending', 'confirmed', 'create_new', 'org', 'catalog_item', '2026-09-16T11:45:00.000Z']));
+  });
+  it.each(['waiting', 'active', 'delayed', 'prioritized'])('does not enqueue an in-flight %s job', async state => {
+    selectWhereMock.mockResolvedValueOnce([mappingJob]);
+    queueGetJobMock.mockResolvedValueOnce({ getState: async () => state });
+    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 0 });
+    expect(queueAddMock).not.toHaveBeenCalled();
+  });
+  it('releases the sweep DB context before enqueue and reports Redis outages', async () => {
+    let inContext = false;
+    withSystemDbAccessContextMock.mockImplementationOnce(async fn => {
+      inContext = true;
+      try { return await fn(); } finally { inContext = false; }
+    });
+    selectWhereMock.mockResolvedValueOnce([mappingJob]);
+    queueAddMock.mockImplementationOnce(async () => {
+      expect(inContext).toBe(false);
+      throw new Error('redis down');
+    });
+    await expect(processMappingSweep()).resolves.toEqual({ enqueued: 0, failed: 1 });
+    expect(runOutsideDbContextMock).toHaveBeenCalled();
+  });
+  it('dispatches the scheduled sweep and rethrows a failed DB read', async () => {
+    selectWhereMock.mockRejectedValueOnce(new Error('db down'));
+    await expect(processAccountingSyncJob({ type: 'mapping-sweep' })).rejects.toThrow('db down');
+    expect(queueAddMock).not.toHaveBeenCalled();
   });
 });

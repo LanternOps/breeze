@@ -1088,6 +1088,13 @@ describe('pushInvoiceToAccounting', () => {
       expect(pushInvoiceMock).not.toHaveBeenCalled();
     });
 
+    it('keeps concurrent mapping sync contention retryable for invoice jobs', async () => {
+      setup({ mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, syncStatus: 'pending' })] });
+      syncMappedEntityMock.mockRejectedValueOnce(new AccountingMappingError('sync_in_progress', 409, 'Mapping sync is already in progress'));
+      await expect(pushInvoiceToAccounting(INVOICE, PARTNER, runCtx)).rejects.toMatchObject({ code: 'quickbooks_error', status: 502 });
+      expect(pushInvoiceMock).not.toHaveBeenCalled();
+    });
+
     it('re-types reauth_required/not_connected from a nested sync to their exact counterparts', async () => {
       setup({
         mappings: [orgMappingRow({ linkStatus: 'create_new', remoteEntityId: null, remoteSyncToken: null, syncStatus: 'pending' })],

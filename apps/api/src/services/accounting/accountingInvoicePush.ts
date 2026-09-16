@@ -345,7 +345,8 @@ async function persistInvoiceCurrencyMismatchErrorInOwnContext(
  * config problems on the dependency mapping that no amount of retrying the
  * QuickBooks call will fix. The first two are re-typed to their exact
  * counterparts (mirrors `translateMappingError`); `quickbooks_error` passes
- * through unchanged; everything else collapses to `dependency_not_ready` so
+ * through unchanged, and concurrent mapping sync contention stays retryable;
+ * everything else collapses to `dependency_not_ready` so
  * it is never mistaken for a retryable `quickbooks_error`/502. Every message
  * here is already sanitized/user-safe — never a raw provider body.
  */
@@ -353,7 +354,9 @@ function translateNestedSyncError(err: unknown): never {
   if (err instanceof AccountingMappingError) {
     if (err.code === 'not_connected') throw new AccountingInvoicePushError('not_connected', 404, err.message);
     if (err.code === 'reauth_required') throw new AccountingInvoicePushError('reauth_required', 409, err.message);
-    if (err.code === 'quickbooks_error') throw new AccountingInvoicePushError('quickbooks_error', 502, err.message);
+    if (err.code === 'quickbooks_error' || err.code === 'sync_in_progress') {
+      throw new AccountingInvoicePushError('quickbooks_error', 502, err.message);
+    }
     throw new AccountingInvoicePushError('dependency_not_ready', err.status === 404 ? 404 : 409, err.message);
   }
   throw err;

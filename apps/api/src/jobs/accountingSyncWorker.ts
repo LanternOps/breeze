@@ -48,6 +48,10 @@
  */
 
 import { Queue, Worker, Job } from 'bullmq';
+import { and, eq, inArray, lt } from 'drizzle-orm';
+import { accountingEntityMappings } from '../db/schema/accounting';
+import { jobSchedule } from './scheduleRegistry';
+import { syncMappedEntity, AccountingMappingError, type MappingEntityType, type AccountingMappingErrorCode } from '../services/accounting/accountingMappingService';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
@@ -95,8 +99,15 @@ interface DeletePaymentJobData {
   mappingId: string;
   partnerId: string;
 }
+interface SyncMappingJobData {
+  type: 'sync-mapping';
+  partnerId: string;
+  breezeEntityType: MappingEntityType;
+  breezeEntityId: string;
+}
 export type AccountingSyncJobData =
-  PushInvoiceJobData | VoidInvoiceJobData | PushPaymentJobData | DeletePaymentJobData;
+  PushInvoiceJobData | VoidInvoiceJobData | PushPaymentJobData | DeletePaymentJobData
+  | SyncMappingJobData | { type: 'mapping-sweep' };
 
 // Matched by CODE, not `.status` — every code below is terminal because
 // retrying cannot fix a permanent mapping/currency problem (most carry status
@@ -137,6 +148,12 @@ const PAYMENT_TERMINAL_CODES: ReadonlySet<AccountingPaymentPushErrorCode> = new 
   'reauth_required',
 ]);
 
+const MAPPING_TERMINAL_CODES: ReadonlySet<AccountingMappingErrorCode> = new Set([
+  'not_connected', 'reauth_required', 'mapping_conflict', 'entity_not_found',
+  'income_account_required', 'mapping_not_ready', 'currency_mismatch',
+  'item_price_required', 'record_failed',
+]);
+
 let accountingSyncQueue: Queue<AccountingSyncJobData> | null = null;
 
 /** Get or create the accounting-sync queue. */
@@ -170,6 +187,10 @@ export function getAccountingSyncQueue(): Queue<AccountingSyncJobData> {
  *     `processPaymentJob` below.
  */
 export async function processAccountingSyncJob(data: AccountingSyncJobData): Promise<void> {
+  if (data.type === 'mapping-sweep') {
+    await processMappingSweep();
+    return;
+  }
   await runOutsideDbContext(async () => {
     // The gate read gets its own short system context; the coordinator is then
     // called with NO ambient context and opens its own per-phase ones through
@@ -180,6 +201,24 @@ export async function processAccountingSyncJob(data: AccountingSyncJobData): Pro
     const runInDbContext = <T>(fn: () => Promise<T>): Promise<T> =>
       withSystemDbAccessContext(fn, `accountingSync.${data.type}`);
 
+    if (data.type === 'sync-mapping') {
+      try {
+        await syncMappedEntity({
+          partnerId: data.partnerId, provider: 'quickbooks',
+          breezeEntityType: data.breezeEntityType, breezeEntityId: data.breezeEntityId,
+        }, runInDbContext);
+      } catch (err) {
+        // Configuration/ownership refusals need operator action. Provider and
+        // unexpected failures use the queue's existing attempts/backoff policy.
+        if (!(err instanceof AccountingMappingError) || !MAPPING_TERMINAL_CODES.has(err.code)) throw err;
+        console.error('[AccountingSyncWorker] terminal mapping failure, not retrying', err.code, err.message);
+        captureException(err, undefined, {
+          service: 'accountingSyncWorker', accounting_job_type: data.type,
+          accounting_entity_id: data.breezeEntityId, accounting_error_code: err.code,
+        });
+      }
+      return;
+    }
     const conn = await runInDbContext(() => getConnection(db, data.partnerId, 'quickbooks'));
     if (!conn || conn.status !== 'connected') {
       // A payment job's mapping row is the OUTBOX, so returning silently here
@@ -410,14 +449,63 @@ async function enqueuePaymentJob(
   }
 }
 
+/** A lost enqueue is recovered from the pending mapping by the sweep. */
+export async function enqueueAccountingMappingSync(
+  breezeEntityType: MappingEntityType, breezeEntityId: string, partnerId: string,
+): Promise<boolean> {
+  try {
+    await getAccountingSyncQueue().add('sync-mapping', {
+      type: 'sync-mapping', partnerId, breezeEntityType, breezeEntityId,
+    }, { jobId: mappingJobId(breezeEntityType, breezeEntityId, partnerId), ...ENQUEUE_OPTS });
+    return true;
+  } catch (err) {
+    console.error('[AccountingSyncWorker] failed to enqueue sync-mapping', err instanceof Error ? err.message : err);
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return false;
+  }
+}
+
+function mappingJobId(entityType: MappingEntityType, entityId: string, partnerId: string): string {
+  return `accounting-mapping-${partnerId}-${entityType}-${entityId}`;
+}
+
+/** Read in a short system context; release its connection before touching Redis. */
+export async function processMappingSweep(now = new Date()): Promise<{ enqueued: number; failed: number }> {
+  return runOutsideDbContext(async () => {
+    const rows = await withSystemDbAccessContext(() => db.select({
+      partnerId: accountingEntityMappings.partnerId,
+      breezeEntityType: accountingEntityMappings.breezeEntityType,
+      breezeEntityId: accountingEntityMappings.breezeEntityId,
+    }).from(accountingEntityMappings).where(and(
+      eq(accountingEntityMappings.syncStatus, 'pending'),
+      inArray(accountingEntityMappings.linkStatus, ['confirmed', 'create_new']),
+      inArray(accountingEntityMappings.breezeEntityType, ['org', 'catalog_item']),
+      lt(accountingEntityMappings.updatedAt, new Date(now.getTime() - 15 * 60_000)),
+    )), 'accountingSync.mapping-sweep');
+    let enqueued = 0;
+    let failed = 0;
+    for (const row of rows) {
+      const entityType = row.breezeEntityType as MappingEntityType;
+      const job = await getAccountingSyncQueue().getJob(mappingJobId(entityType, row.breezeEntityId, row.partnerId));
+      if (job) {
+        const state = await job.getState();
+        if (state !== 'completed' && state !== 'failed' && state !== 'unknown') continue;
+        await job.remove();
+      }
+      if (await enqueueAccountingMappingSync(entityType, row.breezeEntityId, row.partnerId)) enqueued++;
+      else failed++;
+    }
+    return { enqueued, failed };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
 
 let accountingSyncWorker: Worker<AccountingSyncJobData> | null = null;
 
-/** Initialize the accounting-sync worker. Call during app startup. No
- *  repeatable jobs — Phase C has no scheduled accounting sync. */
+/** Initialize the accounting-sync worker and pending-mapping recovery sweep. */
 export async function initializeAccountingSyncWorkers(): Promise<void> {
   try {
     accountingSyncWorker = createAccountingSyncWorker();
@@ -430,6 +518,14 @@ export async function initializeAccountingSyncWorkers(): Promise<void> {
       console.error(`[AccountingSyncWorker] Job ${job?.id} failed:`, error);
     });
 
+    const queue = getAccountingSyncQueue();
+    for (const repeatable of await queue.getRepeatableJobs()) {
+      if (repeatable.name === 'mapping-sweep') await queue.removeRepeatableByKey(repeatable.key);
+    }
+    await queue.add('mapping-sweep', { type: 'mapping-sweep' }, {
+      repeat: { pattern: jobSchedule('accounting-mapping-sweep') },
+      ...ENQUEUE_OPTS,
+    });
     console.log('[AccountingSyncWorker] Accounting sync worker initialized');
   } catch (error) {
     console.error('[AccountingSyncWorker] Failed to initialize:', error);

@@ -36,6 +36,7 @@
  * is provenance, not a guess.
  */
 
+import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { db } from '../../db';
 import { assertNoAmbientDbContext, type DbContextRunner } from './dbContextGuard';
@@ -54,6 +55,7 @@ import { normalizeCurrencyCode } from './accountingCurrency';
 import { getValidAccessToken, ReauthRequiredError } from './accountingTokens';
 import { getAccountingProvider } from './providerRegistry';
 import { captureException } from '../sentry';
+import { getRedis } from '../redis';
 import { isPgUniqueViolation } from '../../utils/pgErrors';
 import type {
   AccountingCustomerPayload,
@@ -79,6 +81,8 @@ export type AccountingMappingErrorCode =
   | 'not_connected'
   | 'reauth_required'
   | 'quickbooks_error'
+  | 'record_failed'
+  | 'sync_in_progress'
   | 'mapping_conflict'
   | 'entity_not_found'
   | 'income_account_required'
@@ -255,6 +259,11 @@ async function callProviderOrThrow<T>(action: () => Promise<T>, errorMessage: st
 }
 
 type MappingRow = AccountingEntityMappingRow;
+export type MappingResult = MappingRow & Pick<MappingProposal, 'confidence' | 'proposedRemoteName'>;
+
+function mappingResult(row: MappingRow, proposedRemoteName: string | null): MappingResult {
+  return { ...row, confidence: confidenceForMapping(row), proposedRemoteName };
+}
 
 /**
  * `confidence` describes how the PROPOSED remote id was arrived at, so a
@@ -813,7 +822,7 @@ async function upsertMappingRow(params: {
 export async function saveMappingDecision(
   input: SaveMappingDecisionInput,
   runInDbContext: DbContextRunner,
-): Promise<MappingRow> {
+): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId, decision, remoteEntityId } = input;
   assertNoAmbientDbContext('saveMappingDecision');
   const remoteEntityType: 'Customer' | 'Item' = breezeEntityType === 'org' ? 'Customer' : 'Item';
@@ -849,6 +858,7 @@ export async function saveMappingDecision(
   });
 
   let fields: MappingDecisionFields;
+  let proposedRemoteName: string | null = null;
 
   if (decision === 'confirmed') {
     if (!remoteEntityId) {
@@ -884,6 +894,7 @@ export async function saveMappingDecision(
     // RemoteItem carries no currencyCode (only RemoteCustomer does), so this is
     // naturally null for a catalog_item confirm even without the explicit gate
     // — the gate documents the intent rather than relying on that incidentally.
+    proposedRemoteName = found.displayName;
     const remoteCurrencyCode = breezeEntityType === 'org' ? (found as RemoteCustomer).currencyCode ?? null : null;
     fields = { remoteEntityId, remoteSyncToken: found.syncToken ?? null, remoteCurrencyCode, linkStatus: 'confirmed', syncStatus: 'pending', lastError: null };
   } else if (decision === 'create_new') {
@@ -893,8 +904,9 @@ export async function saveMappingDecision(
   }
 
   // Phase 2 — its own short context, so the decision COMMITS on its own.
-  return runInDbContext(() =>
+  const row = await runInDbContext(() =>
     upsertMappingRow({ existing, integrationId: conn.id, partnerId, breezeEntityType, breezeEntityId, remoteEntityType, fields }));
+  return mappingResult(row, proposedRemoteName);
 }
 
 /** Only the fields QBO omission (§11) needs: never send a raw org/item row across the seam. */
@@ -1126,7 +1138,45 @@ async function persistRemoteRef(params: {
 export async function syncMappedEntity(
   input: SyncMappedEntityInput,
   runInDbContext: DbContextRunner,
-): Promise<MappingRow> {
+): Promise<MappingResult> {
+  assertNoAmbientDbContext('syncMappedEntity');
+  const redis = getRedis();
+  if (!redis) throw new Error('QuickBooks mapping sync coordination is unavailable');
+  const key = `accounting-mapping-sync:${input.partnerId}:${input.provider}:${input.breezeEntityType}:${input.breezeEntityId}`;
+  const token = randomUUID();
+  const ttl = 5 * 60 * 1000;
+  if (await redis.set(key, token, 'PX', ttl, 'NX') !== 'OK') {
+    throw new AccountingMappingError('sync_in_progress', 409, 'QuickBooks mapping sync is already in progress');
+  }
+  // The web's explicit sync and the worker must not both CREATE from the same
+  // pending row. Renew across slow provider calls without holding a DB connection.
+  const renewal = setInterval(() => {
+    void redis.eval(
+      "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+      1, key, token, ttl,
+    ).catch((err: unknown) => captureException(err instanceof Error ? err : new Error(String(err))));
+  }, 30_000);
+  renewal.unref();
+  try {
+    return await syncMappedEntityUnderLease(input, runInDbContext);
+  } finally {
+    clearInterval(renewal);
+    try {
+      await redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        1, key, token,
+      );
+    } catch (err) {
+      // A release outage must not replace a successfully persisted remote ref.
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+}
+
+async function syncMappedEntityUnderLease(
+  input: SyncMappedEntityInput,
+  runInDbContext: DbContextRunner,
+): Promise<MappingResult> {
   const { partnerId, provider, breezeEntityType, breezeEntityId } = input;
   assertNoAmbientDbContext('syncMappedEntity');
 
@@ -1152,30 +1202,44 @@ export async function syncMappedEntity(
       : null;
     const isCreate = existingRef === null;
 
-    if (breezeEntityType === 'org') {
-      const org = await loadOwnedOrg(breezeEntityId, partnerId);
-      if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
-      return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
-    }
+    try {
+      if (breezeEntityType === 'org') {
+        const org = await loadOwnedOrg(breezeEntityId, partnerId);
+        if (isCreate) assertCreateCurrencyMatchesRealm(conn, org.currencyCode, 'organization');
+        return { conn, mapping, existingRef, kind: 'org' as const, payload: buildCustomerPayload(org) };
+      }
 
-    if (isCreate && !conn.defaultIncomeAccountRef) {
-      throw new AccountingMappingError(
-        'income_account_required',
-        409,
-        'Select a default QuickBooks income account before creating catalog items in QuickBooks',
-      );
+      if (isCreate && !conn.defaultIncomeAccountRef) {
+        throw new AccountingMappingError(
+          'income_account_required',
+          409,
+          'Select a default QuickBooks income account before creating catalog items in QuickBooks',
+        );
+      }
+      const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
+      const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
+      // The Item payload's currency is the PARTNER's default currency (see
+      // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
+      if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
+      return {
+        conn, mapping, existingRef, kind: 'catalog_item' as const,
+        payload: buildItemPayload(item, conn, currencyCode, unitPrice),
+      };
+    } catch (err) {
+      if (!(err instanceof AccountingMappingError) || ![
+        'currency_mismatch', 'income_account_required', 'item_price_required',
+      ].includes(err.code)) throw err;
+      // Return the refusal from this transaction so lastError commits before
+      // the typed error reaches the route or worker. A throw here rolls it back.
+      await db.update(accountingEntityMappings)
+        .set({ lastError: err.message, updatedAt: new Date() })
+        .where(and(eq(accountingEntityMappings.id, mapping.id), eq(accountingEntityMappings.partnerId, partnerId)))
+        .returning();
+      return { refusal: err };
     }
-    const item = await loadOwnedCatalogItem(breezeEntityId, partnerId);
-    const { currencyCode, unitPrice } = await resolveItemSellPrice(item, partnerId);
-    // The Item payload's currency is the PARTNER's default currency (see
-    // resolveItemSellPrice), so that is what QBO would stamp the new Item at.
-    if (isCreate) assertCreateCurrencyMatchesRealm(conn, currencyCode, 'catalog item');
-    return {
-      conn, mapping, existingRef, kind: 'catalog_item' as const,
-      payload: buildItemPayload(item, conn, currencyCode, unitPrice),
-    };
   });
 
+  if ('refusal' in prep) throw prep.refusal;
   const { conn, mapping, existingRef } = prep;
   // Token refresh and the upsert both run with NO context held (see
   // `resolveLiveConnection`).
@@ -1216,7 +1280,7 @@ export async function syncMappedEntity(
 
   try {
     // Phase 2 (success) — likewise its own short, self-committing context.
-    return await runInDbContext(() => persistRemoteRef({
+    const row = await runInDbContext(() => persistRemoteRef({
       mappingId: mapping.id,
       partnerId,
       remoteEntityId: remote.id,
@@ -1227,6 +1291,7 @@ export async function syncMappedEntity(
       // an accident of which provider methods happen to fill it in today.
       remoteCurrencyCode: breezeEntityType === 'org' ? (remote.currencyCode ?? null) : null,
     }));
+    return mappingResult(row, prep.kind === 'org' ? prep.payload.displayName : prep.payload.name);
   } catch (dbErr) {
     captureException(dbErr instanceof Error ? dbErr : new Error(String(dbErr)), undefined, {
       service: 'accountingMappingService',
@@ -1235,10 +1300,13 @@ export async function syncMappedEntity(
       remote_sync_token: remote.syncToken ?? 'none',
     });
     const label = breezeEntityType === 'org' ? 'customer' : 'item';
-    throw new AccountingMappingError(
-      'quickbooks_error',
-      502,
-      `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`,
-    );
+    const message = `QuickBooks accepted the ${label} sync (remote id ${remote.id}) but Breeze failed to record it — do not retry; contact support to reconcile`;
+    // Exclude this unsafe-to-retry create from the pending-row sweep too.
+    try {
+      await runInDbContext(() => markMappingError(mapping.id, partnerId, message));
+    } catch (markErr) {
+      captureException(markErr instanceof Error ? markErr : new Error(String(markErr)));
+    }
+    throw new AccountingMappingError('record_failed', 502, message);
   }
 }

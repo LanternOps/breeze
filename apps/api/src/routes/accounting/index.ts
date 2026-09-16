@@ -39,7 +39,7 @@ import {
   type MappingEntityType,
 } from '../../services/accounting/accountingMappingService';
 import { AccountingInvoicePushError, pushInvoiceToAccounting } from '../../services/accounting/accountingInvoicePush';
-import { enqueueAccountingInvoicePush } from '../../jobs/accountingSyncWorker';
+import { enqueueAccountingInvoicePush, enqueueAccountingMappingSync } from '../../jobs/accountingSyncWorker';
 import { enqueueAccountingReconcile } from '../../jobs/accountingReconcileWorker';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { getAccountingProvider } from '../../services/accounting/providerRegistry';
@@ -252,6 +252,8 @@ function toMappingResponse(mapping: {
   syncStatus: string;
   lastSyncedAt: Date | null;
   lastError: string | null;
+  confidence: string;
+  proposedRemoteName: string | null;
 }) {
   return {
     breezeEntityType: mapping.breezeEntityType,
@@ -262,6 +264,8 @@ function toMappingResponse(mapping: {
     syncStatus: mapping.syncStatus,
     lastSyncedAt: mapping.lastSyncedAt,
     lastError: mapping.lastError,
+    confidence: mapping.confidence,
+    proposedRemoteName: mapping.proposedRemoteName,
   };
 }
 
@@ -1034,6 +1038,14 @@ accountingRoutes.put('/:provider/mappings', authMiddleware, partnerScopes, requi
     }, (fn) => withAuthDbAccessContext(auth, fn));
   } catch (err) {
     return handleMappingError(c, err);
+  }
+
+  // saveMappingDecision has committed its short auth-scoped context. Redis
+  // runs outside that context; the stale-row sweep recovers a missed enqueue.
+  if (body.decision === 'confirmed' || body.decision === 'create_new') {
+    await runOutsideDbContext(() => enqueueAccountingMappingSync(
+      body.breezeEntityType, body.breezeEntityId, partner.partnerId,
+    ));
   }
 
   writeRouteAudit(c, {
