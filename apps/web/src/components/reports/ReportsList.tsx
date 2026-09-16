@@ -39,7 +39,10 @@ export type ReportType =
   | 'security_compliance_posture'
   | 'ai_org_narrative'
   | 'ai_fleet_design'
-  | 'hardware_lifecycle';
+  | 'hardware_lifecycle'
+  // #5784 W02. Curated service-plan evidence; its label comes from the dynamic
+  // i18n lookup in getReportTypeLabel, so there is no map to extend here.
+  | 'threat_detection_review';
 
 /**
  * Report types the API owns end to end: the AI schedule creates the definition,

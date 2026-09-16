@@ -262,15 +262,19 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  it('renders the auto-evidence report type picker on the item form, with the empty state (W01: no types shipped)', async () => {
+  it('offers every managed evidence report type on the item form, defaulting to None (#5784 W02)', async () => {
     render(<DeliverableTemplatesPage />);
     const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
 
     fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
 
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    // None stays the default — auto-evidence is opt-in per item.
     expect(select.value).toBe('');
-    expect(screen.getByTestId('deliverable-template-item-auto-evidence-empty')).toBeInTheDocument();
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toContain('threat_detection_review');
+    // W01's empty state is gone now that the registry has a member.
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).toBeNull();
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {

@@ -294,7 +294,17 @@
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
-        "software_inventory": "Inventario software"
+        "software_inventory": "Inventario software",
+        "threat_detection_review": "Revisione del rilevamento delle minacce"
+      },
+      "threatDetection": {
+        "agents": "Endpoint con agente di rilevamento",
+        "carriedIn": "Riportati, ancora aperti",
+        "coverage": "Limiti di questo rapporto",
+        "devicesWithoutAgent": "Dispositivi gestiti senza agente",
+        "notMeasured": "N/D",
+        "opened": "Rilevamenti segnalati",
+        "resolved": "Rilevamenti risolti"
       },
       "tryAgain": "Riprova",
       "values": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
-        "software_inventory": "Inventario software"
+        "software_inventory": "Inventario software",
+        "threat_detection_review": "Revisione del rilevamento delle minacce"
       },
       "runsTable": {
         "actions": "Azioni",
@@ -865,7 +876,8 @@
         "patches": "Patch",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
-        "software_inventory": "Inventario software"
+        "software_inventory": "Inventario software",
+        "threat_detection_review": "Revisione del rilevamento delle minacce"
       },
       "schedules": {
         "daily": "Giornaliero",
@@ -903,11 +915,24 @@
         "security_compliance_posture": {
           "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.",
           "name": "Stato di sicurezza e conformità (assicurazione)"
+        },
+        "threat_detection_review": {
+          "description": "I rilevamenti di minacce conservati per un periodo, con la finestra effettivamente coperta dichiarata sul rapporto stesso: mai uno zero per una fonte che non era collegata.",
+          "name": "Revisione del rilevamento delle minacce"
         }
       },
       "title": "Template report",
       "useTemplate": "Usa template",
       "useTemplateTitle": "Usa {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Annulla",
+      "coverageNote": "Il rapporto stampa la finestra che copre davvero. Se la fonte di rilevamento non era collegata per parte del periodo, lo dichiara invece di riportare zero.",
+      "createReport": "Crea rapporto",
+      "includeCarriedIn": "Includi i rilevamenti riportati",
+      "includeCarriedInHelp": "I rilevamenti aperti prima di questo periodo e ancora irrisolti vengono elencati insieme a quelli del periodo.",
+      "topIncidents": "Elenca al massimo (rilevamenti)",
+      "topIncidentsHelp": "Limita la tabella dei rilevamenti perché un mese affollato non produca un PDF di cento pagine. Il rapporto dichiara quanti ne sono stati esclusi invece di troncare in silenzio."
     }
   }
 }

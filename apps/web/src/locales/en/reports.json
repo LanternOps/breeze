@@ -294,7 +294,17 @@
         "hardware_lifecycle": "Hardware Lifecycle",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review"
+      },
+      "threatDetection": {
+        "agents": "Endpoints with a detection agent",
+        "carriedIn": "Carried in, still open",
+        "coverage": "Limits of this report",
+        "devicesWithoutAgent": "Managed devices with no agent",
+        "notMeasured": "N/A",
+        "opened": "Detections raised",
+        "resolved": "Detections resolved"
       },
       "tryAgain": "Try again",
       "values": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Hardware Lifecycle",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review"
       },
       "runsTable": {
         "actions": "Actions",
@@ -725,7 +736,18 @@
         "templateName": "Quarterly Compliance Pack",
         "value": "Value"
       },
-      "recipients": { "contacts": "Organization contacts", "legacy": "Legacy email addresses", "convert": "Convert to contact", "added": "Report recipient added", "removed": "Report recipient removed", "converted": "Email address converted to a contact", "updateFailed": "Could not update the report recipients", "convertFailed": "Could not convert this email address", "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.", "loadFailed": "Could not load the report recipients" },
+      "recipients": {
+        "contacts": "Organization contacts",
+        "legacy": "Legacy email addresses",
+        "convert": "Convert to contact",
+        "added": "Report recipient added",
+        "removed": "Report recipient removed",
+        "converted": "Email address converted to a contact",
+        "updateFailed": "Could not update the report recipients",
+        "convertFailed": "Could not convert this email address",
+        "mfaRequired": "Converting a recipient requires multi-factor authentication. Enable MFA in your profile and try again.",
+        "loadFailed": "Could not load the report recipients"
+      },
       "previewTable": {
         "selectFields": "Select fields to populate the preview table."
       },
@@ -854,7 +876,8 @@
         "patches": "Patches",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
-        "software_inventory": "Software Inventory"
+        "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review"
       },
       "schedules": {
         "daily": "Daily",
@@ -892,11 +915,24 @@
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",
           "name": "Security & Compliance Posture (Insurance)"
+        },
+        "threat_detection_review": {
+          "description": "The threat detections held for a period, with the window actually covered stated on the face of it — never a zero for a source that was not connected.",
+          "name": "Threat Detection Review"
         }
       },
       "title": "Report Templates",
       "useTemplate": "Use template",
       "useTemplateTitle": "Use {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancel",
+      "coverageNote": "The report prints the window it actually covers. If the detection source was not connected for part of the period, it says so instead of reporting zero.",
+      "createReport": "Create report",
+      "includeCarriedIn": "Include detections carried in",
+      "includeCarriedInHelp": "Detections that opened before this period and are still unresolved are listed alongside the period’s own.",
+      "topIncidents": "List at most (detections)",
+      "topIncidentsHelp": "Caps the detection table so a noisy month cannot produce a hundred-page PDF. The report states how many were withheld rather than truncating silently."
     }
   }
 }

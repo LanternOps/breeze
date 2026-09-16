@@ -171,13 +171,13 @@ export default function DeliverableForm({
   const contractsLoading = showContractPicker && contractsState === 'loading';
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
-  // Managed evidence definitions this org could link a deliverable to. Empty
-  // in W01 (MANAGED_EVIDENCE_REPORT_TYPES is []) — later waves populate the
-  // tuple and this starts fetching /reports for real. Auto-evidence is
-  // optional, so a failed fetch falls back to the empty-list state rather
-  // than blocking the form (it can still be saved with no linked report).
+  // Managed evidence definitions this org could link a deliverable to. The
+  // tuple is non-empty as of #5784 W02, so this always fetches; W01's
+  // `length === 0` early return is gone rather than kept as dead code.
+  // Auto-evidence is optional, so a failed fetch falls back to the empty-list
+  // state rather than blocking the form (it can still be saved with no
+  // linked report).
   useEffect(() => {
-    if (MANAGED_EVIDENCE_REPORT_TYPES.length === 0) return;
     let cancelled = false;
     void (async () => {
       try {

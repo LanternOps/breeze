@@ -294,7 +294,17 @@
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi"
+      },
+      "threatDetection": {
+        "agents": "Tespit aracısı olan uç noktalar",
+        "carriedIn": "Devreden, hâlâ açık",
+        "coverage": "Bu raporun sınırları",
+        "devicesWithoutAgent": "Aracısı olmayan yönetilen cihazlar",
+        "notMeasured": "Yok",
+        "opened": "Bildirilen tespitler",
+        "resolved": "Çözülen tespitler"
       },
       "tryAgain": "Tekrar deneyin",
       "values": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -865,7 +876,8 @@
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi"
       },
       "schedules": {
         "daily": "Günlük",
@@ -903,11 +915,24 @@
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
           "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
+        },
+        "threat_detection_review": {
+          "description": "Bir dönem için elde tutulan tehdit tespitleri; gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir — bağlı olmayan bir kaynak için asla sıfır yazılmaz.",
+          "name": "Tehdit Tespiti İncelemesi"
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
       "useTemplateTitle": "{{name}} kullanın"
+    },
+    "threatDetectionOptions": {
+      "cancel": "İptal",
+      "coverageNote": "Rapor, gerçekte kapsadığı zaman aralığını yazar. Tespit kaynağı dönemin bir bölümünde bağlı değilse, sıfır bildirmek yerine bunu açıkça belirtir.",
+      "createReport": "Rapor oluştur",
+      "includeCarriedIn": "Devreden tespitleri dahil et",
+      "includeCarriedInHelp": "Bu dönemden önce açılmış ve hâlâ çözülmemiş tespitler, dönemin kendi tespitleriyle birlikte listelenir.",
+      "topIncidents": "En fazla listele (tespit)",
+      "topIncidentsHelp": "Yoğun bir ayın yüz sayfalık PDF üretmemesi için tespit tablosunu sınırlar. Rapor, sessizce kesmek yerine kaç tanesinin dışarıda bırakıldığını belirtir."
     }
   }
 }

@@ -294,7 +294,17 @@
         "hardware_lifecycle": "Ciclo de vida do hardware",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças"
+      },
+      "threatDetection": {
+        "agents": "Endpoints com agente de detecção",
+        "carriedIn": "Herdadas, ainda abertas",
+        "coverage": "Limites deste relatório",
+        "devicesWithoutAgent": "Dispositivos gerenciados sem agente",
+        "notMeasured": "N/D",
+        "opened": "Detecções registradas",
+        "resolved": "Detecções resolvidas"
       },
       "tryAgain": "Tentar novamente",
       "values": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Ciclo de vida do hardware",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -865,7 +876,8 @@
         "patches": "Patches",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças"
       },
       "schedules": {
         "daily": "Diario",
@@ -903,11 +915,24 @@
         "security_compliance_posture": {
           "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
           "name": "Postura de Seguranca e Conformidade (Seguro)"
+        },
+        "threat_detection_review": {
+          "description": "As detecções de ameaças mantidas em um período, com a janela realmente coberta declarada no próprio relatório — nunca um zero para uma fonte que não estava conectada.",
+          "name": "Revisão de detecção de ameaças"
         }
       },
       "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
       "useTemplateTitle": "Usar {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancelar",
+      "coverageNote": "O relatório imprime a janela que realmente cobre. Se a fonte de detecção não estava conectada durante parte do período, ele diz isso em vez de informar zero.",
+      "createReport": "Criar relatório",
+      "includeCarriedIn": "Incluir detecções herdadas",
+      "includeCarriedInHelp": "Detecções abertas antes deste período e ainda não resolvidas são listadas junto com as do próprio período.",
+      "topIncidents": "Listar no máximo (detecções)",
+      "topIncidentsHelp": "Limita a tabela de detecções para que um mês agitado não gere um PDF de cem páginas. O relatório informa quantas ficaram de fora em vez de truncar silenciosamente."
     }
   }
 }
