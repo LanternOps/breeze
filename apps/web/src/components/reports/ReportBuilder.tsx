@@ -187,6 +187,16 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // builder never offers it. Mapping to the devices source keeps this Record
   // exhaustive and `reportTypeSurvivesBuilder('threat_detection_review')` false.
   threat_detection_review: 'devices',
+  // Endpoint Management Review (#5784 W03) is a curated evidence template with
+  // its own options form; the freeform builder cannot represent its Intune
+  // freshness/trend config and never offers it. Mapping to the devices source
+  // keeps the Record exhaustive and `reportTypeSurvivesBuilder` false.
+  endpoint_management_review: 'devices',
+  // Vulnerability Management (#5784 W04) — curated, with its own options form
+  // (severity floor, top-N, exceptions). The builder never offers it; mapping
+  // to the compliance source keeps this Record exhaustive and
+  // `reportTypeSurvivesBuilder('vulnerability_management')` false.
+  vulnerability_management: 'compliance',
   // #5784 W06 — curated, with its own options form, and NOT representable by
   // the freeform builder (it has no site dimension and no device rows). Mapped
   // so the Record stays exhaustive, with

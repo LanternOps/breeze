@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   createReportSchema,
+  endpointManagementConfigFields,
+  endpointManagementConfigSchema,
   hardwareLifecycleConfigFields,
   hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
@@ -10,6 +12,8 @@ import {
   threatDetectionConfigFields,
   threatDetectionConfigSchema,
   updateReportSchema,
+  vulnerabilityManagementConfigFields,
+  vulnerabilityManagementConfigSchema,
 } from './schemas';
 
 const builderConfig = {
@@ -102,6 +106,65 @@ describe('report config schema', () => {
     expect(Object.keys(hardwareLifecycleConfigFields).sort()).toEqual(
       Object.keys(hardwareLifecycleConfigSchema.shape).sort(),
     );
+  });
+
+  it('keeps the endpoint management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(endpointManagementConfigFields).sort()).toEqual(
+      Object.keys(endpointManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults an endpoint management config', () => {
+    expect(endpointManagementConfigSchema.parse({})).toEqual({
+      sites: [], staleEnrolmentDays: 14, trendDays: 30, includeLicences: true,
+    });
+  });
+
+  it('rejects an out-of-range trendDays', () => {
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 0 })).toThrow();
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 400 })).toThrow();
+  });
+
+  it('preserves endpoint management staleEnrolmentDays on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Endpoints', type: 'endpoint_management_review',
+      config: { staleEnrolmentDays: 30, includeLicences: false },
+    });
+    expect(parsed.config.staleEnrolmentDays).toBe(30);
+    expect(parsed.config.includeLicences).toBe(false);
+  });
+
+  it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
+      Object.keys(vulnerabilityManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a vulnerability management config to the spec values', () => {
+    expect(vulnerabilityManagementConfigSchema.parse({})).toEqual({
+      sites: [], severityFloor: 'high', topN: 25, includeAccepted: true,
+    });
+  });
+
+  it('rejects an unknown severity floor', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ severityFloor: 'catastrophic' })).toThrow();
+  });
+
+  it('rejects a topN outside the schema range, for the API caller that bypasses the form', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 0 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 501 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 25.5 })).toThrow();
+    expect(vulnerabilityManagementConfigSchema.parse({ topN: 500 }).topN).toBe(500);
+  });
+
+  it('preserves vulnerability management options on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Vulns', type: 'vulnerability_management',
+      config: { severityFloor: 'medium', topN: 50, includeAccepted: false },
+    });
+    expect(parsed.config.severityFloor).toBe('medium');
+    expect(parsed.config.topN).toBe(50);
+    expect(parsed.config.includeAccepted).toBe(false);
   });
 
   it('preserves hardware lifecycle replaceAgeYears on create', () => {

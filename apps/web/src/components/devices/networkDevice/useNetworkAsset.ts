@@ -43,7 +43,7 @@ export function useNetworkAsset(assetId: string) {
   // not flash the loading skeleton over content the operator is already
   // looking at, and a transient failure shouldn't blow away a working page —
   // so it skips both the loading flag and the error state entirely.
-  const fetchAsset = useCallback(async (opts?: { background?: boolean }) => {
+  const fetchAsset = useCallback(async (opts?: { background?: boolean }): Promise<boolean> => {
     const background = opts?.background ?? false;
     try {
       if (!background) {
@@ -86,6 +86,7 @@ export function useNetworkAsset(assetId: string) {
       if (background) {
         announce(t('networkDeviceDetailPage.live.refreshed'));
       }
+      return true;
     } catch (err) {
       if (!background) {
         setError(err instanceof Error ? err.message : t('networkDeviceDetailPage.errors.load'));
@@ -95,6 +96,7 @@ export function useNetworkAsset(assetId: string) {
         // will fail the same way.
         console.warn('[network-device] background refresh failed', assetId, err);
       }
+      return false;
     } finally {
       if (!background) setLoading(false);
     }

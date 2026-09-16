@@ -78,3 +78,21 @@ describe('useNetworkAsset', () => {
     expect(result.current.devices).toEqual([{ id: 'dev-2', name: 'Later', online: true }]);
   });
 });
+
+it('returns true for a successful refresh and false on failure while preserving the asset', async () => {
+  fetchWithAuthMock.mockImplementation(async (url) => makeJsonResponse(url.startsWith('/discovery/') ? { data: baseAsset } : { data: [] }));
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  const { result } = renderHook(() => useNetworkAsset(ASSET_ID));
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  await act(async () => {
+    expect(await result.current.fetchAsset({ background: true })).toBe(true);
+  });
+  const previous = result.current.asset;
+  fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({}, false));
+  await act(async () => {
+    expect(await result.current.fetchAsset({ background: true })).toBe(false);
+  });
+  expect(result.current.asset).toBe(previous);
+  expect(warning).toHaveBeenCalledWith('[network-device] background refresh failed', ASSET_ID, expect.any(Error));
+  warning.mockRestore();
+});

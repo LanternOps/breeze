@@ -1,63 +1,27 @@
 {
   "assetDetailModal": {
-    "actions": {
-      "connect": "Bağlan",
-      "connecting": "Bağlanıyor...",
-      "deleteAsset": "Öğeyi Sil",
-      "deleting": "Siliniyor...",
-      "enabling": "Etkinleştiriliyor...",
-      "linkAsset": "Bağlantı varlığı",
-      "linking": "Bağlanıyor...",
-      "resetType": "Otomatik algılamaya sıfırla",
-      "unlink": "Bağlantıyı kaldır",
-      "working": "Çalışıyorum..."
-    },
     "assetInfoTitle": "Varlık Bilgisi",
-    "confirmDelete": "Bulunan \"{{name}}\" varlığı silinsin mi?",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
-    "deleteDescription": "Bu varlığı keşif sonuçlarından kaldırın.",
     "detailsUnavailableDescription": "Bu cihazın kaydını yükleyemedik. Kaldırılmış olabilir veya erişiminiz olmayabilir.",
     "detailsUnavailableTitle": "Ayrıntılar mevcut değil",
     "deviceDetailsTitle": "Cihaz ayrıntıları",
     "errors": {
-      "createAllowlist": "İzin verilenler listesi girişi oluşturulamadı",
-      "createProxyTunnel": "Proxy tüneli oluşturulamadı",
-      "createTunnel": "Tünel oluşturulamadı",
-      "delete": "Öğe silinemedi",
-      "generic": "Bir hata oluştu",
-      "link": "Varlık bağlanamadı",
-      "resetType": "Tür sıfırlanamadı",
-      "saveInfo": "Varlık bilgileri kaydedilemedi",
-      "selectDeviceToLink": "Bağlanacak cihazı seçin.",
-      "unlink": "Öğenin bağlantısı kaldırılamadı"
+      "generic": "Bir hata oluştu"
     },
     "fields": {
       "assetType": "Varlık Türü",
       "displayName": "Görünen Ad",
       "notesDescription": "Notlar / Açıklama",
       "osFingerprint": "İşletim Sistemi Parmak İzi",
-      "ping": "Ping",
+      "ping": "Gecikme (ping)",
       "tags": "Etiketler (virgülle ayrılmış)"
     },
     "lastSeen": "Son görülme {{time}}",
     "loadingDetails": "Cihaz ayrıntıları yükleniyor…",
-    "messages": {
-      "linked": "Öğe bağlantılı. Artık onaylandı olarak işaretlendi.",
-      "linkedToDevice": "Varlık {{device}} ile bağlantılı. Artık onaylandı olarak işaretlendi.",
-      "unlinked": "Cihazın bağlantısı kesildi."
-    },
     "networkDetailsTitle": "Ağ Ayrıntıları",
     "noOpenPorts": "Açık bağlantı noktası algılanmadı.",
     "noSnmpData": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP araştırılmamış olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "openPorts": "Açık Bağlantı Noktaları",
-    "options": {
-      "selectManagedDevice": "Yönetilen bir cihaz seçin"
-    },
-    "placeholders": {
-      "displayName": "ör. Ana Anahtar",
-      "notes": "ör. Dolap A, 2. katta yer almaktadır",
-      "tags": "ör. kritik, kat-2, ağ iletişimi"
-    },
     "proxy": {
       "manageOnDevicePage": "Ağ cihazı sayfasında proxy erişimini yönetin",
       "title": "Proxy Erişimi"
@@ -67,41 +31,27 @@
       "systemName": "Sistem Adı",
       "objectId": "Nesne Kimliği"
     },
-    "sameDeviceAs": "{{name}} ile aynı cihaz"
-  },
-  "assetMonitoringSection": {
-    "actions": {
-      "addUpdate": "Ekleme / Güncelleme İzleme",
-      "disableActive": "Aktif İzlemeyi Devre Dışı Bırak",
-      "disabling": "Devre dışı bırakılıyor...",
-      "enable": "İzlemeyi Etkinleştir",
-      "open": "Açık İzleme"
-    },
-    "activeChecks": "{{active}}/{{total}} ağ kontrolleri etkin",
-    "errors": {
-      "disable": "İzleme devre dışı bırakılamadı",
-      "loadMonitors": "Ağ monitörleri yüklenemedi",
-      "loadStatus": "İzleme durumu yüklenemedi"
-    },
-    "loading": "İzleme durumu yükleniyor...",
-    "monitorTypes": {
-      "icmp_ping": "ICMP Ping'i",
-      "tcp_port": "TCP Bağlantı Noktası",
-      "http_check": "HTTP Kontrolü",
-      "dns_check": "DNS Kontrol et"
-    },
-    "networkMonitorsTitle": "Ağ Monitörleri ({{count}})",
-    "noChecks": "Yapılandırılmış ağ kontrolü yok",
-    "snmpSummary": "{{version}} · her {{seconds}}s",
-    "snmpTitle": "SNMP Cihaz Monitörü",
-    "state": {
-      "active": "Aktif",
-      "configuredPaused": "Yapılandırıldı (Duraklatıldı)",
-      "paused": "Duraklatıldı",
-      "notConfigured": "Yapılandırılmadı"
-    },
-    "title": "İzleme",
-    "lastPolled": "• son anket {{time}}"
+    "sameDeviceAs": "{{name}} ile aynı cihaz",
+    "peek": {
+      "manageTitle": "Bu varlığı yönet",
+      "manageDescription": "Kimlik, izleme, bağlantı ve kaldırma işlemleri cihaz sayfasında yönetilir.",
+      "openDevicePage": "Cihaz sayfasını aç",
+      "settings": "Ayarlar…",
+      "reachabilityLine": "{{state}} · {{source}} {{age}}",
+      "lastSeenLine": "Son görülme · {{source}} {{age}}",
+      "state": {
+        "responding": "Yanıt veriyor",
+        "notResponding": "Yanıt vermiyor",
+        "unverified": "Doğrulanmadı"
+      },
+      "source": {
+        "networkCheck": "ağ kontrolü",
+        "probe": "şimdi kontrol et",
+        "scan": "tarama",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      }
+    }
   },
   "discoveredAssetList": {
     "actions": {
@@ -117,7 +67,8 @@
       "selectAllVisible": "Görünenlerin tümünü seç",
       "selectAllVisibleAssets": "Tüm görünür varlıkları seç",
       "selectAsset": "Varlık seçin {{asset}}",
-      "viewDetails": "Ayrıntıları görüntüle"
+      "viewDetails": "Ayrıntıları görüntüle",
+      "settings": "Ayarlar…"
     },
     "columns": {
       "approval": "Onay",
@@ -230,7 +181,7 @@
     },
     "schedule": {
       "cron": "Cron programı",
-      "cronValue": "Cron: {{cron}}",
+      "cronValue": "Cron ifadesi: {{cron}}",
       "daily": "Her gün {{time}} saatinde",
       "everyHours": "Her {{count}} saatte bir",
       "everyMinutes": "Her {{count}} dakikada bir",
@@ -377,39 +328,6 @@
     },
     "title": "Keşif Profilleri",
     "tryAgain": "Tekrar deneyin"
-  },
-  "enableMonitoringForm": {
-    "actions": {
-      "addNetworkMonitor": "Ağ İzleyicisi Ekle",
-      "enableSnmp": "SNMP İzlemeyi Etkinleştir",
-      "enabling": "Etkinleştiriliyor..."
-    },
-    "description": "İzleme, SNMP yoklamayı ve ağ kontrollerini destekler Ping/TCP/HTTP/DNS . İkisinden birini veya her ikisini de yapılandırabilirsiniz.",
-    "errors": {
-      "communityRequired": "SNMP v1/v2c için topluluk dizesi gereklidir",
-      "enable": "İzleme etkinleştirilemedi",
-      "generic": "Bir hata oluştu",
-      "loadTemplates": "Şablonlar yüklenemedi",
-      "usernameRequired": "SNMP v3 için kullanıcı adı gereklidir"
-    },
-    "fields": {
-      "authPassword": "Kimlik Doğrulama Şifresi",
-      "authProtocol": "Kimlik Doğrulama Protokolü",
-      "community": "Topluluk Dizini",
-      "pollingInterval": "Yoklama Aralığı (saniye)",
-      "privacyPassword": "Gizlilik Şifresi",
-      "privacyProtocol": "Gizlilik Protokolü",
-      "snmpVersion": "SNMP Sürüm",
-      "template": "Şablon",
-      "username": "Kullanıcı adı"
-    },
-    "networkChecksDescription": "Bu varlık için ping, TCP, HTTP veya DNS monitörleri ekleyin.",
-    "networkChecksTitle": "Ağ Kontrolleri",
-    "noTemplate": "Şablon yok",
-    "placeholders": {
-      "community": "herkese açık"
-    },
-    "snmpTitle": "SNMP Cihaz İzleme"
   },
   "networkBaselinesPanel": {
     "actions": {
@@ -683,7 +601,7 @@
     },
     "title": "Ağ Topolojisi",
     "tryAgain": "Tekrar deneyin",
-    "vlan": "VLAN {{vlan}}",
+    "vlan": "Sanal LAN {{vlan}}",
     "escToCancel": "· İptal etmek için Esc"
   },
   "proxyConnect": {

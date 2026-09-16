@@ -21,7 +21,12 @@ export const templateOwnerScopeSchema = z.enum(['organization', 'partner']);
  * alongside its own enum migration. Later waves only APPEND to this tuple.
  */
 export const MANAGED_EVIDENCE_REPORT_TYPES = [
+  // #5784 W02 — Huntress threat detection review.
   'threat_detection_review',
+  // #5784 W03 — Intune endpoint management review over the #5327 sync tables.
+  'endpoint_management_review',
+  // #5784 W04 — the vulnerability detail artifact.
+  'vulnerability_management',
   // #5784 W06 — the identity and access review (interactive sign-ins).
   'identity_access_review',
 ] as const satisfies readonly string[];

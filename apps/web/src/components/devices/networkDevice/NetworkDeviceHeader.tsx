@@ -1,8 +1,8 @@
 // The page header card: type icon tile, name/type/approval/online badges,
 // the IP/MAC/manufacturer subtitle line, and the header-level actions (Open
-// Web UI, Manage in Discovery).
+// Web UI, Settings).
 
-import { ChevronRight, MapPin, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
+import { Settings, MapPin, Wifi, WifiOff, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { DiscoveredAsset } from '../../discovery/DiscoveredAssetList';
 import { typeConfig, approvalStatusConfig } from '../../discovery/DiscoveredAssetList';
@@ -24,6 +24,7 @@ export function NetworkDeviceHeader({
   devicesError,
   onRetryDevices,
   onAnnounce,
+  onOpenSettings,
 }: {
   asset: DiscoveredAsset;
   displayName: string;
@@ -39,6 +40,7 @@ export function NetworkDeviceHeader({
   devicesError: boolean;
   onRetryDevices: () => void;
   onAnnounce: (message: string) => void;
+  onOpenSettings: () => void;
 }) {
   const { t } = useTranslation('devices');
   return (
@@ -97,9 +99,9 @@ export function NetworkDeviceHeader({
             </div>
           </div>
         </div>
-        {/* Approve / reclassify remain in Discovery until slice 3 of #1424
-            brings them inline; unlink for manual links is available inline on
-            the Monitoring tab. Other actions link out for now. */}
+        {/* The device page owns this asset now (spec §10, D7): Settings is the
+            one way in, and the old "Manage in Discovery" hand-off is gone —
+            Discovery links HERE, not the other way round. */}
         <div className="flex items-center gap-2">
           <ProxyConnectPopover
             variant="header"
@@ -113,14 +115,15 @@ export function NetworkDeviceHeader({
             onRetryDevices={onRetryDevices}
             onAnnounce={onAnnounce}
           />
-          <a
-            href={`/discovery?asset=${asset.id}#assets`}
-            data-testid="network-detail-manage-discovery"
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          <button
+            type="button"
+            data-testid="network-detail-settings"
+            onClick={onOpenSettings}
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {t('networkDeviceDetailPage.manageInDiscovery')}
-            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
-          </a>
+            <Settings aria-hidden="true" className="h-4 w-4" />
+            {t('networkDeviceDetailPage.header.settings')}
+          </button>
         </div>
       </div>
     </div>

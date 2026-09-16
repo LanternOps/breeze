@@ -40,6 +40,7 @@ import { showToast } from '../shared/Toast';
 import DeliverableTemplatesPage from './DeliverableTemplatesPage';
 import type { TemplateSet } from '../../lib/api/deliverableTemplates';
 import type { ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
+import { MANAGED_EVIDENCE_REPORT_TYPES } from '@breeze/shared';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -262,7 +263,13 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  it('offers every managed evidence report type on the item form, defaulting to None (#5784 W02)', async () => {
+  // #5784 W02 shipped the first managed-evidence type, so the picker now has
+  // options and the empty state is gone. The picker still defaults to None —
+  // auto-evidence is opt-in, never inherited by an existing template item.
+  // W03 and W04 registered further types (endpoint_management_review,
+  // vulnerability_management); the assertion below reads the registry
+  // directly so later waves need no edit here.
+  it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
     render(<DeliverableTemplatesPage />);
     const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
 
@@ -271,10 +278,10 @@ describe('DeliverableTemplatesPage', () => {
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
     // None stays the default — auto-evidence is opt-in per item.
     expect(select.value).toBe('');
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toContain('threat_detection_review');
-    // W01's empty state is gone now that the registry has a member.
-    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).toBeNull();
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
+    );
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {

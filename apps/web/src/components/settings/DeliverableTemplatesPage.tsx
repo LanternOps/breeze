@@ -581,6 +581,19 @@ export default function DeliverableTemplatesPage() {
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
+                        {/* Widening cast: the tuple is a literal type, so
+                            `.length === 0` is a ts(2367) error once it has
+                            members (non-empty from #5784 W02 on). The empty
+                            state still has to render if every type is ever
+                            retired. */}
+                        {(MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0 && (
+                          <p
+                            className="mt-1 text-xs text-muted-foreground"
+                            data-testid="deliverable-template-item-auto-evidence-empty"
+                          >
+                            {t('form.autoEvidenceEmpty')}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div>

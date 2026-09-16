@@ -6,6 +6,12 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
   },
+  // #5784 W04: vulnerability_management's shared loader elevates the GLOBAL CVE
+  // catalog read out of the request's org context, so the parameterized arms
+  // below reach these two. They pass the callback straight through — the site
+  // scope under test is bound by the DEVICE query, not by the context helper.
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 import { db } from '../db';
@@ -34,6 +40,8 @@ const REPORT_TYPES: readonly ReportType[] = [
   'security_compliance_posture',
   'hardware_lifecycle',
   'threat_detection_review',
+  'endpoint_management_review',
+  'vulnerability_management',
   'identity_access_review',
 ];
 /**
@@ -158,6 +166,33 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
+  // #5784 W04. This arm must NOT be the bare `emptyRowsReport()` the other
+  // row-shaped types get: a summary-less result falls through buildReportPdf's
+  // arm to renderGenericReport, whose "No data available for the selected
+  // filters." is indistinguishable from "we checked every device and found
+  // none". Nothing was queried, so the counts are UNMEASURED, and the artifact
+  // has to say which of the two happened.
+  it('vulnerability_management returns a shaped, unmeasured summary for restricted-empty, not a bare empty result', async () => {
+    const result = await generateReport(
+      'vulnerability_management',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as {
+      open?: { critical: number | null; knownExploited: number | null };
+      dataGaps?: string[];
+      closedThisPeriod?: { count: number | null };
+    };
+    expect(summary).toBeTruthy();
+    expect(summary.open?.critical).toBeNull();
+    expect(summary.open?.knownExploited).toBeNull();
+    expect(summary.closedThisPeriod?.count).toBeNull();
+    expect(summary.dataGaps?.join(' ')).toMatch(/no sites in scope/i);
+  });
+
   it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority for %s',
     async (type) => {
@@ -230,6 +265,33 @@ describe('generateReport mandatory execution authority', () => {
       expect(params).not.toContain(SITE_B);
     },
   );
+
+  // #5784 W03. The generic `emptyRowsReport()` shape carries NO summary, and
+  // buildReportPdf's endpoint-management arm is guarded on the summary being
+  // present — so that shape degrades the artifact to renderGenericReport's
+  // one-line "No data available for the selected filters". A technician with no
+  // permitted sites must be told that, not shown a blank all-clear.
+  it('endpoint_management_review returns a SHAPED zero-safe summary, not a bare empty result', async () => {
+    const result = await generateReport(
+      'endpoint_management_review',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as Record<string, unknown> | undefined;
+    expect(summary).toBeTruthy();
+    expect(summary).toMatchObject({
+      enrolment: {
+        intuneDevices: null, breezeDevices: null, breezeWithoutIntune: null, intuneWithoutBreezeLink: null,
+      },
+      compliance: { byState: null },
+    });
+    expect(Array.isArray(summary?.rows)).toBe(true);
+    expect(summary?.historyCaveat).toBeTruthy();
+    expect(summary?.dataGaps).toEqual([expect.stringMatching(/No sites are in scope/)]);
+  });
 
   it.each(REPORT_TYPES)(
     '%s preserves unrestricted generation without a site predicate',

@@ -6,6 +6,7 @@ import {
   CalendarClock,
   FileText,
   KeyRound,
+  Laptop,
   Loader2,
   Plus,
   ShieldAlert,
@@ -25,6 +26,16 @@ import {
   ThreatDetectionOptionsForm,
   type ThreatDetectionOptions,
 } from './ThreatDetectionOptionsForm';
+import {
+  DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
+  EndpointManagementOptionsForm,
+  type EndpointManagementOptions,
+} from './EndpointManagementOptionsForm';
+import {
+  DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS,
+  VulnerabilityManagementOptionsForm,
+  type VulnerabilityManagementOptions,
+} from './VulnerabilityManagementOptionsForm';
 import {
   DEFAULT_IDENTITY_ACCESS_OPTIONS,
   IdentityAccessOptionsForm,
@@ -81,6 +92,8 @@ const reportTypeValues: TemplateReportType[] = [
   'security_compliance_posture',
   'hardware_lifecycle',
   'threat_detection_review',
+  'endpoint_management_review',
+  'vulnerability_management',
   'identity_access_review',
   'devices',
   'alerts',
@@ -136,6 +149,42 @@ const defaultTemplates: ReportTemplate[] = [
     defaults: {
       name: 'Threat Detection Review',
       type: 'threat_detection_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: ShieldAlert,
+    tone: {
+      iconBg: 'bg-rose-500/15',
+      iconColor: 'text-rose-600'
+    }
+  },
+  {
+    id: 'endpoint_management_review',
+    name: 'Intune Endpoint Management Review',
+    description:
+      'Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.',
+    defaults: {
+      name: 'Intune Endpoint Management Review',
+      type: 'endpoint_management_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Laptop,
+    tone: {
+      iconBg: 'bg-cyan-500/15',
+      iconColor: 'text-cyan-600'
+    }
+  },
+  {
+    id: 'vulnerability_management',
+    name: 'Vulnerability Management Report',
+    description:
+      'Open findings by severity with actively exploited (KEV) and high-EPSS called out separately, the patchable findings to remediate first, and the accepted-risk exceptions expiring next period.',
+    defaults: {
+      name: 'Vulnerability Management Report',
+      type: 'vulnerability_management',
       dateRange: { preset: 'last_30_days' },
       schedule: 'monthly',
       format: 'pdf'
@@ -372,6 +421,10 @@ export default function ReportTemplates() {
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
   const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
+  const [endpointManagementTemplate, setEndpointManagementTemplate] = useState<ReportTemplate | null>(null);
+  const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+  const [vulnerabilityTemplate, setVulnerabilityTemplate] = useState<ReportTemplate | null>(null);
+  const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
   const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
   const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -463,6 +516,16 @@ export default function ReportTemplates() {
       if (type === 'threat_detection_review') {
         setThreatOptions(DEFAULT_THREAT_DETECTION_OPTIONS);
         setThreatTemplate(template);
+        return;
+      }
+      if (type === 'endpoint_management_review') {
+        setEndpointManagementOptions(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+        setEndpointManagementTemplate(template);
+        return;
+      }
+      if (type === 'vulnerability_management') {
+        setVulnerabilityOptions(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
+        setVulnerabilityTemplate(template);
         return;
       }
       if (type === 'identity_access_review') {
@@ -687,6 +750,54 @@ export default function ReportTemplates() {
                 onCancel={() => setThreatTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(threatTemplate, { ...threatOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {endpointManagementTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(endpointManagementTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <EndpointManagementOptionsForm
+                value={endpointManagementOptions}
+                onChange={setEndpointManagementOptions}
+                busy={creatingId === endpointManagementTemplate.id}
+                submitLabel={t('reports.endpointManagementOptions.createReport')}
+                onCancel={() => setEndpointManagementTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(endpointManagementTemplate, { ...endpointManagementOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {vulnerabilityTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(vulnerabilityTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <VulnerabilityManagementOptionsForm
+                value={vulnerabilityOptions}
+                onChange={setVulnerabilityOptions}
+                busy={creatingId === vulnerabilityTemplate.id}
+                submitLabel={t('reports.vulnerabilityManagementOptions.createReport')}
+                onCancel={() => setVulnerabilityTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(vulnerabilityTemplate, { ...vulnerabilityOptions });
                 }}
               />
             </div>

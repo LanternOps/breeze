@@ -11,6 +11,10 @@ import type { IdentityAccessSummary } from '../types/identityAccessReport';
 // reportPdf.threatDetection.test.ts. A type with no arm falls silently through
 // to renderGenericReport, and that spy is the only thing that catches it.
 import * as threatDetectionPdf from './threatDetectionPdf';
+import type { EndpointManagementSummary } from '../types/endpointManagementReport';
+import { renderEndpointManagementReport } from './endpointManagementPdf';
+import type { VulnerabilityManagementSummary } from '../types/vulnerabilityManagementReport';
+import { renderVulnerabilityManagementReport } from './vulnerabilityManagementPdf';
 import * as identityAccessPdf from './identityAccessPdf';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
@@ -148,7 +152,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | IdentityAccessSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary | EndpointManagementSummary | VulnerabilityManagementSummary | IdentityAccessSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -178,6 +182,8 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   identity_access_review: 'Identity & Access Review',
   hardware_lifecycle: 'Hardware Lifecycle',
   threat_detection_review: 'Threat Detection Review',
+  endpoint_management_review: 'Endpoint Management Review',
+  vulnerability_management: 'Vulnerability Management',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2043,6 +2049,64 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
     threatDetectionPdf.renderThreatDetectionReport(
       doc,
       opts.summary as ThreatDetectionSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'endpoint_management_review'
+    && opts.summary
+    && Array.isArray((opts.summary as EndpointManagementSummary).rows)
+  ) {
+    // #5784 W03. Self-contained chrome for the same reason as the arm above:
+    // the device, trend and licence tables paginate on their own.
+    //
+    // A type with NO arm here silently falls through to renderGenericReport,
+    // which drops the entire designed summary and prints a plain row table —
+    // a plausible-looking, wrong PDF on both the portal (renderRunPdf) and the
+    // scheduled-email path. reportPdf.endpointManagement.test.ts is what
+    // catches that regression.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderEndpointManagementReport(
+      doc,
+      opts.summary as EndpointManagementSummary,
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'vulnerability_management'
+    && opts.summary
+    && typeof (opts.summary as VulnerabilityManagementSummary).open === 'object'
+  ) {
+    // #5784 W04. WITHOUT this arm the type falls through to
+    // `renderGenericReport` below, which prints the rows as a plain table and
+    // silently drops the whole designed summary — the exceptions section
+    // included. Self-contained chrome: both tables paginate on their own.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderVulnerabilityManagementReport(
+      doc,
+      opts.summary as VulnerabilityManagementSummary,
       {
         generatedAt: opts.generatedAt,
         partnerName: opts.branding?.name ?? null,

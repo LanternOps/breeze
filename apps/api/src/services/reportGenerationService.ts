@@ -14,12 +14,21 @@ import {
   reportRuns
 } from '../db/schema';
 import type { ExecutiveSummary } from '@breeze/shared';
+import { emptyVulnerabilityManagementSummary } from '@breeze/shared';
+import {
+  ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+  emptyEndpointManagementSummary,
+} from '@breeze/shared';
 import {
   systemReportAuthorityFor,
   type ReportExecutionAuthority,
   type ReportGenerationAuthority,
 } from './siteScope';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
+
+/** Mirrors `endpointManagementConfigSchema`'s default. Duplicated rather than
+ *  imported because routes/reports/schemas.ts imports back from this module. */
+const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS = 14;
 
 export type ReportType =
   | 'device_inventory'
@@ -52,6 +61,16 @@ export type ReportType =
   // period, with an explicit coverage window. Generated on demand and by the
   // managed-evidence system path; see services/threatDetectionReport.ts.
   | 'threat_detection_review'
+  // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
+  // posture from the #5327 sync tables, with the freshness of each domain
+  // printed. Current inventory plus rollup trend only — entity-level history is
+  // not reconstructible (see services/endpointManagementReport.ts).
+  | 'endpoint_management_review'
+  // #5784 W04. Service-plan evidence: the vulnerability DETAIL artifact.
+  // security_compliance_posture keeps its single control line; this is the
+  // findings, exceptions and remediation ranking a vulnerability-management
+  // deliverable needs. See services/vulnerabilityManagementReport.ts.
+  | 'vulnerability_management'
   // #5784 W06. Service-plan evidence: interactive sign-in review, identity
   // inventory, conditional access posture and remote-access client presence.
   // Org-wide by construction — M365 identity has no site dimension — so a
@@ -907,6 +926,18 @@ async function dispatchReportGeneration(
       const { generateThreatDetectionReport } = await import('./threatDetectionReport');
       return generateThreatDetectionReport(orgId, config, authority, evidence);
     }
+    case 'endpoint_management_review': {
+      // `await import` keeps a heavy generator off the hot path and avoids the
+      // module cycle back to `assertReportExecutionPreflight`.
+      const { generateEndpointManagementReport } = await import('./endpointManagementReport');
+      return generateEndpointManagementReport(orgId, config, authority, evidence);
+    }
+    // #5784 W04. The dynamic import keeps a heavy generator out of the hot path
+    // and avoids the module cycle back to `assertReportExecutionPreflight`.
+    case 'vulnerability_management': {
+      const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
+      return generateVulnerabilityManagementReport(orgId, config, authority, evidence);
+    }
     // #5784 W06. Same managed-evidence shape as W02 above: `authority` is passed
     // as-is because a system authority legitimately reaches this arm, and the
     // generator itself decides what a RESTRICTED authority gets (nothing —
@@ -991,6 +1022,46 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // result, not only the zero-sites case.
     case 'identity_access_review':
       return emptyRowsReport();
+    // #5784 W03 — generated on demand, so a restricted-empty authority gets a
+    // zero-safe shape rather than a stored-artifact refusal. It needs its OWN
+    // case, not `emptyRowsReport()`: that returns no `summary` at all, and
+    // `buildReportPdf`'s endpoint-management arm is guarded on the summary
+    // being present, so the artifact would fall through to renderGenericReport
+    // and print one line — "No data available for the selected filters" — which
+    // reads as "nothing to report" to a technician whose real situation is
+    // "your access scope contains no sites". This short-circuit runs BEFORE the
+    // dispatch switch, so the generator's own empty branch never sees it.
+    case 'endpoint_management_review':
+      return {
+        rows: [],
+        rowCount: 0,
+        summary: emptyEndpointManagementSummary({
+          orgId,
+          generatedAt: new Date().toISOString(),
+          thresholdDays: ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS,
+          dataGap: ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+        }) as unknown as Record<string, unknown>,
+      };
+    // #5784 W04. NOT `emptyRowsReport()`: that returns no `summary`, and
+    // `buildReportPdf`'s vulnerability_management arm requires one — a
+    // summary-less result falls through to `renderGenericReport`, which prints
+    // "No data available for the selected filters.", phrasing indistinguishable
+    // from "we checked every device and found none". A site-restricted
+    // authority with zero sites queried nothing, so the counts are NOT
+    // MEASURED and the artifact says which of the two happened.
+    case 'vulnerability_management': {
+      const generatedAt = new Date().toISOString();
+      return {
+        rows: [],
+        rowCount: 0,
+        generatedAt,
+        summary: emptyVulnerabilityManagementSummary(
+          orgId,
+          generatedAt,
+          'This report ran under a site-restricted authority with no sites in scope, so no device was queried. The counts below are not measured — they are not zero.',
+        ) as unknown as Record<string, unknown>,
+      };
+    }
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before
     // dispatch ever runs, and an empty zero-safe shape would read as "the

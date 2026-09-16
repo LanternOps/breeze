@@ -13,8 +13,20 @@ import {
   PageHeader,
 } from './ui';
 
-/** Types a portal user may START. Mirrors the server's PORTAL_REPORT_TYPES —
- *  the generate endpoint refuses anything outside it. */
+/**
+ * The types a PORTAL USER may generate on demand — deliberately NARROWER than
+ * `PortalRunDto['type']`, which is the set that can be LISTED. Mirrors the
+ * server's PORTAL_REPORT_TYPES — the generate endpoint refuses anything
+ * outside it.
+ *
+ * #5784 W02/W03/W04: a managed-evidence run (`threat_detection_review`,
+ * `endpoint_management_review`, `vulnerability_management`) appears in the
+ * list once its occurrence is delivered, but the customer may never generate
+ * one — the artifact is the MSP's evidence, produced by the deliverable sweep
+ * (OD-10 = A). Keeping the two unions separate is what stops a later edit
+ * from wiring a generate button for an evidence type; the row rendering
+ * below reads `PortalRunDto` directly, so it needs no entry here.
+ */
 type GeneratableReportType =
   | 'security_compliance_posture'
   | 'executive_summary'
@@ -22,24 +34,25 @@ type GeneratableReportType =
 
 /** Every type that can APPEAR in this list. Wider than the generatable set:
  *  `portalRunListPredicate` has no type filter, so a managed-evidence run
- *  (#5784 W02) reaches the list once its occurrence is delivered. Keeping the
- *  two unions apart is what makes "listed but not generatable" (OD-10 = A) a
- *  compile-time fact rather than a convention. */
+ *  (#5784 W02/W03/W04) reaches the list once its occurrence is delivered.
+ *  Keeping the two unions apart is what makes "listed but not generatable"
+ *  (OD-10 = A) a compile-time fact rather than a convention. */
 type ReportType =
   | GeneratableReportType
   | 'threat_detection_review'
+  | 'vulnerability_management'
   | 'identity_access_review';
 
 /** What the reader is told is happening, in their own language. The MSP-side
- *  report definition names are technical; these are not. */
-const GENERATING_COPY: Record<ReportType, string> = {
+ *  report definition names are technical; these are not. Total over
+ *  `GeneratableReportType` — a missing entry is a typecheck failure. */
+const GENERATING_COPY: Record<GeneratableReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
   hardware_lifecycle: 'Generating your hardware lifecycle plan…',
   // Never shown in practice — there is no button that starts one — but the
   // map is a total Record, so a missed entry is a typecheck failure.
   threat_detection_review: 'Preparing your threat detection review…',
-  identity_access_review: 'Preparing your identity and access review…',
 };
 
 /**

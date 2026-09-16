@@ -172,12 +172,21 @@ export default function DeliverableForm({
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   // Managed evidence definitions this org could link a deliverable to. The
-  // tuple is non-empty as of #5784 W02, so this always fetches; W01's
-  // `length === 0` early return is gone rather than kept as dead code.
-  // Auto-evidence is optional, so a failed fetch falls back to the empty-list
-  // state rather than blocking the form (it can still be saved with no
-  // linked report).
+  // tuple was empty in W01 and each later wave (W02 threat_detection_review,
+  // W03 endpoint_management_review, ...) appends one type; once it is
+  // non-empty this fetches /reports for real. Auto-evidence is optional, so a
+  // failed fetch falls back to the empty-list state rather than blocking the
+  // form (it can still be saved with no linked report).
+  //
+  // The widening cast is load-bearing: `MANAGED_EVIDENCE_REPORT_TYPES` is a
+  // literal tuple, so once it has members TypeScript narrows `.length` to its
+  // literal count and `=== 0` becomes a ts(2367) "no overlap" error. The guard
+  // itself must stay — the tuple can legitimately be empty again if every type
+  // is retired.
   useEffect(() => {
+    // Widened: the tuple is non-empty from #5784 W04 on, so a literal-typed
+    // comparison would be a tsc error rather than the runtime guard it is.
+    if ((MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0) return;
     let cancelled = false;
     void (async () => {
       try {

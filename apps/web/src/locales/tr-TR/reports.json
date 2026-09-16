@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Sunucu değişimini planla (yıl sonra)",
       "serverReplaceAgeYearsHelp": "Sunucular kendi zaman çizelgesini izler ve raporun ayrı bir bölümünde listelenir."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "includeAccepted": "Kabul edilen riskleri ve istisnaları dahil et",
+      "includeAcceptedHelp": "Kabul edilen ve azaltılan bulguları listeler; kabulü sonraki dönemde sona erenleri işaretler.",
+      "severity": {
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "severityFloor": "Listelenecek en düşük önem derecesi",
+      "severityFloorHelp": "Bu önem derecesinin altındaki bulgular tablolara alınmaz. Etkin olarak sömürülen (KEV) veya EPSS değeri yüksek bir bulguyu asla gizlemez; bunlar her zaman sayılır ve listelenir.",
+      "topN": "Giderme listesi uzunluğu",
+      "topNHelp": "«Önce gider» tablosunun kaç yamalanabilir bulgu içereceği. Rapor, sessizce kesmek yerine kaç bulgunun dışarıda kaldığını belirtir."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Rapor Yapılandırması",
       "description": "Kaydetmeden tek seferlik bir rapor oluşturun.",
@@ -284,6 +300,14 @@
         "replaceNow": "Şimdi değiştir",
         "unknownAge": "Yaş bilinmiyor"
       },
+      "vulnerabilityManagement": {
+        "critical": "Açık kritik",
+        "expiringExceptions": "Sonraki dönemde sona eren istisnalar",
+        "high": "Açık yüksek",
+        "highEpss": "Sömürülme olasılığı yüksek",
+        "knownExploited": "Etkin olarak sömürülen (KEV)",
+        "notMeasured": "Yok"
+      },
       "reportTypes": {
         "ai_fleet_design": "Filo Tasarımı",
         "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
@@ -292,11 +316,13 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
-        "threat_detection_review": "Tehdit Tespiti İncelemesi"
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "threatDetection": {
         "agents": "Tespit aracısı olan uç noktalar",
@@ -316,6 +342,15 @@
       "viewModes": {
         "chart": "Grafik",
         "table": "Masa"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Kaydı olmayan Breeze cihazları",
+        "dataGaps": "Ölçemediklerimiz",
+        "intuneDevices": "Intune'a kayıtlı",
+        "intuneWithoutBreezeLink": "Eşleşmemiş Intune kayıtları",
+        "noncompliant": "Uyumlu değil",
+        "notMeasured": "Yok",
+        "staleEnrolments": "Eskimiş kayıtlar"
       },
       "identityAccess": {
         "notMeasured": "Yok",
@@ -375,11 +410,13 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
-        "threat_detection_review": "Tehdit Tespiti İncelemesi"
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -887,12 +924,14 @@
         "devices": "Cihazlar",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
-        "threat_detection_review": "Tehdit Tespiti İncelemesi"
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "schedules": {
         "daily": "Günlük",
@@ -927,6 +966,10 @@
           "description": "Müşteriye hazır cihaz değiştirme planı: yaş, garanti, değiştirme tarihleri ve işletim sistemi destek durumu, aşamalı bir öneriyle.",
           "name": "Donanım Yaşam Döngüsü Raporu"
         },
+        "vulnerability_management": {
+          "description": "Önem derecesine göre açık bulgular; etkin olarak sömürülenler (KEV) ve EPSS değeri yüksek olanlar ayrıca belirtilir, önce giderilecek yamalanabilir bulgular ve sonraki dönemde süresi dolan kabul edilmiş risk istisnaları listelenir.",
+          "name": "Güvenlik Açığı Yönetimi Raporu"
+        },
         "identity_access_review": {
           "name": "Kimlik ve Erişim İncelemesi",
           "description": "Bir döneme ait etkileşimli Microsoft 365 oturum açmaları; kimlik envanteri, atıl hesaplar, koşullu erişim durumu ve uzaktan erişim istemcilerinin varlığıyla birlikte — gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir."
@@ -938,6 +981,10 @@
         "threat_detection_review": {
           "description": "Bir dönem için elde tutulan tehdit tespitleri; gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir — bağlı olmayan bir kaynak için asla sıfır yazılmaz.",
           "name": "Tehdit Tespiti İncelemesi"
+        },
+        "endpoint_management_review": {
+          "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
+          "name": "Intune Uç Nokta Yönetimi İncelemesi"
         }
       },
       "title": "Rapor Şablonları",
@@ -952,6 +999,16 @@
       "includeCarriedInHelp": "Bu dönemden önce açılmış ve hâlâ çözülmemiş tespitler, dönemin kendi tespitleriyle birlikte listelenir.",
       "topIncidents": "En fazla listele (tespit)",
       "topIncidentsHelp": "Yoğun bir ayın yüz sayfalık PDF üretmemesi için tespit tablosunu sınırlar. Rapor, sessizce kesmek yerine kaç tanesinin dışarıda bırakıldığını belirtir."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Vazgeç",
+      "createReport": "Rapor oluştur",
+      "includeLicences": "Lisans koltuklarını dahil et",
+      "includeLicencesHelp": "Her Microsoft 365 ürünü için kullanılan koltukları satın alınan koltuklarla karşılaştırarak gösterir.",
+      "staleEnrolmentDays": "Şu kadar gündür sessiz kayıtları işaretle (gün)",
+      "staleEnrolmentDaysHelp": "Bu kadar gündür Intune ile iletişim kurmayan bir cihaz eskimiş kayıt sayılır. Ölçüt, rapor dönemi değil Intune eşitleme sıklığıdır.",
+      "trendDays": "Uyumluluk eğilimi penceresi (gün)",
+      "trendDaysHelp": "Günlük uyumluluk eğiliminin Microsoft 365 durum özetlerinde ne kadar geriye gittiği."
     },
     "identityAccessOptions": {
       "cancel": "İptal",

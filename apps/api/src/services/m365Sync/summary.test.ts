@@ -174,6 +174,43 @@ describe('loadSyncSummary', () => {
 describe('loadDomainFreshness', () => {
   it('reads asOf from last_complete_snapshot_at, never last_success_at', async () => {
     mocks.stateRows = [state({
+      domain: 'intune_devices',
+      lastStatus: 'partial',
+      lastSuccessAt: new Date('2026-09-30T04:00:00Z'),
+      lastCompleteSnapshotAt: new Date('2026-09-02T04:00:00Z'),
+      truncated: true,
+      sources: { intuneDevices: 'ok' },
+    })];
+    const got = await loadDomainFreshness(ORG, ['intune_devices']);
+    // A partial run advances last_success_at without enumerating the tenant.
+    // Using it would claim a freshness the data does not have (summary.ts).
+    expect(got.intune_devices.asOf).toBe('2026-09-02T04:00:00.000Z');
+    expect(got.intune_devices.lastStatus).toBe('partial');
+    expect(got.intune_devices.truncated).toBe(true);
+    expect(got.intune_devices.sources).toEqual({ intuneDevices: 'ok' });
+  });
+
+  it('reports a never-scheduled domain as asOf null rather than omitting it', async () => {
+    const got = await loadDomainFreshness(ORG, ['intune_devices']);
+    expect(got.intune_devices).toEqual({
+      asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false,
+    });
+  });
+
+  it('flags the domain as unlicensed from its OWN primary source key', async () => {
+    mocks.stateRows = [state({ domain: 'skus', lastStatus: 'success', sources: { subscribedSkus: 'unlicensed' } })];
+    const got = await loadDomainFreshness(ORG, ['skus']);
+    expect(got.skus.unlicensed).toBe(true);
+  });
+
+  it('issues exactly one query for several domains', async () => {
+    const got = await loadDomainFreshness(ORG, ['intune_devices', 'skus']);
+    expect(mocks.selectCalls).toBe(1);
+    expect(Object.keys(got).sort()).toEqual(['intune_devices', 'skus']);
+  });
+
+  it('reads asOf from last_complete_snapshot_at for signin_events, never last_success_at', async () => {
+    mocks.stateRows = [state({
       domain: 'signin_events',
       lastStatus: 'partial',
       lastSuccessAt: new Date('2026-09-30T04:00:00.000Z'),
@@ -190,14 +227,14 @@ describe('loadDomainFreshness', () => {
     expect(got.signin_events.unlicensed).toBe(false);
   });
 
-  it('reports a never-scheduled domain as asOf null rather than omitting it', async () => {
+  it('reports a never-scheduled signin_events domain as asOf null rather than omitting it', async () => {
     const got = await loadDomainFreshness(ORG, ['signin_events']);
     expect(got.signin_events).toEqual({
       asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false,
     });
   });
 
-  it('flags the domain unlicensed from ITS OWN primary source key', async () => {
+  it('flags signin_events unlicensed from ITS OWN primary source key', async () => {
     mocks.stateRows = [state({
       domain: 'signin_events',
       sources: { signinEvents: 'unlicensed' },
@@ -206,7 +243,7 @@ describe('loadDomainFreshness', () => {
     expect(got.signin_events.unlicensed).toBe(true);
   });
 
-  it('issues exactly one query for several domains', async () => {
+  it('issues exactly one query for several domains including signin_events', async () => {
     await loadDomainFreshness(ORG, ['signin_events', 'ca_policies', 'users']);
     expect(mocks.selectCalls).toBe(1);
   });

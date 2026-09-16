@@ -1834,7 +1834,9 @@
         "assetsDescription": "Visão unificada de polling SNMP e verificações de rede por ativo descoberto.",
         "table": {
           "asset": "Ativo",
-          "overall": "Geral"
+          "overall": "Geral",
+          "reachability": "Acessibilidade",
+          "collection": "Coleta"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1886,7 +1888,29 @@
         "disabling": "Desativando...",
         "yesDisable": "Sim, desativar",
         "monitoringNotActive": "O monitoramento não está ativo para este ativo.",
-        "saving": "Salvando..."
+        "saving": "Salvando...",
+        "openSettings": "Configurações…",
+        "reachability": {
+          "responding": "Respondendo",
+          "notResponding": "Não responde",
+          "unverified": "Não verificado",
+          "sources": {
+            "networkCheck": "verificação de rede",
+            "probe": "verificar agora",
+            "scan": "varredura",
+            "unifi": "controladora UniFi",
+            "snmp": "consulta SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Coletando",
+          "partial": "Parcial",
+          "no_template": "Sem modelo",
+          "failing": "Com falha",
+          "paused": "Em pausa",
+          "never_polled": "Nunca consultado",
+          "not_configured": "Não configurado"
+        }
       },
       "MonitoringPage": {
         "tabs": {
