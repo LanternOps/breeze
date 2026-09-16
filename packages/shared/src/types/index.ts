@@ -851,6 +851,7 @@ export * from './hardwareLifecycleReport';
 // ============================================
 
 export * from './portalVisibility';
+export * from './portalChromeAccent';
 export * from './portalService';
 
 // ============================================
