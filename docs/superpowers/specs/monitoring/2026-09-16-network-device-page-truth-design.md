@@ -135,7 +135,11 @@ type Reachability = {
 `buildScanUpdateSet`), disappeared sweep (`:1287`), auto-approve decision (`:1157`),
 `unifiSyncService.ts:168`, `unifiTelemetryService.ts:68`. Manual asset creation
 (`routes/devices/network.ts:390`) leaves both NULL. `last_seen_at` keeps its meaning (last positive
-sighting) and is not changed.
+sighting) and is not changed. Rows that predate the columns: an undated `is_online = false` is no
+observation at all (the sweep never stamped anything, so its age is unknowable), while an undated
+`is_online = true` falls back to `last_seen_at`, labelled `scan`. An inactive SNMP device contributes
+nothing; a cron-scheduled discovery profile gets the 24 h window (only `interval` schedules yield a
+cadence).
 
 ### 4.4 Consumers (all switch in W01)
 
@@ -145,8 +149,10 @@ sighting) and is not changed.
   the row also carries `reachability` so the devices list can show source and age on hover.
 - `GET /monitoring/assets` and `/assets/:id` (`routes/monitoring.ts:234,270`) add `reachability`.
 - `routes/discovery.ts:1825` (asset status export) uses the same mapping.
-- AI tools that report asset online state (`services/aiToolsNetwork.ts`, `aiToolsMonitoring.ts`) read
-  `reachability` and phrase the source ("responding via SNMP 2 minutes ago"), never a bare "online".
+- No AI tool reports asset online state today (enumerated against main). `query_monitors`
+  (`services/aiToolsMonitoring.ts`) gains `assetReachability` per asset, and a Tier-1 read-only
+  `get_network_asset_reachability` tool is added; both phrase the source ("responding via SNMP 2 minutes
+  ago"), never a bare "online".
 - `is_online` stays available on every response for one release and is documented as
   "last scan/controller verdict".
 
@@ -158,8 +164,12 @@ sighting) and is not changed.
 1. Resolve and lock the asset row; require `ip_address` and `site_id`. Select an online, non-ephemeral
    agent in the asset's site (`selectExecutionAgentForMonitor` extracted to
    `services/networkExecutorSelection.ts` and shared by the monitor worker, the monitors `/test`
-   route, and this probe; no org-wide fallback for asset-bound work). No agent → 409
-   `{ code: 'NO_AGENT_IN_SITE' }`.
+   route, and this probe; no org-wide fallback for asset-bound work, and Quick Support ephemeral agents
+   are never executors; sharing the picker means the monitors `/test` route loses its org-wide fallback
+   and gains the ephemeral exclusion, a behaviour change the W01 PR calls out). No agent → 409
+   `{ code: 'NO_AGENT_IN_SITE' }`. The probe's asset and site ids ride the command payload so the
+   socket-holding API instance can record the result expectation; the 8 s await is instance-local and
+   best-effort, the persisted stamp is the contract.
 2. Insert a pending probe stamp on the asset: `last_probe_at = now()`, `last_probe_status = 'pending'`,
    `last_probe_ref = <command id>`.
 3. Dispatch `network_ping` (existing agent command, `services/monitorCommands.ts` mapping) and await
@@ -217,9 +227,9 @@ exist but the latest value is null with no error (legacy agents' table GETs). Th
 
 ### 6.3 Metric history
 
-`GET /monitoring/assets/:id/metrics?oid=<base or instance oid>&from=&to=&bucket=<auto|1m|5m|1h|1d>`
-returns `{ series: [{ oid, instance, name, points: [[ts, value]] }] }`, server-side bucketed with
-`date_trunc` + `avg` for gauges and `max` for counters (the template entry's `type` decides; counters
+`GET /monitoring/assets/:id/metrics?oid=<base or instance oids, CSV of up to 64>&from=&to=&bucket=<auto|1m|5m|1h|1d>`
+returns `{ series: [{ oid, instance, name, points: [[ts, value]] }] }`, server-side bucketed by
+epoch-floor arithmetic (`date_trunc` has no 5-minute unit) with `avg` for gauges and `max` for counters (the template entry's `type` decides; counters
 are additionally returned as reset-aware deltas when `&delta=1`). Hard caps: 90-day range, 2 000 points
 per series, 64 series per request. Requires the composite index of §7.4.
 
@@ -293,10 +303,13 @@ the bounds cap the rest, and the reaper below keeps the table bounded.
 
 ### 7.5 Index and retention (W01)
 
-Migration adds `snmp_metrics (device_id, oid, timestamp DESC)` and drops nothing. A daily job
-`jobs/snmpMetricsRetention.ts` deletes rows older than `SNMP_METRICS_RETENTION_DAYS` (default 30) in
-batches of 10 000 (`ctid`-bounded loop, system DB context), logging the count. Alert thresholds
-(`snmp_alert_thresholds`) are unaffected.
+Migration adds `snmp_metrics (device_id, oid, timestamp DESC)` (a `-- @no-transaction` file using
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`, with an operator note to pre-build it on large production
+tables) and drops nothing. Retention already exists: `jobs/snmpRetention.ts` is ctid-batched, driven by
+`SNMP_METRICS_RETENTION_DAYS`, logs counts and runs four times a day from the schedule registry, so no
+second job is added (it would double-delete and fail `scheduleRegistry.contract.test.ts`). Its default
+rises from 7 to 30 days so the 30-day charts and the 90-day range are not structurally empty. Alert
+thresholds (`snmp_alert_thresholds`) are unaffected.
 
 ## 8. Template suggestion and the Xerox template (D5)
 
@@ -449,7 +462,7 @@ rows), reserved names, re-checked against `ls apps/api/migrations | sort | tail 
 | File | Wave |
 |---|---|
 | `2026-10-17-110000-discovered-assets-status-provenance-and-probe.sql` | W01 |
-| `2026-10-17-110100-snmp-metrics-instances-errors-index.sql` | W01 |
+| `2026-10-17-110100-snmp-metrics-instances-errors-index.sql` (`-- @no-transaction`, index built `CONCURRENTLY`) | W01 |
 | `2026-10-17-110200-snmp-devices-poll-seq.sql` | W01 |
 | `2026-10-17-110300-snmp-templates-prefixes-modes-xerox.sql` (DML: seeds; elects system scope) | W03 |
 
@@ -487,7 +500,7 @@ rows), reserved names, re-checked against `ls apps/api/migrations | sort | tail 
 
 | Wave | Ships | Depends on |
 |---|---|---|
-| W01 API truth | §4 (service, columns, all consumers), §5 probe, §6.1–6.3 (`no_template`, `collection`, `/metrics`), §7.3 ingestion, §7.5 index + reaper, §9 read-time model mask, `nicVendor`, executor-selection extraction | — |
+| W01 API truth | §4 (service, columns, all consumers), §5 probe, §6.1–6.3 (`no_template`, `collection`, `/metrics`), §7.3 ingestion, §7.5 index + retention default, §9 read-time model mask, `nicVendor`, executor-selection extraction | — |
 | W02 Agent acquisition | §7.1 `oidSpecs` + limits in the server command builder, §7.2/§7.4 agent walks and error rows, `classify.go` change, `poll_seq` cadence gating | W01 |
 | W03 Templates and identity | §8 prefixes, suggestion service + route + PUT behaviour, Xerox template, `mode`/`cadence` seeding; §9 identity resolution at ingest | W01 |
 | W04 Web settings surface | §10 modal, single-writer module + contract test, entry points, Discovery peek, Monitoring modal removal | W01 (W03 for the suggestion line, feature-detected: the section works without it) |
