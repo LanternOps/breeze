@@ -1828,6 +1828,7 @@
       },
       "reverseError": "Could not reverse the payment.",
       "reverseSuccess": "Payment reversed",
+      "reverseInQuickbooksToo": "Reverse this in QuickBooks too",
       "sendLink": "Send payment link",
       "setUp": "Set up",
       "shareLinkPrompt": "Share this payment link with your customer:",

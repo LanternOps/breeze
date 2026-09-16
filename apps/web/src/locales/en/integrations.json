@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Synced with tax difference"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Owed QuickBooks operations",
+    "owedLoadError": "Could not load owed operations. Reload the page to try again.",
+    "owedCount": "Pending operations: {{total}}",
+    "owedEmpty": "No owed operations",
+    "owedDelete": "Delete payment",
+    "owedPush": "Push payment",
+    "owedViewInvoice": "View invoice",
+    "owedInvoiceUnavailable": "Invoice unavailable",
+    "owedAge": "Age: {{minutes}} min",
     "quickbooksConnected": "QuickBooks connected.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks connection failed. Please try again.",
     "failedToStartTheQuickBooksConnection": "Failed to start the QuickBooks connection.",

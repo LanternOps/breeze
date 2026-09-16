@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Sincronizzato con differenza d'imposta"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Operazioni QuickBooks in sospeso",
+    "owedLoadError": "Impossibile caricare le operazioni in sospeso. Ricarica la pagina per riprovare.",
+    "owedCount": "Operazioni in sospeso: {{total}}",
+    "owedEmpty": "Nessuna operazione in sospeso",
+    "owedDelete": "Elimina pagamento",
+    "owedPush": "Invia pagamento",
+    "owedViewInvoice": "Visualizza fattura",
+    "owedInvoiceUnavailable": "Fattura non disponibile",
+    "owedAge": "In attesa da {{minutes}} min",
     "quickbooksConnected": "QuickBooks connesso.",
     "quickbooksConnectionFailedPleaseTryAgain": "Connessione QuickBooks non riuscita. Riprova.",
     "failedToStartTheQuickBooksConnection": "Impossibile avviare la connessione QuickBooks.",

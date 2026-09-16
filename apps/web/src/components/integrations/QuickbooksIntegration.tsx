@@ -62,6 +62,19 @@ interface QuickbooksStatus {
   pushPayments?: boolean;
 }
 
+interface OwedOperations {
+  count: number;
+  data: Array<{
+    id: string;
+    pendingOp: "push" | "delete";
+    lastError: string | null;
+    pendingSince: string;
+    ageSeconds: number;
+    invoiceId: string | null;
+    invoiceNumber: string | null;
+  }>;
+}
+
 function isMfaError(err: unknown): boolean {
   return (
     err instanceof ActionError &&
@@ -71,7 +84,7 @@ function isMfaError(err: unknown): boolean {
 }
 
 export default function QuickbooksIntegration() {
-  const { t } = useTranslation("integrations");
+  const { t, i18n } = useTranslation("integrations");
   const claims = getJwtClaims();
   const isOrgScoped = claims.scope === "organization";
   /**
@@ -96,6 +109,8 @@ export default function QuickbooksIntegration() {
   const [status, setStatus] = useState<QuickbooksStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [owed, setOwed] = useState<OwedOperations | null>(null);
+  const [owedError, setOwedError] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
@@ -125,12 +140,31 @@ export default function QuickbooksIntegration() {
     return json as QuickbooksStatus;
   }, [onUnauthorized]);
 
+  const fetchOwedOperations = useCallback(async () => {
+    setOwed(null);
+    setOwedError(false);
+    try {
+      const res = await fetchWithAuth("/accounting/quickbooks/owed-operations");
+      if (res.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (!res.ok) throw new Error("Owed operations request failed");
+      setOwed(await res.json() as OwedOperations);
+    } catch {
+      setOwedError(true);
+    }
+  }, [onUnauthorized]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const data = await fetchStatus();
-      if (data) setStatus(data);
+      if (data) {
+        setStatus(data);
+        await fetchOwedOperations();
+      }
     } catch (err) {
       setLoadError(
         err instanceof Error
@@ -140,7 +174,7 @@ export default function QuickbooksIntegration() {
     } finally {
       setLoading(false);
     }
-  }, [fetchStatus]);
+  }, [fetchStatus, fetchOwedOperations]);
 
   // Surface the OAuth round-trip result. The API callback redirects back to
   // /integrations?accounting=quickbooks&connected=1 (or &error=...). Show a
@@ -778,6 +812,41 @@ export default function QuickbooksIntegration() {
             </button>
           </div>
         </div>
+      )}
+
+      {status && (
+        <section className="space-y-3 rounded-lg border bg-card p-5" data-testid="quickbooks-owed-operations" aria-labelledby="quickbooks-owed-heading">
+          <h2 id="quickbooks-owed-heading" className="font-semibold">{t("quickbooksIntegration.owedTitle")}</h2>
+          {owedError ? (
+            <p role="alert" className="text-sm text-destructive" data-testid="quickbooks-owed-error">{t("quickbooksIntegration.owedLoadError")}</p>
+          ) : !owed ? (
+            <p className="text-sm text-muted-foreground">{t("common:states.loading")}</p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">{t("quickbooksIntegration.owedCount", { total: owed.count })}</p>
+              {owed.count === 0 ? (
+                <p className="text-sm">{t("quickbooksIntegration.owedEmpty")}</p>
+              ) : (
+                <ul className="divide-y">
+                  {owed.data.map((operation) => (
+                    <li key={operation.id} className="space-y-1 py-3 text-sm">
+                      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                        <span className="font-medium">{operation.pendingOp === "delete" ? t("quickbooksIntegration.owedDelete") : t("quickbooksIntegration.owedPush")}</span>
+                        {operation.invoiceId ? (
+                          <a className="text-primary underline underline-offset-2" data-testid={`quickbooks-owed-invoice-${operation.id}`} href={`/billing/invoices/${operation.invoiceId}`}>
+                            {operation.invoiceNumber ?? t("quickbooksIntegration.owedViewInvoice")}
+                          </a>
+                        ) : <span className="text-muted-foreground">{t("quickbooksIntegration.owedInvoiceUnavailable")}</span>}
+                      </div>
+                      <p className="text-muted-foreground">{t("quickbooksIntegration.owedAge", { minutes: new Intl.NumberFormat(i18n.language).format(Math.floor(operation.ageSeconds / 60)) })}</p>
+                      {operation.lastError && <p className="break-words text-destructive">{operation.lastError}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </section>
       )}
 
       {isConnected && status && (

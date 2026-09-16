@@ -1828,6 +1828,7 @@
       },
       "reverseError": "Não foi possível estornar o pagamento.",
       "reverseSuccess": "Pagamento estornado",
+      "reverseInQuickbooksToo": "Estorne este pagamento também no QuickBooks",
       "sendLink": "Enviar link de pagamento",
       "setUp": "Configurar",
       "shareLinkPrompt": "Compartilhe este link de pagamento com o cliente:",

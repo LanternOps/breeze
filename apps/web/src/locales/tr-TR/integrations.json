@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Vergi farkıyla eşitlendi"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Bekleyen QuickBooks işlemleri",
+    "owedLoadError": "Bekleyen işlemler yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+    "owedCount": "Bekleyen işlemler: {{total}}",
+    "owedEmpty": "Bekleyen işlem yok",
+    "owedDelete": "Ödemeyi sil",
+    "owedPush": "Ödemeyi gönder",
+    "owedViewInvoice": "Faturayı görüntüle",
+    "owedInvoiceUnavailable": "Fatura kullanılamıyor",
+    "owedAge": "Bekleme süresi: {{minutes}} dk",
     "quickbooksConnected": "QuickBooks bağlandı.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks bağlantısı başarısız oldu. Lütfen tekrar deneyin.",
     "failedToStartTheQuickBooksConnection": "QuickBooks bağlantısı başlatılamadı.",

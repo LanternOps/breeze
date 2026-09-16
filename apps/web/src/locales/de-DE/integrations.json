@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Synchronisiert mit Steuerabweichung"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Ausstehende QuickBooks-Vorgänge",
+    "owedLoadError": "Ausstehende Vorgänge konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "owedCount": "Ausstehende Vorgänge: {{total}}",
+    "owedEmpty": "Keine ausstehenden Vorgänge",
+    "owedDelete": "Zahlung löschen",
+    "owedPush": "Zahlung übertragen",
+    "owedViewInvoice": "Rechnung anzeigen",
+    "owedInvoiceUnavailable": "Rechnung nicht verfügbar",
+    "owedAge": "Wartezeit: {{minutes}} Min.",
     "quickbooksConnected": "QuickBooks verbunden.",
     "quickbooksConnectionFailedPleaseTryAgain": "QuickBooks-Verbindung fehlgeschlagen. Bitte versuchen Sie es erneut.",
     "failedToStartTheQuickBooksConnection": "Die QuickBooks-Verbindung konnte nicht gestartet werden.",

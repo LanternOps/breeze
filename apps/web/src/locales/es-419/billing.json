@@ -1828,6 +1828,7 @@
       },
       "reverseError": "No se pudo revertir el pago.",
       "reverseSuccess": "Pago revertido",
+      "reverseInQuickbooksToo": "Revierte este pago también en QuickBooks",
       "sendLink": "Enviar enlace de pago",
       "setUp": "Configuración",
       "shareLinkPrompt": "Comparta este enlace de pago con su cliente:",

@@ -774,6 +774,15 @@
     "syncedWithTaxVariance": "Sincronizado com diferença de imposto"
   },
   "quickbooksIntegration": {
+    "owedTitle": "Operações pendentes do QuickBooks",
+    "owedLoadError": "Não foi possível carregar as operações pendentes. Recarregue a página para tentar novamente.",
+    "owedCount": "Operações pendentes: {{total}}",
+    "owedEmpty": "Nenhuma operação pendente",
+    "owedDelete": "Excluir pagamento",
+    "owedPush": "Enviar pagamento",
+    "owedViewInvoice": "Ver fatura",
+    "owedInvoiceUnavailable": "Fatura indisponível",
+    "owedAge": "Tempo de espera: {{minutes}} min",
     "quickbooksConnected": "QuickBooks conectados.",
     "quickbooksConnectionFailedPleaseTryAgain": "A conexão do QuickBooks falhou. Por favor, tente novamente.",
     "failedToStartTheQuickBooksConnection": "Falha ao iniciar a conexão do QuickBooks.",

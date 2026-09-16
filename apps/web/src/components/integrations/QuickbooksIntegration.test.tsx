@@ -614,3 +614,56 @@ describe("QuickbooksIntegration — payment push (Phase D2)", () => {
     expect(screen.queryByTestId("quickbooks-pushpayments")).toBeNull();
   });
 });
+
+
+describe("owed QuickBooks operations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scope = "partner";
+    window.history.replaceState({}, "", "/integrations");
+  });
+
+  it("shows pending deleted payments with error, age, count and invoice link", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => {
+      if (url === "/accounting/quickbooks") return jsonResponse(connected);
+      if (url === "/accounting/quickbooks/owed-operations") return jsonResponse({ count: 2, data: [
+        { id: "owed-1", pendingOp: "delete", lastError: "QuickBooks refused deletion", pendingSince: "2026-09-01T00:00:00Z", ageSeconds: 172800, invoiceId: "invoice-1", invoiceNumber: "INV-101" },
+        { id: "owed-2", pendingOp: "push", lastError: null, pendingSince: "2026-09-02T00:00:00Z", ageSeconds: 60, invoiceId: null, invoiceNumber: null },
+      ] });
+      return jsonResponse({}, 404);
+    });
+    render(<QuickbooksIntegration />);
+    const panel = await screen.findByTestId("quickbooks-owed-operations");
+    await waitFor(() => expect(panel.textContent).toContain("QuickBooks refused deletion"));
+    expect(panel.textContent).toContain("Pending operations: 2");
+    expect(panel.textContent).toContain("Age: 2,880 min");
+    expect(panel.textContent).toContain("Delete payment");
+    expect(panel.textContent).toContain("Push payment");
+    expect(panel.textContent).toContain("Invoice unavailable");
+    expect(screen.getByTestId("quickbooks-owed-invoice-owed-1").getAttribute("href")).toBe("/billing/invoices/invoice-1");
+    expect(screen.queryByTestId("quickbooks-owed-invoice-owed-2")).toBeNull();
+  });
+
+  it("shows an explicit empty state", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => jsonResponse(
+      url === "/accounting/quickbooks" ? disconnected : { count: 0, data: [] },
+    ));
+    render(<QuickbooksIntegration />);
+    await waitFor(() => expect(screen.getByTestId("quickbooks-owed-operations").textContent).toContain("No owed operations"));
+  });
+
+  it("shows a load failure instead of reporting no debt", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => url === "/accounting/quickbooks"
+      ? jsonResponse(connected) : jsonResponse({}, 500));
+    render(<QuickbooksIntegration />);
+    expect(await screen.findByTestId("quickbooks-owed-error")).toBeTruthy();
+    expect(screen.getByTestId("quickbooks-owed-operations").textContent).not.toContain("No owed operations");
+  });
+
+  it("redirects when the owed operations read is unauthorized", async () => {
+    fetchWithAuth.mockImplementation(async (url: string) => url === "/accounting/quickbooks"
+      ? jsonResponse(disconnected) : jsonResponse({}, 401));
+    render(<QuickbooksIntegration />);
+    await waitFor(() => expect(navigateTo).toHaveBeenCalledWith("/login?next=/integrations"));
+  });
+});

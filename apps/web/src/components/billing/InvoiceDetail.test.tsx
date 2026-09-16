@@ -186,6 +186,47 @@ describe('InvoiceDetail', () => {
     expect(JSON.parse((postCall![1] as RequestInit).body as string)).toMatchObject({ amount: 50, method: 'check' });
   });
 
+  it.each([true, false])('warns about a QuickBooks reversal only when the record is untouched (%s)', async (quickbooksRecordUntouched) => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (opts?.method === 'DELETE') return json({ data: issued.invoice, quickbooksRecordUntouched });
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p-qb', invoiceId: 'inv-1', amount: '40.00', method: 'check', reference: null, receivedAt: '2026-06-11', note: null, createdAt: '', source: 'quickbooks' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('invoice-payment-void-p-qb'));
+    fireEvent.click(screen.getByTestId('invoice-payment-reverse-confirm'));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledWith('/invoices/inv-1/payments/p-qb', { method: 'DELETE' });
+    if (quickbooksRecordUntouched) {
+      expect(showToast).toHaveBeenCalledWith({ type: 'warning', message: 'Reverse this in QuickBooks too' });
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    } else {
+      expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+      expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    }
+  });
+
+  it('surfaces the server refusal when QuickBooks pull would re-import a reversed payment', async () => {
+    const onChanged = vi.fn();
+    fetchMock.mockImplementation(async (input: string, opts?: RequestInit) => {
+      if (opts?.method === 'DELETE') return json({ error: 'Reverse in QuickBooks instead', code: 'QUICKBOOKS_OWNED_PAYMENT' }, false, 409);
+      if (input.endsWith('/payments')) return json({ data: [
+        { id: 'p-qb', invoiceId: 'inv-1', amount: '40.00', method: 'check', reference: null, receivedAt: '2026-06-11', note: null, createdAt: '', source: 'quickbooks' },
+      ] });
+      return json({ data: {} });
+    });
+    render(<InvoiceDetail detail={issued} onChanged={onChanged} />);
+    fireEvent.click(await screen.findByTestId('invoice-payment-void-p-qb'));
+    fireEvent.click(screen.getByTestId('invoice-payment-reverse-confirm'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+  });
+
   it('blocks payment recording on a draft and explains why', async () => {
     const draft: InvoiceDetailData = {
       ...issued,
@@ -286,7 +327,7 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-void-p1')).not.toBeInTheDocument();
   });
 
-  it('badges QuickBooks-pulled payments and hides manual void on them (Phase D)', async () => {
+  it('badges QuickBooks-pulled payments and lets the server decide whether reversal is allowed', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p2', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'QB-9012', receivedAt: '2026-06-11', note: null, createdAt: '', source: 'quickbooks' },
@@ -297,11 +338,7 @@ describe('InvoiceDetail', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-payment-p2')).toBeInTheDocument());
 
     expect(screen.getByTestId('invoice-payment-quickbooks-p2')).toHaveTextContent('QuickBooks');
-    // Reversing a pulled payment in Breeze would not touch QuickBooks, and the
-    // next reconcile would pull it straight back in — so the void affordance is
-    // replaced by a provenance label, exactly as it is for Stripe.
-    expect(screen.getByTestId('invoice-payment-p2')).toHaveTextContent('via QuickBooks');
-    expect(screen.queryByTestId('invoice-payment-void-p2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-payment-void-p2')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-online-p2')).not.toBeInTheDocument();
   });
 
@@ -379,7 +416,7 @@ describe('InvoiceDetail', () => {
     expect(screen.queryByTestId('invoice-payment-qbosync-p7')).not.toBeInTheDocument();
   });
 
-  it('keeps a QuickBooks-ORIGIN payment un-voidable regardless of accountingSync (unchanged Phase D behaviour)', async () => {
+  it('allows attempting a QuickBooks-origin reversal without a pushed-payment sync badge', async () => {
     fetchMock.mockImplementation(async (input: string) => {
       if (input.endsWith('/payments')) return json({ data: [
         { id: 'p8', invoiceId: 'inv-1', amount: '120.00', method: 'check', reference: 'QB-1', receivedAt: '2026-06-17', note: null, createdAt: '', source: 'quickbooks', accountingSync: null },
@@ -390,7 +427,7 @@ describe('InvoiceDetail', () => {
     await waitFor(() => expect(screen.getByTestId('invoice-payment-p8')).toBeInTheDocument());
 
     expect(screen.getByTestId('invoice-payment-quickbooks-p8')).toBeInTheDocument();
-    expect(screen.queryByTestId('invoice-payment-void-p8')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-payment-void-p8')).toBeInTheDocument();
     expect(screen.queryByTestId('invoice-payment-qbosync-p8')).not.toBeInTheDocument();
   });
 });

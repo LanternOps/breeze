@@ -1828,6 +1828,7 @@
       },
       "reverseError": "Impossible d'annuler le paiement.",
       "reverseSuccess": "Paiement annulé",
+      "reverseInQuickbooksToo": "Annulez également ce paiement dans QuickBooks",
       "sendLink": "Envoyer le lien de paiement",
       "setUp": "Configurer",
       "shareLinkPrompt": "Partagez ce lien de paiement avec votre client :",
