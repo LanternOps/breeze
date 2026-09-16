@@ -2224,6 +2224,7 @@
       "emptyState": {
         "title": "Noch keine KI-Ergebnisse in diesem Zeitraum",
         "description": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Erweitern Sie oben den Berichtszeitraum, oder richten Sie einen Agenten ein, um loszulegen.",
+        "descriptionWidestWindow": "Ergebnisse erscheinen hier, sobald Ihre KI-Agenten im Beobachtungs- oder Aktionsmodus eine Warnmeldung bewerten, ein Ticket sortieren oder eine Behebung ausführen. Selbst beim längsten Berichtszeitraum liegen noch zu wenig Daten vor – richten Sie einen Agenten ein, um loszulegen.",
         "action": "Agenten einrichten"
       },
       "tileGroups": {

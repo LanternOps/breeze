@@ -49,8 +49,12 @@
   "deciding": "Invio in corso…",
   "expiresIn": "Scade tra {{minutes}} min",
   "expiresSoon": "Scade tra meno di un minuto",
+  "expiresInHours": "Scade tra {{hours}} h",
+  "expiresInDays": "Scade tra {{days}} giorni",
   "expired": "Scaduta",
   "unknownOrganization": "Organizzazione sconosciuta",
+  "intentNoLongerPending": "Quell’approvazione non è più in sospeso.",
+  "dismiss": "Ignora",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} approvato per {{org}}",
   "pagination": {

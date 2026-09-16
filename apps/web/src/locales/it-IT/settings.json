@@ -2224,6 +2224,7 @@
       "emptyState": {
         "title": "Nessun risultato IA in questo periodo",
         "description": "I risultati appariranno qui non appena i tuoi agenti IA valuteranno un avviso, smisteranno un ticket o eseguiranno una correzione in modalità osservazione o azione. Amplia il periodo del report qui sopra, oppure configura un agente per iniziare.",
+        "descriptionWidestWindow": "I risultati appariranno qui non appena i tuoi agenti IA valuteranno un avviso, smisteranno un ticket o eseguiranno una correzione in modalità osservazione o azione. Non ci sono ancora dati sufficienti, nemmeno nel periodo di report più ampio: configura un agente per iniziare.",
         "action": "Configura un agente"
       },
       "tileGroups": {
