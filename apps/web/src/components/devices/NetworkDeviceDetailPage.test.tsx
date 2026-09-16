@@ -294,7 +294,7 @@ describe('NetworkDeviceDetailPage', () => {
   // #reviewFix10b: each tab must point at its panel via aria-controls, and
   // the panel must be named with aria-label (not aria-labelledby) since the
   // labelling tab element doesn't exist in the DOM while it's in overflow.
-  it('links each tab to its panel via aria-controls, naming the panel with aria-label', async () => {
+  it('links each tab to its panel via aria-controls, naming the panel with aria-labelledby', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
@@ -303,13 +303,15 @@ describe('NetworkDeviceDetailPage', () => {
     const overviewTab = screen.getByTestId('network-detail-tab-overview');
     const overviewPanel = screen.getByTestId('network-detail-overview');
     expect(overviewTab.getAttribute('aria-controls')).toBe(overviewPanel.id);
-    expect(overviewPanel.getAttribute('aria-label')).toBe('Overview');
-    expect(overviewPanel.hasAttribute('aria-labelledby')).toBe(false);
+    expect(overviewPanel.getAttribute('aria-labelledby')).toBe(overviewTab.id);
+    expect(overviewPanel).toHaveAccessibleName('Overview');
+    expect(overviewPanel).not.toHaveAttribute('aria-label');
 
     openMonitoringTab();
     const monitoringPanel = await screen.findByTestId('network-detail-monitoring');
-    expect(monitoringPanel.getAttribute('aria-label')).toBe('Monitoring');
-    expect(monitoringPanel.hasAttribute('aria-labelledby')).toBe(false);
+    expect(monitoringPanel.getAttribute('aria-labelledby')).toBe('network-detail-tab-monitoring');
+    expect(monitoringPanel).toHaveAccessibleName('Monitoring');
+    expect(monitoringPanel).not.toHaveAttribute('aria-label');
   });
 
   it('initializes the active tab from the URL hash on mount', async () => {

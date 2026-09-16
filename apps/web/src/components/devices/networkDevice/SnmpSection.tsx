@@ -4,7 +4,7 @@
 
 import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Section } from './primitives';
+import { Section, UnknownValue } from './primitives';
 import { snmpFieldLabel } from './format';
 
 // Values longer than this are clamped behind a "Show more" toggle so one
@@ -19,7 +19,7 @@ function SnmpValue({ fieldKey, value }: { fieldKey: string; value: string }) {
   const displayValue = isLong && !expanded ? `${value.slice(0, SNMP_VALUE_CLAMP_LENGTH)}…` : value;
   return (
     <dd className="font-medium break-words">
-      {displayValue || '—'}
+      {displayValue || <UnknownValue />}
       {isLong && (
         <button
           type="button"

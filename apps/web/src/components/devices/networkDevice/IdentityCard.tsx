@@ -7,7 +7,7 @@
 import { useTranslation } from 'react-i18next';
 import { isManualLink } from '../../discovery/networkTypes';
 import { typeConfig, type DiscoveredAsset } from '../../discovery/DiscoveredAssetList';
-import { Section, Field } from './primitives';
+import { Section, Field, UnknownValue } from './primitives';
 import { formatTimestamp } from './format';
 import { CopyButton } from './CopyButton';
 import type { NetworkAssetExtras } from './types';
@@ -173,7 +173,7 @@ export function IdentityCard({
           <div data-testid="network-detail-first-seen">
             <dt className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.fields.firstSeen')}</dt>
             <dd className="font-medium" title={formatTimestamp(extras.firstSeenAt, timezone)}>
-              {formatTimestamp(extras.firstSeenAt, timezone)}
+              {extras.firstSeenAt ? formatTimestamp(extras.firstSeenAt, timezone) : <UnknownValue />}
             </dd>
           </div>
           <Field

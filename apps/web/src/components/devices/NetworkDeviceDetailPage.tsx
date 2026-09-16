@@ -3,7 +3,7 @@
 // modules in `./networkDevice/` — kept thin so each concern stays reviewable
 // on its own.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActionError } from '@/lib/runAction';
 import { showToast } from '../shared/Toast';
 import { ApprovalBanner } from './networkDevice/ApprovalBanner';
@@ -15,12 +15,12 @@ import { useTranslation } from 'react-i18next';
 import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
-import { OverflowTabs, overflowPanelId, type OverflowTab } from '../shared/OverflowTabs';
+import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
 import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import { isWebPort, sortPorts } from '../discovery/portCatalog';
 import { typeConfig, approvalStatusConfig } from '../discovery/DiscoveredAssetList';
 import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
-import { Section, Field } from './networkDevice/primitives';
+import { Section, Field, UnknownValue } from './networkDevice/primitives';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { IdentityCard } from './networkDevice/IdentityCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
@@ -86,6 +86,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // render so the scroll only fires once the overview panel (and the ports
   // section inside it) is actually back in the DOM, and never on an
   // unrelated tab change (URL back/forward, clicking a tab directly).
+  const overviewPanelRef = useRef<HTMLDivElement>(null);
+  const monitoringPanelRef = useRef<HTMLDivElement>(null);
+  const portsSectionRef = useRef<HTMLDivElement>(null);
   const [pendingPortsScroll, setPendingPortsScroll] = useState(false);
   const handleViewPorts = useCallback(() => {
     setPendingPortsScroll(true);
@@ -93,9 +96,22 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   }, [switchTab]);
   useEffect(() => {
     if (!pendingPortsScroll || activeTab !== 'overview') return;
-    document.querySelector('[data-testid="network-detail-ports"]')?.scrollIntoView?.({ block: 'start' });
+    portsSectionRef.current?.scrollIntoView?.({ block: 'start' });
+    portsSectionRef.current?.focus();
     setPendingPortsScroll(false);
   }, [pendingPortsScroll, activeTab]);
+
+  // Shortcuts move keyboard focus along with the viewport.
+  const [pendingMonitoringFocus, setPendingMonitoringFocus] = useState(false);
+  const handleViewMonitoring = useCallback(() => {
+    setPendingMonitoringFocus(true);
+    switchTab('monitoring');
+  }, [switchTab]);
+  useEffect(() => {
+    if (!pendingMonitoringFocus || activeTab !== 'monitoring') return;
+    monitoringPanelRef.current?.focus();
+    setPendingMonitoringFocus(false);
+  }, [pendingMonitoringFocus, activeTab]);
 
   // Lifted here (rather than local to OpenPortsSection) because that section
   // unmounts whenever the Monitoring tab is active — local state would reset
@@ -239,7 +255,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         timezone={resolveAssetTimezone(extras.siteTimezone)}
         probeState={probeState}
         onViewPorts={handleViewPorts}
-        onViewMonitoring={() => switchTab('monitoring')}
+        onViewMonitoring={handleViewMonitoring}
       />
 
       <OverflowTabs
@@ -255,7 +271,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           data-testid="network-detail-overview"
           role="tabpanel"
           id={overflowPanelId('overview', TAB_ID_PREFIX)}
-          aria-label={t('networkDeviceDetailPage.tabs.overview')}
+          aria-labelledby={overflowTabId('overview', TAB_ID_PREFIX)}
+          tabIndex={-1}
+          ref={overviewPanelRef}
         >
           <div className="space-y-5">
             <IdentityCard
@@ -271,6 +289,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
           <div className="space-y-5">
             <OpenPortsSection
+              sectionRef={portsSectionRef}
               openPorts={openPorts}
               assetId={asset.id}
               assetIp={asset.ip}
@@ -292,7 +311,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           data-testid="network-detail-monitoring"
           role="tabpanel"
           id={overflowPanelId('monitoring', TAB_ID_PREFIX)}
-          aria-label={t('networkDeviceDetailPage.tabs.monitoring')}
+          aria-labelledby={overflowTabId('monitoring', TAB_ID_PREFIX)}
+          tabIndex={-1}
+          ref={monitoringPanelRef}
         >
           <Section title={t('networkDeviceDetailPage.sections.monitoringStatus')}>
             <dl className="space-y-3 text-sm">
@@ -361,9 +382,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               />
               <Field
                 label={t('networkDeviceDetailPage.fields.discoveryMethods')}
-                value={discoveryMethods.length > 0 ? discoveryMethods.join(', ') : '—'}
+                value={discoveryMethods.length > 0 ? discoveryMethods.join(', ') : <UnknownValue />}
               />
-              <Field label={t('networkDeviceDetailPage.fields.discoveryProfile')} value={asset.profileName || '—'} />
+              <Field label={t('networkDeviceDetailPage.fields.discoveryProfile')} value={asset.profileName || <UnknownValue />} />
             </dl>
           </Section>
         </div>
