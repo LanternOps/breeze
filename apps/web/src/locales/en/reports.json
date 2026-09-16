@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Plan server replacement after (years)",
       "serverReplaceAgeYearsHelp": "Servers follow their own timeline and are listed in a separate section of the report."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "includeAccepted": "Include accepted risks and exceptions",
+      "includeAcceptedHelp": "Lists accepted and mitigated findings, flagging the ones whose acceptance expires in the next period.",
+      "severity": {
+        "critical": "Critical",
+        "high": "High",
+        "low": "Low",
+        "medium": "Medium"
+      },
+      "severityFloor": "Minimum severity to list",
+      "severityFloorHelp": "Findings below this severity are left out of the tables. It never hides an actively exploited (KEV) or high-EPSS finding — those are always counted and listed.",
+      "topN": "Remediation list length",
+      "topNHelp": "How many patchable findings the remediate-first table holds. The report states how many were withheld rather than truncating silently."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Report Configuration",
       "description": "Generate a one-time report without saving it.",
@@ -284,6 +300,14 @@
         "replaceNow": "Replace now",
         "unknownAge": "Purchase date unknown"
       },
+      "vulnerabilityManagement": {
+        "critical": "Open critical",
+        "expiringExceptions": "Exceptions expiring next period",
+        "high": "Open high",
+        "highEpss": "Likely to be exploited",
+        "knownExploited": "Actively exploited (KEV)",
+        "notMeasured": "N/A"
+      },
       "reportTypes": {
         "ai_fleet_design": "Fleet Design",
         "ai_org_narrative": "Weekly AI Operations Narrative",
@@ -292,6 +316,7 @@
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory"
@@ -352,6 +377,7 @@
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory"
@@ -851,6 +877,7 @@
         "devices": "Devices",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "vulnerability_management": "Vulnerability Management",
         "patches": "Patches",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
@@ -888,6 +915,10 @@
         "hardware_lifecycle": {
           "description": "Customer-ready device replacement plan: age, warranty, replace-by dates and OS support status, with a staged recommendation.",
           "name": "Hardware Lifecycle Report"
+        },
+        "vulnerability_management": {
+          "description": "Open findings by severity, with actively exploited (KEV) and high-EPSS findings called out separately, the patchable findings to remediate first, and the accepted-risk exceptions expiring next period.",
+          "name": "Vulnerability Management Report"
         },
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",

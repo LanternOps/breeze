@@ -581,7 +581,9 @@ export default function DeliverableTemplatesPage() {
                           ))}
                         </select>
                         <p className="mt-1 text-xs text-muted-foreground">{t('form.autoEvidenceHelp')}</p>
-                        {MANAGED_EVIDENCE_REPORT_TYPES.length === 0 && (
+                        {/* Widened: non-empty from #5784 W04 on; the empty
+                            state stays for the no-types-registered case. */}
+                        {(MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0 && (
                           <p
                             className="mt-1 text-xs text-muted-foreground"
                             data-testid="deliverable-template-item-auto-evidence-empty"

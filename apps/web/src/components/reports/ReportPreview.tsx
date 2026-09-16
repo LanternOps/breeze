@@ -294,8 +294,55 @@ export default function ReportPreview({
         );
       })()}
 
+      {/* Vulnerability Management (#5784 W04): severity tiles with actively
+          exploited (KEV) and high-EPSS as their OWN tiles — never folded into
+          severity — plus the exceptions count. `null` renders "N/A", never 0:
+          unmeasured and zero are different sentences. */}
+      {data.type === 'vulnerability_management' && data.data.summary && previewMode === 'table' && (() => {
+        const s = data.data.summary as {
+          open?: {
+            critical?: number | null; high?: number | null;
+            knownExploited?: number | null; highEpss?: number | null;
+          };
+          exceptions?: Array<{ expiringNextPeriod?: boolean }> | null;
+          feedNote?: string;
+        };
+        const show = (value: number | null | undefined) =>
+          value === null || value === undefined ? t('reports.reportPreview.vulnerabilityManagement.notMeasured') : String(value);
+        const tiles: { key: string; value: string; tone: string }[] = [
+          { key: 'critical', value: show(s.open?.critical), tone: 'text-destructive' },
+          { key: 'high', value: show(s.open?.high), tone: 'text-warning' },
+          { key: 'knownExploited', value: show(s.open?.knownExploited), tone: 'text-destructive' },
+          { key: 'highEpss', value: show(s.open?.highEpss), tone: 'text-warning' },
+          {
+            key: 'expiringExceptions',
+            value: s.exceptions === null || s.exceptions === undefined
+              ? t('reports.reportPreview.vulnerabilityManagement.notMeasured')
+              : String(s.exceptions.filter((row) => row.expiringNextPeriod).length),
+            tone: '',
+          },
+        ];
+        return (
+          <div className="space-y-4" data-testid="vulnerability-management-summary">
+            {s.feedNote ? (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                {s.feedNote}
+              </div>
+            ) : null}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              {tiles.map((tile) => (
+                <div key={tile.key} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.vulnerabilityManagement.${tile.key}`)}</p>
+                  <p className={cn('text-2xl font-bold mt-1', tile.tone)}>{tile.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Summary Cards */}
-      {data.type !== 'hardware_lifecycle' && data.data.summary && previewMode === 'table' && (
+      {data.type !== 'hardware_lifecycle' && data.type !== 'vulnerability_management' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">

@@ -35,5 +35,8 @@ describe('reportTypeSurvivesBuilder', () => {
     expect(reportTypeSurvivesBuilder('ai_fleet_design')).toBe(false);
     // hardware_lifecycle → devices: curated template with its own options form.
     expect(reportTypeSurvivesBuilder('hardware_lifecycle')).toBe(false);
+    // vulnerability_management → compliance: curated template with its own
+    // options form (severity floor, top-N, exceptions), #5784 W04.
+    expect(reportTypeSurvivesBuilder('vulnerability_management')).toBe(false);
   });
 });

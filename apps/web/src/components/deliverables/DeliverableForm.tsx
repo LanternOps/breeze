@@ -177,7 +177,9 @@ export default function DeliverableForm({
   // optional, so a failed fetch falls back to the empty-list state rather
   // than blocking the form (it can still be saved with no linked report).
   useEffect(() => {
-    if (MANAGED_EVIDENCE_REPORT_TYPES.length === 0) return;
+    // Widened: the tuple is non-empty from #5784 W04 on, so a literal-typed
+    // comparison would be a tsc error rather than the runtime guard it is.
+    if ((MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).length === 0) return;
     let cancelled = false;
     void (async () => {
       try {

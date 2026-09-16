@@ -12,6 +12,12 @@ import {
   hardwareLifecycleOptionsFromConfig,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS,
+  VulnerabilityManagementOptionsFields,
+  vulnerabilityManagementOptionsFromConfig,
+  type VulnerabilityManagementOptions,
+} from './VulnerabilityManagementOptionsForm';
 import { useTranslation } from 'react-i18next';
 // Initializes the shared i18next singleton. Islands hydrate independently, so
 // an island that hydrates before whichever other island happens to pull i18n in
@@ -29,6 +35,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [error, setError] = useState<string>();
   const [backupRequired, setBackupRequired] = useState(true);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
 
   const fetchReport = useCallback(async () => {
     try {
@@ -43,6 +50,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       const config = data.config as Record<string, unknown>;
       setBackupRequired(config.backupRequired !== false);
       setLifecycleOptions(hardwareLifecycleOptionsFromConfig(config));
+      setVulnerabilityOptions(vulnerabilityManagementOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
     } finally {
@@ -104,6 +112,7 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const config = report.config as Record<string, unknown>;
   const isPosture = report.type === 'security_compliance_posture';
   const isLifecycle = report.type === 'hardware_lifecycle';
+  const isVulnerability = report.type === 'vulnerability_management';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
     type: report.type as ReportType,
@@ -151,6 +160,12 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       )}
 
+      {isVulnerability && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <VulnerabilityManagementOptionsFields value={vulnerabilityOptions} onChange={setVulnerabilityOptions} />
+        </div>
+      )}
+
       <ReportBuilder
         mode="edit"
         reportId={reportId}
@@ -160,7 +175,9 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
             ? { ...config, backupRequired }
             : isLifecycle
               ? { ...config, ...lifecycleOptions }
-              : config
+              : isVulnerability
+                ? { ...config, ...vulnerabilityOptions }
+                : config
         }
         onSubmit={handleSubmit}
         onCancel={handleCancel}

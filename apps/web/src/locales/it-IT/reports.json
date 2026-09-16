@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Pianifica la sostituzione dei server dopo (anni)",
       "serverReplaceAgeYearsHelp": "I server seguono una propria tempistica e sono elencati in una sezione separata del report."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Annulla",
+      "createReport": "Crea report",
+      "includeAccepted": "Includi rischi accettati ed eccezioni",
+      "includeAcceptedHelp": "Elenca le rilevazioni accettate e mitigate, segnalando quelle la cui accettazione scade nel periodo successivo.",
+      "severity": {
+        "critical": "Critica",
+        "high": "Alta",
+        "low": "Bassa",
+        "medium": "Media"
+      },
+      "severityFloor": "Gravità minima da elencare",
+      "severityFloorHelp": "Le rilevazioni sotto questa gravità restano fuori dalle tabelle. Non nasconde mai una rilevazione sfruttata attivamente (KEV) o a EPSS elevato: quelle vengono sempre conteggiate ed elencate.",
+      "topN": "Lunghezza dell’elenco di correzione",
+      "topNHelp": "Quante rilevazioni con patch contiene la tabella «correggi per prime». Il report dichiara quante sono state escluse invece di troncare in silenzio."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configurazione report",
       "description": "Genera un report una tantum senza salvarlo.",
@@ -284,6 +300,14 @@
         "replaceNow": "Sostituire ora",
         "unknownAge": "Età sconosciuta"
       },
+      "vulnerabilityManagement": {
+        "critical": "Critiche aperte",
+        "expiringExceptions": "Eccezioni in scadenza nel periodo successivo",
+        "high": "Alte aperte",
+        "highEpss": "Sfruttamento probabile",
+        "knownExploited": "Sfruttate attivamente (KEV)",
+        "notMeasured": "N/D"
+      },
       "reportTypes": {
         "ai_fleet_design": "Progettazione della flotta",
         "ai_org_narrative": "Resoconto settimanale delle operazioni AI",
@@ -292,6 +316,7 @@
         "device_inventory": "Inventario dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "vulnerability_management": "Gestione delle vulnerabilità",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software"
@@ -352,6 +377,7 @@
         "device_inventory": "Inventario dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "vulnerability_management": "Gestione delle vulnerabilità",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software"
@@ -862,6 +888,7 @@
         "devices": "Dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "vulnerability_management": "Gestione delle vulnerabilità",
         "patches": "Patch",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
@@ -899,6 +926,10 @@
         "hardware_lifecycle": {
           "description": "Piano di sostituzione dei dispositivi pronto per il cliente: età, garanzia, date di sostituzione e stato del supporto del sistema operativo, con una raccomandazione a fasi.",
           "name": "Report ciclo di vita dell’hardware"
+        },
+        "vulnerability_management": {
+          "description": "Rilevazioni aperte per gravità, con quelle sfruttate attivamente (KEV) e a EPSS elevato indicate separatamente, le rilevazioni con patch da correggere per prime e le eccezioni di rischio accettato in scadenza nel periodo successivo.",
+          "name": "Report gestione delle vulnerabilità"
         },
         "security_compliance_posture": {
           "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.",

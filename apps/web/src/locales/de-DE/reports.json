@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Server-Austausch planen nach (Jahren)",
       "serverReplaceAgeYearsHelp": "Server folgen ihrem eigenen Zeitplan und werden in einem eigenen Abschnitt des Berichts aufgeführt."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen",
+      "includeAccepted": "Akzeptierte Risiken und Ausnahmen einbeziehen",
+      "includeAcceptedHelp": "Listet akzeptierte und entschärfte Befunde und markiert jene, deren Akzeptanz im nächsten Zeitraum ausläuft.",
+      "severity": {
+        "critical": "Kritisch",
+        "high": "Hoch",
+        "low": "Niedrig",
+        "medium": "Mittel"
+      },
+      "severityFloor": "Mindestschweregrad in der Liste",
+      "severityFloorHelp": "Befunde unterhalb dieses Schweregrads erscheinen nicht in den Tabellen. Aktiv ausgenutzte (KEV) und Befunde mit hohem EPSS-Wert werden dadurch nie ausgeblendet – sie werden immer gezählt und aufgeführt.",
+      "topN": "Länge der Behebungsliste",
+      "topNHelp": "Wie viele patchbare Befunde die Tabelle „Zuerst beheben“ enthält. Der Bericht nennt die Zahl der nicht aufgeführten Befunde, statt still abzuschneiden."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Berichtskonfiguration",
       "description": "Erstellen Sie einen einmaligen Bericht, ohne ihn zu speichern.",
@@ -284,6 +300,14 @@
         "replaceNow": "Jetzt austauschen",
         "unknownAge": "Alter unbekannt"
       },
+      "vulnerabilityManagement": {
+        "critical": "Offen kritisch",
+        "expiringExceptions": "Ausnahmen mit Ablauf im nächsten Zeitraum",
+        "high": "Offen hoch",
+        "highEpss": "Ausnutzung wahrscheinlich",
+        "knownExploited": "Aktiv ausgenutzt (KEV)",
+        "notMeasured": "k. A."
+      },
       "reportTypes": {
         "ai_fleet_design": "Flottendesign",
         "ai_org_narrative": "Wöchentlicher KI-Betriebsbericht",
@@ -292,6 +316,7 @@
         "device_inventory": "Geräteinventar",
         "executive_summary": "Zusammenfassung",
         "hardware_lifecycle": "Hardware-Lebenszyklus",
+        "vulnerability_management": "Schwachstellenmanagement",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar"
@@ -352,6 +377,7 @@
         "device_inventory": "Geräteinventar",
         "executive_summary": "Zusammenfassung",
         "hardware_lifecycle": "Hardware-Lebenszyklus",
+        "vulnerability_management": "Schwachstellenmanagement",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
         "software_inventory": "Software-Inventar"
@@ -862,6 +888,7 @@
         "devices": "Geräte",
         "executive_summary": "Zusammenfassung",
         "hardware_lifecycle": "Hardware-Lebenszyklus",
+        "vulnerability_management": "Schwachstellenmanagement",
         "patches": "Patches",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
@@ -899,6 +926,10 @@
         "hardware_lifecycle": {
           "description": "Kundenfertiger Geräte-Austauschplan: Alter, Garantie, Austauschtermine und Betriebssystem-Supportstatus mit einer gestaffelten Empfehlung.",
           "name": "Hardware-Lebenszyklusbericht"
+        },
+        "vulnerability_management": {
+          "description": "Offene Befunde nach Schweregrad, mit aktiv ausgenutzten (KEV) und Befunden mit hohem EPSS-Wert getrennt ausgewiesen, den zuerst zu behebenden patchbaren Befunden und den Ausnahmen, deren Risikoakzeptanz im nächsten Zeitraum ausläuft.",
+          "name": "Schwachstellenmanagement-Bericht"
         },
         "security_compliance_posture": {
           "description": "Versicherungs-/prüfbereite Beweise: EDR-Abdeckung, Verschlüsselung, Firewall, Patching, Schwachstellen, privilegierter Zugriff und Sicherheitsintegrationen mit prozentual implementierten Rollups.",

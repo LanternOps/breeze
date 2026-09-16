@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Planificar reemplazo de servidores después de (años)",
       "serverReplaceAgeYearsHelp": "Los servidores siguen su propio calendario y se listan en una sección separada del informe."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Crear informe",
+      "includeAccepted": "Incluir riesgos aceptados y excepciones",
+      "includeAcceptedHelp": "Lista los hallazgos aceptados y mitigados, y marca aquellos cuya aceptación vence en el próximo período.",
+      "severity": {
+        "critical": "Crítica",
+        "high": "Alta",
+        "low": "Baja",
+        "medium": "Media"
+      },
+      "severityFloor": "Severidad mínima a listar",
+      "severityFloorHelp": "Los hallazgos por debajo de esta severidad quedan fuera de las tablas. Nunca oculta un hallazgo explotado activamente (KEV) ni uno de EPSS alto: esos siempre se cuentan y se listan.",
+      "topN": "Largo de la lista de corrección",
+      "topNHelp": "Cuántos hallazgos con parche incluye la tabla de corrección prioritaria. El informe indica cuántos quedaron fuera en lugar de truncar en silencio."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Configuración de informes",
       "description": "Genere un informe único sin guardarlo.",
@@ -284,6 +300,14 @@
         "replaceNow": "Reemplazar ahora",
         "unknownAge": "Antigüedad desconocida"
       },
+      "vulnerabilityManagement": {
+        "critical": "Críticos abiertos",
+        "expiringExceptions": "Excepciones que vencen el próximo período",
+        "high": "Altos abiertos",
+        "highEpss": "Explotación probable",
+        "knownExploited": "Explotados activamente (KEV)",
+        "notMeasured": "N/D"
+      },
       "reportTypes": {
         "ai_fleet_design": "Diseño de flota",
         "ai_org_narrative": "Narrativa semanal de operaciones con IA",
@@ -292,6 +316,7 @@
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "vulnerability_management": "Gestión de vulnerabilidades",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software"
@@ -352,6 +377,7 @@
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "vulnerability_management": "Gestión de vulnerabilidades",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software"
@@ -862,6 +888,7 @@
         "devices": "Dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "vulnerability_management": "Gestión de vulnerabilidades",
         "patches": "Parches",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
@@ -899,6 +926,10 @@
         "hardware_lifecycle": {
           "description": "Plan de reemplazo de equipos listo para el cliente: antigüedad, garantía, fechas de reemplazo y estado de soporte del sistema operativo, con una recomendación por etapas.",
           "name": "Informe de ciclo de vida del hardware"
+        },
+        "vulnerability_management": {
+          "description": "Hallazgos abiertos por severidad, con los explotados activamente (KEV) y los de EPSS alto señalados por separado, los hallazgos con parche que deben corregirse primero y las excepciones de riesgo aceptado que vencen en el próximo período.",
+          "name": "Informe de gestión de vulnerabilidades"
         },
         "security_compliance_posture": {
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",

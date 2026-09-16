@@ -224,6 +224,22 @@
       "serverReplaceAgeYears": "Sunucu değişimini planla (yıl sonra)",
       "serverReplaceAgeYearsHelp": "Sunucular kendi zaman çizelgesini izler ve raporun ayrı bir bölümünde listelenir."
     },
+    "vulnerabilityManagementOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "includeAccepted": "Kabul edilen riskleri ve istisnaları dahil et",
+      "includeAcceptedHelp": "Kabul edilen ve azaltılan bulguları listeler; kabulü sonraki dönemde sona erenleri işaretler.",
+      "severity": {
+        "critical": "Kritik",
+        "high": "Yüksek",
+        "low": "Düşük",
+        "medium": "Orta"
+      },
+      "severityFloor": "Listelenecek en düşük önem derecesi",
+      "severityFloorHelp": "Bu önem derecesinin altındaki bulgular tablolara alınmaz. Etkin olarak sömürülen (KEV) veya EPSS değeri yüksek bir bulguyu asla gizlemez; bunlar her zaman sayılır ve listelenir.",
+      "topN": "Giderme listesi uzunluğu",
+      "topNHelp": "«Önce gider» tablosunun kaç yamalanabilir bulgu içereceği. Rapor, sessizce kesmek yerine kaç bulgunun dışarıda kaldığını belirtir."
+    },
     "reportBuilderPage": {
       "configurationTitle": "Rapor Yapılandırması",
       "description": "Kaydetmeden tek seferlik bir rapor oluşturun.",
@@ -284,6 +300,14 @@
         "replaceNow": "Şimdi değiştir",
         "unknownAge": "Yaş bilinmiyor"
       },
+      "vulnerabilityManagement": {
+        "critical": "Açık kritik",
+        "expiringExceptions": "Sonraki dönemde sona eren istisnalar",
+        "high": "Açık yüksek",
+        "highEpss": "Sömürülme olasılığı yüksek",
+        "knownExploited": "Etkin olarak sömürülen (KEV)",
+        "notMeasured": "Yok"
+      },
       "reportTypes": {
         "ai_fleet_design": "Filo Tasarımı",
         "ai_org_narrative": "Haftalık Yapay Zeka Operasyon Anlatısı",
@@ -292,6 +316,7 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri"
@@ -352,6 +377,7 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri"
@@ -862,6 +888,7 @@
         "devices": "Cihazlar",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
@@ -899,6 +926,10 @@
         "hardware_lifecycle": {
           "description": "Müşteriye hazır cihaz değiştirme planı: yaş, garanti, değiştirme tarihleri ve işletim sistemi destek durumu, aşamalı bir öneriyle.",
           "name": "Donanım Yaşam Döngüsü Raporu"
+        },
+        "vulnerability_management": {
+          "description": "Önem derecesine göre açık bulgular; etkin olarak sömürülenler (KEV) ve EPSS değeri yüksek olanlar ayrıca belirtilir, önce giderilecek yamalanabilir bulgular ve sonraki dönemde süresi dolan kabul edilmiş risk istisnaları listelenir.",
+          "name": "Güvenlik Açığı Yönetimi Raporu"
         },
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
