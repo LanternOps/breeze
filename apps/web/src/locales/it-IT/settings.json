@@ -5236,6 +5236,7 @@
     "confirmYourPassword": "Conferma la password"
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Le variabili appartenenti a un’organizzazione sono elencate nella rispettiva organizzazione.",
     "title": "Variabili",
     "description": "Definisci un valore una sola volta — un token di sito di un fornitore, l'URL di un repository interno — e richiamalo dagli script invece di scriverlo per ogni cliente.",
     "loading": "Caricamento delle variabili…",

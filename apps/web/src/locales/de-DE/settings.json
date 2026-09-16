@@ -5236,6 +5236,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Suche in der TD SYNNEX Preisdatei fehlgeschlagen (ungültige Antwort)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organisationsspezifische Variablen werden unter der jeweiligen Organisation aufgeführt.",
     "title": "Variablen",
     "description": "Definieren Sie einen Wert einmal – ein Anbieter-Site-Token, eine interne Repository-URL – und verweisen Sie in Skripten darauf, statt ihn pro Kunde fest einzutragen.",
     "loading": "Variablen werden geladen …",

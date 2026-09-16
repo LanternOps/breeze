@@ -5231,6 +5231,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Organization-owned variables are listed under each organization.",
     "title": "Variables",
     "description": "Define a value once — a vendor site token, an internal repo URL — and reference it from scripts instead of hardcoding it per customer.",
     "loading": "Loading variables…",

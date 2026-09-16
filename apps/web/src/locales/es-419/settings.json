@@ -5236,6 +5236,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Falló la búsqueda del Archivo de precios TD SYNNEX (respuesta no válida)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Las variables de cada organización se muestran dentro de esa organización.",
     "title": "Variables",
     "description": "Define un valor una sola vez —un token de sitio de un proveedor, la URL de un repositorio interno— y refiérelo desde los scripts en lugar de escribirlo en cada cliente.",
     "loading": "Cargando variables…",

@@ -5236,6 +5236,7 @@
     "tDSYNNEXPriceFileSearchFailedInvalidResponse": "Échec de la recherche du fichier tarifaire TD SYNNEX (réponse non valide)."
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Les variables propres à une organisation sont répertoriées sous celle-ci.",
     "title": "Variables",
     "description": "Définissez une valeur une seule fois — jeton de site d'un fournisseur, URL d'un dépôt interne — et référencez-la dans vos scripts au lieu de la coder en dur pour chaque client.",
     "loading": "Chargement des variables…",

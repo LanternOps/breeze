@@ -5236,6 +5236,7 @@
     }
   },
   "tenantVariablesPage": {
+    "orgOwnedNote": "Kuruluşa ait değişkenler ilgili kuruluşun altında listelenir.",
     "title": "Değişkenler",
     "description": "Bir satıcı site belirteci, dahili bir depo URL'si gibi bir değeri bir kez tanımlayın ve bunu müşteri başına sabit kodlamak yerine komut dosyalarından referans alın.",
     "loading": "Değişkenler yükleniyor…",
