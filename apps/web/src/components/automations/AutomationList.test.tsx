@@ -130,3 +130,30 @@ describe('AutomationList controlled trigger filter (#5288)', () => {
     expect(screen.getByText('Scheduled One')).toBeInTheDocument();
   });
 });
+
+describe('AutomationList elevated actions', () => {
+  it('badges a stored elevated script action once per automation', () => {
+    const automation = { ...baseAutomation, actions: [
+      { type: 'run_script', runAs: 'elevated' },
+      { type: 'run_script', runAs: 'elevated' },
+    ] };
+    render(<AutomationList automations={[automation]} />);
+
+    expect(screen.getAllByTestId('automation-elevated-badge')).toHaveLength(1);
+    expect(screen.getByTestId('automation-elevated-badge')).toHaveTextContent('Elevated');
+  });
+
+  it.each([
+    undefined,
+    [],
+    [{ type: 'run_script' }],
+    [{ type: 'run_script', runAs: 'system' }],
+    [{ type: 'run_script', runAs: 'user' }],
+    [{ type: 'notify', runAs: 'elevated' }],
+  ])('does not badge actions without elevated scripts: %j', (actions) => {
+    const automation = { ...baseAutomation, actions };
+    render(<AutomationList automations={[automation]} />);
+
+    expect(screen.queryByTestId('automation-elevated-badge')).toBeNull();
+  });
+});

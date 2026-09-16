@@ -206,6 +206,7 @@
     }
   },
   "automationList": {
+    "elevated": "Erhöhte Rechte",
     "relativeTime": {
       "justNow": "Gerade eben",
       "minutesAgo": "Vor {{count}}m",

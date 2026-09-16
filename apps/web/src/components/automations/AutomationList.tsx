@@ -47,6 +47,7 @@ export type Automation = {
     eventType?: string;
     webhookUrl?: string;
   };
+  actions?: { type: string; runAs?: string }[];
   enabled: boolean;
   lastRunAt?: string;
   lastRunStatus?: AutomationStatus;
@@ -283,6 +284,14 @@ export default function AutomationList({
                             >
                               <Layers className="h-3 w-3" />
                               {t('automationList.allOrgs')}
+                            </span>
+                          )}
+                          {automation.actions?.some(action => action.type === 'run_script' && action.runAs === 'elevated') && (
+                            <span
+                              className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                              data-testid="automation-elevated-badge"
+                            >
+                              {t('automationList.elevated')}
                             </span>
                           )}
                           {isManaged && (

@@ -88,6 +88,12 @@ function toListAutomation(raw: unknown, t: ScriptsT): Automation {
       eventType: asString(trigger.eventType),
       webhookUrl: asString(trigger.webhookUrl)
     },
+    actions: Array.isArray(item.actions)
+      ? item.actions.filter(isPlainRecord).map(action => ({
+        type: asString(action.type) ?? '',
+        runAs: asString(action.runAs),
+      }))
+      : [],
     enabled: Boolean(item.enabled),
     lastRunAt: asString(item.lastRunAt),
     lastRunStatus: undefined,
