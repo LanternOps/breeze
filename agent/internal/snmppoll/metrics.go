@@ -21,11 +21,19 @@ const ValueEncodingHex = "hex"
 
 // SNMPDevice defines the target and credentials for polling.
 type SNMPDevice struct {
-	IP             string
-	Port           uint16
-	Version        SNMPVersion
-	Auth           SNMPAuth
-	OIDs           []string
+	IP      string
+	Port    uint16
+	Version SNMPVersion
+	Auth    SNMPAuth
+	// OIDs is the legacy flat list. Kept verbatim: it is what pre-W02 servers
+	// send and what SpecsFromOIDs falls back to.
+	OIDs []string
+	// Specs is the per-OID acquisition plan (spec §7.1). When empty,
+	// CollectMetrics derives it from OIDs as plain GETs.
+	Specs []OIDSpec
+	// Limits bounds one poll. The zero value is replaced with
+	// DefaultPollLimits by CollectMetrics.
+	Limits         PollLimits
 	Timeout        time.Duration
 	Retries        int
 	MaxRepetitions uint32

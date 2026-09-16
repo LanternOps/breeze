@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/discovery"
@@ -50,17 +51,19 @@ func handleNetworkDiscovery(_ *Heartbeat, cmd Command) tools.CommandResult {
 	}, time.Since(start).Milliseconds())
 }
 
-func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
-	start := time.Now()
-	target, errResult := tools.RequirePayloadString(cmd.Payload, "target")
+// parseSnmpPollRequest turns a poll command payload into an SNMPDevice.
+//
+// Split out of handleSnmpPoll so the wire contract (spec §7.1) is unit-testable
+// without a network: every branch below decides what the agent will put on the
+// wire, and that is exactly the part an SNMP device cannot be asked about.
+func parseSnmpPollRequest(payload map[string]any) (snmppoll.SNMPDevice, *tools.CommandResult) {
+	target, errResult := tools.RequirePayloadString(payload, "target")
 	if errResult != nil {
-		errResult.DurationMs = time.Since(start).Milliseconds()
-		return *errResult
+		return snmppoll.SNMPDevice{}, errResult
 	}
 
-	version := tools.GetPayloadString(cmd.Payload, "version", "v2c")
 	var snmpVersion snmppoll.SNMPVersion
-	switch version {
+	switch tools.GetPayloadString(payload, "version", "v2c") {
 	case "v1":
 		snmpVersion = 0x00
 	case "v3":
@@ -71,26 +74,97 @@ func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
 
 	// The port narrows to uint16 below; an out-of-range value would silently
 	// wrap onto some other port, so reject it instead of probing the wrong one.
-	port := tools.GetPayloadInt(cmd.Payload, "port", 161)
+	port := tools.GetPayloadInt(payload, "port", 161)
 	if port < 1 || port > 65535 {
-		return tools.NewErrorResult(fmt.Errorf("port must be 1-65535, got %d", port), time.Since(start).Milliseconds())
+		result := tools.NewErrorResult(fmt.Errorf("port must be 1-65535, got %d", port), 0)
+		return snmppoll.SNMPDevice{}, &result
 	}
 
-	device := snmppoll.SNMPDevice{
+	oids := tools.GetPayloadStringSlice(payload, "oids")
+
+	return snmppoll.SNMPDevice{
 		IP:      target,
 		Port:    uint16(port),
 		Version: snmpVersion,
 		Auth: snmppoll.SNMPAuth{
-			Community:      tools.GetPayloadString(cmd.Payload, "community", "public"),
-			Username:       tools.GetPayloadString(cmd.Payload, "username", ""),
-			AuthProtocol:   snmppoll.ParseAuthProtocol(tools.GetPayloadString(cmd.Payload, "authProtocol", "")),
-			AuthPassphrase: tools.GetPayloadString(cmd.Payload, "authPassword", ""),
-			PrivProtocol:   snmppoll.ParsePrivProtocol(tools.GetPayloadString(cmd.Payload, "privProtocol", "")),
-			PrivPassphrase: tools.GetPayloadString(cmd.Payload, "privPassword", ""),
+			Community:      tools.GetPayloadString(payload, "community", "public"),
+			Username:       tools.GetPayloadString(payload, "username", ""),
+			AuthProtocol:   snmppoll.ParseAuthProtocol(tools.GetPayloadString(payload, "authProtocol", "")),
+			AuthPassphrase: tools.GetPayloadString(payload, "authPassword", ""),
+			PrivProtocol:   snmppoll.ParsePrivProtocol(tools.GetPayloadString(payload, "privProtocol", "")),
+			PrivPassphrase: tools.GetPayloadString(payload, "privPassword", ""),
 		},
-		OIDs:    tools.GetPayloadStringSlice(cmd.Payload, "oids"),
-		Timeout: time.Duration(tools.GetPayloadInt(cmd.Payload, "timeout", 2)) * time.Second,
-		Retries: tools.GetPayloadInt(cmd.Payload, "retries", 1),
+		OIDs:    oids,
+		Specs:   parseOIDSpecs(payload, oids),
+		Limits:  parsePollLimits(payload),
+		Timeout: time.Duration(tools.GetPayloadInt(payload, "timeout", 2)) * time.Second,
+		Retries: tools.GetPayloadInt(payload, "retries", 1),
+	}, nil
+}
+
+// parseOIDSpecs reads `oidSpecs`, falling back to the legacy `oids` as plain
+// GETs. The fallback is the compatibility contract in both directions: a
+// pre-W02 server sends no specs and gets exactly today's behaviour.
+func parseOIDSpecs(payload map[string]any, legacyOIDs []string) []snmppoll.OIDSpec {
+	raw := tools.GetPayloadObjectSlice(payload, "oidSpecs")
+	specs := make([]snmppoll.OIDSpec, 0, len(raw))
+	for _, entry := range raw {
+		oid := strings.TrimSpace(tools.GetPayloadString(entry, "oid", ""))
+		if oid == "" {
+			continue
+		}
+		name := tools.GetPayloadString(entry, "name", "")
+		if name == "" {
+			name = oid
+		}
+		mode := tools.GetPayloadString(entry, "mode", "")
+		if mode != snmppoll.ModeGet && mode != snmppoll.ModeWalk {
+			mode = snmppoll.DefaultMode(oid)
+		}
+		cadence := tools.GetPayloadString(entry, "cadence", "")
+		if cadence != snmppoll.CadenceFast && cadence != snmppoll.CadenceSlow {
+			cadence = snmppoll.CadenceFast
+		}
+		specs = append(specs, snmppoll.OIDSpec{OID: oid, Name: name, Mode: mode, Cadence: cadence})
+	}
+	if len(specs) > 0 {
+		return specs
+	}
+	return snmppoll.SpecsFromOIDs(legacyOIDs)
+}
+
+// parsePollLimits reads `limits`, keeping the compiled-in default for any bound
+// the server omitted or sent as a non-positive value. A zero row bound means
+// "collect nothing" and a negative duration means "already expired"; both would
+// silently stop collection, so neither is honoured.
+func parsePollLimits(payload map[string]any) snmppoll.PollLimits {
+	limits := snmppoll.DefaultPollLimits
+	raw := tools.GetPayloadObject(payload, "limits")
+	if raw == nil {
+		return limits
+	}
+	if v := tools.GetPayloadInt(raw, "maxRowsPerOid", 0); v > 0 {
+		limits.MaxRowsPerOID = v
+	}
+	if v := tools.GetPayloadInt(raw, "maxRowsPerPoll", 0); v > 0 {
+		limits.MaxRowsPerPoll = v
+	}
+	if v := tools.GetPayloadInt(raw, "maxBytesPerPoll", 0); v > 0 {
+		limits.MaxBytesPerPoll = v
+	}
+	if v := tools.GetPayloadInt(raw, "maxDurationMs", 0); v > 0 {
+		limits.MaxDuration = time.Duration(v) * time.Millisecond
+	}
+	return limits
+}
+
+func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
+	start := time.Now()
+
+	device, errResult := parseSnmpPollRequest(cmd.Payload)
+	if errResult != nil {
+		errResult.DurationMs = time.Since(start).Milliseconds()
+		return *errResult
 	}
 
 	metrics, err := snmppoll.CollectMetrics(device)
