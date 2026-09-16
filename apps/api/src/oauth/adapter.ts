@@ -15,7 +15,7 @@ import {
   type OAuthRevocationMarkerResult,
 } from './revocationRetry';
 import { revokeClientFamilies } from './revocationService';
-import { ERROR_IDS, logOauthDebug, logOauthError } from './log';
+import { ERROR_IDS, logOauthDebug, logOauthError, logOauthWarn } from './log';
 import { assertActiveTenantContext, TenantInactiveError } from '../services/tenantStatus';
 import { isOAuthGrantActiveInCurrentDbContext, revokeGrantsDurablyInCurrentDbContext } from './grantStatus';
 
@@ -212,12 +212,25 @@ const CLIENT_LAST_USED_STAMP_INTERVAL_MS = 60 * 60 * 1000;
 
 async function touchClientLastUsed(clientId: string, now: Date = new Date()): Promise<void> {
   const threshold = new Date(now.getTime() - CLIENT_LAST_USED_STAMP_INTERVAL_MS);
-  await db.update(oauthClients)
-    .set({ lastUsedAt: now })
-    .where(and(
-      eq(oauthClients.id, clientId),
-      or(isNull(oauthClients.lastUsedAt), lt(oauthClients.lastUsedAt, threshold)),
-    ));
+  // Advisory bookkeeping for the DCR GC (#5610): this stamp rides along with
+  // AuthorizationCode / RefreshToken issuance, so a failure here must never
+  // abort the grant the user is actually asking for. Worst case the client
+  // keeps an older last_used_at and is re-stamped on its next token exchange.
+  try {
+    await db.update(oauthClients)
+      .set({ lastUsedAt: now })
+      .where(and(
+        eq(oauthClients.id, clientId),
+        or(isNull(oauthClients.lastUsedAt), lt(oauthClients.lastUsedAt, threshold)),
+      ));
+  } catch (err) {
+    logOauthWarn({
+      errorId: ERROR_IDS.OAUTH_CLIENT_LAST_USED_STAMP_FAILED,
+      message: 'failed to stamp oauth_clients.last_used_at; token issuance continues',
+      err,
+      context: { clientId },
+    });
+  }
 }
 
 export class BreezeOidcAdapter {

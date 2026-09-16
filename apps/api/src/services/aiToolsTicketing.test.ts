@@ -33,6 +33,15 @@ vi.mock('./ticketConfigService', async () => {
   return { ...actual, ...ticketConfigMocks };
 });
 
+// #5808 W03 — `get` now returns a READ-ONLY checklist summary. Mocked so these
+// cases pin exactly WHAT is exposed (labels + progress) and what is not
+// (per-step detail, and the completer's id — an attestation, not context).
+const checklistMocks = vi.hoisted(() => ({ listChecklist: vi.fn() }));
+vi.mock('./ticketChecklistService', async () => {
+  const actual = await vi.importActual<typeof import('./ticketChecklistService')>('./ticketChecklistService');
+  return { ...actual, ...checklistMocks };
+});
+
 // Mutable handle so individual tests can override the limit() return value
 // (typed as returning unknown[] so mockResolvedValue(TICKET_ROW) compiles),
 // plus shared spies so the site-scope tests can assert on (a) how many
@@ -137,6 +146,8 @@ describe('manage_tickets tool', () => {
     vi.clearAllMocks();
     // Default: ticket not found (empty rows).
     mockLimit.mockResolvedValue([]);
+    // Default: the ticket has no checklist (#5808 W03).
+    checklistMocks.listChecklist.mockResolvedValue({ done: 0, total: 0, items: [] });
     // Default: status name resolution finds nothing.
     ticketConfigMocks.findStatusByName.mockResolvedValue(null);
     ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
@@ -232,6 +243,66 @@ describe('manage_tickets tool', () => {
     const whereArg = mockWhere.mock.calls.at(-1)?.[0];
     expect(whereArg).toBeDefined();
     expect(JSON.stringify(whereArg)).toContain('is null');
+  });
+
+  // ── #5808 W03: read-only checklist exposure ───────────────────────────────
+
+  it('get includes the checklist summary and ordered labels', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    checklistMocks.listChecklist.mockResolvedValue({
+      done: 1,
+      total: 2,
+      items: [
+        { id: 'c1', ticketId: 't-1', label: 'A', detail: 'secret runbook step', position: 0, done: true, doneAt: '2026-01-01T00:00:00.000Z', doneByUserId: 'u-9', source: 'deliverable', sourceTemplateItemId: 'ti-1', createdAt: '2026-01-01T00:00:00.000Z' },
+        { id: 'c2', ticketId: 't-1', label: 'B', detail: null, position: 1, done: false, doneAt: null, doneByUserId: null, source: 'deliverable', sourceTemplateItemId: 'ti-2', createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    const parsed = JSON.parse(await getTool().handler({ action: 'get', ticketId: 't-1' }, auth));
+    expect(parsed.checklist).toEqual({
+      done: 1,
+      total: 2,
+      items: [{ label: 'A', done: true }, { label: 'B', done: false }],
+    });
+  });
+
+  it('get omits per-step DETAIL and the completer’s id', async () => {
+    // The agent needs to know where the ticket stands, not who attested what.
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    checklistMocks.listChecklist.mockResolvedValue({
+      done: 1,
+      total: 1,
+      items: [{ id: 'c1', ticketId: 't-1', label: 'A', detail: 'secret runbook step', position: 0, done: true, doneAt: '2026-01-01T00:00:00.000Z', doneByUserId: 'u-9', source: 'manual', sourceTemplateItemId: null, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    const out = await getTool().handler({ action: 'get', ticketId: 't-1' }, auth);
+    expect(out).not.toContain('doneByUserId');
+    expect(out).not.toContain('u-9');
+    expect(out).not.toContain('secret runbook step');
+  });
+
+  it('get returns checklist null for a ticket with none', async () => {
+    mockLimit.mockResolvedValue(TICKET_ROW);
+    checklistMocks.listChecklist.mockResolvedValue({ done: 0, total: 0, items: [] });
+    const parsed = JSON.parse(await getTool().handler({ action: 'get', ticketId: 't-1' }, auth));
+    expect(parsed.checklist).toBeNull();
+  });
+
+  it('there is NO tool or action that ticks a checklist step (OD-7 A)', () => {
+    // Pinned so a future "helpful" addition fails HERE and has to argue with
+    // the decision rather than slip in. done_by_user_id is a human attestation
+    // in a compliance artifact; an agent ticking a box it did not perform is a
+    // falsified record. The real control is W01's isInteractiveUserSession gate
+    // on the `done` branch — an MCP key carries its creator's real user id, so
+    // omitting a tool alone would not make ticking human-only.
+    const tools = new Map<string, AiTool>();
+    registerTicketingTools(tools);
+    const suspicious = [...tools.keys()].filter((n) => /checklist/i.test(n) && !/list|get|read/i.test(n));
+    expect(suspicious).toEqual([]);
+    const actions = (tools.get('manage_tickets')!.definition.input_schema as {
+      properties: { action: { enum: string[] } };
+    }).properties.action.enum;
+    expect(actions).not.toContain('tick_checklist');
+    expect(actions).not.toContain('complete_checklist_item');
+    expect(actions).not.toContain('update_checklist');
   });
 
   // ── comment ───────────────────────────────────────────────────────────────
@@ -451,6 +522,8 @@ describe('manage_tickets list — site-axis scoping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
+    // Default: the ticket has no checklist (#5808 W03).
+    checklistMocks.listChecklist.mockResolvedValue({ done: 0, total: 0, items: [] });
     ticketConfigMocks.findStatusByName.mockResolvedValue(null);
     ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
@@ -497,6 +570,8 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLimit.mockResolvedValue([]);
+    // Default: the ticket has no checklist (#5808 W03).
+    checklistMocks.listChecklist.mockResolvedValue({ done: 0, total: 0, items: [] });
     ticketConfigMocks.findStatusByName.mockResolvedValue(null);
     ticketConfigMocks.listActiveStatusNames.mockResolvedValue([]);
   });
@@ -530,7 +605,9 @@ describe('manage_tickets — log_time_entry / start_timer / stop_timer', () => {
         isBillable: true,
         hourlyRate: 125
       }),
-      expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' })
+      expect.objectContaining({ userId: 'u-1', manageAll: false, partnerId: 'p-1' }),
+      // #4177: a human's own tool call keeps the column default provenance.
+      { source: 'manual' }
     );
     expect(JSON.parse(out)).toMatchObject({
       timeEntry: { id: 'te-1' },

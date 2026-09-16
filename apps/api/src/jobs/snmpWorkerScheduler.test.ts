@@ -200,9 +200,6 @@ describe('processPollDevice attempt marking (#3217)', () => {
 
   it.each([
     ['the device row is gone', () => [[]]],
-    ['the device has no OIDs configured', () => [
-      [{ id: 'dev-1', orgId: 'org-1', templateId: null, ipAddress: '10.0.0.1' }],
-    ]],
     ['the org has no online agent', () => [
       [{ id: 'dev-1', orgId: 'org-1', templateId: 'tpl-1', ipAddress: '10.0.0.1', port: 161, snmpVersion: 'v2c' }],
       [{ oids: [{ oid: '1.3.6.1.2.1.1.1.0' }] }],
@@ -220,6 +217,24 @@ describe('processPollDevice attempt marking (#3217)', () => {
     expect(captured.updateSets).toHaveLength(1);
     expect(captured.updateSets[0]).not.toHaveProperty('consecutiveFailures');
     expect(captured.updateSets[0]!.lastPollAttemptedAt).toBeInstanceOf(Date);
+  });
+
+  it('records no_template WITHOUT counting a failure when the device has no OIDs (spec §6.1)', async () => {
+    // F2: "SNMP monitoring: Enabled" on a device with no template polls nothing
+    // and left last_status NULL forever, so no page could say so. It is now a
+    // durable status — but NOT a failure: the poll never left the building, and
+    // counting it would back a healthy device off to an hour and eventually
+    // mark it 'offline' (the exact behaviour the #3217 contract forbids).
+    selectResults = [[{ id: 'dev-1', orgId: 'org-1', templateId: null, ipAddress: '10.0.0.1' }]] as unknown[][];
+    isAgentConnectedMock.mockReturnValue(false);
+
+    await processPollDevice({ type: 'poll-device', deviceId: 'dev-1', orgId: 'org-1' });
+
+    expect(captured.updateSets).toHaveLength(2);
+    expect(captured.updateSets[0]!.lastPollAttemptedAt).toBeInstanceOf(Date);
+    expect(captured.updateSets[1]).toMatchObject({ lastStatus: 'no_template' });
+    expect(captured.updateSets[1]).not.toHaveProperty('consecutiveFailures');
+    expect(captured.updateSets[1]!.lastPollAttemptedAt).toBeInstanceOf(Date);
   });
 
   it('counts a failure once the poll is genuinely dispatched', async () => {

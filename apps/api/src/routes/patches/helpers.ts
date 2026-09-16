@@ -1,7 +1,7 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { AuditResult } from '@breeze/shared';
 import { db } from '../../db';
-import { organizations, patchPolicies } from '../../db/schema';
+import { organizations, patchApprovals, patchPolicies } from '../../db/schema';
 import { writeRouteAudit, type AuthContext } from '../../services/auditEvents';
 import type { AuthContext as MiddlewareAuthContext } from '../../middleware/auth';
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from '../../services/partnerWideAccess';
@@ -111,6 +111,67 @@ export async function upsertPatchApproval(values: {
       status = EXCLUDED.status, approved_by = EXCLUDED.approved_by, approved_at = EXCLUDED.approved_at,
       defer_until = EXCLUDED.defer_until, notes = EXCLUDED.notes, updated_at = NOW()
   `);
+}
+
+// Declines a patch across EVERY ring approval row for the partner, not just
+// the blanket (ringId=null) one. Root cause of #5585: the evaluator matches
+// either the ring-specific row OR the blanket row (patchApprovalEvaluator.ts),
+// so a blanket-only decline left previously approved ring rows live and their
+// devices kept the patch approved. Also always upserts the blanket row itself
+// so a patch with no prior approval anywhere still gets an explicit rejection,
+// matching single-ring decline's always-upsert behavior.
+//
+// Each ring's upsert is written per-item (mirrors the bulk-approve loop in
+// approvals.ts): a failure on one ring is logged and recorded in
+// `failedRingIds` rather than aborting the whole call, so a caller that
+// already got rings A and B declined isn't told the operation failed outright
+// and left to guess which rings, if any, actually changed. A
+// PartnerWideWriteDeniedError is the one exception — it means the caller
+// never had authority to write ANY of these rows (not a per-ring transient
+// failure), so it propagates immediately instead of being recorded as one
+// failed ring among others.
+export async function declineAllRingApprovals(
+  partnerId: string,
+  patchId: string,
+  note: string | null,
+  auth: Pick<MiddlewareAuthContext, 'scope' | 'partnerOrgAccess'>
+): Promise<{ ringIds: (string | null)[]; failedRingIds: (string | null)[] }> {
+  const rows = await db
+    .select({ ringId: patchApprovals.ringId })
+    .from(patchApprovals)
+    .where(and(eq(patchApprovals.partnerId, partnerId), eq(patchApprovals.patchId, patchId)));
+
+  const ringIds = new Set<string | null>(rows.map((r) => r.ringId));
+  ringIds.add(null);
+
+  const declined: (string | null)[] = [];
+  const failed: (string | null)[] = [];
+
+  for (const ringId of ringIds) {
+    try {
+      await upsertPatchApproval({
+        partnerId,
+        patchId,
+        ringId,
+        status: 'rejected',
+        notes: note,
+      }, auth);
+      declined.push(ringId);
+    } catch (err) {
+      if (err instanceof PartnerWideWriteDeniedError) throw err;
+      // Same rationale as the bulk-approve per-id catch in approvals.ts: log
+      // every per-ring failure so an operator asking "why is this patch still
+      // approved in ring X after I declined it everywhere?" has something to
+      // correlate against.
+      console.error(
+        `[Patches] declineAllRingApprovals failed for patch=${patchId} partner=${partnerId} ring=${ringId ?? 'blanket'}:`,
+        err
+      );
+      failed.push(ringId);
+    }
+  }
+
+  return { ringIds: declined, failedRingIds: failed };
 }
 
 export async function resolvePatchApprovalPartnerIdForRing(

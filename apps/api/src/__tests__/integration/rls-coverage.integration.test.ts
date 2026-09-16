@@ -359,6 +359,34 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge proof: deliverableTemplatesPartnerRls.integration.test.ts.
   'deliverable_template_sets',
   'deliverable_template_items',
+  // ticket_checklist_templates / ticket_checklist_template_items (spec #5783
+  // §4.2, §4.3): a checklist template is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL — one MSP-authored procedure
+  // every customer inherits). Created dual-axis from day one in
+  // 2026-10-16-191300-ticket-checklist-templates. The org_id column means
+  // org-tenant auto-discovery already asserts the breeze_has_org_access branch,
+  // so these entries are what assert the breeze_has_partner_access
+  // (partner-wide) branch. CHECKs <table>_one_owner_chk enforce exactly one
+  // axis. Functional cross-partner forge proof:
+  // ticketChecklistTemplatesPartnerRls.integration.test.ts.
+  'ticket_checklist_templates',
+  'ticket_checklist_template_items',
+  // tool_sources / tool_source_tools (Tool catalog W01, #5215 / #5216, spec
+  // 2026-09-07 §5): a registration of an external MCP server is org-scoped
+  // (org_id set) OR partner-wide (partner_id set, org_id NULL — one MSP
+  // registration every customer's AI session can reach). Created dual-axis from
+  // day one in 2026-10-16-193500-tool-sources, with both partner-wide SELECT
+  // branches in that same migration, so neither needs a
+  // PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry. tool_source_tools DENORMALISES the
+  // owner from its parent (constraint trigger tool_source_tools_owner_guard_trg
+  // keeps them equal) so the per-session resolver stays one indexed query. The
+  // org_id column means org-tenant auto-discovery already asserts the
+  // breeze_has_org_access branch, so these entries are what assert the
+  // breeze_has_partner_access (partner-wide) branch. CHECKs
+  // <table>_one_owner_chk enforce exactly one axis. Functional cross-partner
+  // forge proof: toolSourcesPartnerRls.integration.test.ts.
+  'tool_sources',
+  'tool_source_tools',
   'users',
   'deployment_invites',
   'access_reviews',
@@ -642,6 +670,19 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',
   'deliverable_template_items',
+  // ticket_checklist_templates_one_owner_chk /
+  // ticket_checklist_template_items_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-191300. Both
+  // partner-wide SELECT branches ship in that same migration, so neither needs
+  // a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'ticket_checklist_templates',
+  'ticket_checklist_template_items',
+  // tool_sources_one_owner_chk / tool_source_tools_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-193500 (#5216).
+  // Both partner-wide SELECT branches ship in that same migration, so neither
+  // needs a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'tool_sources',
+  'tool_source_tools',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',

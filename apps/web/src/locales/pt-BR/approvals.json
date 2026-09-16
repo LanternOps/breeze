@@ -49,8 +49,12 @@
   "deciding": "Enviando…",
   "expiresIn": "Expira em {{minutes}} min",
   "expiresSoon": "Expira em menos de um minuto",
+  "expiresInHours": "Expira em {{hours}} h",
+  "expiresInDays": "Expira em {{days}} dias",
   "expired": "Expirada",
   "unknownOrganization": "Organização desconhecida",
+  "intentNoLongerPending": "Essa aprovação não está mais pendente.",
+  "dismiss": "Dispensar",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} aprovado para {{org}}",
   "pagination": {
@@ -85,6 +89,25 @@
     "errors": {
       "approvedPromoteFailed": "Aprovado, mas não foi possível enviar a solicitação de pré-autorização. Tente novamente nas configurações do agente.",
       "policyDecideDisabled": "Aprovado. Não foi possível solicitar a pré-autorização porque ela está desativada para esta implantação."
+    }
+  },
+  "recent": {
+    "title": "Recentes",
+    "subtitle": "Já decididas ou finalizadas",
+    "loading": "Carregando aprovações recentes…",
+    "error": "Não foi possível carregar as aprovações recentes.",
+    "retry": "Tentar novamente",
+    "empty": "Nada foi finalizado recentemente.",
+    "status": {
+      "failed": "Falhou",
+      "rejected": "Rejeitada",
+      "expired": "Expirada",
+      "cancelled": "Cancelada",
+      "completed": "Concluída",
+      "denied": "Negada",
+      "approved": "Aprovada",
+      "reported": "Reportada",
+      "unknown": "Desconhecido"
     }
   }
 }

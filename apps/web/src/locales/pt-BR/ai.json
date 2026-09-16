@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "Executando...",
     "approvedRunning": "Aprovado · em execução",
+    "approvedFailed": "Aprovado · falhou",
+    "approvedCompleted": "Aprovado · concluído",
     "input": "Entrada:",
     "error": "Erro:",
     "output": "Saída:"
@@ -138,7 +140,7 @@
     "tabs": {
       "orgs": "Organizações",
       "sessions": "Sessões",
-      "usage": "Uso",
+      "usage": "Uso do complemento do Office",
       "templates": "Modelos"
     }
   },
@@ -487,5 +489,19 @@
     "ownerScopeOrganization": "Somente esta organização",
     "ownerScopePartner": "Todas as organizações deste parceiro",
     "nameRequired": "É necessário informar um nome."
+  },
+  "aiRunCard": {
+    "title": "Execução de análise",
+    "openRun": "Abrir a execução completa",
+    "resultOnRunPage": "Isso terminou depois que a conversa avançou — o resultado completo fica disponível na página da execução.",
+    "status": {
+      "queued": "na fila",
+      "running": "em execução",
+      "completed": "concluído",
+      "failed": "falhou",
+      "cancelled": "cancelado",
+      "expired": "expirado",
+      "skipped": "ignorado"
+    }
   }
 }

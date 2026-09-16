@@ -33,6 +33,9 @@ vi.mock('../db/schema', () => ({
     lastChecked: 'softwareComplianceStatus.lastChecked',
     remediationStatus: 'softwareComplianceStatus.remediationStatus',
     lastRemediationAttempt: 'softwareComplianceStatus.lastRemediationAttempt',
+    installRemediationStatus: 'softwareComplianceStatus.install_remediation_status',
+    lastInstallRemediationAttempt: 'softwareComplianceStatus.last_install_remediation_attempt',
+    installRemediationAttempts: 'softwareComplianceStatus.install_remediation_attempts',
   },
   softwarePolicies: { id: 'id', orgId: 'orgId', partnerId: 'partnerId', mode: 'mode', name: 'name', isActive: 'isActive', updatedAt: 'updatedAt' },
 }));
@@ -701,6 +704,55 @@ describe('GET /violations — site scope', () => {
     setAuth();
     app = new Hono();
     app.route('/software-policies', softwarePoliciesRoutes);
+  });
+
+  it.each([
+    { status: 'gave_up', attemptedAt: new Date('2026-09-15T12:00:00Z'), attempts: 3 },
+    { status: 'none', attemptedAt: null, attempts: 0 },
+    { status: null, attemptedAt: null, attempts: 0 },
+  ])('returns install remediation fields on the wire ($status)', async ({ status, attemptedAt, attempts }) => {
+    const storedRow: Record<string, unknown> = {
+      'softwareComplianceStatus.remediationStatus': 'failed',
+      'softwareComplianceStatus.install_remediation_status': status,
+      'softwareComplianceStatus.last_install_remediation_attempt': attemptedAt,
+      'softwareComplianceStatus.install_remediation_attempts': attempts,
+    };
+    // Honor the route's projection so an omitted or incorrectly mapped column
+    // cannot pass merely because the mock returned a pre-shaped response.
+    vi.mocked(db.select).mockImplementationOnce((projection: any) => ({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                device: { id: DEVICE_ALLOWED },
+                compliance: Object.fromEntries(
+                  Object.entries(projection.compliance).map(([key, column]) => [key, storedRow[String(column)]])
+                ),
+              }]),
+            }),
+          }),
+        }),
+      }),
+    }) as any);
+
+    const res = await app.request('/software-policies/violations', {
+      headers: { Authorization: 'Bearer token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      data: [{
+        device: { id: DEVICE_ALLOWED },
+        compliance: {
+          remediationStatus: 'failed',
+          installRemediationStatus: status,
+          lastInstallRemediationAttempt: attemptedAt?.toISOString() ?? null,
+          installRemediationAttempts: attempts,
+        },
+      }],
+      total: 1,
+    });
   });
 
   it('returns 403 when an explicit deviceId is outside the caller site allowlist', async () => {

@@ -25,6 +25,8 @@ import {
 } from './queueSchemas';
 import { attachWorkerObservability } from './workerObservability';
 import { redactOptionalSecretText, redactSecretsDeep } from '../services/secretRedaction';
+import { monitorRequestUrl, readTlsObservation, tlsObservationUpdate } from '../services/monitors/tlsObservation';
+import { loadAssetSiteId, selectNetworkExecutor } from '../services/networkExecutorSelection';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -270,65 +272,17 @@ function parseNumericThreshold(threshold: string | null | undefined): number | n
 }
 
 /**
- * Quick Support exclusion (applies to every device selection below):
- * ephemeral devices (`devices.isEphemeral`) live in the hidden per-partner
- * 'quick_support' org and are a stranger's personal machine borrowed for one
- * ~20-minute session. That org stays inside technicians' accessibleOrgIds for
- * RLS reasons, so background workers are NOT filtered for us. Such a device must
- * never be conscripted as a monitor executor (it would run network probes on a
- * home network) nor be picked as the attribution device for a monitor alert.
+ * Kept as a named export because monitorWorker.test.ts and
+ * monitorWorker.dbcontext.test.ts assert on it directly. The rules now live in
+ * services/networkExecutorSelection.ts, shared with routes/monitors.ts and the
+ * manual probe (spec §5).
  */
 export async function selectExecutionAgentForMonitor(
-  monitor: {
-    orgId: string;
-    assetId: string | null;
-  }
+  monitor: { orgId: string; assetId: string | null },
 ): Promise<string | null> {
-  let assetSiteId: string | null = null;
-
-  if (monitor.assetId) {
-    const [asset] = await db
-      .select({ siteId: discoveredAssets.siteId })
-      .from(discoveredAssets)
-      .where(and(eq(discoveredAssets.id, monitor.assetId), eq(discoveredAssets.orgId, monitor.orgId)))
-      .limit(1);
-    assetSiteId = asset?.siteId ?? null;
-  }
-
-  if (assetSiteId) {
-    // Site-bound monitor: the executing agent MUST live in the monitor's site.
-    // If no online agent is available there, return null rather than crossing
-    // the site boundary to an arbitrary org agent (SR5-08) — that would direct
-    // a root-level agent in another site to probe this target.
-    const [siteAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.isEphemeral, false),
-        eq(devices.siteId, assetSiteId),
-        eq(devices.status, 'online')
-      ))
-      .limit(1);
-
-    return siteAgent?.agentId ?? null;
-  }
-
-  // Unbound monitor (no site scope): org-wide selection is legitimate. Monitors
-  // created by site-restricted callers are now required to be site-bound
-  // (aiToolsMonitoring create gate), so this path is reached only for monitors
-  // an unrestricted caller intentionally left assetless.
-  const [onlineAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(
-      eq(devices.orgId, monitor.orgId),
-      eq(devices.isEphemeral, false),
-      eq(devices.status, 'online')
-    ))
-    .limit(1);
-
-  return onlineAgent?.agentId ?? null;
+  const siteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
+  const pick = await selectNetworkExecutor({ orgId: monitor.orgId, siteId });
+  return 'agentId' in pick ? pick.agentId : null;
 }
 
 async function resolveMonitorAlertDevice(
@@ -598,6 +552,30 @@ export async function recordMonitorCheckResult(
       timestamp: now
     });
 
+    // #5754 provenance guard. Only read when the result actually carries an
+    // observation, so every icmp/dns/tcp check keeps its current statement
+    // count. `FOR UPDATE` is what makes it a guard rather than a hint: a
+    // concurrent `PATCH /monitors/:id` either commits first (and we read its
+    // new URL, so this stale result is dropped) or blocks until we commit
+    // (and its own tls reset then clears whatever we wrote). Without the lock
+    // the read could be taken just before an edit lands and the check would
+    // pass on data that is already stale.
+    let tlsGuard: { expectedRequestUrl?: string | null; monitorId: string } = { monitorId };
+    if (readTlsObservation(result.details)) {
+      const [current] = await tx
+        .select({ target: networkMonitors.target, config: networkMonitors.config })
+        .from(networkMonitors)
+        .where(eq(networkMonitors.id, monitorId))
+        .for('update')
+        .limit(1);
+      // A missing row means the monitor was deleted mid-flight; `null` still
+      // fails the equality check, so the observation is dropped.
+      tlsGuard = {
+        monitorId,
+        expectedRequestUrl: current ? monitorRequestUrl(current) : null,
+      };
+    }
+
     // Update monitor state
     const isFailure = result.status === 'offline';
     const updateSet: Record<string, unknown> = {
@@ -605,7 +583,16 @@ export async function recordMonitorCheckResult(
       lastStatus: result.status,
       lastResponseMs: result.responseMs ?? null,
       lastError: result.error ?? null,
-      updatedAt: now
+      updatedAt: now,
+      // #5754: the TLS observation joins THIS updateSet rather than a second
+      // statement, so the certificate reading and the check it came from can
+      // never disagree. The fragment is empty for any result carrying no
+      // `sslState` — every icmp/dns/tcp check, and every agent predating the
+      // wave — so those never clear a good observation. It is written on the
+      // `network_monitors` DEFINITION row, so for a partner-wide monitor
+      // (org_id NULL, fanned out to many orgs) the last reporting org wins;
+      // harmless today because loadExpiringCerts reads org-owned rows only.
+      ...tlsObservationUpdate(result.details, now, tlsGuard),
     };
 
     if (isFailure) {

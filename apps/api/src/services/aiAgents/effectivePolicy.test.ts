@@ -309,6 +309,17 @@ describe('mergeAgentPolicies — tighten only', () => {
     expect(effective.triggers.ticketPriorities).toEqual(['high']);
   });
 
+  it('narrows alertCategories by intersection and leaves it undefined when neither side sets it (AI patch agent W04, #5750)', () => {
+    const partner = policy({
+      triggers: { alertSeverities: ['critical', 'high'], alertCategories: ['patching', 'monitor'], respectMaintenanceWindows: false },
+    });
+    const org = policy({
+      triggers: { alertSeverities: ['critical', 'high'], alertCategories: ['patching'], respectMaintenanceWindows: false },
+    });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.alertCategories).toEqual(['patching']);
+    expect(mergeAgentPolicies(policy(), policy(), { allowedModels: null }).effective.triggers.alertCategories).toBeUndefined();
+  });
+
   it('ticketCategories/ticketPriorities stay undefined (unrestricted) when neither side sets them', () => {
     const partner = policy();
     const org = policy();

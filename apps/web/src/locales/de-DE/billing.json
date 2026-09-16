@@ -318,6 +318,11 @@
       "estimateExcluded": "Schließt {{count}} Vertrag/Verträge aus, deren Schätzung nicht verfügbar ist"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "countPlus": "{{count}}+ Verträge werden in einer anderen Währung als der ihrer Organisation abgerechnet.",
+        "review": "Prüfen"
+      },
       "title": "Verträge",
       "description": "Wiederkehrende Vereinbarungen, die in regelmäßigen Abständen automatisch Rechnungsentwürfe erstellen.",
       "newContract": "Neuer Vertrag",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Gespeichert, aber nicht unterstützte Formatierung wurde entfernt: {{tags}}. Vereinbarungstexte unterstützen Überschriften, Fett, Kursiv, Unterstrichen, Listen und Links."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Vereinbarungsvorlagen",
+      "signed": "Unterzeichnete Vereinbarungen"
+    },
+    "signedPage": {
+      "title": "Unterzeichnete Vereinbarungen",
+      "description": "Alle Vereinbarungen, die Ihre Kunden unterzeichnet haben. Ordnen Sie eine einem Vertrag zu, damit sie bei dem Vertrag erscheint, den sie regelt.",
+      "unlinkedOnly": "Nur nicht zugeordnete",
+      "empty": {
+        "title": "Noch keine unterzeichneten Vereinbarungen",
+        "description": "Eine Vereinbarung gilt als unterzeichnet, sobald ein Kunde ein Angebot annimmt, das sie enthält."
+      },
+      "emptyUnlinked": {
+        "title": "Keine nicht zugeordneten unterzeichneten Vereinbarungen",
+        "description": "Jede unterzeichnete Vereinbarung ist bereits einem Vertrag zugeordnet."
+      },
+      "columns": {
+        "contract": "Vertrag"
+      },
+      "viewContract": "Vertrag ansehen",
+      "notLinked": "Nicht zugeordnet",
+      "rowSubtitle": "Mit Angebot {{quoteNumber}} angenommen von {{signer}} am {{date}}",
+      "rowSubtitleNoQuote": "Unterzeichnet von {{signer}} am {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen",
+      "usageUnavailable": "Verwendung nicht verfügbar",
+      "backToTemplates": "Zurück zu den Vereinbarungsvorlagen",
+      "archiveConfirm": {
+        "title": "Diese Vereinbarungsvorlage archivieren?",
+        "message": "Verwendet in {{quotes}} Angeboten · {{signed}} unterzeichneten Vereinbarungen. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "messageUnknownUsage": "Es ließ sich nicht prüfen, wo diese Vorlage verwendet wird. Bereits daran gebundene Angebote funktionieren weiter, es lassen sich aber keine neuen Vereinbarungsabschnitte mehr hinzufügen.",
+        "confirm": "Vorlage archivieren"
+      }
+    },
+    "contractPill": {
+      "under": "Gemäß {{template}} v{{n}}"
     }
   },
   "quotes": {
@@ -1297,7 +1342,7 @@
       "contract": {
         "download": "Vereinbarung herunterladen",
         "previewTitle": "Vereinbarung {{name}}",
-        "unavailable": "Vertragsdatei nicht verfügbar",
+        "unavailable": "Vereinbarungsdatei nicht verfügbar",
         "versionFooter": "{{name}} — Version {{version}}"
       },
       "draft": "Entwurf",

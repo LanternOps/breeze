@@ -7,6 +7,7 @@
  * - configure_network_baseline (Tier 2): Create/update network baseline configuration
  * - get_ip_history (Tier 1): Query historical IP assignments
  * - network_discovery (Tier 3): Initiate a network discovery scan
+ * - get_network_asset_reachability (Tier 1): Sourced, dated reachability for a discovered asset
  */
 
 import { isIP } from 'node:net';
@@ -14,11 +15,13 @@ import { db } from '../db';
 import {
   devices,
   deviceIpHistory,
+  discoveredAssets,
   networkBaselines,
   networkChangeEvents,
   sites,
   type NetworkBaselineScanSchedule,
 } from '../db/schema';
+import { loadReachability } from './assetReachabilityLoader';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -635,7 +638,71 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
   });
 
   // ============================================
-  // 5. network_discovery - Tier 3 (requires approval)
+  // 5. get_network_asset_reachability - Tier 1 (read-only)
+  // ============================================
+
+  registerTool({
+    tier: 1,
+    definition: {
+      name: 'get_network_asset_reachability',
+      description:
+        'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, '
+        + 'with the SOURCE of the evidence and how old it is. Always state the source and age when answering — '
+        + '"responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has '
+        + 'checked the device recently; report it as unverified, not as down.',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          asset_id: { type: 'string', description: 'Discovered asset UUID' },
+        },
+        required: ['asset_id'],
+      },
+    },
+    handler: async (input, auth) => {
+      const assetId = typeof input.asset_id === 'string' ? input.asset_id : '';
+      if (!assetId) return JSON.stringify({ error: 'asset_id is required' });
+
+      // Org axis via RLS + the explicit predicate; site axis app-layer, fail closed.
+      const conditions: SQL[] = [eq(discoveredAssets.id, assetId)];
+      const orgCondition = auth.orgCondition(discoveredAssets.orgId);
+      if (orgCondition) conditions.push(orgCondition);
+      if (auth.allowedSiteIds !== undefined) {
+        if (auth.allowedSiteIds.length === 0) return JSON.stringify({ error: 'Asset not found or access denied' });
+        conditions.push(inArray(discoveredAssets.siteId, auth.allowedSiteIds));
+      }
+
+      const [asset] = await db
+        .select({
+          id: discoveredAssets.id,
+          label: discoveredAssets.label,
+          hostname: discoveredAssets.hostname,
+          ipAddress: discoveredAssets.ipAddress,
+          assetType: discoveredAssets.assetType,
+          siteId: discoveredAssets.siteId,
+        })
+        .from(discoveredAssets)
+        .where(and(...conditions))
+        .limit(1);
+
+      if (!asset) return JSON.stringify({ error: 'Asset not found or access denied' });
+      if (siteAccessDenied(auth, asset.siteId)) return JSON.stringify({ error: 'Asset not found or access denied' });
+
+      const reachability = (await loadReachability([asset.id])).get(asset.id) ?? null;
+
+      return JSON.stringify({
+        asset: {
+          id: asset.id,
+          name: asset.label ?? asset.hostname ?? asset.ipAddress ?? asset.id,
+          assetType: asset.assetType,
+          ipAddress: asset.ipAddress,
+        },
+        reachability,
+      });
+    },
+  });
+
+  // ============================================
+  // 6. network_discovery - Tier 3 (requires approval)
   // ============================================
 
   registerTool({

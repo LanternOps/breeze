@@ -59,6 +59,22 @@ type firstInstallArtifactSpec struct {
 	sourcePath   string
 	client       *http.Client
 	trustKeys    map[string]ed25519.PublicKey
+
+	// serverURL is the persisted control-plane URL (config.Config.ServerURL),
+	// empty on a host that has not run `enroll` yet. Hosted builds only.
+	serverURL string
+
+	// manifestBytes / signatureBytes carry the signed release manifest inline
+	// instead of fetching it from manifestURL / signatureURL. Set by
+	// applyHostedFirstInstallSource, which reads them from the control plane's
+	// agent-versions response (#5899).
+	manifestBytes  []byte
+	signatureBytes []byte
+
+	// serverSourced records that the manifest came from the enrolled control
+	// plane rather than the public GitHub release. It relaxes exactly one
+	// binding in verifyFirstInstallManifest — see the comment there.
+	serverSourced bool
 }
 
 var releaseRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
@@ -179,8 +195,17 @@ func firstInstallHTTPClient() *http.Client {
 
 func trustedReleaseHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
-	return host == "github.com" || host == "objects.githubusercontent.com" ||
-		host == "release-assets.githubusercontent.com"
+	if host == "github.com" || host == "objects.githubusercontent.com" ||
+		host == "release-assets.githubusercontent.com" {
+		return true
+	}
+	// A hosted build also stages from its own control plane (#5899). The set it
+	// adds is hostpolicy's compile-time allowlist — exact, case-insensitive,
+	// no wildcard or suffix matching — and it is consulted ONLY in hosted mode:
+	// in self-host mode AllowedHost permits every host, which must never widen
+	// this set. hostpolicy.Enforced() is the guard that keeps self-host
+	// behaviour byte-for-byte identical.
+	return hostpolicy.Enforced() && hostpolicy.AllowedHost(host)
 }
 
 func validateFirstInstallURL(rawURL string) error {
@@ -246,7 +271,17 @@ func verifyFirstInstallManifest(manifestBytes, signatureText []byte, spec firstI
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return firstInstallManifestAsset{}, fmt.Errorf("release manifest is invalid JSON: %w", err)
 	}
-	if manifest.SchemaVersion != 1 || !strings.EqualFold(manifest.Repository, expectedRepository) ||
+	// The `repository` field binds a GitHub-sourced manifest to the release the
+	// agent asked for. A control-plane-sourced manifest cannot be bound that
+	// way: a hosted build's artifacts are produced in a PRIVATE repository whose
+	// name no shipped binary knows, and baking it in would put internal infra
+	// naming into public source. What replaces it is not weaker — the manifest
+	// is still signed by the embedded release key, and the release tag, asset
+	// name, edition, platformTrust, size and SHA-256 all still bind below. This
+	// mirrors the updater's own server-sourced manifest contract
+	// (verifyReleaseArtifactManifest), which has never checked `repository`.
+	repositoryMatches := spec.serverSourced || strings.EqualFold(manifest.Repository, expectedRepository)
+	if manifest.SchemaVersion != 1 || !repositoryMatches ||
 		manifest.Release != "v"+spec.version || !sourceCommitPattern.MatchString(manifest.SourceCommit) {
 		return firstInstallManifestAsset{}, fmt.Errorf("release manifest identity tuple does not match requested release")
 	}
@@ -320,11 +355,19 @@ func stageFirstInstallArtifact(spec firstInstallArtifactSpec) error {
 	if _, err := firstInstallReleaseRepository(); err != nil {
 		return err
 	}
+	// Hosted builds re-point the manifest (and, absent a local sibling, the
+	// artifact) at their own control plane: the public GitHub release only ever
+	// carries self-host-edition assets, which a hosted build refuses by policy
+	// (#5899). No-op for self-host builds and for the manifest-URL test seam.
+	if err := applyHostedFirstInstallSource(&spec); err != nil {
+		return err
+	}
 	client := spec.client
 	productionClient := client == nil
 	if client == nil {
 		client = firstInstallHTTPClient()
 	}
+	inlineManifest := len(spec.manifestBytes) > 0
 	manifestURL := spec.manifestURL
 	if manifestURL == "" {
 		manifestURL = releaseManifestURL(spec.version)
@@ -334,9 +377,11 @@ func stageFirstInstallArtifact(spec firstInstallArtifactSpec) error {
 		signatureURL = releaseManifestSignatureURL(spec.version)
 	}
 	if productionClient {
-		for _, rawURL := range []string{manifestURL, signatureURL} {
-			if err := validateFirstInstallURL(rawURL); err != nil {
-				return err
+		if !inlineManifest {
+			for _, rawURL := range []string{manifestURL, signatureURL} {
+				if err := validateFirstInstallURL(rawURL); err != nil {
+					return err
+				}
 			}
 		}
 		if spec.sourcePath == "" {
@@ -345,13 +390,17 @@ func stageFirstInstallArtifact(spec firstInstallArtifactSpec) error {
 			}
 		}
 	}
-	manifest, err := fetchFirstInstallBytes(client, manifestURL, "release manifest", maxFirstInstallManifest)
-	if err != nil {
-		return err
-	}
-	signature, err := fetchFirstInstallBytes(client, signatureURL, "release manifest signature", 4096)
-	if err != nil {
-		return err
+	manifest, signature := spec.manifestBytes, spec.signatureBytes
+	if !inlineManifest {
+		var err error
+		manifest, err = fetchFirstInstallBytes(client, manifestURL, "release manifest", maxFirstInstallManifest)
+		if err != nil {
+			return err
+		}
+		signature, err = fetchFirstInstallBytes(client, signatureURL, "release manifest signature", 4096)
+		if err != nil {
+			return err
+		}
 	}
 	asset, err := verifyFirstInstallManifest(manifest, signature, spec)
 	if err != nil {

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const RUN_ID = '00000000-0000-4000-8000-0000000000e1';
@@ -760,5 +762,211 @@ describe('deliverRunFinishedNotifications — triage (P2-4)', () => {
     const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
     expect(input.title).toBe('Agent run finished');
     expect(input.link).toBe(`/ai-agents/runs/${RUN_ID}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AI patch agent W01 (#5747), Task 11 — the patch-run digest. Same shape as
+// the sweep digest above: counts in the title, the plan summary's first line
+// as the message, and the ordinary run link (W01 renders the plan on the run
+// detail page, and mints no intents of its own).
+// ---------------------------------------------------------------------------
+describe('deliverRunFinishedNotifications — patch plan (W01)', () => {
+  function patchRun(overrides: Record<string, unknown> = {}) {
+    return {
+      ...baseRun,
+      profile: 'patch',
+      summary: 'Run finished.',
+      outcome: {
+        toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1,
+          summary: 'Two servers are behind on critical updates.\nDetail follows.',
+          posture: 'behind',
+          items: [
+            { class: 'install', severity: 'critical' },
+            { class: 'install', severity: 'warning' },
+            { class: 'reboot_plan', severity: 'critical' },
+          ],
+          dispositions: [],
+          evidenceTruncated: false,
+          generatedAt: '2026-09-14T02:00:00.000Z',
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it('titles a patch run with the plan counts and uses the plan summary as the message', async () => {
+    queueRows('ai_agent_runs', [patchRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    expect(createNotification).toHaveBeenCalledTimes(1);
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Patch plan ready: 3 item(s) (2 critical) — Front Desk Triage');
+    expect(input.message).toBe('Two servers are behind on critical updates.');
+    expect(input.link).toBe(`/ai-agents/runs/${RUN_ID}`);
+  });
+
+  it('escalates a plan carrying a critical item and leaves a clean plan at the default priority', async () => {
+    queueRows('ai_agent_runs', [patchRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    expect((createNotification.mock.calls[0]![0] as { priority?: string }).priority).toBe('high');
+
+    createNotification.mockClear();
+    queueRows('ai_agent_runs', [patchRun({
+      outcome: {
+        toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1,
+          summary: 'Everything is current.',
+          posture: 'current',
+          items: [{ class: 'install', severity: 'info' }],
+          dispositions: [],
+          evidenceTruncated: false,
+          generatedAt: '2026-09-14T02:00:00.000Z',
+        },
+      },
+    })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    expect((createNotification.mock.calls[0]![0] as { priority?: string }).priority).toBeUndefined();
+  });
+
+  it('sends to the EFFECTIVE policy snapshot recipients, not the agent row column', async () => {
+    queueRows('ai_agent_runs', [patchRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    // A regression pin, not a fix: an org override's added recipient reaches
+    // the digest only because the RUN's snapshot is the input here.
+    expect(resolveRecipientUserIds).toHaveBeenCalledWith(
+      expect.objectContaining({ recipients: baseRun.policySnapshot.effective.recipients }),
+      ORG_ID,
+    );
+  });
+
+  it('falls back to the generic verdict-aware title when the run produced no plan', async () => {
+    queueRows('ai_agent_runs', [patchRun({ outcome: { toolExecutionCount: 0 } })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Agent run finished');
+  });
+
+  // ---- W03 (#5749): escalation delivery ---------------------------------------
+  function chaseRun(extra: Record<string, unknown> = {}) {
+    return patchRun({
+      outcome: {
+        toolExecutionCount: 0,
+        patchPlan: {
+          schemaVersion: 1,
+          summary: 'Three installs failed; two are worth a retry.',
+          posture: 'behind',
+          items: [
+            { class: 'install', severity: 'high' },
+            { class: 'chase', severity: 'high', failureClass: 'transient', attemptCount: 1 },
+            { class: 'chase', severity: 'high', failureClass: 'disk_space', attemptCount: 1 },
+            { class: 'escalation', severity: 'critical', failureClass: 'permanent', attemptCount: 2 },
+            { class: 'escalation', severity: 'high', failureClass: 'unknown', attemptCount: 3 },
+          ],
+          dispositions: [
+            { index: 0, class: 'install', disposition: 'intent_created' },
+            { index: 1, class: 'chase', disposition: 'intent_created' },
+            { index: 2, class: 'chase', disposition: 'refused', reason: 'no_eligible_patches' },
+            { index: 3, class: 'escalation', disposition: 'recorded' },
+            { index: 4, class: 'escalation', disposition: 'recorded' },
+          ],
+          evidenceTruncated: false,
+          generatedAt: '2026-09-14T02:00:00.000Z',
+          ...extra,
+        },
+      },
+    });
+  }
+
+  it('names failures and escalations in the patch digest title (W03)', async () => {
+    queueRows('ai_agent_runs', [chaseRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Patch plan ready: 5 item(s), 2 escalation(s) (1 critical) — Front Desk Triage');
+    // The message keeps the summary first, then the failure breakdown by class.
+    expect(input.message).toMatch(/^Three installs failed; two are worth a retry\./);
+    expect(input.message).toContain('2 retry proposal(s)');
+    expect(input.message).toContain('2 escalation(s)');
+    expect(input.message).toMatch(/disk_space 1/);
+    expect(input.message).toMatch(/permanent 1/);
+    expect(input.message).toMatch(/transient 1/);
+    expect(input.message).toMatch(/unknown 1/);
+  });
+
+  it('states the queued-offline coverage note when there is one — not silence (W03)', async () => {
+    queueRows('ai_agent_runs', [chaseRun({ queuedOffline: 4 })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.message).toContain('4 install(s) waiting for offline devices');
+
+    createNotification.mockClear();
+    queueRows('ai_agent_runs', [chaseRun({ queuedOffline: 0 })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    expect((createNotification.mock.calls[0]![0] as { message: string }).message).not.toContain('offline');
+  });
+
+  it('a plan with no chase or escalation keeps the W01 title verbatim (W03)', async () => {
+    queueRows('ai_agent_runs', [patchRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Patch plan ready: 3 item(s) (2 critical) — Front Desk Triage');
+    expect(input.message).toBe('Two servers are behind on critical updates.');
+  });
+
+  it('an escalation goes to the EFFECTIVE policy snapshot recipients (W03 regression pin)', async () => {
+    queueRows('ai_agent_runs', [chaseRun()]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+    await deliverRunFinishedNotifications(RUN_ID);
+    expect(resolveRecipientUserIds).toHaveBeenCalledWith(
+      expect.objectContaining({ recipients: baseRun.policySnapshot.effective.recipients }),
+      ORG_ID,
+    );
+  });
+
+  it('opens no ticket for an escalation (OD-7 A) — asserted on the source', () => {
+    const src = readFileSync(join(__dirname, 'runFinishedNotify.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(src).not.toMatch(/createTicket|ticketService|insert\(tickets\)/);
+  });
+
+  it('never applies the patch copy to another profile, even with a patchPlan on the outcome', async () => {
+    queueRows('ai_agent_runs', [patchRun({ profile: 'full' })]);
+    queueRows('ai_agents', [baseAgent]);
+    resolveRecipientUserIds.mockResolvedValue([USER_A]);
+
+    await deliverRunFinishedNotifications(RUN_ID);
+
+    const [input] = createNotification.mock.calls[0]! as [Record<string, unknown>];
+    expect(input.title).toBe('Agent run finished');
   });
 });

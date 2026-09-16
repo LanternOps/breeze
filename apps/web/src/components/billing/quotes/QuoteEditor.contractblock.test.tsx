@@ -293,7 +293,7 @@ describe('QuoteEditor — agreement vocabulary (spec §3)', () => {
     const empty = await screen.findByTestId('quote-block-contract-no-templates');
     expect(empty).toHaveTextContent('No agreement templates yet.');
     const link = within(empty).getByRole('link', { name: 'Create one' });
-    expect(link).toHaveAttribute('href', '/contracts#tab=templates');
+    expect(link).toHaveAttribute('href', '/agreements/templates');
   });
 
   it('tells the technician where legal terms belong, under the plain-text terms box', async () => {

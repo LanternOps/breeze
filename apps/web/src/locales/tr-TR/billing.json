@@ -318,6 +318,11 @@
       "estimateExcluded": "Tahmini kullanılamayan {{count}} sözleşmeyi hariç tutar"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "countPlus": "{{count}}+ sözleşme, kuruluşunun para biriminden farklı bir para biriminde faturalandırılıyor.",
+        "review": "İncele"
+      },
       "title": "Sözleşmeler",
       "description": "Taslak faturaları belirli aralıklarla otomatik olarak oluşturan yinelenen anlaşmalar.",
       "newContract": "Yeni sözleşme",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Kaydedildi, ancak desteklenmeyen biçimlendirme kaldırıldı: {{tags}}. Anlaşma gövdeleri başlıkları, kalın, italik, altı çizili, listeleri ve bağlantıları destekler."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Anlaşma şablonları",
+      "signed": "İmzalı anlaşmalar"
+    },
+    "signedPage": {
+      "title": "İmzalı anlaşmalar",
+      "description": "Müşterilerinizin imzaladığı tüm anlaşmalar. Bir anlaşmayı, ilgili olduğu sözleşmede görünmesi için o sözleşmeye bağlayın.",
+      "unlinkedOnly": "Yalnızca bağlanmamışlar",
+      "empty": {
+        "title": "Henüz imzalı anlaşma yok",
+        "description": "Bir müşteri, anlaşma içeren bir fiyat teklifini kabul ettiğinde anlaşma imzalanmış olur."
+      },
+      "emptyUnlinked": {
+        "title": "Bağlanmamış imzalı anlaşma yok",
+        "description": "Her imzalı anlaşma zaten bir sözleşmenin altında saklanıyor."
+      },
+      "columns": {
+        "contract": "Sözleşme"
+      },
+      "viewContract": "Sözleşmeyi görüntüle",
+      "notLinked": "Bağlanmamış",
+      "rowSubtitle": "{{date}} tarihinde {{signer}} tarafından {{quoteNumber}} numaralı fiyat teklifiyle kabul edildi",
+      "rowSubtitleNoQuote": "{{date}} tarihinde {{signer}} tarafından imzalandı"
+    },
+    "templateEditor": {
+      "usage": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor",
+      "usageUnavailable": "Kullanım bilgisi yok",
+      "backToTemplates": "Anlaşma şablonlarına dön",
+      "archiveConfirm": {
+        "title": "Bu anlaşma şablonu arşivlensin mi?",
+        "message": "{{quotes}} fiyat teklifinde · {{signed}} imzalı anlaşmada kullanılıyor. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
+        "messageUnknownUsage": "Bu şablonun nerede kullanıldığı denetlenemedi. Şablona daha önce sabitlenmiş teklifler çalışmaya devam eder, ancak yeni anlaşma bölümleri eklenemez.",
+        "confirm": "Şablonu arşivle"
+      }
+    },
+    "contractPill": {
+      "under": "{{template}} v{{n}} kapsamında"
     }
   },
   "quotes": {
@@ -1297,7 +1342,7 @@
       "contract": {
         "download": "Anlaşmayı indirin",
         "previewTitle": "{{name}} anlaşması",
-        "unavailable": "Sözleşme dosyası mevcut değil",
+        "unavailable": "Anlaşma dosyası mevcut değil",
         "versionFooter": "{{name}} — v{{version}}"
       },
       "draft": "Taslak",

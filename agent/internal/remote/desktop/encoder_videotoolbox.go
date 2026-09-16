@@ -344,7 +344,8 @@ import (
 )
 
 type videotoolboxEncoder struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	convertTimer
 	cfg    EncoderConfig
 	width  int
 	height int
@@ -404,7 +405,9 @@ func (v *videotoolboxEncoder) Encode(frame []byte) ([]byte, error) {
 	}
 
 	// Convert RGBA → NV12 (video-range).
+	convertStart := time.Now()
 	nv12 := rgbaToNV12(frame, width, height, stride)
+	v.record(time.Since(convertStart))
 	defer putNV12Buffer(nv12)
 
 	req := &vtEncodeRequest{ch: make(chan vtEncodeResult, 1)}

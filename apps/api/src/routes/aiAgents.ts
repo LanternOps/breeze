@@ -23,6 +23,7 @@ import {
   impactQuerySchema,
   impactRebuildQuerySchema,
   impactWeightsSchema,
+  nextCronOccurrenceAt,
   previewAiAgentSchema,
   promoteSupervisedKeyRequestSchema,
   triggerAgentRunSchema,
@@ -86,14 +87,20 @@ import { findingsToReviewSql, summaryExcerpt } from '../services/aiAgents/runFin
 import { buildRunTrace } from '../services/aiAgents/runTrace';
 import { recordVerdictFeedback } from '../services/aiAgents/alertVerdicts';
 import { sweepFindingDeviceIds } from '../services/aiAgents/sweepFindings';
+import { patchPlanDeviceIds } from '../services/aiAgents/patchPlan';
+import { loadEnabledBaselineCadences } from '../services/aiAgents/scheduleService';
 import { narrativeArtifactProjection } from '../services/aiAgents/narrativeReport';
 import { summarizeDeliveries } from '../services/reportRunDelivery';
 import { fleetDesignArtifactProjection } from '../services/aiAgents/fleetDesignReport';
+import { readRunProgress } from '../services/aiAgents/runProgress';
 import {
   buildRunsKeysetPredicate, decodeRunsCursor, encodeRunsCursor, runsCursorFromRow,
 } from '../services/aiAgents/runsListCursor';
 import { verifyDeviceAccess } from '../services/aiTools';
 import { listArtifactsForAuth, toArtifactDto } from '../services/artifacts/artifactService';
+// Execution plane W05 (spec §5.8) — the run-detail DTO's artifact list and
+// workspace step transcript.
+import { aiRunArtifacts, aiRunWorkspaces } from '../db/schema/aiWorkspace';
 import { writeRouteAudit } from '../services/auditEvents';
 import { PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { isPgUniqueViolation } from '../utils/pgErrors';
@@ -363,6 +370,33 @@ type LastRunProjection = {
   lastRunFindingsToReview: number;
 };
 
+/**
+ * AI patch agent W01 (#5747) — each agent's next scheduled occurrence, for the
+ * whole page in ONE cadence read (never one per row, same rule as
+ * `loadLastRuns` above).
+ *
+ * The occurrence itself is computed by `nextCronOccurrenceAt` from
+ * `@breeze/shared` — the SAME evaluator the schedules drawer renders its
+ * next-run hint with, so the card and the drawer can never disagree about when
+ * an agent fires. An agent with several enabled baselines reports the SOONEST;
+ * an unparseable or never-firing cron contributes nothing rather than throwing,
+ * because one bad stored pattern must not blank the whole settings page.
+ */
+async function loadNextOccurrences(
+  auth: AuthContext,
+  agentIds: string[],
+): Promise<Map<string, string>> {
+  const cadences = await loadEnabledBaselineCadences(auth, agentIds);
+  const soonest = new Map<string, string>();
+  for (const cadence of cadences) {
+    const at = nextCronOccurrenceAt(cadence.cron, cadence.timezone);
+    if (!at) continue;
+    const current = soonest.get(cadence.agentId);
+    if (current === undefined || at < current) soonest.set(cadence.agentId, at);
+  }
+  return soonest;
+}
+
 /** Only the piece of the auth context `loadLastRuns` needs. */
 type AuthContextForRuns = Pick<AuthContext, 'allowedSiteIds'> & {
   orgCondition: (column: typeof aiAgentRuns.orgId) => SQL | undefined;
@@ -419,7 +453,11 @@ aiAgentsRoutes.get(
     });
     // Batched, never per row: the settings page renders every agent this
     // caller owns, and a per-row query would be one round trip per agent.
-    const lastRuns = await loadLastRuns(auth, rows.map((row) => row.id));
+    const agentIds = rows.map((row) => row.id);
+    const lastRuns = await loadLastRuns(auth, agentIds);
+    // AI patch agent W01 (#5747): the card's "next occurrence", batched the
+    // same way — one cadence read for the page.
+    const nextOccurrences = await loadNextOccurrences(auth, agentIds);
     // #4170: one query for the whole page, same convention as loadLastRuns
     // above — never one per row. Reported both per-row (`hasPartnerBaseline`,
     // so the list can flag an org row the resolver would treat as inert) and
@@ -443,6 +481,7 @@ aiAgentsRoutes.get(
           lastRunAt: last?.lastRunAt ?? null,
           lastRunStatus: last?.lastRunStatus ?? null,
           lastRunFindingsToReview: last?.lastRunFindingsToReview ?? null,
+          nextOccurrenceAt: nextOccurrences.get(row.id) ?? null,
         };
       }),
       partnerBaselineKinds: Array.from(partnerBaselineKinds),
@@ -1322,6 +1361,9 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       // the only representation that goes back to null when the artifact is
       // deleted.
       reportRunId: aiAgentRuns.reportRunId,
+      // Execution plane W04 (#5715) — the settled sandbox charge the
+      // run-detail DTO surfaces beside the analysis outcome.
+      computeCents: aiAgentRuns.computeCents,
       // Fleet Designer W01 (#5651), Task 9 — gates the fleet design artifact
       // read below; `undefined`/absent for a row read back through an older
       // mock/fixture simply never matches `'design'`.
@@ -1355,6 +1397,11 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     .limit(1);
   if (!run) return c.json({ error: 'Run not found' }, 404);
 
+  // Live progress (spec §5.8). Read from the short-lived ring, never the DB:
+  // this page polls every 5s and a per-poll table read for telemetry would be
+  // a query per viewer per five seconds for a value that is worth a spinner.
+  const progress = await readRunProgress(run.id);
+
   // The execution ledger is keyed by session, not run — `run.session_id` is
   // set once, inside `driveSdkLoop`, right after the model resolves
   // (runLoop.ts), and stays null for the lifetime of the run if that
@@ -1374,24 +1421,31 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .orderBy(asc(aiToolExecutions.createdAt))
     : [];
 
-  // `run.intent_ids` only ever lists PENDING intents (see the column's
-  // docstring in schema/aiAgents.ts and OutcomeProposedAction.intentId's in
-  // runLoop.ts) — an intent that was decided or expired drops out of the
-  // array, so this summary reflects "what's still awaiting a human", not
-  // the full proposal history. The org predicate is defence-in-depth beside
-  // RLS, matching the run read above.
-  const intentRows = run.intentIds.length > 0
-    ? await db
-      .select({
-        id: actionIntents.id,
-        status: actionIntents.status,
-        actionName: actionIntents.actionName,
-        approvalScope: actionIntents.approvalScope,
-        decidedVia: actionIntents.decidedVia,
-      })
-      .from(actionIntents)
-      .where(and(inArray(actionIntents.id, run.intentIds), auth.orgCondition(actionIntents.orgId)))
-    : [];
+  // #4442 W05 — read by `requesting_agent_run_id`, NOT by `run.intent_ids`.
+  // That column only ever lists PENDING intents (see its docstring in
+  // schema/aiAgents.ts and OutcomeProposedAction.intentId's in runLoop.ts): an
+  // intent that was decided, auto-executed or expired drops out of the array.
+  // Act mode makes exactly those the interesting outcomes, so a pending-only
+  // read would silently drop the proposals this page most needs to report.
+  // `run.intent_ids` is left populated as-is for every other consumer
+  // (ticketProposal below still reads it); this route just stops depending on
+  // it. TWO org predicates: the run's OWN org pins the read, and the caller's
+  // condition stays as defence-in-depth beside RLS — same posture as the
+  // batched hostname read below.
+  const intentRows = await db
+    .select({
+      id: actionIntents.id,
+      status: actionIntents.status,
+      actionName: actionIntents.actionName,
+      approvalScope: actionIntents.approvalScope,
+      decidedVia: actionIntents.decidedVia,
+    })
+    .from(actionIntents)
+    .where(and(
+      eq(actionIntents.requestingAgentRunId, run.id),
+      eq(actionIntents.orgId, run.orgId),
+      auth.orgCondition(actionIntents.orgId),
+    ));
 
   // Phase 2 wave P2-2 (scheduled sweeps), Task A7 — a sweep run is
   // device-less but its findings each name one device, so the detail needs
@@ -1409,7 +1463,12 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
   // run.orgId)` pins the read to the run's OWN org, and the auth condition
   // stays as defence-in-depth beside RLS (matching the two reads above). A
   // device that fails either simply projects a null hostname.
-  const sweepDeviceIds = sweepFindingDeviceIds(run.outcome);
+  // AI patch agent W01 (#5747): a patch plan's item devices ride the SAME
+  // batched, run-org-pinned read — model-authored ids, same threat model.
+  const sweepDeviceIds = [...new Set([
+    ...sweepFindingDeviceIds(run.outcome),
+    ...patchPlanDeviceIds(run.outcome),
+  ])];
   const hostnameRows = sweepDeviceIds.length > 0
     ? await db
       .select({ id: devices.id, hostname: devices.hostname })
@@ -1562,6 +1621,57 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
       .orderBy(desc(ticketDrafts.createdAt))
     : [];
 
+  // Execution plane W05 (spec §5.8, §7 step 7). Both reads carry the run's OWN
+  // org id as well as `auth.orgCondition`, for the same reason the hostname and
+  // narrative reads above do: a partner-scoped caller's accessible set spans
+  // every sibling org, and these rows are keyed by run id alone.
+  //
+  // Both are gated on the `analysis` profile, the same way `draftRows` above is
+  // gated on a ticket trigger: only an `analysis` run can create a workspace or
+  // produce artifacts, so for every other profile — which is the overwhelming
+  // majority of runs on this endpoint — these two queries would be guaranteed
+  // to return nothing.
+  const isAnalysisRun = run.profile === 'analysis';
+
+  const artifactRows = isAnalysisRun
+    ? await db
+      .select()
+      .from(aiRunArtifacts)
+      .where(and(
+        eq(aiRunArtifacts.runId, run.id),
+        eq(aiRunArtifacts.orgId, run.orgId),
+        auth.orgCondition(aiRunArtifacts.orgId),
+      ))
+      .orderBy(desc(aiRunArtifacts.createdAt))
+    : [];
+
+  const [workspaceRow] = isAnalysisRun
+    ? await db
+      .select({
+        backend: aiRunWorkspaces.backend,
+        region: aiRunWorkspaces.region,
+        status: aiRunWorkspaces.status,
+        bootstrapHash: aiRunWorkspaces.bootstrapHash,
+        createdAt: aiRunWorkspaces.createdAt,
+        readyAt: aiRunWorkspaces.readyAt,
+        destroyedAt: aiRunWorkspaces.destroyedAt,
+        cpuMs: aiRunWorkspaces.cpuMs,
+        wallMs: aiRunWorkspaces.wallMs,
+        memAllocatedMb: aiRunWorkspaces.memAllocatedMb,
+        stagedBytes: aiRunWorkspaces.stagedBytes,
+        artifactBytes: aiRunWorkspaces.artifactBytes,
+        stepCount: aiRunWorkspaces.stepCount,
+        steps: aiRunWorkspaces.steps,
+      })
+      .from(aiRunWorkspaces)
+      .where(and(
+        eq(aiRunWorkspaces.runId, run.id),
+        eq(aiRunWorkspaces.orgId, run.orgId),
+        auth.orgCondition(aiRunWorkspaces.orgId),
+      ))
+      .limit(1)
+    : [];
+
   // Both fields come from the same left-joined ai_agents row, so they are
   // either both present or both null together.
   const agent = run.agentName !== null && run.agentKind !== null
@@ -1578,8 +1688,16 @@ aiAgentsRoutes.get('/runs/:runId', scopes, requireAiRead, async (c) => {
     draftRows,
     fleetDesignArtifact,
     narrativeDelivery,
+    // `toArtifactDto` is what keeps `blobKey` inside the API (W01).
+    artifactRows.map(toArtifactDto),
+    workspaceRow ?? null,
   );
-  return c.json({ data: detail });
+  return c.json({
+    data: {
+      ...detail,
+      progress,
+    },
+  });
 });
 
 /**

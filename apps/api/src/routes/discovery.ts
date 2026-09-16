@@ -26,6 +26,9 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
+import { reachabilityToListStatus } from '../services/assetReachability';
+import { loadReachability } from '../services/assetReachabilityLoader';
 import {
   encryptSnmpCommunities,
   encryptSnmpCredentials,
@@ -1123,6 +1126,8 @@ discoveryRoutes.get(
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
+    const reachabilityByAsset = await loadReachability(results.map((row) => row.asset.id));
+
     return c.json({
       data: results.map((row) => {
         const a = row.asset;
@@ -1132,12 +1137,18 @@ discoveryRoutes.get(
           assetType: a.assetType,
           approvalStatus: a.approvalStatus,
           isOnline: a.isOnline,
+          // W01 (spec §4.4). `isOnline` above is retained for one release and
+          // means "last scan/controller verdict"; everything new reads this.
+          reachability: reachabilityByAsset.get(a.id) ?? null,
           hostname: a.hostname,
           label: a.label,
           ipAddress: a.ipAddress,
           macAddress: a.macAddress,
           manufacturer: a.manufacturer,
-          model: a.model,
+          // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+          // value stays reachable through snmpData.sysObjectId.
+          model: maskOidShapedModel(a.model),
+          nicVendor: nicVendorFromMac(a.macAddress),
           openPorts: a.openPorts,
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
@@ -1219,6 +1230,10 @@ discoveryRoutes.get(
         // through the device IT WAS LINKED TO is a loopback).
         suggestedBridgeDeviceId: bridgeDevices.id,
         siteName: sites.name,
+        // The site's IANA zone. The page formats every absolute timestamp in
+        // it (spec §11 Formatting); `sites` is already left-joined for the
+        // name, so this costs one more column and no extra query.
+        siteTimezone: sites.timezone,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1244,21 +1259,34 @@ discoveryRoutes.get(
     }
 
     const a = row.asset;
+    const reachability = (await loadReachability([a.id])).get(a.id) ?? null;
     return c.json({
       data: {
         id: a.id,
         orgId: a.orgId,
         siteId: a.siteId,
         siteName: row.siteName ?? null,
+        siteTimezone: row.siteTimezone ?? null,
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,
+        // W01 (spec §4.4). `isOnline` is retained for one release and means
+        // "last scan/controller verdict"; everything new reads this.
+        reachability,
+        probe: a.lastProbeStatus ? {
+          state: a.lastProbeStatus,
+          observedAt: a.lastProbeAt?.toISOString() ?? null,
+          responseMs: a.lastProbeResponseMs ?? null,
+        } : null,
         hostname: a.hostname,
         label: a.label,
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,
         manufacturer: a.manufacturer,
-        model: a.model,
+        // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+        // value stays reachable through snmpData.sysObjectId.
+        model: maskOidShapedModel(a.model),
+        nicVendor: nicVendorFromMac(a.macAddress),
         openPorts: a.openPorts,
         osFingerprint: a.osFingerprint,
         snmpData: a.snmpData,
@@ -1817,12 +1845,19 @@ discoveryRoutes.get(
       : await db.select().from(topologyManualNodes))
       .filter((node) => canAccessRecordSite(permissions, node.siteId));
 
+    // W01 (spec §4.4) — the topology map is an asset-status export like any
+    // other, so it takes the same derivation. 'unknown' is a real third state
+    // here: the client renders it muted rather than as a red node.
+    const topologyReachability = await loadReachability(assets.map((a) => a.id));
+
     const nodes = [
       ...assets.map((a) => ({
         id: a.id,
         type: a.assetType,
         label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
-        status: a.isOnline ? 'online' : 'offline',
+        status: reachabilityToListStatus(
+          topologyReachability.get(a.id) ?? { state: 'unverified', source: null, observedAt: null, lastKnown: null, detail: {} },
+        ),
         approvalStatus: a.approvalStatus,
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,

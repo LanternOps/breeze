@@ -33,12 +33,15 @@ const requireVariablesManage = requirePermission(
 );
 const scopes = requireScope('organization', 'partner', 'system');
 
-const listQuerySchema = z.object({ orgId: z.string().guid().optional() });
+const listQuerySchema = z.object({
+  orgId: z.string().guid().optional(),
+  scope: z.enum(['partner', 'org', 'all']).default('all')
+});
 const idParamSchema = z.object({ id: z.string().guid() });
 
 function handleServiceError(c: { json: (b: unknown, s: number) => Response }, err: unknown): Response {
   if (err instanceof TenantVariableError) {
-    return c.json({ error: err.message }, err.status);
+    return c.json({ error: err.message, ...(err.code ? { code: err.code } : {}) }, err.status);
   }
   throw err;
 }
@@ -63,7 +66,7 @@ tenantVariableRoutes.get(
   zValidator('query', listQuerySchema),
   async (c) => {
     const auth = c.get('auth');
-    const { orgId } = c.req.valid('query');
+    const { orgId, scope } = c.req.valid('query');
 
     // Check access BEFORE fetching: this must not leak which orgs exist by
     // returning an empty list for a reachable org and an error for others.
@@ -71,8 +74,12 @@ tenantVariableRoutes.get(
       return c.json({ error: 'Access denied to this organization' }, 403);
     }
 
-    const data = await listTenantVariables(auth, orgId ? { orgId } : {});
-    return c.json({ data });
+    try {
+      const data = await listTenantVariables(auth, { orgId, scope });
+      return c.json({ data });
+    } catch (err) {
+      return handleServiceError(c, err);
+    }
   }
 );
 

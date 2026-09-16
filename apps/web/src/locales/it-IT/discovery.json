@@ -1,35 +1,12 @@
 {
   "assetDetailModal": {
-    "actions": {
-      "connect": "Connetti",
-      "connecting": "Connessione in corso...",
-      "deleteAsset": "Elimina asset",
-      "deleting": "Eliminazione in corso...",
-      "enabling": "Abilitazione in corso...",
-      "linkAsset": "Collega asset",
-      "linking": "Collegamento in corso...",
-      "resetType": "Ripristina il rilevamento automatico",
-      "unlink": "Scollega",
-      "working": "Operazione in corso..."
-    },
     "assetInfoTitle": "Informazioni sull'asset",
-    "confirmDelete": "Eliminare l'asset rilevato \"{{name}}\"?",
     "confirmUnlink": "Scollegare questo dispositivo?",
-    "deleteDescription": "Rimuovi questo asset dai risultati del rilevamento.",
     "detailsUnavailableDescription": "Impossibile caricare il record di questo dispositivo. Potrebbe essere stato rimosso oppure potresti non disporre delle autorizzazioni necessarie.",
     "detailsUnavailableTitle": "Dettagli non disponibili",
     "deviceDetailsTitle": "Dettagli dispositivo",
     "errors": {
-      "createAllowlist": "Impossibile creare la voce nell'elenco di autorizzazione",
-      "createProxyTunnel": "Impossibile creare il tunnel proxy",
-      "createTunnel": "Impossibile creare il tunnel",
-      "delete": "Impossibile eliminare l'asset",
-      "generic": "Si è verificato un errore",
-      "link": "Impossibile collegare l'asset",
-      "resetType": "Impossibile ripristinare il tipo",
-      "saveInfo": "Impossibile salvare le informazioni sull'asset",
-      "selectDeviceToLink": "Seleziona un dispositivo da collegare.",
-      "unlink": "Impossibile scollegare l'asset"
+      "generic": "Si è verificato un errore"
     },
     "fields": {
       "assetType": "Tipo di asset",
@@ -41,23 +18,10 @@
     },
     "lastSeen": "Ultimo rilevamento {{time}}",
     "loadingDetails": "Caricamento dei dettagli del dispositivo…",
-    "messages": {
-      "linked": "Asset collegato. Ora è contrassegnato come approvato.",
-      "linkedToDevice": "Asset collegato a {{device}}. Ora è contrassegnato come approvato.",
-      "unlinked": "Dispositivo scollegato."
-    },
     "networkDetailsTitle": "Dettagli di rete",
     "noOpenPorts": "Nessuna porta aperta rilevata.",
     "noSnmpData": "Non è stato raccolto alcun dato SNMP: il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la stringa community sia impostata nel profilo di rilevamento.",
     "openPorts": "Porte aperte",
-    "options": {
-      "selectManagedDevice": "Seleziona un dispositivo gestito"
-    },
-    "placeholders": {
-      "displayName": "es. Switch principale",
-      "notes": "es. Situato nell'armadio A, 2° piano",
-      "tags": "es. critico, piano-2, rete"
-    },
     "proxy": {
       "manageOnDevicePage": "Gestisci l'accesso proxy nella pagina del dispositivo di rete",
       "title": "Accesso proxy"
@@ -67,41 +31,27 @@
       "systemName": "Nome sistema",
       "objectId": "ID oggetto"
     },
-    "sameDeviceAs": "Stesso dispositivo di {{name}}"
-  },
-  "assetMonitoringSection": {
-    "actions": {
-      "addUpdate": "Aggiungi/Aggiorna monitoraggio",
-      "disableActive": "Disabilita monitoraggio attivo",
-      "disabling": "Disabilitazione in corso...",
-      "enable": "Abilita monitoraggio",
-      "open": "Apri monitoraggio"
-    },
-    "activeChecks": "{{active}}/{{total}} controlli di rete attivi",
-    "errors": {
-      "disable": "Impossibile disabilitare il monitoraggio",
-      "loadMonitors": "Impossibile caricare i monitor di rete",
-      "loadStatus": "Impossibile caricare lo stato del monitoraggio"
-    },
-    "loading": "Caricamento dello stato del monitoraggio...",
-    "monitorTypes": {
-      "icmp_ping": "Ping ICMP",
-      "tcp_port": "Porta TCP",
-      "http_check": "Controllo HTTP",
-      "dns_check": "Controllo DNS"
-    },
-    "networkMonitorsTitle": "Monitor di rete ({{count}})",
-    "noChecks": "Nessun controllo di rete configurato",
-    "snmpSummary": "{{version}} · ogni {{seconds}} s",
-    "snmpTitle": "Monitor dispositivo SNMP",
-    "state": {
-      "active": "Attivo",
-      "configuredPaused": "Configurato (in pausa)",
-      "paused": "In pausa",
-      "notConfigured": "Non configurato"
-    },
-    "title": "Monitoraggio",
-    "lastPolled": " • ultima interrogazione {{time}}"
+    "sameDeviceAs": "Stesso dispositivo di {{name}}",
+    "peek": {
+      "manageTitle": "Gestisci questo asset",
+      "manageDescription": "Identità, monitoraggio, collegamento e rimozione si gestiscono nella pagina del dispositivo.",
+      "openDevicePage": "Apri la pagina del dispositivo",
+      "settings": "Impostazioni…",
+      "reachabilityLine": "{{state}} · {{source}} {{age}}",
+      "lastSeenLine": "Ultimo rilevamento · {{source}} {{age}}",
+      "state": {
+        "responding": "Risponde",
+        "notResponding": "Non risponde",
+        "unverified": "Non verificato"
+      },
+      "source": {
+        "networkCheck": "controllo di rete",
+        "probe": "verifica ora",
+        "scan": "scansione",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      }
+    }
   },
   "discoveredAssetList": {
     "actions": {
@@ -117,7 +67,8 @@
       "selectAllVisible": "Seleziona tutti quelli visibili",
       "selectAllVisibleAssets": "Seleziona tutti gli asset visibili",
       "selectAsset": "Seleziona asset {{asset}}",
-      "viewDetails": "Visualizza dettagli"
+      "viewDetails": "Visualizza dettagli",
+      "settings": "Impostazioni…"
     },
     "columns": {
       "approval": "Approvazione",
@@ -137,7 +88,7 @@
     },
     "filters": {
       "profile": "Profilo",
-      "subnet": "Subnet"
+      "subnet": "Sottorete"
     },
     "loading": "Caricamento degli asset rilevati...",
     "monitored": "Monitorato",
@@ -173,7 +124,7 @@
     },
     "filteredByProfile": "Filtrato per profilo:",
     "filters": {
-      "subnet": "Subnet"
+      "subnet": "Sottorete"
     },
     "loading": "Caricamento dei processi di rilevamento...",
     "status": {
@@ -241,6 +192,7 @@
     },
     "tabs": {
       "assets": "Asset",
+      "baselines": "Baseline",
       "changes": "Modifiche",
       "jobs": "Processi",
       "profiles": "Profili",
@@ -376,39 +328,6 @@
     },
     "title": "Profili di rilevamento",
     "tryAgain": "Riprova"
-  },
-  "enableMonitoringForm": {
-    "actions": {
-      "addNetworkMonitor": "Aggiungi monitor di rete",
-      "enableSnmp": "Abilita monitoraggio SNMP",
-      "enabling": "Abilitazione in corso..."
-    },
-    "description": "Il monitoraggio supporta il polling SNMP e i controlli di rete Ping/TCP/HTTP/DNS. Puoi configurare una delle due opzioni o entrambe.",
-    "errors": {
-      "communityRequired": "La stringa community è obbligatoria per SNMP v1/v2c",
-      "enable": "Impossibile abilitare il monitoraggio",
-      "generic": "Si è verificato un errore",
-      "loadTemplates": "Impossibile caricare i modelli",
-      "usernameRequired": "Il nome utente è obbligatorio per SNMP v3"
-    },
-    "fields": {
-      "authPassword": "Password di autenticazione",
-      "authProtocol": "Protocollo di autenticazione",
-      "community": "Stringa community",
-      "pollingInterval": "Intervallo di polling (secondi)",
-      "privacyPassword": "Password di privacy",
-      "privacyProtocol": "Protocollo di privacy",
-      "snmpVersion": "Versione SNMP",
-      "template": "Modello",
-      "username": "Nome utente"
-    },
-    "networkChecksDescription": "Aggiungi monitor ping, TCP, HTTP o DNS per questo asset.",
-    "networkChecksTitle": "Controlli di rete",
-    "noTemplate": "Nessun modello",
-    "placeholders": {
-      "community": "public"
-    },
-    "snmpTitle": "Monitoraggio dispositivo SNMP"
   },
   "networkBaselinesPanel": {
     "actions": {

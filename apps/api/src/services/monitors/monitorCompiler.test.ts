@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { PATCH_ALERT_CATEGORY } from '@breeze/shared';
 import {
   buildCompiledTemplate,
   buildCompiledRule,
@@ -58,6 +59,20 @@ describe('monitor compiler builders (#5289)', () => {
     expect(Array.isArray(t.conditions)).toBe(false);
     expect(t.cooldownMinutes).toBe(30);
     expect(t.autoResolve).toBe(true);
+  });
+
+  it('a cpu-kind template carries the general monitor category', () => {
+    const t = buildCompiledTemplate(def);
+    expect(t.category).toBe('monitor');
+  });
+
+  it('a patch_compliance-kind template carries the patching category', () => {
+    const t = buildCompiledTemplate({
+      ...def,
+      kind: 'patch_compliance',
+      condition: { operator: 'lt', value: 80 },
+    });
+    expect(t.category).toBe(PATCH_ALERT_CATEGORY);
   });
 
   it('rule targets the monitor and carries delivery overrides', () => {

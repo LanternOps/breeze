@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Dialog } from '../shared/Dialog';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { runAction, handleActionError, ActionError } from '../../lib/runAction';
 import { navigateTo } from '@/lib/navigation';
 
@@ -15,13 +16,25 @@ type TargetLevel = 'organization' | 'site' | 'device_group';
 
 export interface DeployMonitorDialogProps {
   monitorId: string;
+  /**
+   * The monitor's own `orgId`, or `null`/`undefined` for a partner-wide
+   * monitor. Used as the `createPolicyFor.targetId` when deploying at
+   * organization level — the API requires a UUID `targetId` for every level,
+   * including 'organization' (`monitorDefinitions.ts` `createPolicyFor`
+   * schema).
+   */
+  orgId?: string | null;
   open: boolean;
   onClose: () => void;
   onDeployed: () => void;
 }
 
-export default function DeployMonitorDialog({ monitorId, open, onClose, onDeployed }: DeployMonitorDialogProps) {
+export default function DeployMonitorDialog({ monitorId, orgId, open, onClose, onDeployed }: DeployMonitorDialogProps) {
   const { t } = useTranslation('monitoring');
+  // Org-owned monitor: deploy to its own org. Partner-wide monitor (orgId
+  // null): fall back to whichever org is currently selected in the app chrome.
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
+  const organizationTargetId = orgId ?? currentOrgId ?? null;
   const [mode, setMode] = useState<'existing' | 'new'>('existing');
   const [policies, setPolicies] = useState<ConfigPolicy[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -70,7 +83,7 @@ export default function DeployMonitorDialog({ monitorId, open, onClose, onDeploy
           : {
               createPolicyFor: {
                 level,
-                targetId,
+                targetId: level === 'organization' ? (organizationTargetId ?? '') : targetId,
                 name: policyName || undefined,
               },
             };
@@ -81,6 +94,7 @@ export default function DeployMonitorDialog({ monitorId, open, onClose, onDeploy
             body: JSON.stringify(body),
           }),
         errorFallback: t('deploy.errors.attach'),
+        successMessage: t('deploy.attached'),
         onUnauthorized: UNAUTHORIZED,
       });
       onDeployed();
@@ -95,7 +109,12 @@ export default function DeployMonitorDialog({ monitorId, open, onClose, onDeploy
 
   if (!open) return null;
 
-  const canSubmit = mode === 'existing' ? !!selectedPolicyId : !!targetId || level === 'organization';
+  const canSubmit =
+    mode === 'existing'
+      ? !!selectedPolicyId
+      : level === 'organization'
+        ? !!organizationTargetId
+        : !!targetId;
 
   return (
     <Dialog open={open} onClose={onClose} title={t('deploy.title')} labelledBy="deploy-monitor-dialog-title">
@@ -157,6 +176,11 @@ export default function DeployMonitorDialog({ monitorId, open, onClose, onDeploy
                   </option>
                 ))}
               </select>
+              {level === 'organization' && !organizationTargetId && (
+                <p className="text-sm text-destructive" data-testid="deploy-monitor-no-org">
+                  {t('deploy.noOrgSelected')}
+                </p>
+              )}
               {level === 'site' && (
                 <select
                   data-testid="deploy-monitor-target-select"

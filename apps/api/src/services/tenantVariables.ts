@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { and, asc, count, eq, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, getTableColumns, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   MAX_TENANT_VARIABLES_PER_OWNER,
   MIN_SECRET_TENANT_VARIABLE_VALUE_LENGTH,
@@ -9,7 +9,7 @@ import {
   type UpdateTenantVariableInput
 } from '@breeze/shared';
 import { db } from '../db';
-import { tenantVariables, type TenantVariableRow } from '../db/schema';
+import { organizations, tenantVariables, type TenantVariableRow } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { columnAad, encryptedColumnRegistry, type EncryptedColumnSpec } from './encryptedColumnRegistry';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
@@ -40,7 +40,7 @@ const VALUE_SPEC: EncryptedColumnSpec = (() => {
 
 /** Carries its own HTTP status so routes can map it without a second switch. */
 export class TenantVariableError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(message: string, public readonly status: number, public readonly code?: string) {
     super(message);
     this.name = 'TenantVariableError';
   }
@@ -86,7 +86,7 @@ export function tenantVariableOwnerScope(row: Pick<TenantVariableRow, 'orgId'>):
  * every route response goes through, so no endpoint can leak one by forgetting
  * to redact.
  */
-export function toApiTenantVariable(row: TenantVariableRow): TenantVariable {
+export function toApiTenantVariable(row: TenantVariableRow & { orgName?: string | null }): TenantVariable {
   let value: string | null = null;
   if (!row.isSecret) {
     try {
@@ -107,6 +107,7 @@ export function toApiTenantVariable(row: TenantVariableRow): TenantVariable {
     description: row.description,
     ownerScope: tenantVariableOwnerScope(row),
     orgId: row.orgId,
+    orgName: row.orgName ?? null,
     partnerId: row.partnerId,
     version: row.version,
     createdAt: row.createdAt.toISOString(),
@@ -235,6 +236,7 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 export interface ListTenantVariablesFilter {
+  scope?: 'partner' | 'org' | 'all';
   /** Restrict to one org's own variables plus the partner-wide rows it inherits. */
   orgId?: string;
 }
@@ -243,18 +245,28 @@ export async function listTenantVariables(
   auth: AuthContext,
   filter: ListTenantVariablesFilter = {}
 ): Promise<TenantVariable[]> {
+  if (filter.scope === 'partner' && (auth.scope !== 'partner' || !auth.partnerId)) {
+    throw new TenantVariableError('Partner scope is required', 400, 'PARTNER_SCOPE_REQUIRED');
+  }
+  if (filter.scope === 'org' && !filter.orgId) {
+    throw new TenantVariableError('orgId is required for org scope', 400, 'ORG_ID_REQUIRED');
+  }
+
   const conditions: SQL[] = [];
   const accessCondition = tenantVariableReadCondition(auth);
   if (accessCondition) conditions.push(accessCondition);
-  if (filter.orgId) {
+  if (filter.scope === 'partner') {
+    conditions.push(isNull(tenantVariables.orgId), eq(tenantVariables.partnerId, auth.partnerId!));
+  } else if (filter.orgId) {
     // Partner-wide rows (org_id NULL) apply to this org too; the access
     // condition above already restricts them to the caller's own partner.
     conditions.push(sql`(${tenantVariables.orgId} = ${filter.orgId} OR ${tenantVariables.orgId} IS NULL)`);
   }
 
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(tenantVariables), orgName: organizations.name })
     .from(tenantVariables)
+    .leftJoin(organizations, eq(tenantVariables.orgId, organizations.id))
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     // Org-owned rows first within a key so the UI can render the override
     // above the partner-wide row it shadows (false sorts before true).

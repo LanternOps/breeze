@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Patch approved",
       "declined": "Patch declined",
+      "declinedAllRings": "Patch declined for all update rings",
       "deferred": "Patch deferred"
+    },
+    "allRings": {
+      "label": "Clear all ring approvals",
+      "description": "Also revoke this patch's approval in every other update ring for this partner, not just the current scope."
     },
     "confirm": {
       "title": "Confirm patch approval",
@@ -264,6 +269,7 @@
     "actions": {
       "deploy": "Deploy",
       "review": "Review",
+      "unapprove": "Unapprove",
       "details": "Details",
       "approveCount": "Approve {{count}}",
       "declineCount": "Decline {{count}}",

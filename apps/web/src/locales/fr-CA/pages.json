@@ -126,8 +126,9 @@
     "sensitiveData": "Données sensibles",
     "settingsAccessReviews": "Revues d'accès",
     "settingsAiAgents": "Agents IA",
-    "settingsAiUsage": "Utilisation et budget de l'IA",
+    "settingsAiUsage": "Utilisation de l’IA",
     "settingsAiScriptAuthoring": "Rédaction de scripts",
+    "settingsToolSources": "Sources d'outils",
     "settingsAlertTemplatesDetail": "Modèle d'alerte",
     "settingsAlertTemplates": "Modèles d'alerte",
     "settingsApiKeys": "Clés API",
@@ -161,7 +162,11 @@
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
     "workspace": "Assistant IA",
-    "aiAgentsFleetDesign": "Conception de flotte"
+    "aiAgentsFleetDesign": "Conception de flotte",
+    "agreementTemplates": "Modèles d'entente",
+    "agreementTemplateDetail": "Modèle d'entente",
+    "agreementTemplateNew": "Nouveau modèle d'entente",
+    "signedAgreements": "Ententes signées"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -224,6 +229,10 @@
       "deliverableTemplates": {
         "title": "Modèles de livrables",
         "description": "Définissez un niveau de service une seule fois et appliquez ses livrables à n'importe quel client."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modèles de liste de vérification de billets",
+        "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel billet."
       }
     }
   },

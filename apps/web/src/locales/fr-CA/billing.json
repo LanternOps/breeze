@@ -318,6 +318,11 @@
       "estimateExcluded": "Exclut {{count}} contrat(s) dont l’estimation n’est pas disponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "countPlus": "{{count}}+ contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "review": "Les examiner"
+      },
       "title": "Contrats",
       "description": "Accords récurrents qui génèrent automatiquement des factures brouillon selon une périodicité.",
       "newContract": "Nouveau contrat",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des ententes prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Modèles d'entente",
+      "signed": "Ententes signées"
+    },
+    "signedPage": {
+      "title": "Ententes signées",
+      "description": "Toutes les ententes que vos clients ont signées. Liez-en une à un contrat pour qu’elle apparaisse sur le contrat qu’elle régit.",
+      "unlinkedOnly": "Non liées seulement",
+      "empty": {
+        "title": "Aucune entente signée pour l’instant",
+        "description": "Une entente est signée lorsqu’un client accepte un devis qui en comporte une."
+      },
+      "emptyUnlinked": {
+        "title": "Aucune entente signée non liée",
+        "description": "Toutes les ententes signées sont déjà classées avec un contrat."
+      },
+      "columns": {
+        "contract": "Contrat"
+      },
+      "viewContract": "Voir le contrat",
+      "notLinked": "Non liée",
+      "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
+      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées",
+      "usageUnavailable": "Utilisation non disponible",
+      "backToTemplates": "Retour aux modèles d'entente",
+      "archiveConfirm": {
+        "title": "Archiver ce modèle d'entente ?",
+        "message": "Utilisé sur {{quotes}} devis · {{signed}} ententes signées. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
+        "messageUnknownUsage": "Impossible de vérifier où ce modèle est utilisé. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section d’entente ne pourra être ajoutée.",
+        "confirm": "Archiver le modèle"
+      }
+    },
+    "contractPill": {
+      "under": "Sous {{template}} v{{n}}"
     }
   },
   "quotes": {
@@ -1297,7 +1342,7 @@
       "contract": {
         "download": "Télécharger l'entente",
         "previewTitle": "Entente {{name}}",
-        "unavailable": "Fichier du contrat indisponible",
+        "unavailable": "Fichier de l'entente indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
       "draft": "Brouillon",

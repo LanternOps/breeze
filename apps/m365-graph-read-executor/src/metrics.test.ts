@@ -15,6 +15,7 @@ const SERIES = [
   'm365_sync_in_flight',
   'm365_in_flight_total',
   'm365_signin_limiter_tokens',
+  'm365_signin_events_limiter_tokens',
 ];
 
 describe('executor metrics registry', () => {

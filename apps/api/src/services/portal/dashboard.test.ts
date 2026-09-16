@@ -46,7 +46,8 @@ vi.mock('./actionItemsReadModel', () => ({
 }));
 vi.mock('./serviceReadModel', () => ({ serviceTile: tiles.serviceTile }));
 
-import type { SQL } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
+const ticketOwnership = sql`ownership_predicate`;
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { awaitingYouTile, dashboardForOrg } from './dashboard';
 
@@ -117,7 +118,7 @@ describe('portal dashboard read model', () => {
     const dto = await dashboardForOrg('org-1', {
       timezone: 'America/Denver',
       now,
-    });
+    }, ticketOwnership);
 
     expect(dto).toEqual({
       asOf: now.toISOString(),
@@ -163,7 +164,7 @@ describe('portal dashboard read model', () => {
     expect(tiles.supportTile).toHaveBeenCalledWith('org-1', {
       timezone: 'America/Denver',
       now,
-    });
+    }, ticketOwnership);
     expect(tiles.actionItemsTile).toHaveBeenCalledWith('org-1', now);
   });
 });
@@ -182,7 +183,7 @@ describe('dashboardForOrg service tile (W04)', () => {
       tiles.backupTile, tiles.supportTile, tiles.actionItemsTile,
     ]) tile.mockResolvedValue({ status: 'no_data' });
     tiles.serviceTile.mockResolvedValue(serviceResult);
-    return dashboardForOrg('org-1', { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') });
+    return dashboardForOrg('org-1', { timezone: 'UTC', now: new Date('2026-10-15T12:00:00Z') }, ticketOwnership);
   }
 
   it('carries the tile when the read model returns one', async () => {

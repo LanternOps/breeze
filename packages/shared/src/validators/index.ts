@@ -1019,6 +1019,7 @@ export * from './aiOperator';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
 export * from './aiAgentImpactMeasured';
@@ -1107,6 +1108,22 @@ export {
   type ChecklistItemCreateInput,
   type ChecklistItemPatchInput,
   type ChecklistReorderInput,
+  checklistTemplateOwnerScopeSchema,
+  createChecklistTemplateSchema,
+  updateChecklistTemplateSchema,
+  createChecklistTemplateItemSchema,
+  updateChecklistTemplateItemSchema,
+  checklistTemplateItemReorderSchema,
+  listChecklistTemplatesQuerySchema,
+  applyChecklistTemplateSchema,
+  type ChecklistTemplateOwnerScope,
+  type CreateChecklistTemplateInput,
+  type UpdateChecklistTemplateInput,
+  type CreateChecklistTemplateItemInput,
+  type UpdateChecklistTemplateItemInput,
+  type ChecklistTemplateItemReorderInput,
+  type ListChecklistTemplatesQuery,
+  type ApplyChecklistTemplateInput,
 } from './ticketChecklists';
 export {
   templateOwnerScopeSchema,
@@ -1116,6 +1133,8 @@ export {
   updateTemplateSetSchema,
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,
   type CreateTemplateSetInput,
@@ -1147,3 +1166,6 @@ export {
 // the ./automationActions leaf (never from this barrel), so this re-export
 // carries no initialisation-order hazard.
 export * from './monitors';
+
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+export * from './toolSources';

@@ -200,6 +200,7 @@ export const ticketCategoryInputSchema = z.object({
   resolutionSlaMinutes: z.number().int().positive().nullable().optional(),
   defaultBillable: z.boolean().optional(),
   defaultHourlyRate: z.number().nonnegative().nullable().optional(),
+  defaultTimeEntryMinutes: z.number().int().min(1).max(1440).nullable().optional(),
   sortOrder: z.number().int().optional(),
   isActive: z.boolean().optional()
 });

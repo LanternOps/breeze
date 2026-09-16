@@ -290,28 +290,55 @@ async function handleVaultSyncResult({ agentId, command, result, resolvedDeviceI
   }
 }
 
-async function handleSnmpPollResult({ agentId, command, result, commandId }: Parameters<CommandResultHandler>[0]): Promise<void> {
+/** Called only after the transport has bound the result to its dispatched target.
+ * The update stays in the agent's org-scoped DB context; RETURNING supplies the
+ * authoritative org for the log, never an agent-supplied organization id.
+ */
+export async function recordSnmpPollFailure(snmpDeviceId: string, deviceId: string, error: string): Promise<void> {
+  const { snmpDevices } = await import('../db/schema');
+  const lastError = redactSecretsFromOutput(error).slice(0, 500);
+  const [updated] = await db.update(snmpDevices)
+    .set({ lastError, lastErrorAt: new Date(), lastStatus: 'warning' })
+    .where(eq(snmpDevices.id, snmpDeviceId))
+    .returning({ orgId: snmpDevices.orgId });
+  if (updated) {
+    console.warn('[AgentWs] SNMP poll failed', { deviceId, orgId: updated.orgId, snmpDeviceId, error: lastError });
+  }
+}
+
+async function handleSnmpPollResult({ agentId, command, result, commandId, resolvedDeviceId }: Parameters<CommandResultHandler>[0]): Promise<void> {
   try {
     const payload = command.payload as Record<string, unknown> | null;
     const expectedDeviceId = typeof payload?.deviceId === 'string' ? payload.deviceId : null;
     const snmpData = result.result as {
       deviceId?: string;
       metrics?: SnmpMetricResult[];
+      protocol?: number;
+      success?: boolean;
     } | undefined;
 
-    if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
-      if (!expectedDeviceId || snmpData.deviceId !== expectedDeviceId) {
-        console.warn(
-          `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
-          `sentDevice=${snmpData.deviceId} expected=${expectedDeviceId ?? 'none'}`
-        );
-        return;
-      }
-      if (isRedisAvailable()) {
+    if (!expectedDeviceId || (snmpData?.deviceId && snmpData.deviceId !== expectedDeviceId)) {
+      console.warn(
+        `[AgentWs] Rejecting mismatched SNMP result ${commandId} from agent ${agentId}: ` +
+        `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectedDeviceId ?? 'none'}`
+      );
+      return;
+    }
+    if (result.status !== 'completed' || snmpData?.success === false) {
+      await recordSnmpPollFailure(expectedDeviceId, resolvedDeviceId, result.error || 'SNMP poll failed');
+      return;
+    }
+    if (snmpData?.deviceId && Array.isArray(snmpData.metrics)) {
+      if (isRedisAvailable() || snmpData.metrics.length === 0) {
+        const { snmpDevices } = await import('../db/schema');
+        await db.update(snmpDevices)
+          .set({ lastError: null, lastErrorAt: null })
+          .where(eq(snmpDevices.id, expectedDeviceId));
+        if (snmpData.metrics.length === 0) return;
         const metrics = snmpData.metrics;
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics));
+        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics, undefined, snmpData.protocol));
       } else {
         // Redis not available — log warning about dropped metrics and mark status
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);
@@ -325,7 +352,9 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
             // healthy SNMP target to 'offline' and a one-hour interval.
             lastPollAttemptedAt: new Date(),
             consecutiveFailures: 0,
-            lastStatus: 'warning'
+            lastStatus: 'warning',
+            lastError: null,
+            lastErrorAt: null
           })
           .where(eq(snmpDevices.id, expectedDeviceId));
       }

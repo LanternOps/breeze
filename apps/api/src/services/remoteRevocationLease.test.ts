@@ -31,6 +31,7 @@ import {
   type RevocationRecheckRow,
 } from './remoteRevocationLease';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
+import { afterEach } from 'vitest';
 
 const NOW = Date.parse('2026-10-15T12:00:00.000Z');
 
@@ -46,6 +47,9 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       startedAt: new Date(NOW - 60_000),
       createdAt: new Date(NOW - 120_000),
       permissionsEpochSnapshot: 7,
+      desktopStartGeneration: 4n,
+      terminalGeneration: null,
+      terminationPhase: 'none',
     },
     device: {
       id: 'dev-1',
@@ -53,6 +57,7 @@ function row(overrides: Partial<RevocationRecheckRow> = {}): RevocationRecheckRo
       siteId: 'site-1',
       agentId: 'agent-1',
       revocationLeaseProtocolVersion: 1,
+      desktopFenceProtocolVersion: 1,
     },
     user: {
       status: 'active',
@@ -305,6 +310,81 @@ describe('evaluateRevocationRecheck', () => {
   });
 });
 
+describe('renewRevocationLease fence resync fields (SEC-038 W05)', () => {
+  const liveRedis = () => ({
+    eval: vi.fn(async () =>
+      JSON.stringify({
+        userId: 'user-1',
+        deviceId: 'dev-1',
+        permissionsEpoch: 7,
+        issuedAt: NOW - 25_000,
+        hardDeadline: NOW + 3_600_000,
+      }),
+    ),
+  });
+
+  it('reports the session start generation as a canonical decimal string', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () =>
+        row({
+          session: {
+            ...row().session,
+            // Above 2^53: must not round-trip through a JS number anywhere.
+            desktopStartGeneration: 9007199254740993n,
+          },
+        } as never),
+      redis: liveRedis() as never,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('renewed');
+    if (result.status !== 'renewed') return;
+    expect(result.startGeneration).toBe('9007199254740993');
+    expect(result.terminationPhase).toBe('none');
+  });
+
+  it('carries the terminal generation onto a revoked verdict', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () =>
+        row({
+          session: {
+            ...row().session,
+            status: 'ended',
+            terminalGeneration: 12n,
+            terminationPhase: 'pending',
+          },
+        } as never),
+      redis: liveRedis() as never,
+      markRevoked: async () => null,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('revoked');
+    if (result.status !== 'revoked') return;
+    expect(result.terminalGeneration).toBe('12');
+  });
+
+  it('leaves the terminal generation undefined when the session row is unknown', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () => null,
+      redis: liveRedis() as never,
+      markRevoked: async () => null,
+      now: () => NOW,
+    });
+    expect(result.status).toBe('revoked');
+    if (result.status !== 'revoked') return;
+    expect(result.terminalGeneration).toBeUndefined();
+  });
+
+  it('never reveals another device\'s session generation on a forbidden renew', async () => {
+    const result = await renewRevocationLease('sess-1', {
+      loadRow: async () => row(),
+      expectDeviceId: 'someone-else',
+      redis: liveRedis() as never,
+      now: () => NOW,
+    });
+    expect(result).toEqual({ status: 'forbidden' });
+  });
+});
+
 describe('renewRevocationLease', () => {
   beforeEach(() => {
     vi.mocked(teardownDisconnectedSessions).mockClear();
@@ -351,6 +431,8 @@ describe('renewRevocationLease', () => {
       hardDeadline: NOW + 3_600_000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      startGeneration: '4',
+      terminationPhase: 'none',
     });
     expect(teardownDisconnectedSessions).not.toHaveBeenCalled();
   });
@@ -419,6 +501,8 @@ describe('renewRevocationLease', () => {
       hardDeadline: NOW - 60_000 + 8 * 60 * 60 * 1000,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      startGeneration: '4',
+      terminationPhase: 'none',
     });
   });
 
@@ -511,5 +595,58 @@ describe('prepareRevocationLeaseForStart', () => {
       renewEverySec: 25,
       graceSec: 90,
     });
+  });
+});
+
+// SEC-038 W06 (#5537): the desktop-fence capability gate mirrors the #5481
+// lease gate — same denial code, same upgrade message — but sits behind
+// REMOTE_DESKTOP_FENCE_REQUIRED, default OFF, so the release that introduces
+// it is a no-op for the fleet until the flag is flipped one release later.
+describe('prepareRevocationLeaseForStart — desktop fence capability gate (SEC-038 W06)', () => {
+  const original = process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+  afterEach(() => {
+    if (original === undefined) delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    else process.env.REMOTE_DESKTOP_FENCE_REQUIRED = original;
+  });
+
+  it('gate off: admits an unfenced agent (fleet no-op on the introducing release)', async () => {
+    delete process.env.REMOTE_DESKTOP_FENCE_REQUIRED;
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: refuses an unfenced agent with the agent_upgrade_required code', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: refuses an unknown future fence protocol version rather than assuming forward compatibility', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.desktopFenceProtocolVersion = 2;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
+  });
+
+  it('gate on: admits a fenced agent', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const result = await prepareRevocationLeaseForStart('sess-1', { loadRow: async () => row(), now: () => NOW });
+    expect(result.ok).toBe(true);
+  });
+
+  it('gate on: the lease gate still wins first — a lease-incapable agent is refused regardless of fence', async () => {
+    process.env.REMOTE_DESKTOP_FENCE_REQUIRED = 'true';
+    const r = row();
+    r.device.revocationLeaseProtocolVersion = 0;
+    await expect(
+      prepareRevocationLeaseForStart('sess-1', { loadRow: async () => r, now: () => NOW }),
+    ).resolves.toEqual({ ok: false, reason: 'agent_upgrade_required' });
   });
 });

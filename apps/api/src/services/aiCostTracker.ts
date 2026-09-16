@@ -7,6 +7,7 @@
 
 import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiCostUsage, aiBudgets, organizations } from '../db/schema';
+import { aiAgentRuns } from '../db/schema/aiAgents';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
@@ -420,6 +421,127 @@ export async function deductBillingCredits(orgId: string, costCents: number): Pr
         ai_billing_http_status: 'transport_error',
       });
     });
+  }
+}
+
+/**
+ * Execution plane W04 (spec §5.6 "Reservation") — the credits gate for the
+ * SANDBOX COMPUTE leg of an analysis run.
+ *
+ * Compute is OURS regardless of who pays for tokens: a BYOK partner pays
+ * Anthropic for the model, but the microVM is billed to us, so this is
+ * checked (and later deducted) for `platform` runs exactly like token spend,
+ * and skipped for `partner_key` — which does NOT mean partner_key compute is
+ * free: it is charged and settled on the run row and `ai_cost_usage` all the
+ * same ({@link settleComputeCents}), just not against prepaid AI credits.
+ *
+ * A SIBLING of `checkBillingCredits` rather than a parameter on it: a dozen
+ * call sites branch on that function's `string | null` shape and none of them
+ * has a compute leg to declare.
+ *
+ * `reserveCents` is the reservation about to be taken, not spend already
+ * incurred — this runs BEFORE the run row exists, which is the whole point
+ * (spec §5.6: "this is the fix for the 'credits are enforced after the fact'
+ * gap for this lane").
+ */
+export async function checkComputeCredits(
+  orgId: string,
+  billingSource: AiBillingSource,
+  reserveCents: number,
+): Promise<AiAccessDenial | null> {
+  if (billingSource !== 'platform') return null;
+  if (reserveCents <= 0) return null;
+  return checkBillingCreditsDetailed(orgId, billingSource);
+}
+
+/**
+ * Execution plane W04 (spec §5.6) — stamp an analysis run's compute
+ * RESERVATION on its own row.
+ *
+ * The reservation is what makes concurrent admissions safe: admission sums
+ * settled `compute_cents` PLUS outstanding `compute_reserved_cents` for the
+ * day, so N runs that each fit under the ceiling cannot collectively blow
+ * through it. It is deliberately stored on the run rather than in Redis —
+ * a reservation that evaporates with a cache is a reservation that does not
+ * bound anything, and the row is already the durable record the settlement
+ * writes back to.
+ *
+ * Non-throwing is NOT an option here: a reservation that silently failed to
+ * write would leave the run admitted with no fence at all, so the caller
+ * takes it inside the same transaction as every other admission counter.
+ */
+export async function reserveComputeCents(
+  orgId: string,
+  runId: string,
+  reserveCents: number,
+  _billingSource: AiBillingSource,
+): Promise<void> {
+  if (reserveCents <= 0) return;
+  await withSystemDbAccessContext(() => db
+    .update(aiAgentRuns)
+    .set({ computeReservedCents: reserveCents })
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId))));
+}
+
+/**
+ * Execution plane W04 (spec §5.6, §9) — replace a run's reservation with what
+ * the sandbox actually cost.
+ *
+ * Called from the run loop's `finally` for EVERY billing source, and from the
+ * admission enqueue-failure path with `0` (that zero IS the release: there is
+ * exactly one way a reservation ever ends). `compute_reserved_cents` is
+ * cleared in the same statement that writes `compute_cents`, so the daily sum
+ * can never double-count a settled run.
+ *
+ * Credits are deducted only for `platform`; a BYOK partner is still CHARGED
+ * (the row and the `ai_cost_usage` rollup carry the cents) — they just do not
+ * come out of prepaid AI credits, exactly like token spend.
+ */
+export async function settleComputeCents(
+  orgId: string,
+  runId: string,
+  actualCents: number,
+  billingSource: AiBillingSource,
+): Promise<void> {
+  const cents = Number.isFinite(actualCents) && actualCents > 0 ? Math.ceil(actualCents) : 0;
+
+  await withSystemDbAccessContext(() => db
+    .update(aiAgentRuns)
+    .set({ computeCents: cents, computeReservedCents: null })
+    .where(and(eq(aiAgentRuns.id, runId), eq(aiAgentRuns.orgId, orgId))));
+
+  if (cents <= 0) return;
+
+  const now = new Date();
+  const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+  const monthlyKey = dailyKey.slice(0, 7);
+  for (const [period, periodKey] of [['daily', dailyKey], ['monthly', monthlyKey]] as const) {
+    try {
+      await withSystemDbAccessContext(() => db
+        .insert(aiCostUsage)
+        .values({ orgId, period, periodKey, computeCents: cents, billingSource })
+        .onConflictDoUpdate({
+          target: [aiCostUsage.orgId, aiCostUsage.period, aiCostUsage.periodKey],
+          set: {
+            computeCents: sql`${aiCostUsage.computeCents} + ${cents}`,
+            updatedAt: new Date(),
+          },
+        }));
+    } catch (err) {
+      // Same posture as the token rollup above: a failed aggregate must not
+      // fail the run, and the authoritative number is on the run row
+      // (`ai_agent_runs.compute_cents`, written above and outside this catch)
+      // — admission's daily ceiling reads THAT, not this column. Paged anyway:
+      // nothing reconciles a dropped rollup, so the drift is permanent, and
+      // silent permanent drift in a spend column is how an invoice built on it
+      // later comes out wrong with no record of why.
+      console.error(`[AI] Failed to roll up ${period} compute for org=${orgId}, run=${runId}:`, err);
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  if (billingSource === 'platform') {
+    await deductBillingCredits(orgId, cents);
   }
 }
 

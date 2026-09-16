@@ -32,6 +32,7 @@ vi.mock('../db', () => ({
 }));
 
 vi.mock('../db/schema', () => ({
+  snmpDevices: { id: 'snmpDevices.id', orgId: 'snmpDevices.orgId' },
   // #4673 W02 — validateAgentToken innerJoins organizations to resolve the
   // owning MSP's partnerId; the query is fully mocked at each call site, but
   // the module still evaluates `organizations.partnerId` when building the
@@ -5220,5 +5221,158 @@ describe('agent websocket revocation_lease_renew', () => {
 
     expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
     expect(ws.send).not.toHaveBeenCalled();
+  });
+
+  // SEC-038 W05: the renewal answer is also how an agent resyncs its durable
+  // desktop start fence, so it echoes the session's current start generation
+  // and termination phase — as canonical decimal strings, never JSON numbers,
+  // because the generation is a bigint.
+  it('echoes the start generation and termination phase on a renewed answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'renewed',
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease',
+      sessionId: SESSION_ID,
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+  });
+
+  it('echoes the terminal generation on a revoked answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'revoked',
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+  });
+
+  it('omits the terminal generation when the service could not determine one', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'forbidden' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer.type).toBe('revocation_lease_revoked');
+    // Non-disclosure: another device's session metadata never leaves here.
+    expect(answer).not.toHaveProperty('terminalGeneration');
+  });
+
+  // The agent correlates its fence resync with a nonce so a stalled answer to
+  // an earlier renewal cannot certify a later one. Every answer type echoes it.
+  it('echoes the sync nonce on every answer type', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ status: 'renewed', expiresAt: 1, hardDeadline: 2, renewEverySec: 25, graceSec: 90 }, 'revocation_lease'],
+      [{ status: 'revoked', reason: 'membership_removed' }, 'revocation_lease_revoked'],
+      [{ status: 'unavailable' }, 'revocation_lease_unavailable'],
+    ];
+    for (const [result, type] of cases) {
+      renewRevocationLeaseMock.mockResolvedValue(result);
+      const ws = await sendRenew({
+        type: 'revocation_lease_renew',
+        sessionId: SESSION_ID,
+        syncNonce: 'nonce-1',
+      });
+      const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+      expect(answer.type).toBe(type);
+      expect(answer.syncNonce).toBe('nonce-1');
+    }
+  });
+
+  it('drops a renew whose sync nonce is not a short opaque string', async () => {
+    const ws = await sendRenew({
+      type: 'revocation_lease_renew',
+      sessionId: SESSION_ID,
+      syncNonce: 'x'.repeat(200),
+    });
+    expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('orphaned SNMP poll outcomes (#6021)', () => {
+  const snmpDeviceId = '11111111-1111-4111-8111-111111111111';
+  const deviceId = '22222222-2222-4222-8222-222222222222';
+  const orgId = '33333333-3333-4333-8333-333333333333';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  async function dispatch(commandId: string) {
+    await connectedAgent('agent-snmp-errors', { deviceId, orgId, partnerId: 'partner-123' });
+    expect(sendCommandToAgent('agent-snmp-errors', {
+      id: commandId, type: 'snmp_poll', payload: { deviceId: snmpDeviceId },
+    })).toBe(true);
+    const set = vi.fn(() => ({ where: vi.fn(() => ({ returning: vi.fn().mockResolvedValue([{ orgId }]) })) }));
+    vi.mocked(db.update).mockClear().mockReturnValue({ set } as any);
+    return set;
+  }
+
+  it('persists a failure without payload using the dispatched target and consumes it once', async () => {
+    const commandId = 'snmp-error-test';
+    const set = await dispatch(commandId);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = { type: 'command_result' as const, commandId, status: 'failed' as const, error: 'walk timeout' };
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, result);
+    expect(set).toHaveBeenCalledWith({ lastError: 'walk timeout', lastErrorAt: expect.any(Date), lastStatus: 'warning' });
+    expect(warning).toHaveBeenCalledWith('[AgentWs] SNMP poll failed', { deviceId, orgId, snmpDeviceId, error: 'walk timeout' });
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, result);
+    expect(set).toHaveBeenCalledTimes(1);
+    warning.mockRestore();
+  });
+
+  it.each([true, false])('clears the error on a successful poll (Redis: %s)', async (redisAvailable) => {
+    const commandId = `snmp-recovery-test-${redisAvailable}`;
+    const set = await dispatch(commandId);
+    vi.mocked(isRedisAvailable).mockReturnValue(redisAvailable);
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'completed', result: {
+        deviceId: snmpDeviceId, metrics: [{ oid: '1.3.6.1.2.1.1.3.0', name: 'uptime', value: 42 }],
+      },
+    });
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ lastError: null, lastErrorAt: null }));
+  });
+
+  it('clears the previous error for a successful empty poll', async () => {
+    const commandId = 'snmp-empty-recovery-test';
+    const set = await dispatch(commandId);
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'completed',
+      result: { deviceId: snmpDeviceId, metrics: [] },
+    });
+    expect(set).toHaveBeenCalledWith({ lastError: null, lastErrorAt: null });
+    expect(enqueueSnmpPollResults).not.toHaveBeenCalled();
+  });
+
+  it('rejects failure from another agent and a mismatched target', async () => {
+    const commandId = 'snmp-forged-error-test';
+    const set = await dispatch(commandId);
+    await processOrphanedCommandResult('other-agent', deviceId, {
+      type: 'command_result', commandId, status: 'failed', error: 'forged',
+    });
+    expect(set).not.toHaveBeenCalled();
+    await processOrphanedCommandResult('agent-snmp-errors', deviceId, {
+      type: 'command_result', commandId, status: 'failed', error: 'forged', result: { deviceId },
+    });
+    expect(set).not.toHaveBeenCalled();
   });
 });

@@ -105,6 +105,9 @@
       "test": "Teste falhou",
       "generic": "Algo deu errado"
     },
+    "saved": "Monitor salvo",
+    "deleted": "Monitor excluído",
+    "detached": "Monitor desanexado",
     "loading": "Carregando monitor…",
     "noAttachments": "Ainda não implantado em nenhuma política.",
     "testResult": {
@@ -246,8 +249,10 @@
     },
     "selectPolicy": "Política de configuração",
     "selectTarget": "Destino",
+    "noOrgSelected": "Selecione uma organização para implantar.",
     "policyName": "Nome da política",
     "attach": "Anexar",
+    "attached": "Monitor anexado",
     "cancel": "Cancelar",
     "detachConfirm": "Desanexar de {{policy}}?",
     "errors": {

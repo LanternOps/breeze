@@ -34,6 +34,11 @@ vi.mock('../db/schema/approvals', () => ({
     elevationRequestId: 'elevation_request_id',
     intentId: 'intent_id',
     status: 'status',
+    // #6022: the Recent listing orders by decision time.
+    decidedAt: 'decided_at',
+    createdAt: 'created_at',
+    userId: 'user_id',
+    expiresAt: 'expires_at',
   },
 }));
 
@@ -42,6 +47,11 @@ vi.mock('../db/schema/actionIntents', () => ({
     id: 'id',
     orgId: 'org_id',
     status: 'status',
+    // #6022: the Recent listing filters on terminal status and projects the
+    // outcome columns.
+    errorCode: 'error_code',
+    result: 'result',
+    executedAt: 'executed_at',
   },
   intentOutbox: {
     id: 'id',
@@ -4013,5 +4023,216 @@ describe('P2-2 batch decide routes', () => {
     expect(vi.mocked(generateApprovalAssertionOptions).mock.calls[0]![0].approvalId).toBe(
       'appr-b1',
     );
+  });
+});
+
+// ============================================================================
+// GET /approvals/pending?view=recent — terminal intents (#6022)
+// ============================================================================
+
+/**
+ * `/approvals` listed PENDING intents only, so an intent that failed had no UI
+ * home: #6022's autoInstall guardrail refusal ended `failed` /
+ * `tool_returned_error` and the operator had nowhere to see it.
+ *
+ * `?view=recent` is additive — absent or any other value keeps the unchanged
+ * pending listing — and read-only: it never feeds a decide affordance.
+ */
+describe('GET /approvals/pending?view=recent (#6022)', () => {
+  /** The recent query is `.from().leftJoin().where().orderBy().limit()`. */
+  function mockRecentJoinResolves(rows: Array<{ approval: unknown; intent: unknown | null }>) {
+    const node: any = {};
+    node.from = vi.fn().mockReturnValue(node);
+    node.leftJoin = vi.fn().mockReturnValue(node);
+    node.innerJoin = vi.fn().mockReturnValue(node);
+    node.where = vi.fn().mockReturnValue(node);
+    node.orderBy = vi.fn().mockReturnValue(node);
+    node.limit = vi.fn().mockResolvedValue(rows);
+    // Any SHORTER batched lookup (org name, target device) resolves empty.
+    node.then = (resolve: (v: unknown[]) => void) => resolve([]);
+    vi.mocked(db.select).mockReturnValue(node);
+    return node;
+  }
+
+  const guardrail =
+    'Arming autoInstall requires a human operator with devices.execute and MFA; the AI agent cannot arm software installation.';
+
+  function failedIntentRow(overrides: Record<string, unknown> = {}) {
+    return {
+      approval: buildPendingApproval({
+        id: 'a-failed',
+        intentId: 'intent-failed',
+        status: 'approved',
+        decidedAt: new Date(),
+      }),
+      intent: {
+        id: 'intent-failed',
+        orgId: 'org-9',
+        status: 'failed',
+        errorCode: 'tool_returned_error',
+        result: { error: guardrail },
+        executedAt: new Date('2026-09-16T10:00:00.000Z'),
+        approvalScope: 'supervised',
+        requestedByUserId: TEST_USER.id,
+        ...overrides,
+      },
+    };
+  }
+
+  it('surfaces a failed intent with its status, error code and the refusal reason', async () => {
+    mockRecentJoinResolves([failedIntentRow()]);
+
+    const res = await buildApp().request('/approvals/pending?view=recent');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0].intentOutcome).toEqual({
+      status: 'failed',
+      errorCode: 'tool_returned_error',
+      reason: guardrail,
+      executedAt: '2026-09-16T10:00:00.000Z',
+    });
+    // Read-only listing: no cursor pagination story.
+    expect(body.nextCursor).toBeNull();
+  });
+
+  it('reports a rejected intent as never having run', async () => {
+    mockRecentJoinResolves([
+      failedIntentRow({ status: 'rejected', errorCode: null, result: null, executedAt: null }),
+    ]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals[0].intentOutcome.status).toBe('rejected');
+    expect(body.approvals[0].intentOutcome.reason).toMatch(/did not run/i);
+  });
+
+  it('carries no failure reason for a completed intent', async () => {
+    mockRecentJoinResolves([
+      failedIntentRow({ status: 'completed', errorCode: null, result: { tempPassword: 'hunter2' } }),
+    ]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals[0].intentOutcome.status).toBe('completed');
+    expect(body.approvals[0].intentOutcome.reason).toBeNull();
+    // The stored result is free-form jsonb and may hold sealed secrets — the
+    // listing must never project it.
+    expect(JSON.stringify(body)).not.toContain('hunter2');
+  });
+
+  it('applies the SAME identity/permission rule as the pending list — a demoted approver sees nothing', async () => {
+    mockRecentJoinResolves([
+      failedIntentRow({ approvalScope: 'four_eyes', requestedByUserId: 'someone-else' }),
+    ]);
+    vi.mocked(userCanDecideApprovals).mockReturnValueOnce(false);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('hides another user\'s supervised terminal row', async () => {
+    mockRecentJoinResolves([failedIntentRow({ requestedByUserId: 'someone-else' })]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toEqual([]);
+  });
+
+  it('leaves the DEFAULT listing untouched — no view param is still pending-only', async () => {
+    const approval = buildPendingApproval({ id: 'a-pending', intentId: 'intent-pending' });
+    const intent = {
+      id: 'intent-pending',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    };
+    mockPendingJoinResolves([{ approval, intent }]);
+
+    const body = await (await buildApp().request('/approvals/pending')).json();
+    expect(body.approvals).toHaveLength(1);
+    // Pending rows carry no terminal outcome.
+    expect(body.approvals[0].intentOutcome).toBeNull();
+  });
+
+  it('an unrecognised view value falls back to the pending listing', async () => {
+    const approval = buildPendingApproval({ id: 'a-fallback', intentId: 'intent-fb' });
+    const intent = {
+      id: 'intent-fb',
+      orgId: 'org-9',
+      status: 'pending_approval',
+      approvalScope: 'supervised',
+      requestedByUserId: TEST_USER.id,
+    };
+    mockPendingJoinResolves([{ approval, intent }]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=banana')).json();
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0].id).toBe('a-fallback');
+  });
+
+  // An UNLINKED row (PAM elevation, legacy execution-linked, dev seed) has no
+  // intent lifecycle. Projecting `intentOutcome: null` for it would put a
+  // DENIED elevation request in the Recent panel with no outcome — and a
+  // client reading "no outcome" as "nothing went wrong" paints it green.
+  // That is #6022 again, one code path over.
+  it('derives an outcome for an unlinked row from the approval\'s own status', async () => {
+    mockRecentJoinResolves([
+      {
+        approval: buildPendingApproval({
+          id: 'a-pam',
+          intentId: null,
+          status: 'denied',
+          decidedAt: new Date(),
+          decisionReason: 'Not during change freeze',
+        }),
+        intent: null,
+      },
+    ]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0].intentOutcome).toMatchObject({
+      status: 'denied',
+      reason: 'Not during change freeze',
+    });
+  });
+
+  it('never reports an unlinked row as outcome-less', async () => {
+    for (const status of ['expired', 'reported']) {
+      mockRecentJoinResolves([
+        { approval: buildPendingApproval({ id: `a-${status}`, intentId: null, status }), intent: null },
+      ]);
+      const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+      expect(body.approvals[0].intentOutcome?.status).toBe(status);
+      expect(body.approvals[0].intentOutcome?.reason).toMatch(/did not run/i);
+    }
+  });
+
+  it('bounds the recent query in SQL rather than fetching the whole history', async () => {
+    const node = mockRecentJoinResolves([]);
+
+    await buildApp().request('/approvals/pending?view=recent&limit=10');
+    // 10 requested x the over-fetch factor that covers rows the app-layer
+    // authorization filter will drop.
+    expect(node.limit).toHaveBeenCalledWith(40);
+  });
+
+  it('clamps a caller-requested limit before over-fetching', async () => {
+    const node = mockRecentJoinResolves([]);
+
+    await buildApp().request('/approvals/pending?view=recent&limit=9999');
+    // Clamped to the page max (50) FIRST, then over-fetched — not 9999 x 4.
+    expect(node.limit).toHaveBeenCalledWith(200);
+  });
+
+  it('returns at most `limit` rows even when more are authorized', async () => {
+    mockRecentJoinResolves(
+      Array.from({ length: 5 }, (_, i) => ({
+        approval: buildPendingApproval({ id: `a-${i}`, intentId: null, status: 'denied' }),
+        intent: null,
+      })),
+    );
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent&limit=2')).json();
+    expect(body.approvals).toHaveLength(2);
   });
 });

@@ -778,3 +778,63 @@ describe('PUT /ticket-categories/reorder', () => {
     expect((await reorder({ ids: [ID_A, ID_B] })).status).toBe(404);
   });
 });
+
+describe('category default time entry minutes', () => {
+  const CAT_ID = '3f2f1d8e-1111-4222-8333-444455556666';
+
+  beforeEach(() => { vi.clearAllMocks(); dbSelectResult.mockReset(); resetAuth(); });
+
+  it.each(['partner', 'system'])('includes saved minutes in the %s list', async (scope) => {
+    resetAuth({ scope });
+    dbSelectResult.mockResolvedValue([{ id: CAT_ID, name: 'Hardware', defaultTimeEntryMinutes: 45 }]);
+    const response = await makeApp().request('/ticket-categories');
+    expect(response.status).toBe(200);
+    expect((await response.json()).data[0].defaultTimeEntryMinutes).toBe(45);
+    const { db } = await import('../db');
+    expect(db.select).toHaveBeenCalledWith();
+  });
+
+  describe.each(['POST', 'PATCH'])('%s', (method) => {
+    const request = (body: unknown) => makeApp().request(
+      method === 'POST' ? '/ticket-categories' : `/ticket-categories/${CAT_ID}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }
+    );
+
+    it.each([45, null])('persists and returns %s', async (defaultTimeEntryMinutes) => {
+      const row = { id: CAT_ID, partnerId: 'p-1', name: 'Hardware', defaultTimeEntryMinutes };
+      dbInsertReturning.mockResolvedValue([row]);
+      dbUpdateReturning.mockResolvedValue([row]);
+      const response = await request({ name: 'Hardware', defaultTimeEntryMinutes });
+      expect(response.status).toBe(method === 'POST' ? 201 : 200);
+      expect((await response.json()).data.defaultTimeEntryMinutes).toBe(defaultTimeEntryMinutes);
+      const { db } = await import('../db');
+      const write = method === 'POST'
+        ? vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0]
+        : vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
+      expect(write).toHaveProperty('defaultTimeEntryMinutes', defaultTimeEntryMinutes);
+    });
+
+    it.each([0, 1441, 1.5, '45'])('rejects invalid minutes %s before writing', async (defaultTimeEntryMinutes) => {
+      const response = await request({ name: 'Hardware', defaultTimeEntryMinutes });
+      expect(response.status).toBe(400);
+      const { db } = await import('../db');
+      expect(db.insert).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it('does not overwrite existing minutes when omitted', async () => {
+      dbInsertReturning.mockResolvedValue([{ id: CAT_ID, name: 'Hardware' }]);
+      dbUpdateReturning.mockResolvedValue([{ id: CAT_ID, name: 'Hardware', defaultTimeEntryMinutes: 45 }]);
+      const response = await request({ name: 'Hardware' });
+      expect(response.status).toBe(method === 'POST' ? 201 : 200);
+      const { db } = await import('../db');
+      const write = method === 'POST'
+        ? vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0]
+        : vi.mocked(db.update).mock.results[0]?.value.set.mock.calls[0]?.[0];
+      expect(write).not.toHaveProperty('defaultTimeEntryMinutes');
+    });
+  });
+});

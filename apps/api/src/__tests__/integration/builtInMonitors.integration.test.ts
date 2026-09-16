@@ -1,7 +1,7 @@
 /**
  * Built-in default monitors — provisioning contract against real Postgres.
  *
- * Proves: (1) one call provisions three compiled partner-wide built-ins and
+ * Proves: (1) one call provisions four compiled partner-wide built-ins and
  * NOTHING is assigned — a device under the partner resolves no monitors until
  * the MSP attaches them to a policy;
  * (2) a second call is a no-op; (3) a partner that deleted a built-in does NOT
@@ -105,7 +105,7 @@ async function marker(partnerId: string) {
 }
 
 describe('ensureBuiltInMonitorsForPartner', () => {
-  it('provisions three compiled partner-wide monitors and assigns NOTHING by default', async () => {
+  it('provisions four compiled partner-wide monitors and assigns NOTHING by default', async () => {
     const partner = await newPartner();
     const org = await createOrganization({ partnerId: partner.id });
     createdOrgIds.push(org.id);
@@ -117,7 +117,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     expect(result.monitorIds).toHaveLength(BUILT_IN_MONITOR_DEFAULTS.length);
 
     const rows = await builtInsFor(partner.id);
-    expect(rows.map((r) => r.builtinKey).sort()).toEqual(['cpu_high', 'disk_full', 'memory_high']);
+    expect(rows.map((r) => r.builtinKey).sort()).toEqual(['cpu_high', 'disk_full', 'memory_high', 'patch_compliance_low']);
     expect(rows.every((r) => r.orgId === null && r.enabled && r.autoResolve)).toBe(true);
 
     // Each definition compiled into its three managed rows.
@@ -139,10 +139,10 @@ describe('ensureBuiltInMonitorsForPartner', () => {
       db.select({ id: configurationPolicies.id }).from(configurationPolicies).where(eq(configurationPolicies.partnerId, partner.id)),
     );
     expect(policies).toEqual([]);
-    const effective = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
-    expect(effective).toEqual([]);
+    const resolution = await withDbAccessContext(SYSTEM_CTX, () => resolveMonitorsForDevice(device.id));
+    expect(resolution).toEqual({ kind: 'resolved', monitors: [] });
 
-    expect(await marker(partner.id)).toMatchObject({ version: 1 });
+    expect(await marker(partner.id)).toMatchObject({ version: 2 });
   });
 
   it('is a no-op on the second call', async () => {
@@ -150,7 +150,7 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
     const again = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
     expect(again).toEqual({ provisioned: false, monitorIds: [] });
-    expect(await builtInsFor(partner.id)).toHaveLength(3);
+    expect(await builtInsFor(partner.id)).toHaveLength(4);
   });
 
   it('never resurrects a built-in the partner deleted', async () => {
@@ -163,7 +163,44 @@ describe('ensureBuiltInMonitorsForPartner', () => {
     );
     const again = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
     expect(again.provisioned).toBe(false);
-    expect((await builtInsFor(partner.id)).map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high']);
+    expect((await builtInsFor(partner.id)).map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high', 'patch_compliance_low']);
+  });
+
+  // W04 (#5750): the production shape every existing partner is in — marker
+  // at version 1 with the three legacy rows (one of them deleted) — must gain
+  // ONLY patch_compliance_low, keep the surviving rows' ids, never resurrect
+  // the deleted one, and move the marker to version 2 with provisionedAt kept.
+  it('upgrades a version-1 partner in place: one new row, existing rows untouched, deleted one stays gone', async () => {
+    const partner = await newPartner();
+    await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    // Rewind to the v1 shape: drop the v2 row and stamp the legacy marker.
+    await withDbAccessContext(SYSTEM_CTX, async () => {
+      await db.delete(monitorDefinitions)
+        .where(and(eq(monitorDefinitions.partnerId, partner.id), eq(monitorDefinitions.builtinKey, 'patch_compliance_low')));
+      await db.delete(monitorDefinitions)
+        .where(and(eq(monitorDefinitions.partnerId, partner.id), eq(monitorDefinitions.builtinKey, 'cpu_high')));
+      await db.update(partners)
+        .set({ settings: sql`jsonb_build_object('builtInMonitors', jsonb_build_object('version', 1, 'provisionedAt', '2026-01-01T00:00:00.000Z'))` })
+        .where(eq(partners.id, partner.id));
+    });
+    const before = await builtInsFor(partner.id);
+    expect(before.map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high']);
+    const beforeIds = new Set(before.map((r) => r.id));
+
+    // The boot backfill sees a stale-version partner; the per-partner call upgrades it.
+    const backfill = await ensureBuiltInMonitorsForAllPartners();
+    expect(backfill.provisioned).toBeGreaterThanOrEqual(1);
+
+    const after = await builtInsFor(partner.id);
+    expect(after.map((r) => r.builtinKey).sort()).toEqual(['disk_full', 'memory_high', 'patch_compliance_low']);
+    for (const row of after) {
+      if (row.builtinKey !== 'patch_compliance_low') expect(beforeIds.has(row.id)).toBe(true);
+    }
+    expect(await marker(partner.id)).toMatchObject({ version: 2, provisionedAt: '2026-01-01T00:00:00.000Z' });
+
+    // Idempotent: a second pass at version 2 is a no-op.
+    const again = await withDbAccessContext(SYSTEM_CTX, () => ensureBuiltInMonitorsForPartner(partner.id));
+    expect(again).toEqual({ provisioned: false, monitorIds: [] });
   });
 
   it('refuses an org-owned row carrying a builtin_key (CHECK)', async () => {
@@ -213,9 +250,9 @@ describe('createPartner() hook', () => {
     createdOrgIds.push(created.orgId);
 
     const rows = await builtInsFor(created.partnerId);
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows.every((r) => r.createdBy === created.adminUserId)).toBe(true);
-    expect(await marker(created.partnerId)).toMatchObject({ version: 1 });
+    expect(await marker(created.partnerId)).toMatchObject({ version: 2 });
   });
 });
 
@@ -234,8 +271,8 @@ describe('ensureBuiltInMonitorsForAllPartners', () => {
     expect(summary.failed).toBe(0);
     expect(summary.provisioned).toBeGreaterThanOrEqual(1);
 
-    expect(await builtInsFor(fresh.id)).toHaveLength(3);
-    expect(await builtInsFor(done.id)).toHaveLength(2);
+    expect(await builtInsFor(fresh.id)).toHaveLength(4);
+    expect(await builtInsFor(done.id)).toHaveLength(3);
   });
 
   it('is disabled by BREEZE_BUILTIN_MONITORS_AUTOSEED=false', async () => {

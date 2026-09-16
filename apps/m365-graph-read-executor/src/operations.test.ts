@@ -6,6 +6,7 @@ import { executeGraphReadAction } from './microsoft/readActions';
 import { renderMetrics, resetMetrics } from './metrics';
 import { createSyncContinuationCodec } from './syncContinuation';
 import { createSigninLimiter } from './signinLimiter';
+import { createSigninEventsLimiter } from './signinEventsLimiter';
 
 vi.mock('./microsoft/readActions', () => ({
   executeGraphReadAction: vi.fn(),
@@ -64,10 +65,13 @@ function syncDependencies() {
       maxItemsDevices: 25_000,
       maxItemsCaPolicies: 500,
       maxItemsSkus: 200,
+      maxItemsSigninEvents: 25_000,
+      signinEventsRpm: 6,
       continuationKey: null,
     },
     continuations: createSyncContinuationCodec({ key: null }),
     signinLimiter: createSigninLimiter({ requestsPerMinute: 4 }),
+    signinEventsLimiter: createSigninEventsLimiter({ requestsPerMinute: 6 }),
   };
 }
 

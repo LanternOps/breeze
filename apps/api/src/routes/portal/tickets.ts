@@ -27,9 +27,15 @@ import { listTicketFormsForOrg } from '../../services/ticketFormService';
 import { editCommentSchema, PORTAL_TICKET_COMMENT_MAX_CHARS } from '@breeze/shared';
 import type { TicketAttachmentMeta } from '@breeze/shared';
 import { ATTACHMENT_META_COLUMNS, ticketAttachments } from '../../db/schema/ticketAttachments';
-import { openBytes } from '../../services/ticketAttachmentStorage';
+import { AttachmentExpiredError, openBytes } from '../../services/ticketAttachmentStorage';
 import { captureException } from '../../services/sentry';
-import { contentDispositionFor } from '../tickets/attachments';
+// `contentDispositionFor` lives in services/attachmentFilename.ts. It used to be
+// imported from routes/tickets/attachments.ts, which merely RE-EXPORTS it —
+// that pulled the whole technician ticket route surface into this module's
+// graph and put it in an import cycle, so under Vite's SSR transform the
+// re-exported binding could still be uninitialised when this handler ran
+// (TypeError: contentDispositionFor is not a function). Import the source.
+import { contentDispositionFor } from '../../services/attachmentFilename';
 import { Readable } from 'node:stream';
 import { ticketSla } from '../../services/portal/ticketReadModel';
 import { supportUsageForOrg } from '../../services/portal/supportUsage';
@@ -651,6 +657,13 @@ ticketRoutes.get(
           storageBackend: ticketAttachments.storageBackend,
           storageKey: ticketAttachments.storageKey,
           data: ticketAttachments.data,
+          // Execution plane W05 (#5716): an artifact-backed row resolves its
+          // bytes against the ATTACHMENT's own org. Both columns are required —
+          // without them `openBytes` reads undefined for each and raises
+          // AttachmentExpiredError unconditionally, so every artifact download
+          // 503s at the customer while the file is perfectly alive.
+          orgId: ticketAttachments.orgId,
+          artifactId: ticketAttachments.artifactId,
         },
       })
       .from(ticketAttachments)
@@ -682,8 +695,15 @@ ticketRoutes.get(
     // Sentry (W08A review).
     let opened: Awaited<ReturnType<typeof openBytes>>;
     try {
-      opened = await openBytes(att);
+      opened = await openBytes(att, { orgId: att.orgId });
     } catch (err) {
+      // Execution plane W05 (#5716): an artifact whose 30-day TTL elapsed is a
+      // 410, not a 503. Checked BEFORE the transport branch, which would
+      // otherwise tell the customer to retry something that will never work and
+      // fire a Sentry exception on every attempt. Mirrors the technician route.
+      if (err instanceof AttachmentExpiredError) {
+        return c.json({ error: 'This attachment has expired and is no longer available' }, 410);
+      }
       captureException(err);
       return c.json({ error: 'Attachment storage is unavailable — try again shortly' }, 503);
     }

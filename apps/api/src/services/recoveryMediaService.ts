@@ -693,6 +693,13 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
       signedAt = new Date();
     }
 
+    // #5411: a successful build must clear any `error` left by a prior failed
+    // attempt on this same row — otherwise a rebuilt bundle shows a ready
+    // status next to stale failure text. Belt-and-suspenders alongside the
+    // rebuild-start clear in routes/backup/bmr.ts, since this function is
+    // also re-invoked directly by the BullMQ retry path without going through
+    // that route.
+    const { error: _staleError, ...metadataWithoutError } = asRecord(artifact.metadata);
     await db
       .update(recoveryMediaArtifacts)
       .set({
@@ -705,7 +712,7 @@ export async function buildRecoveryMediaArtifact(artifactId: string, requestUrl?
         signingKeyId,
         signedAt,
         metadata: {
-          ...asRecord(artifact.metadata),
+          ...metadataWithoutError,
           storageProvider: storage.provider,
           downloadFilename: storage.downloadFilename,
           releaseSource: getBinarySource(),

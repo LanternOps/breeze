@@ -15,6 +15,8 @@ import { db } from '../../db';
 import { deviceGroups, fleetDesignAppliedItems, reportRuns, reports } from '../../db/schema';
 import { FLEET_DESIGN_REPORT_TYPE } from '../aiAgents/fleetDesignReport';
 
+type LedgerExecutor = Pick<typeof db, 'select' | 'insert' | 'update'>;
+
 export type FleetDesignLedgerRow = typeof fleetDesignAppliedItems.$inferSelect;
 
 export interface RecordLedgerInput {
@@ -41,8 +43,8 @@ export async function loadLedger(reportRunId: string, orgId: string): Promise<Fl
  * item_ref)` already existed — the caller treats null as "already applied,
  * skip", exactly as `assignPolicy` treats its null.
  */
-export async function recordApplied(input: RecordLedgerInput): Promise<FleetDesignLedgerRow | null> {
-  const [row] = await db
+export async function recordApplied(input: RecordLedgerInput, database: LedgerExecutor = db): Promise<FleetDesignLedgerRow | null> {
+  const [row] = await database
     .insert(fleetDesignAppliedItems)
     .values({
       orgId: input.orgId,
@@ -82,8 +84,8 @@ export async function recordFailed(input: RecordLedgerInput & { error: string })
 }
 
 /** Refresh `created_refs` on an applied row (a second apply in the same run unions monitoring into the same policy). */
-export async function updateCreatedRefs(id: string, orgId: string, createdRefs: FleetDesignCreatedRefs): Promise<void> {
-  await db
+export async function updateCreatedRefs(id: string, orgId: string, createdRefs: FleetDesignCreatedRefs, database: LedgerExecutor = db): Promise<void> {
+  await database
     .update(fleetDesignAppliedItems)
     .set({ createdRefs })
     .where(and(eq(fleetDesignAppliedItems.id, id), eq(fleetDesignAppliedItems.orgId, orgId)));
@@ -107,8 +109,8 @@ export async function markRolledBack(ids: string[], orgId: string, userId: strin
  * was deleted (or handed back to the technician) and must not be re-adopted.
  * A technician-renamed group is still reused: the id is the identity.
  */
-export async function findReusableGroup(orgId: string, functionKey: string): Promise<{ groupId: string } | null> {
-  const rows = await db
+export async function findReusableGroup(orgId: string, functionKey: string, database: LedgerExecutor = db): Promise<{ groupId: string } | null> {
+  const rows = await database
     .select({ createdRefs: fleetDesignAppliedItems.createdRefs })
     .from(fleetDesignAppliedItems)
     .where(and(
@@ -123,7 +125,7 @@ export async function findReusableGroup(orgId: string, functionKey: string): Pro
   const candidateIds = [...new Set(rows.map((r) => r.createdRefs?.groupId).filter((id): id is string => typeof id === 'string'))];
   if (candidateIds.length === 0) return null;
 
-  const existing = await db
+  const existing = await database
     .select({ id: deviceGroups.id })
     .from(deviceGroups)
     .where(and(inArray(deviceGroups.id, candidateIds), eq(deviceGroups.orgId, orgId)));

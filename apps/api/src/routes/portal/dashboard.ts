@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { portalTicketOwnership } from './ticketOwnership';
 import { dashboardForOrg } from '../../services/portal/dashboard';
 import {
   applyPortalCacheHeaders,
@@ -32,7 +33,7 @@ portalDashboardRoutes.get('/dashboard', async (c) => {
   const payload = await dashboardForOrg(auth.user.orgId, {
     timezone: auth.timezone,
     now: new Date(),
-  });
+  }, portalTicketOwnership(auth.user));
 
   applyPortalCacheHeaders(c, {
     scope: 'private',

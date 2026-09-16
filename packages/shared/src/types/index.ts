@@ -813,6 +813,7 @@ export * from './aiOrigin';
 export * from './orgNarrativeReport';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './deviceFunction';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
@@ -844,6 +845,10 @@ export * from './vulnerability';
 export * from './postureReport';
 export * from './executiveSummaryReport';
 export * from './hardwareLifecycleReport';
+export * from './identityAccessReport';
+export * from './threatDetectionReport';
+export * from './endpointManagementReport';
+export * from './vulnerabilityManagementReport';
 
 // ============================================
 // Portal Visibility DTOs (Wave 1 - #4562)
@@ -883,3 +888,9 @@ export * from './tickets';
 // ============================================
 
 export * from './aiArtifacts';
+
+// ============================================
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+// ============================================
+
+export * from './toolSources';

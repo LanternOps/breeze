@@ -255,6 +255,22 @@ describe('metric rollups service', () => {
     expect(snmpHourlyStatementSql).toContain('sourceBucketSeconds');
   });
 
+  it('keys SNMP rollups by normalized OID and keeps changing names display-only', async () => {
+    await rollupDeviceMetricsRange({
+      orgId: '11111111-1111-1111-1111-111111111111',
+      from: new Date('2026-06-18T12:00:00.000Z'),
+      to: new Date('2026-06-18T12:15:00.000Z'),
+    });
+    const statement = onlyStatementFor('metricRollups.raw.snmp_metrics');
+    expect(statement).not.toContain("coalesce(nullif(sm.name, ''), sm.oid)");
+    expect(statement).toContain("regexp_replace(sm.oid, '^[.]', '') AS oid");
+    expect(statement).toContain("md5(sm.device_id::text || ':' || regexp_replace(sm.oid, '^[.]', ''))");
+    // Both agent generations may occur in one bucket; labels cannot split it.
+    expect(statement).toContain('min(name) AS name');
+    expect(statement).toContain('GROUP BY org_id, device_id, snmp_device_id, oid, metric_name');
+    expect(statement).toContain("'displayName', bg.name");
+  });
+
   // #4341 — the raw passes used to issue ONE full CTE per metric: 10 scans of
   // the `device_metrics` window plus 7 scans of the `device_process_samples`
   // window, per org, every 5 minutes. On US prod the process-sample CTE alone

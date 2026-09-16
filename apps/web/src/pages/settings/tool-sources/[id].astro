@@ -1,0 +1,10 @@
+---
+import DashboardLayout from '../../../layouts/DashboardLayout.astro';
+import ToolSourceDetail from '../../../components/toolSources/ToolSourceDetail';
+
+const { id } = Astro.params;
+---
+
+<DashboardLayout titleKey="titles.settingsToolSources">
+  <ToolSourceDetail client:load sourceId={id!} />
+</DashboardLayout>

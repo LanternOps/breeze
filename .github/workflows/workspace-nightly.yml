@@ -86,7 +86,7 @@ jobs:
               teamId: process.env.VERCEL_TEAM_ID,
               projectId: process.env.VERCEL_PROJECT_ID,
             };
-            const page = await Sandbox.list({ namePrefix: "breeze-", ...credentials });
+            const page = await Sandbox.list({ namePrefix: "breeze-", sortBy: "name", ...credentials });
             for (const row of await page.toArray()) {
               if (row.status === "stopped" || row.status === "aborted") continue;
               const sandbox = await Sandbox.get({ name: row.name, resume: false, ...credentials });

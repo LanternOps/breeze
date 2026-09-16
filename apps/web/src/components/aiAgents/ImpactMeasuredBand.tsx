@@ -33,6 +33,7 @@ import { formatNumber, formatPercent } from '@/lib/i18n/format';
 import { fetchWithAuth } from '../../stores/auth';
 import type {
   AiAgentImpactMeasuredDto,
+  MeasuredArm,
   MeasuredCohort,
   MeasuredOmissionReason,
   MeasuredSignal,
@@ -55,21 +56,52 @@ function testIdFor(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'unnamed';
 }
 
+/**
+ * The right-censored p50/p90, as one refinement line -- or `null` when the DTO
+ * gave neither (survival never reached that quantile). No extra n-gate is
+ * applied here: `buildArm` (apps/api impactStatistics.ts) already withholds the
+ * whole arm below `MEASURED_MIN_COHORT_N`, so any arm reaching this component
+ * has already cleared that gate (#5879).
+ */
+function formatPercentiles(
+  arm: MeasuredArm,
+  t: (key: string) => string,
+): string | null {
+  const parts: string[] = [];
+  if (arm.censoredP50Minutes !== null) {
+    parts.push(t('aiAgentsPage.impact.measured.percentileP50').replace('{minutes}', formatNumber(arm.censoredP50Minutes)));
+  }
+  if (arm.censoredP90Minutes !== null) {
+    parts.push(t('aiAgentsPage.impact.measured.percentileP90').replace('{minutes}', formatNumber(arm.censoredP90Minutes)));
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function ArmFigure({
   label,
   n,
   proportion,
   cohortSizeLabel,
+  percentileText,
+  armTestId,
 }: {
   label: string;
   n: number;
   proportion: number;
   cohortSizeLabel: string;
+  percentileText: string | null;
+  /** Distinguishes the two arms' otherwise-identical `data-testid`s (one per cohort row). */
+  armTestId: 'ai-touched' | 'untouched';
 }) {
   return (
     <div className="flex-1">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="text-lg font-semibold">{formatPercent(proportion)}</p>
+      {percentileText !== null && (
+        <p data-testid={`measured-percentiles-${armTestId}`} className="text-xs text-muted-foreground">
+          {percentileText}
+        </p>
+      )}
       {/* The cohort size travels WITH the figure, never as a footnote: a
           proportion without its n invites a comparison the data cannot bear. */}
       <p className="text-xs text-muted-foreground">{cohortSizeLabel.replace('{n}', formatNumber(n))}</p>
@@ -91,12 +123,16 @@ function CohortRow({ cohort, t }: { cohort: MeasuredCohort; t: (key: string) => 
           n={cohort.aiTouched.n}
           proportion={cohort.aiTouched.proportionWithinHorizon}
           cohortSizeLabel={cohortSizeLabel}
+          percentileText={formatPercentiles(cohort.aiTouched, t)}
+          armTestId="ai-touched"
         />
         <ArmFigure
           label={t('aiAgentsPage.impact.measured.armUntouched')}
           n={cohort.untouched.n}
           proportion={cohort.untouched.proportionWithinHorizon}
           cohortSizeLabel={cohortSizeLabel}
+          percentileText={formatPercentiles(cohort.untouched, t)}
+          armTestId="untouched"
         />
       </div>
     </div>
@@ -203,6 +239,24 @@ function TechnicianMinutesSection({
   );
 }
 
+/**
+ * Whether ANY arm across either signal actually shows a censored percentile.
+ * The note disclaims a number that must be on screen for the disclaimer to
+ * mean anything (#5879) -- unconditionally showing it over a band with no
+ * percentiles at all attaches a caveat to values the reader never sees.
+ */
+function hasAnyPercentile(dto: AiAgentImpactMeasuredDto): boolean {
+  return [dto.alertResolution, dto.ticketFirstResponse].some((signal) =>
+    signal.cohorts.some(
+      (cohort) =>
+        cohort.aiTouched.censoredP50Minutes !== null ||
+        cohort.aiTouched.censoredP90Minutes !== null ||
+        cohort.untouched.censoredP50Minutes !== null ||
+        cohort.untouched.censoredP90Minutes !== null,
+    ),
+  );
+}
+
 export default function ImpactMeasuredBand({ window: windowDays }: ImpactMeasuredBandProps) {
   const { t } = useTranslation('settings');
   const [dto, setDto] = useState<AiAgentImpactMeasuredDto | null>(null);
@@ -285,9 +339,11 @@ export default function ImpactMeasuredBand({ window: windowDays }: ImpactMeasure
 
       <TechnicianMinutesSection technicianMinutes={dto.technicianMinutes} t={t} />
 
-      <p data-testid="measured-censored-note" className="text-xs text-muted-foreground">
-        {t('aiAgentsPage.impact.measured.censoredNote')}
-      </p>
+      {hasAnyPercentile(dto) && (
+        <p data-testid="measured-censored-note" className="text-xs text-muted-foreground">
+          {t('aiAgentsPage.impact.measured.censoredNote')}
+        </p>
+      )}
     </section>
   );
 }

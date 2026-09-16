@@ -49,8 +49,12 @@
   "deciding": "Envoi en cours…",
   "expiresIn": "Expire dans {{minutes}} min",
   "expiresSoon": "Expire dans moins d’une minute",
+  "expiresInHours": "Expire dans {{hours}} h",
+  "expiresInDays": "Expire dans {{days}} jours",
   "expired": "Expirée",
   "unknownOrganization": "Organisation inconnue",
+  "intentNoLongerPending": "Cette approbation n’est plus en attente.",
+  "dismiss": "Ignorer",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} approuvé pour {{org}}",
   "pagination": {
@@ -85,6 +89,25 @@
     "errors": {
       "approvedPromoteFailed": "Approuvé, mais la demande de préautorisation n’a pas pu être envoyée. Réessayez depuis les paramètres de l’agent.",
       "policyDecideDisabled": "Approuvé. La préautorisation n’a pas pu être demandée, car elle est désactivée pour ce déploiement."
+    }
+  },
+  "recent": {
+    "title": "Récentes",
+    "subtitle": "Déjà décidées ou terminées",
+    "loading": "Chargement des approbations récentes…",
+    "error": "Impossible de charger les approbations récentes.",
+    "retry": "Réessayer",
+    "empty": "Rien ne s’est terminé récemment.",
+    "status": {
+      "failed": "Échec",
+      "rejected": "Refusée",
+      "expired": "Expirée",
+      "cancelled": "Annulée",
+      "completed": "Terminée",
+      "denied": "Refusée",
+      "approved": "Approuvée",
+      "reported": "Signalée",
+      "unknown": "Inconnu"
     }
   }
 }

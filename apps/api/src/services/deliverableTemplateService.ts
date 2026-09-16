@@ -13,9 +13,14 @@ import type {
 import { canManagePartnerWidePolicies, PartnerWideWriteDeniedError } from './partnerWideAccess';
 import { isPgUniqueViolation, pgErrorConstraint } from '../utils/pgErrors';
 import { createDeliverable, DeliverableServiceError } from './serviceDeliverableService';
+import { resolveManagedEvidenceDefinition } from './managedEvidenceDefinitions';
+import type { ManagedEvidenceType } from './managedEvidenceRegistry';
 import { firstAnchorAfter, type Cadence } from './recurrence';
 import { contracts } from '../db/schema/contracts';
 import { serviceDeliverables } from '../db/schema/serviceDeliverables';
+import { assertChecklistTemplateUsableByTemplateItemOwner } from './checklistTemplateReference';
+import { ticketChecklistTemplates } from '../db/schema';
+import { organizations } from '../db/schema/orgs';
 
 /**
  * Deliverable template sets and items (spec #5573 §4.6, D9). Dual ownership per
@@ -92,6 +97,26 @@ const ownerScopeOf = (row: Pick<DeliverableTemplateSetRow, 'orgId'>) =>
 /** Visibility is not permission: a partner-wide row is administrable only by a full-partner admin. */
 function requireWritable(row: Pick<DeliverableTemplateSetRow, 'orgId'>, actor: TemplateActor): void {
   if (row.orgId === null && !canManagePartnerWidePolicies(actor)) throw new PartnerWideWriteDeniedError();
+}
+
+/**
+ * The owner axis to validate a checklist-template REFERENCE against (#5921
+ * follow-up). The set's own `partnerId` column is ALWAYS null for an
+ * org-owned set — the one-owner XOR constraint forbids both columns being
+ * set — so handing that column straight to
+ * `assertChecklistTemplateUsableByTemplateItemOwner` rejected every
+ * partner-wide checklist template on every org-owned set. Resolve the
+ * ORGANIZATION's own partnerId instead, same lookup as
+ * serviceDeliverableService's `validateReferences`. A partner-owned set's
+ * `partnerId` column is already the right value and needs no lookup.
+ */
+async function resolveChecklistItemOwner(
+  set: Pick<DeliverableTemplateSetRow, 'orgId' | 'partnerId'>,
+): Promise<{ orgId: string | null; partnerId: string | null }> {
+  if (set.orgId === null) return { orgId: null, partnerId: set.partnerId };
+  const [org] = await db.select({ partnerId: organizations.partnerId }).from(organizations)
+    .where(eq(organizations.id, set.orgId)).limit(1);
+  return { orgId: set.orgId, partnerId: org?.partnerId ?? null };
 }
 
 function mapUniqueViolation(err: unknown): never {
@@ -199,6 +224,7 @@ export async function createTemplateSet(input: CreateTemplateSetInput, actor: Te
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           sortOrder: item.sortOrder,
+          autoEvidenceReportType: item.autoEvidenceReportType ?? null,
         }).returning();
         if (itemRow) items.push(itemRow);
       }
@@ -242,6 +268,13 @@ export async function deleteTemplateSet(setId: string, actor: TemplateActor): Pr
 export async function addTemplateItem(setId: string, input: CreateTemplateItemInput, actor: TemplateActor): Promise<TemplateItemView> {
   const set = await loadSetOr404(setId, actor);
   requireWritable(set, actor);
+  // #5808 W03. The SET'S owner axis, never the caller's org: a partner-wide
+  // item that pointed at an org-owned checklist template would be invisible to
+  // every other org the set is applied to, and the apply would silently produce
+  // an empty checklist. A null needs no lookup — it clears the pointer.
+  if (input.checklistTemplateId != null) {
+    await assertChecklistTemplateUsableByTemplateItemOwner(input.checklistTemplateId, await resolveChecklistItemOwner(set));
+  }
   try {
     const [row] = await db.transaction(async (tx) => tx.insert(deliverableTemplateItems).values({
       setId: set.id,
@@ -254,7 +287,10 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
       graceDays: input.graceDays,
       artifactRequired: input.artifactRequired,
       completionMode: input.completionMode,
+      instructions: input.instructions ?? null,
+      checklistTemplateId: input.checklistTemplateId ?? null,
       sortOrder: input.sortOrder,
+      autoEvidenceReportType: input.autoEvidenceReportType ?? null,
     }).returning());
     if (!row) throw new TemplateServiceError('Insert returned no row', 500, 'INSERT_FAILED');
     return row;
@@ -266,6 +302,9 @@ export async function addTemplateItem(setId: string, input: CreateTemplateItemIn
 export async function updateTemplateItem(setId: string, itemId: string, patch: UpdateTemplateItemInput, actor: TemplateActor): Promise<TemplateItemView> {
   const set = await loadSetOr404(setId, actor);
   requireWritable(set, actor);
+  if (patch.checklistTemplateId != null) {
+    await assertChecklistTemplateUsableByTemplateItemOwner(patch.checklistTemplateId, await resolveChecklistItemOwner(set));
+  }
   try {
     const [row] = await db.transaction(async (tx) => tx.update(deliverableTemplateItems)
       .set({
@@ -276,7 +315,10 @@ export async function updateTemplateItem(setId: string, itemId: string, patch: U
         ...(patch.graceDays !== undefined ? { graceDays: patch.graceDays } : {}),
         ...(patch.artifactRequired !== undefined ? { artifactRequired: patch.artifactRequired } : {}),
         ...(patch.completionMode !== undefined ? { completionMode: patch.completionMode } : {}),
+        ...(patch.instructions !== undefined ? { instructions: patch.instructions ?? null } : {}),
+        ...(patch.checklistTemplateId !== undefined ? { checklistTemplateId: patch.checklistTemplateId ?? null } : {}),
         ...(patch.sortOrder !== undefined ? { sortOrder: patch.sortOrder } : {}),
+        ...(patch.autoEvidenceReportType !== undefined ? { autoEvidenceReportType: patch.autoEvidenceReportType } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(deliverableTemplateItems.id, itemId), eq(deliverableTemplateItems.setId, set.id)))
@@ -322,6 +364,51 @@ export async function applyTemplateSet(
     .where(eq(deliverableTemplateItems.setId, set.id))
     .orderBy(asc(deliverableTemplateItems.sortOrder), asc(deliverableTemplateItems.name));
 
+  // #5808 W03 — cross-org apply guard (spec §4.4). loadSetOr404 authorizes the
+  // SOURCE set and requireOrgAccess the TARGET org, independently, so an actor
+  // holding both may apply org A's set to org B. Copying org A's PRIVATE
+  // checklist template into an org-B deliverable would create a cross-org
+  // pointer that RLS hides from org B while the system-context sweep still
+  // reads it and seeds from it. A PARTNER-WIDE template is fine: it is visible
+  // to both orgs by construction, and that is exactly what it is for.
+  //
+  // This runs BEFORE the transaction, so a refusal writes nothing.
+  const referenced = [...new Set(items.map((i) => i.checklistTemplateId).filter((v): v is string => !!v))];
+  if (referenced.length > 0) {
+    // The TARGET org's partner, not the actor's and not the source set's: it is
+    // what decides which partner-wide templates the copied deliverable will be
+    // able to reach once it exists.
+    const [targetOrg] = await db.select({ partnerId: organizations.partnerId })
+      .from(organizations).where(eq(organizations.id, orgId)).limit(1);
+    const owners = await db
+      .select({ id: ticketChecklistTemplates.id, orgId: ticketChecklistTemplates.orgId, partnerId: ticketChecklistTemplates.partnerId })
+      .from(ticketChecklistTemplates)
+      .where(inArray(ticketChecklistTemplates.id, referenced));
+    const bad = owners.filter((o) => (
+      o.orgId !== null
+        // An ORG-owned template: usable only if that org IS the target.
+        ? o.orgId !== orgId
+        // A PARTNER-WIDE template is "visible to both by construction" ONLY
+        // when it belongs to the target org's own partner. One owned by a
+        // DIFFERENT MSP is exactly as unreachable as a foreign org's private
+        // template, so it is refused here rather than being left to
+        // createDeliverable's second-layer 404 mid-transaction.
+        : targetOrg?.partnerId == null || o.partnerId !== targetOrg.partnerId
+    )).map((o) => o.id);
+    // A referenced id that resolved to no row is already broken. Treat it as
+    // bad rather than silently applying a dangling pointer that would produce
+    // an empty checklist forever after, with no error anywhere.
+    const missing = referenced.filter((id) => !owners.some((o) => o.id === id));
+    if (bad.length > 0 || missing.length > 0) {
+      throw new TemplateServiceError(
+        'This template set references a checklist template that does not belong to the target organization',
+        409,
+        'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG',
+        { templateIds: [...bad, ...missing] },
+      );
+    }
+  }
+
   const contractId = opts.contractId ?? null;
   let contractStart: string | null = null;
   if (contractId) {
@@ -364,6 +451,34 @@ export async function applyTemplateSet(
       const out: AppliedTemplateResult['created'] = [];
       for (const item of toCreate) {
         const anchorDueDate = firstAnchorAfter(effectiveFrom, item.cadence as Cadence);
+        // #5784 OD-6 = A. Resolve the partner-wide TYPE to THIS org's managed
+        // definition, inside the same all-or-nothing transaction and on the
+        // SAME tx handle — the ambient `db` proxy would resolve to the request
+        // transaction (serviceDeliverableService.ts:52) and escape the rollback.
+        // A provisioning failure aborts the whole apply with an error the
+        // technician sees, rather than a 05:18 console.warn. This only
+        // provisions a definition and links a deliverable: it never generates
+        // and never publishes — the OD-12 delivery gate sits downstream.
+        let autoEvidenceReportId: string | undefined;
+        if (item.autoEvidenceReportType) {
+          // A managed definition carries USER provenance (its created_by is the
+          // principal the ordinary edit/reauthorize surface works on), so a
+          // session with no user (API key, system) must name an owner.
+          const definitionOwner = opts.ownerUserId ?? actor.userId;
+          if (!definitionOwner) {
+            throw new TemplateServiceError(
+              'Applying an item with an auto-evidence report type requires ownerUserId when the caller has no user',
+              400, 'EVIDENCE_OWNER_REQUIRED',
+            );
+          }
+          const managed = await resolveManagedEvidenceDefinition(
+            orgId,
+            item.autoEvidenceReportType as ManagedEvidenceType,
+            definitionOwner,
+            tx,
+          );
+          autoEvidenceReportId = managed.id;
+        }
         const row = await createDeliverable(orgId, {
           contractId: contractId ?? undefined,
           name: item.name,
@@ -376,6 +491,9 @@ export async function applyTemplateSet(
           artifactRequired: item.artifactRequired,
           completionMode: item.completionMode,
           ownerUserId: opts.ownerUserId ?? undefined,
+          autoEvidenceReportId,
+          instructions: item.instructions ?? undefined,
+          checklistTemplateId: item.checklistTemplateId ?? undefined,
           portalVisible: true,
           sortOrder: item.sortOrder,
         }, deliverableActor, tx);

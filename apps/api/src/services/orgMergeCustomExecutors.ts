@@ -931,6 +931,46 @@ const mergeServiceDeliverables: CustomMergeExecutor = async (loser, survivor) =>
 };
 
 // ---------------------------------------------------------------------------
+// ticket_checklist_templates — `ticket_checklist_templates_org_name_uq
+// (org_id, name) WHERE org_id IS NOT NULL` (2026-10-16-191300, spec #5783
+// §4.2). A repoint-dedupe DELETE would be worse here than for a template set:
+// a checklist template is LIVE-REFERENCED by
+// service_deliverables.checklist_template_id and
+// deliverable_template_items.checklist_template_id (#5783 W03), both ON DELETE
+// SET NULL — so dropping a colliding loser would silently NULL those pointers
+// and empty every future occurrence's checklist, with no error and no signal.
+// Rename on collision instead, the service_deliverables move: the suffix is
+// deterministic, fires only on an actual collision, and `left(name, 182)` keeps
+// the result inside varchar(200).
+//
+// Partner-wide templates carry org_id NULL and are never merge participants;
+// the partial index's own `WHERE org_id IS NOT NULL` is mirrored by both
+// equality predicates below, which can never match a NULL org_id row.
+// ---------------------------------------------------------------------------
+const mergeTicketChecklistTemplates: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE ticket_checklist_templates AS t
+       SET name = left(t.name, 182) || ' (merged ' || left(${uuid(loser)}::text, 8) || ')',
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM ticket_checklist_templates AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.name = t.name
+       )`);
+  const moved = await run(buildRepoint('ticket_checklist_templates', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `ticket_checklist_templates: renamed ${renamed} checklist template from the merged-away org whose name already existed under the survivor (suffixed with the merged org id; nothing deleted, so no deliverable's checklist_template_id is orphaned)`,
+      ]
+      : [],
+  };
+};
+
+// ---------------------------------------------------------------------------
 // api_keys / enrollment_keys — the design doc is explicit that the loser's
 // org-bound capabilities are "revoked, not repointed" (controller ruling R2).
 // Repointing alone would hand the survivor a live credential that the merged
@@ -1385,16 +1425,89 @@ const mergeAutomationResourceBindings: CustomMergeExecutor = async (loser, survi
   notes: [],
 });
 
+// ---------------------------------------------------------------------------
+// tool_sources / tool_source_tools — Tool catalog W01 (#5215 / #5216).
+//
+// `tool_sources_org_slug_uq (org_id, slug) WHERE org_id IS NOT NULL` lets two
+// orgs each own a source with the same slug, so a plain repoint aborts the
+// whole merge on 23505. Dropping the loser's registration instead would
+// silently delete a working integration and every tool enabled on it, with no
+// error and no signal (the same reasoning as ticket_checklist_templates), so
+// this renames on collision.
+//
+// The suffix must itself satisfy `tool_sources_slug_chk`
+// (^[a-z][a-z0-9]{1,23}$): no underscore, no hyphen, 24 chars max. Hence
+// `left(slug, 20) || 'm' || <3 hex chars of the loser id>` — deterministic,
+// in-grammar, and fired only on an actual collision.
+//
+// A renamed slug invalidates every child's `qualified_name` (`<slug>__<name>`,
+// the name chat and MCP address the tool by), so the second statement rewrites
+// them from the parent. A rewrite that would exceed varchar(64) is recorded
+// the same way discovery records an unusable name — disabled, flagged for
+// review, `last_error = 'name_not_addressable'` — rather than truncated into a
+// name that no longer splits back to a real source.
+// ---------------------------------------------------------------------------
+const mergeToolSources: CustomMergeExecutor = async (loser, survivor) => {
+  const renamed = await run(sql`
+    UPDATE tool_sources AS t
+       SET slug = left(t.slug, 20) || 'm' || substr(replace(${uuid(loser)}::text, '-', ''), 1, 3),
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM tool_sources AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND s.slug = t.slug
+       )`);
+  await run(sql`
+    UPDATE tool_source_tools AS t
+       SET qualified_name = left(s.slug || '__' || t.name, 64),
+           enabled = CASE WHEN length(s.slug || '__' || t.name) > 64 THEN false ELSE t.enabled END,
+           review_needed = CASE WHEN length(s.slug || '__' || t.name) > 64 THEN true ELSE t.review_needed END,
+           last_error = CASE WHEN length(s.slug || '__' || t.name) > 64 THEN 'name_not_addressable' ELSE t.last_error END,
+           updated_at = now()
+      FROM tool_sources AS s
+     WHERE s.id = t.source_id
+       AND t.org_id = ${uuid(loser)}
+       AND t.qualified_name IS DISTINCT FROM s.slug || '__' || t.name`);
+  const moved = await run(buildRepoint('tool_sources', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `tool_sources: renamed ${renamed} external tool source from the merged-away org whose slug already existed under the survivor (suffixed with the merged org id; nothing deleted, and every affected tool's qualified name was rewritten to match)`,
+      ]
+      : [],
+  };
+};
+
+// The child owner is denormalised from the parent and kept in step by the
+// DEFERRABLE INITIALLY IMMEDIATE trigger `tool_source_tools_owner_guard_trg`.
+// The merge runs under SET CONSTRAINTS ALL DEFERRED, so parent and child may
+// move in separate statements as long as both land in the same transaction.
+const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
+  moved: await run(sql`
+    UPDATE tool_source_tools
+       SET org_id = ${uuid(survivor)},
+           updated_at = now()
+     WHERE org_id = ${uuid(loser)}`),
+  dropped: 0,
+  notes: [],
+});
+
 /**
  * The `move`-phase half of every `custom` table (which, for all but one of
  * them, is the whole executor).
  */
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   automation_resource_bindings: mergeAutomationResourceBindings,
+  tool_sources: mergeToolSources,
+  tool_source_tools: mergeToolSourceTools,
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
   audit_baselines: mergeAuditBaselines,
   service_deliverables: mergeServiceDeliverables,
+  ticket_checklist_templates: mergeTicketChecklistTemplates,
   pax8_orders: mergePax8Orders,
   fleet_findings: mergeFleetFindings,
   ai_agents: mergeAiAgents,

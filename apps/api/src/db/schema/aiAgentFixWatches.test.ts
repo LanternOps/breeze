@@ -52,8 +52,22 @@ describe('ai_agent_fix_watches schema', () => {
         'recurrenceAlertId', 'notifiedAt', 'createdAt',
         // P2-5 (#4192): intent-anchored fix watches.
         'intentId', 'sourceKind', 'opKeys',
+        // #5751 W02 (#5753): subject-anchored (sweep-condition) fix watches.
+        'subjectKind', 'subjectKey',
       ].sort(),
     );
+  });
+
+  it('leaves the subject pair nullable — NULL is how an alert-anchored watch is recognised', () => {
+    const cols = getTableColumns(aiAgentFixWatches);
+    expect(cols.subjectKind.notNull).toBe(false);
+    expect(cols.subjectKey.notNull).toBe(false);
+  });
+
+  it('keeps alert_id nullable and device_id NOT NULL — a subject watch stores NULL in the former and the intent\'s scope device in the latter', () => {
+    const cols = getTableColumns(aiAgentFixWatches);
+    expect(cols.alertId.notNull).toBe(false);
+    expect(cols.deviceId.notNull).toBe(true);
   });
 
   it('requires org_id, partner_id, agent_id, run_id, device_id, and state', () => {

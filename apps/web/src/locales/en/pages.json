@@ -126,8 +126,9 @@
     "sensitiveData": "Sensitive Data",
     "settingsAccessReviews": "Access Reviews",
     "settingsAiAgents": "AI Agents",
-    "settingsAiUsage": "AI Usage & Budget",
+    "settingsAiUsage": "AI Usage",
     "settingsAiScriptAuthoring": "Script authoring",
+    "settingsToolSources": "Tool Sources",
     "settingsAlertTemplatesDetail": "Alert Template",
     "settingsAlertTemplates": "Alert Templates",
     "settingsApiKeys": "API Keys",
@@ -161,7 +162,11 @@
     "timesheet": "Timesheet",
     "vulnerabilities": "Vulnerabilities",
     "workspace": "AI Assistant",
-    "aiAgentsFleetDesign": "Fleet Design"
+    "aiAgentsFleetDesign": "Fleet Design",
+    "agreementTemplates": "Agreement templates",
+    "agreementTemplateDetail": "Agreement template",
+    "agreementTemplateNew": "New agreement template",
+    "signedAgreements": "Signed agreements"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Remote Monitoring and Management",
@@ -224,6 +229,10 @@
       "deliverableTemplates": {
         "title": "Deliverable Templates",
         "description": "Define a service tier once and apply its deliverables to any customer."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Ticket checklist templates",
+        "description": "Reusable step lists your technicians can apply to any ticket."
       }
     }
   },

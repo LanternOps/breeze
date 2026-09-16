@@ -15,7 +15,7 @@
  * unit alone and the sweep carries on.
  */
 import { Queue, Worker } from 'bullmq';
-import { and, eq, gte, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gte, isNull, lt, lte, or } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
@@ -104,6 +104,27 @@ export async function runDeliverableSweep(asOf: Date = new Date()): Promise<Deli
       captureException(err instanceof Error ? err : new Error(String(err)));
     }
   }
+
+  // Definitions outside their window cannot open new work, but existing
+  // scheduled/open occurrences must still age out after their due date.
+  const closing = await runOutsideDbContext(() => withSystemDbAccessContext(() =>
+    db.select().from(serviceDeliverables).where(and(
+      or(eq(serviceDeliverables.active, false), lt(serviceDeliverables.effectiveUntil, today)),
+      buildAutomationEligibleOrgPredicate(serviceDeliverables.orgId),
+    )), 'deliverableSweep.selectClosing'));
+  let closedMissed = 0;
+  for (const d of closing) {
+    try {
+      closedMissed += await runOutsideDbContext(() => withSystemDbAccessContext(
+        () => markDueOccurrencesMissedForDeliverable(d, today, { closing: true }), 'deliverableSweep.closeMissed'));
+    } catch (err) {
+      res.failed++;
+      console.error('[DeliverableWorker] closing sweep failed', `deliverableId=${d.id}`, `orgId=${d.orgId}`, errMessage(err));
+      captureException(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+  res.missed += closedMissed;
+  console.log('[DeliverableWorker] closing sweep complete', JSON.stringify({ today, deliverables: closing.length, missed: closedMissed }));
 
   // Fleet-wide, not per deliverable: a key date needs no deliverable at all.
   try {

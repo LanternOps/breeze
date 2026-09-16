@@ -16,6 +16,7 @@ import { checkAgentGuardrails, type AgentGuardrailPolicy } from '../aiGuardrails
 import { readAiKillState } from '../aiKillState';
 import { resolveEffectiveAgentSystem } from '../aiAgents/effectivePolicy';
 import { resolveRecipientUserIds } from '../aiAgents/recipients';
+import { evaluateSweepDecideGate } from '../aiAgents/sweepActMode';
 import { createNotification } from '../userNotifications';
 import { captureException } from '../sentry';
 import { canonicalPolicyKey } from './canonicalPolicyKey';
@@ -217,6 +218,20 @@ type DegradeReason =
   // authorizing) is the fail-closed outcome here; release then refuses the
   // intent terminally with the same code (agentReleaseAuthority.ts).
   | 'agent_scope_lost'
+  // #4442 W04 — the sweep lane's three decide-time refusals. All deterministic
+  // degrades, never errors: the intent becomes an ordinary supervised card.
+  //   `sweep_condition_cleared` — the condition recovered on its own. Recovery
+  //     is not a failure (spec §3.4): NO evidence row is written, so nothing
+  //     auto-demotes the operator's graduation ladder for it.
+  //   `sweep_condition_unknown` — the probe could not answer. Fail closed.
+  //   `sweep_intent_stale`      — the intent is older than the act TTL.
+  //   `sweep_subject_unresolvable` — the trigger key names no probeable subject.
+  // The evaluation itself lives in `aiAgents/sweepActMode.ts`; only the reason
+  // strings are here, because `degradeToHumanRequired` owns the vocabulary.
+  | 'sweep_condition_cleared'
+  | 'sweep_condition_unknown'
+  | 'sweep_intent_stale'
+  | 'sweep_subject_unresolvable'
   | CapCheckFailure;
 
 async function degradeToHumanRequired(intentId: string, reason: DegradeReason, details?: Record<string, unknown>): Promise<void> {
@@ -581,6 +596,19 @@ export async function attemptPolicyDecision(intentId: string): Promise<void> {
     const snapshotAuthorizedKeys = run.policySnapshot?.effective?.actAssets?.supervisedActionKeys ?? [];
     if (!snapshotAuthorizedKeys.includes(key)) {
       await degradeToHumanRequired(intentId, 'not_run_snapshot_authorized', { key });
+      return;
+    }
+
+    // #4442 W04 — the trigger-scoped decide gate (freshness + a LIVE
+    // re-evaluation of the condition the intent was minted for). Evaluated
+    // AFTER the snapshot-key check and BEFORE readAiKillState(), so it costs
+    // nothing for an intent that was going to be refused anyway. The gate
+    // itself lives in `aiAgents/sweepActMode.ts` — this file is bound by the
+    // "no safety bypass" source contract (`verdictProfile.contract.test.ts`),
+    // and asking one generic question keeps it that way.
+    const triggerRefusal = await evaluateSweepDecideGate(intent);
+    if (triggerRefusal) {
+      await degradeToHumanRequired(intentId, triggerRefusal);
       return;
     }
 

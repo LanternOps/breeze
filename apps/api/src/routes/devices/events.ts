@@ -403,7 +403,12 @@ eventsRoutes.get(
         name: row.resourceName,
       },
       initiatedBy: row.initiatedBy,
-      details: redactAiProvenance(row.details),
+      // Already selected as JSONB by both feed arms; provenance stays top-level.
+      // #5788 strips the raw AI session/run ids (OD-9 A); #5751's trigger
+      // fields are plain scalars and survive the redaction.
+      details: redactAiProvenance(row.details) as (Record<string, unknown> & {
+        proposalId?: string | null; triggerKind?: string | null; triggerKey?: string | null;
+      }) | null,
       errorMessage: row.errorMessage,
       ipAddress: row.ipAddress,
     }));

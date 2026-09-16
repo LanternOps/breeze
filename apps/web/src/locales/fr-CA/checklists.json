@@ -35,5 +35,39 @@
     "saveFailed": "Impossible d'enregistrer l'étape de la liste de vérification.",
     "reorderFailed": "Impossible de réordonner la liste de vérification.",
     "tickRequiresUser": "Cocher une étape exige une session utilisateur connectée."
+  },
+  "templates": {
+    "title": "Modèles de liste de vérification",
+    "subtitle": "Des procédures réutilisables que vos techniciens peuvent appliquer à n'importe quel billet.",
+    "allOrganizations": "Toutes les orgs",
+    "partnerWideHint": "S'applique à chaque organisation que vous gérez, maintenant et à l'avenir.",
+    "thisOrganizationOnly": "Cette organisation uniquement",
+    "scope": "Qui peut utiliser ce modèle",
+    "name": "Nom",
+    "description": "Description",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "isActive": "Actif",
+    "inactiveHint": "Les modèles inactifs restent liés là où ils sont déjà utilisés, mais n'apparaissent plus dans les sélecteurs.",
+    "steps": "Étapes",
+    "addStep": "Ajouter une étape",
+    "stepLabelPlaceholder": "Libellé de l'étape",
+    "empty": "Aucun modèle pour le moment.",
+    "create": "Nouveau modèle",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "apply": "Appliquer le modèle",
+    "applyCta": "Appliquer",
+    "choosePlaceholder": "Choisir un modèle",
+    "applyMode": {
+      "append": "Ajouter ces étapes à la liste de vérification existante",
+      "replaceUnticked": "Remplacer les étapes non cochées (les étapes terminées sont conservées)"
+    },
+    "errors": {
+      "loadFailed": "Impossible de charger les modèles de liste de vérification.",
+      "saveFailed": "Impossible d'enregistrer le modèle de liste de vérification.",
+      "applyFailed": "Impossible d'appliquer le modèle de liste de vérification."
+    }
   }
 }

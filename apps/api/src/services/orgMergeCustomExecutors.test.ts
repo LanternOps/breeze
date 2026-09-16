@@ -480,3 +480,84 @@ describe('script_executions merge policy detaches AI origin pointers (#5022 W01)
     expect(src).toMatch(/ai_agent_run_id = NULL/);
   });
 });
+
+/**
+ * Tool catalog (#5215 / #5216). `tool_sources_org_slug_uq (org_id, slug)
+ * WHERE org_id IS NOT NULL` means two orgs may each own a source with the same
+ * slug; a plain repoint would violate it and abort the whole merge. Dropping
+ * the loser's registration instead would silently remove a working integration
+ * (and its enabled tools) with no signal, so the executor RENAMES on collision.
+ * The rename has to carry into `tool_source_tools.qualified_name`, which
+ * embeds the slug — otherwise the resolver would keep advertising a name that
+ * no longer splits back to a real source.
+ */
+describe('mergeToolSources / mergeToolSourceTools', () => {
+  afterEach(() => {
+    executeMock.mockReset();
+  });
+
+  it('classifies both tables as custom with registered move executors', () => {
+    const policies = getOrgMergePolicies();
+
+    expect(policies.get('tool_sources')).toMatchObject({ kind: 'custom' });
+    expect(policies.get('tool_source_tools')).toMatchObject({ kind: 'custom' });
+    expect(CUSTOM_EXECUTORS.tool_sources).toBeTypeOf('function');
+    expect(CUSTOM_EXECUTORS.tool_source_tools).toBeTypeOf('function');
+  });
+
+  it('renames a colliding slug, rewrites the child qualified names, then repoints', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 1 }) // slug rename
+      .mockResolvedValueOnce({ rowCount: 4 }) // qualified_name rewrite
+      .mockResolvedValueOnce({ rowCount: 2 }); // repoint
+
+    const result = await CUSTOM_EXECUTORS.tool_sources!(L, S);
+
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    const renameSql = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(renameSql).toMatch(/UPDATE tool_sources/i);
+    // Only on an actual collision under the survivor.
+    expect(renameSql).toMatch(/EXISTS/i);
+    // The suffix must stay inside tool_sources_slug_chk (^[a-z][a-z0-9]{1,23}$):
+    // no underscore, no hyphen, and capped at 24 characters.
+    expect(renameSql).not.toMatch(/\|\|\s*'_/);
+    expect(renameSql).toMatch(/left\(/i);
+
+    const qualifiedSql = dialect.sqlToQuery(executeMock.mock.calls[1]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(qualifiedSql).toMatch(/UPDATE tool_source_tools/i);
+    expect(qualifiedSql).toMatch(/qualified_name/i);
+    expect(qualifiedSql).toMatch(/name_not_addressable/);
+
+    const repointSql = dialect.sqlToQuery(executeMock.mock.calls[2]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(repointSql).toMatch(/UPDATE "?tool_sources"? SET org_id =/i);
+
+    expect(result.moved).toBe(2);
+    expect(result.dropped).toBe(0);
+    expect(result.notes.join(' ')).toMatch(/renamed 1/);
+  });
+
+  it('emits no note when nothing collided', async () => {
+    executeMock
+      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockResolvedValueOnce({ rowCount: 5 });
+
+    const result = await CUSTOM_EXECUTORS.tool_sources!(L, S);
+
+    expect(result.moved).toBe(5);
+    expect(result.notes).toEqual([]);
+  });
+
+  it('repoints tool_source_tools org_id so the owner guard still matches the parent', async () => {
+    executeMock.mockResolvedValueOnce({ rowCount: 7 });
+
+    const result = await CUSTOM_EXECUTORS.tool_source_tools!(L, S);
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    const sqlText = dialect.sqlToQuery(executeMock.mock.calls[0]![0] as SQL).sql.replace(/\s+/g, ' ');
+    expect(sqlText).toMatch(/UPDATE tool_source_tools/i);
+    expect(sqlText).toMatch(/SET org_id =/i);
+    expect(result.moved).toBe(7);
+    expect(result.dropped).toBe(0);
+  });
+});

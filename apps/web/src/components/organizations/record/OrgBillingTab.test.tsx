@@ -24,6 +24,11 @@ vi.mock('../../billing/quotes/QuotesPage', () => ({
     <div data-testid="stub-quotes-page">quotes:{lockedOrgId}</div>
   ),
 }));
+vi.mock('../../agreements/SignedAgreementsPage', () => ({
+  default: ({ lockedOrgId, defaultUnlinkedOnly }: { lockedOrgId?: string; defaultUnlinkedOnly?: boolean }) => (
+    <div data-testid="stub-signed-agreements">agreements:{lockedOrgId}:{String(defaultUnlinkedOnly)}</div>
+  ),
+}));
 
 type Perm = { resource: string; action: string };
 const grantedPermissions = vi.hoisted(() => ({ current: [{ resource: '*', action: '*' }] as Perm[] }));
@@ -48,22 +53,25 @@ describe('OrgBillingTab', () => {
     expect(screen.getByTestId('stub-contracts-list')).toHaveTextContent(`contracts:${ORG_ID}`);
     expect(screen.getByTestId('stub-invoices-page')).toHaveTextContent(`invoices:${ORG_ID}`);
     expect(screen.getByTestId('stub-quotes-page')).toHaveTextContent(`quotes:${ORG_ID}`);
+    // The `:undefined` half asserts the embed does NOT default to unlinked-only.
+    expect(screen.getByTestId('stub-signed-agreements')).toHaveTextContent(`agreements:${ORG_ID}:undefined`);
   });
 
-  it('renders Contracts first, then Invoices, then Quotes', () => {
+  it('renders Contracts first, then Invoices, then Quotes, then Agreements', () => {
     grantedPermissions.current = [{ resource: '*', action: '*' }];
     render(<OrgBillingTab orgId={ORG_ID} />);
     const sections = screen.getByTestId('org-billing-tab').querySelectorAll('details');
-    expect(sections).toHaveLength(3);
+    expect(sections).toHaveLength(4);
     expect(sections[0]).toHaveAttribute('data-testid', 'org-billing-section-contracts');
     expect(sections[1]).toHaveAttribute('data-testid', 'org-billing-section-invoices');
     expect(sections[2]).toHaveAttribute('data-testid', 'org-billing-section-quotes');
+    expect(sections[3]).toHaveAttribute('data-testid', 'org-billing-section-agreements');
   });
 
-  it('opens all three sections by default', () => {
+  it('opens all four sections by default', () => {
     grantedPermissions.current = [{ resource: '*', action: '*' }];
     render(<OrgBillingTab orgId={ORG_ID} />);
-    for (const testId of ['org-billing-section-contracts', 'org-billing-section-invoices', 'org-billing-section-quotes']) {
+    for (const testId of ['org-billing-section-contracts', 'org-billing-section-invoices', 'org-billing-section-quotes', 'org-billing-section-agreements']) {
       expect((screen.getByTestId(testId) as HTMLDetailsElement).open).toBe(true);
     }
   });
@@ -99,5 +107,20 @@ describe('OrgBillingTab', () => {
     expect(invoicesSection.open).toBe(false);
     // Still in the DOM — collapsing toggles `open`, not React unmount.
     expect(screen.getByTestId('stub-invoices-page')).toBeInTheDocument();
+  });
+  it('shows only the Agreements section for a user with agreements:read alone', () => {
+    grantedPermissions.current = [{ resource: 'agreements', action: 'read' }];
+    render(<OrgBillingTab orgId={ORG_ID} />);
+    expect(screen.queryByTestId('stub-contracts-list')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stub-invoices-page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stub-quotes-page')).not.toBeInTheDocument();
+    expect(screen.getByTestId('stub-signed-agreements')).toBeInTheDocument();
+  });
+
+  it('hides Agreements for a user holding contracts:read but not agreements:read', () => {
+    grantedPermissions.current = [{ resource: 'contracts', action: 'read' }];
+    render(<OrgBillingTab orgId={ORG_ID} />);
+    expect(screen.getByTestId('stub-contracts-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('stub-signed-agreements')).not.toBeInTheDocument();
   });
 });

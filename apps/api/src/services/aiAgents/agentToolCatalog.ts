@@ -29,7 +29,7 @@ export type AgentCapabilityId =
   | 'alerts_monitoring' | 'services_startup' | 'files_disk' | 'scripts_commands' | 'tickets'
   | 'patching_software' | 'security_response' | 'backup_recovery' | 'config_policies' | 'network'
   | 'remote_access' | 'endpoint_agent' | 'automations_reports' | 'business' | 'tenancy'
-  | 'author_scripts';
+  | 'author_scripts' | 'workspace';
 
 export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standard' | 'high' }[] = [
   { id: 'alerts_monitoring', tone: 'standard' },
@@ -50,6 +50,9 @@ export const AGENT_CAPABILITIES: readonly { id: AgentCapabilityId; tone: 'standa
   { id: 'automations_reports', tone: 'standard' },
   { id: 'business', tone: 'standard' },
   { id: 'tenancy', tone: 'high' },
+  // W04 adds the `workspace_*` tools under this same capability — whichever
+  // wave lands first adds it, the second finds it already present.
+  { id: 'workspace', tone: 'standard' },
 ];
 
 /**
@@ -225,6 +228,7 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   configure_network_baseline: 'network',
   get_network_changes: 'network',
   get_ip_history: 'network',
+  get_network_asset_reachability: 'network',
 
   // ---- remote_access ----
   take_screenshot: 'remote_access',
@@ -310,6 +314,14 @@ export const TOOL_CAPABILITY: Readonly<Record<string, AgentCapabilityId>> = {
   m365_query_groups: 'tenancy',
   m365_query_org: 'tenancy',
   m365_query_sites: 'tenancy',
+
+  // ---- workspace ----
+  export_dataset: 'workspace',
+  // ---- workspace (execution plane W04) ----
+  workspace_stage: 'workspace',
+  workspace_run: 'workspace',
+  workspace_collect: 'workspace',
+  workspace_cancel: 'workspace',
 };
 
 export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>> = {
@@ -321,10 +333,14 @@ export const AGENT_KIND_PRESETS: Readonly<Record<AiAgentKind, readonly string[]>
     'disk_cleanup:execute',
     'run_script',
   ],
+  // AI patch agent (W01): `manage_deployments:start` dropped — it is the
+  // software-rollout engine, not patch jobs. This is the create-time default
+  // for the DEVICE lane only; existing agents keep their stored allowlists,
+  // and a `patch`-profile run ignores this entirely (patchToolAllowlist is a
+  // floor, not an intersection).
   patch: [
     'manage_patches:approve',
     'manage_patches:install',
-    'manage_deployments:start',
     'manage_services:restart',
   ],
   helpdesk: ['manage_services:restart', 'disk_cleanup:execute', 'run_script'],

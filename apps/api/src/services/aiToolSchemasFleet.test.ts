@@ -108,6 +108,39 @@ describe('manage_patches schema', () => {
     expect(parse('manage_patches', { action: 'defer', patchId: TEST_UUID, deferUntil: 'not-a-date' }).success).toBe(false);
     expect(parse('manage_patches', { action: 'defer', patchId: TEST_UUID, deferUntil: '2026-03-01T00:00:00Z' }).success).toBe(true);
   });
+
+  // #5585: an AI decline by name (no known UUID) must be expressible.
+  it('accepts patchName in place of patchId for approve/decline/defer', () => {
+    expect(parse('manage_patches', { action: 'decline', patchName: 'KB5001234' }).success).toBe(true);
+    expect(parse('manage_patches', { action: 'approve', patchName: 'KB5001234' }).success).toBe(true);
+    expect(parse('manage_patches', {
+      action: 'defer', patchName: 'KB5001234', deferUntil: '2026-03-01T00:00:00Z',
+    }).success).toBe(true);
+  });
+
+  it('still requires patchId (never patchName) for rollback', () => {
+    expect(parse('manage_patches', {
+      action: 'rollback', patchName: 'KB5001234', deviceIds: [TEST_UUID],
+    }).success).toBe(false);
+  });
+
+  it('accepts ringId to scope approve/decline/defer to one update ring', () => {
+    expect(parse('manage_patches', { action: 'decline', patchId: TEST_UUID, ringId: TEST_UUID2 }).success).toBe(true);
+  });
+
+  it('accepts allRings on decline to clear every ring approval', () => {
+    expect(parse('manage_patches', { action: 'decline', patchId: TEST_UUID, allRings: true }).success).toBe(true);
+  });
+
+  it('rejects allRings combined with ringId', () => {
+    expect(parse('manage_patches', {
+      action: 'decline', patchId: TEST_UUID, allRings: true, ringId: TEST_UUID2,
+    }).success).toBe(false);
+  });
+
+  it('rejects allRings on actions other than decline', () => {
+    expect(parse('manage_patches', { action: 'approve', patchId: TEST_UUID, allRings: true }).success).toBe(false);
+  });
 });
 
 // ─── manage_groups ──────────────────────────────────────────────────────

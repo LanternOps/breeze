@@ -30,6 +30,7 @@ import {
   partnerUsers,
   portalUsers,
   tickets,
+  users,
 } from '../../db/schema';
 import { createAccessToken, type TokenPayload } from '../../services/jwt';
 import { PERMISSIONS } from '../../services/permissions';
@@ -431,16 +432,81 @@ describe('GET /orgs/account-readiness', () => {
     expect((await otherRes.json()).orgs.map((org: { orgId: string }) => org.orgId)).toEqual([orgD]);
   });
 
-  // System scope is pinned at the unit level (routes/orgAccountReadiness.test.ts:
-  // partnerId required / must be a UUID / resolves against the named partner
-  // with accessibleOrgIds=null). It cannot be driven through the real
-  // middleware here: login mints scope='system' only for a membership-less
-  // platform admin (routes/auth/helpers.ts resolveCurrentUserTokenContext),
-  // and requirePermission -> getUserPermissions resolves a role solely from a
-  // partner_users / organization_users membership, so such a token answers
-  // 403 "No permissions found" on EVERY requirePermission route — GET /orgs
-  // included, same chain. Pre-existing platform gap, not a W01 defect:
-  // tracked in #5733.
+  // #5733 — a scope='system' token driven through the REAL middleware chain
+  // (authMiddleware -> requireScope('partner','system') -> requirePermission).
+  // Login mints system scope only for a membership-less platform admin
+  // (routes/auth/helpers.ts resolveCurrentUserTokenContext), and before #5733
+  // getUserPermissions resolved a role solely from a partner_users /
+  // organization_users row — so such a token answered 403 "No permissions
+  // found" on EVERY requirePermission route and the system branches in this
+  // handler were unreachable in production. These two cases pin the contract
+  // against real Postgres: a live platform admin gets through, a
+  // non-platform-admin system token does not.
+
+  /** Mints a system-scope access token for a membership-less user. */
+  async function systemScopeGet(
+    app: Hono,
+    partnerId: string,
+    options: { isPlatformAdmin: boolean },
+  ): Promise<(path: string) => Promise<Response>> {
+    // users.partner_id is the row's owning partner; what makes this token
+    // SYSTEM scope is the absence of any partner_users / organization_users
+    // membership, exactly as login produces it.
+    const user = await createUser({ partnerId, orgId: null, email: `sysadmin-${randomUUID()}@example.com` });
+    await getTestDb()
+      .update(users)
+      .set({ isPlatformAdmin: options.isPlatformAdmin })
+      .where(eq(users.id, user.id));
+
+    const payload: Omit<TokenPayload, 'type'> = {
+      sub: user.id,
+      email: user.email,
+      roleId: null,
+      orgId: null,
+      partnerId: null,
+      scope: 'system',
+      mfa: false,
+      aep: 1,
+      mep: 1,
+      sid: randomUUID(),
+    };
+    const token = await createAccessToken(payload);
+    return async (path: string) => app.request(path, { headers: { Authorization: `Bearer ${token}` } });
+  }
+
+  runDb('a live platform admin on a system-scope token reads the board for the named partner', async () => {
+    const board = await seedBoard();
+    const { app, partnerId, orgA, orgB } = board;
+    const get = await systemScopeGet(app, partnerId, { isPlatformAdmin: true });
+
+    const res = await get(readinessPath([orgA, orgB], partnerId));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The wildcard platform-admin grant lights every section up.
+    expect(body.capabilities).toEqual(ALL_CAPABILITIES);
+    expect(body.orgs.map((org: { orgId: string }) => org.orgId).sort()).toEqual([orgA, orgB].sort());
+  });
+
+  // This case pins the OUTER layer only, and passes on a base without #5733 —
+  // that is the honest reading, not a discrimination failure to paper over.
+  // authMiddleware's SR2-02 live-binding check (middleware/auth.ts, "system
+  // scope is only legitimate for a current platform admin") rejects the token
+  // before requirePermission runs, so getUserPermissions' own null branch is
+  // unreachable through the real chain except in a same-request demotion race.
+  // That inner branch is pinned where it CAN be driven: services/permissions.test.ts
+  // ("returns null (→ 403) for a system token whose user is NOT a platform
+  // admin"). Kept here so a future widening of the fix — one that granted the
+  // wildcard set off the token's scope claim alone — fails at BOTH layers.
+  runDb('a system-scope token whose user is NOT a platform admin is rejected before the handler', async () => {
+    const board = await seedBoard();
+    const { app, partnerId, orgA } = board;
+    const get = await systemScopeGet(app, partnerId, { isPlatformAdmin: false });
+
+    const res = await get(readinessPath([orgA], partnerId));
+
+    expect(res.status).toBe(403);
+  });
 
   runDb('withholds tickets and invoices when the partner is not in native service-management mode', async () => {
     const board = await seedBoard();

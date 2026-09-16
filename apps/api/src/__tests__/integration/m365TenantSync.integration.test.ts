@@ -28,7 +28,7 @@ import { getTestDb } from './setup';
 import {
   createFakeSyncExecutor, type FakeSyncExecutor,
   syncCaPoliciesResult, syncIntuneDevicesResult, syncSecureScoreResult,
-  syncSigninActivityResult, syncSkusResult, syncUsersResult,
+  syncSigninActivityResult, syncSigninEventsResult, syncSkusResult, syncUsersResult,
 } from './m365SyncFakeExecutor';
 
 const runDb = it.runIf(!!process.env.DATABASE_URL);
@@ -81,6 +81,8 @@ vi.mock('../../services/m365ControlPlane/runtimeConfig', () => ({
 const TENANT_ID = '44444444-4444-4444-8444-444444444444';
 const DOMAINS: M365SyncDomain[] = [
   'users', 'signin_activity', 'intune_devices', 'ca_policies', 'skus', 'secure_score',
+  // #5784 W05: /auditLogs/signIns delta sync.
+  'signin_events',
 ];
 
 interface SyncFixture { orgId: string; connectionId: string; actorId: string }
@@ -271,7 +273,7 @@ describe('fake sync executor harness', () => {
   });
 });
 
-describe('m365 tenant sync — first run across all six domains', () => {
+describe('m365 tenant sync — first run across all seven domains', () => {
   runDb('populates every table, sync state, rollup, and the Graph-dated score backfill', async () => {
     process.env.M365_TENANT_SYNC_ENABLED = 'true';
     const fixture = await seedConnectedOrg();
@@ -304,6 +306,11 @@ describe('m365 tenant sync — first run across all six domains', () => {
       { skuId: '11111111-0000-4000-8000-00000000000a', skuPartNumber: 'SPB', consumedUnits: 3, enabled: 10 },
     ]));
     executor.enqueue('m365.sync.secure_score', syncSecureScoreResult('2026-09-08', 90));
+    executor.enqueue('m365.sync.signin_events', syncSigninEventsResult([
+      { id: 'dddddddd-0000-4000-8000-000000000001', createdDateTime: '2026-09-07T12:00:00.000Z' },
+      { id: 'dddddddd-0000-4000-8000-000000000002', createdDateTime: '2026-09-08T08:15:00.000Z',
+        userId: 'aaaaaaaa-0000-4000-8000-000000000002', userPrincipalName: 'grace@contoso.example' },
+    ]));
 
     // Drive every claimed domain. The sign-in fixture hands back
     // `continuation: 'page-2-token'` on its first call, so THAT run resolves

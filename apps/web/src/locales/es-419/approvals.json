@@ -49,8 +49,12 @@
   "deciding": "Enviando…",
   "expiresIn": "Vence en {{minutes}} min",
   "expiresSoon": "Vence en menos de un minuto",
+  "expiresInHours": "Vence en {{hours}} h",
+  "expiresInDays": "Vence en {{days}} días",
   "expired": "Vencida",
   "unknownOrganization": "Organización desconocida",
+  "intentNoLongerPending": "Esa aprobación ya no está pendiente.",
+  "dismiss": "Descartar",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "Se aprobó {{action}} para {{org}}",
   "pagination": {
@@ -85,6 +89,25 @@
     "errors": {
       "approvedPromoteFailed": "Aprobado, pero no se pudo enviar la solicitud de preautorización. Inténtalo de nuevo desde la configuración del agente.",
       "policyDecideDisabled": "Aprobado. No se pudo solicitar la preautorización porque está desactivada para esta implementación."
+    }
+  },
+  "recent": {
+    "title": "Recientes",
+    "subtitle": "Ya decididas o finalizadas",
+    "loading": "Cargando aprobaciones recientes…",
+    "error": "No se pudieron cargar las aprobaciones recientes.",
+    "retry": "Reintentar",
+    "empty": "No ha finalizado nada recientemente.",
+    "status": {
+      "failed": "Falló",
+      "rejected": "Rechazada",
+      "expired": "Expirada",
+      "cancelled": "Cancelada",
+      "completed": "Completada",
+      "denied": "Denegada",
+      "approved": "Aprobada",
+      "reported": "Reportada",
+      "unknown": "Desconocido"
     }
   }
 }

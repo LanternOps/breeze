@@ -268,6 +268,7 @@ function rigTransactionSuccess(
   // self_uninstall exclusion is actually in the SQL.
   const updateWheres: unknown[] = [];
   const commandSelectWheres: unknown[] = [];
+  const pinSelectWheres: unknown[] = [];
   let txHandle: unknown = null;
   // Each tx.execute() call captures the identifier name being UPDATEd (the
   // second chunk in our `UPDATE ${sql.identifier(table)} SET org_id = ...`
@@ -334,11 +335,14 @@ function rigTransactionSuccess(
           // (assertDeviceTicketsNotPinnedToDeliverable) is the only read here
           // that joins; answer it from its own queue, default unpinned.
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn(() => {
-                statements.push(`SELECT deliverable pin (after ${updatedTables.length} updates)`);
-                return Promise.resolve(pinnedOccurrenceRows);
-              }),
+            where: vi.fn().mockImplementation((cond: unknown) => {
+              pinSelectWheres.push(cond);
+              return {
+                limit: vi.fn(() => {
+                  statements.push(`SELECT deliverable pin (after ${updatedTables.length} updates)`);
+                  return Promise.resolve(pinnedOccurrenceRows);
+                }),
+              };
             }),
           }),
           where: vi.fn().mockImplementation(() => ({
@@ -373,6 +377,7 @@ function rigTransactionSuccess(
     deviceUpdateSets,
     updateWheres,
     commandSelectWheres,
+    pinSelectWheres,
     tx: () => txHandle,
   };
 }
@@ -1362,13 +1367,16 @@ describe('POST /devices/:id/move-org', () => {
 
     it('#5573 W02: refuses with 409 DELIVERABLE_TICKET_PINNED when a ticket on the device is a deliverable work item', async () => {
       rigMove();
-      const { statements, updatedTables } = rigTransactionSuccess();
+      const { statements, updatedTables, pinSelectWheres } = rigTransactionSuccess();
       pinnedOccurrenceRows = [{ id: 'occ-1' }];
 
       const response = await postMove();
 
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({ code: 'DELIVERABLE_TICKET_PINNED' });
+      const pinQuery = new PgDialect().sqlToQuery(pinSelectWheres[0] as Parameters<PgDialect['sqlToQuery']>[0]);
+      expect(pinQuery.sql).toContain('"service_deliverable_occurrences"."org_id" =');
+      expect(pinQuery.params).toEqual([DEVICE_ID, SOURCE_ORG]);
       // Nothing was written: the refusal precedes the org flip and every rewrite.
       expect(updatedTables).toEqual([]);
       expect(statements.some((s) => s === 'UPDATE devices')).toBe(false);

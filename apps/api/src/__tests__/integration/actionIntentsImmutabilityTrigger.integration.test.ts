@@ -236,12 +236,22 @@ describe('action_intents immutability trigger (live DB)', () => {
     // direction, and the BEFORE UPDATE trigger raises before either the
     // all-or-none CHECK (`action_intents_task_link_chk`) or the FK gets to
     // complain — which is what makes a single-column patch a valid probe here.
+    trigger_kind: { triggerKind: 'alert' },
+    trigger_ref_id: { triggerRefId: randomUUID() },
+    trigger_key: { triggerKey: 'alert:disk low' },
     task_id: { taskId: randomUUID() },
     task_step_key: { taskStepKey: 'restart-service' },
     operation_key: { operationKey: 'restart:spooler:1' },
     // 2026-10-16-120300 (AI script authoring W04, #5612): the unattended
     // lane's typed decision evidence. Written once at INSERT; the seeded
     // intent starts with it NULL, so setting any blob is the blocked direction.
+    // 2026-10-16-193700 (tool catalog W01 PR B, #5216): external tool
+    // binding. Unconditional guards; the seeded intent starts with both NULL,
+    // so setting either is the blocked direction. Single-column patches are
+    // valid probes because the BEFORE UPDATE trigger raises before
+    // `action_intents_external_tool_chk` gets to complain about the pairing.
+    tool_source_tool_id: { toolSourceToolId: randomUUID() },
+    tool_revision: { toolRevision: 'rev-2' },
     script_reviewer_evidence: {
       scriptReviewerEvidence: {
         proposalId: randomUUID(), reviewId: randomUUID(), contentDigest: 'a'.repeat(64), scannerVersion: '2026-09-11.1',
@@ -372,5 +382,46 @@ describe('action_intents immutability trigger (live DB)', () => {
         .where(eq(actionIntents.id, intentId)),
     );
     expect(row?.approvalExpiresAt?.getTime()).toBe(deadline.getTime());
+  });
+});
+
+// Tool catalog W01 PR B (#5216): the external tool binding is a PAIR — both
+// columns set or both NULL — pinned by `action_intents_external_tool_chk`
+// (migrations/2026-10-16-193700-action-intents-external-tool.sql). A tool id
+// without a revision is an unrevalidatable half-record; a revision without a
+// tool id pins nothing.
+describe('action_intents external tool binding CHECK (live DB)', () => {
+  let intentId: string;
+  beforeEach(async () => {
+    intentId = (await seedPendingIntent()).id;
+  });
+
+  async function cloneIntentWith(overrides: Partial<NewActionIntent>): Promise<void> {
+    await withSystemDbAccessContext(async () => {
+      const [row] = await db.select().from(actionIntents).where(eq(actionIntents.id, intentId)).limit(1);
+      const { id: _id, createdAt: _c, ...rest } = row!;
+      await db.insert(actionIntents).values({
+        ...(rest as NewActionIntent),
+        idempotencyKey: `idem-ext-${randomUUID().slice(0, 8)}`,
+        correlationId: randomUUID(),
+        ...overrides,
+      });
+    });
+  }
+
+  it('rejects a tool id without a revision with 23514', async () => {
+    await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: null }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_external_tool_chk' } });
+  });
+
+  it('rejects a revision without a tool id with 23514', async () => {
+    await expect(cloneIntentWith({ toolSourceToolId: null, toolRevision: 'rev-1' }))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint_name: 'action_intents_external_tool_chk' } });
+  });
+
+  it('accepts a full binding, and the id carries no FK (a stale id is evidence, not an error)', async () => {
+    // A random uuid names no tool_source_tools row: the column is deliberately
+    // FK-less (schema/actionIntents.ts), so this must insert cleanly.
+    await expect(cloneIntentWith({ toolSourceToolId: randomUUID(), toolRevision: 'rev-1' })).resolves.toBeUndefined();
   });
 });

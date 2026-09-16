@@ -532,9 +532,12 @@ describe('site scope on device-reading monitor routes', () => {
   const DEVICE_IN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const DEVICE_IN_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const dialect = new PgDialect();
-  const resolvedMatch = [
-    { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: POLICY_ID, sourceLevel: 'organization' },
-  ];
+  const resolvedMatch = {
+    kind: 'resolved' as const,
+    monitors: [
+      { monitorId: MONITOR_ID, enabled: true, overrides: null, sourcePolicyId: POLICY_ID, sourceLevel: 'organization' },
+    ],
+  };
 
   /** selectChain that records every `.where()` argument it receives. */
   function recordingChain<T>(rows: T, sink: unknown[]) {
@@ -621,6 +624,27 @@ describe('site scope on device-reading monitor routes', () => {
       const body = (await res.json()) as { data: Array<{ deviceId: string }> };
       expect(body.data.map((d) => d.deviceId)).toEqual([DEVICE_IN_A, DEVICE_IN_B]);
       expect(dialect.sqlToQuery(wheres[0] as SQL).sql).not.toMatch(/"site_id"/);
+    });
+
+    it('drops a device that raced a delete (resolver returns device_missing) from the listing, same as no match (#5677)', async () => {
+      getMonitorDefinitionMock.mockResolvedValue(monitorRow());
+      queueAttachmentLookups();
+      selectMock.mockReturnValueOnce(
+        selectChain([
+          { id: DEVICE_IN_A, hostname: 'a', displayName: null },
+          { id: DEVICE_IN_B, hostname: 'b', displayName: null },
+        ]),
+      );
+      // DEVICE_IN_A raced a delete; DEVICE_IN_B still resolves normally.
+      vi.mocked(resolveMonitorsForDeviceMock)
+        .mockResolvedValueOnce({ kind: 'device_missing' } as never)
+        .mockResolvedValueOnce(resolvedMatch as never);
+
+      const res = await jsonRequest(buildApp(), 'GET', `/${MONITOR_ID}/devices`);
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { data: Array<{ deviceId: string }> };
+      expect(body.data.map((d) => d.deviceId)).toEqual([DEVICE_IN_B]);
     });
   });
 

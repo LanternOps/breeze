@@ -67,10 +67,19 @@
       "on_ticket_resolve": "Consegnato alla risoluzione del ticket collegato"
     },
     "autoEvidenceReport": "Allega le esecuzioni del report come evidenza",
+    "autoEvidenceNone": "Nessuno",
+    "autoEvidenceHelp": "L'evidenza viene generata il giorno di scadenza e diventa visibile al cliente quando l'occorrenza viene consegnata.",
+    "autoEvidenceEmpty": "Non sono ancora disponibili tipi di report di evidenza gestiti.",
     "owner": "Responsabile",
     "ticketCategory": "Categoria del ticket",
     "portalVisible": "Mostra nel portale clienti",
-    "sortOrder": "Ordinamento"
+    "sortOrder": "Ordinamento",
+    "instructions": "Istruzioni interne",
+    "instructionsHint": "Interno — mai mostrato al cliente.",
+    "checklistTemplate": "Modello di checklist",
+    "checklistTemplateNone": "Nessuno",
+    "checklistTemplateAllOrgs": "Tutte le org",
+    "checklistTemplateManage": "Gestisci i modelli di checklist"
   },
   "drawer": {
     "title": "Occorrenze",
@@ -84,7 +93,10 @@
     "uploadEvidence": "Carica un file come evidenza",
     "uploadEvidenceHint": "PDF, JPEG, PNG o WebP, fino a 10 MB. Il file viene archiviato nella libreria documenti di questa organizzazione.",
     "evidenceDocument": "Documento",
-    "upload": "Carica"
+    "upload": "Carica",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostra checklist",
+    "hideChecklist": "Nascondi checklist"
   },
   "evidence": {
     "reportRun": "Esecuzione del report",
@@ -177,7 +189,8 @@
       "leadDays": "Apri questo numero di giorni prima della scadenza",
       "graceDays": "Segna come mancato questo numero di giorni dopo la scadenza",
       "artifactRequired": "Evidenza richiesta",
-      "completionMode": "Completamento"
+      "completionMode": "Completamento",
+      "autoEvidenceReportType": "Tipo di report di evidenza"
     },
     "ownerScope": {
       "legend": "Per chi è questo set?",

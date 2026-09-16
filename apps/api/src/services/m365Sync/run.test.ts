@@ -5,6 +5,7 @@ const { mocks } = vi.hoisted(() => ({
   mocks: {
     loadContext: vi.fn(), assertFence: vi.fn(), release: vi.fn(),
     persistUsers: vi.fn(), persistSignin: vi.fn(), persistSecureScore: vi.fn(), callExecutor: vi.fn(),
+    persistSigninEvents: vi.fn(), signinEventsWindow: vi.fn(),
     completion: [] as Record<string, unknown>[],
     audit: vi.fn(), metricRun: vi.fn(), metricFenced: vi.fn(), metricItems: vi.fn(),
     hook: vi.fn(), captureException: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock('../../db', () => ({
 vi.mock('./domains/users', () => ({ persistUsers: mocks.persistUsers }));
 vi.mock('./domains/signinActivity', () => ({ persistSigninActivity: mocks.persistSignin }));
 vi.mock('./domains/secureScore', () => ({ persistSecureScore: mocks.persistSecureScore }));
+vi.mock('./domains/signinEvents', () => ({
+  persistSigninEvents: mocks.persistSigninEvents,
+  signinEventsWindow: mocks.signinEventsWindow,
+}));
 vi.mock('./metrics', () => ({
   recordM365SyncRun: mocks.metricRun, recordM365SyncFenced: mocks.metricFenced,
   recordM365SyncItems: mocks.metricItems, recordM365SyncExecutorSeconds: vi.fn(),
@@ -437,9 +442,35 @@ describe('W05: every domain has a persister', () => {
     mocks.assertFence.mockResolvedValue(null);
   });
 
-  it('has a function for all six contracted domains', () => {
+  it('has a function for all seven contracted domains', () => {
     expect(Object.keys(DOMAIN_PERSISTERS).sort()).toEqual([...M365_SYNC_DOMAINS].sort());
     for (const domain of M365_SYNC_DOMAINS) expect(DOMAIN_PERSISTERS[domain]).toBeTypeOf('function');
+  });
+
+  it('#5784 W05: signin_events runs its persister and carries the Phase A delta window', async () => {
+    const WINDOW = { since: '2026-09-01T00:00:00.000Z', until: '2026-09-08T00:00:00.000Z' };
+    mocks.loadContext.mockResolvedValue({
+      ...CTX, state: { ...CTX.state, signinEventsWindow: WINDOW },
+    });
+    mocks.callExecutor.mockResolvedValue({
+      ok: true, kind: 'sync', executorMs: 800,
+      result: {
+        success: true, kind: 'sync', items: [{ id: 'e1' }], truncated: false,
+        fetchedAt: '2026-09-08T00:00:00.000Z', sources: { signinEvents: 'ok' },
+      },
+    });
+    mocks.persistSigninEvents.mockResolvedValue({
+      inserted: 1, updated: 0, unchanged: 0, stale: 0, complete: true,
+      counts: { signin_events: 1 }, continuation: null, unlicensed: false,
+    });
+    await expect(runSyncDomain({ ...JOB, domain: 'signin_events' as const }, {
+      callExecutor: mocks.callExecutor, now: new Date('2026-09-08T00:00:00.000Z'), rng: () => 0.5,
+      deps: { loadSyncRunContext: mocks.loadContext, assertStillFenced: mocks.assertFence, releaseLease: mocks.release },
+    })).resolves.toBe('success');
+    expect(mocks.persistSigninEvents).toHaveBeenCalled();
+    // The window is what keeps this an incremental pull rather than a re-scan.
+    expect(mocks.callExecutor.mock.calls.at(-1)![1])
+      .toEqual({ type: 'm365.sync.signin_events', since: WINDOW.since, until: WINDOW.until });
   });
 
   it('M365_SYNC_IMPLEMENTED_DOMAINS is the full contracted set', () => {

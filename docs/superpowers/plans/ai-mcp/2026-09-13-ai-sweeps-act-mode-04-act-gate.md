@@ -1,7 +1,7 @@
 ---
-tracking_issue: TBD (register after Gate B)
-wave_issue: TBD (register after Gate B)
-branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
+tracking_issue: LanternOps/breeze#5751
+wave_issue: LanternOps/breeze#5755
+branch: feature/5751-ai-sweeps-act-mode/wave-5755
 ---
 
 # AI sweeps act mode — W04: the act gate Implementation Plan
@@ -20,7 +20,7 @@ branch: feature/<parent>-ai-sweeps-act-mode/wave-<sub-issue>
 
 ## Global Constraints
 
-- Migration filename `apps/api/migrations/2026-10-16-181520-ai-agent-schedules-act-mode.sql`, inside this cluster's reserved `1815xx` block. Re-check `ls apps/api/migrations | sort | tail -1` against `origin/main`; bump upward only; never rename for today's date.
+- Migration filename `apps/api/migrations/2026-10-16-191900-ai-agent-schedules-act-mode.sql` (the `1815xx` slot this plan reserved was overtaken on main; 190900 is the first free slot after the newest committed migration). Re-check `ls apps/api/migrations | sort | tail -1` against `origin/main`; bump upward only; never rename for today's date.
 - **Pure DDL, no DML** — see the `act_mode` nullability decision below, which is what makes a backfill unnecessary. `migrationRlsScope.test.ts` stays green with no elevation.
 - **`act_mode` is nullable, three-valued, on both arms.** `NOT NULL DEFAULT false` would be a trap: every existing org override row would materialise as `false`, and `effectiveSchedule`'s `baseline && (override ?? true)` shape would then make a partner-wide arming invisible to precisely the orgs that have an override. Semantics instead: **on a baseline, `true` = armed and anything else = not armed; on an override, `false` = explicitly disarmed and anything else = inherit.** Effective is `baseline.actMode === true && override?.actMode !== false`. Fail-closed in both directions, no backfill, no CHECK.
 - **Flag-off must be byte-identical to today.** With `BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED` false, `resolvePolicyDecisionState` returns `'human_required'` for every scoped intent, evaluating nothing else — the same property P2-5 asserted for its own flag, and the cheapest possible regression test. Task 3 Step 1 writes it before anything else changes.

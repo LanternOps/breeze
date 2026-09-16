@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
+import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
 import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -82,7 +83,7 @@ import {
   commandResultResultByteLength,
   MAX_COMMAND_RESULT_BYTES,
 } from './agents/schemas';
-import { commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
+import { recordSnmpPollFailure, commandResultHandlers, normalizeDiscoveryHosts } from '../services/commandResultHandlers';
 
 import { terminalPayloadErasureSet } from '../services/sensitiveCommandPayload';
 import { applyCommandAutomationTerminal } from '../services/automationTerminalEvidence';
@@ -499,18 +500,12 @@ const VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS = 24 * 60 * 60 * 1000; // 24h
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
 type OrphanedResultExpectation =
-  | {
-      agentId: string;
-      kind: 'snmp';
-      targetId: string;
-      expiresAt: number;
-    }
-  | {
-      agentId: string;
-      kind: 'monitor';
-      targetId: string;
-      expiresAt: number;
-    };
+  | { agentId: string; kind: 'snmp'; targetId: string; expiresAt: number }
+  | { agentId: string; kind: 'monitor'; targetId: string; expiresAt: number }
+  // Spec §5 — a manual probe. The expected ip/site are captured at DISPATCH so
+  // the result handler can refuse a result for an asset that has since moved or
+  // been re-addressed; they are not derivable from the agent's reply.
+  | { agentId: string; kind: 'probe'; targetId: string; ipAddress: string; siteId: string; expiresAt: number };
 
 const orphanedResultExpectations = new Map<string, OrphanedResultExpectation>();
 
@@ -533,6 +528,25 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
       agentId,
       kind: 'snmp',
       targetId: deviceId,
+      expiresAt,
+    });
+    return;
+  }
+
+  // Spec §5 — a probe is a network_ping carrying probeAssetId instead of a
+  // monitorId. Checked FIRST: the monitor branch below would otherwise swallow
+  // it and record nothing, because a probe has no monitorId.
+  if (command.type === 'network_ping' && typeof payload.probeAssetId === 'string') {
+    const probeAssetId = payload.probeAssetId;
+    const probeSiteId = typeof payload.probeSiteId === 'string' ? payload.probeSiteId : null;
+    const target = typeof payload.target === 'string' ? payload.target : null;
+    if (!probeSiteId || !target) return;
+    orphanedResultExpectations.set(command.id, {
+      agentId,
+      kind: 'probe',
+      targetId: probeAssetId,
+      ipAddress: target,
+      siteId: probeSiteId,
       expiresAt,
     });
     return;
@@ -863,6 +877,13 @@ const backupProgressMessageSchema = z.object({
 const revocationLeaseRenewSchema = z.object({
   type: z.literal('revocation_lease_renew'),
   sessionId: z.string().uuid(),
+  /**
+   * SEC-038 W05: an opaque correlator the agent generates for a fence resync
+   * and echoes back on the answer, so a stalled answer to an EARLIER renewal
+   * can never satisfy a later resync. Optional — the watchdog's ordinary
+   * renewals send none, and older agents do not send it at all.
+   */
+  syncNonce: z.string().min(1).max(64).optional(),
 });
 
 const agentMessageSchema = z.discriminatedUnion('type', [
@@ -1177,24 +1198,42 @@ export async function processOrphanedCommandResult(
   const snmpData = result.result as {
     deviceId?: string;
     metrics?: SnmpMetricResult[];
+    protocol?: number;
+    success?: boolean;
   } | undefined;
 
-  if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
+  // Failed polls carry no result payload. Recover their target from dispatch
+  // evidence, without consuming expectations belonging to other command kinds.
+  pruneOrphanedResultExpectations();
+  const dispatched = orphanedResultExpectations.get(result.commandId);
+  const isSnmpDispatch = dispatched?.agentId === agentId && dispatched.kind === 'snmp';
+  if (isSnmpDispatch || (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0)) {
     const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
-    if (!expectation || expectation.kind !== 'snmp' || expectation.targetId !== snmpData.deviceId) {
+    if (!expectation || expectation.kind !== 'snmp' || (snmpData?.deviceId && expectation.targetId !== snmpData.deviceId)) {
       console.warn(
         `[AgentWs] Rejecting unexpected SNMP result ${result.commandId} from agent ${agentId}: ` +
-        `sentDevice=${snmpData.deviceId} expected=${expectation?.kind === 'snmp' ? expectation.targetId : 'none'} authDevice=${authenticatedDeviceId}`
+        `sentDevice=${snmpData?.deviceId ?? 'none'} expected=${expectation?.kind === 'snmp' ? expectation.targetId : 'none'} authDevice=${authenticatedDeviceId}`
       );
       return;
     }
-    console.log(`[AgentWs] Processing SNMP poll result for device ${snmpData.deviceId} from agent ${agentId}`);
+    const snmpDeviceId = expectation.targetId;
     try {
-      if (isRedisAvailable()) {
+      if (result.status !== 'completed' || snmpData?.success === false) {
+        await recordSnmpPollFailure(snmpDeviceId, authenticatedDeviceId, result.error || 'SNMP poll failed');
+        return;
+      }
+      if (!snmpData?.deviceId || !Array.isArray(snmpData.metrics)) return;
+      console.log(`[AgentWs] Processing SNMP poll result for device ${snmpDeviceId} from agent ${agentId}`);
+      if (isRedisAvailable() || snmpData.metrics.length === 0) {
+        const { snmpDevices } = await import('../db/schema');
+        await db.update(snmpDevices)
+          .set({ lastError: null, lastErrorAt: null })
+          .where(eq(snmpDevices.id, snmpDeviceId));
+        if (snmpData.metrics.length === 0) return;
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
         await runOutsideDbContext(() =>
-          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId)
+          enqueueSnmpPollResults(snmpData.deviceId!, snmpData.metrics!, result.commandId, snmpData.protocol)
         );
       } else {
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${snmpData.deviceId}`);
@@ -1207,12 +1246,61 @@ export async function processOrphanedCommandResult(
             // backoff must not accumulate on a Redis outage (#3217).
             lastPollAttemptedAt: new Date(),
             consecutiveFailures: 0,
-            lastStatus: 'warning'
+            lastStatus: 'warning',
+            lastError: null,
+            lastErrorAt: null
           })
           .where(eq(snmpDevices.id, snmpData.deviceId));
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+      captureException(err);
+    }
+    return;
+  }
+
+  // Spec §5 — a manual "Check now" result. Matched on the command id (the agent
+  // echoes an empty monitorId for a probe, so the monitor branch below would
+  // fall through anyway; matching here first keeps the intent explicit).
+  const probeAssetId = parseProbeCommandId(result.commandId);
+  if (probeAssetId) {
+    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    if (!expectation || expectation.kind !== 'probe' || expectation.targetId !== probeAssetId) {
+      console.warn(
+        `[AgentWs] Rejecting unexpected probe result ${result.commandId} from agent ${agentId}: ` +
+        `sentAsset=${probeAssetId} expected=${expectation?.kind === 'probe' ? expectation.targetId : 'none'}`
+      );
+      return;
+    }
+    const probeData = result.result as { status?: string; responseMs?: number; error?: string } | undefined;
+    // The agent reports monitor-shaped statuses ('online' | 'offline' |
+    // 'degraded'). Only an explicit success is `ok`; everything else, including
+    // a transport-level failure with no body at all, is `failed`.
+    const probeStatus: 'ok' | 'failed' =
+      result.status === 'completed' && (probeData?.status === 'online' || probeData?.status === 'degraded')
+        ? 'ok'
+        : 'failed';
+    try {
+      const applied = await applyProbeResult({
+        commandId: result.commandId,
+        assetId: probeAssetId,
+        expectedIp: expectation.ipAddress,
+        expectedSiteId: expectation.siteId,
+        status: probeStatus,
+        responseMs: typeof probeData?.responseMs === 'number' ? probeData.responseMs : null,
+        error: probeData?.error ?? result.error ?? null,
+      });
+      if (!applied) {
+        // The asset moved, was re-addressed, or a newer probe superseded this
+        // dispatch. Dropping it is the point — a stale reachability claim about
+        // a host we are no longer describing is worse than no claim.
+        console.warn(
+          `[AgentWs] Probe result ${result.commandId} for asset ${probeAssetId} did not correlate ` +
+          '(asset moved, re-addressed, or superseded); dropped.'
+        );
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to persist probe result for ${agentId}:`, err);
       captureException(err);
     }
     return;
@@ -2663,7 +2751,8 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             console.warn(`[AgentWs] Dropping revocation_lease_renew from superseded socket for agent ${agentId}`);
             return;
           }
-          const { sessionId: leaseSessionId } = parsedRenew.data;
+          const { sessionId: leaseSessionId, syncNonce } = parsedRenew.data;
+          const nonceEcho = syncNonce ? { syncNonce } : {};
           // Bind the renew to the device this socket authenticated as: an agent
           // must never be able to renew (or learn about) another tenant's
           // session by guessing a session id.
@@ -2678,6 +2767,14 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               hardDeadline: leaseResult.hardDeadline,
               renewEverySec: leaseResult.renewEverySec,
               graceSec: leaseResult.graceSec,
+              // SEC-038: the agent's durable start fence resyncs from these.
+              ...(leaseResult.startGeneration !== undefined
+                ? { startGeneration: leaseResult.startGeneration }
+                : {}),
+              ...(leaseResult.terminationPhase !== undefined
+                ? { terminationPhase: leaseResult.terminationPhase }
+                : {}),
+              ...nonceEcho,
             }));
           } else if (leaseResult.status === 'revoked' || leaseResult.status === 'forbidden') {
             // `forbidden` is reported as a revocation on purpose: from the
@@ -2687,6 +2784,12 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
               type: 'revocation_lease_revoked',
               sessionId: leaseSessionId,
               reason: leaseResult.status === 'revoked' ? leaseResult.reason : 'not_authorized',
+              // `forbidden` never carries a generation: it must reveal nothing
+              // about a session belonging to another device.
+              ...(leaseResult.status === 'revoked' && leaseResult.terminalGeneration !== undefined
+                ? { terminalGeneration: leaseResult.terminalGeneration }
+                : {}),
+              ...nonceEcho,
             }));
           } else {
             // Infrastructure blip: say nothing conclusive and let the agent ride
@@ -2694,6 +2797,7 @@ export function createAgentWsHandlers(agentId: string, preValidatedAgent: AgentD
             ws.send(JSON.stringify({
               type: 'revocation_lease_unavailable',
               sessionId: leaseSessionId,
+              ...nonceEcho,
             }));
           }
           return;

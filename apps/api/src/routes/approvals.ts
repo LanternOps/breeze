@@ -1,7 +1,12 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq, gt, desc, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, gt, desc, inArray, isNull, ne, or } from 'drizzle-orm';
+import {
+  TERMINAL_INTENT_STATUSES,
+  intentTerminalReason,
+  isTerminalIntentStatus,
+} from '../services/aiToolHandoff';
 
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { authMiddleware, isInteractiveUserSession } from '../middleware/auth';
@@ -72,6 +77,14 @@ approvalRoutes.use('*', authMiddleware);
 // Keyset page size (spec §4.2 / task-8 brief): capped at 50 regardless of what
 // the caller asks for, defaulting to 50 when omitted.
 const PENDING_PAGE_MAX = 50;
+/** Page ceiling for the read-only #6022 "Recent" (terminal) listing. */
+const RECENT_PAGE_MAX = 50;
+/**
+ * How many raw rows to read per requested row. The live-authorization filter
+ * runs in app code, so some rows are dropped after the query; over-fetching
+ * keeps a full page available without unbounded scanning.
+ */
+const RECENT_OVERFETCH = 4;
 
 /**
  * Opaque `(createdAt, id)` keyset cursor. Base64 of `<isoTimestamp>|<uuid>` —
@@ -148,6 +161,13 @@ interface AuthorizedApproval {
   /** P2-2: the scope columns + org the batched `resolveTargetDevices` pass
    *  needs. Carried on the projection rather than re-fetched per row. */
   targetRef: IntentTargetRef | null;
+  /**
+   * The linked intent row itself, carried only by the #6022 "Recent" listing
+   * so the serializer can project the terminal outcome (status, error_code and
+   * the tool's own error string). Absent on the pending path, which has no
+   * terminal outcome to report.
+   */
+  intent?: typeof actionIntents.$inferSelect | null;
 }
 
 /**
@@ -232,6 +252,29 @@ async function isIntentRowLiveAuthorized(
   agentDecideAuthorizer: (intent: LiveAuthzIntent) => Promise<boolean>,
 ): Promise<boolean> {
   if (!intent || intent.status !== 'pending_approval') return false;
+  return isIntentRowVisibleToUser(intent, userId, orgDecideAuthorizer, agentDecideAuthorizer);
+}
+
+/**
+ * The IDENTITY/PERMISSION half of the rule above, with the
+ * `status === 'pending_approval'` gate lifted.
+ *
+ * Split out for the #6022 "Recent" view: a terminal intent (failed, rejected,
+ * expired, cancelled, completed) can never be decided again, so the pending
+ * gate is not what protects it — the identity and permission checks are, and
+ * they are unchanged here. `isIntentRowLiveAuthorized` remains the ONLY rule
+ * used by every decide-capable surface (`GET /pending`, `/pending/count`,
+ * `GET /:id`, `POST /:id/assertion-challenge`); this function is used solely
+ * by the read-only recent listing, so widening visibility to already-decided
+ * rows can never widen the ability to act on one.
+ */
+async function isIntentRowVisibleToUser(
+  intent: LiveAuthzIntent | null,
+  userId: string,
+  orgDecideAuthorizer: (orgId: string) => Promise<boolean>,
+  agentDecideAuthorizer: (intent: LiveAuthzIntent) => Promise<boolean>,
+): Promise<boolean> {
+  if (!intent) return false;
   // Wave 3b: an AGENT-originated intent has no requester, so the supervised
   // identity rule below can never authorize anyone for it. Supervised agent
   // rows are fanned out to action-and-target-eligible humans and re-checked
@@ -351,30 +394,142 @@ async function fetchAuthorizedPendingApprovals(
   return authorized;
 }
 
-approvalRoutes.get('/pending', async (c) => {
-  const userId = c.get('auth').user.id;
-  const partnerId = c.get('auth').partnerId ?? null;
+/**
+ * The caller's RECENT (terminal) approval rows — the #6022 "Recent" view.
+ *
+ * `/approvals` listed pending intents only, so an intent that FAILED had no UI
+ * home at all: the autoInstall guardrail refusal in #6022 left the intent
+ * `failed` / `tool_returned_error` and the operator had nowhere to see it.
+ *
+ * Deliberately a SEPARATE query rather than a relaxation of
+ * `fetchAuthorizedPendingApprovals`: this one is read-only and must never feed
+ * a decide affordance. It selects rows whose linked intent has reached a
+ * terminal status (plus decided/expired rows with no linked intent), and
+ * projects the intent's own `status`/`error_code`/error string so the UI can
+ * say WHY. Live authorization uses `isIntentRowVisibleToUser` — the same
+ * identity/permission checks as the pending rule, minus only the
+ * pending-status gate, which is meaningless for a row that can no longer be
+ * acted on.
+ */
+async function fetchAuthorizedRecentApprovals(
+  userId: string,
+  partnerId: string | null,
+  limit: number,
+): Promise<AuthorizedApproval[]> {
+  const rows = await runOutsideDbContext(() =>
+    withSystemDbAccessContext(() =>
+      db
+        .select({ approval: approvalRequests, intent: actionIntents })
+        .from(approvalRequests)
+        .leftJoin(actionIntents, eq(approvalRequests.intentId, actionIntents.id))
+        .where(
+          and(
+            eq(approvalRequests.userId, userId),
+            // Intent-linked rows: the intent reached a terminal status.
+            // Unlinked rows (PAM / legacy execution-linked / dev seed) have no
+            // intent lifecycle, so fall back to the approval row's own status.
+            or(
+              inArray(actionIntents.status, [...TERMINAL_INTENT_STATUSES]),
+              and(isNull(approvalRequests.intentId), ne(approvalRequests.status, 'pending')),
+            ),
+          ),
+        )
+        // Most recently decided first; `createdAt` breaks ties for rows that
+        // terminalized without a decision (expired, cancelled).
+        .orderBy(desc(approvalRequests.decidedAt), desc(approvalRequests.createdAt), desc(approvalRequests.id))
+        // Bounded in SQL: unlike the pending set this grows without limit, so
+        // it must never be fetched whole and sliced in memory.
+        .limit(Math.min(limit, RECENT_PAGE_MAX) * RECENT_OVERFETCH),
+    ),
+  );
 
-  const requestedLimit = Number(c.req.query('limit'));
-  const limit =
-    Number.isFinite(requestedLimit) && requestedLimit > 0
-      ? Math.min(Math.floor(requestedLimit), PENDING_PAGE_MAX)
-      : PENDING_PAGE_MAX;
+  const orgDecideAuthorizer = makeOrgDecideAuthorizer(userId, partnerId);
+  const agentDecideAuthorizer = makeAgentDecideAuthorizer(userId);
+  const authorized: AuthorizedApproval[] = [];
+  for (const { approval, intent } of rows) {
+    if (authorized.length >= limit) break;
+    if (!approval.intentId) {
+      authorized.push({ approval, approvalScope: null, attribution: null, targetRef: null, intent: null });
+      continue;
+    }
+    if (await isIntentRowVisibleToUser(intent, userId, orgDecideAuthorizer, agentDecideAuthorizer)) {
+      authorized.push({
+        approval,
+        approvalScope: intent?.approvalScope ?? null,
+        attribution: toIntentAttribution(intent),
+        targetRef: toIntentTargetRef(intent),
+        intent: intent ?? null,
+      });
+    }
+  }
+  return authorized;
+}
 
-  const cursorParam = c.req.query('cursor');
-  const cursor = cursorParam ? decodePendingCursor(cursorParam) : null;
+/**
+ * Project a linked intent's TERMINAL outcome for the wire (#6022), or null
+ * when there is no intent or it has not terminalized.
+ *
+ * The reason string comes from `intentTerminalReason` — the SAME function the
+ * chat read-back uses — so `/approvals` Recent and the chat's tool error can
+ * never tell the operator two different stories about the same refusal. That
+ * function reads only a STRING `result.error`; the rest of `result` is
+ * free-form jsonb that can hold sealed secret material
+ * (`actionIntents/resultSecrets.ts`) and is never projected here.
+ */
+function toIntentOutcome(
+  intent: typeof actionIntents.$inferSelect | null,
+  approval: typeof approvalRequests.$inferSelect,
+) {
+  if (intent && isTerminalIntentStatus(intent.status)) {
+    const snapshot = {
+      status: intent.status,
+      errorCode: intent.errorCode ?? null,
+      result: intent.result ?? null,
+    };
+    return {
+      status: intent.status,
+      errorCode: intent.errorCode ?? null,
+      reason: intent.status === 'completed' ? null : intentTerminalReason(snapshot),
+      executedAt: intent.executedAt?.toISOString() ?? null,
+    };
+  }
 
-  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
-  const afterCursor = cursor
-    ? authorized.filter((r) => isAfterPendingCursor(r.approval, cursor))
-    : authorized;
-  const page = afterCursor.slice(0, limit);
-  const last = page[page.length - 1];
-  const nextCursor =
-    afterCursor.length > limit && last
-      ? encodePendingCursor(last.approval.createdAt, last.approval.id)
-      : null;
+  // UNLINKED rows (PAM elevation, legacy execution-linked, dev seed) have no
+  // intent lifecycle at all — the `approval_requests_one_source_chk`
+  // constraint permits none of the three links to be set. Falling through to
+  // `null` here would have been the SAME BUG this issue is about, one path
+  // over: a DENIED elevation request would reach the Recent panel with no
+  // outcome, and a client that reads "no outcome" as "nothing went wrong"
+  // paints it green. Derive the outcome from the approval row's own status
+  // instead.
+  if (!intent && approval.status !== 'pending') {
+    return {
+      status: approval.status,
+      errorCode: null,
+      reason:
+        approval.status === 'denied'
+          ? approval.decisionReason?.trim() || 'the approval was denied, so it did not run'
+          : approval.status === 'expired'
+            ? 'the approval expired, so it did not run'
+            : approval.status === 'reported'
+              ? 'the request was reported as suspicious, so it did not run'
+              : null,
+      executedAt: null,
+    };
+  }
 
+  return null;
+}
+
+/**
+ * Serialize one page of authorized rows, with every per-page lookup batched.
+ *
+ * Extracted so the pending and the #6022 recent listing can never drift on
+ * what a row looks like on the wire — a row that renders one way in the
+ * pending tab and another in Recent is exactly the confusion this issue is
+ * about.
+ */
+async function serializePage(page: AuthorizedApproval[]) {
   // Batched lookup: one query resolves the customer tenant for ALL M365
   // mutation rows in this page (no N+1).
   const tenants = await lookupCustomerTenants(page.map((r) => r.approval));
@@ -388,20 +543,57 @@ approvalRoutes.get('/pending', async (c) => {
   // the page's batched lookups so a page with no orgId at all (every row
   // intent-less) never issues it at all.
   const orgNames = await lookupOrgNames(page.map(({ targetRef }) => targetRef?.orgId ?? null));
-  return c.json({
-    approvals: page.map(({ approval, approvalScope, attribution, targetRef }) =>
-      serialize(
-        approval,
-        (approval.executionId && tenants.get(approval.executionId)) || null,
-        approvalScope,
-        attribution,
-        targetDevices.get(approval.id) ?? null,
-        targetRef?.orgId ?? null,
-        (targetRef?.orgId && orgNames.get(targetRef.orgId)) || null,
-      ),
+  return page.map(({ approval, approvalScope, attribution, targetRef, intent }) =>
+    serialize(
+      approval,
+      (approval.executionId && tenants.get(approval.executionId)) || null,
+      approvalScope,
+      attribution,
+      targetDevices.get(approval.id) ?? null,
+      targetRef?.orgId ?? null,
+      (targetRef?.orgId && orgNames.get(targetRef.orgId)) || null,
+      toIntentOutcome(intent ?? null, approval),
     ),
-    nextCursor,
-  });
+  );
+}
+
+approvalRoutes.get('/pending', async (c) => {
+  const userId = c.get('auth').user.id;
+  const partnerId = c.get('auth').partnerId ?? null;
+
+  const requestedLimit = Number(c.req.query('limit'));
+  const limit =
+    Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), PENDING_PAGE_MAX)
+      : PENDING_PAGE_MAX;
+
+  const cursorParam = c.req.query('cursor');
+  const cursor = cursorParam ? decodePendingCursor(cursorParam) : null;
+
+  // ADDITIVE (#6022): `?view=recent` returns this caller's TERMINAL rows
+  // instead of the pending ones, so a failed/rejected/expired intent finally
+  // has a UI home. Anything else — including the param being absent, which is
+  // every existing client — is the unchanged pending listing. The recent view
+  // is read-only and is NOT paginated by the pending cursor (it is ordered by
+  // decision time, not creation time), so it always returns `nextCursor: null`.
+  const recentView = c.req.query('view') === 'recent';
+  if (recentView) {
+    const rows = await fetchAuthorizedRecentApprovals(userId, partnerId, Math.min(limit, RECENT_PAGE_MAX));
+    return c.json({ approvals: await serializePage(rows), nextCursor: null });
+  }
+
+  const authorized = await fetchAuthorizedPendingApprovals(userId, partnerId);
+  const afterCursor = cursor
+    ? authorized.filter((r) => isAfterPendingCursor(r.approval, cursor))
+    : authorized;
+  const page = afterCursor.slice(0, limit);
+  const last = page[page.length - 1];
+  const nextCursor =
+    afterCursor.length > limit && last
+      ? encodePendingCursor(last.approval.createdAt, last.approval.id)
+      : null;
+
+  return c.json({ approvals: await serializePage(page), nextCursor });
 });
 
 // Registered BEFORE the `/:id` param route below so Hono never captures

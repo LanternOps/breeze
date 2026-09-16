@@ -17,6 +17,7 @@ import { getUserPermissions, hasPermission } from './permissions';
 import { rateLimiter } from './rate-limit';
 import { getRedis } from './redis';
 import { isSecretBearingTool } from './actionIntents/secretBearingTools';
+import { WORKSPACE_TOOL_NAMES } from './workspace/workspaceToolNames';
 import type { AuthContext } from '../middleware/auth';
 import { envFlag } from '../config/env';
 import { resolveActOperation } from './aiAgents/actManifest';
@@ -177,6 +178,22 @@ export const TIER2_READONLY_TOOLS = new Set<string>([
   'search_catalog',
 ]);
 
+/**
+ * Execution plane W04 (spec §5.3). The four sandbox-workspace tools are
+ * Tier 1 — they execute nothing on the fleet — but they are NOT read-only:
+ * they spend compute, write files into a sandbox, and are opt-in per agent.
+ * `isReadOnlyResolution` treats every Tier-1 tool as read-only, which would
+ * (a) make the capability picker list them as "always on" and never write
+ * them to the allowlist, and (b) skip the allowlist gate in
+ * `checkAgentGuardrails`. This set is the ONE exclusion that makes them
+ * allowlist-gated; the carve-out in `checkAgentGuardrails` then keeps them
+ * `allow` (never `propose`/`act`, allowed on device-less runs) once the
+ * allowlist and protected-resource checks pass. Pinned by
+ * aiGuardrails.workspace.contract.test.ts.
+ */
+export { WORKSPACE_TOOL_NAMES, type WorkspaceToolName } from './workspace/workspaceToolNames';
+export const TIER1_NON_READONLY_TOOLS: ReadonlySet<string> = new Set<string>(WORKSPACE_TOOL_NAMES);
+
 // Actions that downgrade to Tier 1 (auto-execute, no approval) even if the tool's base tier is higher
 // Exported for contract tests only — see the note on TIER2_ACTIONS.
 export const TIER1_ACTIONS: Record<string, string[]> = {
@@ -232,7 +249,15 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // action on real endpoints with no human in the loop:
   //   - software policies: `enforceMode` + `remediationOptions.autoUninstall`
   //     turn a detect-only allowlist into fleet-wide auto-uninstall (the #3381
-  //     mass-uninstall failure mode).
+  //     mass-uninstall failure mode). `remediationOptions.autoInstall` (#5505
+  //     desired-state install) is NOT gated the same way as the fields above —
+  //     it is never accepted from the AI at all. The four handler write sites
+  //     in aiToolsCompliance.ts/aiToolsPolicyPrereqs.ts refuse an
+  //     autoInstall:true outright, regardless of tier or approval, because
+  //     only a human operator holding devices.execute + MFA may arm software
+  //     installation (contract-A D4). Tier-3 approval on this tool remains
+  //     for enforceMode/autoUninstall; it is not the mechanism that protects
+  //     autoInstall.
   //   - update rings: `autoApprove` + `deadlineDays` + `gracePeriodHours` arm
   //     unattended patch installs with FORCED reboots — the standing-rule form
   //     of manage_patches:install, which already requires approval.
@@ -424,6 +449,12 @@ export const TIER3_FOUR_EYES_TOOLS = new Set<string>([
  */
 export const AGENT_HUMAN_ONLY_TOOLS = new Set<string>([
   'manage_ai_agents',
+  // Execution plane (spec §5.5). An agent that could launch analysis runs could
+  // launch runs that launch runs; the compute reservation is the only thing
+  // bounding that, and a reservation is not an authority model. A HUMAN asks
+  // for analysis. Denied unconditionally in `checkAgentGuardrails`, above the
+  // allowlist, so it cannot be re-granted by a policy snapshot.
+  'workspace_launch_analysis',
 ]);
 
 export const TIER3_SUPERVISED_ACTIONS: Record<string, string[]> = {
@@ -958,12 +989,25 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   resolve_device_context: { resource: 'devices', action: 'write' },
   // Agent log tools
   search_agent_logs: { resource: 'devices', action: 'read' },
+  // Execution plane W04 — sandbox workspace tools. They only function inside
+  // an `analysis` run (chat/MCP calls return `workspace_requires_run`); the
+  // mapping exists so the chat path reports that typed error rather than
+  // "No RBAC permission mapping".
+  workspace_stage: { resource: 'ai_agents', action: 'read' },
+  workspace_run: { resource: 'ai_agents', action: 'read' },
+  workspace_collect: { resource: 'ai_agents', action: 'read' },
+  workspace_cancel: { resource: 'ai_agents', action: 'read' },
   set_agent_log_level: { resource: 'devices', action: 'execute' },
   capture_agent_pprof: { resource: 'devices', action: 'execute' },
   // Event log tools
   search_logs: { resource: 'devices', action: 'read' },
   get_log_trends: { resource: 'devices', action: 'read' },
   detect_log_correlations: { resource: 'devices', action: 'read' },
+  // Execution plane
+  export_dataset: { resource: 'devices', action: 'read' },
+  // Starting an autonomous run is an ai_agents WRITE even though the tool is
+  // Tier 1: it spends the org's compute budget and its credits.
+  workspace_launch_analysis: { resource: 'ai_agents', action: 'write' },
   // Configuration policy tools
   list_configuration_policies: { resource: 'policies', action: 'read' },
   get_configuration_policy: { resource: 'policies', action: 'read' },
@@ -1279,6 +1323,7 @@ export const TOOL_PERMISSIONS: Record<string, { resource: string; action: string
   // Network (mirror backing REST routes: networkChanges.ts uses devices:read + alerts:acknowledge;
   // networkBaselines.ts uses devices:write)
   get_network_changes: { resource: 'devices', action: 'read' },
+  get_network_asset_reachability: { resource: 'devices', action: 'read' },
   acknowledge_network_device: { resource: 'alerts', action: 'acknowledge' },
   configure_network_baseline: { resource: 'devices', action: 'write' },
 };
@@ -1336,6 +1381,9 @@ const TOOL_RATE_LIMITS: Record<string, { limit: number; windowSeconds: number }>
   search_logs: { limit: 30, windowSeconds: 300 },
   get_log_trends: { limit: 20, windowSeconds: 300 },
   detect_log_correlations: { limit: 10, windowSeconds: 300 },
+  // One export is a full table scan's worth of work — far below search_logs'
+  // 30/5min on purpose.
+  export_dataset: { limit: 5, windowSeconds: 300 },
   // Agent log tools
   set_agent_log_level: { limit: 5, windowSeconds: 600 },
   capture_agent_pprof: { limit: 3, windowSeconds: 600 },
@@ -1455,6 +1503,9 @@ export function isReadOnlyResolution(
   toolName: string,
   check: Pick<GuardrailCheck, 'tier' | 'readOnly'>,
 ): boolean {
+  // Execution plane W04: the one exclusion from "tier 1 implies read-only".
+  // See TIER1_NON_READONLY_TOOLS.
+  if (TIER1_NON_READONLY_TOOLS.has(toolName)) return false;
   return check.tier === 1
     || (check.tier === 2 && (check.readOnly === true || TIER2_READONLY_TOOLS.has(toolName)));
 }
@@ -1979,7 +2030,14 @@ export function checkAgentGuardrails(
   // every OTHER `manage_tickets` call with no ticket scope, still denies
   // exactly as before — this is not a blanket device-less carve-out.
   const ticketScoped = toolName === 'manage_tickets' && !!policy.scope?.ticketId;
-  if (!readOnly && policy.deviceId === null && !ticketScoped) {
+  // Execution plane W04 exemption: a workspace tool's "mutation" is bounded
+  // to the run's own sandbox and its frozen `staged_inputs`, not to a device
+  // — the device-less rule exists to keep an ORG-WIDE mutation from being
+  // proposed, and there is nothing org-wide here (the sandbox is inert and
+  // reachable only by this run). It is still allowlist- and
+  // protected-resource-gated below.
+  const workspaceTool = TIER1_NON_READONLY_TOOLS.has(toolName);
+  if (!readOnly && policy.deviceId === null && !ticketScoped && !workspaceTool) {
     return deny(`Tool "${toolName}" mutates and the run is not device-bound`);
   }
 
@@ -1991,6 +2049,15 @@ export function checkAgentGuardrails(
 
   const protectedHit = touchesProtected(input, policy.protectedResources);
   if (protectedHit) return deny(`Denied: ${protectedHit}`);
+
+  // Execution plane W04: allowlisted + not protected ⇒ a workspace tool
+  // executes. Never `propose` (there is nothing a human could approve — the
+  // sandbox is inert) and never `act` (not in the act manifest). Placed AFTER
+  // every structural deny above and BEFORE the mode branches, so shadow mode
+  // cannot turn `workspace_stage` into a recorded proposal.
+  if (workspaceTool) {
+    return { ...base, allowed: true, requiresApproval: false, disposition: 'allow' };
+  }
 
   // Act mode (wave 4 Part B): a manifest-matched, rule-equivalent mutation
   // executes (through the normal tool path — the pre/post hooks in

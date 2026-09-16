@@ -86,7 +86,7 @@ describe('buildInstallCommands', () => {
       // server, so Windows must match.
       const { windows } = buildInstallCommands(base);
       expect(windows).toContain(
-        'Invoke-WebRequest -Uri "https://rmm.example.com/api/v1/agents/download/windows/amd64" -OutFile breeze-agent.exe'
+        'Invoke-WebRequest -Uri "https://rmm.example.com/api/v1/agents/download/windows/amd64" -OutFile $exe'
       );
       expect(windows).not.toContain('github.com');
     });
@@ -109,6 +109,23 @@ describe('buildInstallCommands', () => {
       expect(windows).toContain('captive portal or web filter');
       // The MZ check must run before the first agent invocation.
       expect(windows.indexOf('0x4D')).toBeLessThan(windows.indexOf('service install'));
+    });
+
+    it('downloads into a temp directory, never the shell working directory (#5898)', () => {
+      // An elevated PowerShell starts in C:\Windows\system32. A relative
+      // -OutFile puts the agent INSIDE System32, `service install` copies it
+      // from there into Program Files, and Defender's ASR rule "Block use of
+      // copied or impersonated system tools" (C0033C00-...) then denies every
+      // open of the copy, even to SYSTEM - the service never starts.
+      const { windows } = buildInstallCommands(base);
+      expect(windows).toContain('$env:TEMP');
+      expect(windows).not.toContain('-OutFile breeze-agent.exe');
+      expect(windows).not.toContain('$pwd');
+      expect(windows).not.toContain('.\\breeze-agent.exe');
+      // The directory must exist before the download writes into it.
+      expect(windows.indexOf('New-Item')).toBeLessThan(windows.indexOf('Invoke-WebRequest'));
+      // Every agent invocation and the MZ check use the same absolute path.
+      expect(windows.match(/\$exe/g)?.length).toBeGreaterThanOrEqual(5);
     });
 
     it('appends --enrollment-secret only when a secret is provided', () => {

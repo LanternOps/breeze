@@ -35,7 +35,7 @@ vi.mock('../services/featureConfigResolver', () => ({
 
 import {
   processCheckPolicy,
-  readEarliestUnauthorizedDetection,
+  readEarliestViolationDetection,
   scheduleSoftwareComplianceCheck,
   shouldQueueAutoRemediation,
 } from './softwareComplianceWorker';
@@ -90,6 +90,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('returns queue:false when status is in_progress', () => {
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: 'in_progress',
       lastRemediationAttempt: null,
       now: NOW,
@@ -102,6 +103,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('returns queue:false when status is pending', () => {
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: 'pending',
       lastRemediationAttempt: null,
       now: NOW,
@@ -114,6 +116,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('returns queue:false when inside grace period', () => {
     const result = shouldQueueAutoRemediation({
       violations: RECENT_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
       now: NOW,
@@ -126,6 +129,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('returns queue:true when outside grace period', () => {
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
       now: NOW,
@@ -139,6 +143,7 @@ describe('shouldQueueAutoRemediation', () => {
     const lastAttempt = new Date(NOW.getTime() - 30 * 60 * 1000);
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: lastAttempt,
       now: NOW,
@@ -152,6 +157,7 @@ describe('shouldQueueAutoRemediation', () => {
     const lastAttempt = new Date(NOW.getTime() - 200 * 60 * 1000);
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: lastAttempt,
       now: NOW,
@@ -164,6 +170,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('returns queue:true with no previous state and no grace/cooldown', () => {
     const result = shouldQueueAutoRemediation({
       violations: PAST_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
       now: NOW,
@@ -176,6 +183,7 @@ describe('shouldQueueAutoRemediation', () => {
   it('skips grace period check when gracePeriodHours is 0', () => {
     const result = shouldQueueAutoRemediation({
       violations: RECENT_VIOLATION,
+      violationType: 'unauthorized',
       previousRemediationStatus: null,
       lastRemediationAttempt: null,
       now: NOW,
@@ -186,20 +194,20 @@ describe('shouldQueueAutoRemediation', () => {
   });
 });
 
-describe('readEarliestUnauthorizedDetection', () => {
+describe('readEarliestViolationDetection', () => {
   it('returns null for non-array input', () => {
-    expect(readEarliestUnauthorizedDetection(null)).toBeNull();
-    expect(readEarliestUnauthorizedDetection('string')).toBeNull();
-    expect(readEarliestUnauthorizedDetection({})).toBeNull();
+    expect(readEarliestViolationDetection(null, 'unauthorized')).toBeNull();
+    expect(readEarliestViolationDetection('string', 'unauthorized')).toBeNull();
+    expect(readEarliestViolationDetection({}, 'unauthorized')).toBeNull();
   });
 
   it('returns null for empty array', () => {
-    expect(readEarliestUnauthorizedDetection([])).toBeNull();
+    expect(readEarliestViolationDetection([], 'unauthorized')).toBeNull();
   });
 
   it('returns null when no unauthorized violations', () => {
     const violations = [{ type: 'missing', detectedAt: '2025-01-01T00:00:00Z' }];
-    expect(readEarliestUnauthorizedDetection(violations)).toBeNull();
+    expect(readEarliestViolationDetection(violations, 'unauthorized')).toBeNull();
   });
 
   it('returns the earliest unauthorized detection date', () => {
@@ -208,7 +216,7 @@ describe('readEarliestUnauthorizedDetection', () => {
       { type: 'unauthorized', detectedAt: '2025-01-01T00:00:00Z' },
       { type: 'unauthorized', detectedAt: '2025-01-15T00:00:00Z' },
     ];
-    const result = readEarliestUnauthorizedDetection(violations);
+    const result = readEarliestViolationDetection(violations, 'unauthorized');
     expect(result?.toISOString()).toBe('2025-01-01T00:00:00.000Z');
   });
 
@@ -217,7 +225,7 @@ describe('readEarliestUnauthorizedDetection', () => {
       { type: 'unauthorized', detectedAt: 'not-a-date' },
       { type: 'unauthorized', detectedAt: '2025-01-05T00:00:00Z' },
     ];
-    const result = readEarliestUnauthorizedDetection(violations);
+    const result = readEarliestViolationDetection(violations, 'unauthorized');
     expect(result?.toISOString()).toBe('2025-01-05T00:00:00.000Z');
   });
 });
@@ -287,5 +295,67 @@ describe('scheduleSoftwareComplianceCheck approval_generation backfill (site-cei
 
     const [, data] = addMock.mock.calls[0] as unknown as [string, { generation?: number }];
     expect(data.generation).toBeUndefined();
+  });
+});
+
+describe('readEarliestViolationDetection — verb awareness (contract D10)', () => {
+  const MIXED = [
+    { type: 'unauthorized', detectedAt: '2025-01-10T00:00:00Z' },
+    { type: 'missing', detectedAt: '2025-01-02T00:00:00Z' },
+    { type: 'unauthorized', detectedAt: '2025-01-05T00:00:00Z' },
+    { type: 'missing', detectedAt: '2025-01-20T00:00:00Z' },
+  ];
+
+  it('measures only unauthorized violations when asked for unauthorized', () => {
+    expect(readEarliestViolationDetection(MIXED, 'unauthorized')?.toISOString())
+      .toBe('2025-01-05T00:00:00.000Z');
+  });
+
+  it('measures only missing violations when asked for missing', () => {
+    expect(readEarliestViolationDetection(MIXED, 'missing')?.toISOString())
+      .toBe('2025-01-02T00:00:00.000Z');
+  });
+
+  it('returns null when the requested type is absent', () => {
+    expect(readEarliestViolationDetection(
+      [{ type: 'unauthorized', detectedAt: '2025-01-10T00:00:00Z' }],
+      'missing',
+    )).toBeNull();
+  });
+});
+
+describe('shouldQueueAutoRemediation — grace measured against the requested verb', () => {
+  const NOW_D10 = new Date('2025-01-10T00:00:00Z');
+
+  // A device with a fresh `missing` violation and a long-stale `unauthorized`
+  // one. Before D10 the grace clock read the unauthorized timestamp for BOTH
+  // verbs, so the install verb would queue immediately, ignoring its own grace.
+  const MIXED_AGES = [
+    { type: 'unauthorized', detectedAt: '2024-01-01T00:00:00Z' },
+    { type: 'missing', detectedAt: '2025-01-09T23:00:00Z' },
+  ];
+
+  it('defers the install verb inside ITS grace window even though an unauthorized violation is ancient', () => {
+    expect(shouldQueueAutoRemediation({
+      violations: MIXED_AGES,
+      violationType: 'missing',
+      previousRemediationStatus: null,
+      lastRemediationAttempt: null,
+      now: NOW_D10,
+      gracePeriodHours: 24,
+      cooldownMinutes: 120,
+    })).toEqual({ queue: false, reason: 'grace_period' });
+  });
+
+  it('still queues the uninstall verb against the same violation set', () => {
+    expect(shouldQueueAutoRemediation({
+      violations: MIXED_AGES,
+      violationType: 'unauthorized',
+      previousRemediationStatus: null,
+      lastRemediationAttempt: null,
+      now: NOW_D10,
+      gracePeriodHours: 24,
+      cooldownMinutes: 120,
+    })).toEqual({ queue: true });
   });
 });

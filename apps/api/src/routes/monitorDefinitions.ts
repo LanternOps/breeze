@@ -627,8 +627,15 @@ monitorDefinitionRoutes.get(
 
     const data: Array<Record<string, unknown>> = [];
     for (const device of candidates) {
-      const effective = await resolveMonitorsForDevice(device.id);
-      const match = effective.find((m) => m.monitorId === monitor.id);
+      // A device that vanished between the candidate query above and here
+      // (raced a delete) resolves as `device_missing`, not a fabricated
+      // "zero monitors apply" — either way it drops out of this listing,
+      // but the two must stay distinguishable at the resolver (#5677).
+      const resolution = await resolveMonitorsForDevice(device.id);
+      const match =
+        resolution.kind === 'resolved'
+          ? resolution.monitors.find((m) => m.monitorId === monitor.id)
+          : undefined;
       if (!match) continue;
       const state = activityByDevice.get(device.id);
       data.push({

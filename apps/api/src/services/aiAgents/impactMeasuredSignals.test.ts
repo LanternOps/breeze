@@ -19,7 +19,7 @@ vi.mock('../../db', () => ({
 const { loadAlertResolutionSignal, loadTechnicianMinutes } = await import('./impactMeasuredSignals');
 
 const auth = { orgCondition: () => undefined } as never;
-const window = { orgIds: ['org-1'], from: '2026-01-01', through: '2026-01-31' };
+const window = { orgIds: ['org-1'], from: '2026-01-01', through: '2026-01-31', windowDays: 30 };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -80,6 +80,40 @@ describe('toNumber', () => {
     expect(signal.omitted).toBeNull();
     expect(signal.cohorts[0]!.aiTouched.n).toBe(20);
     expect(signal.cohorts[0]!.untouched.n).toBe(20);
+  });
+});
+
+describe('signalFrom — omission reason vs. window length (#5879)', () => {
+  // Rows with hasFollowup: false never reach a cohort (foldCohorts drops them),
+  // so eligibleRows > 0 but followupRows stays 0 -- the shape that currently
+  // produces 'insufficient_followup'.
+  function notEnoughFollowupRows() {
+    return Array.from({ length: 10 }, (_unused, i) => ({
+      rule_id: 'rule-a',
+      rule_name: 'Rule A',
+      ai_touched: i % 2 === 0,
+      observed: false,
+      minutes: 5,
+      has_followup: false,
+    }));
+  }
+
+  it('reports insufficient_followup below the max window, where "try a longer window" has somewhere to go', async () => {
+    execute.mockResolvedValue(notEnoughFollowupRows());
+
+    await expect(loadAlertResolutionSignal(auth, { ...window, windowDays: 30 })).resolves.toMatchObject({
+      cohorts: [],
+      omitted: 'insufficient_followup',
+    });
+  });
+
+  it('never tells the user to try a longer window AT the max window (90 days)', async () => {
+    execute.mockResolvedValue(notEnoughFollowupRows());
+
+    await expect(loadAlertResolutionSignal(auth, { ...window, windowDays: 90 })).resolves.toMatchObject({
+      cohorts: [],
+      omitted: 'insufficient_data',
+    });
   });
 });
 

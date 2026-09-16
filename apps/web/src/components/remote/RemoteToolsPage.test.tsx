@@ -10,6 +10,13 @@ vi.mock('@/stores/auth', () => ({
   fetchWithAuth: vi.fn(),
 }));
 
+// This suite is about tabs/processes/services, not live events. The real hook
+// now reads the auth + org stores (#6029), which this partial auth mock cannot
+// satisfy — stub it the way RemoteToolsPage.liveDesktopAccess.test.tsx does.
+vi.mock('@/hooks/useEventStream', () => ({
+  useEventStream: () => ({ connected: false, subscribe: vi.fn(), send: vi.fn() }),
+}));
+
 // The real button drives desktop-session launch/deep-link flows unrelated to
 // tab/hash behavior; only its presence matters for this suite.
 vi.mock('./ConnectDesktopButton', () => ({

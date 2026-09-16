@@ -11,7 +11,7 @@ import { findDueOfflineEffects, persistOfflineTransition, pruneOfflineEffects } 
 import { processOfflineEffect } from '../services/offlineTransitionEffects';
 import * as dbModule from '../db';
 import { devices, alertRules, alertTemplates, alerts } from '../db/schema';
-import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray } from 'drizzle-orm';
+import { eq, and, lt, gt, asc, inArray, or, isNull, notInArray, sql } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { createAlert, evaluateDeviceAlertsFromPolicy, alertRuleOwnershipConditionForOrg } from '../services/alertService';
 import { interpolateTemplate } from '../services/alertConditions';
@@ -22,6 +22,8 @@ import { envInt } from '../utils/envInt';
 import { createAuditLogAsync } from '../services/auditService';
 import { ANONYMOUS_ACTOR_ID } from '../services/auditEvents';
 import { DEFAULT_OFFLINE_THRESHOLD_MINUTES } from '../services/deviceLiveness';
+import { captureMessage } from '../services/sentry';
+import { throttledReporter } from '../services/sentryThrottle';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -133,6 +135,25 @@ function canonicalTimestamp(value: string, name: string): string {
 function sha256(parts: readonly string[]): string {
   return createHash('sha256').update(parts.join('\0')).digest('hex');
 }
+
+// Skipped-device-row reporting (#5867). A row with an invalid id/orgId/
+// lastSeenAt is re-selected and re-skipped every ~30s sweep until someone
+// fixes it by hand — permanent, not transient — so console.error alone (the
+// file's other benign-and-self-healing paths, e.g. the config-policy-tables
+// warning below) isn't durable signal on its own: no BullMQ job is ever
+// created for the row, so it never reaches attachWorkerObservability's
+// 'failed' handler either. Throttled (like the filterPreviewTimeout /
+// softwareInventoryObservations call sites) so one permanently-bad row
+// doesn't turn into an event per sweep.
+const reportSkippedDeviceRow = throttledReporter(5 * 60 * 1000, (suppressed) => {
+  captureMessage('offlineDetector skipped a device row with an invalid id/orgId/lastSeenAt', {
+    eventCode: 'offline_detector_invalid_device_row',
+    level: 'warning',
+  });
+  if (suppressed > 0) {
+    console.warn(`[OfflineDetector] ${suppressed} further invalid device rows suppressed since the last Sentry report`);
+  }
+});
 
 export function offlineTransitionId(
   orgId: string,
@@ -271,6 +292,7 @@ export function createOfflineWorker(): Worker<OfflineJobData> {
  */
 export async function processDetectOffline(data: DetectOfflineJobData): Promise<{
   detected: number;
+  skipped: number;
   durationMs: number;
 }> {
   const startTime = Date.now();
@@ -287,6 +309,7 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
   const queue = getOfflineQueue();
   let totalDetected = 0;
+  let totalSkipped = 0;
   let cursor: string | null = data.cursor ? requireUuid(data.cursor, 'cursor') : null;
 
   while (true) {
@@ -332,34 +355,53 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
 
     if (chunk.length === 0) break;
 
-    const jobs = chunk.map(device => {
-      const observedLastSeenAt = canonicalTimestamp(
-        device.lastSeenAt?.toISOString() || '',
-        'observedLastSeenAt',
-      );
-      const transitionId = offlineTransitionId(device.orgId, device.id, observedLastSeenAt);
-      return {
-        name: 'mark-offline',
-        data: {
-          type: 'mark-offline' as const,
-          transitionId,
-          deviceId: device.id,
-          orgId: device.orgId,
-          observedLastSeenAt,
-        },
-        opts: {
-          jobId: transitionId,
-          removeOnComplete: { count: 10_000 },
-          // Failed deterministic IDs must not block the next sweep forever.
-          // Brief retries absorb transient DB errors; exhausted jobs release
-          // their ID so an unchanged stale observation can be admitted again.
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 1_000 },
-          removeOnFail: true,
-        },
-      };
-    });
+    // A single malformed row (e.g. a non-v4 UUID inserted outside the API,
+    // which only ever mints v4) must not abort the whole page: requireUuid /
+    // canonicalTimestamp throwing inside a bare .map() would lose every OTHER
+    // device in this chunk too, and since the job retries from the same
+    // cursor, the bad row would fail the sweep every 30s forever (#5867).
+    // Skip-and-log the offending row instead so its siblings still get
+    // enqueued.
+    const jobs = chunk
+      .map(device => {
+        try {
+          const observedLastSeenAt = canonicalTimestamp(
+            device.lastSeenAt?.toISOString() || '',
+            'observedLastSeenAt',
+          );
+          const transitionId = offlineTransitionId(device.orgId, device.id, observedLastSeenAt);
+          return {
+            name: 'mark-offline',
+            data: {
+              type: 'mark-offline' as const,
+              transitionId,
+              deviceId: device.id,
+              orgId: device.orgId,
+              observedLastSeenAt,
+            },
+            opts: {
+              jobId: transitionId,
+              removeOnComplete: { count: 10_000 },
+              // Failed deterministic IDs must not block the next sweep forever.
+              // Brief retries absorb transient DB errors; exhausted jobs release
+              // their ID so an unchanged stale observation can be admitted again.
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 1_000 },
+              removeOnFail: true,
+            },
+          };
+        } catch (error) {
+          console.error(
+            `[OfflineDetector] Skipping device ${device.id} (org ${device.orgId}) — invalid identifiers or lastSeenAt:`,
+            error,
+          );
+          reportSkippedDeviceRow();
+          return null;
+        }
+      })
+      .filter((job): job is NonNullable<typeof job> => job !== null);
 
+    totalSkipped += chunk.length - jobs.length;
     await queue.addBulk(jobs);
     totalDetected += jobs.length;
     cursor = chunk[chunk.length - 1]!.id;
@@ -370,9 +412,13 @@ export async function processDetectOffline(data: DetectOfflineJobData): Promise<
   if (totalDetected > 0) {
     console.log(`[OfflineDetector] Detected ${totalDetected} stale devices`);
   }
+  if (totalSkipped > 0) {
+    console.warn(`[OfflineDetector] Skipped ${totalSkipped} device row(s) with invalid identifiers or lastSeenAt`);
+  }
 
   return {
     detected: totalDetected,
+    skipped: totalSkipped,
     durationMs: Date.now() - startTime
   };
 }
@@ -395,7 +441,9 @@ export async function processMarkOffline(data: MarkOfflineJobData): Promise<{
     const [device] = await db.update(devices).set({ status: 'offline' }).where(and(
       eq(devices.id, data.deviceId), eq(devices.orgId, data.orgId),
       inArray(devices.status, ['online', 'updating']),
-      eq(devices.lastSeenAt, new Date(observedLastSeenAt)),
+      // The observation and transition ID have JS millisecond precision, while
+      // SQL-side writes (e.g. now()) can leave microseconds in last_seen_at.
+      sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observedLastSeenAt}`,
     )).returning();
     if (!device) return [];
     return persistOfflineTransition(device, data.transitionId, observedLastSeenAt);

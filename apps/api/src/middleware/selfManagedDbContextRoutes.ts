@@ -28,6 +28,10 @@ interface SelfManagedRoute {
 }
 
 const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
+  // Commit source changes and record the audit before enqueueing discovery.
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/?$/ },
+  { method: 'PATCH', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/?$/ },
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/discover\/?$/ },
   // Partner-initiated "Send payment link" — createInvoicePayLink.
   { method: 'POST', pattern: /^\/api\/v1\/invoices\/[^/]+\/pay-link\/?$/ },
   // Customer-portal "Pay invoice online".
@@ -245,6 +249,14 @@ const SELF_MANAGED_DB_CONTEXT_ROUTES: readonly SelfManagedRoute[] = [
   // `withSystemDbAccessContext` block, run strictly AFTER the URL check, so
   // the handler needs no ambient transaction at all.
   { method: 'POST', pattern: /^\/api\/v1\/admin\/llm-provider-catalog\/[^/]+\/revisions\/?$/ },
+  // Task A9 (tool-catalog W1) — the tool test-call route dispatches a real
+  // outbound MCP call via executeTenantTool (the remote server's own
+  // latency, no bounded timeout on our side beyond the client's). The
+  // handler wraps its lookups in a short withAuthDbAccessContext block and
+  // resolver/executor manage their own short system-scoped contexts around
+  // the network call, so the ambient request transaction must not be held
+  // across it.
+  { method: 'POST', pattern: /^\/api\/v1\/tool-sources\/[^/]+\/tools\/[^/]+\/test\/?$/ },
 ];
 
 /**

@@ -217,9 +217,15 @@ export async function processScriptMonitorTick(): Promise<ScriptMonitorTickResul
         // Winner-per-monitor resolution (device-first, see header). A
         // disabled-for-this-device winner (an explicit override lower in
         // the hierarchy) contributes no dispatch, same as it contributes no
-        // alert rule on the evaluation side.
-        const effective = await resolveMonitorsForDevice(device.id);
-        const match = effective.find((m) => m.monitorId === monitor.id);
+        // alert rule on the evaluation side. A device that vanished between
+        // the query above and here (raced a delete) resolves as
+        // `device_missing`, not a fabricated "zero monitors" — same
+        // no-dispatch outcome for this tick either way (#5677).
+        const resolution = await resolveMonitorsForDevice(device.id);
+        const match =
+          resolution.kind === 'resolved'
+            ? resolution.monitors.find((m) => m.monitorId === monitor.id)
+            : undefined;
         if (!match || !match.enabled) {
           result.skipped++;
           continue;

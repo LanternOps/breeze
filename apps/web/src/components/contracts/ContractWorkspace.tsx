@@ -11,6 +11,7 @@ import {
   CONTRACT_STATUS_ROLES,
   type ContractDetail as ContractDetailData,
 } from '../../lib/api/contracts';
+import { listContractDocuments, type ContractDocument } from '../../lib/api/contractDocuments';
 import { StatusPill } from '../billing/shared/StatusPill';
 
 const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
@@ -61,6 +62,39 @@ export default function ContractWorkspace({ contractId }: Props) {
   }, [isNew, contractId, t]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Spec §6 reciprocal link: name the agreement this contract sits under.
+  //
+  // Fetched HERE rather than bubbled out of the embedded SignedAgreementsPage
+  // on ContractDetail, on purpose: a DRAFT contract renders ContractEditor, not
+  // ContractDetail, so that list never mounts — and a draft auto-created from an
+  // accepted quote is exactly when this pill matters most. The cost is one
+  // duplicate contractId-scoped list GET; the projection carries no PDF bytes,
+  // so it is cheap.
+  //
+  // "First by created_at" (spec §6) = the LAST element: the service orders
+  // desc(createdAt).
+  const [firstAgreement, setFirstAgreement] = useState<ContractDocument | null>(null);
+  useEffect(() => {
+    if (isNew || !contractId) return;
+    let cancelled = false;
+    // try/catch around the WHOLE body, not `.catch()` on the call: the client
+    // can throw synchronously (or, under a stubbed transport, return nothing at
+    // all), and an unhandled rejection out of a decorative effect would take the
+    // page down with it.
+    void (async () => {
+      try {
+        const res = await listContractDocuments({ contractId });
+        if (!res?.ok) return;               // decoration; a failure is silent
+        const body = (await res.json().catch(() => null)) as { data?: ContractDocument[] } | null;
+        const docs = body?.data ?? [];
+        if (!cancelled && docs.length) setFirstAgreement(docs[docs.length - 1]!);
+      } catch {
+        // no pill; never a page-level error
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isNew, contractId]);
 
   if (isNew) {
     return (
@@ -118,6 +152,15 @@ export default function ContractWorkspace({ contractId }: Props) {
               label={t(/* i18n-dynamic */ `contracts.shared.status.${contract.status}`)}
               className={CONTRACT_STATUS_ROLES[contract.status].className}
             />
+            {firstAgreement && (
+              <a href="#signed-agreements" data-testid="contract-under-agreement-pill"
+                 className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted/70">
+                {t('agreements.contractPill.under', {
+                  template: firstAgreement.templateName,
+                  n: firstAgreement.templateVersionNumber,
+                })}
+              </a>
+            )}
           </div>
         </div>
         {contract.status === 'active' && canWrite && (

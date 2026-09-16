@@ -402,6 +402,7 @@ export default function ScriptsPage() {
           onEdit={handleEdit}
           onDuplicate={(script) => void handleDuplicate(script)}
           onDelete={handleDelete}
+          onOpenLibrary={() => void handleOpenLibrary()}
           organizations={organizations}
         />
       )}
@@ -471,7 +472,7 @@ export default function ScriptsPage() {
 
       {/* Import from Library Modal */}
       {modalMode === 'import-library' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
+        <div data-testid="scripts-library-dialog" className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 px-4 py-8">
           <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border bg-card shadow-lg flex flex-col">
             <div className="flex items-center justify-between border-b px-6 py-4">
               <div>
@@ -481,6 +482,7 @@ export default function ScriptsPage() {
               <button
                 type="button"
                 onClick={handleCloseModal}
+                data-testid="scripts-library-close"
                 className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-muted"
               >
                 <X className="h-5 w-5" />

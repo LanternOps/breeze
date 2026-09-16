@@ -318,6 +318,11 @@
       "estimateExcluded": "Exclut {{count}} contrat(s) dont l’estimation est indisponible"
     },
     "contractsList": {
+      "currencyBanner": {
+        "count": "{{count}} contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "countPlus": "{{count}}+ contrats sont facturés dans une devise différente de celle de leur organisation.",
+        "review": "Les examiner"
+      },
       "title": "Contrats",
       "description": "Accords récurrents qui génèrent automatiquement des factures brouillon selon une périodicité.",
       "newContract": "Nouveau contrat",
@@ -583,6 +588,46 @@
       "warnings": {
         "markupRemoved": "Enregistré, mais une mise en forme non prise en charge a été supprimée : {{tags}}. Le corps des conventions prend en charge les titres, le gras, l'italique, le soulignement, les listes et les liens."
       }
+    }
+  },
+  "agreements": {
+    "tabs": {
+      "templates": "Modèles de convention",
+      "signed": "Conventions signées"
+    },
+    "signedPage": {
+      "title": "Conventions signées",
+      "description": "Toutes les conventions que vos clients ont signées. Liez-en une à un contrat pour qu’elle apparaisse sur le contrat qu’elle régit.",
+      "unlinkedOnly": "Non liées uniquement",
+      "empty": {
+        "title": "Aucune convention signée pour l’instant",
+        "description": "Une convention est signée lorsqu’un client accepte un devis qui en comporte une."
+      },
+      "emptyUnlinked": {
+        "title": "Aucune convention signée non liée",
+        "description": "Toutes les conventions signées sont déjà classées avec un contrat."
+      },
+      "columns": {
+        "contract": "Contrat"
+      },
+      "viewContract": "Voir le contrat",
+      "notLinked": "Non liée",
+      "rowSubtitle": "Acceptée avec le devis {{quoteNumber}} par {{signer}} le {{date}}",
+      "rowSubtitleNoQuote": "Signée par {{signer}} le {{date}}"
+    },
+    "templateEditor": {
+      "usage": "Utilisé sur {{quotes}} devis · {{signed}} conventions signées",
+      "usageUnavailable": "Utilisation indisponible",
+      "backToTemplates": "Retour aux modèles de convention",
+      "archiveConfirm": {
+        "title": "Archiver ce modèle de convention ?",
+        "message": "Utilisé sur {{quotes}} devis · {{signed}} conventions signées. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section de convention ne pourra être ajoutée.",
+        "messageUnknownUsage": "Impossible de vérifier où ce modèle est utilisé. Les devis déjà rattachés continuent de fonctionner, mais aucune nouvelle section de convention ne pourra être ajoutée.",
+        "confirm": "Archiver le modèle"
+      }
+    },
+    "contractPill": {
+      "under": "Sous {{template}} v{{n}}"
     }
   },
   "quotes": {
@@ -1297,7 +1342,7 @@
       "contract": {
         "download": "Télécharger la convention",
         "previewTitle": "Convention {{name}}",
-        "unavailable": "Fichier du contrat indisponible",
+        "unavailable": "Fichier de la convention indisponible",
         "versionFooter": "{{name}} — version {{version}}"
       },
       "draft": "Brouillon",

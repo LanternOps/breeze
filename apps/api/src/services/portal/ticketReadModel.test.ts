@@ -24,6 +24,8 @@ vi.mock('../../db', () => ({
   },
 }));
 
+import { portalTicketOwnership } from '../../routes/portal/ticketOwnership';
+
 import { supportTile, ticketSla } from './ticketReadModel';
 
 const NOW = new Date('2026-09-02T02:00:00Z');
@@ -106,7 +108,7 @@ describe('supportTile', () => {
     state.wheres.length = 0;
   });
 
-  it('returns org-wide open count and response sample', async () => {
+  it('scopes the open count to ownership and keeps the response sample org-wide', async () => {
     state.rows.push(
       [{ openTickets: 4 }],
       [{ averageFirstResponseMinutes: 35, sampleSize: 2 }],
@@ -116,7 +118,7 @@ describe('supportTile', () => {
       supportTile(ORG_ID, {
         timezone: 'UTC',
         now: new Date('2026-09-02T12:00:00Z'),
-      }),
+      }, portalTicketOwnership({ id: 'portal-user-1', contactId: null })),
     ).resolves.toEqual({
       status: 'ok',
       openTickets: 4,
@@ -137,6 +139,9 @@ describe('supportTile', () => {
     expect(responseQuery!.sql).toContain('"tickets"."deleted_at" is null');
     expect(responseQuery!.sql).toContain('date_trunc');
     expect(openQuery!.params).toContain(ORG_ID);
+    expect(openQuery!.sql).toContain('"tickets"."submitted_by" =');
+    expect(openQuery!.params).toContain('portal-user-1');
+    expect(responseQuery!.sql).not.toContain('submitted_by');
     expect(responseQuery!.params).toContain(ORG_ID);
   });
 });

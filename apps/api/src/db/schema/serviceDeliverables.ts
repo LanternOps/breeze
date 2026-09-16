@@ -35,6 +35,19 @@ export const serviceDeliverables = pgTable('service_deliverables', {
   autoEvidenceReportId: uuid('auto_evidence_report_id').references(() => reports.id),
   ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
   ticketCategoryId: uuid('ticket_category_id').references(() => ticketCategories.id, { onDelete: 'set null' }),
+  /** Internal runbook prose for the technician. NEVER entered into the portal
+   *  read model (#5808 W03, spec §5) — services/portal/serviceReadModel.ts must
+   *  not select it, and nothing may auto-append it to a resolution or delivery
+   *  note. */
+  instructions: text('instructions'),
+  /** Live pointer at a ticket_checklist_templates row (spec OD-3, settled as A).
+   *  A template edit improves every FUTURE occurrence; already-opened
+   *  occurrences are unaffected because their ticket_checklist_items are real
+   *  rows no later edit can touch. Deliberately a SINGLE-column FK — a
+   *  composite (id, org_id) one could never match a partner-wide template, see
+   *  the header of migration 2026-10-16-192300. The owner-axis rules live in
+   *  services/checklistTemplateReference.ts instead. */
+  checklistTemplateId: uuid('checklist_template_id'),
   portalVisible: boolean('portal_visible').notNull().default(true),
   active: boolean('active').notNull().default(true),
   sortOrder: integer('sort_order').notNull().default(0),
@@ -68,6 +81,14 @@ export const serviceDeliverableOccurrences = pgTable('service_deliverable_occurr
   waivedAt: timestamp('waived_at', { withTimezone: true }),
   waivedByUserId: uuid('waived_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   waivedReason: text('waived_reason'),
+  /** #5784 W01. Last auto-evidence sweep attempt for this occurrence. */
+  autoEvidenceAttemptedAt: timestamp('auto_evidence_attempted_at', { withTimezone: true }),
+  /**
+   * #5784 W01. Last refusal reason (`AutoEvidenceRefusal`), NULL when the last
+   * attempt succeeded or none has run. Also de-duplicates the internal ticket
+   * comment: the sweep comments only when this value CHANGES.
+   */
+  autoEvidenceRefusal: text('auto_evidence_refusal'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

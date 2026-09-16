@@ -1857,16 +1857,21 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 	// macOS/Linux.
 	detachHelperConsole()
 
-	// Log to file in the same logs folder as the main agent
-	logDir := filepath.Dir(config.Default().LogFile) // e.g. C:\ProgramData\Breeze\logs
-	os.MkdirAll(logDir, 0700)
+	// Log to file in the same logs folder as the main agent (e.g.
+	// C:\ProgramData\Breeze\logs) — except on macOS, where these helpers
+	// run as the logged-in user and the shared directory is root-owned
+	// 0700 and re-hardened on every agent log open/rotation. There they
+	// get ~/Library/Logs/Breeze instead (#5877).
+	logDir, homeErr := config.HelperLogDir()
+	mkdirErr := os.MkdirAll(logDir, 0700)
 	logFileName := "user-helper.log"
 	if binaryKind == ipc.HelperBinaryDesktopHelper {
 		logFileName = "desktop-helper.log"
 	}
 	logPath := filepath.Join(logDir, logFileName)
 	var output io.Writer = os.Stdout
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
+	f, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if openErr == nil {
 		// When spawned with CREATE_NO_WINDOW (service helper), stdout is invalid.
 		// Use file-only to avoid io.MultiWriter aborting on stdout write errors.
 		if hasConsole() {
@@ -1937,6 +1942,13 @@ func runHelperProcess(name string, role ipc.HelperRole, context, binaryKind stri
 		}
 		defer logging.StopShipper()
 	}
+
+	// Always record where diagnostics are going; the pre-#5877 code fell
+	// back to stdout silently, so an unwritable directory looked like an
+	// empty log with no explanation anywhere (and under a macOS LaunchAgent
+	// or a CREATE_NO_WINDOW spawn, stdout goes nowhere at all). Emitted
+	// after the shipper is up so the warn still reaches Agent Logs.
+	logging.EmitLogFileOutcome(slog.Default(), logPath, openErr, mkdirErr, homeErr)
 
 	// Top-level panic recovery for the main goroutine of runHelperProcess.
 	// NOTE: recover() only catches panics in THIS goroutine. Panics in

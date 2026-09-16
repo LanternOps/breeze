@@ -59,6 +59,13 @@ export interface Deliverable {
   autoEvidenceReportId: string | null;
   ownerUserId: string | null;
   ticketCategoryId: string | null;
+  /** #5808 W03 — internal runbook prose for the technician. Never shown to the
+   *  customer. */
+  instructions: string | null;
+  /** #5808 W03 — a live pointer to the checklist template seeded onto each
+   *  occurrence's ticket. Editing the template improves every FUTURE
+   *  occurrence; already-opened ones keep the rows they were seeded with. */
+  checklistTemplateId: string | null;
   portalVisible: boolean;
   active: boolean;
   sortOrder: number;
@@ -104,6 +111,10 @@ export interface Occurrence {
   updatedAt: string;
   late: boolean;
   evidence: OccurrenceEvidence[];
+  /** #5808 W03 — MSP-only checklist progress for this occurrence's ticket.
+   *  null when there is no ticket or the ticket has no checklist. The customer
+   *  portal has its own DTOs and never carries this. */
+  checklist: { done: number; total: number } | null;
 }
 
 export interface ListDeliverablesQuery {

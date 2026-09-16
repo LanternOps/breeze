@@ -19,6 +19,7 @@ interface Draft {
 }
 
 type Editing = { id?: string; original?: TenantVariable; draft: Draft } | null;
+type ScopeFilter = 'all' | TenantVariable['ownerScope'];
 
 const UNAUTHORIZED = () => void navigateTo(loginPathWithNext(), { replace: true });
 const KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -48,6 +49,7 @@ export default function TenantVariablesPage() {
   const { t } = useTranslation('settings');
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const orgScope = useOrgScope();
+  const partnerOnly = isPartnerScope && orgScope.scope === 'all';
 
   const [variables, setVariables] = useState<TenantVariable[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,13 +58,15 @@ export default function TenantVariablesPage() {
   const [issues, setIssues] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>('all');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
-    // fetchWithAuth injects the selected orgId, so this is already scoped to
-    // the current org context (plus the partner-wide rows it inherits).
-    const response = await fetchWithAuth('/tenant-variables').catch(() => null);
+    // A selected org includes its inherited partner rows. All Organizations
+    // instead lists only partner-wide definitions (#5353).
+    const response = await fetchWithAuth(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables').catch(() => null);
     if (!response || !response.ok) {
       setError(true);
       setLoading(false);
@@ -71,11 +75,16 @@ export default function TenantVariablesPage() {
     const body = (await response.json()) as { data?: TenantVariable[] };
     setVariables(body.data ?? []);
     setLoading(false);
-  }, []);
+  }, [partnerOnly]);
 
+  // Re-run on an org switch (not just mount): `load()` reads whatever org
+  // fetchWithAuth currently injects, so a stale list otherwise lingers on
+  // screen after switching orgs while save() already posts against the new
+  // one (#5354). Follows the SsoProvidersPage pattern (`orgScope.scope` +
+  // `orgScope.orgId` deps).
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, orgScope.scope, orgScope.orgId]);
 
   const openNew = () => {
     setIssues([]);
@@ -192,6 +201,26 @@ export default function TenantVariablesPage() {
    */
   const canManage = (variable: TenantVariable) => variable.ownerScope === 'organization' || isPartnerScope;
 
+  // Client-side: the endpoint already returns the whole list (#5354), so there
+  // is no page/query-param round trip to add for this.
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredVariables = variables.filter((variable) => {
+    if (!partnerOnly && scopeFilter !== 'all' && variable.ownerScope !== scopeFilter) return false;
+    if (!normalizedSearch) return true;
+    const matchesKey = variable.key.toLowerCase().includes(normalizedSearch);
+    const matchesDescription = (variable.description ?? '').toLowerCase().includes(normalizedSearch);
+    return matchesKey || matchesDescription;
+  });
+  const scopeFilters: { value: ScopeFilter; label: string; testId: string }[] = [
+    { value: 'all', label: t('tenantVariablesPage.filters.scopeAll'), testId: 'tenant-variable-filter-scope-all' },
+    { value: 'partner', label: t('tenantVariablesPage.editor.allOrgs'), testId: 'tenant-variable-filter-scope-partner' },
+    {
+      value: 'organization',
+      label: t('tenantVariablesPage.editor.thisOrg'),
+      testId: 'tenant-variable-filter-scope-organization'
+    }
+  ];
+
   return (
     <div className="space-y-6" data-testid="tenant-variables-page">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -209,6 +238,12 @@ export default function TenantVariablesPage() {
           {t('tenantVariablesPage.actions.add')}
         </button>
       </div>
+
+      {partnerOnly && (
+        <p className="text-sm text-muted-foreground" data-testid="tenant-variables-org-note">
+          {t('tenantVariablesPage.orgOwnedNote')}
+        </p>
+      )}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -343,6 +378,41 @@ export default function TenantVariablesPage() {
         </section>
       )}
 
+      {!loading && variables.length > 0 && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center" data-testid="tenant-variables-toolbar">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('tenantVariablesPage.filters.searchPlaceholder')}
+            aria-label={t('tenantVariablesPage.filters.searchLabel')}
+            className="h-9 min-w-48 flex-1 rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+            data-testid="tenant-variable-search"
+          />
+          {!partnerOnly && (
+            <div
+              className="flex items-center gap-1 rounded-md border bg-muted/40 p-1"
+              role="group"
+              aria-label={t('tenantVariablesPage.filters.scopeGroupLabel')}
+            >
+              {scopeFilters.map((filter) => (
+                <button
+                  key={filter.value}
+                  type="button"
+                  onClick={() => setScopeFilter(filter.value)}
+                  aria-pressed={scopeFilter === filter.value}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition ${
+                    scopeFilter === filter.value ? 'bg-card text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  data-testid={filter.testId}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="py-12 text-center text-sm text-muted-foreground">{t('tenantVariablesPage.loading')}</div>
       ) : variables.length === 0 ? (
@@ -350,6 +420,12 @@ export default function TenantVariablesPage() {
           <KeyRound className="mx-auto mb-2 h-6 w-6 text-muted-foreground" />
           <p className="text-sm font-medium">{t('tenantVariablesPage.empty.title')}</p>
           <p className="text-sm text-muted-foreground">{t('tenantVariablesPage.empty.description')}</p>
+        </div>
+      ) : filteredVariables.length === 0 ? (
+        <div className="rounded-lg border border-dashed py-12 text-center" data-testid="tenant-variables-no-matches">
+          <KeyRound className="mx-auto mb-2 h-6 w-6 text-muted-foreground" />
+          <p className="text-sm font-medium">{t('tenantVariablesPage.noMatches.title')}</p>
+          <p className="text-sm text-muted-foreground">{t('tenantVariablesPage.noMatches.description')}</p>
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border">
@@ -364,7 +440,7 @@ export default function TenantVariablesPage() {
               </tr>
             </thead>
             <tbody>
-              {variables.map((variable) => (
+              {filteredVariables.map((variable) => (
                 <tr key={variable.id} className="border-t" data-testid={`tenant-variable-row-${variable.key}`}>
                   <td className="px-4 py-2 font-mono text-xs">{`{{var.${variable.key}}}`}</td>
                   <td className="px-4 py-2">
@@ -386,7 +462,9 @@ export default function TenantVariablesPage() {
                         {t('tenantVariablesPage.editor.allOrgs')}
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">{t('tenantVariablesPage.editor.thisOrg')}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {variable.orgName ?? t('tenantVariablesPage.editor.thisOrg')}
+                      </span>
                     )}
                   </td>
                   <td className="px-4 py-2 text-muted-foreground">{variable.description}</td>

@@ -49,8 +49,12 @@
   "deciding": "Wird gesendet…",
   "expiresIn": "Läuft in {{minutes}} Min. ab",
   "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "expiresInHours": "Läuft in {{hours}} Std. ab",
+  "expiresInDays": "Läuft in {{days}} Tagen ab",
   "expired": "Abgelaufen",
   "unknownOrganization": "Unbekannte Organisation",
+  "intentNoLongerPending": "Diese Genehmigung ist nicht mehr ausstehend.",
+  "dismiss": "Ausblenden",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} für {{org}} genehmigt",
   "pagination": {
@@ -85,6 +89,25 @@
     "errors": {
       "approvedPromoteFailed": "Genehmigt, aber die Anfrage zur Vorautorisierung konnte nicht gesendet werden. Versuchen Sie es erneut in den Agenteneinstellungen.",
       "policyDecideDisabled": "Genehmigt. Die Vorautorisierung konnte nicht angefordert werden, da sie für diese Bereitstellung deaktiviert ist."
+    }
+  },
+  "recent": {
+    "title": "Kürzlich",
+    "subtitle": "Bereits entschieden oder abgeschlossen",
+    "loading": "Kürzliche Genehmigungen werden geladen…",
+    "error": "Kürzliche Genehmigungen konnten nicht geladen werden.",
+    "retry": "Erneut versuchen",
+    "empty": "Kürzlich wurde nichts abgeschlossen.",
+    "status": {
+      "failed": "Fehlgeschlagen",
+      "rejected": "Abgelehnt",
+      "expired": "Abgelaufen",
+      "cancelled": "Abgebrochen",
+      "completed": "Abgeschlossen",
+      "denied": "Abgelehnt",
+      "approved": "Genehmigt",
+      "reported": "Gemeldet",
+      "unknown": "Unbekannt"
     }
   }
 }

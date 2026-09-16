@@ -57,10 +57,15 @@ vi.mock('./sentry', () => ({
   captureException: vi.fn(),
 }));
 
+vi.mock('./patchAlerts', () => ({
+  emitPatchJobFailureAlert: vi.fn().mockResolvedValue('alert-1'),
+}));
+
 import { db } from '../db';
 import { patchJobResults, patchJobs } from '../db/schema';
 import { evaluateRebootPolicy, executeReboot } from './patchRebootHandler';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
+import { emitPatchJobFailureAlert } from './patchAlerts';
 import {
   SUPERSEDED_ERROR_MESSAGE,
   checkAndFinalizeJob,
@@ -541,6 +546,186 @@ describe('finalizePatchJobDevice — the poll exhausted with no result', () => {
     expectCounterDelta(jobCounterUpdate(), 'devicesPending', '- 1');
     // A device that never reported installed nothing.
     expect(evaluateRebootPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe('finalizePatchJobDevice — patch job failure alert (#5750 W04)', () => {
+  it('fires the failure alert once for a genuine install failure', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any) // no existing rows — first write
+      .mockImplementationOnce(() => limitChain([]) as any); // checkAndFinalizeJob
+
+    const result = await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: {
+        kind: 'result',
+        commandResult: {
+          status: 'failed',
+          exitCode: 1,
+          stdout: JSON.stringify({
+            success: false,
+            installedCount: 1,
+            failedCount: 1,
+            rebootRequired: false,
+            results: [
+              { id: 'patch-1', externalId: 'KB1', status: 'installed' },
+              { id: 'patch-2', externalId: 'KB2', status: 'failed', error: 'disk full' },
+            ],
+          }),
+        },
+      },
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(result).toEqual({ applied: true });
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledTimes(1);
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: CONTEXT.orgId,
+        patchJobId: JOB,
+        deviceId: DEVICE,
+        failedCount: 1,
+        errorExcerpt: 'disk full',
+      }),
+    );
+  });
+
+  it('fires the failure alert for a timeout terminal (execution clock ran out)', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: { kind: 'timeout', message: 'Command timed out' },
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledTimes(1);
+    expect(emitPatchJobFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: CONTEXT.orgId,
+        deviceId: DEVICE,
+        patchJobId: JOB,
+        errorExcerpt: 'Command timed out',
+      }),
+    );
+  });
+
+  it('does NOT fire the failure alert for a successful install that still requires a reboot (#4228)', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain([]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: {
+        kind: 'result',
+        commandResult: {
+          status: 'completed',
+          exitCode: 0,
+          stdout: JSON.stringify({
+            success: true,
+            installedCount: 2,
+            failedCount: 0,
+            rebootRequired: true,
+            results: [
+              { id: 'patch-1', externalId: 'KB1', status: 'installed', rebootRequired: true },
+              { id: 'patch-2', externalId: 'KB2', status: 'installed' },
+            ],
+          }),
+        },
+      },
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the failure alert for an expired (queued-offline delivery deadline) terminal', async () => {
+    // #5128 W3: the device never got the command — it did not fail an install.
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain(queuedRows()) as any)
+      .mockImplementationOnce(() => limitChain([{ orgId: 'org-1', targets: {} }]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: { kind: 'expired', message: 'Device did not reconnect before 2026-10-20' },
+      completedAt: new Date(),
+      source: { kind: 'deferred' },
+    });
+
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the failure alert for a cancelled device', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain(queuedRows()) as any)
+      .mockImplementationOnce(() => limitChain([{ orgId: 'org-1', targets: {} }]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: { kind: 'cancelled', reason: 'cancelled' },
+      completedAt: new Date(),
+      source: { kind: 'deferred' },
+    });
+
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the failure alert for a superseded device', async () => {
+    vi.mocked(db.select)
+      .mockImplementationOnce(() => whereChain(queuedRows()) as any)
+      .mockImplementationOnce(() => limitChain([{ orgId: 'org-1', targets: {} }]) as any)
+      .mockImplementationOnce(() => limitChain([]) as any);
+
+    await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: { kind: 'superseded', byJobId: 'job-2' },
+      completedAt: new Date(),
+      source: { kind: 'deferred' },
+    });
+
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it('does NOT fire the failure alert when a second door hits the already-terminal fence (dedupe)', async () => {
+    vi.mocked(db.select).mockImplementationOnce(
+      () =>
+        whereChain([
+          { id: 'r1', patchId: 'patch-1', status: 'completed', rebootRequired: true },
+          { id: 'r2', patchId: 'patch-2', status: 'completed', rebootRequired: false },
+        ]) as any,
+    );
+
+    const result = await finalizePatchJobDevice({
+      patchJobId: JOB,
+      deviceId: DEVICE,
+      commandId: COMMAND,
+      terminal: successResult(),
+      completedAt: new Date(),
+      source: { kind: 'synchronous', context: CONTEXT },
+    });
+
+    expect(result).toEqual({ applied: false });
+    expect(emitPatchJobFailureAlert).not.toHaveBeenCalled();
   });
 });
 

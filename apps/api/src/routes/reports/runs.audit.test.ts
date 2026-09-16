@@ -63,6 +63,16 @@ vi.mock('../../db/schema', () => ({
     id: 'reportRuns.id',
     reportId: 'reportRuns.reportId',
     result: 'reportRuns.result',
+    artifactId: 'reportRuns.artifactId',
+  },
+  // Execution plane W05 (#5716): runs.ts reaches artifactService for the
+  // from-artifact attach route, and that module reads this table off the
+  // barrel. Present so this partial schema mock stays loadable.
+  aiRunArtifacts: {
+    id: 'aiRunArtifacts.id',
+    orgId: 'aiRunArtifacts.orgId',
+    runId: 'aiRunArtifacts.runId',
+    expiresAt: 'aiRunArtifacts.expiresAt',
   },
 }));
 

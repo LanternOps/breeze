@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   csv: vi.fn(),
   where: null as unknown,
   selfServiceEnabled: false,
+  devicesEnabled: false,
+  brandingExists: true,
 }));
 
 vi.mock('../../services/portal/deviceReadModel', () => ({
@@ -27,7 +29,9 @@ vi.mock('../../db', () => ({
           if ('enableSelfService' in selection) {
             return {
               limit: vi.fn(() =>
-                Promise.resolve([{ enableSelfService: mocks.selfServiceEnabled }]),
+                Promise.resolve(mocks.brandingExists
+                  ? [{ enableSelfService: mocks.selfServiceEnabled, enableDevices: mocks.devicesEnabled }]
+                  : []),
               ),
             };
           }
@@ -105,6 +109,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.where = null;
   mocks.selfServiceEnabled = false;
+  mocks.devicesEnabled = false;
+  mocks.brandingExists = true;
 });
 
 afterEach(() => {
@@ -173,7 +179,62 @@ it('logs CSV generation failures with the org id and returns an error response',
   );
 });
 
-describe('real portal router auth and enableSelfService gate', () => {
+describe('real portal router auth and Devices gate', () => {
+  it.each([[true, false], [false, true], [true, true]])(
+    'allows Devices with enableDevices=%s and enableSelfService=%s',
+    async (devicesEnabled, selfServiceEnabled) => {
+      mocks.devicesEnabled = devicesEnabled;
+      mocks.selfServiceEnabled = selfServiceEnabled;
+      mocks.enriched.mockResolvedValue({ data: [], pagination: { page: 1, limit: 50, total: 0 } });
+      const response = await portalRoutes.request('/devices', {
+        headers: { Authorization: 'Bearer portal-token' },
+      });
+      expect(response.status).toBe(200);
+      expect(mocks.enriched).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111', expect.any(Object));
+    },
+  );
+
+  it.each(['/devices', '/devices/export.csv'])(
+    'preserves legacy access without a portal_branding row for GET %s',
+    async (path) => {
+      mocks.brandingExists = false;
+      mocks.enriched.mockResolvedValue({ data: [], pagination: { page: 1, limit: 50, total: 0 } });
+      mocks.csv.mockImplementation(async function* () {
+        yield 'Device,Status\nLaptop,online\n';
+      });
+
+      const response = await portalRoutes.request(path, {
+        headers: { Authorization: 'Bearer portal-token' },
+      });
+
+      expect(response.status).toBe(200);
+      const reader = path.endsWith('.csv') ? mocks.csv : mocks.enriched;
+      expect(reader).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111', expect.any(Object));
+    },
+  );
+
+  it('allows CSV export with Devices enabled and self-service disabled', async () => {
+    mocks.devicesEnabled = true;
+    mocks.selfServiceEnabled = false;
+    mocks.csv.mockImplementation(async function* () {
+      yield 'Device,Status\nLaptop,online\n';
+    });
+
+    const response = await portalRoutes.request('/devices/export.csv', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/csv');
+    expect(await response.text()).toBe('Device,Status\nLaptop,online\n');
+    expect(mocks.csv).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      expect.objectContaining({ timezone: 'America/Denver' }),
+    );
+  });
+
   it.each(['/devices', '/devices/export.csv'])(
     'returns 401 for unauthenticated GET %s',
     async (path) => {
@@ -185,7 +246,7 @@ describe('real portal router auth and enableSelfService gate', () => {
   );
 
   it.each(['/devices', '/devices/export.csv'])(
-    'returns 403 when enableSelfService is false for GET %s',
+    'returns 403 when both Devices grants are false for GET %s',
     async (path) => {
       const response = await portalRoutes.request(path, {
         headers: { Authorization: 'Bearer portal-token' },

@@ -35,5 +35,39 @@
     "saveFailed": "Impossibile salvare il passaggio della checklist.",
     "reorderFailed": "Impossibile riordinare la checklist.",
     "tickRequiresUser": "Spuntare un passaggio richiede una sessione utente autenticata."
+  },
+  "templates": {
+    "title": "Modelli di checklist",
+    "subtitle": "Procedure riutilizzabili che i tuoi tecnici possono applicare a qualsiasi ticket.",
+    "allOrganizations": "Tutte le org",
+    "partnerWideHint": "Si applica a ogni organizzazione che gestisci, ora e in futuro.",
+    "thisOrganizationOnly": "Solo questa organizzazione",
+    "scope": "Chi può usare questo modello",
+    "name": "Nome",
+    "description": "Descrizione",
+    "instructions": "Istruzioni interne",
+    "instructionsHint": "Interno — mai mostrato al cliente.",
+    "isActive": "Attivo",
+    "inactiveHint": "I modelli inattivi restano collegati dove sono già utilizzati, ma non compaiono più nei selettori.",
+    "steps": "Passaggi",
+    "addStep": "Aggiungi un passaggio",
+    "stepLabelPlaceholder": "Etichetta del passaggio",
+    "empty": "Ancora nessun modello.",
+    "create": "Nuovo modello",
+    "save": "Salva",
+    "cancel": "Annulla",
+    "delete": "Elimina",
+    "apply": "Applica modello",
+    "applyCta": "Applica",
+    "choosePlaceholder": "Scegli un modello",
+    "applyMode": {
+      "append": "Aggiungi questi passaggi alla checklist esistente",
+      "replaceUnticked": "Sostituisci i passaggi non spuntati (i passaggi completati vengono mantenuti)"
+    },
+    "errors": {
+      "loadFailed": "Impossibile caricare i modelli di checklist.",
+      "saveFailed": "Impossibile salvare il modello di checklist.",
+      "applyFailed": "Impossibile applicare il modello di checklist."
+    }
   }
 }

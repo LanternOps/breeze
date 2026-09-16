@@ -68,6 +68,7 @@ function authority(
 }
 
 const AGENT_ROW = {
+  deviceId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
   hostname: 'agent-1',
   displayName: 'Agent One',
   osType: 'windows',
@@ -102,6 +103,7 @@ describe('device_inventory manual-asset union (#4622)', () => {
     expect(report.rowCount).toBe(2);
     const manual = report.rows.find((r) => r.serialNumber === 'MANUAL-SN');
     expect(manual).toEqual({
+      deviceId: null,
       hostname: 'Spare Laptop',
       displayName: 'Spare Laptop',
       osType: null,

@@ -85,6 +85,12 @@ const (
 	TypeDesktopLeaseRenew  = "desktop_lease_renew"  // helper -> agent
 	TypeDesktopLeaseUpdate = "desktop_lease_update" // agent -> helper
 
+	// SEC-038 start fence. The service seeds a connecting helper with its
+	// fence (desktop_fence_sync) and the helper acknowledges, so a start
+	// carrying a generation is never admitted by a helper that has not yet
+	// learned what the service already knows.
+	TypeDesktopFenceSync = "desktop_fence_sync" // agent -> helper
+
 	// Remote-session consent + banner
 	TypeConsentRequest = "consent_request"
 	TypeConsentResult  = "consent_result"
@@ -325,11 +331,17 @@ type TrayAction struct {
 // remote desktop session. The helper creates the full WebRTC pipeline and
 // returns an SDP answer.
 type DesktopStartRequest struct {
-	SessionID    string          `json:"sessionId"`
-	Offer        string          `json:"offer"`
-	ICEServers   json.RawMessage `json:"iceServers,omitempty"`
-	DisplayIndex int             `json:"displayIndex"`
-	GPUVendor    string          `json:"gpuVendor,omitempty"`
+	SessionID string `json:"sessionId"`
+	// StartGeneration is the server's monotonic desktop_start_generation for
+	// this start, as a canonical decimal string (SEC-038). It is a bigint on
+	// the server and an int64 here, so it never travels as a JSON number —
+	// above 2^53 that silently rounds. Empty from an older service, which the
+	// helper admits exactly as the agent does (mixed-fleet rollout).
+	StartGeneration string          `json:"startGeneration,omitempty"`
+	Offer           string          `json:"offer"`
+	ICEServers      json.RawMessage `json:"iceServers,omitempty"`
+	DisplayIndex    int             `json:"displayIndex"`
+	GPUVendor       string          `json:"gpuVendor,omitempty"`
 	// Agent-enforced session policy (findings #2, #7). Clipboard direction gates
 	// are pointers so an older service that doesn't set them leaves the helper at
 	// permissive defaults (preserve existing behavior). Timeouts of 0 = disabled.
@@ -389,11 +401,40 @@ type DesktopLeaseUpdate struct {
 	HardDeadlineUnixMs int64  `json:"hardDeadlineUnixMs,omitempty"`
 	Revoked            bool   `json:"revoked,omitempty"`
 	Reason             string `json:"reason,omitempty"`
+	// Unavailable is the control plane's "I cannot answer right now". It is
+	// NOT a renewal: before a session's first successful renewal it ends the
+	// session (SEC-038 owner decision 2), afterwards the grace window governs.
+	// Absent on an older service, where the answer was swallowed entirely.
+	Unavailable bool `json:"unavailable,omitempty"`
 }
 
 // DesktopStopRequest tells the user helper to tear down a desktop session.
 type DesktopStopRequest struct {
 	SessionID string `json:"sessionId"`
+	// TerminalGeneration is the generation at which the session was declared
+	// terminal, as a canonical decimal string (SEC-038). Empty from an older
+	// service; the helper's tombstone is installed either way, since a stop is
+	// an unambiguous terminal decision whatever its generation says.
+	TerminalGeneration string `json:"terminalGeneration,omitempty"`
+}
+
+// DesktopFenceSync seeds a freshly connected helper with the service's
+// SEC-038 start fence, so a helper that restarts mid-session cannot be talked
+// into replaying a start the service has already superseded or tombstoned.
+//
+// Sent agent -> helper on connect, before any start may be admitted for a
+// session carrying a generation.
+type DesktopFenceSync struct {
+	Sessions map[string]DesktopFenceEntry `json:"sessions"`
+}
+
+// DesktopFenceEntry is one session's fence state on the wire. Generations are
+// canonical decimal strings for the same reason as everywhere else.
+type DesktopFenceEntry struct {
+	// HighWater is the highest start generation the service has admitted.
+	HighWater string `json:"highWater,omitempty"`
+	// Terminal is the absolute tombstone.
+	Terminal bool `json:"terminal,omitempty"`
 }
 
 // SASRequest is sent by the user helper to the service when it needs to

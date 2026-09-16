@@ -103,7 +103,9 @@ export async function pruneOfflineEffects(): Promise<number> {
 export async function lockCurrentOfflineObservation(observation: OfflineObservation) {
   const [device] = await db.select().from(devices).where(and(
     eq(devices.id, observation.deviceId), eq(devices.orgId, observation.orgId),
-    eq(devices.status, 'offline'), eq(devices.lastSeenAt, new Date(observation.observedLastSeenAt)),
+    eq(devices.status, 'offline'),
+    // ms-precision observation vs. possibly µs last_seen_at — same as processMarkOffline (#6024).
+    sql`date_trunc('milliseconds', ${devices.lastSeenAt}) = ${observation.observedLastSeenAt}`,
     eq(devices.isEphemeral, false),
   )).for('update');
   return device;

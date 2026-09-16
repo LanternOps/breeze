@@ -2347,15 +2347,15 @@ export default function QuoteEditor({ detail, onChanged, onPendingEditsChange, o
                       {/* The href is a literal, never a locale value: a translated
                           route breaks the feature in one language only, at runtime,
                           with no test or type error (#3426, localeParity's
-                          routePathValueErrors). W3 retargets this to
-                          /agreements/templates when the IA split lands. */}
+                          routePathValueErrors). Retargeted to /agreements/templates
+                          by W03's IA split. */}
                       <Trans
                         i18nKey="quotes.editor.contract.noTemplates"
                         t={t}
                         components={{
                           templatesLink: (
                             <a
-                              href="/contracts#tab=templates"
+                              href="/agreements/templates"
                               className="font-medium underline hover:text-foreground"
                             />
                           ),

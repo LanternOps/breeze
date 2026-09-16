@@ -126,6 +126,8 @@ export const M365_SYNC_PRIMARY_SOURCE_KEY: Record<M365SyncDomain, string> = {
   ca_policies: 'policies',
   skus: 'subscribedSkus',
   secure_score: 'secureScores',
+  // #5784 W05. The executor's own source key for /auditLogs/signIns.
+  signin_events: 'signinEvents',
 };
 
 export const M365_SYNC_DOMAIN_ACTION_ID: Record<M365SyncDomain, M365SyncActionId> = {
@@ -135,6 +137,7 @@ export const M365_SYNC_DOMAIN_ACTION_ID: Record<M365SyncDomain, M365SyncActionId
   ca_policies: 'm365.sync.ca_policies',
   skus: 'm365.sync.skus',
   secure_score: 'm365.sync.secure_score',
+  signin_events: 'm365.sync.signin_events',
 };
 
 /**
@@ -148,11 +151,28 @@ export const M365_SYNC_DOMAIN_ACTION_ID: Record<M365SyncDomain, M365SyncActionId
  */
 export function m365SyncActionFor(
   domain: M365SyncDomain,
-  opts: { continuation?: string | null; backfill?: boolean } = {},
+  opts: {
+    continuation?: string | null;
+    backfill?: boolean;
+    /**
+     * #5784 W05. The `signin_events` delta window, computed in Phase A (the
+     * only phase that holds a DB context) by `signinEventsWindow`. Omitted for
+     * every other domain, and safe to omit here too: the executor then falls
+     * back to its own bounded cold-start window rather than scanning a tenant.
+     */
+    window?: { since: string; until: string } | null;
+  } = {},
 ): M365ReadAction {
   const type = M365_SYNC_DOMAIN_ACTION_ID[domain];
   if (type === 'm365.sync.signin_activity' && opts.continuation) {
     return { type, continuation: opts.continuation } as M365ReadAction;
+  }
+  if (type === 'm365.sync.signin_events') {
+    return {
+      type,
+      ...(opts.window ? { since: opts.window.since, until: opts.window.until } : {}),
+      ...(opts.continuation ? { continuation: opts.continuation } : {}),
+    } as M365ReadAction;
   }
   if (type === 'm365.sync.secure_score' && opts.backfill) {
     return { type, backfill: true } as M365ReadAction;

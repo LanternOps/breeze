@@ -142,7 +142,7 @@ export async function loadMeasuredImpact(
   const orgIds: readonly string[] = input.orgId !== undefined
     ? [input.orgId]
     : (auth.accessibleOrgIds ?? []);
-  const window: MeasuredWindow = { orgIds, from, through };
+  const window: MeasuredWindow = { orgIds, from, through, windowDays: input.window };
 
   const technicianAuthorized = canReadTechnicianMinutes(auth, permissions);
 
@@ -152,13 +152,19 @@ export async function loadMeasuredImpact(
     technicianAuthorized ? loadTechnicianMinutes(auth, window) : Promise.resolve(null),
   ]);
 
+  // An empty cohort list is not "nothing to omit" -- it's the same
+  // not-enough-comparable-work story the other two signals tell explicitly
+  // (#5879). Reporting `omitted: null` here left the band rendering a heading
+  // plus "0% logged" over zero rows, which reads as data rather than as absence.
   const technicianMinutes: MeasuredTechnicianMinutes = technicianRaw === null
     ? { omitted: 'insufficient_authority' }
-    : {
-        omitted: null,
-        cohorts: technicianRaw.cohorts,
-        loggingCoverage: technicianRaw.loggingCoverage,
-      };
+    : technicianRaw.cohorts.length === 0
+      ? { omitted: 'insufficient_data' }
+      : {
+          omitted: null,
+          cohorts: technicianRaw.cohorts,
+          loggingCoverage: technicianRaw.loggingCoverage,
+        };
 
   return {
     schemaVersion: 1,

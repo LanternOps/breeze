@@ -78,6 +78,7 @@ vi.mock('../../db', () => ({
   withSystemDbAccessContext: async <T>(fn: () => Promise<T>): Promise<T> => fn()
 }));
 
+import { db } from '../../db';
 import { scripts, scriptTags, scriptToTags, scriptVersions } from '../../db/schema';
 import { exportBundle, importBundle, previewBundle, type BundleAuth } from './index';
 import {
@@ -1287,5 +1288,33 @@ describe('exportBundle', () => {
     const bundle = await exportBundle(makeAuth(), [SCRIPT_ID]);
     const parsed = scriptBundleSchema.safeParse(bundle);
     expect(parsed.success).toBe(true);
+  });
+});
+
+
+describe('explicit import transaction', () => {
+  it.each(['rename', 'new-version'] as const)('routes %s SQL through the supplied transaction', async (mode) => {
+    const tx = {
+      select: vi.fn(vi.mocked(db.select).getMockImplementation()),
+      insert: vi.fn(vi.mocked(db.insert).getMockImplementation()),
+      update: vi.fn(vi.mocked(db.update).getMockImplementation()),
+      transaction: vi.fn(),
+    };
+    tx.transaction.mockImplementation(async (fn) => fn(tx));
+    h.state.selectQueue.push([{ id: SCRIPT_ID, name: baseEntry.name, version: 1, content: 'old' }]);
+    if (mode === 'rename') h.state.selectQueue.push([]); // available suffixed name
+    h.state.selectQueue.push([]); // new tag
+    if (mode === 'new-version') h.state.selectQueue.push([]); // existing tag links
+    const result = await importBundle(makeAuth(), validBundle([baseEntry]), {
+      mode, availability: 'org', tags: ['fleet-design'],
+    }, tx as unknown as NonNullable<Parameters<typeof importBundle>[3]>);
+    expect(result).toMatchObject({ errors: [], [mode === 'rename' ? 'renamed' : 'versioned']: 1 });
+    expect(tx.select).toHaveBeenCalled();
+    expect(tx.insert).toHaveBeenCalled();
+    expect(tx.transaction).toHaveBeenCalledOnce();
+    expect(db.select).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
   });
 });

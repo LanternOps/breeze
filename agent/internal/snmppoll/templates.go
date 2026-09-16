@@ -30,6 +30,12 @@ var printerOIDs = []string{
 }
 
 // GetTemplate returns a list of OIDs for the requested device type.
+//
+// Deprecated: not used in production — the server sends the device's template
+// as `oids`/`oidSpecs` on every poll command (spec §7.1), and these hardcoded
+// lists carry no mode or cadence, so wiring them in would GET table columns and
+// reproduce the silent-null bug W02 exists to fix. Kept only as the offline
+// fallback set a future disconnected mode would start from.
 func GetTemplate(deviceType string) []string {
 	deviceType = strings.ToLower(strings.TrimSpace(deviceType))
 

@@ -2062,11 +2062,21 @@ const MONITOR_ONLY_CHECK_INTERVAL_SECONDS = 60;
  * path, because middleware/agentAuth sets `breeze.current_partner_id`. Wrapping
  * this in a system context would be the forbidden request-path escalation
  * (#2417) and would double-hold a pooled connection (#1105).
+ *
+ * Discriminated so a device that vanished mid-request (raced a delete/org
+ * move) is never folded into "resolved with zero monitor-derived watches" —
+ * see the `resolveDeviceMonitoringSettings` caller (#5677).
  */
-async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitoringWatchConfig[]> {
-  const effective = await resolveMonitorsForDevice(deviceId);
+type MonitorDerivedWatchesResult =
+  | { kind: 'device_missing' }
+  | { kind: 'resolved'; watches: MonitoringWatchConfig[] };
+
+async function resolveMonitorDerivedWatches(deviceId: string): Promise<MonitorDerivedWatchesResult> {
+  const resolution = await resolveMonitorsForDevice(deviceId);
+  if (resolution.kind === 'device_missing') return { kind: 'device_missing' };
+  const effective = resolution.monitors;
   const enabledIds = effective.filter((m) => m.enabled).map((m) => m.monitorId);
-  if (enabledIds.length === 0) return [];
+  if (enabledIds.length === 0) return { kind: 'resolved', watches: [] };
 
   const definitions = await db
     .select({
@@ -2130,7 +2140,7 @@ async function resolveMonitorDerivedWatches(deviceId: string): Promise<Monitorin
     });
   }
 
-  return watches;
+  return { kind: 'resolved', watches };
 }
 
 /**
@@ -2179,7 +2189,27 @@ async function resolveDeviceMonitoringSettings(deviceId: string): Promise<Monito
   // unmodified. Both sources emit the same frozen `MonitoringWatchConfig`
   // shape; the union below is order-independent.
   const policy = await resolvePolicyMonitoringSettings(deviceId);
-  const monitorWatches = await resolveMonitorDerivedWatches(deviceId);
+  const monitorResult = await resolveMonitorDerivedWatches(deviceId);
+
+  // A device that vanished between authentication and here (raced a
+  // delete/org move) must NOT be folded into "resolved with zero
+  // monitor-derived watches": unioning `[]` into a truthy (possibly also
+  // empty) policy result would produce the #2949 "stop watching" clear
+  // signal for monitors this device still legitimately has, purely because
+  // of the race — not because resolution actually found zero (#5677). Omit
+  // the monitoring update entirely this heartbeat instead, same as
+  // `resolvePolicyMonitoringSettings` already does when its own device
+  // lookup misses.
+  if (monitorResult.kind === 'device_missing') {
+    // Surface this: the device just authenticated the heartbeat that reached
+    // this code, so a vanish between then and here should be rare. Silently
+    // omitting the monitoring update is the right behavior (see above), but
+    // silent AND invisible would hide a real bug (e.g. a stale deviceId)
+    // behind "just a benign race" forever (#5677 review).
+    console.warn(`[monitoring] device vanished mid-resolution, omitting monitoring update for device ${deviceId}`);
+    return null;
+  }
+  const monitorWatches = monitorResult.watches;
 
   // Null ONLY when both sources are empty AND no policy resolved. A policy that
   // resolved with zero enabled watches still returns `watches: []` below — that

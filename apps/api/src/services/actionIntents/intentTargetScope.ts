@@ -257,3 +257,34 @@ export function assertArgsMatchTicketScope(
     );
   }
 }
+
+/**
+ * #4442 W04 — does an intent's ARGUMENTS name exactly the system-observed
+ * subject, on the scope device?
+ *
+ * The creation gate and any later re-check must not drift, so the comparison
+ * lives here once. Shaped like `assertArgsMatchScope`
+ * (`intentTargetScope.ts`), but answers a narrower question: that gate proves
+ * the arguments target the scope DEVICE, this one proves they target the
+ * observed SUBJECT on it.
+ *
+ * Act mode for sweeps v1 covers exactly ONE op key. Of the two members of the
+ * closed `SweepProposedAction` union only `manage_services:restart` is in
+ * `POLICY_DECIDABLE_TIER3` (`policyDecidableKeys.ts`) —
+ * `remediate_vulnerability` is absent — and only `service_down` has a live
+ * re-probe (`sweepSubjectProbe.ts`). Anything else returns false: a subject
+ * whose condition cannot be re-verified must not be auto-executed, and a
+ * silent `true` here would be the whole gate.
+ */
+export function subjectMatchesArguments(
+  subject: { kind: string; key: string; observedAt?: string | null },
+  toolName: string,
+  input: Record<string, unknown>,
+  scopeDeviceId: string,
+): boolean {
+  if (subject.kind !== 'service_down') return false;
+  if (toolName !== 'manage_services') return false;
+  if (input.action !== 'restart') return false;
+  if (typeof input.deviceId !== 'string' || input.deviceId !== scopeDeviceId) return false;
+  return typeof input.serviceName === 'string' && input.serviceName === subject.key;
+}

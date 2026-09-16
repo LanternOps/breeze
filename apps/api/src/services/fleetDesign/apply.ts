@@ -58,6 +58,8 @@ import {
 export { FLEET_DESIGN_ASSIGNMENT_PRIORITY };
 export const FLEET_DESIGN_CHECK_INTERVAL_SECONDS = 60;
 
+type ApplyTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 interface ApplyCtx extends FleetDesignPreviewContext {
   auth: AuthContext;
   orgId: string;
@@ -120,18 +122,19 @@ export async function applyFleetDesign(
   };
   const skipped = [...preview.alreadyApplied];
 
-  const steps: Array<[number, () => Promise<void>]> = [
-    [1, () => stepFunctions(ctx)],
-    [2, () => stepRetire(ctx)],
-    [3, () => stepMonitoring(ctx)],
-    [4, () => stepScripts(ctx)],
-    [5, () => stepRoleCorrections(ctx)],
+  const steps: Array<[number, (tx: ApplyTransaction) => Promise<void>]> = [
+    [1, (tx) => stepFunctions(ctx, tx)],
+    [2, (tx) => stepRetire(ctx, tx)],
+    [3, (tx) => stepMonitoring(ctx, tx)],
+    [4, (tx) => stepScripts(ctx, tx)],
+    [5, (tx) => stepRoleCorrections(ctx, tx)],
   ];
   for (const [n, run] of steps) {
     const before = ctx.applied.length;
     try {
-      // SAVEPOINT inside the request transaction (db resolves to the ambient tx).
-      await db.transaction(async () => { await run(); });
+      // Pass the savepoint handle explicitly: the db proxy still resolves to
+      // the outer request transaction, including for nested helper transactions.
+      await db.transaction(async (tx) => { await run(tx); });
     } catch (error) {
       // Anything this step recorded was rolled back with the savepoint.
       ctx.applied.length = before;
@@ -148,7 +151,7 @@ export async function applyFleetDesign(
 // ---------------------------------------------------------------------------
 // Step 1: functions → assessments + one static group per function
 // ---------------------------------------------------------------------------
-async function stepFunctions(ctx: ApplyCtx): Promise<void> {
+async function stepFunctions(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
   const runId = ctx.locked.summary?.fleetDesign?.runId ?? null;
   for (const fn of ctx.preview.functions) {
     const itemRef = `functions:${fn.functionKey}`;
@@ -162,7 +165,7 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
     const priorAssessmentIdByDevice: Record<string, string | null> = {};
     for (const d of wanted) priorAssessmentIdByDevice[d] = null;
     if (wanted.length > 0) {
-      const active = await db
+      const active = await tx
         .select({ id: deviceFunctionAssessments.id, deviceId: deviceFunctionAssessments.deviceId })
         .from(deviceFunctionAssessments)
         .where(and(
@@ -179,9 +182,9 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
       runId,
       userId: ctx.userId,
       functions: [{ functionKey: entry.functionKey, label: entry.label, deviceIds: wanted, confidence: entry.confidence, evidence: entry.evidence }],
-    });
+    }, tx);
     const written = wanted.length > 0
-      ? await db
+      ? await tx
         .select({ id: deviceFunctionAssessments.id })
         .from(deviceFunctionAssessments)
         .where(and(
@@ -196,7 +199,7 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
     let groupId = fn.groupId;
     let groupCreated = false;
     if (!groupId) {
-      const [group] = await db
+      const [group] = await tx
         .insert(deviceGroups)
         .values({ orgId: ctx.orgId, name: fleetDesignGroupName(fn.label), type: 'static' })
         .returning({ id: deviceGroups.id });
@@ -204,14 +207,14 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
       groupId = group.id;
       groupCreated = true;
     }
-    const [group] = await db
+    const [group] = await tx
       .select({ siteId: deviceGroups.siteId })
       .from(deviceGroups)
       .where(and(eq(deviceGroups.id, groupId), eq(deviceGroups.orgId, ctx.orgId)))
       .limit(1);
     if (!group) throw new Error('Fleet Design group disappeared during apply');
 
-    const current = groupCreated ? [] : (await db
+    const current = groupCreated ? [] : (await tx
       .select({ deviceId: deviceGroupMemberships.deviceId })
       .from(deviceGroupMemberships)
       .where(and(eq(deviceGroupMemberships.groupId, groupId), eq(deviceGroupMemberships.orgId, ctx.orgId)))).map((r) => r.deviceId);
@@ -219,12 +222,12 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
     const devicesRemoved = current.filter((d) => !wanted.includes(d));
 
     if (devicesAdded.length > 0) {
-      const validation = await validateManualMembershipDevices({ deviceIds: devicesAdded, orgId: ctx.orgId, siteId: group.siteId ?? null });
+      const validation = await validateManualMembershipDevices({ deviceIds: devicesAdded, orgId: ctx.orgId, siteId: group.siteId ?? null }, tx);
       if (!validation.ok) throw new Error(`membership_validation_failed: ${validation.error}`);
-      await addManualGroupMemberships({ groupId, orgId: ctx.orgId, deviceIds: devicesAdded });
+      await addManualGroupMemberships({ groupId, orgId: ctx.orgId, deviceIds: devicesAdded }, tx);
     }
     if (devicesRemoved.length > 0) {
-      await db
+      await tx
         .delete(deviceGroupMemberships)
         .where(and(
           eq(deviceGroupMemberships.groupId, groupId),
@@ -240,7 +243,7 @@ async function stepFunctions(ctx: ApplyCtx): Promise<void> {
 
     const createdRefs: FleetDesignCreatedRefs = { groupId, groupCreated, assessmentIds: written.map((w) => w.id), membershipSnapshot: wanted };
     const beforeImage: FleetDesignBeforeImage = { memberships: current, priorAssessmentIdByDevice };
-    const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'function', step: 1, createdRefs, beforeImage, userId: ctx.userId });
+    const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'function', step: 1, createdRefs, beforeImage, userId: ctx.userId }, tx);
     if (row) {
       ctx.applied.push(itemRef);
       ctx.appliedRefs.add(itemRef);
@@ -277,19 +280,19 @@ export function retireRewrite(kind: 'watch' | 'rule', itemName: string, inlineSe
   return { ...s, items: (s.items ?? []).filter((r) => r.name !== itemName) };
 }
 
-async function stepRetire(ctx: ApplyCtx): Promise<void> {
+async function stepRetire(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
   for (const [itemRef, resolved] of ctx.retiredResolved) {
     if (ctx.appliedRefs.has(itemRef)) continue;
     const { item, linkId, inlineSettings } = resolved;
     const next = retireRewrite(item.kind, item.itemName, inlineSettings);
-    const updated = await updateFeatureLink(linkId, { inlineSettings: next }, item.policyId);
+    const updated = await updateFeatureLink(linkId, { inlineSettings: next }, item.policyId, undefined, tx);
     if (!updated) throw new Error(`retired_link_missing: ${itemRef}`);
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'retired', step: 2,
       createdRefs: { policyId: item.policyId, linkId },
       beforeImage: { inlineSettings },
       userId: ctx.userId,
-    });
+    }, tx);
     if (row) {
       ctx.applied.push(itemRef);
       ctx.appliedRefs.add(itemRef);
@@ -331,12 +334,12 @@ function createdScriptIdFor(ctx: ApplyCtx, r: FleetDesignRule, functionKey: stri
   return ref ? ctx.createdScriptIds.get(ref) : undefined;
 }
 
-async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
+async function stepMonitoring(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
   for (const [functionKey, items] of ctx.monitoringByFunction) {
     const section = ctx.outcome.sections.monitoring.find((m) => m.functionKey === functionKey);
     if (!section) continue;
     const fn = ctx.preview.functions.find((f) => f.functionKey === functionKey);
-    const resolvedGroupId = fn?.groupId ?? (await findReusableGroup(ctx.orgId, functionKey))?.groupId ?? null;
+    const resolvedGroupId = fn?.groupId ?? (await findReusableGroup(ctx.orgId, functionKey, tx))?.groupId ?? null;
     if (!resolvedGroupId) throw new Error(`function_group_missing: ${functionKey}`);
 
     const newWatchRefs = items.watches.map((n) => `monitoring:${functionKey}:watch:${n}`).filter((r) => !ctx.appliedRefs.has(r));
@@ -354,7 +357,7 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
     if (existingRow?.createdRefs?.policyId) {
       // Second apply in the same run: union into the same policy's links.
       policyId = existingRow.createdRefs.policyId;
-      const links = await listFeatureLinks(policyId);
+      const links = await listFeatureLinks(policyId, tx);
       const monitoringLink = links.find((l) => l.featureType === 'monitoring' && !l.featurePolicyId);
       const ruleLink = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId);
       let monitoringLinkId = monitoringLink?.id;
@@ -362,29 +365,29 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
       if (newWatches.length > 0) {
         if (monitoringLink) {
           const cur = (monitoringLink.inlineSettings ?? {}) as WatchSettings;
-          await updateFeatureLink(monitoringLink.id, { inlineSettings: { ...cur, watches: [...(cur.watches ?? []), ...newWatches] } }, policyId);
+          await updateFeatureLink(monitoringLink.id, { inlineSettings: { ...cur, watches: [...(cur.watches ?? []), ...newWatches] } }, policyId, undefined, tx);
         } else {
-          const link = await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches });
+          const link = await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches }, undefined, tx);
           monitoringLinkId = link?.id;
         }
       }
       if (newRules.length > 0) {
         if (ruleLink) {
           const cur = (ruleLink.inlineSettings ?? {}) as RuleSettings;
-          await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items: [...(cur.items ?? []), ...newRules] } }, policyId);
+          await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items: [...(cur.items ?? []), ...newRules] } }, policyId, undefined, tx);
         } else {
-          const link = await addFeatureLink(policyId, 'alert_rule', null, { items: newRules });
+          const link = await addFeatureLink(policyId, 'alert_rule', null, { items: newRules }, undefined, tx);
           alertRuleLinkId = link?.id;
         }
       }
-      const after = await listFeatureLinks(policyId);
+      const after = await listFeatureLinks(policyId, tx);
       createdRefs = {
         ...existingRow.createdRefs,
         monitoringLinkId,
         alertRuleLinkId,
         linksSnapshot: snapshotLinks(after),
       };
-      await updateCreatedRefs(existingRow.id, ctx.orgId, createdRefs);
+      await updateCreatedRefs(existingRow.id, ctx.orgId, createdRefs, tx);
       // Keep the in-memory row current: step 4 (linkRulesToCreatedScripts)
       // rebuilds created_refs from it, and a stale copy would write back the
       // link ids this step just added.
@@ -398,18 +401,19 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
           status: 'inactive',
         },
         ctx.userId,
+        tx,
       );
       policyId = policy.id;
       const monitoringLink = newWatches.length > 0
-        ? await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches })
+        ? await addFeatureLink(policyId, 'monitoring', null, { checkIntervalSeconds: FLEET_DESIGN_CHECK_INTERVAL_SECONDS, watches: newWatches }, undefined, tx)
         : null;
       const ruleLink = newRules.length > 0
-        ? await addFeatureLink(policyId, 'alert_rule', null, { items: newRules })
+        ? await addFeatureLink(policyId, 'alert_rule', null, { items: newRules }, undefined, tx)
         : null;
-      const assignment = await assignPolicy(policyId, 'device_group', resolvedGroupId, FLEET_DESIGN_ASSIGNMENT_PRIORITY, ctx.userId, undefined, undefined);
-      const activated = await updateConfigPolicy(policyId, { status: 'active' }, ctx.auth);
+      const assignment = await assignPolicy(policyId, 'device_group', resolvedGroupId, FLEET_DESIGN_ASSIGNMENT_PRIORITY, ctx.userId, undefined, undefined, tx);
+      const activated = await updateConfigPolicy(policyId, { status: 'active' }, ctx.auth, tx);
       if (!activated) throw new Error(`policy_activation_failed: ${policyId}`);
-      const after = await listFeatureLinks(policyId);
+      const after = await listFeatureLinks(policyId, tx);
       createdRefs = {
         policyId,
         groupId: resolvedGroupId,
@@ -418,7 +422,7 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
         assignmentId: assignment?.id,
         linksSnapshot: snapshotLinks(after),
       };
-      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: policyRef, itemKind: 'policy', step: 3, createdRefs, userId: ctx.userId });
+      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: policyRef, itemKind: 'policy', step: 3, createdRefs, userId: ctx.userId }, tx);
       if (row) {
         ctx.applied.push(policyRef);
         ctx.appliedRefs.add(policyRef);
@@ -427,11 +431,11 @@ async function stepMonitoring(ctx: ApplyCtx): Promise<void> {
     }
 
     for (const ref of newWatchRefs) {
-      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'watch', step: 3, createdRefs: { policyId }, userId: ctx.userId });
+      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'watch', step: 3, createdRefs: { policyId }, userId: ctx.userId }, tx);
       if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     for (const ref of newRuleRefs) {
-      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'rule', step: 3, createdRefs: { policyId }, userId: ctx.userId });
+      const row = await recordApplied({ orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: ref, itemKind: 'rule', step: 3, createdRefs: { policyId }, userId: ctx.userId }, tx);
       if (row) { ctx.applied.push(ref); ctx.appliedRefs.add(ref); } else warnUnrecordedApply(ctx.reportRunId, ref);
     }
     writeAuditEvent(ctx.audit, {
@@ -475,7 +479,7 @@ export function canonical(value: unknown): unknown {
  * user, no proposal/review id, no approvalMethod — creating a script is not
  * authorising a run of it.
  */
-async function stepScripts(ctx: ApplyCtx): Promise<void> {
+async function stepScripts(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
   const pending = ctx.scriptsToCreate.filter((s) => !ctx.appliedRefs.has(s.itemRef));
   if (pending.length === 0) return;
   const approvedAt = new Date();
@@ -490,7 +494,7 @@ async function stepScripts(ctx: ApplyCtx): Promise<void> {
       approvedAt,
       changelog: `Created by Fleet Design from report run ${ctx.reportRunId} (${pending[index]?.itemRef ?? `entry ${index}`})`,
     }),
-  });
+  }, tx);
   if ('error' in result) throw new Error(`script_scope_denied: ${result.error}`);
   if (result.errors.length > 0) {
     const detail = result.errors.map((e) => `${pending[e.index]?.itemRef ?? `entry ${e.index}`}: ${e.error}`).join('; ');
@@ -508,7 +512,7 @@ async function stepScripts(ctx: ApplyCtx): Promise<void> {
     const row = await recordApplied({
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef: item.itemRef, itemKind: 'script', step: 4,
       createdRefs: { scriptId: entry.scriptId, scriptName }, userId: ctx.userId,
-    });
+    }, tx);
     if (row) {
       ctx.applied.push(item.itemRef);
       ctx.appliedRefs.add(item.itemRef);
@@ -521,7 +525,7 @@ async function stepScripts(ctx: ApplyCtx): Promise<void> {
       });
     } else warnUnrecordedApply(ctx.reportRunId, item.itemRef);
   }
-  if (createdNow.length > 0) await linkRulesToCreatedScripts(ctx, new Set(createdNow.map((c) => c.itemRef)));
+  if (createdNow.length > 0) await linkRulesToCreatedScripts(ctx, new Set(createdNow.map((c) => c.itemRef)), tx);
 }
 
 /**
@@ -535,7 +539,7 @@ async function stepScripts(ctx: ApplyCtx): Promise<void> {
  * name + rationale step 3 wrote, so one a technician has since edited is
  * deliberately left alone (it is theirs now).
  */
-async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>): Promise<void> {
+async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>, tx: ApplyTransaction): Promise<void> {
   for (const [functionKey, policyRow] of ctx.policyRowByFunction) {
     const policyId = policyRow.createdRefs?.policyId;
     const section = ctx.outcome.sections.monitoring.find((m) => m.functionKey === functionKey);
@@ -551,7 +555,7 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
     }
     if (rewrites.size === 0) continue;
 
-    const links = await listFeatureLinks(policyId);
+    const links = await listFeatureLinks(policyId, tx);
     const ruleLink = links.find((l) => l.featureType === 'alert_rule' && !l.featurePolicyId);
     if (!ruleLink) continue; // no rule of this function was approved
     const cur = (ruleLink.inlineSettings ?? {}) as RuleSettings;
@@ -563,10 +567,10 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
       return { ...item, rationale: next.rationale };
     });
     if (!changed) continue;
-    const updated = await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items } }, policyId);
+    const updated = await updateFeatureLink(ruleLink.id, { inlineSettings: { ...cur, items } }, policyId, undefined, tx);
     if (!updated) throw new Error(`rule_link_missing: ${policyId}`);
-    const createdRefsNext: FleetDesignCreatedRefs = { ...policyRow.createdRefs, linksSnapshot: snapshotLinks(await listFeatureLinks(policyId)) };
-    await updateCreatedRefs(policyRow.id, ctx.orgId, createdRefsNext);
+    const createdRefsNext: FleetDesignCreatedRefs = { ...policyRow.createdRefs, linksSnapshot: snapshotLinks(await listFeatureLinks(policyId, tx)) };
+    await updateCreatedRefs(policyRow.id, ctx.orgId, createdRefsNext, tx);
     policyRow.createdRefs = createdRefsNext;
   }
 }
@@ -574,17 +578,17 @@ async function linkRulesToCreatedScripts(ctx: ApplyCtx, createdRefs: Set<string>
 // ---------------------------------------------------------------------------
 // Step 5: role corrections (billing-relevant; source 'ai', never over 'manual')
 // ---------------------------------------------------------------------------
-async function stepRoleCorrections(ctx: ApplyCtx): Promise<void> {
+async function stepRoleCorrections(ctx: ApplyCtx, tx: ApplyTransaction): Promise<void> {
   for (const rc of ctx.preview.roleCorrections) {
     const itemRef = `roleCorrections:${rc.deviceId}`;
     if (ctx.appliedRefs.has(itemRef)) continue;
-    const [current] = await db
+    const [current] = await tx
       .select({ deviceRole: devices.deviceRole, deviceRoleSource: devices.deviceRoleSource })
       .from(devices)
       .where(and(eq(devices.id, rc.deviceId), eq(devices.orgId, ctx.orgId)))
       .limit(1);
     if (!current) throw new Error(`device_missing: ${rc.deviceId}`);
-    const [updated] = await db
+    const [updated] = await tx
       .update(devices)
       .set({ deviceRole: rc.to, deviceRoleSource: 'ai', updatedAt: new Date() })
       .where(and(
@@ -598,7 +602,7 @@ async function stepRoleCorrections(ctx: ApplyCtx): Promise<void> {
       orgId: ctx.orgId, reportRunId: ctx.reportRunId, itemRef, itemKind: 'role_correction', step: 5,
       beforeImage: { deviceRole: current.deviceRole, deviceRoleSource: current.deviceRoleSource },
       userId: ctx.userId,
-    });
+    }, tx);
     if (row) {
       ctx.applied.push(itemRef);
       ctx.appliedRefs.add(itemRef);

@@ -537,6 +537,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'm365_license_skus',
   'm365_posture_rollups',
   'm365_secure_score_snapshots',
+  // #5784 W05. Append-only interactive sign-in events. Its only FK is
+  // org_id -> organizations, which is last in this array, so the
+  // children-before-parents property holds. DELETE is granted (the retention
+  // worker purges it), so no AUDIT_ADMIN_REQUIRED_TABLES entry either.
+  'm365_signin_events',
   'm365_sync_state',
   'm365_users',
   'maintenance_windows',
@@ -731,6 +736,19 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // the cascade walks this array explicitly and an unlisted org_id table fails
   // tenantCascade.integration.test.ts.
   'ticket_checklist_items',
+  // ticket_checklist_template_items before ticket_checklist_templates —
+  // children before parents. Both branch FKs (template_id, org_id) and
+  // (template_id, partner_id) are ON DELETE CASCADE, but the cascade list
+  // deletes explicitly, so the child must still come first. localeCompare
+  // already orders them that way ('_' < 's' at the diverging character, the
+  // same prefix-extension trap as contract_template_versions /
+  // contract_templates); verified with
+  // `node --eval "console.log('ticket_checklist_template_items'.localeCompare('ticket_checklist_templates'))"`
+  // => -1. Both sort after 'ticket_checklist_items' and before 'ticket_drafts'.
+  // Partner-wide rows carry org_id NULL, so an org erasure never touches them —
+  // only org-owned templates and their items.
+  'ticket_checklist_template_items',
+  'ticket_checklist_templates',
   // ticket_drafts (P2-4, #4191): the reply/resolution-note an agent proposes
   // for a ticket. Composite FKs to tickets(id, org_id) (ON DELETE CASCADE —
   // this row dies with its ticket) and to ai_agent_runs/action_intents(id,
@@ -772,6 +790,12 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'tickets',
   'time_entries',
   'time_series_metrics',
+  // Tool catalog (#5215 / #5216). Child before parent: tool_source_tools
+  // references tool_sources, so it must be deleted first. localeCompare agrees
+  // (verified: 'tool_source_tools'.localeCompare('tool_sources') === -1), so
+  // the alphabetical and FK-order properties do not fight here.
+  'tool_source_tools',
+  'tool_sources',
   'topology_layout',
   'topology_manual_nodes',
   'tunnel_allowlists',

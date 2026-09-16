@@ -37,9 +37,9 @@ export function chunkIds(ids: readonly string[], size = READINESS_BATCH_SIZE): s
 
 type BatchResult = { kind: 'ok'; response: AccountReadinessResponse } | { kind: 'failed' } | { kind: 'unauthorized' };
 
-async function fetchBatch(ids: string[]): Promise<BatchResult> {
+async function fetchBatch(ids: string[], partnerId?: string): Promise<BatchResult> {
   try {
-    const res = await fetchWithAuth(`/orgs/account-readiness?orgIds=${ids.join(',')}`);
+    const res = await fetchWithAuth(`/orgs/account-readiness?${partnerId ? `partnerId=${encodeURIComponent(partnerId)}&` : ''}orgIds=${ids.join(',')}`);
     if (res.status === 401) return { kind: 'unauthorized' };
     if (!res.ok) return { kind: 'failed' };
     const body = (await res.json()) as AccountReadinessResponse | null;
@@ -57,7 +57,7 @@ async function fetchBatch(ids: string[]): Promise<BatchResult> {
  * responses are discarded on arrival (latest-wins). A manual reorder changes
  * the order, not the set, so it never refetches.
  */
-export function useAccountReadiness(orgIds: readonly string[]): AccountReadinessState {
+export function useAccountReadiness(orgIds: readonly string[], partnerId?: string): AccountReadinessState {
   const key = [...orgIds].sort().join(',');
   const [capabilities, setCapabilities] = useState<ReadinessCapabilities | null>(null);
   const [mode, setMode] = useState<ServiceManagementMode | null>(null);
@@ -83,7 +83,7 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
       for (;;) {
         const chunk = queue.shift();
         if (!chunk) return;
-        const result = await fetchBatch(chunk);
+        const result = await fetchBatch(chunk, partnerId);
         // Latest-wins: a response for a superseded id set never touches state —
         // the newer generation already reset everything it is about to fill.
         if (!mounted.current || gen !== generation.current) return;
@@ -123,11 +123,13 @@ export function useAccountReadiness(orgIds: readonly string[]): AccountReadiness
       }
     };
     await Promise.all(Array.from({ length: Math.min(READINESS_CONCURRENCY, chunks.length) }, worker));
-  }, []);
+  }, [partnerId]);
 
   useEffect(() => {
     const gen = ++generation.current;
     const ids = key ? key.split(',') : [];
+    setCapabilities(null);
+    setMode(null);
     setByOrg(new Map());
     setConnectors(null);
     setFailedChunks([]);

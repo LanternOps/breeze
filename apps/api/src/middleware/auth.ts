@@ -871,9 +871,17 @@ export function requirePermission(resource: string, action: string) {
       throw new HTTPException(403, { message: 'AI agents cannot call HTTP routes' });
     }
 
+    // #5733 — pass the token scope. The system-scope token LOGIN mints carries
+    // neither partnerId nor orgId, so without this the resolver has no axis to
+    // look up and every requirePermission route answers 403 for a platform
+    // admin. getUserPermissions takes the wildcard branch only for that
+    // null/null shape, and authorises it off a live users.is_platform_admin
+    // read rather than this claim; a system token that DOES carry an axis stays
+    // governed by that membership's grants (#5071).
     const userPerms = await getUserPermissions(auth.user.id, {
       partnerId: auth.partnerId || undefined,
-      orgId: auth.orgId || undefined
+      orgId: auth.orgId || undefined,
+      scope: auth.scope
     });
 
     if (!userPerms) {
@@ -957,7 +965,8 @@ export function requireOrgAccess(orgIdParam: string = 'orgId') {
     if (!userPerms) {
       const fetchedPerms = await getUserPermissions(auth.user.id, {
         partnerId: auth.partnerId || undefined,
-        orgId: auth.orgId || undefined
+        orgId: auth.orgId || undefined,
+        scope: auth.scope
       });
       userPerms = fetchedPerms || undefined;
     }
@@ -996,7 +1005,8 @@ export function requireSiteAccess(siteIdParam: string = 'siteId') {
     if (!userPerms) {
       const fetchedPerms = await getUserPermissions(auth.user.id, {
         partnerId: auth.partnerId || undefined,
-        orgId: auth.orgId || undefined
+        orgId: auth.orgId || undefined,
+        scope: auth.scope
       });
       userPerms = fetchedPerms || undefined;
     }

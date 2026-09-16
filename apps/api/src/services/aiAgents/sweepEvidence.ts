@@ -5,7 +5,7 @@
  * ## Why the evidence is SYSTEM-EXECUTED
  *
  * A sweep run's model never assembles its own evidence by calling tools in a
- * free-form loop: the six `AI_SWEEP_KINDS` each map to ONE hand-written,
+ * free-form loop: each of the `AI_SWEEP_KINDS` maps to ONE hand-written,
  * org-pinned query here, and the run is handed the result. That removes the
  * whole class of "the model wandered off and read something it shouldn't"
  * from a job that runs unattended on a cron schedule — there is no recipe for
@@ -52,10 +52,13 @@
  * already holds a SYSTEM DB context (full RLS bypass) — no context management
  * here, matching `loadAnomalyContext`/`loadTicketContext`. That makes the
  * `org_id = $orgId` predicate in every statement below the ONLY thing keeping
- * one tenant's sweep out of another tenant's rows. Every statement pins the
- * org on BOTH sides of its join, and every statement excludes ephemeral
- * (Quick Support) devices, which are one-off support enrolments that no
- * scheduled hygiene sweep should ever report on.
+ * one tenant's sweep out of another tenant's rows. Every statement that JOINS
+ * a second table pins the org on both sides of that join, and every statement
+ * reading a device table excludes ephemeral (Quick Support) devices, which are
+ * one-off support enrolments that no scheduled hygiene sweep should ever
+ * report on. `expiring_certs` (#5754) is the single exception to both: it
+ * reads `network_monitors` alone, with no join, so its one `org_id` predicate
+ * is the entire boundary and there is no device table to filter.
  *
  * `assembleSweepEvidence` is the pure core (fixture-testable, no DB) that
  * `loadSweepEvidence` wraps with the actual reads.
@@ -166,6 +169,105 @@ export function assembleSweepEvidence(raw: RawSweepEvidence): SweepEvidence {
 }
 
 // ---------------------------------------------------------------------------
+// #4442 W04 — the SYSTEM's own subject for an evidence row.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the SYSTEM observed, for one loaded evidence row: which device, and
+ * which sub-thing on it (a service name, a mount point, a set of
+ * device-vulnerability ids). Act mode's anti-substitution control: the gate
+ * matches a proposal's arguments against ONE of these, so evidence about
+ * service A can never authorize an unattended restart of service B on the
+ * same device.
+ *
+ * `observedAt` is the loader's own timestamp where the kind has one and
+ * `null` where it does not (`disk_pressure` and `unpatched_critical` are
+ * point-in-time aggregates with no per-row observation time). It is
+ * provenance for the approval card, NOT the staleness control — decide-time
+ * freshness is enforced by `probeSweepSubject`'s own
+ * `SWEEP_PROBE_FRESHNESS_MS` window against a LIVE re-read, which a stored
+ * timestamp could not do.
+ */
+export interface SweepEvidenceSubject {
+  kind: AiSweepKind;
+  deviceId: string;
+  key: string;
+  observedAt: string | null;
+}
+
+/** A non-empty display string off a loader field, else null. */
+function subjectKeyField(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * The SYSTEM's subject for ONE loader row — derived from NAMED fields the
+ * loader read off a column, never from model text. `null` for a kind whose
+ * findings have no single sub-subject (`stale_agents`, `pending_reboots`,
+ * `failed_backups`: the DEVICE is the subject and there is nothing narrower
+ * to pin), and `null` for a row with no device or an empty key rather than
+ * inventing one — a subject that cannot be named is not evidence that
+ * authorizes anything.
+ *
+ * Pure, and exhaustively tested per kind in `sweepEvidence.subjects.test.ts`.
+ * `sweepFindings.ts`'s `sweepSubjectKey` builds the PROPOSAL side of the same
+ * comparison and must agree with this function kind by kind — the pairing is
+ * asserted there.
+ */
+export function evidenceRowSubject(kind: AiSweepKind, row: SweepEvidenceRow): SweepEvidenceSubject | null {
+  const deviceId = row.deviceId;
+  if (!deviceId) return null;
+
+  const observedAt = (field: unknown): string | null => (typeof field === 'string' ? field : null);
+
+  switch (kind) {
+    case 'service_down': {
+      const key = subjectKeyField(row.fields.name);
+      return key === null ? null : { kind, deviceId, key, observedAt: observedAt(row.fields.checkedAt) };
+    }
+    case 'disk_pressure': {
+      const key = subjectKeyField(row.fields.mountPoint);
+      return key === null ? null : { kind, deviceId, key, observedAt: null };
+    }
+    case 'unpatched_critical': {
+      // The loader emits a comma-joined sample ordered by CVSS; the subject
+      // key is SORTED so it matches the proposal side, which sorts too
+      // (`sweepSubjectKey`). Order must not be part of the identity.
+      const raw = subjectKeyField(row.fields.deviceVulnerabilityIds);
+      if (raw === null) return null;
+      const ids = raw.split(',').map((id) => id.trim()).filter((id) => id.length > 0);
+      if (ids.length === 0) return null;
+      return { kind, deviceId, key: [...ids].sort().join(','), observedAt: null };
+    }
+    default:
+      return null;
+  }
+}
+
+/** The index key a proposal is looked up by. One place, so build and match
+ *  cannot drift on separator or field order. */
+export function sweepSubjectIndexKey(kind: AiSweepKind, deviceId: string, subjectKey: string): string {
+  return `${kind}|${deviceId}|${subjectKey}`;
+}
+
+/**
+ * Every subject in a LOADED evidence set, keyed `kind|deviceId|key`. Built
+ * from `evidence.kinds[*].rows` — i.e. the rows that survived the cap and the
+ * byte trim, never the pre-trim input: a row the model never saw is not
+ * evidence and must not authorize anything.
+ */
+export function indexEvidenceSubjects(evidence: SweepEvidence): ReadonlyMap<string, SweepEvidenceSubject> {
+  const index = new Map<string, SweepEvidenceSubject>();
+  for (const kind of AI_SWEEP_KINDS) {
+    for (const row of evidence.kinds[kind]?.rows ?? []) {
+      const subject = evidenceRowSubject(kind, row);
+      if (subject) index.set(sweepSubjectIndexKey(kind, subject.deviceId, subject.key), subject);
+    }
+  }
+  return index;
+}
+
+// ---------------------------------------------------------------------------
 // Column coercion — everything below returns a display scalar or null.
 // ---------------------------------------------------------------------------
 
@@ -232,7 +334,7 @@ function totalFrom(rows: ReadonlyArray<{ total_count?: number | string | null }>
 
 // ---------------------------------------------------------------------------
 // Per-kind loaders. Raw SQL (not the Drizzle builder) for two reasons: three
-// of the six need `DISTINCT ON` / `array_agg(...)[1:5]`, which the builder
+// of them need `DISTINCT ON` / `array_agg(...)[1:5]`, which the builder
 // cannot express; and a hand-written statement is the only form whose tenancy
 // predicate a unit test can actually READ back (see sweepEvidence.test.ts).
 // ---------------------------------------------------------------------------
@@ -464,6 +566,73 @@ async function loadUnpatchedCritical(orgId: string): Promise<LoadedKind> {
   };
 }
 
+/**
+ * #5751 W03 (#5754). The only kind that is not about a DEVICE: a public
+ * endpoint's certificate belongs to a monitor, so this reads
+ * `network_monitors` alone — no `devices` join, and therefore no ephemeral
+ * filter to apply — and emits `deviceId: null`. `sweepFindings.ts`'s gate 1
+ * (`device_not_in_evidence`) then refuses any proposal naming a device, which
+ * is exactly the fail-closed posture a finding-only kind wants.
+ *
+ * The full predicate set, all five of which matter:
+ *  - `org_id = $1`, which under the run's SYSTEM DB context is the WHOLE
+ *    isolation boundary here, there being no join to pin on a second side.
+ *  - `is_active = true` — a paused monitor is not evidence about anything.
+ *  - `tls_state = 'observed'` — a `handshake_failed` or `not_tls` row has no
+ *    usable expiry, and a NULL `tls_not_after` must never read as "fine".
+ *  - `tls_observed_at > now() - interval '7 days'` — a reading nobody has
+ *    refreshed in a week is not current evidence about a live endpoint.
+ *  - `tls_not_after <= now() + interval '45 days'` — the window that DEFINES
+ *    "expiring". Widen or remove it and the kind reports every certificate
+ *    the fleet has ever observed.
+ *
+ * Partner-wide `network_monitors` rows (`org_id IS NULL`, #5291 W04) are
+ * deliberately NOT reached in v1 — spec §2 scopes certificate evidence to
+ * org-owned monitors. Widening to `OR (org_id IS NULL AND partner_id = …)` is
+ * a filed follow-up, not an oversight.
+ *
+ * `nm.config` is jsonb (`excludedOpen`) and is never selected.
+ */
+async function loadExpiringCerts(orgId: string): Promise<LoadedKind> {
+  const rows = await dbModule.db.execute<{
+    monitor_id: string | null; monitor_name: string | null; target: string | null;
+    tls_observed_host: string | null; tls_not_after: Date | string | null;
+    tls_issuer: string | null; tls_observed_at: Date | string | null;
+    total_count: number | string | null;
+  }>(sql`
+    SELECT nm.id AS monitor_id, nm.name AS monitor_name, nm.target,
+           nm.tls_observed_host, nm.tls_not_after, nm.tls_issuer, nm.tls_observed_at,
+           COUNT(*) OVER () AS total_count
+    FROM network_monitors nm
+    WHERE nm.org_id = ${orgId}
+      AND nm.is_active = true
+      AND nm.tls_state = 'observed'
+      AND nm.tls_observed_at > now() - interval '7 days'
+      AND nm.tls_not_after <= now() + interval '45 days'
+    ORDER BY nm.tls_not_after ASC
+    LIMIT ${FETCH_LIMIT}
+  `);
+  const list = [...rows];
+  return {
+    // Ordered soonest-expiring first, so the tail the assembler trims is
+    // always the least urgent certificate.
+    rows: list.map((row) => ({
+      // A public endpoint belongs to no device.
+      deviceId: null,
+      hostname: null,
+      fields: {
+        monitorName: textOrNull(row.monitor_name),
+        target: textOrNull(row.target),
+        observedHost: textOrNull(row.tls_observed_host),
+        notAfter: isoOrNull(row.tls_not_after),
+        issuer: textOrNull(row.tls_issuer),
+        observedAt: isoOrNull(row.tls_observed_at),
+      },
+    })),
+    total: totalFrom(list),
+  };
+}
+
 const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<LoadedKind>> = {
   disk_pressure: loadDiskPressure,
   stale_agents: loadStaleAgents,
@@ -471,6 +640,7 @@ const LOADERS: Record<AiSweepKind, (orgId: string) => Promise<LoadedKind>> = {
   failed_backups: loadFailedBackups,
   service_down: loadServiceDown,
   unpatched_critical: loadUnpatchedCritical,
+  expiring_certs: loadExpiringCerts,
 };
 
 /**

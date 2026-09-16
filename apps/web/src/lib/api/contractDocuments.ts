@@ -31,14 +31,25 @@ export interface ContractDocument {
   createdAt: string;
 }
 
+/** Spec §6 link-state filter. NOTE the asymmetry: the SERVER defaults an omitted
+ *  `linked` to 'unlinked' (back-compat with the pre-Agreements Documents tab), so
+ *  a caller that wants the whole inventory must say so. SignedAgreementsPage
+ *  sends 'all' unless its "Unlinked only" chip is on. */
+export type SignedAgreementLinkFilter = 'all' | 'linked' | 'unlinked';
+
 export interface ListContractDocumentsQuery {
   contractId?: string;
+  orgId?: string;
+  linked?: SignedAgreementLinkFilter;
+  /** @deprecated legacy spelling of `linked: 'unlinked'`; kept until no caller sends it. */
   unattached?: boolean;
 }
 
 function buildQuery(q: ListContractDocumentsQuery): string {
   const params = new URLSearchParams();
   if (q.contractId) params.set('contractId', q.contractId);
+  if (q.orgId) params.set('orgId', q.orgId);
+  if (q.linked) params.set('linked', q.linked);
   if (q.unattached) params.set('unattached', 'true');
   const qs = params.toString();
   return qs ? `?${qs}` : '';

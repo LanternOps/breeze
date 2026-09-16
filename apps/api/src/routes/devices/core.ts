@@ -1206,6 +1206,11 @@ coreRoutes.get(
         // silently dropped (#800/#1273/#2138) — asserted by
         // core.list-response-shape.test.ts.
         possibleReplacementOfDeviceId: d.possibleReplacementOfDeviceId ?? null,
+        // #5701 follow-up: purchaseDate/purchaseDateSource are selected above
+        // but were dropped here — the same list-mapper failure mode as
+        // #800/#1273/#2138 (see the comment above).
+        purchaseDate: d.purchaseDate ?? null,
+        purchaseDateSource: d.purchaseDateSource ?? null,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,

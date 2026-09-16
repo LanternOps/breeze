@@ -83,6 +83,18 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   // no caller-supplied partner id, never reachable with a partner token's choice
   // of target.
   'services/monitors/builtInMonitors.ts': 'one-time per-partner provisioning of the partner\'s own built-in rows; callers are createPartner(), a requireScope(system) route, and the boot backfill',
+  // --- tool_sources / tool_source_tools became dual-axis in #5216 -----------
+  // Discovery is a BullMQ job, not a caller-facing write: it loads the source
+  // row by id, copies that row's OWN owner axis onto the tools it upserts (the
+  // constraint trigger tool_source_tools_owner_guard_trg rejects anything
+  // else), and never reads an owner from a request. All FIVE caller-facing
+  // mutating routes in routes/toolSources.ts run the
+  // `existing.orgId === null && !canManagePartnerWidePolicies(auth)` gate
+  // before touching a partner-wide row: PATCH /:id, DELETE /:id, PATCH
+  // /:id/tools/:toolId, POST /:id/tools/bulk, and POST /:id/discover (the
+  // one enqueue site a caller can reach — added in the same PR that added
+  // this allowlist entry, after a review round found it missing).
+  'services/toolSources/discovery.ts': 'background discovery copies the owner axis off the source row it was handed; every caller-facing write in routes/toolSources.ts (PATCH /:id, DELETE /:id, PATCH /:id/tools/:toolId, POST /:id/tools/bulk, POST /:id/discover) runs canManagePartnerWidePolicies() first',
   // --- `users` is dual-axis (shape 4) but these are AUTHENTICATION flows -----
   // They mutate the acting user's own credential/session columns (password
   // hash, MFA secret, passkeys, phone, email verification, last-login), never
@@ -156,6 +168,7 @@ const ALLOWED_WITHOUT_CAPABILITY_CHECK: Record<string, string> = {
   'services/llm/llmConfigResolver.ts': 'runtime resolver; only write is the system-context version-CASed credential-error stamp',
   'services/partnerCreate.ts': 'new-partner bootstrap seeds first roles/user/org before any partner capability can exist',
   'services/platformAdminBootstrap.ts': 'startup-only platform-admin bootstrap (index.ts boot path); no tenant route calls it',
+  'services/patchAlerts.ts': 'patch-job finalizer / reboot sweep creating derived alert artifacts (global built-in templates, org-owned rules) in system context — no tenant caller, same class as policyAlertBridge',
   'services/policyAlertBridge.ts': 'startup event subscriber creating derived alert artifacts in system context',
   'services/stripeConnectService.ts': 'Stripe-signed webhook records provider-side disconnect status; no tenant caller',
   'services/stripeFinancialEventPoller.ts': 'system reconciliation worker persists provider cursor/error state; no tenant caller',

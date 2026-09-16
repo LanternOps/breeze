@@ -14,6 +14,7 @@ import type {
   ChecklistItemCreateInput,
   ChecklistItemPatchInput,
   ChecklistItemSource,
+  ApplyChecklistTemplateInput,
 } from '@breeze/shared';
 import { unwrapData, type Fetcher } from './serviceDeliverables';
 
@@ -87,4 +88,21 @@ export async function patchChecklistItem(
 
 export async function deleteChecklistItem(f: Fetcher, itemId: string): Promise<void> {
   await unwrapData<unknown>(await f(itemPath(itemId), { method: 'DELETE' }));
+}
+
+/**
+ * Copy a checklist template's steps onto this ticket (#5808 W02).
+ *
+ * `append` adds after whatever is already there; `replace_unticked` drops the
+ * unticked steps first. There is deliberately no destructive mode — a ticked
+ * step is a human attestation and is never dropped by applying a template.
+ */
+export async function applyChecklistTemplate(
+  f: Fetcher,
+  ticketId: string,
+  body: ApplyChecklistTemplateInput,
+): Promise<ChecklistSummary> {
+  return unwrapData<ChecklistSummary>(
+    await f(`${ticketPath(ticketId)}/apply-template`, jsonInit('POST', body)),
+  );
 }

@@ -91,6 +91,8 @@ Every catalog entry has a `source`: `core`, `extension`, `mcp`, `openapi`. The f
 | created_by_user_id | uuid fk users | |
 | created_at / updated_at | timestamptz | |
 
+**Amendment (W1 plan, 2026-09-07):** the `slug` regex above is superseded by `^[a-z][a-z0-9]{1,23}$` — no underscore, no hyphen. Keeping the slug free of `_` guarantees the first `__` in a qualified name (§5.4) is always the unambiguous split point between slug and tool name.
+
 `tool_source_tools` (owner ids denormalised from the source so RLS stays direct dual-axis)
 
 | column | type | notes |
@@ -149,6 +151,8 @@ Listing, authorization (guardrails), execution, and approval release all take a 
 - Consumers: chat tool list, agent allowlist validation, MCP server `tools/list` and `tools/call`, flow validator, `flow.<slug>` registration.
 - Name rule: tenant tools always contain a dot; core and extension tools never do, so the dot alone prevents collision with them. Reserved slugs: `flow`, `core`, `breeze`, every extension id, and, for an org-owned source, any slug already used by a partner-wide source visible to that org (otherwise the org could shadow its partner's tools).
 
+**Amendment (W1 plan, 2026-09-07):** `__` (double underscore) marks a tenant tool, not a dot — the qualified name is `<slug>__<name>`, slug `^[a-z][a-z0-9]{1,23}$` (§5.2). The Anthropic tool-name grammar `^[a-zA-Z0-9_-]{1,64}$` rejects dots outright, and `mcp__<server>__<tool>` is already the ecosystem's namespacing idiom. The tenant-metadata cache bullet above is superseded: v1 ships with no cache — one indexed query per resolve, matching what the extension registry already pays (`aiTools.ts:498-507`) rather than building a cross-replica invalidation story for a v1 feature. Resolution for an org-scoped caller runs in a system DB context with explicit predicates (`org_id = :org OR (org_id IS NULL AND partner_id = :orgPartner)`), because org tokens cannot pass `breeze_has_partner_access` (CLAUDE.md, "Partner-Wide First" step 3); management routes stay inside the request transaction and therefore show org admins only org-owned sources.
+
 ### 5.5 Execution
 
 `executeTool` learns a second path: when the name contains a dot, dispatch to `services/toolSourceExecutor.ts`.
@@ -160,6 +164,8 @@ Listing, authorization (guardrails), execution, and approval release all take a 
 - **Credential origin pinning (quorum):** a source's credential is attached only to requests whose scheme+host[:port] equals `credential_origin`. OpenAPI `servers[]` entries and `base_url_override` must match it; remote `$ref`s are rejected at discovery; a redirect to another host is followed without the credential or not at all.
 - Audit: every tenant-tool call goes through the same `executeTool` path as core tools, so the existing tool audit and the MCP execution ledger record source id, qualified name, redacted input, tier, and approver.
 
+**Amendment (W1 plan, 2026-09-07):** descriptors are never registered into the process-global `aiTools` map, `TOOL_TIERS`, or `TOOL_PERMISSIONS` — the same qualified name can resolve to a different tool for different tenants, so per-auth resolution (§5.4) is the only path any surface uses to reach a tenant tool.
+
 ### 5.6 Guardrails and permissions for tenant tools
 
 **Amendment (quorum): four places hard-code the closed name set and must consume the descriptor instead** (each is a unit-tested change in W1):
@@ -168,6 +174,8 @@ Listing, authorization (guardrails), execution, and approval release all take a 
 2. `aiGuardrails.ts` ~1804: `resolveToolPermissionRequirements` denies when `TOOL_PERMISSIONS[name]` is absent. Becomes `descriptor.permission`, where dotted names carry the generic policy below.
 3. `aiAgentSdk.ts` ~503: chat rejects any tool missing from static `TOOL_TIERS`. Becomes descriptor lookup.
 4. `mcpExecutionOrg.ts` ~94: `deviceArgs` lookup is core-only. Becomes `descriptor.deviceArgs`.
+
+**Amendment (W1 plan, 2026-09-07):** the four-item closed-set list above is superseded. As-built, chat's tool list is not assembled from `getToolDefinitions()`; it is the hand-written `tool()` array in `aiAgentSdkTools.ts:createBreezeMcpServer`, so tenant tools enter chat through that function's existing `extraTools` parameter and a session-held descriptor map. The real closed-set seams are two, not four: chat's `createSessionPreToolUse` (`aiAgentSdk.ts`) and `routes/mcpServer.ts`'s `tools/list`/`tools/call`. `aiGuardrails.ts` and `mcpExecutionOrg.ts` are untouched because tenant tools never reach their name-global lookups — they are resolved and authorized entirely through the per-auth descriptor path (§5.4), never through the static maps those two files check.
 
 Unchanged on purpose: `mcpServer.ts`'s `isMcpApprovalRequired` gate (Tier 3 tenant tools are denied over Breeze's MCP server exactly like core Tier 3 tools; flows and chat are the Tier 3 paths), and the API-key transport ceilings in `apiKeyScopes.ts`.
 
@@ -390,5 +398,6 @@ Codex `xhigh` (gpt-6-astra, read-only, 2026-09-07) was asked five questions with
 | D3 | In-house expression grammar vs library | **Agree**, rejecting line count as the justification; specify null/missing/skipped semantics, membership, typing, bounds. | Accepted: §6.2. |
 | D4 | Runs as system context scoped to org, enabling user as permission principal | **Disagree.** Agents run as their own principal with org-scoped context and `userId = null` (`agentAuthContext.ts:39`); automations run with no caller context (`automationRuntime.ts:849`); "system context scoped to org" is a contradiction (`db/index.ts:180`). Named-asset pre-approval needs effect binding + live revalidation (`actRevalidation.ts:455`) and can never cover four-eyes actions (`policyDecidable.ts:211`). | Accepted: **flow principal** replaces enabling-user delegation (§6.5); pre-approval restricted to policy-decidable actions with effect bindings (§6.3); `action_intents` fourth actor (§8); `flow.<slug>` invocation authz (§6.6). |
 | D5 | Repo-contract obligations | **Agree on shapes**; adds: cross-reference tenancy beyond FKs, `PARENT_FK_JOIN_POLICY_TABLES` exists as an alternative to denormalising (we keep denormalising so children stay dual-axis), event dispatch mode defaults off (`eventBus.ts:340`), loop/feedback prevention, webhook replay. | Accepted: §6.5 event prerequisite + loop prevention, §8 cross-reference tenancy. |
+| — | Plan amendments (W1) | N/A — as-built findings from implementing the plan (`docs/superpowers/plans/ai-mcp/2026-09-07-tool-catalog-w1-tool-sources-mcp.md`, Task A0), not a quorum question. | Accepted: `__` separator replaces the dot, slug loses `_`/`-` (§5.2, §5.4); resolver reads in a system DB context with explicit owner predicates because org tokens cannot pass `breeze_has_partner_access` (§5.4); v1 ships with no descriptor cache (§5.4); descriptors never enter the process-global `aiTools`/`TOOL_TIERS`/`TOOL_PERMISSIONS` maps (§5.5); the real closed-set seams are two (chat `createSessionPreToolUse`, `mcpServer.ts` list/call), not four — `aiGuardrails.ts` and `mcpExecutionOrg.ts` are untouched (§5.6). |
 
 Codex's top three implementation risks, each now addressed in the text: remote success followed by worker death before checkpoint (§6.5 unknown outcome); approved revisions drifting before resume (§6.5 drift); partner-wide credentials reaching another customer's data in the external system (§5.6 known limitation, UI warning, per-org recommendation).

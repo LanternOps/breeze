@@ -684,7 +684,7 @@ describe('design run read-only backstop', () => {
         generatedAt: new Date().toISOString(),
       },
     } as never);
-    expect(await pre('submit_fleet_design', VALID_FLEET_DESIGN_SUBMISSION)).toEqual({ allowed: true });
+    expect(await pre('submit_fleet_design', VALID_FLEET_DESIGN_SUBMISSION)).toMatchObject({ allowed: true });
 
     for (const profile of ['full', 'verdict', 'narrative'] as const) {
       const otherOutcome = emptyOutcome();

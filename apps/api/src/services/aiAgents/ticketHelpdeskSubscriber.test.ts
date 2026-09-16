@@ -55,6 +55,12 @@ vi.mock('../../db/schema', () => ({
 
 const createAndEnqueueAgentRun = vi.hoisted(() => vi.fn());
 vi.mock('./runService', () => ({ createAndEnqueueAgentRun }));
+// #4177 (W04): the time-entry proposal minted from an outbox `aiDraft` claim.
+// Mocked wholesale — its verification + minting is aiTimeEntryProposal.test.ts;
+// here we pin that the subscriber forwards the claim (and only a claim) and
+// that a proposal failure never blocks admission.
+const proposeTimeEntryFromOutboxClaim = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('../aiTimeEntryProposal', () => ({ proposeTimeEntryFromOutboxClaim }));
 
 import { db, withSystemDbAccessContext } from '../../db';
 import type { BreezeEvent } from '../eventBus';
@@ -816,5 +822,54 @@ describe('per-ticket triage-run ceiling (#4212)', () => {
     await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: 'c9', isPublic: true } }));
 
     expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('AI time-entry proposal claim forwarding (#4177, W04)', () => {
+  beforeEach(() => {
+    proposeTimeEntryFromOutboxClaim.mockReset();
+    proposeTimeEntryFromOutboxClaim.mockResolvedValue(null);
+  });
+
+  const claim = { draftId: '00000000-0000-4000-8000-0000000000d1', runId: '00000000-0000-4000-8000-0000000000d2', trigger: 'draft_sent' };
+
+  it('ticket.commented with an aiDraft claim forwards it, then still runs admission', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockCleanTicket();
+
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: COMMENT_ID, isPublic: true, aiDraft: claim } }));
+
+    expect(proposeTimeEntryFromOutboxClaim).toHaveBeenCalledWith({ orgId: ORG_ID, ticketId: TICKET_ID, claim });
+    expect(createAndEnqueueAgentRun).toHaveBeenCalled();
+  });
+
+  it('ticket.commented without a claim never touches the proposal lane', async () => {
+    mockCommentVerification([{ createdAt: new Date('2026-09-10T11:00:00Z') }]);
+    mockCleanTicket();
+    await handleTicketCommentedEvent(ticketCommentedEvent());
+    expect(proposeTimeEntryFromOutboxClaim).not.toHaveBeenCalled();
+  });
+
+  it('ticket.status_changed with a claim forwards it even when the transition is not to resolved', async () => {
+    await handleTicketStatusChangedEvent(ticketStatusChangedEvent({
+      payload: { ticketId: TICKET_ID, from: 'resolved', to: 'closed', aiDraft: { ...claim, trigger: 'resolved_with_ai_note' } },
+    }));
+    expect(proposeTimeEntryFromOutboxClaim).toHaveBeenCalledWith({
+      orgId: ORG_ID, ticketId: TICKET_ID, claim: { ...claim, trigger: 'resolved_with_ai_note' },
+    });
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('an infrastructure error from the proposal lane propagates so the subscriber retry fires', async () => {
+    proposeTimeEntryFromOutboxClaim.mockRejectedValueOnce(new Error('pool timeout'));
+    await expect(
+      handleTicketCommentedEvent(ticketCommentedEvent({ payload: { ticketId: TICKET_ID, commentId: COMMENT_ID, isPublic: true, aiDraft: claim } })),
+    ).rejects.toThrow('pool timeout');
+    expect(createAndEnqueueAgentRun).not.toHaveBeenCalled();
+  });
+
+  it('a malformed event (no ticketId) is dropped before the claim is ever forwarded', async () => {
+    await handleTicketCommentedEvent(ticketCommentedEvent({ payload: { commentId: COMMENT_ID, aiDraft: claim } }));
+    expect(proposeTimeEntryFromOutboxClaim).not.toHaveBeenCalled();
   });
 });

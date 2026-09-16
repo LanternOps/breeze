@@ -39,6 +39,8 @@ import { fetchWithAuth } from '../../stores/auth';
 import { showToast } from '../shared/Toast';
 import DeliverableTemplatesPage from './DeliverableTemplatesPage';
 import type { TemplateSet } from '../../lib/api/deliverableTemplates';
+import type { ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
+import { MANAGED_EVIDENCE_REPORT_TYPES } from '@breeze/shared';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -73,6 +75,30 @@ const PARTNER_WIDE_SET = setFrom({
   name: 'Gold tier',
 });
 
+function checklistTemplateFrom(overrides: Partial<ChecklistTemplate> = {}): ChecklistTemplate {
+  return {
+    id: 'ctpl-1',
+    orgId: 'org-1',
+    partnerId: 'partner-1',
+    ownerScope: 'organization',
+    name: 'Org onboarding',
+    description: null,
+    instructions: null,
+    isActive: true,
+    items: [],
+    createdAt: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+const ORG_CHECKLIST_TEMPLATE = checklistTemplateFrom();
+const PARTNER_WIDE_CHECKLIST_TEMPLATE = checklistTemplateFrom({
+  id: 'ctpl-partner',
+  orgId: null,
+  ownerScope: 'partner',
+  name: 'Partner-wide checklist',
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.canManagePartnerWide = undefined;
@@ -83,6 +109,9 @@ beforeEach(() => {
     const method = opts?.method ?? 'GET';
     if (String(url).startsWith('/deliverable-templates') && method === 'GET') {
       return jsonResponse({ data: [PARTNER_WIDE_SET, setFrom()] });
+    }
+    if (String(url).startsWith('/ticket-checklist-templates') && method === 'GET') {
+      return jsonResponse({ data: [ORG_CHECKLIST_TEMPLATE, PARTNER_WIDE_CHECKLIST_TEMPLATE] });
     }
     return jsonResponse({ error: 'unexpected' }, 500);
   });
@@ -232,5 +261,140 @@ describe('DeliverableTemplatesPage', () => {
       expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: 'Deliverable removed' }));
     });
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
+  });
+
+  // #5784 W02 shipped the first managed-evidence type, so the picker now has
+  // options and the empty state is gone. The picker still defaults to None —
+  // auto-evidence is opt-in, never inherited by an existing template item.
+  // W03 and W04 registered further types (endpoint_management_review,
+  // vulnerability_management); the assertion below reads the registry
+  // directly so later waves need no edit here.
+  it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    // None stays the default — auto-evidence is opt-in per item.
+    expect(select.value).toBe('');
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
+    );
+  });
+
+  it('sends autoEvidenceReportType: null on item create when None is selected', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({
+        data: {
+          id: 'item-2',
+          setId: 'set-1',
+          name: 'Quarterly review',
+          description: null,
+          cadence: 'quarterly',
+          leadDays: 7,
+          graceDays: 14,
+          artifactRequired: true,
+          completionMode: 'on_ticket_resolve',
+          sortOrder: 0,
+          autoEvidenceReportType: null,
+        },
+      }),
+    );
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+    fireEvent.change(screen.getByTestId('deliverable-template-item-name'), { target: { value: 'Quarterly review' } });
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/deliverable-templates/set-1/items' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body).toEqual(expect.objectContaining({ autoEvidenceReportType: null }));
+    });
+  });
+});
+
+describe('DeliverableTemplatesPage item checklist fields (#5808 W03)', () => {
+  it('shows the instructions hint and a checklist-template picker on the item form', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    expect(screen.getByTestId('deliverable-template-item-instructions')).toBeInTheDocument();
+    expect(screen.getByTestId('deliverable-template-item-checklist-template')).toBeInTheDocument();
+  });
+
+  it('lists both the org-owned and partner-wide checklist templates for an org-owned set', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    const select = (await screen.findByTestId('deliverable-template-item-checklist-template')) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(3)); // None + org-owned + partner-wide
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels).toContain('Org onboarding');
+    expect(labels.some((l) => l?.includes('Partner-wide checklist') && l?.includes('All orgs'))).toBe(true);
+  });
+
+  it('lists ONLY partner-wide checklist templates for a partner-wide set — an org-owned one would 404', async () => {
+    render(<DeliverableTemplatesPage />);
+    const partnerCard = await screen.findByTestId('deliverable-template-set-set-partner');
+    fireEvent.click(partnerCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    const select = (await screen.findByTestId('deliverable-template-item-checklist-template')) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(2)); // None + partner-wide only
+    const labels = Array.from(select.options).map((o) => o.textContent);
+    expect(labels.some((l) => l?.includes('Org onboarding'))).toBe(false);
+    expect(labels.some((l) => l?.includes('Partner-wide checklist'))).toBe(true);
+  });
+
+  it('threads instructions and checklistTemplateId into the item submit payload', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    fireEvent.change(screen.getByTestId('deliverable-template-item-name'), { target: { value: 'X' } });
+    fireEvent.change(screen.getByTestId('deliverable-template-item-instructions'), { target: { value: 'Do X' } });
+    const select = (await screen.findByTestId('deliverable-template-item-checklist-template')) as HTMLSelectElement;
+    await waitFor(() => expect(select.options.length).toBe(3));
+    fireEvent.change(select, { target: { value: 'ctpl-1' } });
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({
+        data: {
+          id: 'item-2',
+          setId: 'set-1',
+          name: 'X',
+          description: null,
+          cadence: 'monthly',
+          leadDays: 7,
+          graceDays: 14,
+          artifactRequired: true,
+          completionMode: 'on_ticket_resolve',
+          instructions: 'Do X',
+          checklistTemplateId: 'ctpl-1',
+          sortOrder: 0,
+        },
+      }),
+    );
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, opts]) => url === '/deliverable-templates/set-1/items' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body.instructions).toBe('Do X');
+      expect(body.checklistTemplateId).toBe('ctpl-1');
+    });
   });
 });

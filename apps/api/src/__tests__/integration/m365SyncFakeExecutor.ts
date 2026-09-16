@@ -290,6 +290,33 @@ export function syncSigninActivityResult(
   return result(entries, { signInActivity: 'ok' }, extra);
 }
 
+/**
+ * #5784 W05. `/auditLogs/signIns` rows as the executor hands them back. Only
+ * `id` and `createdDateTime` are required by the persister; the rest mirrors a
+ * typical interactive sign-in so the parsed row has every column populated.
+ */
+export function syncSigninEventsResult(
+  events: { id: string; createdDateTime: string; userId?: string; userPrincipalName?: string }[],
+  extra: Partial<M365SyncActionResult> = {},
+): M365SyncActionResult {
+  return result(events.map((event) => ({
+    id: event.id,
+    createdDateTime: event.createdDateTime,
+    userId: event.userId ?? 'aaaaaaaa-0000-4000-8000-000000000001',
+    userPrincipalName: event.userPrincipalName ?? 'ada@contoso.example',
+    appId: 'app-1',
+    appDisplayName: 'Outlook',
+    clientAppUsed: 'Browser',
+    ipAddress: '203.0.113.7',
+    location: { city: 'Austin', countryOrRegion: 'US' },
+    conditionalAccessStatus: 'success',
+    status: { errorCode: 0 },
+    riskLevelAggregated: 'none',
+    riskState: 'none',
+    isInteractive: true,
+  })), { signinEvents: 'ok' }, extra);
+}
+
 export function syncIntuneDevicesResult(
   devices: { id: string; deviceName: string; serialNumber?: string | null; complianceState?: string }[],
   extra: Partial<M365SyncActionResult> = {},

@@ -255,6 +255,17 @@ export function normalizeRevocationLeaseProtocolVersion(value: unknown): 0 | 1 {
   return value === 1 ? 1 : 0;
 }
 
+/**
+ * SEC-038 W06: normalize the only desktop start/terminal fence protocol
+ * version implemented here. Same tolerance contract as the lease version —
+ * absent, malformed, or a future version this server does not speak is 0, and
+ * behind REMOTE_DESKTOP_FENCE_REQUIRED every desktop-start dispatch site
+ * refuses with 503 agent_upgrade_required.
+ */
+export function normalizeDesktopFenceProtocolVersion(value: unknown): 0 | 1 {
+  return value === 1 ? 1 : 0;
+}
+
 // #5250 — the agent recomputes `checkedAt` (and, on macOS/Linux, the whole
 // DesktopAccessState) fresh on EVERY heartbeat regardless of whether access
 // actually changed (agent/internal/heartbeat/desktop_access_{darwin,linux}.go
@@ -862,6 +873,10 @@ heartbeatRoutes.post('/:id/heartbeat', bodyLimit({ maxSize: 5 * 1024 * 1024, onE
     // and desktop sessions are refused again until the agent is back.
     revocationLeaseProtocolVersion: normalizeRevocationLeaseProtocolVersion(
       data.securityCapabilities?.revocationLeaseProtocolVersion,
+    ),
+    // SEC-038 W06 desktop fence capability, same non-sticky contract.
+    desktopFenceProtocolVersion: normalizeDesktopFenceProtocolVersion(
+      data.securityCapabilities?.desktopFenceProtocolVersion,
     ),
     // Migration-banner Task 2 — self-reported install edition + migration
     // flag. Written UNCONDITIONALLY every heartbeat, mirroring

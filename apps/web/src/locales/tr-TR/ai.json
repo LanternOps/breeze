@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "Koşuyor...",
     "approvedRunning": "Onaylandı · çalışıyor",
+    "approvedFailed": "Onaylandı · başarısız",
+    "approvedCompleted": "Onaylandı · tamamlandı",
     "input": "Giriş:",
     "error": "Hata:",
     "output": "Çıktı:"
@@ -138,7 +140,7 @@
     "tabs": {
       "orgs": "Organizasyonlar",
       "sessions": "Oturumlar",
-      "usage": "Kullanım",
+      "usage": "Office eklentisi kullanımı",
       "templates": "Şablonlar"
     }
   },
@@ -487,5 +489,19 @@
     "ownerScopeOrganization": "Yalnızca bu kuruluş",
     "ownerScopePartner": "Bu iş ortağına bağlı tüm kuruluşlar",
     "nameRequired": "Bir ad girilmesi zorunludur."
+  },
+  "aiRunCard": {
+    "title": "Analiz çalıştırması",
+    "openRun": "Tam çalıştırmayı aç",
+    "resultOnRunPage": "Bu işlem, konuşma ilerledikten sonra tamamlandı — tam sonuç çalıştırma sayfasında saklanıyor.",
+    "status": {
+      "queued": "sırada",
+      "running": "çalışıyor",
+      "completed": "tamamlandı",
+      "failed": "başarısız",
+      "cancelled": "iptal edildi",
+      "expired": "süresi doldu",
+      "skipped": "atlandı"
+    }
   }
 }

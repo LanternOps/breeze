@@ -1,0 +1,79 @@
+---
+title: Tool Sources
+description: Connect your own MCP servers so their tools become available to the AI assistant, with per-tool risk tiers, approvals and per-source credentials.
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+Tool Sources let you point Breeze at an **MCP server you already run** — your documentation platform, your PSA, an internal service — and have its tools appear alongside Breeze's own in AI chat. Each discovered tool gets a risk tier, so the same approval rules that govern Breeze's built-in tools govern yours.
+
+<Aside type="note">
+  Tool Sources is off by default. A self-hosted deployment enables it with `TOOL_SOURCES_ENABLED=true` on the API; while it is off, the `/tool-sources` routes answer 404, the nav item is hidden, and AI chat resolves zero external tools.
+</Aside>
+
+## What a tool source is
+
+A tool source is one MCP endpoint plus the credential Breeze uses to reach it. Breeze connects over streamable HTTP, asks the server for its tool list, and records each tool it finds. Tools are **disabled on arrival** — nothing reaches the assistant until you enable it.
+
+Every tool is addressed as `<slug>__<name>`, where the slug is yours (`hudu__get_asset`). The slug is fixed at creation because it is part of every tool's name: renaming it would rename every tool the assistant knows.
+
+## Adding a source
+
+<Steps>
+
+1. Go to **AI → Tool Sources** and choose **Add source**.
+
+2. Give it a display name. The slug is derived from the name and stays editable until you save — lowercase letters and digits, up to 24 characters.
+
+3. Enter the endpoint URL. It must be `https`. Breeze sends your credential **only** to that URL's origin, and it never follows redirects — a 3xx response fails the call rather than forwarding anything to the new location.
+
+4. Pick an authentication method — none, bearer token, API key header, username and password, or OAuth2 client credentials. Credentials are encrypted at rest and never returned by the API.
+
+5. Choose the availability (see below), then save. Discovery is queued immediately; the detail page shows the tools as soon as it finishes.
+
+</Steps>
+
+## Availability: all organizations vs one
+
+A source is owned either by **one organization** or by **the whole partner** ("All organizations").
+
+Partner-wide is the right default for a tool your team uses the same way for every customer. It is the wrong default when the vendor issues **per-customer credentials**: a partner-wide source exposes everything its single credential can reach to every organization's AI chat. Breeze warns about this at creation time, and only a user who can manage partner-wide policies may create, edit or re-discover one.
+
+## Tiers and what they mean for approvals
+
+Discovery proposes a tier for each tool from the server's own annotations; you can change it, and your choice sticks across re-discovery.
+
+| Tier | Behaviour |
+| --- | --- |
+| **Tier 1** | Read-only. Runs without approval, and is the only tier you can test-call from the UI. |
+| **Tier 2** | Can write. Follows the session's approval mode, like Breeze's own Tier-2 tools. |
+| **Tier 3** | Always requires human approval. The request becomes a durable action intent, exactly like a Tier-3 Breeze tool, and survives a restart or a closed browser. |
+
+A Tier-3 external call is **pinned to the tool definition the approver saw**. If the upstream tool changes, is disabled, or its source stops responding between approval and execution, the release refuses rather than calling a tool nobody approved. See [the AI assistant's approval workflow](/features/ai/) for how approvals themselves work.
+
+<Aside type="caution">
+  Tier 3 external tools are available in AI chat only. The MCP API surface has no interactive approval, so it declines them.
+</Aside>
+
+## Enabling tools
+
+On a source's detail page each tool shows its proposed tier, its effective tier, an enable switch, and any flags:
+
+- **Review needed** — the upstream definition changed since you last looked. The tool keeps working at the tier you set, and the flag clears when you set its tier again (confirming the new definition is still worth that approval bar). Toggling it off and on does not clear it.
+- **Removed upstream** — the server no longer lists it. It cannot be re-enabled; it reappears on its own if the server offers it again.
+- **Name not usable** — the tool's name cannot be addressed as `<slug>__<name>` (too long, or characters Breeze cannot route). It can never resolve, so it cannot be enabled.
+
+**Enable all reads** turns on every Tier-1 tool at once; **Disable all** is the fast way back.
+
+## Testing a tool
+
+Tier-1 tools have a **Test** action: supply arguments as JSON and Breeze performs the real call with the source's credential, showing the raw result and how long it took. A failed call reports as a failure — it is a live call, not a simulation, so run it against a source you are comfortable touching.
+
+## Troubleshooting
+
+A source in **Error** state carries the reason on its detail page.
+
+- **Connection refused / timeout** — the endpoint is unreachable from the Breeze API host. Private-network endpoints need `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true` on a self-hosted deployment; hosted Breeze refuses them outright.
+- **401 / 403 from the server** — the stored credential was rejected. Edit the source and re-enter it. Leaving the field blank keeps the stored credential, which is only allowed while the authentication method itself is unchanged; switching methods requires entering the new credential.
+- **No tools discovered** — the server answered but listed nothing. Confirm it speaks streamable-HTTP MCP and that the credential's grants cover tool listing.
+- **A tool the assistant will not call** — check it is enabled, that its source is Active, and that your role carries the external-tools permission for that tier (reads and writes are separate grants).

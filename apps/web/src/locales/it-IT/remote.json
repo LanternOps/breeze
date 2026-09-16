@@ -30,8 +30,12 @@
     "desktopUnavailable": "Desktop non disponibile",
     "dismiss": "Chiudi",
     "downloadFor": "Scarica per {{platform}}",
+    "ending": {
+      "description": "La sessione precedente si sta ancora chiudendo sul dispositivo. Attendi un momento e riprova.",
+      "title": "La sessione si sta ancora chiudendo"
+    },
     "errors": {
-      "agentUpgradeRequired": "Il desktop remoto richiede un aggiornamento dell'agente su questo dispositivo (supporto del lease di revoca della sessione). L'agente si aggiorna automaticamente: di solito si risolve entro un minuto. Terminale e trasferimento file non sono interessati.",
+      "agentUpgradeRequired": "Il desktop remoto richiede un aggiornamento dell'agente su questo dispositivo (supporto del lease di revoca della sessione e della barriera di avvio). L'agente si aggiorna automaticamente: di solito si risolve entro un minuto. Terminale e trasferimento file non sono interessati.",
       "connectionFailed": "Connessione non riuscita",
       "createDesktopCode": "Impossibile creare il codice di connessione al desktop",
       "createDesktopSession": "Impossibile creare la sessione desktop",
@@ -664,7 +668,8 @@
       "connecting": "Connessione in corso...",
       "disconnected": "Disconnessa",
       "failed": "Non riuscita",
-      "pending": "In sospeso"
+      "pending": "In sospeso",
+      "teardownPending": "In chiusura (in attesa del dispositivo)"
     },
     "subtitle": "Registro di controllo degli accessi remoti",
     "title": "Cronologia sessioni",
@@ -700,6 +705,7 @@
       "timeline": "Sequenza temporale"
     },
     "subtitle": "Visualizza e controlla le sessioni di accesso remoto",
+    "teardownPending": "In attesa della conferma del dispositivo",
     "title": "Cronologia sessioni",
     "viewDevice": "Visualizza dispositivo",
     "viewRecording": "Visualizza registrazione"

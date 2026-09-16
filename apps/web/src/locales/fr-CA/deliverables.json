@@ -67,10 +67,19 @@
       "on_ticket_resolve": "Livré lorsque le billet lié est résolu"
     },
     "autoEvidenceReport": "Joindre les exécutions de rapport comme preuve",
+    "autoEvidenceNone": "Aucun",
+    "autoEvidenceHelp": "La preuve est générée le jour d'échéance et devient visible pour le client lorsque l'occurrence est livrée.",
+    "autoEvidenceEmpty": "Aucun type de rapport de preuve géré n'est encore disponible.",
     "owner": "Responsable",
     "ticketCategory": "Catégorie de billet",
     "portalVisible": "Afficher dans le portail client",
-    "sortOrder": "Ordre d'affichage"
+    "sortOrder": "Ordre d'affichage",
+    "instructions": "Instructions internes",
+    "instructionsHint": "Interne — jamais visible du client.",
+    "checklistTemplate": "Modèle de liste de vérification",
+    "checklistTemplateNone": "Aucun",
+    "checklistTemplateAllOrgs": "Toutes les orgs",
+    "checklistTemplateManage": "Gérer les modèles de liste de vérification"
   },
   "drawer": {
     "title": "Occurrences",
@@ -84,7 +93,10 @@
     "uploadEvidence": "Téléverser un fichier comme preuve",
     "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, jusqu'à 10 Mo. Le fichier est classé dans la bibliothèque de documents de cette organisation.",
     "evidenceDocument": "Document de preuve",
-    "upload": "Téléverser"
+    "upload": "Téléverser",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Afficher la liste de vérification",
+    "hideChecklist": "Masquer la liste de vérification"
   },
   "evidence": {
     "reportRun": "Exécution de rapport",
@@ -177,7 +189,8 @@
       "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
       "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
       "artifactRequired": "Preuve requise",
-      "completionMode": "Achèvement"
+      "completionMode": "Achèvement",
+      "autoEvidenceReportType": "Type de rapport de preuve"
     },
     "ownerScope": {
       "legend": "Pour qui est cet ensemble?",

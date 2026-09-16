@@ -1,3 +1,4 @@
+import type { RemediationTrigger } from '@breeze/shared';
 import { randomUUID } from 'node:crypto';
 
 import type { ScriptAdmissionResult, ScriptTargetAdmission } from '@breeze/shared';
@@ -23,6 +24,7 @@ type ScriptExecutionAuth = {
 };
 
 type ExecuteScriptOnDevicesInput = {
+  trigger?: RemediationTrigger;
   scriptId: string;
   deviceIds: string[];
   parameters?: Record<string, unknown>;
@@ -262,6 +264,7 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
     const dispatch = await dispatchScriptToDevice({
       device,
       source: { kind: 'saved', script },
+      trigger: input.trigger,
       parameters,
       triggerType,
       triggeredBy: input.auth.user.id,
@@ -303,6 +306,9 @@ export async function executeScriptOnDevices(input: ExecuteScriptOnDevicesInput)
         continue;
       }
       await db.insert(scriptExecutions).values({
+        triggerKind: input.trigger?.kind ?? null,
+        triggerRefId: input.trigger?.refId ?? null,
+        triggerKey: input.trigger?.key ?? null,
         scriptId: input.scriptId,
         deviceId: device.id,
         // Child rows always take the DEVICE's org (partner-wide fan-out

@@ -21,6 +21,8 @@ export interface TenantVariable {
   description: string | null;
   ownerScope: TenantVariableOwnerScope;
   orgId: string | null;
+  /** Owning organization name, populated by the list endpoint. */
+  orgName?: string | null;
   partnerId: string | null;
   version: number;
   createdAt: string;

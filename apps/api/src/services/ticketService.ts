@@ -16,6 +16,7 @@ import { assertTicketMoveCurrencyCompatible, type MoveCurrencyGuardDetails } fro
 import { TICKET_ORG_DENORMALIZED_TABLES } from './ticketOrgMoveLockOrder';
 import { ServiceManagementOffError, assertTicketCreationAllowed } from './serviceManagement';
 import { isEligibleTicketRecipient } from './ticketPush';
+import type { AiDraftOutboxClaim } from './aiTimeEntryProposal';
 import type { AddinTicketSummary } from '@breeze/shared';
 
 export type TicketStatus = (typeof ticketStatusEnum.enumValues)[number];
@@ -824,7 +825,7 @@ export interface ChangeStatusTarget {
 async function lockAndValidateResolutionDraft(
   ticketId: string,
   draftId: string
-): Promise<{ id: string; content: string }> {
+): Promise<{ id: string; content: string; runId: string | null }> {
   const [draft] = await db
     .select()
     .from(ticketDrafts)
@@ -838,7 +839,7 @@ async function lockAndValidateResolutionDraft(
   if (draft.state !== 'active') {
     throw new TicketServiceError('Draft is no longer active', 409);
   }
-  return { id: draft.id, content: draft.content };
+  return { id: draft.id, content: draft.content, runId: draft.runId ?? null };
 }
 
 /** Companion to `lockAndValidateResolutionDraft` — CAS `active -> consumed` in the
@@ -853,6 +854,35 @@ async function consumeResolutionDraft(draftId: string, consumedBy: string): Prom
   if (consumed.length === 0) {
     throw new TicketServiceError('Draft was already consumed', 409);
   }
+}
+
+/**
+ * #4177 (W04): an AI-drafted reply sent / an AI resolution note applied is
+ * billable work the technician just did. The time-entry PROPOSAL (a Tier-2,
+ * human-reviewed action intent — never a write) is minted by
+ * `services/aiAgents/ticketHelpdeskSubscriber.ts` from the `ticket_outbox`
+ * event this service already writes, so the claim rides in the outbox
+ * payload:
+ *
+ *  - it commits atomically with the send/resolve and is published only
+ *    AFTER that transaction commits (jobs/ticketOutboxPublisher.ts) — a
+ *    failed proposal can never roll back or fail the technician's action;
+ *  - this service stays clear of the action-intent import graph
+ *    (intentService → aiTools → commandQueue → routes/agentWs.ts), which
+ *    the `global`-placement workers that import ticketService must never
+ *    reach (workerEntrypointClosure.contract.test.ts);
+ *  - the subscriber re-verifies every claim against the draft row before
+ *    minting — the payload is a pointer, not a fact.
+ *
+ * A draft with no run (hand-written, or predating the run pointer) carries
+ * no claim: there is no AI-assisted work to bill.
+ */
+function aiDraftOutboxClaim(
+  draft: { id: string; runId: string | null },
+  trigger: AiDraftOutboxClaim['trigger'],
+): { aiDraft: AiDraftOutboxClaim } | Record<string, never> {
+  if (!draft.runId) return {};
+  return { aiDraft: { draftId: draft.id, runId: draft.runId, trigger } };
 }
 
 export async function changeTicketStatus(
@@ -906,7 +936,7 @@ export async function changeTicketStatus(
   // no-op-resolving it) was silently dropped: no error, no consumption, no
   // resolutionNote write. Lock + validate it HERE, unconditionally, whenever
   // the target core status is 'resolved' and the core status isn't changing.
-  let sameStatusDraft: { id: string; content: string } | null = null;
+  let sameStatusDraft: { id: string; content: string; runId: string | null } | null = null;
   if (toStatus === fromStatus && toStatus === 'resolved' && opts.aiDraftId) {
     sameStatusDraft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
   }
@@ -985,6 +1015,11 @@ export async function changeTicketStatus(
       details: { from: fromStatus, to: toStatus },
       result: 'success'
     });
+    // #4177: no time-entry proposal on this path — it deliberately emits no
+    // `ticket.status_changed` outbox event (core status is unchanged), and
+    // the proposal rides on that event. Relabeling an already-resolved
+    // ticket with a resolution draft is the documented residue; see the
+    // W04 PR's follow-ups.
     return updated[0];
   }
 
@@ -999,14 +1034,14 @@ export async function changeTicketStatus(
   // update below: a missing/wrong-kind/inactive draft must fail the whole
   // resolve, not silently resolve without it.
   let resolutionNote = opts.resolutionNote;
-  let draftToConsume: { id: string } | null = null;
+  let draftToConsume: { id: string; runId: string | null } | null = null;
   if (toStatus === 'resolved' && opts.aiDraftId) {
     const draft = await lockAndValidateResolutionDraft(ticketId, opts.aiDraftId);
     // C1 (#4191 final review): a non-empty caller-supplied resolutionNote
     // (e.g. the technician edited the prefilled AI draft before submitting)
     // wins over the draft's content — the draft is still consumed below.
     resolutionNote = opts.resolutionNote?.trim() ? opts.resolutionNote : draft.content;
-    draftToConsume = { id: draft.id };
+    draftToConsume = { id: draft.id, runId: draft.runId };
   }
 
   const now = new Date();
@@ -1086,7 +1121,12 @@ export async function changeTicketStatus(
     actorUserId: actor.userId,
     payload: { from: fromStatus, to: toStatus }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', { from: fromStatus, to: toStatus });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.status_changed', {
+    from: fromStatus,
+    to: toStatus,
+    // #4177: the consumed AI resolution draft, for the time-entry proposal.
+    ...(draftToConsume ? aiDraftOutboxClaim(draftToConsume, 'resolved_with_ai_note') : {}),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -2073,7 +2113,12 @@ export async function sendTicketDraft(
     actorUserId: actor.userId,
     payload: { commentId: comment.id, isPublic: true }
   });
-  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', { commentId: comment.id, isPublic: true });
+  await writeTicketOutbox(ticket.orgId, ticketId, 'ticket.commented', {
+    commentId: comment.id,
+    isPublic: true,
+    // #4177: the consumed AI reply draft, for the time-entry proposal.
+    ...aiDraftOutboxClaim({ id: draft.id, runId: draft.runId ?? null }, 'draft_sent'),
+  });
   await createAuditLogAsync({
     orgId: ticket.orgId,
     actorId: actor.userId,
@@ -2481,12 +2526,16 @@ export const DELIVERABLE_TICKET_PINNED_MESSAGE =
  */
 export async function assertTicketNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  ticketId: string
+  ticketId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
-    .where(eq(serviceDeliverableOccurrences.ticketId, ticketId))
+    .where(and(
+      eq(serviceDeliverableOccurrences.ticketId, ticketId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2504,13 +2553,17 @@ export async function assertTicketNotPinnedToDeliverable(
  */
 export async function assertDeviceTicketsNotPinnedToDeliverable(
   tx: Pick<typeof db, 'select'>,
-  deviceId: string
+  deviceId: string,
+  orgId: string
 ): Promise<void> {
   const linked = await tx
     .select({ id: serviceDeliverableOccurrences.id })
     .from(serviceDeliverableOccurrences)
     .innerJoin(tickets, eq(tickets.id, serviceDeliverableOccurrences.ticketId))
-    .where(eq(tickets.deviceId, deviceId))
+    .where(and(
+      eq(tickets.deviceId, deviceId),
+      eq(serviceDeliverableOccurrences.orgId, orgId)
+    ))
     .limit(1);
   if (linked.length > 0) {
     throw new TicketServiceError(DELIVERABLE_TICKET_PINNED_MESSAGE, 409, 'DELIVERABLE_TICKET_PINNED');
@@ -2615,7 +2668,7 @@ export async function moveTicketOrg(
       throw new TicketServiceError('Tickets can only be moved between organizations of the same partner', 400);
     }
     // #5573 W02: cheap precondition, before the ticket UPDATE burns anything.
-    await assertTicketNotPinnedToDeliverable(tx, ticketId);
+    await assertTicketNotPinnedToDeliverable(tx, ticketId, ticket.orgId);
     // Present by construction: the metadata rows above resolved, so the locks did too.
     const sourceOrg = { ...sourceMeta, currencyCode: lockedOrgs.get(ticket.orgId)!.currencyCode };
     const targetOrg = { ...targetMeta, currencyCode: lockedOrgs.get(targetOrgId)!.currencyCode };

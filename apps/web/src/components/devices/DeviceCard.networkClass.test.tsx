@@ -149,7 +149,7 @@ describe('DeviceCard network-class guard (#4014)', () => {
     expect(screen.getByTestId(`device-${agentDevice.id}-action-remove`)).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${agentDevice.id}/metrics?range=1h`);
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${agentDevice.id}/metrics?range=1h`, { signal: expect.any(AbortSignal) });
     });
   });
 
@@ -185,7 +185,7 @@ describe('DeviceCard network-class guard (#4014)', () => {
     rerender(<DeviceCard device={{ ...networkPrinter, deviceClass: 'agent' }} />);
 
     await waitFor(() => {
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${networkPrinter.id}/metrics?range=1h`);
+      expect(fetchWithAuthMock).toHaveBeenCalledWith(`/devices/${networkPrinter.id}/metrics?range=1h`, { signal: expect.any(AbortSignal) });
     });
   });
 

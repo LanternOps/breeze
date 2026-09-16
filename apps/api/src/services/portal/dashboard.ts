@@ -1,5 +1,5 @@
 import type { AwaitingYouTileDto, DashboardDto } from '@breeze/shared';
-import { and, eq, gt, inArray, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { invoices, quotes } from '../../db/schema';
 import { actionItemsTile } from './actionItemsReadModel';
@@ -45,6 +45,7 @@ export async function awaitingYouTile(
 export async function dashboardForOrg(
   orgId: string,
   args: { timezone: string; now: Date },
+  ticketOwnership: SQL,
 ): Promise<DashboardDto> {
   const [
     securityScore,
@@ -60,7 +61,7 @@ export async function dashboardForOrg(
     devicesProtectedTile(orgId, args.now),
     patchesAppliedTile(orgId, args),
     backupTile(orgId, args.now),
-    supportTile(orgId, args),
+    supportTile(orgId, args, ticketOwnership),
     actionItemsTile(orgId, args.now),
     awaitingYouTile(orgId, args.now),
     serviceTile(orgId, args),
