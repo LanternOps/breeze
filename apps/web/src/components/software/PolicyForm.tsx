@@ -10,6 +10,10 @@ const softwareRuleSchema = z.object({
   minVersion: z.string().max(100).optional().or(z.literal("")),
   maxVersion: z.string().max(100).optional().or(z.literal("")),
   reason: z.string().max(1000).optional().or(z.literal("")),
+  // Links this rule to a software-catalog item so an armed autoInstall
+  // policy has something concrete to install (#5509). Empty string = no
+  // link, matching the other optional string fields' convention above.
+  catalogId: z.string().optional().or(z.literal("")),
 });
 const policyFormSchema = z.object({
   name: z.string().min(1, "Policy name is required").max(200),
@@ -26,9 +30,14 @@ const policyFormSchema = z.object({
   allowUnknown: z.boolean().optional(),
   enforceMode: z.boolean(),
   autoUninstall: z.boolean().optional(),
+  // Arms desired-state install remediation (#5505). Only meaningful on an
+  // allowlist policy — 'missing' violations, the only kind autoInstall acts
+  // on, are only ever emitted for allowlist rule mismatches.
+  autoInstall: z.boolean().optional(),
   gracePeriod: z.coerce.number().int().min(0).max(2160).optional(),
 });
 export type PolicyFormValues = z.infer<typeof policyFormSchema>;
+export type CatalogOption = { id: string; name: string; vendor?: string };
 type PolicyFormProps = {
   onSubmit?: (values: PolicyFormValues) => void | Promise<void>;
   onCancel?: () => void;
@@ -37,6 +46,10 @@ type PolicyFormProps = {
   loading?: boolean;
   /** Show the ownership-scope selector (create-only, partner-scope users). */
   showOwnerScope?: boolean;
+  /** Software catalog items available to link a rule to. Fetched once by the
+   *  parent (ComplianceDashboard); an empty array degrades the picker to "no
+   *  catalog items" rather than blocking the form (#5509). */
+  catalogItems?: CatalogOption[];
 };
 export default function PolicyForm({
   onSubmit,
@@ -45,6 +58,7 @@ export default function PolicyForm({
   submitLabel = "Save Policy",
   loading,
   showOwnerScope = false,
+  catalogItems = [],
 }: PolicyFormProps) {
   useTranslation("policies");
   const {
@@ -60,11 +74,19 @@ export default function PolicyForm({
       description: "",
       mode: "blocklist",
       software: [
-        { name: "", vendor: "", minVersion: "", maxVersion: "", reason: "" },
+        {
+          name: "",
+          vendor: "",
+          minVersion: "",
+          maxVersion: "",
+          reason: "",
+          catalogId: "",
+        },
       ],
       allowUnknown: false,
       enforceMode: false,
       autoUninstall: false,
+      autoInstall: false,
       gracePeriod: 24,
       ...defaultValues,
     },
@@ -75,6 +97,14 @@ export default function PolicyForm({
   });
   const watchMode = watch("mode");
   const watchEnforceMode = watch("enforceMode");
+  const watchAutoInstall = watch("autoInstall");
+  const watchSoftware = watch("software");
+  // Deliberately NOT memoised: react-hook-form mutates the watched array in
+  // place, so its identity is stable across edits and a useMemo keyed on it
+  // would serve a stale count after a catalog link is chosen (#5509).
+  const rulesWithoutCatalog = watchSoftware.filter(
+    (rule) => !rule.catalogId,
+  ).length;
   const isLoading = loading ?? isSubmitting;
   return (
     <form
@@ -195,6 +225,7 @@ export default function PolicyForm({
                 minVersion: "",
                 maxVersion: "",
                 reason: "",
+                catalogId: "",
               })
             }
             className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium hover:bg-muted"
@@ -217,7 +248,7 @@ export default function PolicyForm({
                 key={field.id}
                 className="flex items-center gap-2 rounded-md border bg-muted/20 px-3 py-2"
               >
-                <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-5">
+                <div className="flex-1 grid gap-2 sm:grid-cols-2 md:grid-cols-6">
                   <input
                     placeholder={i18n.t("policies:software.policyForm.name")}
                     className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
@@ -243,6 +274,23 @@ export default function PolicyForm({
                     className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
                     {...register(`software.${index}.reason`)}
                   />
+                  <select
+                    className="h-8 w-full rounded-md border bg-background px-2 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                    title={i18n.t("policies:software.policyForm.catalogLink")}
+                    data-testid={`software-rule-catalog-${index}`}
+                    {...register(`software.${index}.catalogId`)}
+                  >
+                    <option value="">
+                      {i18n.t("policies:software.policyForm.catalogLinkNone")}
+                    </option>
+                    {catalogItems.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.vendor
+                          ? `${item.name} (${item.vendor})`
+                          : item.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <button
                   type="button"
@@ -325,7 +373,36 @@ export default function PolicyForm({
               </span>
             </label>
           )}
+
+          {watchEnforceMode && watchMode === "allowlist" && (
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-border"
+                data-testid="policy-auto-install-checkbox"
+                {...register("autoInstall")}
+              />
+              <span className="text-sm">
+                {i18n.t("policies:software.policyForm.autoInstall")}
+              </span>
+            </label>
+          )}
         </div>
+
+        {watchEnforceMode &&
+          watchMode === "allowlist" &&
+          watchAutoInstall &&
+          rulesWithoutCatalog > 0 && (
+            <p
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+              data-testid="autoinstall-catalog-warning"
+            >
+              {i18n.t("policies:software.policyForm.autoInstallCatalogWarning", {
+                count: rulesWithoutCatalog,
+                total: watchSoftware.length,
+              })}
+            </p>
+          )}
 
         {watchEnforceMode && (
           <div className="flex items-center gap-3">
