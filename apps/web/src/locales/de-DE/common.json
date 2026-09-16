@@ -58,7 +58,7 @@
     "partner": "Partner",
     "billing": "Abrechnung",
     "organizations": "Organisationen",
-    "aiUsageBudget": "KI-Nutzung und Budget",
+    "aiUsage": "KI-Nutzung",
     "scriptAuthoring": "Skripterstellung",
     "aiAgents": "KI-Agenten",
     "aiAgentRuns": "KI-Agenten-Läufe",

@@ -58,7 +58,7 @@
     "partner": "Partner",
     "billing": "Billing",
     "organizations": "Organizations",
-    "aiUsageBudget": "AI Usage & Budget",
+    "aiUsage": "AI Usage",
     "scriptAuthoring": "Script authoring",
     "aiAgents": "AI Agents",
     "aiAgentRuns": "AI Agent Runs",

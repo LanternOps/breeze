@@ -36,6 +36,13 @@ describe('AiForOfficePage', () => {
     expect(screen.getByTestId('stub-orgs')).toBeInTheDocument();
   });
 
+  // #6004: the tab was called just "Usage", which read like a third AI budget
+  // page next to /settings/ai-usage and the partner AI budgets tab.
+  it('labels the usage tab "Office add-in usage"', () => {
+    render(<AiForOfficePage />);
+    expect(screen.getByTestId('ai-office-tab-usage').textContent).toBe('Office add-in usage');
+  });
+
   it('reads the initial tab from the hash', () => {
     window.location.hash = '#sessions';
     render(<AiForOfficePage />);

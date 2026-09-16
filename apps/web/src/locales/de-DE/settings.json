@@ -211,7 +211,8 @@
       "actionPlan": "Aktionsplan",
       "autoApprove": "Automatisch genehmigen",
       "hybridPlan": "Hybridplan"
-    }
+    },
+    "overridesOrgTab": "Die hier festgelegten Felder überschreiben und sperren dasselbe Feld auf der KI-Registerkarte jeder Organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Geben Sie bis zu fünf ganze Zahlen zwischen 1 und 99 ein, durch Kommas getrennt."
@@ -1444,7 +1445,7 @@
     "completeReview": "Überprüfung abschließen"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "KI-Nutzung und Budget",
+    "aIUsageBudget": "KI-Nutzung",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Überwachen Sie die Nutzung des KI-Assistenten und konfigurieren Sie Budgetgrenzen",
     "budgetConfiguration": "Budgetkonfiguration",
     "aIEnabled": "KI aktiviert",
@@ -1494,7 +1495,19 @@
     "untitled": "Ohne Titel",
     "billedToPartnerKey": "Abrechnung über Ihren Schlüssel — die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
     "billedToPartnerKeyViaEndpoint": "Abrechnung über Ihren Schlüssel via {{name}}: die KI-Nutzung läuft über Ihr eigenes Anthropic-Konto, nicht über Breeze-KI-Guthaben",
-    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben"
+    "creditsRemaining": "Verbleibendes Breeze-KI-Guthaben",
+    "defaultValue": "Standard ({{value}})",
+    "viewPartnerWideBudgets": "Partnerweite KI-Budgets",
+    "monitorAIAssistantUsage": "KI-Assistenten-Nutzung überwachen",
+    "effectiveBudget": "Geltendes Budget",
+    "effectiveBudgetHelp": "Die derzeit für diese Organisation geltenden Grenzwerte und wo jeder davon festgelegt wurde.",
+    "effectiveBudgetUnavailable": "Das effektive Budget konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "sourcePartner": "Vom Partner festgelegt",
+    "sourceOrganization": "Von der Organisation festgelegt",
+    "sourceDefault": "Standard",
+    "selectOrgForEffectiveBudget": "Wählen Sie eine Organisation aus, um deren geltendes Budget zu sehen, oder bearbeiten Sie die partnerweiten Standardwerte.",
+    "editPartnerWideDefaults": "Partnerweite Standardwerte bearbeiten",
+    "thresholdsOff": "Aus"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -4282,6 +4295,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "KI-Budget",
+    "description": "Ausgabengrenzen, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten in dieser Organisation. Vom Partner festgelegte Felder werden hier angezeigt, können aber nur im Partner-Tab geändert werden.",
+    "selectOrganization": "Wählen Sie eine Organisation aus, um ihr KI-Budget zu konfigurieren."
+  },
   "orgSettingsPage": {
     "loading": "Organisationseinstellungen werden geladen...",
     "confirmDiscard": "Sie haben in diesem Abschnitt nicht gespeicherte Änderungen. Beim Wechsel werden sie verworfen. Weitermachen?",
@@ -4335,7 +4353,9 @@
       "notifications": "Benachrichtigungen",
       "notificationsDescription": "E-Mail, Slack, Webhooks",
       "ticketing": "Ticketverkauf",
-      "ticketingDescription": "SLA und Abrechnungsüberschreibungen"
+      "ticketingDescription": "SLA und Abrechnungsüberschreibungen",
+      "ai": "KI",
+      "aiDescription": "Budget, Ratenbegrenzungen und Freigabemodus für den KI-Assistenten"
     },
     "overview": {
       "title": "Organisationsübersicht",

@@ -58,7 +58,7 @@
     "partner": "Partenaire",
     "billing": "Facturation",
     "organizations": "Organisations",
-    "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiUsage": "Utilisation de l’IA",
     "scriptAuthoring": "Rédaction de scripts",
     "aiAgents": "Agents IA",
     "aiAgentRuns": "Exécutions des agents IA",
