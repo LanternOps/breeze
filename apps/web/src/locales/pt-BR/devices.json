@@ -2313,6 +2313,14 @@
     "genericError": "Não foi possível iniciar o modo de manutenção."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Aprovação pendente: nada está sendo monitorado ainda.",
+      "dismissedBanner": "Dispensado: oculto nas listas de dispositivos.",
+      "approve": "Aprovar",
+      "dismiss": "Dispensar",
+      "approvedAnnouncement": "Ativo aprovado",
+      "dismissedAnnouncement": "Ativo dispensado"
+    },
     "backToDevices": "Voltar para dispositivos",
     "confirmUnlink": "Desvincular este dispositivo?",
     "confirmUnlinkMessage": "O ativo descoberto e o dispositivo gerenciado serão exibidos como itens separados. A vinculação automática permanecerá desativada para este ativo até que você o vincule novamente.",
@@ -2320,6 +2328,7 @@
     "emptyPorts": "Nenhuma porta aberta encontrada na última verificação.",
     "emptySnmp": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido sondado. Verifique se o método SNMP está ativado e se a string de comunidade está definida no perfil de descoberta.",
     "errors": {
+      "unexpected": "Algo deu errado. Tente novamente.",
       "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
       "malformed": "O servidor retornou uma resposta inesperada para este dispositivo de rede. Tente novamente e, se o problema persistir, entre em contato com o suporte.",
       "notFound": "Dispositivo de rede não encontrado"

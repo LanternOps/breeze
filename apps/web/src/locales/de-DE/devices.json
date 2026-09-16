@@ -2313,6 +2313,14 @@
     "genericError": "Wartungsmodus konnte nicht gestartet werden."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Genehmigung ausstehend: Es wird noch nichts überwacht.",
+      "dismissedBanner": "Verworfen: in Gerätelisten ausgeblendet.",
+      "approve": "Genehmigen",
+      "dismiss": "Verwerfen",
+      "approvedAnnouncement": "Asset genehmigt",
+      "dismissedAnnouncement": "Asset verworfen"
+    },
     "backToDevices": "Zurück zu den Geräten",
     "confirmUnlink": "Verknüpfung dieses Geräts aufheben?",
     "confirmUnlinkMessage": "Der Discovery-Eintrag und das verwaltete Gerät werden danach als separate Einträge angezeigt. Die automatische Verknüpfung bleibt für dieses Gerät deaktiviert, bis Sie es erneut verknüpfen.",
@@ -2320,6 +2328,7 @@
     "emptyPorts": "Beim letzten Scan wurden keine offenen Ports gefunden.",
     "emptySnmp": "Es wurden keine SNMP-Daten erfasst – das Gerät hat möglicherweise nicht reagiert oder SNMP wurde nicht geprüft. Überprüfen Sie, ob die SNMP-Methode aktiviert ist und der Community-String im Erkennungsprofil festgelegt ist.",
     "errors": {
+      "unexpected": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
       "notFound": "Netzwerkgerät nicht gefunden"

@@ -2313,6 +2313,14 @@
     "genericError": "Impossible de démarrer le mode maintenance."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "En attente d’approbation : aucune supervision n’est encore effectuée.",
+      "dismissedBanner": "Ignoré : masqué dans les listes d’appareils.",
+      "approve": "Approuver",
+      "dismiss": "Ignorer",
+      "approvedAnnouncement": "Actif approuvé",
+      "dismissedAnnouncement": "Actif ignoré"
+    },
     "backToDevices": "Retour aux appareils",
     "confirmUnlink": "Déconnecter cet appareil ?",
     "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez à nouveau.",
@@ -2320,6 +2328,7 @@
     "emptyPorts": "Aucun port ouvert trouvé lors de la dernière analyse.",
     "emptySnmp": "Aucune donnée SNMP n’a été collectée — l’appareil n’a peut-être pas répondu ou n’a pas été interrogé via SNMP. Vérifiez que la méthode SNMP est activée et que la chaîne de communauté est définie dans le profil de découverte.",
     "errors": {
+      "unexpected": "Une erreur est survenue. Veuillez réessayer.",
       "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
       "malformed": "Le serveur a renvoyé une réponse inattendue pour cet appareil réseau. Réessayez et, si le problème persiste, contactez l'assistance.",
       "notFound": "Périphérique réseau non trouvé"

@@ -2313,6 +2313,14 @@
     "genericError": "Failed to start maintenance mode."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Pending approval: nothing is monitored yet.",
+      "dismissedBanner": "Dismissed: hidden from device lists.",
+      "approve": "Approve",
+      "dismiss": "Dismiss",
+      "approvedAnnouncement": "Asset approved",
+      "dismissedAnnouncement": "Asset dismissed"
+    },
     "reachability": {
       "state": {
         "responding": "Responding",
@@ -2500,6 +2508,7 @@
     "emptyPorts": "No open ports were found on the most recent scan.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
+      "unexpected": "Something went wrong. Please try again.",
       "load": "Couldn't load this network device. Check your connection and try again.",
       "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
       "notFound": "Network device not found"

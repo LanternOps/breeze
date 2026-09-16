@@ -2313,6 +2313,14 @@
     "genericError": "Bakım modu başlatılamadı."
   },
   "networkDeviceDetailPage": {
+    "approval": {
+      "pendingBanner": "Onay bekleniyor: henüz hiçbir şey izlenmiyor.",
+      "dismissedBanner": "Yok sayıldı: cihaz listelerinde gizli.",
+      "approve": "Onayla",
+      "dismiss": "Yok say",
+      "approvedAnnouncement": "Varlık onaylandı",
+      "dismissedAnnouncement": "Varlık yok sayıldı"
+    },
     "backToDevices": "Cihazlara geri dön",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
     "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
@@ -2320,6 +2328,7 @@
     "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
+      "unexpected": "Bir sorun oluştu. Lütfen tekrar deneyin.",
       "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
       "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
       "notFound": "Ağ cihazı bulunamadı"

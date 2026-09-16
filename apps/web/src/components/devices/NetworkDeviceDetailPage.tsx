@@ -4,6 +4,11 @@
 // on its own.
 
 import { useCallback, useEffect, useState } from 'react';
+import { ActionError } from '@/lib/runAction';
+import { showToast } from '../shared/Toast';
+import { ApprovalBanner } from './networkDevice/ApprovalBanner';
+import { resolveAssetTimezone } from './networkDevice/reachabilityCopy';
+import { useNetworkAssetMutations } from './networkDevice/settings/useNetworkAssetMutations';
 import { useHashState } from '@/lib/useHashState';
 import { Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -29,6 +34,8 @@ import { buildDetailHash, parseDetailHash, type SettingsSection } from './networ
 
 export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetailPageProps) {
   const { t } = useTranslation('devices');
+  const mutations = useNetworkAssetMutations();
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const {
     asset,
     extras,
@@ -162,8 +169,46 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         { label: displayName || t('networkDeviceDetailPage.networkDevice') },
       ]} />
 
+      <ApprovalBanner
+        approvalStatus={asset.approvalStatus}
+        busy={approvalBusy}
+        onApprove={async () => {
+          setApprovalBusy(true);
+          try {
+            await mutations.approve(asset.id);
+            await fetchAsset({ background: true });
+            announce(t('networkDeviceDetailPage.approval.approvedAnnouncement'));
+          } catch (err) {
+            if (err instanceof ActionError && err.status === 401) return;
+            if (!(err instanceof ActionError)) {
+              showToast({ type: 'error', message: t('networkDeviceDetailPage.errors.unexpected') });
+            }
+          } finally {
+            setApprovalBusy(false);
+          }
+        }}
+        onDismiss={async () => {
+          setApprovalBusy(true);
+          try {
+            await mutations.dismiss(asset.id);
+            await fetchAsset({ background: true });
+            announce(t('networkDeviceDetailPage.approval.dismissedAnnouncement'));
+          } catch (err) {
+            if (err instanceof ActionError && err.status === 401) return;
+            if (!(err instanceof ActionError)) {
+              showToast({ type: 'error', message: t('networkDeviceDetailPage.errors.unexpected') });
+            }
+          } finally {
+            setApprovalBusy(false);
+          }
+        }}
+      />
+
       <NetworkDeviceHeader
         asset={asset}
+        reachability={extras.reachability ?? null}
+        timezone={resolveAssetTimezone(extras.siteTimezone)}
+        nicVendor={extras.nicVendor ?? null}
         displayName={displayName}
         siteName={extras.siteName ?? null}
         typeMeta={typeMeta}
