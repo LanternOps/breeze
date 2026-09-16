@@ -1375,7 +1375,9 @@
       "failedToUpdatePolicy": "Failed to update policy",
       "failedToCreatePolicy": "Failed to create policy",
       "policyUpdated": "Policy updated successfully",
-      "policyCreated": "Policy created successfully"
+      "policyCreated": "Policy created successfully",
+      "armInstallRequiresMfa": "Arming automatic install requires multi-factor authentication. Complete MFA, then try again.",
+      "armInstallRequiresPermission": "Arming automatic install requires the devices.execute permission. Ask an administrator to grant it, then try again."
     },
     "deploymentList": {
       "running": "Running",

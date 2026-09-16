@@ -12,7 +12,12 @@ import { fetchWithAuth } from "../../stores/auth";
 import { useOrgStore } from "../../stores/orgStore";
 import { useDefaultOwnerScope } from "@/hooks/useDefaultOwnerScope";
 import { showToast } from "../shared/Toast";
-import PolicyForm, { type PolicyFormValues } from "./PolicyForm";
+import PolicyForm, {
+  type CatalogOption,
+  type PolicyFormValues,
+} from "./PolicyForm";
+import { asList } from "@/lib/asList";
+import { runAction, ActionError } from "@/lib/runAction";
 import { formatDateTime } from "@/lib/dateTimeFormat";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
@@ -32,6 +37,7 @@ type Policy = {
       minVersion?: string;
       maxVersion?: string;
       reason?: string;
+      catalogId?: string;
     }>;
     allowUnknown?: boolean;
   };
@@ -39,6 +45,7 @@ type Policy = {
   enforceMode: boolean;
   remediationOptions?: {
     autoUninstall?: boolean;
+    autoInstall?: boolean;
     gracePeriod?: number;
   } | null;
   createdAt?: string;
@@ -96,6 +103,38 @@ export default function ComplianceDashboard({
   const [modalMode, setModalMode] = useState<ModalMode>("closed");
   const [selectedPolicy, setSelectedPolicy] = useState<Policy | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Catalog items for PolicyForm's per-rule catalog-link picker (#5509).
+  // Fetched on its own rather than inside refresh()'s Promise.all: a catalog
+  // hiccup must not blank the whole dashboard.
+  const [catalogItems, setCatalogItems] = useState<CatalogOption[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithAuth("/software/catalog");
+        if (!res.ok || cancelled) return;
+        const payload = await res.json();
+        const rows = asList<Record<string, unknown>>(payload, "catalog");
+        const items = rows
+          .map((item) => ({
+            id: String(item.id ?? ""),
+            name: String(item.name ?? ""),
+            vendor: item.vendor ? String(item.vendor) : undefined,
+          }))
+          .filter((item) => item.id.length > 0);
+        if (!cancelled) setCatalogItems(items);
+      } catch (err) {
+        // Non-fatal: the picker just shows no options.
+        console.warn(
+          "[ComplianceDashboard] Failed to load software catalog for policy linking:",
+          err,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // Ownership axis (#2126, mirrors ConfigPolicyCreatePage #1724): partner-scope
   // creators may own a policy partner-wide.
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
@@ -214,68 +253,101 @@ export default function ComplianceDashboard({
     }
     setModalMode("edit");
   };
+  // Both arming refusals are coded 403s: MFA_REQUIRED from requireMfa(), and
+  // DEVICES_EXECUTE_REQUIRED from the server's assertMayArmInstall permission
+  // check. Neither may be swallowed (CLAUDE.md runAction contract, #5509).
+  const armInstallFriendly = (code: string) => {
+    if (code === "MFA_REQUIRED") {
+      return i18n.t(
+        "policies:software.complianceDashboard.armInstallRequiresMfa",
+      );
+    }
+    if (code === "DEVICES_EXECUTE_REQUIRED") {
+      return i18n.t(
+        "policies:software.complianceDashboard.armInstallRequiresPermission",
+      );
+    }
+    return undefined;
+  };
+
   const handleFormSubmit = async (values: PolicyFormValues) => {
     setSubmitting(true);
+    const isEdit = modalMode === "edit" && selectedPolicy;
+    const body = {
+      name: values.name,
+      description: values.description || undefined,
+      mode: values.mode,
+      // Ownership is immutable after create — only send the intent on create.
+      // The server derives the partner from the caller's own token (#2126).
+      ownerScope: modalMode === "create" ? values.ownerScope : undefined,
+      rules: {
+        software: values.software.map((s) => ({
+          name: s.name,
+          vendor: s.vendor || undefined,
+          minVersion: s.minVersion || undefined,
+          maxVersion: s.maxVersion || undefined,
+          reason: s.reason || undefined,
+          catalogId: s.catalogId || undefined,
+        })),
+        allowUnknown:
+          values.mode === "allowlist" ? values.allowUnknown : undefined,
+      },
+      enforceMode: values.enforceMode,
+      remediationOptions: values.enforceMode
+        ? {
+            autoUninstall: values.autoUninstall,
+            // Arming is meaningless outside allowlist mode — only allowlist
+            // rules ever produce a 'missing' violation. The checkbox unmounts
+            // when the operator switches mode away, but react-hook-form keeps
+            // its last value, so guard here (same shape as allowUnknown).
+            autoInstall:
+              values.mode === "allowlist" ? values.autoInstall : undefined,
+            gracePeriod: values.gracePeriod,
+          }
+        : undefined,
+    };
+    const url = isEdit
+      ? `/software-policies/${selectedPolicy.id}`
+      : "/software-policies";
+    const method = isEdit ? "PATCH" : "POST";
     try {
-      const body = {
-        name: values.name,
-        description: values.description || undefined,
-        mode: values.mode,
-        // Ownership is immutable after create — only send the intent on create.
-        // The server derives the partner from the caller's own token (#2126).
-        ownerScope: modalMode === "create" ? values.ownerScope : undefined,
-        rules: {
-          software: values.software.map((s) => ({
-            name: s.name,
-            vendor: s.vendor || undefined,
-            minVersion: s.minVersion || undefined,
-            maxVersion: s.maxVersion || undefined,
-            reason: s.reason || undefined,
-          })),
-          allowUnknown:
-            values.mode === "allowlist" ? values.allowUnknown : undefined,
-        },
-        enforceMode: values.enforceMode,
-        remediationOptions: values.enforceMode
-          ? {
-              autoUninstall: values.autoUninstall,
-              gracePeriod: values.gracePeriod,
-            }
-          : undefined,
-      };
-      const isEdit = modalMode === "edit" && selectedPolicy;
-      const url = isEdit
-        ? `/software-policies/${selectedPolicy.id}`
-        : "/software-policies";
-      const method = isEdit ? "PATCH" : "POST";
-      const res = await fetchWithAuth(url, {
-        method,
-        body: JSON.stringify(body),
+      await runAction({
+        request: () =>
+          fetchWithAuth(url, { method, body: JSON.stringify(body) }),
+        errorFallback: i18n.t(
+          /* i18n-dynamic */ isEdit
+            ? "policies:software.complianceDashboard.failedToUpdatePolicy"
+            : "policies:software.complianceDashboard.failedToCreatePolicy",
+        ),
+        friendly: armInstallFriendly,
+        successMessage: i18n.t(
+          /* i18n-dynamic */ isEdit
+            ? "policies:software.complianceDashboard.policyUpdated"
+            : "policies:software.complianceDashboard.policyCreated",
+        ),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          (
-            data as {
-              error?: string;
-            }
-          ).error || i18n.t(/* i18n-dynamic */ isEdit ? "policies:software.complianceDashboard.failedToUpdatePolicy" : "policies:software.complianceDashboard.failedToCreatePolicy"),
-        );
+    } catch (err) {
+      // runAction already toasted an ActionError (including the friendly
+      // arming-refusal copy above) — never a silent no-op. Anything else
+      // still needs its own toast. The modal stays open for retry.
+      if (!(err instanceof ActionError)) {
+        showToast({ type: "error", message: "Failed to save policy" });
       }
-      showToast({
-        type: "success",
-        message: i18n.t(/* i18n-dynamic */ isEdit ? "policies:software.complianceDashboard.policyUpdated" : "policies:software.complianceDashboard.policyCreated"),
-      });
-      setModalMode("closed");
-      setSelectedPolicy(null);
+      setSubmitting(false);
+      return;
+    }
+    setSubmitting(false);
+    setModalMode("closed");
+    setSelectedPolicy(null);
+    // The save genuinely succeeded — a throw from refresh() must not read
+    // back to the operator as a failed save.
+    try {
       await refresh();
     } catch (err) {
-      showToast({
-        type: "error",
-        message: err instanceof Error ? err.message : "Failed to save policy",
-      });
-    } finally {
-      setSubmitting(false);
+      console.error(
+        "[ComplianceDashboard] refresh() failed after a successful policy save",
+        err,
+      );
     }
   };
   const handleDelete = (policy: Policy) => {
@@ -397,12 +469,21 @@ export default function ComplianceDashboard({
       minVersion: s.minVersion ?? "",
       maxVersion: s.maxVersion ?? "",
       reason: s.reason ?? "",
+      catalogId: s.catalogId ?? "",
     })) ?? [
-      { name: "", vendor: "", minVersion: "", maxVersion: "", reason: "" },
+      {
+        name: "",
+        vendor: "",
+        minVersion: "",
+        maxVersion: "",
+        reason: "",
+        catalogId: "",
+      },
     ],
     allowUnknown: policy.rules?.allowUnknown ?? false,
     enforceMode: policy.enforceMode,
     autoUninstall: policy.remediationOptions?.autoUninstall ?? false,
+    autoInstall: policy.remediationOptions?.autoInstall ?? false,
     gracePeriod: policy.remediationOptions?.gracePeriod ?? 24,
   });
   if (loading) {
@@ -689,6 +770,10 @@ export default function ComplianceDashboard({
                 showOwnerScope={
                   modalMode === "create" && isPartnerScope
                 }
+                policyId={
+                  modalMode === "edit" ? selectedPolicy?.id || undefined : undefined
+                }
+                catalogItems={catalogItems}
               />
             </div>
           </div>

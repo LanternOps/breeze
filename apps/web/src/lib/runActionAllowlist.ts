@@ -39,4 +39,10 @@ export const RUN_ACTION_MIGRATION_BACKLOG: ReadonlyArray<string> = [
   // inline error banner + the row updating in place, but the fetchWithAuth
   // mutations are not yet routed through runAction.
   'apps/web/src/components/software/SoftwareVersionManager.tsx',
+  // ComplianceDashboard.tsx: handleFormSubmit (policy create/update — the
+  // handler that arms autoInstall, #5505 W04) IS migrated to runAction.
+  // handleConfirmDelete / handleCheckCompliance / handleRemediate remain on
+  // bare fetchWithAuth — out of that wave's scope. Not yet moved into
+  // TARGET_GLOBS: doing so would flag those three untouched handlers.
+  'apps/web/src/components/software/ComplianceDashboard.tsx',
 ];
