@@ -12,13 +12,13 @@ backfill. The foundation requires all three valid, ready, unique inventory
 indexes on `(id, org_id, site_id)`; an invalid concurrent index is a deployment
 failure, not permission to continue with missing tenant constraints.
 
-1. `2026-10-17-110300-topology-inventory-fk-targets.sql`
-2. `2026-10-17-110400-topology-foundation.sql`
-3. `2026-10-17-110500-topology-legacy-capture.sql`
-4. `2026-10-17-110600-topology-inventory-lifecycle.sql`
+1. `2026-10-17-110800-topology-inventory-fk-targets.sql`
+2. `2026-10-17-110900-topology-foundation.sql`
+3. `2026-10-17-111000-topology-legacy-capture.sql`
+4. `2026-10-17-111100-topology-inventory-lifecycle.sql`
 
-These names follow the newest committed migration at implementation time,
-`2026-10-17-110200-snmp-devices-poll-seq.sql`. When adding a future migration,
+These names follow the newest committed migration at the latest ordering check,
+`2026-10-17-110700-report-type-identity-access-review.sql`. When adding a future migration,
 recompute the actual newest committed filename and allocate a later `HHMMSS`
 slot; the wall-clock date is insufficient.
 
