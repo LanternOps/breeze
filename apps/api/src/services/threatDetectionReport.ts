@@ -38,7 +38,7 @@
  * `excludedOpen` in the tenant export policy for exactly this reason. Section 3
  * shows Huntress's normalized `recommendation` text instead.
  */
-import { and, eq, gte, inArray, isNotNull, lte, min, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -407,7 +407,7 @@ export async function generateThreatDetectionReport(
     .from(huntressIncidents)
     .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
     .where(and(...detailConditions))
-    .orderBy(sql`${huntressIncidents.reportedAt} DESC`)
+    .orderBy(desc(huntressIncidents.reportedAt))
     .limit(cfg.topIncidents)) as DetailIncident[];
 
   const visibleRows = detailRows
@@ -422,8 +422,11 @@ export async function generateThreatDetectionReport(
   if (cfg.includeCarriedIn) {
     const carriedConditions = [
       eq(huntressIncidents.orgId, orgId),
-      sql`${huntressIncidents.reportedAt} < ${window.start}`,
-      sql`${huntressIncidents.resolvedAt} IS NULL`,
+      // Drizzle operators, never a raw `sql` fragment: postgres-js refuses to
+      // bind a JS Date inside sql`` and throws at bind time
+      // ("The \"string\" argument must be ... Received an instance of Date").
+      lt(huntressIncidents.reportedAt, window.start),
+      isNull(huntressIncidents.resolvedAt),
       ...sitePredicates(filter),
     ];
     if (restrictedScope) carriedConditions.push(isNotNull(huntressIncidents.deviceId));
@@ -443,7 +446,7 @@ export async function generateThreatDetectionReport(
       .from(huntressIncidents)
       .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
       .where(and(...carriedConditions))
-      .orderBy(sql`${huntressIncidents.reportedAt} DESC`)
+      .orderBy(desc(huntressIncidents.reportedAt))
       .limit(cfg.topIncidents)) as DetailIncident[];
     carriedInRows = carried
       .filter((r) => !restrictedScope || r.deviceId !== null)
