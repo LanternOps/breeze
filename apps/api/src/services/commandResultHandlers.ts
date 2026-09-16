@@ -297,6 +297,7 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
     const snmpData = result.result as {
       deviceId?: string;
       metrics?: SnmpMetricResult[];
+      protocol?: number;
     } | undefined;
 
     if (snmpData?.deviceId && snmpData.metrics && snmpData.metrics.length > 0) {
@@ -311,7 +312,7 @@ async function handleSnmpPollResult({ agentId, command, result, commandId }: Par
         const metrics = snmpData.metrics;
         // Exit the held org-scoped transaction context for the Redis
         // round-trips (#1105) — see the note on the monitor-result branch.
-        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics));
+        await runOutsideDbContext(() => enqueueSnmpPollResults(expectedDeviceId, metrics, undefined, snmpData.protocol));
       } else {
         // Redis not available — log warning about dropped metrics and mark status
         console.warn(`[AgentWs] Redis unavailable, dropping ${snmpData.metrics.length} SNMP metrics for device ${expectedDeviceId}`);

@@ -2,7 +2,7 @@
  * SNMP Metrics Retention Worker
  *
  * BullMQ worker that prunes old SNMP metric entries in bounded ctid batches.
- * Default retention: 7 days (configurable via SNMP_METRICS_RETENTION_DAYS,
+ * Default retention: 30 days (configurable via SNMP_METRICS_RETENTION_DAYS,
  * clamped to 1..365). Batch bounds: SNMP_METRICS_RETENTION_BATCH_SIZE /
  * SNMP_METRICS_RETENTION_MAX_BATCHES.
  *
@@ -27,7 +27,11 @@ import {
 const LOG_PREFIX = '[SnmpRetention]';
 const QUEUE_NAME = 'snmp-retention';
 const MAX_RETENTION_DAYS = 365;
-const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.SNMP_METRICS_RETENTION_DAYS, 7, MAX_RETENTION_DAYS, LOG_PREFIX);
+// 30 days, not 7 (spec §6.3 / §7.5): the Monitoring tab offers a 30-day chart
+// and /metrics permits a 90-day range, so a 7-day floor made both structurally
+// empty. Override per deployment with SNMP_METRICS_RETENTION_DAYS; the ctid
+// batching, the 200-batch ceiling and the 4x/day schedule are unchanged.
+const DEFAULT_RETENTION_DAYS = resolveRetentionDays(process.env.SNMP_METRICS_RETENTION_DAYS, 30, MAX_RETENTION_DAYS, LOG_PREFIX);
 const BATCH_SIZE = parsePositiveIntEnv(LOG_PREFIX, 'SNMP_METRICS_RETENTION_BATCH_SIZE', 10000);
 const MAX_BATCHES = parsePositiveIntEnv(LOG_PREFIX, 'SNMP_METRICS_RETENTION_MAX_BATCHES', 200);
 

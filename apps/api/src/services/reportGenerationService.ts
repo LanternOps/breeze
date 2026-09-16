@@ -56,6 +56,10 @@ export type ReportType =
   // Hardware Lifecycle: generated on demand from devices/manual assets +
   // warranty; see services/hardwareLifecycleReport.ts.
   | 'hardware_lifecycle'
+  // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
+  // period, with an explicit coverage window. Generated on demand and by the
+  // managed-evidence system path; see services/threatDetectionReport.ts.
+  | 'threat_detection_review'
   // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
   // posture from the #5327 sync tables, with the freshness of each domain
   // printed. Current inventory plus rollup trend only — entity-level history is
@@ -902,6 +906,14 @@ async function dispatchReportGeneration(
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, requestAuthority());
     }
+    // #5784 W02. Accepts `authority` as-is: it is a managed evidence type, so a
+    // system authority legitimately reaches this arm. The dynamic import keeps
+    // the generator off the hot path and avoids the module cycle back to
+    // `assertReportExecutionPreflight`.
+    case 'threat_detection_review': {
+      const { generateThreatDetectionReport } = await import('./threatDetectionReport');
+      return generateThreatDetectionReport(orgId, config, authority, evidence);
+    }
     case 'endpoint_management_review': {
       // `await import` keeps a heavy generator off the hot path and avoids the
       // module cycle back to `assertReportExecutionPreflight`.
@@ -975,6 +987,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
+    // sites gets an empty-but-shaped result rather than a throw.
+    case 'threat_detection_review':
       return emptyRowsReport();
     // #5784 W03 — generated on demand, so a restricted-empty authority gets a
     // zero-safe shape rather than a stored-artifact refusal. It needs its OWN

@@ -67,6 +67,9 @@ async function linkTelemetryDeviceToAsset(
     manufacturer: 'Ubiquiti',
     isOnline: true,
     lastSeenAt: new Date(),
+    // Spec §4.3 — same contract as unifiSyncService.ts.
+    statusObservedAt: new Date(),
+    statusSource: 'unifi' as const,
   };
 
   // 1. Match by (org_id, mac) first — the stable identifier. Normalize both

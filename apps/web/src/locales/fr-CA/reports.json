@@ -295,7 +295,18 @@
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de la détection des menaces",
         "endpoint_management_review": "Revue de gestion des postes"
+      },
+      "threatDetection": {
+        "agents": "Postes avec agent de détection",
+        "breezeDevices": "Appareils gérés par Breeze",
+        "carriedIn": "Reportées, toujours ouvertes",
+        "coverage": "Limites de ce rapport",
+        "devicesWithoutAgent": "Appareils gérés sans agent",
+        "notMeasured": "S. O.",
+        "opened": "Détections signalées",
+        "resolved": "Détections résolues"
       },
       "tryAgain": "Réessayer",
       "values": {
@@ -365,6 +376,7 @@
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de la détection des menaces",
         "endpoint_management_review": "Revue de gestion des postes"
       },
       "runsTable": {
@@ -877,6 +889,7 @@
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
+        "threat_detection_review": "Revue de la détection des menaces",
         "endpoint_management_review": "Revue de gestion des postes"
       },
       "schedules": {
@@ -916,6 +929,10 @@
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
         },
+        "threat_detection_review": {
+          "description": "Les détections de menaces conservées pour une période, avec la fenêtre réellement couverte indiquée à même le rapport — jamais un zéro pour une source qui n’était pas branchée.",
+          "name": "Revue de la détection des menaces"
+        },
         "endpoint_management_review": {
           "description": "Preuve tirée de Microsoft Intune : couverture des inscriptions, répartition de la conformité avec une tendance sur 30 jours, inscriptions périmées et sièges de licence, avec la fraîcheur de chaque synchronisation.",
           "name": "Revue de gestion des postes Intune"
@@ -924,6 +941,15 @@
       "title": "Modèles de rapports",
       "useTemplate": "Utiliser le modèle",
       "useTemplateTitle": "Utilisez {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Annuler",
+      "coverageNote": "Le rapport imprime la fenêtre qu’il couvre réellement. Si la source de détection n’était pas branchée pendant une partie de la période, il le dit plutôt que de déclarer zéro.",
+      "createReport": "Créer le rapport",
+      "includeCarriedIn": "Inclure les détections reportées",
+      "includeCarriedInHelp": "Les détections ouvertes avant cette période et toujours non résolues sont listées avec celles de la période.",
+      "topIncidents": "Lister au plus (détections)",
+      "topIncidentsHelp": "Limite le tableau des détections pour qu’un mois chargé ne produise pas un PDF de cent pages. Le rapport indique combien ont été retenues au lieu de tronquer en silence."
     },
     "endpointManagementOptions": {
       "cancel": "Annuler",

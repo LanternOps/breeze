@@ -199,6 +199,9 @@ const EXPECTED_EMPTY_ALLOWLIST_ADMISSIONS: string[] = [
   'get_invite_funnel',
   'get_invoice',
   'get_log_trends',
+  // W01 (spec §4.4) — read-only reachability for a discovered network asset.
+  // Tier 1, reads nothing outside the caller's tenant, mutates nothing.
+  'get_network_asset_reachability',
   'get_playbook_history',
   'get_quote',
   'get_s1_status',

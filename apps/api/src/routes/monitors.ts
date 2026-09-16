@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, like, desc, sql, gte, lte, or, inArray, isNull } from 'drizzle-orm';
+import { and, eq, like, desc, sql, gte, lte, or, isNull } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
-import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
+import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, discoveredAssets } from '../db/schema';
 import { isRedisAvailable } from '../services/redis';
 import { sendCommandToAgent, isAgentConnected } from '../routes/agentWs';
 import { writeRouteAudit } from '../services/auditEvents';
@@ -12,6 +12,7 @@ import { enqueueMonitorCheck } from '../jobs/monitorWorker';
 import { canAccessSite, PERMISSIONS, type UserPermissions } from '../services/permissions';
 import { buildMonitorCommand } from '../services/monitorCommands';
 import { managedByMonitorResponse } from '../services/monitors/managedRowGuard';
+import { selectNetworkExecutor } from '../services/networkExecutorSelection';
 
 // --- Helpers ---
 
@@ -235,51 +236,31 @@ function validateMonitorConfigForType(
   }
 }
 
-async function selectExecutionAgentForMonitor(monitor: {
-  orgId: string;
-  assetId: string | null;
-}, permissions?: UserPermissions): Promise<string | null | 'SITE_ACCESS_DENIED'> {
+/**
+ * Route-side wrapper: the site-ACCESS check (a 403 axis that RLS does not
+ * defend) stays here; the agent pick is the shared service. The org-wide
+ * fallback for an asset-BOUND monitor is gone on purpose — see spec §5 and the
+ * SR5-08 note in services/networkExecutorSelection.ts. A monitor whose site has
+ * no online agent now reports "No online agent available" rather than probing
+ * from a different site.
+ */
+async function selectExecutionAgentForMonitor(
+  monitor: { orgId: string; assetId: string | null },
+  permissions?: UserPermissions,
+): Promise<string | null | 'SITE_ACCESS_DENIED'> {
   const assetSiteId = await getMonitorSiteId(monitor);
 
   if (permissions?.allowedSiteIds) {
-    if (assetSiteId && !canAccessSite(permissions, assetSiteId)) {
-      return 'SITE_ACCESS_DENIED';
-    }
-    if (!assetSiteId && permissions.allowedSiteIds.length === 0) {
-      return 'SITE_ACCESS_DENIED';
-    }
+    if (assetSiteId && !canAccessSite(permissions, assetSiteId)) return 'SITE_ACCESS_DENIED';
+    if (!assetSiteId && permissions.allowedSiteIds.length === 0) return 'SITE_ACCESS_DENIED';
   }
 
-  if (assetSiteId) {
-    const [siteAgent] = await db
-      .select({ agentId: devices.agentId })
-      .from(devices)
-      .where(and(
-        eq(devices.orgId, monitor.orgId),
-        eq(devices.siteId, assetSiteId),
-        eq(devices.status, 'online')
-      ))
-      .limit(1);
-
-    if (siteAgent?.agentId) {
-      return siteAgent.agentId;
-    }
-  }
-
-  const fallbackConditions = [
-    eq(devices.orgId, monitor.orgId),
-    eq(devices.status, 'online'),
-  ];
-  if (permissions?.allowedSiteIds) {
-    fallbackConditions.push(inArray(devices.siteId, permissions.allowedSiteIds));
-  }
-  const [orgAgent] = await db
-    .select({ agentId: devices.agentId })
-    .from(devices)
-    .where(and(...fallbackConditions))
-    .limit(1);
-
-  return orgAgent?.agentId ?? null;
+  const pick = await selectNetworkExecutor({
+    orgId: monitor.orgId,
+    siteId: assetSiteId,
+    restrictToSiteIds: assetSiteId ? null : (permissions?.allowedSiteIds ?? null),
+  });
+  return 'agentId' in pick ? pick.agentId : null;
 }
 
 // --- Zod Schemas ---

@@ -211,7 +211,8 @@
       "actionPlan": "Piano d'azione",
       "autoApprove": "Approvazione automatica",
       "hybridPlan": "Piano ibrido"
-    }
+    },
+    "overridesOrgTab": "I campi impostati qui sovrascrivono e bloccano lo stesso campo nella scheda AI di ogni organizzazione."
   },
   "aiBudgetThresholds": {
     "invalid": "Inserisci fino a cinque numeri interi tra 1 e 99, separati da virgole."
@@ -1444,7 +1445,7 @@
     "completeReview": "Completa revisione"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilizzo e budget AI",
+    "aIUsageBudget": "Utilizzo AI",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitora l'utilizzo dell'assistente AI e configura i limiti di budget",
     "budgetConfiguration": "Configurazione budget",
     "aIEnabled": "AI abilitata",
@@ -1494,7 +1495,19 @@
     "untitled": "Senza titolo",
     "billedToPartnerKey": "Addebitato sulla tua chiave: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
     "billedToPartnerKeyViaEndpoint": "Addebitato sulla tua chiave tramite {{name}}: l'utilizzo dell'IA va sul tuo account Anthropic, non sui crediti IA di Breeze",
-    "creditsRemaining": "Crediti IA Breeze rimanenti"
+    "creditsRemaining": "Crediti IA Breeze rimanenti",
+    "defaultValue": "Predefinito ({{value}})",
+    "viewPartnerWideBudgets": "Budget AI del partner",
+    "monitorAIAssistantUsage": "Monitora l’utilizzo dell’assistente AI",
+    "effectiveBudget": "Budget effettivo",
+    "effectiveBudgetHelp": "I limiti attualmente in vigore per questa organizzazione e dove è stato impostato ciascuno.",
+    "effectiveBudgetUnavailable": "Non è stato possibile caricare il budget effettivo. Ricarica la pagina per riprovare.",
+    "sourcePartner": "Impostato dal partner",
+    "sourceOrganization": "Impostato dall’organizzazione",
+    "sourceDefault": "Predefinito",
+    "selectOrgForEffectiveBudget": "Seleziona un'organizzazione per vedere il suo budget effettivo, oppure modifica i valori predefiniti a livello di partner.",
+    "editPartnerWideDefaults": "Modifica i valori predefiniti a livello di partner",
+    "thresholdsOff": "Disattivato"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2224,6 +2237,7 @@
       "emptyState": {
         "title": "Nessun risultato IA in questo periodo",
         "description": "I risultati appariranno qui non appena i tuoi agenti IA valuteranno un avviso, smisteranno un ticket o eseguiranno una correzione in modalità osservazione o azione. Amplia il periodo del report qui sopra, oppure configura un agente per iniziare.",
+        "descriptionWidestWindow": "I risultati appariranno qui non appena i tuoi agenti IA valuteranno un avviso, smisteranno un ticket o eseguiranno una correzione in modalità osservazione o azione. Non ci sono ancora dati sufficienti, nemmeno nel periodo di report più ampio: configura un agente per iniziare.",
         "action": "Configura un agente"
       },
       "tileGroups": {
@@ -4330,6 +4344,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget AI",
+    "description": "Limiti di spesa, limiti di frequenza e modalità di approvazione per l’assistente AI in questa organizzazione. I campi impostati dal partner sono mostrati qui, ma possono essere modificati solo nella scheda del partner.",
+    "selectOrganization": "Seleziona un'organizzazione per configurare il suo budget AI."
+  },
   "orgSettingsPage": {
     "loading": "Caricamento impostazioni organizzazione...",
     "confirmDiscard": "Ci sono modifiche non salvate in questa sezione. Cambiando sezione verranno scartate. Continuare?",
@@ -4383,7 +4402,9 @@
       "notifications": "Notifiche",
       "notificationsDescription": "email, Slack, webhook",
       "ticketing": "Ticketing",
-      "ticketingDescription": "Override SLA e fatturazione"
+      "ticketingDescription": "Override SLA e fatturazione",
+      "ai": "IA",
+      "aiDescription": "Budget dell’assistente AI, limiti di frequenza e modalità di approvazione"
     },
     "overview": {
       "title": "Panoramica organizzazione",

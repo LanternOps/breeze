@@ -33,6 +33,7 @@ const REPORT_TYPES: readonly ReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'threat_detection_review',
   'endpoint_management_review',
 ];
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first

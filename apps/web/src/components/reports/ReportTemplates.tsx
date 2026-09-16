@@ -8,6 +8,7 @@ import {
   Laptop,
   Loader2,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   X
 } from 'lucide-react';
@@ -19,6 +20,11 @@ import {
   HardwareLifecycleOptionsForm,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_THREAT_DETECTION_OPTIONS,
+  ThreatDetectionOptionsForm,
+  type ThreatDetectionOptions,
+} from './ThreatDetectionOptionsForm';
 import {
   DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
   EndpointManagementOptionsForm,
@@ -74,6 +80,7 @@ const reportTypeValues: TemplateReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'threat_detection_review',
   'endpoint_management_review',
   'devices',
   'alerts',
@@ -119,6 +126,24 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
+    }
+  },
+  {
+    id: 'threat_detection_review',
+    name: 'Threat Detection Review',
+    description:
+      'The threat detections held for a period, with the window actually covered stated on the face of it — never a zero for a source that was not connected.',
+    defaults: {
+      name: 'Threat Detection Review',
+      type: 'threat_detection_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: ShieldAlert,
+    tone: {
+      iconBg: 'bg-rose-500/15',
+      iconColor: 'text-rose-600'
     }
   },
   {
@@ -345,6 +370,8 @@ export default function ReportTemplates() {
   const [backupRequired, setBackupRequired] = useState(false);
   const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
+  const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
   const [endpointManagementTemplate, setEndpointManagementTemplate] = useState<ReportTemplate | null>(null);
   const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -431,6 +458,11 @@ export default function ReportTemplates() {
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
         setLifecycleTemplate(template);
+        return;
+      }
+      if (type === 'threat_detection_review') {
+        setThreatOptions(DEFAULT_THREAT_DETECTION_OPTIONS);
+        setThreatTemplate(template);
         return;
       }
       if (type === 'endpoint_management_review') {
@@ -631,6 +663,30 @@ export default function ReportTemplates() {
                 onCancel={() => setLifecycleTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {threatTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(threatTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <ThreatDetectionOptionsForm
+                value={threatOptions}
+                onChange={setThreatOptions}
+                busy={creatingId === threatTemplate.id}
+                submitLabel={t('reports.threatDetectionOptions.createReport')}
+                onCancel={() => setThreatTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(threatTemplate, { ...threatOptions });
                 }}
               />
             </div>

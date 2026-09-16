@@ -7,10 +7,23 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
+    // W01: GET /monitoring/assets/:id fetches the newest metric row per
+    // (base_oid, instance) with a real DISTINCT ON, so the mock must model it.
+    selectDistinctOn: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
   },
+}));
+
+// W01 (spec §4.4): the route now derives `reachability` through the batched
+// loader. The derivation is pinned by services/assetReachability.test.ts; this
+// suite owns the WIRING, so the loader is mocked and driven per-test rather
+// than teaching this file's db chain rig three more query shapes.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
 }));
 
 vi.mock('../db/schema', () => ({
@@ -143,7 +156,9 @@ describe('monitoring routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     vi.mocked(db.select).mockReset();
+    vi.mocked(db.selectDistinctOn).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
     vi.mocked(db.delete).mockReset();
@@ -290,6 +305,9 @@ describe('monitoring routes', () => {
     });
 
     it('returns monitoring assets with SNMP and network config', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       // SNMP devices query
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -349,6 +367,10 @@ describe('monitoring routes', () => {
       expect(body.data[0].snmp.configured).toBe(true);
       expect(body.data[0].snmp.snmpVersion).toBe('v2c');
       expect(body.data[0].monitoring.configured).toBe(true);
+      // W01 (spec §4.4) — the list route carries the derived reachability.
+      expect(body.data[0].reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
     });
 
     it('returns empty data when no configured assets exist', async () => {
@@ -465,6 +487,9 @@ describe('monitoring routes', () => {
     });
 
     it('returns asset detail with SNMP config and metrics', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       // Asset lookup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -506,20 +531,21 @@ describe('monitoring routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 1 }]),
         }),
       } as any);
-      // Recent metrics
-      vi.mocked(db.select).mockReturnValueOnce({
+      // Newest row per series (DISTINCT ON)
+      // The DISTINCT ON chain ends at .orderBy() — there is deliberately no
+      // .limit(): the per-series pick happens in Postgres, so a global row cap
+      // would be the very bug this shape replaced.
+      vi.mocked(db.selectDistinctOn).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: 'metric-1',
-                oid: '1.3.6.1.2.1.1.5.0',
-                name: 'sysName',
-                value: 'router-01',
-                valueType: 'string',
-                timestamp: new Date(),
-              }]),
-            }),
+            orderBy: vi.fn().mockResolvedValue([{
+              id: 'metric-1',
+              oid: '1.3.6.1.2.1.1.5.0',
+              name: 'sysName',
+              value: 'router-01',
+              valueType: 'string',
+              timestamp: new Date(),
+            }]),
           }),
         }),
       } as any);
@@ -535,6 +561,56 @@ describe('monitoring routes', () => {
       expect(body.snmpDevice.snmpVersion).toBe('v2c');
       expect(body.recentMetrics).toHaveLength(1);
       expect(body.networkMonitors.totalCount).toBe(2);
+      // W01 (spec §6.2) — collection health rides the same response. This
+      // fixture's device has no template and has never succeeded (lastPolled
+      // null), so the honest answer is never_polled with no OIDs — not a
+      // fabricated 'ok'.
+      expect(body.collection).toMatchObject({ templateId: null, status: 'never_polled', oids: [] });
+      // W01 (spec §4.4) — the detail route carries the derived reachability.
+      expect(body.reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
+    });
+
+    it('carries reachability on the no-SNMP early return too (W01, spec §4.4)', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
+      // Asset lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+      // SNMP devices — none
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as any);
+      // Network monitor total / active
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.snmpDevice).toBeNull();
+      expect(body.reachability.state).toBe('responding');
+      // No SNMP row at all — collection says so explicitly (spec §6.2).
+      expect(body.collection).toMatchObject({ templateId: null, status: 'never_polled', oids: [] });
     });
 
     it('returns 404 for nonexistent asset', async () => {

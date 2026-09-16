@@ -263,7 +263,7 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  // #5784 W03 shipped the first managed-evidence type, so the picker now has
+  // #5784 W02 shipped the first managed-evidence type, so the picker now has
   // options and the empty state is gone. The picker still defaults to None —
   // auto-evidence is opt-in, never inherited by an existing template item.
   it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
@@ -273,6 +273,7 @@ describe('DeliverableTemplatesPage', () => {
     fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
 
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    // None stays the default — auto-evidence is opt-in per item.
     expect(select.value).toBe('');
     expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
     expect([...select.options].map((o) => o.value)).toEqual(

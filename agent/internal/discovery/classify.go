@@ -42,9 +42,13 @@ func ClassifyAsset(host DiscoveredHost) (string, string, string) {
 		manufacturer = "Fortinet"
 	}
 
-	if model == "" && host.SNMPData != nil {
-		model = strings.TrimSpace(host.SNMPData.SysObjectID)
-	}
+	// The sysObjectID is deliberately NOT used as a model. It is a scanner
+	// internal — a Xerox C325 rendered Model ".1.3.6.1.4.1.253.8.62.1.37.1.4.1.1"
+	// on the device page (spec F5). Identity resolution is the server's job
+	// (services/discoveredAssetClassification.ts). Its read-time mask currently
+	// hides OID-shaped models from older agents; the enterprise-number vendor
+	// map and per-vendor model extractors are a W03 addition. An empty model
+	// here means "unknown", which is the truth.
 
 	return assetType, manufacturer, model
 }

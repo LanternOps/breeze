@@ -225,6 +225,50 @@ describe('MonitorEditor (#5289)', () => {
         expect.objectContaining({ method: 'DELETE' }),
       ),
     );
+    // Regression: a detach that succeeded at the API gave zero feedback in the UI.
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' })));
+  });
+
+  it('edit mode: surfaces an error toast when detaching an attachment fails with a server error (regression: silent failure via runAction, sweep G1-4)', async () => {
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === '/monitor-definitions/m1' && !init) {
+        return json({
+          data: {
+            id: 'm1',
+            name: 'Disk full',
+            kind: 'disk',
+            enabled: true,
+            condition: { operator: 'gt', value: 90, durationMinutes: 5 },
+            severity: 'high',
+            cooldownMinutes: 5,
+            autoResolve: false,
+            responses: [],
+            deliveryMode: 'inherit',
+            deliveryChannelIds: [],
+            recurrenceActions: [],
+            pauseResponsesOnEscalation: true,
+            orgId: 'org-1',
+            partnerId: null,
+            attachments: [
+              { id: 'a1', configPolicyId: 'cp1', policyName: 'Site Policy', enabled: true, overrides: null },
+            ],
+          },
+        });
+      }
+      if (input === '/monitor-definitions/m1/devices') return json({ data: [] });
+      if (init?.method === 'DELETE' && input === '/monitor-definitions/m1/attachments/a1') {
+        return json({ error: 'Internal error' }, false, 500);
+      }
+      return defaultFetchImpl(input);
+    });
+    render(<MonitorEditor monitorId="m1" />);
+    await waitFor(() => expect(screen.getByTestId('monitor-editor-name')).toHaveValue('Disk full'));
+
+    fireEvent.click(screen.getByTestId('monitor-editor-detach-a1'));
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' })));
+    // The row must stay listed — a failed detach is not a detach.
+    expect(screen.getByText('Site Policy')).toBeInTheDocument();
   });
 
   it('edit mode: surfaces an error banner when detaching an attachment fails (regression: silent no-op)', async () => {

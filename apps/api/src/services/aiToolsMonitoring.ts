@@ -16,6 +16,7 @@ import { deviceChangeLog, discoveredAssets } from '../db/schema';
 import { eq, and, desc, gte, lte, inArray, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
+import { loadReachability } from './assetReachabilityLoader';
 import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type MonitoringHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
@@ -123,6 +124,7 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         lastResponseMs: networkMonitors.lastResponseMs,
         consecutiveFailures: networkMonitors.consecutiveFailures,
         pollingInterval: networkMonitors.pollingInterval,
+        assetId: networkMonitors.assetId,
       };
 
       // Unrestricted callers take the exact pre-existing query (no join).
@@ -137,7 +139,22 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(networkMonitors.updatedAt))
           .limit(limit);
 
-      return JSON.stringify({ monitors: rows, showing: rows.length });
+      // W01 (spec §4.4): never phrase a monitor's verdict as the DEVICE's
+      // state. A failing HTTP check on a reachable host is a TLS problem, not
+      // an outage, and the agent used to have no way to tell them apart.
+      const assetIds = rows.map((r) => r.assetId).filter((id): id is string => Boolean(id));
+      const reachabilityByAsset = await loadReachability(assetIds);
+
+      return JSON.stringify({
+        monitors: rows.map((row) => {
+          const r = row.assetId ? reachabilityByAsset.get(row.assetId) : undefined;
+          return {
+            ...row,
+            assetReachability: r ? { state: r.state, source: r.source, observedAt: r.observedAt } : null,
+          };
+        }),
+        showing: rows.length,
+      });
     }),
   });
 

@@ -295,7 +295,18 @@
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
         "endpoint_management_review": "Endpoint Management Review"
+      },
+      "threatDetection": {
+        "agents": "Endpoints with a detection agent",
+        "breezeDevices": "Devices Breeze manages",
+        "carriedIn": "Carried in, still open",
+        "coverage": "Limits of this report",
+        "devicesWithoutAgent": "Managed devices with no agent",
+        "notMeasured": "N/A",
+        "opened": "Detections raised",
+        "resolved": "Detections resolved"
       },
       "tryAgain": "Try again",
       "values": {
@@ -365,6 +376,7 @@
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
         "endpoint_management_review": "Endpoint Management Review"
       },
       "runsTable": {
@@ -877,6 +889,7 @@
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
+        "threat_detection_review": "Threat Detection Review",
         "endpoint_management_review": "Endpoint Management Review"
       },
       "schedules": {
@@ -916,6 +929,10 @@
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",
           "name": "Security & Compliance Posture (Insurance)"
         },
+        "threat_detection_review": {
+          "description": "The threat detections held for a period, with the window actually covered stated on the face of it — never a zero for a source that was not connected.",
+          "name": "Threat Detection Review"
+        },
         "endpoint_management_review": {
           "description": "Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.",
           "name": "Intune Endpoint Management Review"
@@ -924,6 +941,15 @@
       "title": "Report Templates",
       "useTemplate": "Use template",
       "useTemplateTitle": "Use {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancel",
+      "coverageNote": "The report prints the window it actually covers. If the detection source was not connected for part of the period, it says so instead of reporting zero.",
+      "createReport": "Create report",
+      "includeCarriedIn": "Include detections carried in",
+      "includeCarriedInHelp": "Detections that opened before this period and are still unresolved are listed alongside the period’s own.",
+      "topIncidents": "List at most (detections)",
+      "topIncidentsHelp": "Caps the detection table so a noisy month cannot produce a hundred-page PDF. The report states how many were withheld rather than truncating silently."
     },
     "endpointManagementOptions": {
       "cancel": "Cancel",

@@ -7,6 +7,8 @@ import {
   hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
+  threatDetectionConfigFields,
+  threatDetectionConfigSchema,
   updateReportSchema,
 } from './schemas';
 
@@ -174,5 +176,31 @@ describe('report config schema', () => {
       config: { backupRequired: true },
     });
     expect(updated.config?.backupRequired).toBe(true);
+  });
+
+  it('keeps the threat detection persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(threatDetectionConfigFields).sort()).toEqual(
+      Object.keys(threatDetectionConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a threat detection config', () => {
+    expect(threatDetectionConfigSchema.parse({})).toEqual({
+      sites: [], includeCarriedIn: true, topIncidents: 100,
+    });
+  });
+
+  it('rejects an out-of-range topIncidents', () => {
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 0 })).toThrow();
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 1001 })).toThrow();
+  });
+
+  it('preserves threat detection topIncidents on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Threat detection', type: 'threat_detection_review',
+      config: { topIncidents: 25, includeCarriedIn: false },
+    });
+    expect(parsed.config?.topIncidents).toBe(25);
+    expect(parsed.config?.includeCarriedIn).toBe(false);
   });
 });

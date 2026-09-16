@@ -263,7 +263,14 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // shape as type_source; `url` is ordinary customer inventory data. Neither is
   // jsonb/bytea and neither matches SUSPICIOUS_NAME_PARTS, so both are plain
   // `included`.
-  "discovered_assets": tablePolicy("org_id", {"included":["id","org_id","site_id","ip_address","mac_address","hostname","label","netbios_name","asset_type","approval_status","is_online","approved_by","approved_at","dismissed_by","dismissed_at","manufacturer","model","response_time_ms","linked_device_id","link_source","auto_link_suppressed_at","type_source","detected_asset_type","detected_type_source","first_seen_at","last_seen_at","last_job_id","discovery_methods","notes","tags","source","url","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["open_ports","os_fingerprint","snmp_data"]}),
+  //
+  // Network device page truth W01 (spec §4.3, §5) — status_observed_at /
+  // status_source date and attribute the is_online verdict; last_probe_* record
+  // one on-demand ICMP probe (a timestamp, a three-value state, a latency and
+  // the agent command id it correlates to). All six are scalars, none is an
+  // open container, and `last_probe_ref` does NOT match SUSPICIOUS_NAME_PARTS
+  // ('refresh' is the entry, 'ref' is not a prefix match) — plain `included`.
+  "discovered_assets": tablePolicy("org_id", {"included":["id","org_id","site_id","ip_address","mac_address","hostname","label","netbios_name","asset_type","approval_status","is_online","approved_by","approved_at","dismissed_by","dismissed_at","manufacturer","model","response_time_ms","linked_device_id","link_source","auto_link_suppressed_at","type_source","detected_asset_type","detected_type_source","first_seen_at","last_seen_at","last_job_id","discovery_methods","notes","tags","source","url","status_observed_at","status_source","last_probe_at","last_probe_status","last_probe_response_ms","last_probe_ref","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["open_ports","os_fingerprint","snmp_data"]}),
   "discovery_jobs": tablePolicy("org_id", {"included":["id","profile_id","org_id","site_id","agent_id","status","scheduled_at","started_at","completed_at","hosts_scanned","hosts_discovered","new_assets","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["errors"]}),
   "discovery_profiles": tablePolicy("org_id", {"included":["id","org_id","site_id","name","description","enabled","subnets","exclude_ips","methods","snmp_communities","deep_scan","identify_os","resolve_hostnames","timeout","concurrency","created_by","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["port_ranges","snmp_credentials","schedule","alert_settings"]}),
   "dns_event_aggregations": tablePolicy("org_id", {"included":["id","org_id","date","integration_id","device_id","domain","category","total_queries","blocked_queries","allowed_queries"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
@@ -550,9 +557,21 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "sites": tablePolicy("org_id", {"included":["id","org_id","name","timezone","created_at","updated_at","partner_export_updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["address","contact","settings"]}),
   "sla_compliance": tablePolicy("org_id", {"included":["id","sla_id","org_id","period_start","period_end","uptime_actual","response_time_actual","resolution_time_actual","uptime_compliant","response_time_compliant","resolution_time_compliant","overall_compliant","total_downtime_minutes","incident_count","excluded_minutes","calculated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["details"]}),
   "sla_definitions": tablePolicy("org_id", {"included":["id","org_id","name","description","uptime_target","response_time_target","resolution_time_target","measurement_window","exclude_maintenance_windows","exclude_weekends","target_type","target_ids","enabled","created_at","updated_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","created_at"],"reviewedIncluded":[],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
-  "snmp_metrics": tablePolicy("org_id", {"included":["id","device_id","org_id","oid","name","value","value_type","timestamp"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "snmp_templates": tablePolicy("org_id", {"included":["id","org_id","name","description","vendor","device_type","is_built_in","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["oids"]}),
+  // W01 (spec §7.1): poll_seq is a monotonic per-device dispatch counter —
+  // ordinary operational state, a plain integer, `included` (the same treatment
+  // as devices.reboot_deferrals_used).
+  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","poll_seq","created_at"],"reviewedIncluded":[],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
+  // W01 (spec §7.3): base_oid and instance are public SNMP OID identifiers —
+  // the same class of value as the existing `oid` column, which has always been
+  // `included`. `error` is a closed set of five SNMP PDU/bound codes
+  // (noSuchObject | noSuchInstance | endOfMib | timeout | truncated), not an
+  // agent-supplied free-text blob. All three are varchar scalars, none is an
+  // open container, none matches SUSPICIOUS_NAME_PARTS.
+  "snmp_metrics": tablePolicy("org_id", {"included":["id","device_id","org_id","oid","base_oid","instance","name","value","value_type","error","timestamp"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
+  // sys_object_id_prefixes (#5988, spec §13): a list of PUBLIC IANA
+  // enterprise OID prefixes the template claims. Not a capability list and not
+  // an open container (text[]), so `included`. `oids` stays excludedOpen.
+  "snmp_templates": tablePolicy("org_id", {"included":["id","org_id","name","description","vendor","device_type","sys_object_id_prefixes","is_built_in","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["oids"]}),
   "software_catalog": tablePolicy("org_id", {"included":["id","org_id","partner_id","integration_provider","name","vendor","description","category","icon_url","website_url","is_managed","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // dependency_fingerprint binds a deployment to the non-secret executable
   // metadata approved at creation. It is tenant-owned integrity provenance,

@@ -49,8 +49,12 @@
   "deciding": "Gönderiliyor…",
   "expiresIn": "{{minutes}} dk içinde sona erer",
   "expiresSoon": "Bir dakikadan kısa sürede sona erer",
+  "expiresInHours": "{{hours}} sa içinde sona erer",
+  "expiresInDays": "{{days}} gün içinde sona erer",
   "expired": "Süresi doldu",
   "unknownOrganization": "Bilinmeyen kuruluş",
+  "intentNoLongerPending": "Bu onay artık beklemede değil.",
+  "dismiss": "Kapat",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{org}} için {{action}} onaylandı",
   "pagination": {

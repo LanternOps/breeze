@@ -286,6 +286,12 @@ export const TOOL_TIERS = {
   query_monitors: 1,
   manage_monitors: 1,           // Action-level escalation in guardrails
   get_service_monitoring_status: 1,
+  // W01 (spec §4.4) — read-only reachability for a discovered network asset,
+  // with the source and age of the evidence. Wired here rather than added to
+  // KNOWN_MISSING_TOOL_TIERS: without a tier, createSessionPreToolUse rejects
+  // it as "Unknown tool" and the chat tells the user the capability does not
+  // exist.
+  get_network_asset_reachability: 1,
   // Monitor definition activity/escalation tools (#5290 W03). list_monitors /
   // get_monitor / manage_monitor_definitions remain in the frozen
   // KNOWN_MISSING_TOOL_TIERS baseline (aiAgentSdkTools.registryParity.contract.test.ts)
@@ -2488,6 +2494,19 @@ export function createBreezeMcpServer(
         limit: z.number().int().min(1).max(100).optional(),
       },
       makeHandler('query_monitors', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    // W01 (spec §4.4) — the only read that answers "is this printer/switch up"
+    // with the SOURCE and AGE of the evidence. Declared here as well as in
+    // TOOL_TIERS: a tier without a tool() declaration is allowlisted but
+    // uncallable (#2605).
+    tool(
+      'get_network_asset_reachability',
+      'Report whether a discovered network asset (printer, switch, AP, camera, NAS) is currently reachable, with the SOURCE of the evidence and how old it is. Always state the source and age when answering — "responding via SNMP 2 minutes ago", never a bare "online". A state of "unverified" means nothing has checked the device recently; report it as unverified, not as down.',
+      {
+        asset_id: uuid,
+      },
+      makeHandler('get_network_asset_reachability', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(

@@ -211,7 +211,8 @@
       "actionPlan": "Plan d’action",
       "autoApprove": "Approbation automatique",
       "hybridPlan": "Plan hybride"
-    }
+    },
+    "overridesOrgTab": "Les champs que vous définissez ici remplacent et verrouillent le même champ dans l’onglet IA de chaque organisation."
   },
   "aiBudgetThresholds": {
     "invalid": "Saisissez jusqu'à cinq nombres entiers entre 1 et 99, séparés par des virgules."
@@ -1444,7 +1445,7 @@
     "completeReview": "Revue complète"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "Utilisation et budget de l’IA",
+    "aIUsageBudget": "Utilisation de l’IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Surveillez l’utilisation de l’assistant IA et configurez les limites budgétaires",
     "budgetConfiguration": "Configuration du budget",
     "aIEnabled": "IA activée",
@@ -1494,7 +1495,19 @@
     "untitled": "Sans titre",
     "billedToPartnerKey": "Facturé sur votre clé — l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturé sur votre clé via {{name}}: l'utilisation de l'IA est portée à votre propre compte Anthropic, et non aux crédits IA de Breeze",
-    "creditsRemaining": "Crédits IA Breeze restants"
+    "creditsRemaining": "Crédits IA Breeze restants",
+    "defaultValue": "Par défaut ({{value}})",
+    "viewPartnerWideBudgets": "Budgets IA du partenaire",
+    "monitorAIAssistantUsage": "Surveiller l’utilisation de l’assistant IA",
+    "effectiveBudget": "Budget en vigueur",
+    "effectiveBudgetHelp": "Les limites actuellement en vigueur pour cette organisation, et l’endroit où chacune a été définie.",
+    "effectiveBudgetUnavailable": "Le budget effectif n’a pas pu être chargé. Rechargez la page pour réessayer.",
+    "sourcePartner": "Défini par le partenaire",
+    "sourceOrganization": "Défini par l’organisation",
+    "sourceDefault": "Par défaut",
+    "selectOrgForEffectiveBudget": "Sélectionnez une organisation pour voir son budget en vigueur, ou modifiez les valeurs par défaut à l’échelle du partenaire.",
+    "editPartnerWideDefaults": "Modifier les valeurs par défaut à l’échelle du partenaire",
+    "thresholdsOff": "Désactivé"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2224,6 +2237,7 @@
       "emptyState": {
         "title": "Aucun résultat d’IA pour cette période",
         "description": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Élargissez la période de rapport ci-dessus, ou configurez un agent pour commencer.",
+        "descriptionWidestWindow": "Les résultats apparaîtront ici dès que vos agents IA évalueront une alerte, trieront un ticket ou appliqueront un correctif en mode observation ou action. Il n’y a pas encore assez de données, même pour la période de rapport la plus longue — configurez un agent pour commencer.",
         "action": "Configurer un agent"
       },
       "tileGroups": {
@@ -4330,6 +4344,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Budget IA",
+    "description": "Plafonds de dépenses, limites de fréquence et mode d’approbation de l’assistant IA dans cette organisation. Les champs définis par votre partenaire sont affichés ici, mais ne peuvent être modifiés que dans l’onglet du partenaire.",
+    "selectOrganization": "Sélectionnez une organisation pour configurer son budget IA."
+  },
   "orgSettingsPage": {
     "loading": "Chargement des paramètres d’organisation...",
     "confirmDiscard": "Vous avez des modifications non enregistrées dans cette section. Changer les éliminera. Continuer ?",
@@ -4383,7 +4402,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Courriel, Slack, webhooks",
       "ticketing": "Billetterie",
-      "ticketingDescription": "SLA et les dérogations de facturation"
+      "ticketingDescription": "SLA et les dérogations de facturation",
+      "ai": "IA",
+      "aiDescription": "Budget de l’assistant IA, limites de fréquence et mode d’approbation"
     },
     "overview": {
       "title": "Aperçu de l’organisation",

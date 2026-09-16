@@ -29,6 +29,7 @@ import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/ag
 import type { AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/cronDue';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { resolveAssetIdentity, type ResolvedAssetIdentity } from '../services/assetIdentity';
 import {
   buildClassificationWrite,
   type DiscoveredAssetDetectionSource,
@@ -691,6 +692,27 @@ export const __testables = {
 };
 
 /**
+ * Identity for one scanned host (spec §9, D6).
+ *
+ * Exported so it can be unit-tested without a database; `processResults` is the
+ * only caller, and it is the single point BOTH the INSERT and the UPDATE branch
+ * read manufacturer/model from. Manual precedence is enforced afterwards, in
+ * SQL, by buildScanUpdateSet — not here.
+ */
+export function resolveScanIdentity(
+  host: DiscoveredHostResult,
+  nicVendor: string | null,
+): ResolvedAssetIdentity {
+  return resolveAssetIdentity({
+    sysObjectId: host.snmpData?.sysObjectId ?? null,
+    sysDescr: host.snmpData?.sysDescr ?? null,
+    snmpData: (host.snmpData ?? null) as Record<string, unknown> | null,
+    macVendor: nicVendor,
+    current: { manufacturer: host.manufacturer ?? null, model: host.model ?? null },
+  });
+}
+
+/**
  * The scan's UPDATE set for an already-known asset (#5213).
  *
  * A scan re-finding a manual row updates it IN PLACE — one identity, no
@@ -713,6 +735,11 @@ export function buildScanUpdateSet(
   const updateSet: PgUpdateSetSource<typeof discoveredAssets> = {
     ...(assetData as PgUpdateSetSource<typeof discoveredAssets>),
   };
+  // Spec §4.3 — every writer of `is_online` dates and attributes its verdict.
+  // A scan sighting is a `scan`-sourced observation taken now; `last_seen_at`
+  // keeps its own meaning (last POSITIVE sighting) and is untouched here.
+  updateSet.statusObservedAt = new Date();
+  updateSet.statusSource = 'scan';
   for (const col of ['hostname', 'manufacturer', 'model'] as const) {
     const proposed = assetData[col] ?? null;
     updateSet[col] = sql`case when ${discoveredAssets.source} = 'manual'
@@ -947,11 +974,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       )
       .limit(1);
 
-    // Use agent-provided manufacturer (SNMP); fall back to OUI lookup
-    let resolvedManufacturer = host.manufacturer ?? null;
-    if (!resolvedManufacturer && host.mac) {
-      resolvedManufacturer = lookupMacVendor(host.mac);
-    }
+    // Identity is resolved SERVER-side now (spec §9): the IANA enterprise arc
+    // of the sysObjectID outranks the NIC OUI, and the raw sysObjectID can no
+    // longer reach `model`. The OUI vendor is still computed — it remains the
+    // last manufacturer fallback and W01 exposes it separately as `nicVendor`.
+    const nicVendor = host.mac ? lookupMacVendor(host.mac) : null;
+    const identity = resolveScanIdentity(host, nicVendor);
+    const resolvedManufacturer = identity.manufacturer;
 
     // What did this scan actually manage to classify, and how strong is that
     // evidence? The agent's own classification is real observation (ports, SNMP,
@@ -983,7 +1012,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
       manufacturer: resolvedManufacturer,
-      model: host.model ?? null,
+      model: identity.model,
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
       snmpData: host.snmpData ?? null,
@@ -1158,7 +1187,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     // Update approvalStatus and isOnline
     if (upsertedAssetId) {
       await db.update(discoveredAssets)
-        .set({ approvalStatus: decision.approvalStatus, isOnline: true })
+        .set({
+          approvalStatus: decision.approvalStatus,
+          isOnline: true,
+          // Spec §4.3 — this is the second place a scan writes is_online, and
+          // it runs AFTER buildScanUpdateSet's upsert, so it would otherwise
+          // leave a newer verdict wearing the older stamp.
+          statusObservedAt: new Date(),
+          statusSource: 'scan',
+        })
         .where(eq(discoveredAssets.id, upsertedAssetId));
     }
 
@@ -1288,7 +1325,17 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       }
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
-          .set({ isOnline: false })
+          .set({
+            isOnline: false,
+            // Spec §4.3 — THE stamp that matters most. Before this, the sweep
+            // wrote is_online = false without touching any timestamp, so the
+            // row said "offline" with no way to tell whether that verdict was
+            // five minutes or five weeks old. deriveReachability refuses to
+            // rank an undated negative at all, so an unstamped sweep result is
+            // silently ignored — this line is what makes the sweep count.
+            statusObservedAt: new Date(),
+            statusSource: 'scan',
+          })
           .where(eq(discoveredAssets.id, asset.id));
 
         // Log disappeared event if configured

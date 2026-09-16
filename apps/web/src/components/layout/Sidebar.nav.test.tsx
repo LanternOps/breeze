@@ -113,7 +113,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/settings/tool-sources', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);
@@ -125,7 +125,13 @@ describe('navSections structure (#1321, #1324)', () => {
     expect(topLevelNav.map((i) => i.href)).not.toContain('/onedrive');
   });
 
-  it('adds a Script authoring entry to the AI section, after AI Usage & Budget (#5612 W05)', () => {
+  it('labels the AI usage entry "AI Usage" — the budget editor moved to org settings (#6004)', () => {
+    const item = section('ai').items.find((i) => i.href === '/settings/ai-usage');
+    expect(item?.name).toBe('AI Usage');
+    expect(item?.labelKey).toBe('nav.aiUsage');
+  });
+
+  it('adds a Script authoring entry to the AI section, after AI Usage (#5612 W05)', () => {
     const item = section('ai').items.find((i) => i.href === '/settings/ai-script-authoring');
     expect(item).toBeDefined();
     expect(item?.labelKey).toBe('nav.scriptAuthoring');

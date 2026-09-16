@@ -295,7 +295,18 @@
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software",
+        "threat_detection_review": "Revisión de detección de amenazas",
         "endpoint_management_review": "Revisión de administración de endpoints"
+      },
+      "threatDetection": {
+        "agents": "Equipos con agente de detección",
+        "breezeDevices": "Dispositivos que Breeze gestiona",
+        "carriedIn": "Arrastradas, aún abiertas",
+        "coverage": "Límites de este informe",
+        "devicesWithoutAgent": "Dispositivos gestionados sin agente",
+        "notMeasured": "N/D",
+        "opened": "Detecciones registradas",
+        "resolved": "Detecciones resueltas"
       },
       "tryAgain": "Intentar otra vez",
       "values": {
@@ -365,6 +376,7 @@
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software",
+        "threat_detection_review": "Revisión de detección de amenazas",
         "endpoint_management_review": "Revisión de administración de endpoints"
       },
       "runsTable": {
@@ -877,6 +889,7 @@
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software",
+        "threat_detection_review": "Revisión de detección de amenazas",
         "endpoint_management_review": "Revisión de administración de endpoints"
       },
       "schedules": {
@@ -916,6 +929,10 @@
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",
           "name": "Postura de seguridad y cumplimiento (seguros)"
         },
+        "threat_detection_review": {
+          "description": "Las detecciones de amenazas registradas en un período, con la ventana realmente cubierta declarada en el propio informe: nunca un cero para una fuente que no estaba conectada.",
+          "name": "Revisión de detección de amenazas"
+        },
         "endpoint_management_review": {
           "description": "Evidencia de Microsoft Intune: cobertura de inscripción, desglose de cumplimiento con tendencia de 30 días, inscripciones obsoletas y licencias, indicando la actualidad de cada sincronización.",
           "name": "Revisión de administración de endpoints de Intune"
@@ -924,6 +941,15 @@
       "title": "Plantillas de informes",
       "useTemplate": "Usar plantilla",
       "useTemplateTitle": "Utilice {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancelar",
+      "coverageNote": "El informe imprime la ventana que realmente cubre. Si la fuente de detección no estuvo conectada durante parte del período, lo indica en lugar de informar cero.",
+      "createReport": "Crear informe",
+      "includeCarriedIn": "Incluir detecciones arrastradas",
+      "includeCarriedInHelp": "Las detecciones abiertas antes de este período y aún sin resolver se listan junto con las del propio período.",
+      "topIncidents": "Listar como máximo (detecciones)",
+      "topIncidentsHelp": "Limita la tabla de detecciones para que un mes ruidoso no genere un PDF de cien páginas. El informe indica cuántas se omitieron en lugar de truncar en silencio."
     },
     "endpointManagementOptions": {
       "cancel": "Cancelar",

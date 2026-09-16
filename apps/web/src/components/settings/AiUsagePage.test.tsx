@@ -66,7 +66,7 @@ describe('AiUsagePage billedTo indicator', () => {
     mockUsage('platform');
     const { getByText, queryByTestId } = renderPage();
 
-    await waitFor(() => expect(getByText('Budget Configuration')).toBeInTheDocument());
+    await waitFor(() => expect(getByText('Recent Sessions')).toBeInTheDocument());
     expect(queryByTestId('ai-usage-billed-to-note')).toBeNull();
   });
 
@@ -74,7 +74,7 @@ describe('AiUsagePage billedTo indicator', () => {
     mockUsage(undefined);
     const { getByText, queryByTestId } = renderPage();
 
-    await waitFor(() => expect(getByText('Budget Configuration')).toBeInTheDocument());
+    await waitFor(() => expect(getByText('Recent Sessions')).toBeInTheDocument());
     expect(queryByTestId('ai-usage-billed-to-note')).toBeNull();
   });
 
@@ -132,7 +132,7 @@ describe('AiUsagePage credits stat card (#4388 W04)', () => {
     mockUsageWithCredits(null);
     const { getByText, queryByText } = renderPage();
 
-    await waitFor(() => expect(getByText('Budget Configuration')).toBeInTheDocument());
+    await waitFor(() => expect(getByText('Recent Sessions')).toBeInTheDocument());
     expect(queryByText('Breeze AI credits remaining')).toBeNull();
   });
 
@@ -140,7 +140,7 @@ describe('AiUsagePage credits stat card (#4388 W04)', () => {
     mockUsage('platform');
     const { getByText, queryByText } = renderPage();
 
-    await waitFor(() => expect(getByText('Budget Configuration')).toBeInTheDocument());
+    await waitFor(() => expect(getByText('Recent Sessions')).toBeInTheDocument());
     expect(queryByText('Breeze AI credits remaining')).toBeNull();
   });
 });
@@ -187,92 +187,137 @@ describe('AiUsagePage effective-settings parallel fetch', () => {
   });
 });
 
-// #4388 W03: the ladder is the one budget field the org row cannot distinguish
-// from "inherit", and the one whose input can hold text that never reaches the
-// form state. Both contracts are load-bearing and only observable in the PUT.
-describe('AiUsagePage alert threshold ladder', () => {
-  function mockUsageWithBudget(alertThresholdPercents: number[] | undefined) {
-    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === '/ai/usage' && !init) {
-        return Promise.resolve(jsonRes({
-          ...usageBody(),
-          budget: {
-            enabled: true,
-            monthlyBudgetCents: 5000,
-            dailyBudgetCents: null,
-            monthlyUsedCents: 0,
-            dailyUsedCents: 0,
-            approvalMode: 'per_step',
-            alertThresholdPercents,
-          },
-        }));
-      }
+// #6004: the org budget FORM moved to the org settings AI tab. What is left
+// here is a read-only panel whose job is to say where each effective value
+// comes from — and, crucially, a page that can never issue a budget PUT.
+describe('AiUsagePage effective budget panel (#6004)', () => {
+  const EFFECTIVE_DEFAULTS = {
+    enabled: true,
+    monthlyBudgetCents: null,
+    dailyBudgetCents: null,
+    maxTurnsPerSession: 50,
+    messagesPerMinutePerUser: 20,
+    messagesPerHourPerOrg: 200,
+    approvalMode: 'per_step',
+    alertThresholdPercents: [50, 80, 95],
+  };
+
+  function mockOrg(aiBudgets: Record<string, unknown>, locked: string[] = []) {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody('platform')));
       if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: [] }));
-      return Promise.resolve(jsonRes({ success: true }));
+      if (url === '/orgs/organizations/org-1/effective-settings') {
+        return Promise.resolve(jsonRes({ effective: { aiBudgets }, locked }));
+      }
+      return Promise.resolve(jsonRes({}));
     });
   }
 
-  const budgetPutBody = () => {
-    const call = fetchWithAuth.mock.calls.find(
-      ([url, init]) => url === '/ai/budget' && (init as RequestInit | undefined)?.method === 'PUT',
+  beforeEach(() => { orgState.currentOrgId = 'org-1'; });
+  afterEach(() => { orgState.currentOrgId = null; });
+
+  it('no longer renders the Budget Configuration form', async () => {
+    mockOrg(EFFECTIVE_DEFAULTS);
+    const { findByTestId, queryByText, queryByTestId } = renderPage();
+
+    await findByTestId('ai-effective-budget');
+    expect(queryByText('Budget Configuration')).toBeNull();
+    expect(queryByTestId('ai-budget-save')).toBeNull();
+    expect(queryByTestId('ai-budget-thresholds-input')).toBeNull();
+  });
+
+  it('renders each field\'s effective value, not just its provenance', async () => {
+    mockOrg({
+      ...EFFECTIVE_DEFAULTS,
+      enabled: false,
+      approvalMode: 'auto_approve',
+      dailyBudgetCents: 1250,
+      alertThresholdPercents: [60, 90],
+    });
+    const { findByTestId, getByTestId } = renderPage();
+
+    expect((await findByTestId('ai-effective-budget-value-enabled')).textContent).toBe('Disabled');
+    expect(getByTestId('ai-effective-budget-value-approvalMode').textContent).toBe('Auto Approve');
+    expect(getByTestId('ai-effective-budget-value-dailyBudgetCents').textContent).toContain('12.50');
+    expect(getByTestId('ai-effective-budget-value-monthlyBudgetCents').textContent).toBe('No limit');
+    expect(getByTestId('ai-effective-budget-value-alertThresholdPercents').textContent).toBe('60%, 90%');
+    expect(getByTestId('ai-effective-budget-value-maxTurnsPerSession').textContent).toBe('50');
+  });
+
+  it('renders an empty threshold ladder as off rather than as a blank cell', async () => {
+    mockOrg({ ...EFFECTIVE_DEFAULTS, alertThresholdPercents: [] });
+    const { findByTestId } = renderPage();
+
+    expect((await findByTestId('ai-effective-budget-value-alertThresholdPercents')).textContent).toBe('Off');
+  });
+
+  it('marks a partner-locked field as partner-sourced and links to the partner tab', async () => {
+    mockOrg({ ...EFFECTIVE_DEFAULTS, monthlyBudgetCents: 9900 }, ['aiBudgets.monthlyBudgetCents']);
+    const { findByTestId } = renderPage();
+
+    const chip = await findByTestId('ai-effective-budget-source-monthlyBudgetCents');
+    expect(chip.textContent).toContain('Set by partner');
+    expect(chip.getAttribute('href')).toBe('/settings/partner#ai-budgets');
+    expect((await findByTestId('ai-effective-budget-value-monthlyBudgetCents')).textContent).toContain('99');
+  });
+
+  it('marks an org-set field as organization-sourced and links to the org AI tab', async () => {
+    mockOrg({ ...EFFECTIVE_DEFAULTS, maxTurnsPerSession: 12 });
+    const { findByTestId } = renderPage();
+
+    const chip = await findByTestId('ai-effective-budget-source-maxTurnsPerSession');
+    expect(chip.textContent).toContain('Set by organization');
+    expect(chip.getAttribute('href')).toBe('/settings/organizations/org-1#ai');
+  });
+
+  it('marks an untouched field as coming from the defaults, with no link', async () => {
+    mockOrg(EFFECTIVE_DEFAULTS);
+    const { findByTestId } = renderPage();
+
+    const chip = await findByTestId('ai-effective-budget-source-messagesPerHourPerOrg');
+    expect(chip.textContent).toContain('Default');
+    expect(chip.tagName).not.toBe('A');
+  });
+});
+
+describe('AiUsagePage with the switcher on All organizations (#6004)', () => {
+  beforeEach(() => { orgState.currentOrgId = null; });
+
+  it('prompts for an org instead of rendering a form, and never PUTs a budget', async () => {
+    mockUsage('platform');
+    const { findByTestId, queryByTestId, queryByText } = renderPage();
+
+    const prompt = await findByTestId('ai-usage-select-org-prompt');
+    expect(prompt.textContent).toContain('Select an organization');
+    expect(within(prompt).getByRole('link').getAttribute('href')).toBe('/settings/partner#ai-budgets');
+
+    expect(queryByTestId('ai-effective-budget')).toBeNull();
+    expect(queryByTestId('ai-budget-save')).toBeNull();
+    expect(queryByText('Budget Configuration')).toBeNull();
+
+    // The 400 in the report came from a Save this page can no longer issue.
+    const puts = fetchWithAuth.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
     );
-    expect(call).toBeDefined();
-    return JSON.parse((call![1] as RequestInit).body as string) as Record<string, unknown>;
-  };
-
-  it('sends alertThresholdPercents: null when the ladder is cleared', async () => {
-    mockUsageWithBudget([50, 80, 95]);
-    const { findByTestId, getByTestId } = renderPage();
-
-    const input = await findByTestId('ai-budget-thresholds-input');
-    fireEvent.change(input, { target: { value: '' } });
-    fireEvent.blur(input);
-    fireEvent.click(getByTestId('ai-budget-save'));
-
-    await waitFor(() => expect(budgetPutBody()).toHaveProperty('alertThresholdPercents', null));
+    expect(puts).toEqual([]);
   });
+});
 
-  it('sends the edited ladder', async () => {
-    mockUsageWithBudget(undefined);
-    const { findByTestId, getByTestId } = renderPage();
+describe('AiUsagePage when effective settings cannot be read (#6004)', () => {
+  beforeEach(() => { orgState.currentOrgId = 'org-1'; });
+  afterEach(() => { orgState.currentOrgId = null; });
 
-    const input = await findByTestId('ai-budget-thresholds-input');
-    fireEvent.change(input, { target: { value: '60, 90' } });
-    fireEvent.blur(input);
-    fireEvent.click(getByTestId('ai-budget-save'));
+  it('names the failure instead of showing the All-organizations prompt', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/ai/usage') return Promise.resolve(jsonRes(usageBody('platform')));
+      if (url.startsWith('/ai/admin/sessions')) return Promise.resolve(jsonRes({ data: [] }));
+      if (url === '/orgs/organizations/org-1/effective-settings') return Promise.reject(new Error('boom'));
+      return Promise.resolve(jsonRes({}));
+    });
+    const { findByTestId, queryByTestId } = renderPage();
 
-    await waitFor(() => expect(budgetPutBody()).toHaveProperty('alertThresholdPercents', [60, 90]));
-  });
-
-  // The form seeds from the EFFECTIVE budget, so an untouched field is showing
-  // whatever the org inherits. Sending it back would pin that inherited ladder
-  // onto the org row as an explicit choice.
-  it('omits alertThresholdPercents entirely when the field was never edited', async () => {
-    mockUsageWithBudget([50, 80, 95]);
-    const { findByTestId, getByTestId } = renderPage();
-
-    await findByTestId('ai-budget-thresholds-input');
-    fireEvent.click(getByTestId('ai-budget-save'));
-
-    await waitFor(() => expect(budgetPutBody()).toHaveProperty('monthlyBudgetCents', 5000));
-    expect(budgetPutBody()).not.toHaveProperty('alertThresholdPercents');
-  });
-
-  it('disables Save while the ladder text does not parse', async () => {
-    mockUsageWithBudget([50, 80, 95]);
-    const { findByTestId, getByTestId } = renderPage();
-
-    const input = await findByTestId('ai-budget-thresholds-input');
-    const save = getByTestId('ai-budget-save') as HTMLButtonElement;
-    expect(save.disabled).toBe(false);
-
-    fireEvent.change(input, { target: { value: '100' } });
-    fireEvent.blur(input);
-    expect(getByTestId('ai-budget-thresholds-error')).toBeInTheDocument();
-    expect(save.disabled).toBe(true);
-
-    fireEvent.change(input, { target: { value: '95' } });
-    fireEvent.blur(input);
-    expect(save.disabled).toBe(false);
+    await findByTestId('ai-effective-budget-unavailable');
+    expect(queryByTestId('ai-usage-select-org-prompt')).toBeNull();
+    expect(queryByTestId('ai-effective-budget')).toBeNull();
   });
 });

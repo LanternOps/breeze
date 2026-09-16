@@ -574,8 +574,8 @@ export default function DeliverableTemplatesPage() {
                           }
                         >
                           <option value="">{t('form.autoEvidenceNone')}</option>
-                          {/* W01 ships no types; each report-type wave adds its
-                              label under `reports.types` when it lands. */}
+                          {/* Each report-type wave adds its label under
+                              `reports.types` when it lands (#5784 W02 first). */}
                           {MANAGED_EVIDENCE_REPORT_TYPES.map((type) => (
                             <option key={type} value={type}>{humanizeReportType(type)}</option>
                           ))}

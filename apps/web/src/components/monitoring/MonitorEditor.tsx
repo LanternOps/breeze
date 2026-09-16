@@ -412,15 +412,19 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     if (!monitorId) return;
     setError(undefined);
     try {
-      const response = await fetchWithAuth(`/monitor-definitions/${monitorId}/attachments/${attachmentId}`, {
-        method: 'DELETE',
+      await runAction({
+        request: () =>
+          fetchWithAuth(`/monitor-definitions/${monitorId}/attachments/${attachmentId}`, {
+            method: 'DELETE',
+          }),
+        errorFallback: t('monitoring:deploy.errors.detach'),
+        successMessage: t('monitoring:editor.detached'),
+        onUnauthorized: UNAUTHORIZED,
       });
-      if (!response.ok && response.status !== 204) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('monitoring:deploy.errors.detach')));
-      }
       setAttachments((prev) => prev.filter((a) => a.id !== attachmentId));
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      handleActionError(err, t('monitoring:deploy.errors.detach'));
       setError(err instanceof Error ? err.message : t('monitoring:deploy.errors.detach'));
     }
   };
@@ -447,6 +451,10 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     setTestSubmitting(true);
     setTestResult(null);
     try {
+      // runaction-exempt: the test result panel below IS the outcome surface —
+      // both the failure and the triggered/not-triggered verdict render inline,
+      // and a toast would report "done" for a test whose whole payload is the
+      // answer.
       const response = await fetchWithAuth(`/monitor-definitions/${monitorId}/test`, {
         method: 'POST',
         body: JSON.stringify({ deviceId: testDeviceId }),
