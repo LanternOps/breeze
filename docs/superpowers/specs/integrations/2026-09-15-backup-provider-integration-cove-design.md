@@ -1,3 +1,6 @@
+---
+tracking_issue: LanternOps/breeze#6008
+---
 # Backup Provider Integration — Phase 1: Cove Data Protection status everywhere
 
 **Date:** 2026-09-15
