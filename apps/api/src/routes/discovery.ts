@@ -26,6 +26,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
+import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
 import {
   encryptSnmpCommunities,
   encryptSnmpCredentials,
@@ -1137,7 +1138,10 @@ discoveryRoutes.get(
           ipAddress: a.ipAddress,
           macAddress: a.macAddress,
           manufacturer: a.manufacturer,
-          model: a.model,
+          // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+          // value stays reachable through snmpData.sysObjectId.
+          model: maskOidShapedModel(a.model),
+          nicVendor: nicVendorFromMac(a.macAddress),
           openPorts: a.openPorts,
           snmpData: a.snmpData,
           responseTimeMs: a.responseTimeMs,
@@ -1258,7 +1262,10 @@ discoveryRoutes.get(
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,
         manufacturer: a.manufacturer,
-        model: a.model,
+        // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+        // value stays reachable through snmpData.sysObjectId.
+        model: maskOidShapedModel(a.model),
+        nicVendor: nicVendorFromMac(a.macAddress),
         openPorts: a.openPorts,
         osFingerprint: a.osFingerprint,
         snmpData: a.snmpData,

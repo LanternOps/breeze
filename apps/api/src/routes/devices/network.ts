@@ -11,6 +11,7 @@ import {
 import { authMiddleware, requireScope, requirePermission, requireMfa } from '../../middleware/auth';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../../services/permissions';
 import { listNetworkDevicesSchema, createNetworkAssetSchema } from './schemas';
+import { maskOidShapedModel, nicVendorFromMac } from '../../services/assetIdentity';
 
 export const networkRoutes = new Hono();
 
@@ -71,7 +72,10 @@ function toUnifiedListShape(r: UnifiedListSourceRow) {
     ipAddress: r.ipAddress ?? null,
     macAddress: r.macAddress ?? null,
     manufacturer: r.manufacturer ?? null,
-    model: r.model ?? null,
+    // Spec §9 read-time guard — a raw sysObjectID is not a model. The raw
+    // value stays reachable through snmpData.sysObjectId.
+    model: maskOidShapedModel(r.model ?? null),
+    nicVendor: nicVendorFromMac(r.macAddress ?? null),
     responseTimeMs: r.responseTimeMs ?? null,
     openPorts: r.openPorts ?? null,
     lastSeenAt: r.lastSeenAt,
