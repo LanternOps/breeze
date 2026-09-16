@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getCookie, setCookie, generateCookie } from 'hono/cookie';
 import { SignJWT, jwtVerify } from 'jose';
 import { randomUUID } from 'crypto';
+import { brotliDecompressSync, gunzipSync, inflateSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db, withSystemDbAccessContext } from '../db';
 import { tunnelSessions, devices } from '../db/schema';
@@ -91,7 +92,6 @@ const HOP_BY_HOP = new Set([
 const FORWARDABLE_REQUEST_HEADERS = new Set([
   'accept',
   'accept-language',
-  'accept-encoding',
   'user-agent',
   'content-type',
   'content-length',
@@ -507,10 +507,28 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
     ? `[${session.targetHost}]` : session.targetHost;
   const rewriteOptions = { basePath, targetOrigin: `${scheme}://${targetHost}:${session.targetPort}` };
-  if (contentType.toLowerCase().includes('text/html')) {
-    body = rewriteTunnelHtml(body.toString('utf8'), rewriteOptions);
-  } else if (contentType.toLowerCase().includes('text/css')) {
-    body = rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
+  const isHtml = contentType.toLowerCase().includes('text/html');
+  if (isHtml || contentType.toLowerCase().includes('text/css')) {
+    const encodings = (respHeaders.get('content-encoding') ?? 'identity')
+      .split(',').map((encoding) => encoding.trim().toLowerCase());
+    // Check the entire stack first: an unknown encoding must pass through with
+    // its original bytes and headers, even when another layer is supported.
+    if (encodings.every((encoding) => ['identity', 'gzip', 'deflate', 'br'].includes(encoding))) {
+      try {
+        for (const encoding of encodings.reverse()) {
+          if (encoding === 'gzip') body = gunzipSync(body);
+          else if (encoding === 'deflate') body = inflateSync(body);
+          else if (encoding === 'br') body = brotliDecompressSync(body);
+        }
+      } catch {
+        return c.text('Malformed upstream content encoding', 502);
+      }
+      body = isHtml
+        ? rewriteTunnelHtml(body.toString('utf8'), rewriteOptions)
+        : rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
+      respHeaders.delete('content-encoding');
+      respHeaders.set('content-length', String(Buffer.byteLength(body)));
+    }
   }
 
   // Buffer isn't a DOM `BodyInit`; hand the runtime a Uint8Array for binary

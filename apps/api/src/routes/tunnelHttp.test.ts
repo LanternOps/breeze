@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib';
 
 // --- UUID constants ---
 const TUNNEL_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -630,4 +631,71 @@ it('rewrites CSS responses using the session target and proxy base', async () =>
   const cookie = await mintCookie(app);
   const res = await app.request(`${BASE}/style.css`, { headers: { cookie } });
   expect(await res.text()).toBe(`@import "${BASE}/theme.css"; a{background:url(${BASE}/image.png)}`);
+});
+
+
+it('does not forward browser compression negotiation to the agent', async () => {
+  const app = makeApp();
+  const cookie = await mintCookie(app);
+  await app.request(`${BASE}/`, { headers: { cookie, 'accept-encoding': 'gzip, deflate, br' } });
+  const [, command] = sendCommandMock.mock.calls.at(-1)!;
+  expect(command.payload.headers).not.toHaveProperty('accept-encoding');
+});
+
+const upstreamEncodings = [
+  ['gzip', gzipSync],
+  ['deflate', deflateSync],
+  ['br', brotliCompressSync],
+  ['GZip, br', (body: Buffer) => brotliCompressSync(gzipSync(body))],
+  ['identity', (body: Buffer) => body],
+] as const;
+
+it.each(upstreamEncodings)('decodes %s HTML before rewriting and fixes response headers', async (encoding, compress) => {
+  const compressed = compress(Buffer.from('<html><head><title>Prínter</title></head><body><img src="/logo.png"></body></html>'));
+  sendCommandMock.mockResolvedValue(okAgentResult({
+    headers: { 'Content-Type': ['text/html'], 'Content-Encoding': [encoding], 'Content-Length': [String(compressed.length)] },
+    bodyB64: compressed.toString('base64'),
+  }));
+  const app = makeApp();
+  const cookie = await mintCookie(app);
+  const res = await app.request(`${BASE}/`, { headers: { cookie } });
+  const body = await res.text();
+  expect(res.status).toBe(200);
+  expect(body).toContain('<title>Prínter</title>');
+  expect(body).toContain(`src="${BASE}/logo.png"`);
+  expect(body.match(/<script data-breeze-tunnel-rewrite>/g)).toHaveLength(1);
+  expect(res.headers.get('content-encoding')).toBeNull();
+  expect(res.headers.get('content-length')).toBe(String(Buffer.byteLength(body)));
+});
+
+it('decodes compressed CSS before rewriting', async () => {
+  const compressed = gzipSync(Buffer.from('a{background:url(/logo.png)}'));
+  sendCommandMock.mockResolvedValue(okAgentResult({
+    headers: { 'content-type': ['text/css'], 'content-encoding': ['gzip'] },
+    bodyB64: compressed.toString('base64'),
+  }));
+  const app = makeApp();
+  const cookie = await mintCookie(app);
+  const res = await app.request(`${BASE}/style.css`, { headers: { cookie } });
+  const body = await res.text();
+  expect(body).toBe(`a{background:url(${BASE}/logo.png)}`);
+  expect(res.headers.get('content-encoding')).toBeNull();
+  expect(res.headers.get('content-length')).toBe(String(Buffer.byteLength(body)));
+});
+
+it.each(['unknown', 'unknown, gzip'])('passes %s encoding through byte-identically without injecting a shim', async (encoding) => {
+  const original = Buffer.concat([Buffer.from([0xff, 0x00, 0x80]), Buffer.from('<head></head><img src="/logo.png">')]);
+  const body = encoding.includes('gzip') ? gzipSync(original) : original;
+  sendCommandMock.mockResolvedValue(okAgentResult({
+    headers: { 'content-type': ['text/html'], 'content-encoding': [encoding] },
+    bodyB64: body.toString('base64'),
+  }));
+  const app = makeApp();
+  const cookie = await mintCookie(app);
+  const res = await app.request(`${BASE}/`, { headers: { cookie } });
+  const received = Buffer.from(await res.arrayBuffer());
+  expect(res.status).toBe(200);
+  expect(received).toEqual(body);
+  expect(received.toString()).not.toContain('data-breeze-tunnel-rewrite');
+  expect(res.headers.get('content-encoding')).toBe(encoding);
 });

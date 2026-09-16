@@ -8,7 +8,6 @@ export interface TunnelRewriteOptions {
 // so server-rendered and dynamically requested URLs use exactly the same mapping.
 export function rewriteTunnelUrl(value: string, options: TunnelRewriteOptions): string {
   const url = value.trim();
-  if (url.startsWith(options.basePath)) return value;
   const rootRelative = url.startsWith('/') && !url.startsWith('//');
   if (!rootRelative && !/^(https?:)?\/\//i.test(url)) return value;
   try {
@@ -18,6 +17,10 @@ export function rewriteTunnelUrl(value: string, options: TunnelRewriteOptions): 
     const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
     const targetPort = target.port || (target.protocol === 'https:' ? '443' : '80');
     if (parsed.hostname !== target.hostname || port !== targetPort) return value;
+    // Dot segments (including percent-encoded ones) must not escape the tunnel.
+    if (parsed.pathname.startsWith(options.basePath)) {
+      return parsed.pathname + parsed.search + parsed.hash;
+    }
     return options.basePath + parsed.pathname.slice(1) + parsed.search + parsed.hash;
   } catch {
     return value;

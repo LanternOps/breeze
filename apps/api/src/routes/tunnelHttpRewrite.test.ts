@@ -8,6 +8,9 @@ const base = options.basePath;
 describe('rewriteTunnelUrl', () => {
   it.each([
     ['/a/../../x', `${base}x`],
+    [`${base}../../devices`, `${base}api/v1/devices`],
+    [`${base}%2e%2e/%2e%2e/devices`, `${base}api/v1/devices`],
+    [`${base}assets/../app.js?x=1#part`, `${base}app.js?x=1#part`],
     ['/webglue/app.js?x=1#part', `${base}webglue/app.js?x=1#part`],
     ['http://printer.example/x', `${base}x`],
     ['http://PRINTER.example:80/x', `${base}x`],
