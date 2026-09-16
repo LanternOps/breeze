@@ -31,11 +31,11 @@ import * as dbModule from '../db';
 import { organizations, partners, tickets } from '../db/schema';
 import { getEmailService } from '../services/email';
 import { escapeHtml } from '../services/emailLayout';
+import { renderPartnerEmail, type PartnerEmailCustom } from '../services/emailTemplates/renderPartnerEmail';
+import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
 import { buildThreadingHeaders, partnerInboundAddress, ticketThreadAnchor } from '../services/inboundEmail/outboundThreading';
-import { buildAutoresponseEmail } from '../services/inboundEmail/autoresponseTemplate';
 import { resolveOutboundMailbox } from '../services/ticketMailbox/resolveOutboundMailbox';
 import { sendThreadedReply, sendNewMail } from '../services/ticketMailbox/graphReplySender';
-import type { TicketTemplateVars } from '@breeze/shared';
 import { getBullMQConnection } from '../services/redis';
 import { captureException } from '../services/sentry';
 import { TICKET_EVENTS_QUEUE, type TicketEvent } from '../services/ticketEvents';
@@ -98,7 +98,105 @@ async function getTicket(ticketId: string) {
 
 async function getOrgName(orgId: string): Promise<string> {
   const rows = await db.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, orgId)).limit(1);
-  return rows[0]?.name ?? '';
+  return rows?.[0]?.name ?? '';
+}
+
+const EMAIL_ONLY_HINT = 'If you do not have a portal account, reply to this email instead.';
+
+type TicketRow = NonNullable<Awaited<ReturnType<typeof getTicket>>>;
+
+type PartnerSettings = {
+  ticketing?: {
+    inbound?: {
+      address?: string;
+      autoresponseSubject?: string | null;
+      autoresponseBody?: string | null;
+    };
+  };
+  emailTemplates?: {
+    ticket_comment_notification?: unknown;
+    ticket_autoresponse?: unknown;
+    ticket_resolved?: unknown;
+  };
+};
+
+interface PartnerMailBits {
+  name: string;
+  replyTo: string | undefined;
+  emailTemplates: PartnerSettings['emailTemplates'];
+  inbound: NonNullable<PartnerSettings['ticketing']>['inbound'];
+}
+
+async function loadPartnerMailBits(partnerId: string | null | undefined): Promise<PartnerMailBits> {
+  const empty: PartnerMailBits = { name: '', replyTo: undefined, emailTemplates: undefined, inbound: undefined };
+  if (!partnerId) return empty;
+  const partnerRows = await db
+    .select({
+      slug: partners.slug,
+      name: partners.name,
+      inboundLocalPart: partners.inboundLocalPart,
+      settings: partners.settings,
+    })
+    .from(partners)
+    .where(eq(partners.id, partnerId))
+    .limit(1);
+  const row = partnerRows?.[0];
+  if (!row) return empty;
+  const settings = row.settings as PartnerSettings | undefined;
+  const inbound = settings?.ticketing?.inbound;
+  const replyTo = row.slug
+    ? partnerInboundAddress(row.inboundLocalPart ?? row.slug, inbound?.address) ?? undefined
+    : undefined;
+  return {
+    name: row.name ?? '',
+    replyTo,
+    emailTemplates: settings?.emailTemplates,
+    inbound,
+  };
+}
+
+function asPartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    subject: typeof o.subject === 'string' ? o.subject : null,
+    heading: typeof o.heading === 'string' ? o.heading : null,
+    buttonLabel: typeof o.buttonLabel === 'string' ? o.buttonLabel : null,
+    html: typeof o.html === 'string' ? o.html : null,
+  };
+}
+
+async function composeLaidOutRequesterMail(
+  ticket: TicketRow,
+  id: 'ticket_comment_notification' | 'ticket_resolved',
+): Promise<{ html: string; subject: string; replyTo: string | undefined }> {
+  const { href, hasPortalUser } = await resolveCommentNotificationPortalHref({
+    ticketId: ticket.id,
+    orgId: ticket.orgId,
+    submitterEmail: ticket.submitterEmail ?? '',
+  });
+  const partner = await loadPartnerMailBits(ticket.partnerId);
+  const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
+  const rendered = renderPartnerEmail({
+    id,
+    custom: asPartnerEmailCustom(partner.emailTemplates?.[id]),
+    vars: {
+      ticket_number: ticket.internalNumber ?? '',
+      ticket_subject: ticket.subject ?? '',
+      requester_name: ticket.submitterName ?? '',
+      requester_email: ticket.submitterEmail ?? '',
+      org_name: orgName,
+      partner_name: partner.name,
+      portal_url: href,
+      email_only_hint: hasPortalUser ? '' : EMAIL_ONLY_HINT,
+      ...(id === 'ticket_resolved' ? { resolution_note: ticket.resolutionNote ?? '' } : {}),
+    },
+    ctaUrl: href,
+    brandName: partner.name,
+    internalNumber: ticket.internalNumber,
+    ticketSubject: ticket.subject,
+  });
+  return { html: rendered.html, subject: rendered.subject, replyTo: partner.replyTo };
 }
 
 async function resolveCurrentTicketPartner(
@@ -207,66 +305,53 @@ async function collectAssigneeNotification(
  * Returns collected email payloads (does not send).
  *
  * Threading is OPT-IN per call (Phase 4 §5): pass a `commentId` to thread the
- * email (technician public-comment reply). When `commentId` is absent (e.g. the
- * `ticket.status_changed` 'Resolved' email) the function behaves exactly as
- * before — no Reply-To, no headers, no anchor stamp. This keeps the Resolved
- * email from emitting a bare-anchor Message-ID that would collide with the
- * autoresponse's Message-ID and confuse the requester's mail client + PR1's
- * thread-key resolver.
+ * email (technician public-comment reply). When `commentId` is absent (the
+ * `ticket.status_changed` 'Resolved' email) there is no Reply-To, no headers,
+ * no anchor stamp — that keeps Resolved from emitting a bare-anchor Message-ID
+ * that would collide with the autoresponse.
  *
- * `bodyHtml` accepts a plain string OR a builder `(ticket) => string` (#3828
- * wave-6-3 task 2). The builder form exists so the Resolved-email caller can
- * compose its body from `ticket.resolutionNote` — fetched here from the DB —
- * instead of from the event payload, which no longer carries that field.
+ * `bodyHtml` as a builder is only for side effects (resolved freshness guard).
+ * Customer html/subject come from renderPartnerEmail. `subjectOverride` replaces
+ * the renderer subject when a caller needs to; comment/resolved pass the
+ * renderer subject by default. Assignee mail never enters here.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
-  bodyHtml: string | ((ticket: NonNullable<Awaited<ReturnType<typeof getTicket>>>) => string),
+  bodyHtml: string | ((ticket: TicketRow) => string),
   subjectPrefix: string,
-  commentId?: string
+  commentId?: string,
+  subjectOverride?: string,
 ): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
   const ticket = await getTicket(event.ticketId);
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
+  // Run the builder first so the resolved freshness guard retries even when we
+  // later skip send (missing submitterEmail).
+  if (typeof bodyHtml === 'function') {
+    bodyHtml(ticket);
+  }
   if (!ticket.submitterEmail) return [];
-
-  const html = typeof bodyHtml === 'function' ? bodyHtml(ticket) : bodyHtml;
-  const label = ticket.internalNumber ?? ticket.ticketNumber ?? ticket.id;
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
   // FROM that mailbox via Graph (native threading). Tech/assignee notifications never
   // call collectRequesterEmail, so they never carry graphMailbox.
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  // Un-threaded path (e.g. ticket.status_changed 'Resolved'): unchanged from before.
   if (!commentId) {
+    const composed = await composeLaidOutRequesterMail(ticket, 'ticket_resolved');
     return [{
       to: ticket.submitterEmail,
-      subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-      html,
+      subject: subjectOverride ?? composed.subject,
+      html: composed.html,
       graphMailbox,
       purpose: 'ticket.customer_notification',
       partnerId: ticket.partnerId ?? null
     }];
   }
 
-  // Threaded path (Phase 4 §5): partner inbound address as Reply-To + deterministic
-  // Message-ID/In-Reply-To/References so the requester's client threads the reply.
-  let replyTo: string | undefined;
-  if (ticket.partnerId) {
-    const partnerRows = await db
-      .select({ slug: partners.slug, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, ticket.partnerId))
-      .limit(1);
-    const slug = partnerRows[0]?.slug;
-    const override = (partnerRows[0]?.settings as
-      | { ticketing?: { inbound?: { address?: string } } }
-      | undefined)?.ticketing?.inbound?.address;
-    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, override) ?? undefined;
-  }
+  const composed = await composeLaidOutRequesterMail(ticket, 'ticket_comment_notification');
 
   const built = buildThreadingHeaders({ ticketId: ticket.id, commentId });
   const headers = Object.keys(built).length > 0 ? built : undefined;
@@ -280,9 +365,9 @@ async function collectRequesterEmail(
 
   return [{
     to: ticket.submitterEmail,
-    subject: `[${label}] ${subjectPrefix}: ${ticket.subject}`,
-    html,
-    replyTo,
+    subject: subjectOverride ?? composed.subject,
+    html: composed.html,
+    replyTo: composed.replyTo,
     headers,
     graphMailbox,
     purpose: 'ticket.customer_notification',
@@ -293,12 +378,12 @@ async function collectRequesterEmail(
 /**
  * One-time autoresponse acknowledgement (spec §5). The autoresponder gate
  * (inboundEmail/autoresponder.ts) already applied loop-prevention + the per-sender
- * cap before emitting; here we just compose + send. The body is the partner's
- * customized auto-reply template when set (settings.ticketing.inbound.autoresponse
- * {Subject,Body}, rendered with the ticket's merge variables), otherwise the default
- * acknowledgement — see buildAutoresponseEmail. Loop hygiene: stamp Auto-Submitted: auto-replied and set
- * the ticket thread anchor as Message-ID so the requester's reply threads. Reply-To
- * is the partner inbound address (self-hosted override honored).
+ * cap before emitting; here we just compose + send. Custom html comes from
+ * settings.emailTemplates.ticket_autoresponse when set; otherwise inbound
+ * autoresponseSubject/Body (plain text); otherwise the hardcoded ack. Loop
+ * hygiene: stamp Auto-Submitted: auto-replied and set the ticket thread anchor
+ * as Message-ID so the requester's reply threads. Reply-To is the partner
+ * inbound address (self-hosted override honored).
  */
 async function collectAutoresponse(
   event: Extract<TicketEvent, { type: 'ticket.autoresponse' }>
@@ -307,48 +392,27 @@ async function collectAutoresponse(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
-  let replyTo: string | undefined;
-  let custom: { subject: string | null; body: string | null } | undefined;
-  let partnerName = '';
-  if (ticket.partnerId) {
-    const partnerRows = await db
-      .select({ slug: partners.slug, name: partners.name, inboundLocalPart: partners.inboundLocalPart, settings: partners.settings })
-      .from(partners)
-      .where(eq(partners.id, ticket.partnerId))
-      .limit(1);
-    const slug = partnerRows[0]?.slug;
-    partnerName = partnerRows[0]?.name ?? '';
-    const inbound = (partnerRows[0]?.settings as
-      | { ticketing?: { inbound?: { address?: string; autoresponseSubject?: string | null; autoresponseBody?: string | null } } }
-      | undefined)?.ticketing?.inbound;
-    if (slug) replyTo = partnerInboundAddress(partnerRows[0]?.inboundLocalPart ?? slug, inbound?.address) ?? undefined;
-    custom = { subject: inbound?.autoresponseSubject ?? null, body: inbound?.autoresponseBody ?? null };
-  }
+  const partner = await loadPartnerMailBits(ticket.partnerId);
+  const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
 
-  let orgName = '';
-  if (ticket.orgId) {
-    const orgRows = await db
-      .select({ name: organizations.name })
-      .from(organizations)
-      .where(eq(organizations.id, ticket.orgId))
-      .limit(1);
-    orgName = orgRows[0]?.name ?? '';
-  }
-
-  const vars: TicketTemplateVars = {
-    ticket_number: ticket.internalNumber ?? '',
-    ticket_subject: ticket.subject ?? event.payload.subject,
-    requester_name: ticket.submitterName ?? '',
-    requester_email: event.payload.to,
-    org_name: orgName,
-    partner_name: partnerName,
-  };
-
-  const tpl = buildAutoresponseEmail({
+  const tpl = renderPartnerEmail({
+    id: 'ticket_autoresponse',
+    custom: asPartnerEmailCustom(partner.emailTemplates?.ticket_autoresponse),
+    inboundAutoresponseFallback: {
+      subject: partner.inbound?.autoresponseSubject ?? null,
+      body: partner.inbound?.autoresponseBody ?? null,
+    },
+    vars: {
+      ticket_number: ticket.internalNumber ?? '',
+      ticket_subject: ticket.subject ?? event.payload.subject,
+      requester_name: ticket.submitterName ?? '',
+      requester_email: event.payload.to,
+      org_name: orgName,
+      partner_name: partner.name,
+    },
+    brandName: partner.name,
     internalNumber: event.payload.internalNumber,
-    subject: event.payload.subject,
-    custom,
-    vars,
+    ticketSubject: event.payload.subject,
   });
 
   const headers: Record<string, string> = { 'Auto-Submitted': 'auto-replied' };
@@ -360,7 +424,17 @@ async function collectAutoresponse(
   // are only used on the EmailService fallback path).
   const graphMailbox = (await resolveOutboundMailbox(ticket.id, ticket.partnerId)) ?? undefined;
 
-  return [{ to: event.payload.to, subject: tpl.subject, html: tpl.html, replyTo, headers, bestEffort: true, graphMailbox, purpose: 'ticket.customer_notification', partnerId: ticket.partnerId ?? null }];
+  return [{
+    to: event.payload.to,
+    subject: tpl.subject,
+    html: tpl.html,
+    replyTo: partner.replyTo,
+    headers,
+    bestEffort: true,
+    graphMailbox,
+    purpose: 'ticket.customer_notification',
+    partnerId: ticket.partnerId ?? null,
+  }];
 }
 
 async function collectSlaBreachNotification(
@@ -502,7 +576,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         if (event.payload.isPublic && !event.payload.inbound) {
           emailPayloads = await collectRequesterEmail(
             event,
-            '<p>Your ticket has a new reply. Sign in to the portal to view it.</p>',
+            '',
             'New reply',
             event.payload.commentId
           );
@@ -549,8 +623,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
                   `Ticket transition not yet visible (likely uncommitted): ${ticket.id}`
                 );
               }
-              const note = ticket.resolutionNote ?? '';
-              return `<p>Your ticket has been resolved.</p>${note ? `<p>${escapeHtml(note)}</p>` : ''}`;
+              return '';
             },
             'Resolved'
           );
