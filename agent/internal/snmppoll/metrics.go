@@ -136,11 +136,22 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 		}
 		pdus, err := src.GetMulti(oids)
 		if err != nil {
-			// Unchanged: a failed GET batch means the device did not answer at
-			// all, which is a whole-poll transport failure, not a per-OID one.
-			return nil, err
+			var statusErr *SnmpStatusError
+			if !errors.As(err, &statusErr) {
+				// Transport failures still fail the whole poll.
+				return nil, err
+			}
+			slog.Warn("SNMP GET failed", "oids", oids, "status", statusErr.Status.String(), "error", err)
+			affected := getSpecs
+			if index := int(statusErr.Index); index > 0 && index <= len(getSpecs) {
+				affected = getSpecs[index-1 : index]
+			}
+			for _, spec := range affected {
+				metrics = append(metrics, errorMetric(spec, "", ErrCodeSNMPError, stamp))
+			}
+		} else {
+			metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
 		}
-		metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
 	}
 
 	budget := &walkBudget{

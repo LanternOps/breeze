@@ -764,3 +764,35 @@ func TestParseValue_BigIntNegativeOverflow(t *testing.T) {
 		t.Errorf("ParseValue = %q, want %q", s, val.String())
 	}
 }
+
+func TestCollectWithSource_GetPacketStatus(t *testing.T) {
+	specs := []OIDSpec{
+		{OID: "1.3.6.1.2.1.1.1.0", Name: "description", Mode: ModeGet},
+		{OID: "1.3.6.1.2.1.1.3.0", Name: "uptime", Mode: ModeGet},
+	}
+	for _, tt := range []struct {
+		name   string
+		status gosnmp.SNMPError
+		index  uint8
+		want   []int
+	}{
+		{"first OID", gosnmp.NoSuchName, 1, []int{0}},
+		{"last OID", gosnmp.NoSuchName, 2, []int{1}},
+		{"whole batch", gosnmp.GenErr, 0, []int{0, 1}},
+		{"invalid index", gosnmp.GenErr, 3, []int{0, 1}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakePDUSource{getErr: &SnmpStatusError{Status: tt.status, Index: tt.index}}
+			metrics, err := collectWithSource(src, specs, DefaultPollLimits, stamp)
+			if err != nil || len(metrics) != len(tt.want) {
+				t.Fatalf("metrics=%+v error=%v, want %d error rows", metrics, err, len(tt.want))
+			}
+			for i, specIndex := range tt.want {
+				m, spec := metrics[i], specs[specIndex]
+				if m.OID != spec.OID || m.BaseOID != spec.OID || m.Name != spec.Name || m.Error != ErrCodeSNMPError || m.Value != nil || m.Timestamp != stamp {
+					t.Errorf("unexpected error row: %+v", m)
+				}
+			}
+		})
+	}
+}
