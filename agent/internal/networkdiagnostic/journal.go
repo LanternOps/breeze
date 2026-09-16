@@ -144,6 +144,11 @@ func (j *Journal) Accept(command Command) (bool, error) {
 	}
 	next := cloneJournal(j.data)
 	j.cleanup(&next, j.clock())
+	for _, old := range next.Commands {
+		if old.RunID == command.RunID && old.AttemptID == command.AttemptID {
+			return false, ErrJournalConflict
+		}
+	}
 	if len(next.Commands)+len(next.Entries) >= 10000 {
 		return false, ErrJournalFull
 	}
@@ -253,7 +258,20 @@ func (j *Journal) Close() error {
 	j.closed = true
 	return j.lock.Close()
 }
+
+type journalFileOps struct {
+	write   func(*os.File, []byte) (int, error)
+	sync    func(*os.File) error
+	replace func(string, string) error
+}
+
+func nativeJournalOps() journalFileOps {
+	return journalFileOps{(*os.File).Write, (*os.File).Sync, replaceJournal}
+}
 func writeJournal(path string, data []byte) error {
+	return writeJournalWithOps(path, data, nativeJournalOps())
+}
+func writeJournalWithOps(path string, data []byte, ops journalFileOps) error {
 	dir := filepath.Dir(path)
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return e
@@ -268,18 +286,18 @@ func writeJournal(path string, data []byte) error {
 		f.Close()
 		return e
 	}
-	if _, e = f.Write(data); e != nil {
+	if _, e = ops.write(f, data); e != nil {
 		f.Close()
 		return e
 	}
-	if e = f.Sync(); e != nil {
+	if e = ops.sync(f); e != nil {
 		f.Close()
 		return e
 	}
 	if e = f.Close(); e != nil {
 		return e
 	}
-	return replaceJournal(name, path)
+	return ops.replace(name, path)
 }
 
 func (j *Journal) accepted(c Command) bool {

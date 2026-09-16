@@ -25,6 +25,7 @@ type NetworkContextReset struct {
 	PreviousEpoch string `json:"previousEpoch"`
 }
 type networkContextManager struct {
+	latestSnapshot  *networkcontext.Snapshot
 	eventsAvailable bool
 	startOnce       sync.Once
 	mu              sync.Mutex
@@ -90,6 +91,7 @@ func (m *networkContextManager) configure(c networkContextConfig) error {
 		}
 		m.scheduler = networkcontext.NewScheduler(rand.Float64)
 		m.captured = time.Time{}
+		m.latestSnapshot = nil
 	}
 	if m.reader == nil {
 		m.reader = networkcontext.NewReader(c.ProducerEpoch)
@@ -177,6 +179,7 @@ func (m *networkContextManager) attach(now time.Time, stop <-chan struct{}) (*ne
 				return
 			}
 			m.captured = captureStarted
+			m.latestSnapshot = &snapshot
 		}()
 	}
 	return nil, nil

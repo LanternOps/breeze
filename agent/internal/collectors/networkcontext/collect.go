@@ -109,6 +109,9 @@ func Collect(parent context.Context, reader Reader) (Snapshot, error) {
 			scoped := Context{ContextKey: scope.ContextKey, Families: []string{family}}
 			r, e := readSection(ctx, scoped, reader.Routes)
 			r.AddressFamily = family
+			// Keep default/connected reachability evidence before less important
+			// destination-specific rows when the context budget is exhausted.
+			sort.SliceStable(r.Rows, func(i, j int) bool { return routePriority(r.Rows[i]) < routePriority(r.Rows[j]) })
 			r = finishSection(r, "routes", scope.ContextKey, routeBudget, e)
 			routeBudget -= len(r.Rows)
 			out.Routes = append(out.Routes, r)
@@ -140,4 +143,19 @@ func readSection[T any](ctx context.Context, scope Context, read func(context.Co
 		return Section[T]{}, err
 	}
 	return read(ctx, scope)
+}
+
+func routePriority(row RouteRow) int {
+	if row.DestinationPrefix == "0.0.0.0/0" || row.DestinationPrefix == "::/0" {
+		return 0
+	}
+	if len(row.NextHops) == 0 {
+		return 1
+	}
+	for _, hop := range row.NextHops {
+		if hop.Address != nil {
+			return 2
+		}
+	}
+	return 1
 }

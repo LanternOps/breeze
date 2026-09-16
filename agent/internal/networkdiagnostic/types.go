@@ -179,7 +179,7 @@ type StepKey struct {
 }
 
 func (k StepKey) String() string {
-	return k.CommandID + ":" + k.RunID + ":" + k.AttemptID + ":" + k.StepID
+	return k.RunID + ":" + k.AttemptID + ":" + k.StepID
 }
 func (c Command) StepKey(stepID string) StepKey {
 	return StepKey{c.CommandID, c.RunID, c.AttemptID, stepID}

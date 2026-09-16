@@ -2,6 +2,7 @@ package networkdiagnostic
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -160,5 +161,75 @@ func TestJournalCancellationTombstoneSurvivesRestart(t *testing.T) {
 	defer j.Close()
 	if _, err = j.Accept(c); !errors.Is(err, ErrCancelled) {
 		t.Fatal(err)
+	}
+}
+
+func TestJournalRejectsDifferentCommandForSameAttempt(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	c := journalCommandFixture()
+	if _, err = j.Accept(c); err != nil {
+		t.Fatal(err)
+	}
+	c.CommandID = "replacement-command"
+	if _, err = j.Accept(c); !errors.Is(err, ErrJournalConflict) {
+		t.Fatal(err)
+	}
+}
+func TestJournalFullAndClockRollback(t *testing.T) {
+	j, err := OpenJournal(filepath.Join(t.TempDir(), "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	now := time.Now()
+	j.clock = func() time.Time { return now }
+	for i := 0; i < 10000; i++ {
+		j.data.Commands[fmt.Sprint(i)] = journalCommand{RunID: fmt.Sprint(i), AttemptID: "a", ExpiresAt: now.Add(time.Hour)}
+	}
+	if _, err = j.Accept(journalCommandFixture()); !errors.Is(err, ErrJournalFull) {
+		t.Fatal(err)
+	}
+	j.data.LastClock = now.Add(48 * time.Hour)
+	next := cloneJournal(j.data)
+	j.cleanup(&next, now.Add(30*time.Hour))
+	if len(next.Commands) != 10000 {
+		t.Fatal("rollback expired entries")
+	}
+}
+
+func TestJournalIntentPersistenceStagesFailClosed(t *testing.T) {
+	for _, stage := range []string{"write", "fsync", "rename"} {
+		t.Run(stage, func(t *testing.T) {
+			j, err := OpenJournal(filepath.Join(t.TempDir(), "journal"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer j.Close()
+			c := journalCommandFixture()
+			if _, err = j.Accept(c); err != nil {
+				t.Fatal(err)
+			}
+			ops := nativeJournalOps()
+			failure := errors.New(stage + " failed")
+			switch stage {
+			case "write":
+				ops.write = func(*os.File, []byte) (int, error) { return 0, failure }
+			case "fsync":
+				ops.sync = func(*os.File) error { return failure }
+			case "rename":
+				ops.replace = func(string, string) error { return failure }
+			}
+			j.write = func(path string, data []byte) error { return writeJournalWithOps(path, data, ops) }
+			if started, err := j.StartStep(c.StepKey("s")); started || !errors.Is(err, failure) {
+				t.Fatal(started, err)
+			}
+			if _, exists := j.Result(c.StepKey("s")); exists {
+				t.Fatal("failed intent published")
+			}
+		})
 	}
 }

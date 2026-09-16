@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -263,7 +264,7 @@ func (s *State) ResolveInterfaceIdentity(evidence string) (string, error) {
 	if key := s.data.InterfaceKeys[evidence]; key != "" {
 		return key, nil
 	}
-	if len(s.data.InterfaceKeys) >= 4096 {
+	if len(s.data.InterfaceKeys) >= 1024 {
 		return "", ErrLimit
 	}
 	next := s.data
@@ -302,6 +303,17 @@ func boundReport(report *Report, source string) error {
 				}
 				if len(rows) == 0 {
 					continue
+				}
+				if kind == "routes" {
+					sort.SliceStable(rows, func(a, b int) bool {
+						decode := func(value any) RouteRow {
+							raw, _ := json.Marshal(value)
+							var row RouteRow
+							_ = json.Unmarshal(raw, &row)
+							return row
+						}
+						return routePriority(decode(rows[a])) < routePriority(decode(rows[b]))
+					})
 				}
 				keep := len(rows) / 2
 				omitted := len(rows) - keep

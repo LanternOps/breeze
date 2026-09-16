@@ -364,6 +364,12 @@ func (n *NativeIO) ICMP(ctx context.Context, ip netip.Addr, route networkcontext
 		return Details{}, e
 	}
 	id := int(binary.BigEndian.Uint16(token[:]))
+	packetTimeout := 2 * time.Second
+	if end, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(end) / time.Duration(count); remaining < packetTimeout {
+			packetTimeout = remaining
+		}
+	}
 	sent, received := 0, 0
 	started := time.Now()
 	for sequence := 0; sequence < count; sequence++ {
@@ -388,7 +394,7 @@ func (n *NativeIO) ICMP(ctx context.Context, ip netip.Addr, route networkcontext
 			return Details{}, e
 		}
 		sent++
-		deadline := time.Now().Add(time.Second)
+		deadline := time.Now().Add(packetTimeout)
 		if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
 			deadline = end
 		}

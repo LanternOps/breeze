@@ -68,3 +68,21 @@ func TestScopeKeysCannotCollide(t *testing.T) {
 		t.Fatal("colliding scope keys")
 	}
 }
+
+func TestRouteRetentionPriority(t *testing.T) {
+	gateway := "192.0.2.1"
+	cases := []struct {
+		row  RouteRow
+		want int
+	}{
+		{RouteRow{DestinationPrefix: "0.0.0.0/0"}, 0},
+		{RouteRow{DestinationPrefix: "::/0"}, 0},
+		{RouteRow{DestinationPrefix: "192.0.2.0/24"}, 1},
+		{RouteRow{DestinationPrefix: "198.51.100.0/24", NextHops: []NextHop{{Address: &gateway}}}, 2},
+	}
+	for _, tc := range cases {
+		if got := routePriority(tc.row); got != tc.want {
+			t.Fatal(tc.row, got)
+		}
+	}
+}
