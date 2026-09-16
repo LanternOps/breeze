@@ -50,9 +50,6 @@ const GENERATING_COPY: Record<GeneratableReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
   hardware_lifecycle: 'Generating your hardware lifecycle plan…',
-  // Never shown in practice — there is no button that starts one — but the
-  // map is a total Record, so a missed entry is a typecheck failure.
-  threat_detection_review: 'Preparing your threat detection review…',
 };
 
 /**
