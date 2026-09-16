@@ -12,6 +12,10 @@ vi.mock('../../services/featureConfigResolver', () => ({
   resolveAllBackupAssignedDevices: (...args: any[]) => resolveAllBackupAssignedDevicesMock(...args),
 }));
 
+vi.mock('../../services/auditService', () => ({
+  createAuditLogAsync: vi.fn(),
+}));
+
 vi.mock('../../services/commandQueue', () => ({
   queueCommandForExecution: vi.fn(),
 }));
@@ -32,10 +36,14 @@ vi.mock('../../services/recoveryAuthorizationSubject', () => ({
 import { recomputeRecoveryReadinessForDevice, runBackupVerification, runScheduledBackupVerification, processBackupVerificationResult, timeoutStaleVerifications, listRecoveryReadiness, getBackupHealthSummary } from './verificationService';
 import { backupJobs, backupVerifications, jobOrgById, verificationOrgById } from './store';
 import { queueCommandForExecution } from '../../services/commandQueue';
+import { createAuditLogAsync } from '../../services/auditService';
+import { recordBackupDispatchFailure } from '../../services/backupMetrics';
 
 describe('backup verification service', () => {
   beforeEach(() => {
     publishEventMock.mockClear();
+    vi.mocked(createAuditLogAsync).mockClear();
+    vi.mocked(recordBackupDispatchFailure).mockClear();
     resolveAllBackupAssignedDevicesMock.mockReset();
     resolveAllBackupAssignedDevicesMock.mockResolvedValue([]);
     vi.mocked(queueCommandForExecution).mockReset();
@@ -253,7 +261,7 @@ describe('backup verification service', () => {
         provider: 's3',
         providerConfig: expect.objectContaining({ bucket: 'breeze-backups' }),
       }),
-      expect.anything()
+      expect.objectContaining({ expectedOrgId: 'org-123' })
     );
 
     const idx = backupVerifications.findIndex((v) => v.id === verification.id);
@@ -406,6 +414,47 @@ describe('backup verification service', () => {
     if (index >= 0) backupVerifications.splice(index, 1);
     verificationOrgById.delete(verification.id);
   });
+
+  it.each(['integrity', 'test_restore'] as const)(
+    'refuses %s after the device moves between lineage authorization and dispatch',
+    async (verificationType) => {
+      const dispatch = vi.fn();
+      vi.mocked(queueCommandForExecution).mockImplementationOnce(async (_deviceId, _type, _payload, options) => {
+        // The queue reads the current org after the scheduler's lineage check.
+        const currentOrgId = 'org-new-owner';
+        if (options?.expectedOrgId && options.expectedOrgId !== currentOrgId) {
+          return { error: 'Device not found' };
+        }
+        dispatch();
+        return { command: { id: 'cmd-stale-owner', status: 'sent' } as any };
+      });
+      const priorIds = new Set(backupVerifications.map((row) => row.id));
+      try {
+        await expect(runScheduledBackupVerification({
+          orgId: 'org-123',
+          deviceId: 'dev-001',
+          backupJobId: 'job-001',
+          verificationType,
+          source: 'weekly-test-restore',
+        })).rejects.toThrow('Device not found');
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(backupVerifications.find((row) => !priorIds.has(row.id))).toMatchObject({
+          orgId: 'org-123', status: 'failed', details: { reason: 'device_org_changed' },
+        });
+        expect(recordBackupDispatchFailure).toHaveBeenCalledWith('backup_verification', 'device_org_changed');
+        expect(createAuditLogAsync).toHaveBeenCalledWith(expect.objectContaining({
+          orgId: 'org-123', result: 'failure', details: expect.objectContaining({ reason: 'device_org_changed' }),
+        }));
+      } finally {
+        for (let i = backupVerifications.length - 1; i >= 0; i--) {
+          if (!priorIds.has(backupVerifications[i]!.id)) {
+            verificationOrgById.delete(backupVerifications[i]!.id);
+            backupVerifications.splice(i, 1);
+          }
+        }
+      }
+    },
+  );
 
   it('performs zero command or verification writes when scheduled authority is denied', async () => {
     const before = backupVerifications.length;

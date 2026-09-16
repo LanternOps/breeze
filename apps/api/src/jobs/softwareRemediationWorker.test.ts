@@ -125,11 +125,12 @@ const COMPLIANCE_ROW = {
  * Drives db.select() through the worker's fixed call order:
  * policy → device → compliance → in-flight uninstall commands.
  */
-function primeDb(policy: unknown, opts: { compliance?: unknown; consumeResult?: unknown[] } = {}) {
+function primeDb(policy: unknown, opts: { compliance?: unknown; consumeResult?: unknown[]; deviceOrgId?: string; partnerId?: string } = {}) {
   const results = [
     [policy],
-    [{ orgId: ORG_ID, isEphemeral: false }],
+    [{ orgId: opts.deviceOrgId ?? ORG_ID, isEphemeral: false }],
     [opts.compliance ?? COMPLIANCE_ROW],
+    ...(opts.partnerId !== undefined ? [[{ partnerId: opts.partnerId }]] : []),
     [], // readInFlightUninstallKeys
   ];
   let call = 0;
@@ -228,9 +229,58 @@ describe('processRemediateDevice — arming gate for automatic jobs (#3543)', ()
       DEVICE_ID,
       'software_uninstall',
       expect.objectContaining({ name: 'Unwanted App', policyId: POLICY_ID, source: 'software_policy' }),
+      undefined, { submittedOrgId: ORG_ID },
     );
     expect(policyAuditActions()).toContain('remediation_queued');
     expect(policyAuditActions()).not.toContain('remediation_skipped_unarmed');
+  });
+});
+
+describe('processRemediateDevice — current device ownership (#5567)', () => {
+  it.each(['auto', 'manual'] as const)('refuses a moved device for a %s job even when the old policy is armed', async (trigger) => {
+    primeDb(policyRow(ARMED), { deviceOrgId: 'org-new' });
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID, trigger,
+    });
+
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ commandsQueued: 0, errors: 1 });
+    expect(setSpy).toHaveBeenCalledWith({
+      remediationStatus: 'failed',
+      remediationErrors: [{ message: 'device_org_changed' }],
+    });
+    expect(recordPolicyAuditMock).toHaveBeenCalledWith(expect.objectContaining({
+      orgId: ORG_ID,
+      action: 'remediation_failed',
+      details: expect.objectContaining({ reason: 'device_org_changed' }),
+    }));
+  });
+
+  it('preserves automatic remediation for a device still owned by a partner-wide policy', async () => {
+    primeDb(policyRow({ ...ARMED, orgId: null, partnerId: 'partner-1' }), { partnerId: 'partner-1' });
+
+    const result = await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID, trigger: 'auto',
+    });
+
+    expect(result.commandsQueued).toBe(1);
+    expect(queueCommandMock).toHaveBeenCalledWith(
+      DEVICE_ID, 'software_uninstall', expect.any(Object), undefined, { submittedOrgId: ORG_ID },
+    );
+  });
+
+  it('refuses a device moved outside the partner-wide policy owner', async () => {
+    primeDb(policyRow({ ...ARMED, orgId: null, partnerId: 'partner-1' }), { partnerId: 'partner-new' });
+
+    await processRemediateDevice({
+      type: 'remediate-device', policyId: POLICY_ID, deviceId: DEVICE_ID, trigger: 'auto',
+    });
+
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(setSpy).toHaveBeenCalledWith(expect.objectContaining({
+      remediationStatus: 'failed', remediationErrors: [{ message: 'device_org_changed' }],
+    }));
   });
 });
 

@@ -71,6 +71,8 @@ vi.mock('../services/agentCommandRelay', () => ({
   dispatchCommandToAgent: agentRelayMock.dispatchCommandToAgent,
 }));
 
+vi.mock('../services/auditService', () => ({ createAuditLogAsync: vi.fn() }));
+
 // Must import AFTER mock so the module-level destructure picks up our mock
 const { resolveBackupTargets, processCleanupExpiredSnapshots, __testOnly } = await import('./backupWorker');
 
@@ -719,7 +721,7 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
   // Route every db.select() call by the shape of its column-selector argument
   // (all these queries hit different tables/columns, real schema refs — not
   // stringly-typed, so we key off which fields were requested).
-  function wireSelects() {
+  function wireSelects(currentOrgId = 'org-1') {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
       let rows: unknown[];
@@ -727,6 +729,8 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
         rows = [CONFIG_ROW]; // config load: db.select() with no arg
       } else if (keys.length === 1 && keys[0] === 'status') {
         rows = []; // isBackupJobCancelled: never cancelled
+      } else if (keys.length === 1 && keys[0] === 'orgId') {
+        rows = [{ orgId: currentOrgId }];
       } else if (keys.length === 1 && keys[0] === 'agentId') {
         rows = [{ agentId: 'agent-1' }]; // device -> agent lookup
       } else if (keys.includes('featureLinkId')) {
@@ -783,6 +787,14 @@ describe('processDispatchBackup (wave 3.5b #4084 — dispatch via facade)', () =
     expect(result).toEqual({ dispatched: false });
     expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
     expect(updateLog.some((u) => u.payload.errorLog === 'Agent not connected')).toBe(true);
+  });
+
+  it('refuses dispatch after a device moves org and records the failure reason', async () => {
+    wireSelects('org-2');
+    const result = await __testOnly.processDispatchBackup(DATA as any);
+    expect(agentRelayMock.dispatchCommandToAgent).not.toHaveBeenCalled();
+    expect(result).toEqual({ dispatched: false });
+    expect(updateLog.some((u) => u.payload.status === 'failed' && u.payload.errorLog === 'device_org_changed')).toBe(true);
   });
 
   it('dispatches normally (sentCount incremented) when the outcome is sent', async () => {
@@ -863,6 +875,7 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
   function wireSelectsWithCandidate(candidateRows: unknown[], retirementRows: unknown[] = []) {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       let rows: unknown[] = [];
       if (keys.length === 0) rows = [CONFIG_ROW];
       else if (keys.length === 1 && keys[0] === 'status') rows = [];
@@ -962,6 +975,7 @@ describe('prepareBackupDispatchTargets — base pin + storage identity (D18 W01)
     // shape router.
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       if (keys.length === 0) return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([CONFIG_ROW]) }) }) };
       if (keys.length === 1 && keys[0] === 'status') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }) }) };
       if (keys.length === 1 && keys[0] === 'agentId') return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ agentId: 'agent-1' }]) }) }) };
@@ -988,6 +1002,7 @@ describe('processDispatchBackup — approval_generation mismatch (site-ceiling g
   function wireSelects(configRow: Record<string, unknown> = CONFIG_ROW_GEN3) {
     mockDb.select.mockImplementation(((cols?: Record<string, unknown>) => {
       const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 1 && keys[0] === 'orgId') return { from: () => ({ where: () => ({ limit: async () => [{ orgId: 'org-1' }] }) }) };
       let rows: unknown[];
       if (keys.length === 0) {
         rows = [configRow];

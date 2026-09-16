@@ -1,7 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { and, eq, gt, gte, inArray, isNull, sql } from 'drizzle-orm';
 import * as dbModule from '../db';
-import { deviceCommands, devices, softwareComplianceStatus, softwarePolicies, softwareRemediationRequests, type RemediationError } from '../db/schema';
+import { deviceCommands, devices, organizations, softwareComplianceStatus, softwarePolicies, softwareRemediationRequests, type RemediationError } from '../db/schema';
 import { recordSoftwareRemediationDecision } from '../routes/metrics';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
@@ -338,6 +338,39 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
     };
   }
 
+  // Both automatic jobs and unverified manual jobs must still belong to the
+  // policy owner. The device lock above keeps this check valid through enqueue.
+  let ownsDevice = Boolean(deviceRow && policy.orgId && deviceRow.orgId === policy.orgId);
+  if (deviceRow && !policy.orgId && policy.partnerId) {
+    const [organization] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, deviceRow.orgId))
+      .limit(1);
+    ownsDevice = organization?.partnerId === policy.partnerId;
+  }
+  if (!deviceRow || !ownsDevice) {
+    const reason = 'device_org_changed';
+    console.warn('[SoftwareRemediationWorker] Device no longer belongs to policy owner', {
+      policyId: policy.id, deviceId: data.deviceId, reason,
+    });
+    await db.update(softwareComplianceStatus).set({
+      remediationStatus: 'failed',
+      remediationErrors: [{ message: reason }],
+    }).where(eq(softwareComplianceStatus.id, compliance.id));
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: 'remediation_failed',
+      actor: 'system',
+      details: { policyName: policy.name, reason },
+    });
+    recordSoftwareRemediationDecision(reason);
+    return { policyId: data.policyId, deviceId: data.deviceId, commandsQueued: 0, errors: 1 };
+  }
+
   // Arming re-check (#3543, incident #3381). This worker is the last hop before
   // `software_uninstall` commands reach real machines, and until now it
   // uninstalled whatever it was handed — the gate existed only in the compliance
@@ -581,7 +614,9 @@ export async function processRemediateDevice(data: RemediateDeviceJobData): Prom
             policyId: policy.id,
             complianceStatusId: compliance.id,
             source: 'software_policy',
-          }
+          },
+          undefined,
+          { submittedOrgId: deviceRow.orgId },
         );
         commandsQueued += 1;
         inFlightKeys.add(key);

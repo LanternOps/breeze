@@ -46,6 +46,7 @@ import { createScheduledBackupJobIfAbsent, deviceHelperQueues } from '../service
 import { recordDispatchedExpectation } from '../services/agentWorkExpectation';
 import { attachWorkerObservability } from './workerObservability';
 import { captureException } from '../services/sentry';
+import { createAuditLogAsync } from '../services/auditService';
 import { assertQueueJobName, parseQueueJobData } from '../services/bullmqValidation';
 import {
   backupQueueJobDataSchema,
@@ -1180,9 +1181,48 @@ async function processDispatchBackup(
     prepared.map((target) => [target.commandJobId, 'not-attempted' as TargetSendState])
   );
   let parentFailureDetail: string | null = null;
+  let deviceOrgChanged = false;
 
   try {
     for (const target of prepared) {
+      // Re-read after payload preparation and between sends: enqueue-time
+      // ownership cannot authorize a backup on a device moved to another org.
+      // Keep the relay acknowledgement wait outside the short DB context.
+      const admitted = await runWithSystemDbAccess(async () => {
+        const [device] = await db.select({ orgId: devices.orgId }).from(devices)
+          .where(eq(devices.id, data.deviceId)).limit(1);
+        if (device?.orgId === data.orgId) return true;
+
+        console.warn('[BackupWorker] Refusing backup dispatch: device_org_changed', {
+          jobId: data.jobId, deviceId: data.deviceId, orgId: data.orgId,
+        });
+        createAuditLogAsync({
+          orgId: data.orgId,
+          actorType: 'system',
+          actorId: '00000000-0000-0000-0000-000000000000',
+          action: 'backup.dispatch.denied',
+          resourceType: 'backup_job',
+          resourceId: data.jobId,
+          result: 'failure',
+          details: { deviceId: data.deviceId, reason: 'device_org_changed' },
+        });
+        return false;
+      });
+      if (!admitted) {
+        deviceOrgChanged = true;
+        for (const pending of prepared) {
+          if (sendState.get(pending.commandJobId) !== 'not-attempted') continue;
+          sendState.set(pending.commandJobId, 'failed');
+          failedTargets.push(`${pending.commandType} (device_org_changed)`);
+          if (pending.commandJobId === data.jobId) {
+            parentFailureDetail = 'device_org_changed';
+          } else {
+            failedChildJobs.push({ commandJobId: pending.commandJobId, detail: 'device_org_changed' });
+          }
+        }
+        break;
+      }
+
       // Set BEFORE the await: if the send throws, delivery is ambiguous and
       // this row must be left in-flight rather than settled as never-sent.
       sendState.set(target.commandJobId, 'attempting');
@@ -1229,9 +1269,11 @@ async function processDispatchBackup(
       if (sentCount === 0) {
         await markJobFailed(
           data.jobId,
-          lastNonOfflineOutcomeStatus
-            ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
-            : 'Failed to send command to agent',
+          deviceOrgChanged
+            ? 'device_org_changed'
+            : lastNonOfflineOutcomeStatus
+              ? `Failed to send command to agent (dispatch outcome ${lastNonOfflineOutcomeStatus})`
+              : 'Failed to send command to agent',
         );
         return { dispatched: false };
       }
