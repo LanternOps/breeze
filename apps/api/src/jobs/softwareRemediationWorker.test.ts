@@ -565,11 +565,16 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
   }
 
   /** db.select() order for the install processor: policy -> device -> compliance. */
-  function primeInstallDb(policy: unknown, compliance: unknown = MISSING_COMPLIANCE) {
+  function primeInstallDb(
+    policy: unknown,
+    compliance: unknown = MISSING_COMPLIANCE,
+    opts: { deviceOrgId?: string; organization?: { partnerId: string } | null } = {},
+  ) {
     const results = [
       policy === null ? [] : [policy],
-      [{ orgId: ORG_ID, osType: 'windows', isEphemeral: false }],
+      [{ orgId: opts.deviceOrgId ?? ORG_ID, osType: 'windows', isEphemeral: false }],
       [compliance],
+      ...(opts.organization !== undefined ? [opts.organization ? [opts.organization] : []] : []),
     ];
     let call = 0;
     selectMock.mockImplementation(() => chain(results[Math.min(call++, results.length - 1)]));
@@ -597,6 +602,45 @@ describe('processRemediateDeviceInstall — #5505 W03', () => {
     );
     expect(policyAuditActions()).toContain('install_queued');
     expect(setSpy.mock.calls.at(-1)![0].installRemediationStatus).toBe('pending');
+  });
+
+  it.each([
+    ['organization-owned', { orgId: ORG_ID, partnerId: null }, undefined],
+    ['partner-owned', { orgId: null, partnerId: 'partner-1' }, { partnerId: 'partner-2' }],
+    ['partner-owned with missing organization', { orgId: null, partnerId: 'partner-1' }, null],
+  ])('refuses a moved device for a %s install policy before dispatch', async (_name, owner, organization) => {
+    primeInstallDb(policyRow({ mode: 'allowlist', ...INSTALL_ARMED, ...owner }), MISSING_COMPLIANCE, {
+      deviceOrgId: 'org-moved', organization,
+    });
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result).toMatchObject({ deploymentsCreated: 0, errors: 1 });
+    expect(createPolicyDeploymentMock).not.toHaveBeenCalled();
+    expect(queueCommandMock).not.toHaveBeenCalled();
+    expect(resolveTargetMock).not.toHaveBeenCalled();
+    expect(setSpy).toHaveBeenCalledWith({ installRemediationStatus: 'failed' });
+    expect(recordDecisionMock).toHaveBeenCalledWith('device_org_changed');
+    expect(recordPolicyAuditMock).toHaveBeenCalledWith(expect.objectContaining({
+      ...owner,
+      policyId: POLICY_ID,
+      deviceId: DEVICE_ID,
+      action: 'install_failed',
+      details: expect.objectContaining({ reason: 'device_org_changed' }),
+    }));
+  });
+
+  it('allows a moved device still owned by the partner-wide install policy', async () => {
+    primeInstallDb(
+      policyRow({ mode: 'allowlist', ...INSTALL_ARMED, orgId: null, partnerId: 'partner-1' }),
+      MISSING_COMPLIANCE,
+      { deviceOrgId: 'org-moved', organization: { partnerId: 'partner-1' } },
+    );
+
+    const result = await processRemediateDeviceInstall(installJob());
+
+    expect(result).toMatchObject({ deploymentsCreated: 1, errors: 0 });
+    expect(createPolicyDeploymentMock).toHaveBeenCalledWith(expect.objectContaining({ orgId: 'org-moved' }));
   });
 
   it('refuses a policy that is armed for uninstall but NOT for install', async () => {

@@ -848,6 +848,38 @@ export async function processRemediateDeviceInstall(
     return nothing;
   }
 
+  // The device lock keeps ownership stable through deployment creation, but
+  // the device may already have moved since this policy's job was queued.
+  let ownsDevice = Boolean(policy.orgId && deviceRow.orgId === policy.orgId);
+  if (!policy.orgId && policy.partnerId) {
+    const [organization] = await db
+      .select({ partnerId: organizations.partnerId })
+      .from(organizations)
+      .where(eq(organizations.id, deviceRow.orgId))
+      .limit(1);
+    ownsDevice = organization?.partnerId === policy.partnerId;
+  }
+  if (!ownsDevice) {
+    const reason = 'device_org_changed';
+    console.warn('[SoftwareRemediationWorker] Device no longer belongs to install policy owner', {
+      policyId: policy.id, deviceId: data.deviceId, reason,
+    });
+    await db.update(softwareComplianceStatus)
+      .set({ installRemediationStatus: 'failed' })
+      .where(eq(softwareComplianceStatus.id, compliance.id));
+    fireAudit({
+      orgId: policy.orgId,
+      partnerId: policy.partnerId,
+      policyId: policy.id,
+      deviceId: data.deviceId,
+      action: SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS.failed,
+      actor: 'system',
+      details: { policyName: policy.name, reason },
+    });
+    recordSoftwareRemediationDecision(reason);
+    return { ...nothing, errors: 1 };
+  }
+
   const arming = evaluateSoftwarePolicyArming(policy, 'install');
   if (!arming.armed) {
     console.warn(
