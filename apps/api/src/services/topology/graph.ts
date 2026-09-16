@@ -63,7 +63,16 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     }
   }
   const filter = nodeFilter(ctx.scope, query);
-  const after = claims?.after ? sql`n.id > ${claims.after}::uuid` : sql`true`;
+  // A fresh focus reserves the first slot. Continuations visit the remaining
+  // UUID-ordered members once, including members whose UUID precedes the focus.
+  // Keeping the focus on every page would prevent progress when limit is one.
+  const after = !claims?.after ? sql`true` : query.focusNodeId
+    ? sql`n.id <> ${query.focusNodeId}::uuid AND ${claims.after.toLowerCase() === query.focusNodeId.toLowerCase()
+      ? sql`true` : sql`n.id > ${claims.after}::uuid`}`
+    : sql`n.id > ${claims.after}::uuid`;
+  const nodeOrder = query.focusNodeId
+    ? sql`CASE WHEN n.id = ${query.focusNodeId}::uuid THEN 0 ELSE 1 END, n.id`
+    : sql`n.id`;
   const [count] = await tx.execute<{ count: string; remaining: string }>(sql`SELECT count(*)::text AS count,
     count(*) FILTER (WHERE ${after})::text AS remaining FROM topology_nodes n WHERE ${filter}`);
   const relationshipScope = sql`${relationshipFilter(ctx.scope, query.view)}
@@ -71,7 +80,7 @@ async function project(tx: ReadTx, ctx: TopologyRequestContext, query: GraphQuer
     AND EXISTS (SELECT 1 FROM topology_nodes nt WHERE nt.id = r.target_node_id AND ${nodeFilter(ctx.scope, query, 'nt')})`;
   const [relationshipCount] = await tx.execute<{ count: string }>(sql`SELECT count(*)::text AS count FROM topology_relationships r WHERE ${relationshipScope}`);
   const rows = await tx.execute<NodeRow>(sql`SELECT ${nodeColumns(ctx.scope)} FROM topology_nodes n
-    WHERE ${filter} AND ${after} ORDER BY n.id LIMIT ${query.limit}`);
+    WHERE ${filter} AND ${after} ORDER BY ${nodeOrder} LIMIT ${query.limit}`);
   const ids = rows.map((row) => row.id);
   const idArray = sql`ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[]`;
   const edgeLimit = Math.min(query.limit * 2, 2000);

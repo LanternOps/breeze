@@ -17,6 +17,23 @@ function app() { const app = new Hono(); app.use('*', authMiddleware); return ap
 function request(env: TestEnvironment, siteId: string, path: string, headers: Record<string, string> = {}) {
   return app().request(`/topology/sites/${siteId}/${path}`, { headers: { Authorization: `Bearer ${env.token}`, ...headers } });
 }
+async function seedOrderedFocus(orgId: string, siteId: string, neighbors: number) {
+  const scope = { orgId, siteId };
+  const focus = 'f0000000-0000-4000-8000-000000000009';
+  const memberIds = Array.from({ length: neighbors }, (_, i) => `10000000-0000-4000-8000-00000000000${i + 1}`);
+  await getTestDb().insert(topologySiteState).values({ ...scope, graphRevision: 1n }).onConflictDoNothing();
+  await getTestDb().insert(topologyNodes).values([...memberIds, focus].map(id => {
+    const kind = id === focus ? 'network' as const : 'endpoint' as const;
+    return { ...scope, id, kind, identityKey: canonicalIdentityKey(scope, kind, id), identityMaterial: { version: 1 as const, kind, sourceKey: id }, attributes: { label: id } };
+  }));
+  await getTestDb().insert(topologyRelationships).values(memberIds.map(id => {
+    const sourceKey = `membership:${id}`;
+    return { ...scope, kind: 'network_member' as const, sourceNodeId: id, targetNodeId: focus,
+      canonicalKey: canonicalIdentityKey(scope, 'network_member', sourceKey),
+      identityMaterial: { version: 1 as const, kind: 'network_member' as const, sourceKey } };
+  }));
+  return { focus, memberIds };
+}
 async function seed(orgId: string, siteId: string) {
   const scope = { orgId, siteId }; const db = getTestDb();
   await db.insert(topologySiteState).values({ ...scope, graphRevision: 9007199254740993n, healthRevision: 2n }).onConflictDoUpdate({ target: [topologySiteState.orgId, topologySiteState.siteId], set: { graphRevision: 9007199254740993n, healthRevision: 2n } });
@@ -46,6 +63,46 @@ async function graph(env: TestEnvironment, siteId: string, query = ''): Promise<
   return graphResponseSchema.parse(body);
 }
 describe('passive topology graph — real request RLS and scope', () => {
+  it('reveals the boundary token focus even when its UUID sorts last and the budget is one', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    const { focus, memberIds } = await seedOrderedFocus(env.organization.id, env.site.id, 1);
+    const initial = await graph(env, env.site.id, '?limit=1');
+    expect(initial.nodes.map(node => node.id)).toEqual(memberIds);
+    const boundary = initial.presentation.edges[0]!;
+    const res = await request(env, env.site.id, `expansions/${boundary.frontierToken}`);
+    expect(res.status).toBe(200);
+    const expanded = graphResponseSchema.parse(await res.json());
+    expect(expanded.nodes.map(node => node.id)).toEqual([focus]);
+    const continuation = expanded.frontier.find(frontier => frontier.label === 'More devices')!;
+    const next = await request(env, env.site.id, `expansions/${continuation.token}`);
+    expect(next.status).toBe(200);
+    const last = graphResponseSchema.parse(await next.json());
+    expect(last.nodes.map(node => node.id)).toEqual(memberIds);
+    expect(last.frontier.some(frontier => frontier.label === 'More devices')).toBe(false);
+  });
+
+  it('keeps the initial group focus in budget and pages every remaining member exactly once', async () => {
+    const env = await setupTestEnvironment({ rolePermissions: READ });
+    const { focus, memberIds } = await seedOrderedFocus(env.organization.id, env.site.id, 4);
+    let res = await request(env, env.site.id, `groups/${focus}/members?limit=2`);
+    expect(res.status).toBe(200);
+    let page = graphResponseSchema.parse(await res.json());
+    expect(page.nodes.map(node => node.id)).toEqual([focus, memberIds[0]]);
+    const seen: string[] = [];
+    for (let pages = 0; pages < 4; pages++) {
+      expect(page.nodes.length).toBeLessThanOrEqual(2);
+      seen.push(...page.nodes.map(node => node.id));
+      const next = page.frontier.find(frontier => frontier.label === 'More devices');
+      if (!next) break;
+      res = await request(env, env.site.id, `groups/${focus}/members?cursor=${next.token}`);
+      expect(res.status).toBe(200);
+      page = graphResponseSchema.parse(await res.json());
+    }
+    expect(seen).toEqual([focus, ...memberIds]);
+    expect(new Set(seen).size).toBe(5);
+    expect(page.frontier.some(frontier => frontier.label === 'More devices')).toBe(false);
+  });
+
   it('pins nonempty bounded reads, counts, positions, boundary provenance and decimal revisions without writes', async () => {
     const env = await setupTestEnvironment({ rolePermissions: READ }); const fixture = await seed(env.organization.id, env.site.id);
     const before = await snapshot(env.site.id);
