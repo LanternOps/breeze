@@ -36,6 +36,12 @@ import {
   getLastWedgedBackendScanSuccessAt,
   getWedgedBackendScanFailures,
 } from '../db/dbPoolHealthMonitor';
+import {
+  getWedgedBackendReclaimFailures,
+  getWedgedBackendReclaimSkipCount,
+  getWedgedBackendReclaimTerminatedTotal,
+  getWedgedBackendSideClientCloseFailures,
+} from '../db/wedgedBackends';
 
 const register = metricsRegistry;
 
@@ -209,6 +215,34 @@ const dbWedgedBackendScanFailuresGauge = new Gauge({
   registers: [register]
 });
 
+// The REPAIR path's own series. Without these, a reclaimer that has been broken
+// for days looks identical to one that has had nothing to do — which is the
+// same three-day-invisible failure #6048 was filed for, one layer up. Alert on
+// `_failures` rising while `breeze_db_wedged_client_read_backends` stays high.
+const dbWedgedBackendReclaimTerminatedGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_terminated_total',
+  help: 'Backends this process has signalled with pg_terminate_backend to reclaim a wedged pool slot (#6048)',
+  registers: [register]
+});
+
+const dbWedgedBackendReclaimFailuresGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_failures',
+  help: 'Reclamation passes that failed before terminating anything, since process start',
+  registers: [register]
+});
+
+const dbWedgedBackendReclaimSkippedGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_reclaim_skipped_total',
+  help: 'Reclamation requests declined by the single-flight guard or the retry floor',
+  registers: [register]
+});
+
+const dbWedgedBackendSideCloseFailuresGauge = new Gauge({
+  name: 'breeze_db_wedged_backend_side_client_close_failures',
+  help: 'Wedged-backend side connections whose end() failed, each a possible leaked connection',
+  registers: [register]
+});
+
 /**
  * Seeds every series above so a dashboard or alert rule referencing them is
  * never querying a metric that does not exist yet. Idempotent — safe to call
@@ -243,6 +277,10 @@ export function initializeRuntimeMetricDefaults(): void {
   dbWedgedBackendOldestAgeGauge.set(0);
   dbWedgedBackendLastSuccessGauge.set(0);
   dbWedgedBackendScanFailuresGauge.set(0);
+  dbWedgedBackendReclaimTerminatedGauge.set(0);
+  dbWedgedBackendReclaimFailuresGauge.set(0);
+  dbWedgedBackendReclaimSkippedGauge.set(0);
+  dbWedgedBackendSideCloseFailuresGauge.set(0);
 }
 
 /**
@@ -312,6 +350,10 @@ function updateWedgedBackendMetrics(): void {
   dbWedgedBackendOldestAgeGauge.set(observation?.oldestAgeSeconds ?? 0);
   dbWedgedBackendLastSuccessGauge.set(Math.floor(getLastWedgedBackendScanSuccessAt() / 1000));
   dbWedgedBackendScanFailuresGauge.set(getWedgedBackendScanFailures());
+  dbWedgedBackendReclaimTerminatedGauge.set(getWedgedBackendReclaimTerminatedTotal());
+  dbWedgedBackendReclaimFailuresGauge.set(getWedgedBackendReclaimFailures());
+  dbWedgedBackendReclaimSkippedGauge.set(getWedgedBackendReclaimSkipCount());
+  dbWedgedBackendSideCloseFailuresGauge.set(getWedgedBackendSideClientCloseFailures());
 }
 
 function updateEventLoopMetrics(): void {

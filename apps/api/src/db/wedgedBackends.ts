@@ -310,6 +310,8 @@ let reclaimInFlight: Promise<WedgedBackendReclaimOutcome> | null = null;
 let lastReclaimAt = 0;
 let lastReclaimOutcome: WedgedBackendReclaimOutcome | null = null;
 let reclaimSkipped = 0;
+let reclaimTerminatedTotal = 0;
+let reclaimFailures = 0;
 
 export interface RequestWedgedBackendReclaimDeps extends ReclaimWedgedBackendsDeps {
   minIntervalMs?: number;
@@ -347,6 +349,12 @@ export function requestWedgedBackendReclaim(
   const pass = reclaimWedgedBackends(deps)
     .then((outcome) => {
       lastReclaimOutcome = outcome;
+      // Monotonic totals, kept here rather than derived from `lastReclaimOutcome`
+      // on scrape: a scrape landing between two passes would otherwise
+      // double-count the last one, and a burst of passes between two scrapes
+      // would be collapsed into whichever happened to be last.
+      reclaimTerminatedTotal += outcome.terminated.length;
+      if (outcome.error !== null) reclaimFailures += 1;
       return outcome;
     })
     .finally(() => {
@@ -366,11 +374,31 @@ export function getWedgedBackendReclaimSkipCount(): number {
   return reclaimSkipped;
 }
 
+/** Backends this process has signalled, since start. Monotonic. */
+export function getWedgedBackendReclaimTerminatedTotal(): number {
+  return reclaimTerminatedTotal;
+}
+
+/**
+ * Reclamation passes that failed, since start. Monotonic.
+ *
+ * This is the series to alert on alongside the detector's count: a wedged count
+ * that will not come down while THIS climbs means the repair path itself is
+ * broken — which is the same three-day-invisible failure #6048 was filed for,
+ * one layer up.
+ */
+export function getWedgedBackendReclaimFailures(): number {
+  return reclaimFailures;
+}
+
 export function __resetWedgedBackendReclaimForTests(): void {
+  sideClientCloseFailures = 0;
   reclaimInFlight = null;
   lastReclaimAt = 0;
   lastReclaimOutcome = null;
   reclaimSkipped = 0;
+  reclaimTerminatedTotal = 0;
+  reclaimFailures = 0;
 }
 
 /**
@@ -404,12 +432,26 @@ async function withSideClient<T>(
     await Promise.resolve()
       .then(() => sql.end({ timeout: 0 }))
       .catch((endErr: unknown) => {
+        // Counted, not just logged. A repeatedly failing close leaks one socket
+        // per pass against a database that — in the failure this module exists
+        // for — is already short of connections, so the recovery path would be
+        // quietly making things worse. Mirrors `probeCloseFailures` in
+        // dbPoolHealthMonitor, which exists for exactly this reason.
+        sideClientCloseFailures += 1;
         console.warn(
-          `[db-wedged-backend] side client (${applicationName}) end() failed; the connection may be leaked:`,
+          `[db-wedged-backend] side client (${applicationName}) end() failed `
+            + `(${sideClientCloseFailures} total); the connection may be leaked:`,
           endErr,
         );
       });
   }
+}
+
+let sideClientCloseFailures = 0;
+
+/** Side-connection closes that failed — each one a possible leaked socket. */
+export function getWedgedBackendSideClientCloseFailures(): number {
+  return sideClientCloseFailures;
 }
 
 /** Default scanner: one fresh side connection, one read. */

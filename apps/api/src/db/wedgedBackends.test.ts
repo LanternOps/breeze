@@ -14,7 +14,9 @@ import {
   __resetWedgedBackendReclaimForTests,
   confirmStillWedged,
   getLastWedgedBackendReclaimOutcome,
+  getWedgedBackendReclaimFailures,
   getWedgedBackendReclaimSkipCount,
+  getWedgedBackendReclaimTerminatedTotal,
   reclaimWedgedBackends,
   requestWedgedBackendReclaim,
   type WedgedBackendRow,
@@ -226,6 +228,36 @@ describe('requestWedgedBackendReclaim', () => {
     releaseScan!([]);
     await first;
     expect(scan).toHaveBeenCalledTimes(1);
+  });
+
+  it('accumulates terminations and failures across passes, monotonically', async () => {
+    // Derived on scrape from `lastReclaimOutcome` these would be wrong twice
+    // over: a scrape between two passes double-counts the last one, and a burst
+    // of passes between two scrapes collapses into whichever ran last.
+    let clock = 1_000_000;
+    const now = () => clock;
+
+    await requestWedgedBackendReclaim(deps({ now }));
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(1);
+    expect(getWedgedBackendReclaimFailures()).toBe(0);
+
+    clock += 120_000;
+    await requestWedgedBackendReclaim(deps({ now, scan: async () => [row({ pid: 99 })] }));
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(2);
+
+    clock += 120_000;
+    await requestWedgedBackendReclaim(
+      deps({
+        now,
+        scan: async () => {
+          throw new Error('too many clients already');
+        },
+      }),
+    );
+    // A pass that could not run must be COUNTED, not just logged: a reclaimer
+    // broken for days otherwise looks identical to one with nothing to do.
+    expect(getWedgedBackendReclaimFailures()).toBe(1);
+    expect(getWedgedBackendReclaimTerminatedTotal()).toBe(2);
   });
 
   it('returns null — not an empty outcome — when reclamation is disabled', async () => {

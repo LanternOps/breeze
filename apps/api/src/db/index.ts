@@ -20,6 +20,10 @@ import {
   type PrologueDeadline,
 } from './prologueDeadline';
 import { requestWedgedBackendReclaim } from './wedgedBackends';
+import {
+  claimDbPoolHealthCaptureSlot,
+  getDbPoolHealthCaptureThrottleMs,
+} from './dbPoolHealthMonitor';
 
 const requestDatabaseConfig = resolveRequestDatabaseConfig();
 logRequestDatabaseConfigSource(requestDatabaseConfig);
@@ -538,6 +542,31 @@ function onPrologueDeadlineExpired(expiry: {
     .then((outcome) => {
       if (outcome.error) {
         console.warn('[db-wedged-backend] reclamation pass failed:', outcome.error);
+        // Sentry too, not console only. The detector alerts that something is
+        // wedged; THIS alerts that we cannot clear it — and a repair path broken
+        // for days while the pool bleeds slots is the same invisible failure
+        // #6048 was filed for, one layer up. Throttled on its own key (a broken
+        // reclaimer fails on every expiry, and this repo has twice blacked out
+        // Sentry with an unthrottled recurring warning) and wrapped, because the
+        // reporter may be what is failing.
+        if (
+          claimDbPoolHealthCaptureSlot(
+            'wedged-backend-reclaim-failed',
+            Date.now(),
+            getDbPoolHealthCaptureThrottleMs(),
+          )
+        ) {
+          try {
+            // Stable headline, no interpolated error text: Sentry groups by
+            // message, and a varying message mints a fresh issue per occurrence.
+            captureMessage('[db-wedged-backend] reclamation pass failed (#6048)', {
+              eventCode: 'db_wedged_backend_reclaim_failed',
+              tags: { db_pool_health_verdict: 'wedged-backend-reclaim-failed' },
+            });
+          } catch (captureErr) {
+            console.error('[db-wedged-backend] failed to report reclaim failure to Sentry:', captureErr);
+          }
+        }
         return;
       }
       console.warn(
