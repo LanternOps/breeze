@@ -1768,6 +1768,9 @@ coreRoutes.patch(
     // out of site-visibility scoping. Mirrors moveOrg.ts. The proxied `db`
     // resolves to the request-context tx via AsyncLocalStorage, so this
     // opens a savepoint within the request transaction (established pattern).
+    // breeze_topology_inventory_lifecycle detaches the old current binding
+    // BEFORE the device UPDATE, so the generic loop cannot drag historical
+    // topology nodes, manual facts or pins into the destination site.
     const siteChanged = data.siteId !== undefined && data.siteId !== device.siteId;
 
     let updated: typeof devices.$inferSelect | undefined;

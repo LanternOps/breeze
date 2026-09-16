@@ -61,7 +61,10 @@ describe('topology foundation', () => {
     await scoped(a.orgId, () => db.execute(sql`INSERT INTO topology_node_bindings (org_id, site_id, node_id, manual_node_id) VALUES (${a.orgId}::uuid, ${a.siteId}::uuid, ${a.nodeId}::uuid, ${a.manualId}::uuid)`));
     await rejected(scoped(a.orgId, () => db.execute(sql`INSERT INTO topology_node_bindings (org_id, site_id, node_id, manual_node_id) VALUES (${a.orgId}::uuid, ${a.siteId}::uuid, ${a.targetNodeId}::uuid, ${a.manualId}::uuid)`)), '23505');
     await scoped(a.orgId, () => db.execute(sql`INSERT INTO topology_node_bindings (org_id, site_id, node_id, device_id) VALUES (${a.orgId}::uuid, ${a.siteId}::uuid, ${a.nodeId}::uuid, ${a.deviceId}::uuid)`));
-    await rejected(scoped(a.orgId, () => db.execute(sql`DELETE FROM devices WHERE id = ${a.deviceId}::uuid`)), '23503');
+    // The FK itself remains NO ACTION. The subsequently installed lifecycle
+    // BEFORE trigger removes current bindings before an inventory deletion;
+    // topology-lifecycle.integration.test.ts proves history survives it.
+    expect((await db.execute(sql`SELECT confdeltype FROM pg_constraint WHERE conname='topology_binding_device_scope_fk'`))[0]!.confdeltype).toBe('a');
   });
 
   it('rejects forged site owners, mixed relationship endpoints, aliases and positions', async () => {

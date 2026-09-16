@@ -95,6 +95,12 @@ vi.mock('./auditService', () => ({
   createAuditLog: vi.fn(async () => {}),
 }));
 
+// Real prepare/rekey transactions are exercised by topology-lifecycle.integration.test.ts.
+vi.mock('./topology/tenantLifecycle', () => ({
+  prepareTopologyOrgMerge: vi.fn(async () => ({ siteIds: [] })),
+  finalizeTopologyOrgMerge: vi.fn(async () => ({ rekeyed: 0, fenced: 0 })),
+}));
+
 import {
   validateMergePair,
   resolveMergedOrgIds,

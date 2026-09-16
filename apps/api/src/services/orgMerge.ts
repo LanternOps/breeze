@@ -58,6 +58,7 @@ import { topologicalCascadeOrder } from './tenantCascade';
 import { envInt } from '../utils/envInt';
 import { disconnectLiveAgentSocketsForOrgIds } from './tenantLifecycle';
 import { invalidateAgentTenantCache, isUsableOrgStatus } from './tenantStatus';
+import { prepareTopologyOrgMerge, finalizeTopologyOrgMerge } from './topology/tenantLifecycle';
 // Self-import so `executeOrgMerge` calls the exported bindings through the
 // module namespace, letting tests spy on `runPolicy` / `fenceLoser` — the same
 // pattern `tenantCascade.ts` uses for `topologicalCascadeOrder`.
@@ -116,6 +117,8 @@ export interface OrgMergeEventSummary {
   tables: Record<string, OrgMergeCounts>;
   /** Operator-review notes: duplicate portal logins / external links, discarded integration connections, revoked capabilities, demotions and role conflicts. */
   warnings: string[];
+  /** Present on merges performed after topology foundation rollout. */
+  topology?: { rekeyed: number; fenced: number };
 }
 
 export interface OrgMergeResult extends OrgMergeEventSummary {
@@ -1066,6 +1069,8 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         const txBlockers = await self.collectMergeBlockers(loser.id);
         if (txBlockers.length > 0) throw new OrgMergeBlockedError(txBlockers);
 
+        const topologyMerge = await prepareTopologyOrgMerge(loser.id, survivor.id);
+
         const policies = getOrgMergePolicies();
         // topologicalCascadeOrder is children-before-parents (erasure order);
         // reversed it is parents-first, with `organizations` (loser-shell,
@@ -1107,6 +1112,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         if (fixups.moved > 0 || fixups.dropped > 0) {
           summary[POST_PASS_FIXUPS_SUMMARY_KEY] = fixups;
         }
+        const topology = await finalizeTopologyOrgMerge(loser.id, survivor.id, topologyMerge.siteIds);
 
         const warnings = self.buildMergeWarnings({
           ...(await self.collectDuplicates([survivor.id])),
@@ -1114,7 +1120,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
           notes,
         });
 
-        const eventSummary: OrgMergeEventSummary = { tables: summary, warnings };
+        const eventSummary: OrgMergeEventSummary = { tables: summary, warnings, topology };
         const [event] = await dbModule.db
           .insert(orgMergeEvents)
           .values({
