@@ -58,10 +58,10 @@ export async function getOrgForwardingConfig(orgId: string): Promise<LogForwardi
   const settings = (org.settings as Record<string, unknown>) ?? {};
   const partnerSettings = (partner?.settings as Record<string, unknown>) ?? {};
   const partnerForwarding = partnerSettings.eventLogs as Partial<LogForwardingConfig> | undefined;
-  // Partner settings lock fields by their presence, with no separate enforce
-  // flag. An explicit enabled=false also wins over the org's configuration.
+  // Only an enabled partner destination with an endpoint overrides the org.
+  // Otherwise, the org configures its own destination.
   // Keep destinations atomic: never send org credentials to a partner URL.
-  const usePartner = partnerForwarding?.enabled !== undefined;
+  const usePartner = partnerForwarding?.enabled === true && !!partnerForwarding?.elasticsearchUrl;
   const forwarding = usePartner
     ? partnerForwarding
     : settings.logForwarding as LogForwardingConfig | undefined;

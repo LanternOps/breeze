@@ -324,12 +324,22 @@ describe('organization forwarding destination resolution', () => {
   it.each([
     ['neither configured', {}, {}],
     ['org disabled', { logForwarding: { ...baseConfig, enabled: false } }, {}],
-    ['partner disabled', { logForwarding: baseConfig }, { eventLogs: { enabled: false } }],
-    ['partner missing endpoint', { logForwarding: baseConfig }, { eventLogs: { enabled: true } }],
   ])('does not deliver when %s', async (_name, orgSettings, partnerSettings) => {
     prime(orgSettings, partnerSettings);
     expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 0, errors: 0 });
     expect(safeFetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['partner disabled', { ...partnerConfig, enabled: false }],
+    ['partner missing endpoint', { enabled: true }],
+  ])('delivers to the org destination when %s', async (_name, eventLogs) => {
+    prime({ logForwarding: { ...baseConfig, elasticsearchApiKey: 'org-key' } }, { eventLogs });
+    expect(await bulkIndexEvents(orgId, [event])).toEqual({ indexed: 1, errors: 0 });
+    expect(safeFetchMock).toHaveBeenCalledWith(`${baseConfig.elasticsearchUrl}/_bulk`, expect.objectContaining({
+      headers: expect.objectContaining({ authorization: 'ApiKey org-key' }),
+    }));
+    expect(decryptForColumn).toHaveBeenCalledWith('organizations', 'settings', 'org-key');
   });
 
   it('pins the elevated partner read to the live org relationship', async () => {
