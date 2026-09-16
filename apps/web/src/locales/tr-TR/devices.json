@@ -2351,7 +2351,15 @@
       "snmpMonitoring": "SNMP izleme",
       "status": "Durum",
       "tags": "Etiketler",
-      "bridgingAgent": "Köprü aracısı"
+      "bridgingAgent": "Köprü aracısı",
+      "ipAddress": "IP adresi",
+      "macAddress": "MAC adresi",
+      "nicVendor": "Ağ kartı üreticisi",
+      "nicVendorHint": "MAC adresinin kayıtlı üreticisi; ağ kartı başka bir şirket tarafından üretilmişse cihaz üreticisinden farklıdır.",
+      "site": "Konum",
+      "sysObjectId": "sysObjectID (ham)",
+      "legacyScanVerdict": "Son tarama sonucu",
+      "legacyScanVerdictHint": "— son alt ağ taramasının kaydettiği sonuç; anlık erişilebilirlik değil"
     },
     "goBack": "Geri dön",
     "live": {
@@ -2392,7 +2400,8 @@
       "snmpData": "SNMP verisi",
       "reachability": "Erişilebilirlik",
       "collection": "Veri toplama",
-      "printerHealth": "Yazıcı durumu"
+      "printerHealth": "Yazıcı durumu",
+      "scanDetails": "Tüm tarama ayrıntıları"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",

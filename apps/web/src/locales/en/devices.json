@@ -2569,7 +2569,15 @@
       "snmpMonitoring": "SNMP monitoring",
       "status": "Status",
       "tags": "Tags",
-      "bridgingAgent": "Bridging agent"
+      "bridgingAgent": "Bridging agent",
+      "ipAddress": "IP address",
+      "macAddress": "MAC address",
+      "nicVendor": "NIC vendor",
+      "nicVendorHint": "The MAC address's registered vendor, which differs from the device manufacturer when the network card is built by someone else.",
+      "site": "Site",
+      "sysObjectId": "sysObjectID (raw)",
+      "legacyScanVerdict": "Last scan verdict",
+      "legacyScanVerdictHint": "— what the last subnet sweep recorded, not live reachability"
     },
     "goBack": "Go back",
     "live": {
@@ -2610,7 +2618,8 @@
       "snmpData": "SNMP data",
       "reachability": "Reachability",
       "collection": "Collection",
-      "printerHealth": "Printer health"
+      "printerHealth": "Printer health",
+      "scanDetails": "All scan details"
     },
     "stats": {
       "asOf": "as of {{time}}",

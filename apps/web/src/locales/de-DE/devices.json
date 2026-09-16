@@ -2351,7 +2351,15 @@
       "snmpMonitoring": "SNMP-Überwachung",
       "status": "Status",
       "tags": "Schlagworte",
-      "bridgingAgent": "Vermittelnder Agent"
+      "bridgingAgent": "Vermittelnder Agent",
+      "ipAddress": "IP-Adresse",
+      "macAddress": "MAC-Adresse",
+      "nicVendor": "Netzwerkkartenhersteller",
+      "nicVendorHint": "Der für die MAC-Adresse registrierte Hersteller. Er weicht vom Gerätehersteller ab, wenn die Netzwerkkarte von einem anderen Hersteller stammt.",
+      "site": "Standort",
+      "sysObjectId": "sysObjectID (Rohwert)",
+      "legacyScanVerdict": "Ergebnis des letzten Scans",
+      "legacyScanVerdictHint": "— das Ergebnis des letzten Subnetzscans, nicht die aktuelle Erreichbarkeit"
     },
     "goBack": "Zurück",
     "live": {
@@ -2392,7 +2400,8 @@
       "snmpData": "SNMP-Daten",
       "reachability": "Erreichbarkeit",
       "collection": "Datenerfassung",
-      "printerHealth": "Druckerzustand"
+      "printerHealth": "Druckerzustand",
+      "scanDetails": "Alle Scandetails"
     },
     "stats": {
       "asOf": "Stand: {{time}}",

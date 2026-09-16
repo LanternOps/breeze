@@ -2351,7 +2351,15 @@
       "snmpMonitoring": "Surveillance SNMP",
       "status": "Statut",
       "tags": "Étiquettes",
-      "bridgingAgent": "Agent relais"
+      "bridgingAgent": "Agent relais",
+      "ipAddress": "Adresse IP",
+      "macAddress": "Adresse MAC",
+      "nicVendor": "Fabricant de la carte réseau",
+      "nicVendorHint": "Le fabricant enregistré pour l’adresse MAC, qui diffère du fabricant de l’appareil lorsque la carte réseau est fabriquée par une autre entreprise.",
+      "site": "Emplacement",
+      "sysObjectId": "sysObjectID (brut)",
+      "legacyScanVerdict": "Résultat de la dernière analyse",
+      "legacyScanVerdictHint": "— ce que la dernière analyse du sous-réseau a enregistré, et non la joignabilité en temps réel"
     },
     "goBack": "Retour",
     "live": {
@@ -2392,7 +2400,8 @@
       "snmpData": "Données SNMP",
       "reachability": "Accessibilité",
       "collection": "Collecte",
-      "printerHealth": "État de l’imprimante"
+      "printerHealth": "État de l’imprimante",
+      "scanDetails": "Tous les détails de l’analyse"
     },
     "stats": {
       "asOf": "en date de {{time}}",

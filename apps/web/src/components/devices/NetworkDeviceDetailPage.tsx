@@ -20,9 +20,9 @@ import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import { isWebPort, sortPorts } from '../discovery/portCatalog';
 import { typeConfig, approvalStatusConfig } from '../discovery/DiscoveredAssetList';
 import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
-import { formatTimestamp } from './networkDevice/format';
 import { Section, Field } from './networkDevice/primitives';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
+import { IdentityCard } from './networkDevice/IdentityCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
 import { useAssetProbe } from './networkDevice/useAssetProbe';
 import { NetworkDeviceStats } from './networkDevice/NetworkDeviceStats';
@@ -144,7 +144,6 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // else 443 — so the action exists even when the scan recorded no ports.
   const defaultWebPort = openPorts.find((p) => isWebPort(p.port, p.service));
   const snmpData = asset.snmpData ?? {};
-  const tags = asset.tags ?? [];
   const discoveryMethods = asset.discoveryMethods ?? [];
   // `mapAsset` normalizes `type` to a valid key, but `approvalStatus` is passed
   // through raw — guard both lookups so an out-of-enum value from the API can't
@@ -259,60 +258,13 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           aria-label={t('networkDeviceDetailPage.tabs.overview')}
         >
           <div className="space-y-5">
-            <Section title={t('networkDeviceDetailPage.sections.identity')}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-                <Field label={t('networkDeviceDetailPage.fields.hostname')} value={asset.hostname || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.displayName')} value={asset.label || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.manufacturer')} value={asset.manufacturer} />
-                <Field label={t('networkDeviceDetailPage.fields.model')} value={extras.model || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.osFingerprint')} value={asset.osFingerprint || '—'} />
-                <Field label={t('networkDeviceDetailPage.fields.firstSeen')} value={formatTimestamp(extras.firstSeenAt)} />
-                <div>
-                  <div className="text-xs font-medium text-muted-foreground">
-                    {t('networkDeviceDetailPage.fields.assetType')}
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{typeLabel}</span>
-                    <button
-                      type="button"
-                      data-testid="network-detail-edit-identity"
-                      onClick={() => openSettings('identity')}
-                      className="text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {t('networkDeviceDetailPage.editInSettings')}
-                    </button>
-                  </div>
-                  {asset.typeSource === 'manual' && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {asset.detectedType
-                        ? t('networkDeviceDetailPage.manuallySetWithDetected', {
-                            type: t(/* i18n-dynamic */ typeConfig[asset.detectedType].labelKey),
-                          })
-                        : t('networkDeviceDetailPage.manuallySet')}
-                    </p>
-                  )}
-                </div>
-                {extras.netbiosName && <Field label={t('networkDeviceDetailPage.fields.netbiosName')} value={extras.netbiosName} />}
-              </dl>
-              {tags.length > 0 && (
-                <div className="mt-3 border-t pt-3">
-                  <p className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.tags')}</p>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {tags.map((tag) => (
-                      <span key={tag} className="rounded-full border border-muted bg-background px-2 py-0.5 text-xs">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {asset.notes && (
-                <div className="mt-3 border-t pt-3">
-                  <p className="text-xs font-medium text-muted-foreground">{t('networkDeviceDetailPage.fields.notes')}</p>
-                  <p className="mt-1 text-sm whitespace-pre-wrap">{asset.notes}</p>
-                </div>
-              )}
-            </Section>
+            <IdentityCard
+              asset={asset}
+              extras={extras}
+              timezone={resolveAssetTimezone(extras.siteTimezone)}
+              onAnnounce={announce}
+              onEditIdentity={() => openSettings('identity')}
+            />
 
             <SnmpSection snmpData={snmpData} />
           </div>

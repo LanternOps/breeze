@@ -2351,7 +2351,15 @@
       "snmpMonitoring": "Monitoreo SNMP",
       "status": "Estado",
       "tags": "Etiquetas",
-      "bridgingAgent": "Agente intermediario"
+      "bridgingAgent": "Agente intermediario",
+      "ipAddress": "Dirección IP",
+      "macAddress": "Dirección MAC",
+      "nicVendor": "Fabricante de la tarjeta de red",
+      "nicVendorHint": "El fabricante registrado de la dirección MAC, que difiere del fabricante del dispositivo cuando la tarjeta de red la fabrica otra empresa.",
+      "site": "Sitio",
+      "sysObjectId": "sysObjectID (sin procesar)",
+      "legacyScanVerdict": "Resultado del último escaneo",
+      "legacyScanVerdictHint": "— lo que registró el último barrido de la subred, no la accesibilidad en tiempo real"
     },
     "goBack": "Volver",
     "live": {
@@ -2392,7 +2400,8 @@
       "snmpData": "Datos SNMP",
       "reachability": "Accesibilidad",
       "collection": "Recopilación",
-      "printerHealth": "Estado de la impresora"
+      "printerHealth": "Estado de la impresora",
+      "scanDetails": "Todos los detalles del escaneo"
     },
     "stats": {
       "asOf": "a partir de {{time}}",

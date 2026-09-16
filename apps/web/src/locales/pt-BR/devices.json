@@ -2351,7 +2351,15 @@
       "snmpMonitoring": "Monitoramento SNMP",
       "status": "Status",
       "tags": "Tags",
-      "bridgingAgent": "Agente intermediário"
+      "bridgingAgent": "Agente intermediário",
+      "ipAddress": "Endereço IP",
+      "macAddress": "Endereço MAC",
+      "nicVendor": "Fabricante da placa de rede",
+      "nicVendorHint": "O fabricante registrado do endereço MAC, que difere do fabricante do dispositivo quando a placa de rede é fabricada por outra empresa.",
+      "site": "Local",
+      "sysObjectId": "sysObjectID (bruto)",
+      "legacyScanVerdict": "Resultado da última varredura",
+      "legacyScanVerdictHint": "— o que a última varredura da sub-rede registrou, não a acessibilidade em tempo real"
     },
     "goBack": "Voltar",
     "live": {
@@ -2392,7 +2400,8 @@
       "snmpData": "Dados SNMP",
       "reachability": "Acessibilidade",
       "collection": "Coleta",
-      "printerHealth": "Integridade da impressora"
+      "printerHealth": "Integridade da impressora",
+      "scanDetails": "Todos os detalhes da varredura"
     },
     "stats": {
       "asOf": "em {{time}}",
