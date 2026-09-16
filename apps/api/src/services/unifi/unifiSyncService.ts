@@ -167,6 +167,12 @@ async function reconcileDiscoveredAsset(
     model: device.model ?? undefined,
     isOnline: isUnifiDeviceOnline(device.adoptionState),
     lastSeenAt: new Date(),
+    // Spec §4.3 — UniFi writes is_online UNCONDITIONALLY on every sync pass,
+    // which is exactly why D1 rejected materialised reachability columns. The
+    // stamp lets the reachability service age this claim out after 60 min
+    // instead of trusting it forever.
+    statusObservedAt: new Date(),
+    statusSource: 'unifi' as const,
   };
 
   if (existing) {

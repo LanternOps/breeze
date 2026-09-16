@@ -713,6 +713,11 @@ export function buildScanUpdateSet(
   const updateSet: PgUpdateSetSource<typeof discoveredAssets> = {
     ...(assetData as PgUpdateSetSource<typeof discoveredAssets>),
   };
+  // Spec §4.3 — every writer of `is_online` dates and attributes its verdict.
+  // A scan sighting is a `scan`-sourced observation taken now; `last_seen_at`
+  // keeps its own meaning (last POSITIVE sighting) and is untouched here.
+  updateSet.statusObservedAt = new Date();
+  updateSet.statusSource = 'scan';
   for (const col of ['hostname', 'manufacturer', 'model'] as const) {
     const proposed = assetData[col] ?? null;
     updateSet[col] = sql`case when ${discoveredAssets.source} = 'manual'
@@ -1158,7 +1163,15 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
     // Update approvalStatus and isOnline
     if (upsertedAssetId) {
       await db.update(discoveredAssets)
-        .set({ approvalStatus: decision.approvalStatus, isOnline: true })
+        .set({
+          approvalStatus: decision.approvalStatus,
+          isOnline: true,
+          // Spec §4.3 — this is the second place a scan writes is_online, and
+          // it runs AFTER buildScanUpdateSet's upsert, so it would otherwise
+          // leave a newer verdict wearing the older stamp.
+          statusObservedAt: new Date(),
+          statusSource: 'scan',
+        })
         .where(eq(discoveredAssets.id, upsertedAssetId));
     }
 
@@ -1288,7 +1301,17 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       }
       if (!seenIps.has(asset.ipAddress) && asset.approvalStatus === 'approved' && asset.isOnline) {
         await db.update(discoveredAssets)
-          .set({ isOnline: false })
+          .set({
+            isOnline: false,
+            // Spec §4.3 — THE stamp that matters most. Before this, the sweep
+            // wrote is_online = false without touching any timestamp, so the
+            // row said "offline" with no way to tell whether that verdict was
+            // five minutes or five weeks old. deriveReachability refuses to
+            // rank an undated negative at all, so an unstamped sweep result is
+            // silently ignored — this line is what makes the sweep count.
+            statusObservedAt: new Date(),
+            statusSource: 'scan',
+          })
           .where(eq(discoveredAssets.id, asset.id));
 
         // Log disappeared event if configured

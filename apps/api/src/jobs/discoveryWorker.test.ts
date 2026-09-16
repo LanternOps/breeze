@@ -113,7 +113,7 @@ import { inferAssetTypeFromVendor } from '../services/macVendorLookup';
 import { devices, discoveredAssets } from '../db/schema';
 import type { DiscoveredHostResult } from './discoveryWorker';
 
-const { cleanupSpeculativeTopologyLinks, processResults, __testables } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
+const { cleanupSpeculativeTopologyLinks, processResults, buildScanUpdateSet, __testables } = await import('./discoveryWorker') as typeof import('./discoveryWorker');
 
 // Helper: build a chainable Drizzle-like mock that resolves to resolveValue
 // when awaited directly (thenable) or via .limit() / .returning().
@@ -228,6 +228,14 @@ function detectedTypeSourceCaseParams(source: string, writerRank: number): unkno
     'discoveredAssets.detectedTypeSource',
   ];
 }
+
+describe('buildScanUpdateSet', () => {
+  it('stamps status provenance on every scan sighting (spec §4.3)', () => {
+    const set = buildScanUpdateSet({ isOnline: true, lastSeenAt: new Date() }, null) as Record<string, unknown>;
+    expect(set.statusSource).toBe('scan');
+    expect(set.statusObservedAt).toBeInstanceOf(Date);
+  });
+});
 
 describe('processResults — type_source', () => {
   let capturedUpdateSet: Record<string, unknown> | null;
