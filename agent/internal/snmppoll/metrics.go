@@ -41,6 +41,17 @@ type SNMPDevice struct {
 
 // SNMPMetric represents a single SNMP value read.
 //
+// BaseOID and Instance split what used to be one opaque OID string. BaseOID is
+// the TEMPLATE's own spelling of the object, which is what the server matches a
+// row back to a template entry with; Instance is the index suffix, empty for a
+// scalar. Neither is `omitempty`: they are the substance of the protocol-2 row
+// shape (spec §7.2), and an empty instance is a fact about a scalar, not a
+// missing field.
+//
+// Error carries a per-OID failure code (spec §7.2 closed set). It IS
+// `omitempty` — the overwhelming majority of rows succeed, and a walked 48-port
+// switch is ~138k rows/day.
+//
 // ValueEncoding declares how Value was encoded by the agent. It is set to
 // ValueEncodingHex only for octet strings the agent had to hex-encode, and is
 // omitted otherwise: `omitempty` keeps the wire format backward-compatible in
@@ -48,10 +59,25 @@ type SNMPDevice struct {
 // never send it).
 type SNMPMetric struct {
 	OID           string    `json:"oid"`
+	BaseOID       string    `json:"baseOid"`
+	Instance      string    `json:"instance"`
 	Name          string    `json:"name"`
 	Value         any       `json:"value"`
+	Error         string    `json:"error,omitempty"`
 	Timestamp     time.Time `json:"timestamp"`
 	ValueEncoding string    `json:"valueEncoding,omitempty"`
+}
+
+// pduSource is the SNMP transport CollectMetrics needs: a multi-OID GET.
+// Task 5 adds WalkBounded alongside the client implementation.
+// *SNMPClient satisfies it.
+//
+// The seam exists for one reason: what this file does is decided entirely by
+// the PDUs a device returns, and an unsupported table OID, a 600-row FDB and a
+// mid-walk timeout are all things a real device on a test runner cannot be
+// asked to produce. No production behaviour depends on the indirection.
+type pduSource interface {
+	GetMulti(oids []string) ([]gosnmp.SnmpPDU, error)
 }
 
 // CollectMetrics fetches all configured OIDs for a device.
@@ -59,8 +85,18 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 	if device.IP == "" {
 		return nil, errors.New("device IP is required")
 	}
-	if len(device.OIDs) == 0 {
+
+	specs := device.Specs
+	if len(specs) == 0 {
+		specs = SpecsFromOIDs(device.OIDs)
+	}
+	if len(specs) == 0 {
 		return nil, errors.New("device has no OIDs configured")
+	}
+
+	limits := device.Limits
+	if limits.MaxRowsPerOID <= 0 {
+		limits = DefaultPollLimits
 	}
 
 	client, err := NewClient(device.ClientConfig())
@@ -69,32 +105,95 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 	}
 	defer client.Close()
 
-	pdus, err := getDevicePDUs(client, device.OIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	return buildMetrics(pdus, time.Now().UTC()), nil
+	return collectWithSource(client, specs, limits, time.Now().UTC())
 }
 
-// buildMetrics maps varbinds onto SNMPMetric rows, declaring the encoding at the
-// same place the value is produced.
-func buildMetrics(pdus []gosnmp.SnmpPDU, stamp time.Time) []SNMPMetric {
+// collectWithSource is CollectMetrics with the transport and the clock supplied.
+func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp time.Time) ([]SNMPMetric, error) {
+	getSpecs := make([]OIDSpec, 0, len(specs))
+	for _, spec := range specs {
+		// Task 5 routes ModeWalk specs to bounded walks; until then every spec
+		// goes through the GET batch, which is what the agent has always done.
+		getSpecs = append(getSpecs, spec)
+	}
+
+	metrics := make([]SNMPMetric, 0, len(getSpecs))
+	if len(getSpecs) > 0 {
+		oids := make([]string, 0, len(getSpecs))
+		for _, spec := range getSpecs {
+			oids = append(oids, spec.OID)
+		}
+		pdus, err := src.GetMulti(oids)
+		if err != nil {
+			// Unchanged: a failed GET batch means the device did not answer at
+			// all, which is a whole-poll transport failure, not a per-OID one.
+			return nil, err
+		}
+		metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
+	}
+
+	return metrics, nil
+}
+
+// buildGetMetrics maps GET varbinds onto SNMPMetric rows, declaring the encoding
+// at the same place the value is produced and turning the three "this object is
+// not here" PDU types into explicit error rows.
+func buildGetMetrics(specs []OIDSpec, pdus []gosnmp.SnmpPDU, stamp time.Time) []SNMPMetric {
 	metrics := make([]SNMPMetric, 0, len(pdus))
 	for _, pdu := range pdus {
-		value, hexEncoded := parseValue(pdu)
-		metric := SNMPMetric{
-			OID:       pdu.Name,
-			Name:      pdu.Name,
-			Value:     value,
-			Timestamp: stamp,
-		}
-		if hexEncoded {
-			metric.ValueEncoding = ValueEncodingHex
-		}
-		metrics = append(metrics, metric)
+		metrics = append(metrics, metricFromPDU(specs, pdu, stamp))
 	}
 	return metrics
+}
+
+// metricFromPDU builds one row, resolving which spec the PDU belongs to by OID.
+func metricFromPDU(specs []OIDSpec, pdu gosnmp.SnmpPDU, stamp time.Time) SNMPMetric {
+	spec := FindSpecForOID(specs, pdu.Name)
+
+	metric := SNMPMetric{
+		OID:       pdu.Name,
+		BaseOID:   pdu.Name,
+		Instance:  "",
+		Name:      pdu.Name,
+		Timestamp: stamp,
+	}
+	if spec != nil {
+		metric.BaseOID = spec.OID
+		metric.Instance = InstanceSuffix(spec.OID, pdu.Name)
+		metric.Name = spec.Name
+	}
+
+	// A device that does not implement the object answers with one of these
+	// three PDU types and a nil value. Before W02 that became value_type
+	// 'null', indistinguishable from a real null — 145 of the ~407 built-in
+	// template OIDs sat in that state permanently (spec F3).
+	if code := pduErrorCode(pdu); code != "" {
+		metric.Error = code
+		metric.Value = nil
+		return metric
+	}
+
+	value, hexEncoded := parseValue(pdu)
+	metric.Value = value
+	if hexEncoded {
+		metric.ValueEncoding = ValueEncodingHex
+	}
+	return metric
+}
+
+// pduErrorCode maps the SNMP "no such thing" PDU types onto the closed per-OID
+// error-code set. Everything else returns "" and is treated as a value.
+func pduErrorCode(pdu gosnmp.SnmpPDU) string {
+	switch pdu.Type {
+	case gosnmp.NoSuchObject:
+		return ErrCodeNoSuchObject
+	case gosnmp.NoSuchInstance:
+		return ErrCodeNoSuchInstance
+	case gosnmp.EndOfMibView:
+		return ErrCodeEndOfMib
+	default:
+		return ""
+	}
 }
 
 // ClientConfig converts an SNMPDevice into an SNMPClientConfig.
@@ -302,8 +401,4 @@ func isTextSafeOctetString(value []byte) bool {
 // at.
 func hexOctets(value []byte) string {
 	return hex.EncodeToString(value)
-}
-
-func getDevicePDUs(client *SNMPClient, oids []string) ([]gosnmp.SnmpPDU, error) {
-	return client.GetMulti(oids)
 }
