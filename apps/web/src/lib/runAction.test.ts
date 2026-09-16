@@ -272,36 +272,91 @@ describe('runAction', () => {
     expect(showToast).toHaveBeenCalledTimes(1);
     expect(showToast).toHaveBeenCalledWith({ message: 'boom', type: 'error' });
   });
-  it('validation 400 without code: keeps specific field text as message, translated headline as detail (Step 4 of #3859, #1976 contract)', async () => {
-    await expect(runAction({
-      request: async () => res({ error: 'name is required' }, 400),
-      errorFallback: 'fb',
-    })).rejects.toBeInstanceOf(ActionError);
-    // #1976: the specific field text stays the high-contrast message; the
-    // translated VALIDATION_FAILED headline rides as the low-contrast detail.
+  it('Zod validation 400 without code: keeps specific field text as message, translated headline as detail (Step 4 of #3859, #1976 contract)', async () => {
+    const specific =
+      'Template must include the {id} placeholder for the per-device value';
+
+    await expect(
+      runAction({
+        request: async () =>
+          res(
+            {
+              success: false,
+              error: {
+                name: 'ZodError',
+                message: JSON.stringify([
+                  {
+                    code: 'custom',
+                    path: ['settings', 'remoteAccessProviders', 0, 'urlTemplate'],
+                    message: specific,
+                  },
+                ]),
+              },
+            },
+            400
+          ),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
     expect(showToast).toHaveBeenCalledWith({
-      message: 'name is required',
+      message: specific,
       detail: 'Check the highlighted fields',
       type: 'error',
     });
   });
 
-  it('validation 400 with no specific field text: translated headline becomes the message', async () => {
-    // extractApiError falls back to errorFallback when the body carries no
-    // usable field text; there is nothing specific to preserve, so the
-    // translated headline is the message and there is no detail line.
-    await expect(runAction({
-      request: async () => res({}, 400),
-      errorFallback: 'fb',
-    })).rejects.toBeInstanceOf(ActionError);
-    const call = showToast.mock.calls.at(-1)?.[0];
-    expect(call.message).toBe('Check the highlighted fields');
-    expect(call.detail).toBeUndefined();
+  it('Zod validation 400 with no specific field text: translated headline becomes the message', async () => {
+    await expect(
+      runAction({
+        request: async () =>
+          res(
+            {
+              details: {
+                formErrors: [],
+                fieldErrors: {},
+              },
+            },
+            400
+          ),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Check the highlighted fields',
+      type: 'error',
+    });
+  });
+
+  it('ordinary non-Zod 400 without code does not get the validation headline', async () => {
+    await expect(
+      runAction({
+        request: async () => res({ error: 'Incorrect password.' }, 400),
+        errorFallback: 'fb',
+      })
+    ).rejects.toBeInstanceOf(ActionError);
+
+    expect(showToast).toHaveBeenCalledWith({
+      message: 'Incorrect password.',
+      type: 'error',
+    });
   });
 
   it('validation envelope does NOT fire when a code is present (code path wins)', async () => {
     await expect(runAction({
-      request: async () => res({ error: 'name is required', code: 'SOME_CODE' }, 400),
+      request: async () =>
+        res(
+          {
+            error: 'name is required',
+            details: {
+              formErrors: ['name is required'],
+              fieldErrors: {},
+            },
+            code: 'SOME_CODE',
+          },
+          400
+        ),
       errorFallback: 'fb',
     })).rejects.toBeInstanceOf(ActionError);
     // code present -> envelope skipped; detail stays undefined
