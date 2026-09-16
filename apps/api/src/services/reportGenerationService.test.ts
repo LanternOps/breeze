@@ -34,7 +34,17 @@ const REPORT_TYPES: readonly ReportType[] = [
   'security_compliance_posture',
   'hardware_lifecycle',
   'threat_detection_review',
+  'identity_access_review',
 ];
+/**
+ * #5784 W06. `identity_access_review` is org-wide by construction: M365 identity
+ * data has no site dimension, so a RESTRICTED authority is refused outright
+ * (OD-8 = A) and the generator reads nothing at all. It therefore cannot bind a
+ * site predicate, and the site-binding matrix below excludes it — with a
+ * dedicated assertion in its place, so the exclusion is proven, not assumed.
+ */
+const SITE_SCOPED_REPORT_TYPES: readonly ReportType[] = REPORT_TYPES
+  .filter((type) => type !== 'identity_access_review');
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and
  *  only ever read back — there is no query that could reproduce it. Fleet
@@ -188,7 +198,24 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
-  it.each(REPORT_TYPES)(
+  it('identity_access_review refuses a restricted authority instead of binding a site scope', async () => {
+    const result = await generateReport(
+      'identity_access_review',
+      ORG_ID,
+      {},
+      authority('restricted', [SITE_A]),
+    );
+
+    // OD-8 = A: an org-wide identity view served to a site-restricted technician
+    // would be a scope escalation, so the answer is the empty-but-shaped result
+    // and NOTHING is read.
+    expect(result.rows).toEqual([]);
+    expect(result.rowCount).toBe(0);
+    expect(renderedParams()).not.toContain(SITE_A);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it.each(SITE_SCOPED_REPORT_TYPES)(
     '%s binds the exact restricted site scope and never Site B',
     async (type) => {
       await generateReport(

@@ -79,6 +79,22 @@ const PORTAL_DEFINITIONS = [
       topIncidents: 100,
     },
   },
+  // #5784 W06 — MANAGED EVIDENCE, not self-service, and the one that carries the
+  // most PII in the feature (user principal names, IP addresses, cities). Same
+  // rule as W02 above: absent from PORTAL_REPORT_TYPES and from both allowlist
+  // literals in reportGenerationService.ts (OD-10 = A), so a customer can read a
+  // DELIVERED artifact but can never generate one on demand.
+  //
+  // No `sites` key: M365 identity data has no site dimension (OD-8 = A).
+  {
+    type: 'identity_access_review',
+    name: 'Service evidence — Identity and access review',
+    config: {
+      dormantDays: 45,
+      homeCountries: [],
+      adminDetail: true,
+    },
+  },
 ] as const;
 
 /** Exported for `managedEvidenceRegistry.test.ts`, which pins this array

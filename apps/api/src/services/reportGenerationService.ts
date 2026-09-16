@@ -51,7 +51,13 @@ export type ReportType =
   // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
   // period, with an explicit coverage window. Generated on demand and by the
   // managed-evidence system path; see services/threatDetectionReport.ts.
-  | 'threat_detection_review';
+  | 'threat_detection_review'
+  // #5784 W06. Service-plan evidence: interactive sign-in review, identity
+  // inventory, conditional access posture and remote-access client presence.
+  // Org-wide by construction — M365 identity has no site dimension — so a
+  // restricted authority gets the zero-safe shape, never a silently org-wide
+  // view. See services/identityAccessReport.ts.
+  | 'identity_access_review';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -901,6 +907,14 @@ async function dispatchReportGeneration(
       const { generateThreatDetectionReport } = await import('./threatDetectionReport');
       return generateThreatDetectionReport(orgId, config, authority, evidence);
     }
+    // #5784 W06. Same managed-evidence shape as W02 above: `authority` is passed
+    // as-is because a system authority legitimately reaches this arm, and the
+    // generator itself decides what a RESTRICTED authority gets (nothing —
+    // M365 identity has no site dimension, OD-8 = A).
+    case 'identity_access_review': {
+      const { generateIdentityAccessReport } = await import('./identityAccessReport');
+      return generateIdentityAccessReport(orgId, config, authority, evidence);
+    }
     default: {
       const exhaustive: never = type;
       throw new Error(`Invalid report type: ${String(exhaustive)}`);
@@ -971,6 +985,11 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
     // sites gets an empty-but-shaped result rather than a throw.
     case 'threat_detection_review':
+    // #5784 W06 — NOT stored-artifact-only either. This arm is load-bearing for
+    // identity_access_review in a way it is not for the types above: the
+    // generator routes EVERY restricted authority into the same empty-but-shaped
+    // result, not only the zero-sites case.
+    case 'identity_access_review':
       return emptyRowsReport();
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before

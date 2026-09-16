@@ -47,7 +47,14 @@ export const MANAGED_EVIDENCE_REGISTRY = Object.freeze({
   },
   // W03 adds 'endpoint_management_review'.
   // W04 adds 'vulnerability_management'.
-  // W06 adds 'identity_access_review'.
+  // #5784 W06. Interactive sign-in review over W05's m365_signin_events plus the
+  // identity, conditional-access and remote-access data already synced. NO
+  // `sites` key on purpose: M365 identity data has no site dimension (OD-8 = A).
+  identity_access_review: {
+    type: 'identity_access_review',
+    definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}Identity and access review`,
+    defaultConfig: { dormantDays: 45, homeCountries: [], adminDetail: true },
+  },
 } as const satisfies Readonly<Record<string, ManagedEvidenceEntry>>);
 
 export type ManagedEvidenceType = keyof typeof MANAGED_EVIDENCE_REGISTRY & ReportType;

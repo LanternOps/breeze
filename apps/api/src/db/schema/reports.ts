@@ -39,7 +39,11 @@ export const reportTypeEnum = pgEnum('report_type', [
   'hardware_lifecycle',
   // Service-plan evidence W02 (#5784): Huntress incidents for an occurrence's
   // period, with an explicit coverage window; see services/threatDetectionReport.ts.
-  'threat_detection_review'
+  'threat_detection_review',
+  // Service-plan evidence W06 (#5784): interactive sign-in review, identity
+  // inventory, conditional access posture and remote-access client presence.
+  // Org-wide by construction; see services/identityAccessReport.ts.
+  'identity_access_review'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [
