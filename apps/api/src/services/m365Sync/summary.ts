@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { M365_SYNC_DOMAINS, type M365SyncDomain } from '@breeze/shared/m365';
 import { isM365TenantSyncEnabled } from '../../config/env';
 import { db } from '../../db';
@@ -58,6 +58,64 @@ function count(value: unknown): number | null {
 function isUnlicensed(domain: M365SyncDomain, sources: unknown): boolean {
   if (sources === null || typeof sources !== 'object') return false;
   return (sources as Record<string, unknown>)[M365_SYNC_PRIMARY_SOURCE_KEY[domain]] === 'unlicensed';
+}
+
+/**
+ * Raw per-domain freshness for a REPORT GENERATOR (#5784 W03/W06).
+ *
+ * Why not reuse `loadSyncSummary`: it returns `null` outright when the sync flag
+ * is off and shapes its output for the UI card, iterating ALL domains. A report
+ * generator needs the freshness of the two or three domains it actually reads,
+ * and needs to tell "sync disabled" from "never ran" so its data-gap line can
+ * say which — so the flag check stays with the caller here.
+ *
+ * TOTAL by construction: a domain with no state row comes back with `asOf: null`
+ * rather than a missing key, so a caller cannot read `undefined.asOf` and render
+ * a gap as a success. `asOf` is `last_complete_snapshot_at`, NEVER
+ * `last_success_at` — a partial run succeeds without enumerating the tenant.
+ *
+ * Read on the REQUEST's own DB context: shape-1 RLS is the tenant boundary, and
+ * the statement is also keyed on the org.
+ */
+export interface DomainFreshness {
+  asOf: string | null;
+  lastStatus: string | null;
+  truncated: boolean;
+  sources: Record<string, string> | null;
+  /** The domain's OWN primary source came back 'unlicensed'. */
+  unlicensed: boolean;
+}
+
+export async function loadDomainFreshness(
+  orgId: string,
+  domains: readonly M365SyncDomain[],
+): Promise<Record<M365SyncDomain, DomainFreshness>> {
+  const rows = domains.length === 0
+    ? []
+    : await db
+      .select({
+        domain: m365SyncState.domain,
+        lastStatus: m365SyncState.lastStatus,
+        lastCompleteSnapshotAt: m365SyncState.lastCompleteSnapshotAt,
+        truncated: m365SyncState.truncated,
+        sources: m365SyncState.sources,
+      })
+      .from(m365SyncState)
+      .where(and(eq(m365SyncState.orgId, orgId), inArray(m365SyncState.domain, [...domains])));
+
+  const byDomain = new Map(rows.map((row) => [row.domain as M365SyncDomain, row]));
+  const out = {} as Record<M365SyncDomain, DomainFreshness>;
+  for (const domain of domains) {
+    const row = byDomain.get(domain);
+    out[domain] = {
+      asOf: iso(row?.lastCompleteSnapshotAt ?? null),
+      lastStatus: row?.lastStatus ?? null,
+      truncated: row?.truncated === true,
+      sources: row?.sources ?? null,
+      unlicensed: isUnlicensed(domain, row?.sources ?? null),
+    };
+  }
+  return out;
 }
 
 /**
