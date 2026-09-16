@@ -32,6 +32,7 @@ import { registerLaneOutcomeHandler } from '../services/scriptProposals/laneOutc
 import { loadProposalRequesterUserId, loadProposalRow } from '../services/scriptProposals/queries';
 import { postProposalOutcomeToAuthor } from '../services/scriptProposals/authorNotify';
 import { requestLikeFromSnapshot, writeAuditEventAsync } from '../services/auditEvents';
+import { SCRIPT_VERIFY_RECONCILE_JOB_NAME, scheduleScriptVerifyReconciliation, sweepScriptVerifyProposals } from './scriptVerifyReconciliation';
 
 const WORKER_NAME = 'scriptVerifyWorker';
 const WORKER_CONCURRENCY = 5;
@@ -173,6 +174,10 @@ function describeOutcome(outcome: VerificationOutcome, evidence: Record<string, 
 }
 
 export async function processScriptVerifyJob(job: Job<unknown>): Promise<void> {
+  if (job.name === SCRIPT_VERIFY_RECONCILE_JOB_NAME) {
+    await sweepScriptVerifyProposals();
+    return;
+  }
   assertQueueJobName(SCRIPT_VERIFY_QUEUE, job, SCRIPT_VERIFY_JOB_NAME);
   const data = parseQueueJobData(SCRIPT_VERIFY_QUEUE, job, scriptVerifyQueueJobDataSchema);
   // The retry ladder lives in the job data, not in BullMQ's `attempts`: a
@@ -198,6 +203,13 @@ export async function initializeScriptVerifyWorker(): Promise<void> {
   registerLaneOutcomeHandler();
   scriptVerifyWorker = createScriptVerifyWorker();
   attachWorkerObservability(scriptVerifyWorker, WORKER_NAME);
+  try {
+    await scheduleScriptVerifyReconciliation();
+  } catch (err) {
+    await scriptVerifyWorker.close();
+    scriptVerifyWorker = null;
+    throw err;
+  }
 }
 
 export async function shutdownScriptVerifyWorker(): Promise<void> {
