@@ -1645,7 +1645,11 @@
       "catalogLink": "Linked catalog item",
       "catalogLinkNone": "None — not linked",
       "autoInstall": "Auto-install missing software",
-      "autoInstallCatalogWarning": "{{count}} of {{total}} rule(s) have no linked catalog item and will be detected as missing but never installed."
+      "autoInstallCatalogWarning": "{{count}} of {{total}} rule(s) have no linked catalog item and will be detected as missing but never installed.",
+      "dryRunLoading": "Checking how many devices this will affect...",
+      "dryRunResult": "This will install missing software on approximately {{count}} device(s).",
+      "dryRunUnavailable": "Device-count preview isn't available yet. Arming will still take effect on the next compliance pass.",
+      "dryRunNewPolicy": "This is a new policy — device impact isn't known until the first compliance pass after you save."
     },
     "softwareCatalog": {
       "ready": "Ready",

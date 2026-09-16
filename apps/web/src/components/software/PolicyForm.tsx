@@ -1,9 +1,11 @@
+import { useEffect, useState } from "react";
 import { useForm, useFieldArray } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { i18n } from "@/lib/i18n";
+import { fetchWithAuth } from "../../stores/auth";
 const softwareRuleSchema = z.object({
   name: z.string().min(1, "Software name is required").max(500),
   vendor: z.string().max(200).optional().or(z.literal("")),
@@ -38,6 +40,11 @@ const policyFormSchema = z.object({
 });
 export type PolicyFormValues = z.infer<typeof policyFormSchema>;
 export type CatalogOption = { id: string; name: string; vendor?: string };
+type DryRunState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; eligibleDeviceCount: number }
+  | { status: "unavailable" };
 type PolicyFormProps = {
   onSubmit?: (values: PolicyFormValues) => void | Promise<void>;
   onCancel?: () => void;
@@ -46,6 +53,10 @@ type PolicyFormProps = {
   loading?: boolean;
   /** Show the ownership-scope selector (create-only, partner-scope users). */
   showOwnerScope?: boolean;
+  /** Existing policy id when editing — undefined while creating (#5509).
+   *  Feeds the install dry-run preview; a brand-new policy has no id to
+   *  query yet. */
+  policyId?: string;
   /** Software catalog items available to link a rule to. Fetched once by the
    *  parent (ComplianceDashboard); an empty array degrades the picker to "no
    *  catalog items" rather than blocking the form (#5509). */
@@ -58,6 +69,7 @@ export default function PolicyForm({
   submitLabel = "Save Policy",
   loading,
   showOwnerScope = false,
+  policyId,
   catalogItems = [],
 }: PolicyFormProps) {
   useTranslation("policies");
@@ -105,6 +117,49 @@ export default function PolicyForm({
   const rulesWithoutCatalog = watchSoftware.filter(
     (rule) => !rule.catalogId,
   ).length;
+  const [dryRun, setDryRun] = useState<DryRunState>({ status: "idle" });
+  useEffect(() => {
+    if (
+      !policyId ||
+      watchMode !== "allowlist" ||
+      !watchEnforceMode ||
+      !watchAutoInstall
+    ) {
+      return;
+    }
+    let cancelled = false;
+    setDryRun({ status: "loading" });
+    (async () => {
+      try {
+        // The preview is advisory only and never blocks arming: any non-2xx
+        // (including a 404) degrades to "unavailable". The real blast-radius
+        // bound is the worker's per-pass install cap, not this number.
+        const response = await fetchWithAuth(
+          `/software-policies/${policyId}/install-preview`,
+        );
+        if (cancelled) return;
+        if (!response.ok) {
+          setDryRun({ status: "unavailable" });
+          return;
+        }
+        const payload = await response.json();
+        const count = Number(
+          (payload as { eligibleDeviceCount?: unknown })?.eligibleDeviceCount,
+        );
+        if (cancelled) return;
+        if (!Number.isFinite(count)) {
+          setDryRun({ status: "unavailable" });
+          return;
+        }
+        setDryRun({ status: "ready", eligibleDeviceCount: count });
+      } catch {
+        if (!cancelled) setDryRun({ status: "unavailable" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [policyId, watchMode, watchEnforceMode, watchAutoInstall]);
   const isLoading = loading ?? isSubmitting;
   return (
     <form
@@ -403,6 +458,33 @@ export default function PolicyForm({
               })}
             </p>
           )}
+
+        {watchEnforceMode && watchMode === "allowlist" && watchAutoInstall && (
+          <div
+            className="rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-2 text-xs"
+            data-testid="autoinstall-dry-run"
+          >
+            {!policyId ? (
+              <p className="text-muted-foreground">
+                {i18n.t("policies:software.policyForm.dryRunNewPolicy")}
+              </p>
+            ) : dryRun.status === "loading" ? (
+              <p className="text-muted-foreground">
+                {i18n.t("policies:software.policyForm.dryRunLoading")}
+              </p>
+            ) : dryRun.status === "ready" ? (
+              <p>
+                {i18n.t("policies:software.policyForm.dryRunResult", {
+                  count: dryRun.eligibleDeviceCount,
+                })}
+              </p>
+            ) : (
+              <p className="text-muted-foreground">
+                {i18n.t("policies:software.policyForm.dryRunUnavailable")}
+              </p>
+            )}
+          </div>
+        )}
 
         {watchEnforceMode && (
           <div className="flex items-center gap-3">
