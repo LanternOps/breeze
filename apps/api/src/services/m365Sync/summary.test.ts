@@ -65,11 +65,12 @@ describe('loadSyncSummary', () => {
     expect(mocks.selectCalls).toBe(1);
   });
 
-  it('lists all six domains in canonical order, filling gaps as never-synced', async () => {
+  it('lists all seven domains in canonical order, filling gaps as never-synced', async () => {
     mocks.stateRows = [state({})];
     const summary = (await loadSyncSummary(ORG, TENANT))!;
     expect(summary.domains.map((d) => d.domain)).toEqual([
       'users', 'signin_activity', 'intune_devices', 'ca_policies', 'skus', 'secure_score',
+      'signin_events',
     ]);
     expect(summary.domains[0]).toEqual({
       domain: 'users', status: 'success', asOf: '2026-09-08T06:00:00.000Z', truncated: false, unlicensed: false,

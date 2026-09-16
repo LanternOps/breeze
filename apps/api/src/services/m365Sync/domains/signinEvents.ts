@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS } from '@breeze/shared/m365';
-import { db, runOutsideDbContext, withSystemDbAccessContext } from '../../../db';
+import { db } from '../../../db';
 import { inOwnedRunTransaction } from './persist';
 import {
   M365_SYNC_PERSIST_CHUNK_SIZE,
@@ -241,18 +241,21 @@ export const SIGNIN_EVENTS_OVERLAP_MINUTES = 60;
 const MS_PER_MINUTE = 60_000;
 const MS_PER_DAY = 24 * 60 * MS_PER_MINUTE;
 
+/**
+ * Runs on the AMBIENT DB context and opens none of its own. Phase A
+ * (`loadSyncRunContext`) already holds one short system transaction and calls
+ * this inside it; nesting `runOutsideDbContext(withSystemDbAccessContext(...))`
+ * here would double-hold a pooled connection, which is the #1105 hang.
+ */
 export async function signinEventsWindow(
   orgId: string,
   now: Date,
 ): Promise<{ since: string; until: string }> {
-  const read = await runOutsideDbContext(() => withSystemDbAccessContext(
-    () => db.execute(sql`
-      select max(signed_in_at) as watermark
-      from m365_signin_events
-      where org_id = ${orgId}::uuid
-    `),
-    'm365SyncSigninEventsWindow',
-  ));
+  const read = await db.execute(sql`
+    select max(signed_in_at) as watermark
+    from m365_signin_events
+    where org_id = ${orgId}::uuid
+  `);
   const raw = rowsOf(read)[0]?.watermark;
   const watermark = raw instanceof Date
     ? raw.getTime()
