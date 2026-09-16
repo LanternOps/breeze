@@ -124,8 +124,8 @@ The scores list includes summary statistics:
 | `page` | Number | Page number (default: 1) |
 | `limit` | Number | Results per page (1-200, default: 25) |
 
-<Aside type="caution">
-  The `siteId` filter is opt-in only: a site-restricted technician who omits it still sees risk scores for every user in the organization, not just their assigned site. Site-scoped visibility for this feature is not yet enforced -- tracked in issue [#5428](https://github.com/LanternOps/breeze/issues/5428).
+<Aside type="note">
+  Site-restricted technicians only see risk scores, events and details for users who are members of their allowed sites (`organization_users.site_ids`), the same boundary Alerts and Software apply. The optional `siteId` filter can narrow that set but never widen it; a `siteId` outside the technician's allowlist is rejected.
 </Aside>
 
 ### User Risk Detail
