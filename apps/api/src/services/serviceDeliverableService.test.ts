@@ -873,14 +873,17 @@ describe('serviceDeliverableService', () => {
   });
 
   describe('markDueOccurrencesMissedForDeliverable (spec §5.3 step 4)', () => {
-    it('closes only overdue scheduled/open occurrences, ignoring grace and preserving tickets', async () => {
+    it('closing mode retires scheduled/open/awaiting_evidence rows past grace and preserves tickets (#5609)', async () => {
       queueResult([{ id: 'o1' }]);
       expect(await markDueOccurrencesMissedForDeliverable(SD, '2026-10-25', { closing: true })).toBe(1);
       expect(lastSet()).toMatchObject({ status: 'missed' });
       expect(lastSet()).not.toHaveProperty('ticketId');
       const params = updateWhereParams();
-      expect(params).toEqual(expect.arrayContaining(['d1', 'scheduled', 'open', '2026-10-25']));
-      for (const status of ['awaiting_evidence', 'delivered', 'waived', 'missed']) expect(params).not.toContain(status);
+      // Grace still applies: a paused (active=false) deliverable can be resumed,
+      // so closing must not stamp `missed` earlier than the normal sweep would.
+      expect(params).toEqual(expect.arrayContaining(['d1', 'scheduled', 'open', 'awaiting_evidence', '2026-10-11']));
+      expect(params).not.toContain('2026-10-25');
+      for (const status of ['delivered', 'waived', 'missed']) expect(params).not.toContain(status);
       const q = new PgDialect().sqlToQuery(chain.where.mock.calls.at(-1)?.[0] as SQL);
       expect(q.sql).toContain('"due_at" <');
       expect(q.sql).not.toContain('"due_at" <=');
