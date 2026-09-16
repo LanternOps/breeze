@@ -11,3 +11,7 @@ export type TopologyDiagnosticStep = z.infer<typeof topologyDiagnosticStepSchema
 export type TopologyDiagnosticPlanStep = z.infer<typeof topologyDiagnosticPlanStepSchema>;
 export type TopologyDiagnosticOrigin = z.infer<typeof topologyDiagnosticOriginSchema>;
 export type TopologyDiagnosticDestination = z.infer<typeof topologyDiagnosticDestinationSchema>;
+
+import type { topologyOriginEligibilitySchema, topologyCollectorsResponseSchema } from '../validators/topologyDiagnostics';
+export type TopologyOriginEligibility = z.infer<typeof topologyOriginEligibilitySchema>;
+export type TopologyCollectorsResponse = z.infer<typeof topologyCollectorsResponseSchema>;
