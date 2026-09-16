@@ -79,7 +79,7 @@ Press `Cmd+Enter` (or `Ctrl+Enter`) to send without leaving the keyboard.
 
 ### Public-reply email notice
 
-A public technician reply emails the requester a laid-out transactional notice (subject, heading, and a **View ticket** button). **The reply text is never in the email.** The customer reads the reply in the [customer portal](/features/portal/) or by replying to the email. Inbound comments (the customer writing in) also send no requester email, so they don't bounce in a loop.
+A public technician reply emails the requester a laid-out transactional notice (subject, heading, and a **View ticket** button). **The reply text is never in the email.** The customer reads the reply in the [customer portal](/features/portal/). They respond by replying to the email. Email-only requesters (no portal login) never see the technician's words. Inbound comments (the customer writing in) also send no requester email, so they don't bounce in a loop.
 
 Partners edit this notice, the ticket-received acknowledgement, and the resolved-ticket mail under **Settings → Partner → Email templates**. The **View ticket** button always goes to `/portal/tickets/:id` on your portal origin; partners cannot point it somewhere else. Self-hosted: set [`PUBLIC_PORTAL_URL`](/deploy/environment/#server) (or `PUBLIC_APP_URL`) so that button is reachable.
 
