@@ -987,13 +987,17 @@ async function openOneOccurrence(d: SweepDeliverable, occ: SweepOccurrence, serv
  * untouched: a missed deliverable's work may still be in flight, and closing
  * its ticket would destroy that signal.
  */
-export async function markDueOccurrencesMissedForDeliverable(d: SweepDeliverable, today: string): Promise<number> {
-  const cutoff = addDaysISO(today, -d.graceDays);   // due_at < cutoff ⇔ due_at + grace < today (isPastGrace)
+export async function markDueOccurrencesMissedForDeliverable(
+  d: SweepDeliverable, today: string, options: { closing?: boolean } = {},
+): Promise<number> {
+  // Once service ends, retire overdue scheduled/open work without waiting for grace.
+  const statuses = options.closing ? ['scheduled', 'open'] as const : MISSABLE;
+  const cutoff = options.closing ? today : addDaysISO(today, -d.graceDays);
   const rows = await db.update(serviceDeliverableOccurrences)
     .set({ status: 'missed', updatedAt: new Date() })
     .where(and(
       eq(serviceDeliverableOccurrences.deliverableId, d.id),
-      inArray(serviceDeliverableOccurrences.status, MISSABLE),
+      inArray(serviceDeliverableOccurrences.status, statuses),
       lt(serviceDeliverableOccurrences.dueAt, cutoff),
     ))
     .returning({ id: serviceDeliverableOccurrences.id });

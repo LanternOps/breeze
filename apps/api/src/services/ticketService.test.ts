@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // Recorders for insert().values(v), update().set(v), and update().set().where(w) arguments
 const valuesMock = vi.fn();
@@ -3756,6 +3757,9 @@ describe('moveTicketOrg', () => {
 
     await expect(moveTicketOrg('t1', 'oB', { userId: 'admin' }))
       .rejects.toMatchObject({ status: 409, code: 'DELIVERABLE_TICKET_PINNED' });
+    const pinQuery = new PgDialect().sqlToQuery(selectWhereMock.mock.calls.at(-1)![0]);
+    expect(pinQuery.sql).toContain('"service_deliverable_occurrences"."org_id" =');
+    expect(pinQuery.params).toEqual(['t1', 'oA']);
     expect(setMock).not.toHaveBeenCalled();
     expect(executedTableNames()).toEqual([]);
     expect(auditMock).not.toHaveBeenCalled();
