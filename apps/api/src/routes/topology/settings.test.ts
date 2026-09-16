@@ -13,7 +13,9 @@ const mocks = vi.hoisted(() => ({
   dbSelect: vi.fn(),
   dbInsert: vi.fn(),
   commandDispatch: vi.fn(),
-  outboxWrite: vi.fn(),
+  dbUpdate: vi.fn(),
+  dbDelete: vi.fn(),
+  dbExecute: vi.fn(),
   loadFlags: vi.fn(),
   capabilities: vi.fn(),
 }));
@@ -45,10 +47,18 @@ vi.mock('../../services/topology/flags', () => ({
   getTopologyCapabilities: mocks.capabilities,
 }));
 
+vi.mock('../../services/commandQueue', () => ({
+  executeCommand: mocks.commandDispatch, queueCommand: mocks.commandDispatch,
+  queueCommandForExecution: mocks.commandDispatch, executeCommandWithSystemPrecheck: mocks.commandDispatch,
+}));
+
 vi.mock('../../db', () => ({
   db: {
     select: mocks.dbSelect,
     insert: mocks.dbInsert,
+    update: mocks.dbUpdate,
+    delete: mocks.dbDelete,
+    execute: mocks.dbExecute,
   },
 }));
 
@@ -100,7 +110,9 @@ describe('GET /topology/sites/:siteId/settings', () => {
     mocks.dbSelect.mockReset();
     mocks.dbInsert.mockReset();
     mocks.commandDispatch.mockReset();
-    mocks.outboxWrite.mockReset();
+    mocks.dbUpdate.mockReset();
+    mocks.dbDelete.mockReset();
+    mocks.dbExecute.mockReset();
     mocks.loadFlags.mockReset();
     mocks.capabilities.mockReset();
     mocks.access.status = 200;
@@ -129,7 +141,9 @@ describe('GET /topology/sites/:siteId/settings', () => {
     });
     expect(mocks.dbInsert).not.toHaveBeenCalled();
     expect(mocks.commandDispatch).not.toHaveBeenCalled();
-    expect(mocks.outboxWrite).not.toHaveBeenCalled();
+    expect(mocks.dbUpdate).not.toHaveBeenCalled();
+    expect(mocks.dbDelete).not.toHaveBeenCalled();
+    expect(mocks.dbExecute).not.toHaveBeenCalled();
   });
 
   it('returns the current revision and treats a successful build as graph ready', async () => {

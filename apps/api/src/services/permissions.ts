@@ -61,6 +61,12 @@ async function getPermissionCacheVersions(userId: string): Promise<PermissionCac
   }
 }
 
+/** Shared invalidation generation for private, permission-bound cursors. Null fails closed. */
+export async function getPermissionAuthorityVersion(userId: string): Promise<string | null> {
+  const versions = await getPermissionCacheVersions(userId);
+  return versions ? JSON.stringify([versions.globalVersion, versions.userVersion]) : null;
+}
+
 function cacheVersionsMatch(
   cached: PermissionCacheVersions | null,
   current: PermissionCacheVersions | null,
