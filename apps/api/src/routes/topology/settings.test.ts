@@ -68,7 +68,7 @@ vi.mock('../../db/schema', () => ({
     siteId: 'topology_site_state.siteId',
     graphRevision: 'topology_site_state.graphRevision',
     settingsRevision: 'topology_site_state.settingsRevision',
-    lastBuildStatus: 'topology_site_state.lastBuildStatus',
+    effectiveSettings: 'topology_site_state.effectiveSettings',
   },
 }));
 
@@ -146,11 +146,18 @@ describe('GET /topology/sites/:siteId/settings', () => {
     expect(mocks.dbExecute).not.toHaveBeenCalled();
   });
 
-  it('returns the current revision and treats a successful build as graph ready', async () => {
+  const checkpoint = {
+    version: 1, runId: '33333333-3333-4333-8333-333333333333',
+    capturedThrough: '0', snapshotThrough: '1', deliveredThrough: '1',
+    status: 'complete', snapshotRows: 0,
+    counts: { imported: 0, skipped: 0, conflicted: 0, manual: 0, pin: 0, tombstone: 0 },
+    mismatches: [],
+  };
+
+  it.each([0n, 3n])('treats a completed import as ready even at graph revision %s', async graphRevision => {
     mocks.dbSelect.mockReturnValue(selectResult([{
-      settingsRevision: 7n,
-      graphRevision: 3n,
-      lastBuildStatus: 'succeeded',
+      settingsRevision: 7n, graphRevision,
+      effectiveSettings: { legacyImport: checkpoint },
     }]));
 
     const response = await app().request(`/topology/sites/${SITE_ID}/settings`);
@@ -160,16 +167,31 @@ describe('GET /topology/sites/:siteId/settings', () => {
     expect(mocks.capabilities).toHaveBeenCalledWith(flags, true, expect.any(Object));
   });
 
-  it('does not treat a success marker without a published graph revision as ready', async () => {
+  it.each([
+    {},
+    { legacyImport: { ...checkpoint, status: 'staged' } },
+  ])('does not treat a structural revision as completed initialization', async effectiveSettings => {
     mocks.dbSelect.mockReturnValue(selectResult([{
-      settingsRevision: 2n,
-      graphRevision: 0n,
-      lastBuildStatus: 'succeeded',
+      settingsRevision: 2n, graphRevision: 3n, effectiveSettings,
     }]));
 
-    await app().request(`/topology/sites/${SITE_ID}/settings`);
+    const response = await app().request(`/topology/sites/${SITE_ID}/settings`);
 
+    expect(response.status).toBe(200);
     expect(mocks.capabilities).toHaveBeenCalledWith(flags, false, expect.any(Object));
+  });
+
+  it('fails closed on corrupt import checkpoint metadata', async () => {
+    mocks.dbSelect.mockReturnValue(selectResult([{
+      settingsRevision: 2n, graphRevision: 3n,
+      effectiveSettings: { legacyImport: { status: 'complete' } },
+    }]));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await app().request(`/topology/sites/${SITE_ID}/settings`);
+      expect(response.status).toBe(500);
+      expect(mocks.capabilities).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
   });
 
   it('returns a hidden 404 for an inaccessible cross-org site before any reads', async () => {

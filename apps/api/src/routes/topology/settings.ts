@@ -9,6 +9,7 @@ import {
   type TopologyAgentCapabilities,
 } from '../../services/topology/flags';
 import { requireTopologySiteCapability } from './middleware';
+import { readLegacyImportCheckpoint } from '../../services/topology/legacyImportState';
 
 export const topologySettingsRoutes = new Hono();
 
@@ -30,7 +31,7 @@ topologySettingsRoutes.get(
       loadTopologyFlags(ctx),
       db
         .select({
-          graphRevision: topologySiteState.graphRevision,
+          effectiveSettings: topologySiteState.effectiveSettings,
           settingsRevision: topologySiteState.settingsRevision,
         })
         .from(topologySiteState)
@@ -42,7 +43,9 @@ topologySettingsRoutes.get(
     ]);
 
     const state = stateRows[0];
-    const siteGraphReady = (state?.graphRevision ?? 0n) > 0n;
+    // Structural revisions also advance on lifecycle changes, while an empty
+    // completed import need not advance one. Match the mutation readiness gate.
+    const siteGraphReady = readLegacyImportCheckpoint(state?.effectiveSettings ?? {})?.status === 'complete';
 
     return c.json({
       siteId: ctx.scope.siteId,
