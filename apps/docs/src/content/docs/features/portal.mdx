@@ -256,6 +256,14 @@ Both portal users and technicians can add comments to tickets. When a technician
 
 Files a technician attaches to a public reply appear beneath it in the portal conversation — images inline, other files as download links. Attachments on internal notes are never exposed. Portal users cannot upload attachments of their own.
 
+### Email notice for a public reply
+
+A public technician reply also emails a notice. **View ticket** opens `/portal/tickets/:id`. Signed-out visitors land on login with a `next` back to that ticket. `next` is limited to known portal paths, so it cannot send someone off-site.
+
+The email does **not** include the reply text, and there is no magic link that shows the ticket without signing in.
+
+Requesters who only ever email you (no portal login) should **reply to the email**. The portal page still requires an account.
+
 ### SLA badges and support usage
 
 Turning on **Support usage** visibility adds two things to the customer's view: an SLA badge on tickets in the list (the ticket detail always shows one), and a month-to-date total of billable support time. Use it with customers on a block-hours or time-and-materials arrangement who would otherwise find the invoice a surprise; leave it off for customers on a flat-rate agreement, where a running time total invites the wrong conversation.
