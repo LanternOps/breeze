@@ -103,3 +103,12 @@ export function useAssetProbe({
 
   return { checking, pending, errorCode, checkNow };
 }
+
+/** Shared locale-key suffixes for probe errors in the stat strip and card. */
+export const PROBE_ERROR_KEYS: Record<ProbeErrorCode, string> = {
+  NO_AGENT_IN_SITE: 'noAgentInSite',
+  PROBE_IN_FLIGHT: 'inFlight',
+  ASSET_NO_IP: 'noIp',
+  PROBE_TIMED_OUT: 'timedOut',
+  UNKNOWN: 'unknown',
+};

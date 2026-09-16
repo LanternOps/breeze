@@ -2350,7 +2350,8 @@
       "ping": "Ping",
       "snmpMonitoring": "Surveillance SNMP",
       "status": "Statut",
-      "tags": "Étiquettes"
+      "tags": "Étiquettes",
+      "bridgingAgent": "Agent relais"
     },
     "goBack": "Retour",
     "live": {
@@ -2388,7 +2389,9 @@
       "identity": "Identité",
       "monitoringStatus": "Statut de surveillance",
       "openPorts": "Ports ouverts",
-      "snmpData": "Données SNMP"
+      "snmpData": "Données SNMP",
+      "reachability": "Accessibilité",
+      "collection": "Collecte"
     },
     "stats": {
       "asOf": "à la date du {{time}}",
@@ -2597,7 +2600,40 @@
     "header": {
       "settings": "Paramètres"
     },
-    "editInSettings": "Modifier dans les paramètres"
+    "editInSettings": "Modifier dans les paramètres",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "En ligne",
+          "degraded": "Dégradé",
+          "offline": "Hors ligne"
+        },
+        "probe": {
+          "ok": "Réponse reçue",
+          "failed": "Aucune réponse",
+          "pending": "En attente de l’agent"
+        },
+        "snmp": {
+          "ok": "Interrogation en cours",
+          "failing": "En échec",
+          "no_template": "Aucun modèle",
+          "no_agent": "Aucun agent sur le site",
+          "asset_moved": "Actif déplacé",
+          "never_polled": "Jamais interrogé"
+        },
+        "snmpFailures": "{{count}} échecs consécutifs",
+        "snmpNote": "Un échec SNMP peut concerner l’agent relais plutôt que l’appareil — les échecs sont comptabilisés lors de l’envoi de l’interrogation.",
+        "scan": {
+          "seen": "Détecté",
+          "missed": "Non détecté"
+        },
+        "emptyTitle": "Aucun rapport reçu pour cet appareil",
+        "emptyDescription": "Aucune analyse, vérification, interrogation ou sonde manuelle n’a encore produit d’observation."
+      }
+    },
+    "collection": {
+      "viewOids": "Voir les OID"
+    }
   },
   "osIcons": {
     "linux": "Linux",

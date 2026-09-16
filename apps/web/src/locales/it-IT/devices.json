@@ -2350,7 +2350,8 @@
       "ping": "Ping",
       "snmpMonitoring": "Monitoraggio SNMP",
       "status": "Stato",
-      "tags": "Tag"
+      "tags": "Tag",
+      "bridgingAgent": "Agente di collegamento"
     },
     "goBack": "Torna indietro",
     "live": {
@@ -2388,7 +2389,9 @@
       "identity": "Identità",
       "monitoringStatus": "Stato monitoraggio",
       "openPorts": "Porte aperte",
-      "snmpData": "Dati SNMP"
+      "snmpData": "Dati SNMP",
+      "reachability": "Raggiungibilità",
+      "collection": "Raccolta"
     },
     "stats": {
       "asOf": "aggiornato al {{time}}",
@@ -2597,7 +2600,40 @@
     "header": {
       "settings": "Impostazioni"
     },
-    "editInSettings": "Modifica nelle impostazioni"
+    "editInSettings": "Modifica nelle impostazioni",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "In linea",
+          "degraded": "Degradato",
+          "offline": "Non in linea"
+        },
+        "probe": {
+          "ok": "Risposta ricevuta",
+          "failed": "Nessuna risposta",
+          "pending": "In attesa dell’agente"
+        },
+        "snmp": {
+          "ok": "Interrogazione in corso",
+          "failing": "In errore",
+          "no_template": "Nessun modello",
+          "no_agent": "Nessun agente nella sede",
+          "asset_moved": "Risorsa spostata",
+          "never_polled": "Mai interrogato"
+        },
+        "snmpFailures": "{{count}} errori consecutivi",
+        "snmpNote": "Un errore SNMP può riguardare l’agente di collegamento anziché il dispositivo — gli errori vengono conteggiati quando viene inviata l’interrogazione.",
+        "scan": {
+          "seen": "Rilevato",
+          "missed": "Non rilevato"
+        },
+        "emptyTitle": "Nessuna segnalazione per questo dispositivo",
+        "emptyDescription": "Nessuna scansione, verifica, interrogazione o sonda manuale ha ancora prodotto un’osservazione."
+      }
+    },
+    "collection": {
+      "viewOids": "Visualizza OID"
+    }
   },
   "osIcons": {
     "linux": "Linux",

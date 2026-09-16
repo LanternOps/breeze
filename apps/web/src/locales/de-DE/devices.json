@@ -2350,7 +2350,8 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP-Überwachung",
       "status": "Status",
-      "tags": "Schlagworte"
+      "tags": "Schlagworte",
+      "bridgingAgent": "Vermittelnder Agent"
     },
     "goBack": "Zurück",
     "live": {
@@ -2388,7 +2389,9 @@
       "identity": "Identität",
       "monitoringStatus": "Überwachungsstatus",
       "openPorts": "Offene Ports",
-      "snmpData": "SNMP-Daten"
+      "snmpData": "SNMP-Daten",
+      "reachability": "Erreichbarkeit",
+      "collection": "Datenerfassung"
     },
     "stats": {
       "asOf": "Stand: {{time}}",
@@ -2597,7 +2600,40 @@
     "header": {
       "settings": "Einstellungen"
     },
-    "editInSettings": "In den Einstellungen bearbeiten"
+    "editInSettings": "In den Einstellungen bearbeiten",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "Erreichbar",
+          "degraded": "Beeinträchtigt",
+          "offline": "Nicht erreichbar"
+        },
+        "probe": {
+          "ok": "Geantwortet",
+          "failed": "Keine Antwort",
+          "pending": "Warten auf den Agenten"
+        },
+        "snmp": {
+          "ok": "Abfrage läuft",
+          "failing": "Fehlgeschlagen",
+          "no_template": "Keine Vorlage",
+          "no_agent": "Kein Agent am Standort",
+          "asset_moved": "Asset verschoben",
+          "never_polled": "Noch nie abgefragt"
+        },
+        "snmpFailures": "{{count}} aufeinanderfolgende Fehler",
+        "snmpNote": "Ein SNMP-Fehler kann den vermittelnden Agenten statt des Geräts betreffen — Fehler werden beim Versand der Abfrage gezählt.",
+        "scan": {
+          "seen": "Gesehen",
+          "missed": "Nicht gesehen"
+        },
+        "emptyTitle": "Für dieses Gerät liegen keine Meldungen vor",
+        "emptyDescription": "Bisher hat weder ein Scan noch eine Prüfung, Abfrage oder manuelle Erreichbarkeitsprüfung eine Beobachtung geliefert."
+      }
+    },
+    "collection": {
+      "viewOids": "OIDs anzeigen"
+    }
   },
   "osIcons": {
     "linux": "Linux",

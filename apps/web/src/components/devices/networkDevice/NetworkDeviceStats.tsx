@@ -7,7 +7,7 @@ import { formatLastPoll, formatReachability, type TFn } from './reachabilityCopy
 import { lowestSupply } from './health/printerMib';
 import { portsUp } from './health/ifTable';
 import type { AssetProbe, Collection, Reachability } from './types';
-import type { ProbeErrorCode, useAssetProbe } from './useAssetProbe';
+import { PROBE_ERROR_KEYS, type useAssetProbe } from './useAssetProbe';
 
 export type NetworkDeviceStatsProps = {
   asset: DiscoveredAsset;
@@ -20,13 +20,6 @@ export type NetworkDeviceStatsProps = {
   onViewMonitoring: () => void;
 };
 
-const PROBE_ERROR_KEYS: Record<ProbeErrorCode, string> = {
-  NO_AGENT_IN_SITE: 'noAgentInSite',
-  PROBE_IN_FLIGHT: 'inFlight',
-  ASSET_NO_IP: 'noIp',
-  PROBE_TIMED_OUT: 'timedOut',
-  UNKNOWN: 'unknown',
-};
 const TONE_CLASSES = { success: 'text-success', destructive: 'text-destructive', muted: 'text-muted-foreground' };
 
 export function NetworkDeviceStats({

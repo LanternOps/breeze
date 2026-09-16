@@ -2350,7 +2350,8 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP izleme",
       "status": "Durum",
-      "tags": "Etiketler"
+      "tags": "Etiketler",
+      "bridgingAgent": "Köprü aracısı"
     },
     "goBack": "Geri dön",
     "live": {
@@ -2388,7 +2389,9 @@
       "identity": "Kimlik",
       "monitoringStatus": "İzleme durumu",
       "openPorts": "Açık bağlantı noktaları",
-      "snmpData": "SNMP verisi"
+      "snmpData": "SNMP verisi",
+      "reachability": "Erişilebilirlik",
+      "collection": "Veri toplama"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",
@@ -2597,7 +2600,40 @@
     "header": {
       "settings": "Ayarlar"
     },
-    "editInSettings": "Ayarlarda düzenle"
+    "editInSettings": "Ayarlarda düzenle",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "Çevrimiçi",
+          "degraded": "Performansı düşmüş",
+          "offline": "Çevrimdışı"
+        },
+        "probe": {
+          "ok": "Yanıt alındı",
+          "failed": "Yanıt yok",
+          "pending": "Aracı bekleniyor"
+        },
+        "snmp": {
+          "ok": "Sorgulanıyor",
+          "failing": "Başarısız",
+          "no_template": "Şablon yok",
+          "no_agent": "Sitede aracı yok",
+          "asset_moved": "Varlık taşındı",
+          "never_polled": "Hiç sorgulanmadı"
+        },
+        "snmpFailures": "Art arda {{count}} başarısızlık",
+        "snmpNote": "Bir SNMP hatası cihazdan ziyade köprü aracısını işaret edebilir — başarısızlıklar sorgu gönderildiğinde sayılır.",
+        "scan": {
+          "seen": "Görüldü",
+          "missed": "Görülmedi"
+        },
+        "emptyTitle": "Bu cihaz hakkında henüz rapor yok",
+        "emptyDescription": "Henüz hiçbir tarama, kontrol, sorgu veya elle başlatılan yoklama bir gözlem üretmedi."
+      }
+    },
+    "collection": {
+      "viewOids": "OID’leri görüntüle"
+    }
   },
   "osIcons": {
     "linux": "Linux",

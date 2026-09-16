@@ -2335,7 +2335,35 @@
         "snmp": "SNMP"
       },
       "lastSeenBy": "last seen by {{source}} {{relative}}",
-      "neverObserved": "never observed"
+      "neverObserved": "never observed",
+      "detail": {
+        "check": {
+          "online": "Online",
+          "degraded": "Degraded",
+          "offline": "Offline"
+        },
+        "probe": {
+          "ok": "Answered",
+          "failed": "No answer",
+          "pending": "Waiting for the agent"
+        },
+        "snmp": {
+          "ok": "Polling",
+          "failing": "Failing",
+          "no_template": "No template",
+          "no_agent": "No agent in site",
+          "asset_moved": "Asset moved",
+          "never_polled": "Never polled"
+        },
+        "snmpFailures": "{{count}} consecutive failures",
+        "snmpNote": "An SNMP failure can mean the bridging agent rather than the device — failures are counted when the poll is dispatched.",
+        "scan": {
+          "seen": "Seen",
+          "missed": "Missed"
+        },
+        "emptyTitle": "Nothing has reported on this device",
+        "emptyDescription": "No scan, check, poll or manual probe has produced an observation yet."
+      }
     },
     "collection": {
       "status": {
@@ -2355,7 +2383,8 @@
         "unknown": "{{count}} unknown",
         "neverPolled": "{{count}} never polled",
         "noOids": "No OIDs in this template"
-      }
+      },
+      "viewOids": "View OIDs"
     },
     "settings": {
       "toasts": {
@@ -2530,7 +2559,8 @@
       "ping": "Ping",
       "snmpMonitoring": "SNMP monitoring",
       "status": "Status",
-      "tags": "Tags"
+      "tags": "Tags",
+      "bridgingAgent": "Bridging agent"
     },
     "goBack": "Go back",
     "live": {
@@ -2568,7 +2598,9 @@
       "identity": "Identity",
       "monitoringStatus": "Monitoring status",
       "openPorts": "Open ports",
-      "snmpData": "SNMP data"
+      "snmpData": "SNMP data",
+      "reachability": "Reachability",
+      "collection": "Collection"
     },
     "stats": {
       "asOf": "as of {{time}}",

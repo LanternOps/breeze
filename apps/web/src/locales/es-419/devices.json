@@ -2350,7 +2350,8 @@
       "ping": "Ping",
       "snmpMonitoring": "Monitoreo SNMP",
       "status": "Estado",
-      "tags": "Etiquetas"
+      "tags": "Etiquetas",
+      "bridgingAgent": "Agente intermediario"
     },
     "goBack": "Volver",
     "live": {
@@ -2388,7 +2389,9 @@
       "identity": "Identidad",
       "monitoringStatus": "Estado de monitoreo",
       "openPorts": "Puertos abiertos",
-      "snmpData": "Datos SNMP"
+      "snmpData": "Datos SNMP",
+      "reachability": "Accesibilidad",
+      "collection": "Recopilación"
     },
     "stats": {
       "asOf": "a partir de {{time}}",
@@ -2597,7 +2600,40 @@
     "header": {
       "settings": "Configuración"
     },
-    "editInSettings": "Editar en configuración"
+    "editInSettings": "Editar en configuración",
+    "reachability": {
+      "detail": {
+        "check": {
+          "online": "En línea",
+          "degraded": "Degradado",
+          "offline": "Sin conexión"
+        },
+        "probe": {
+          "ok": "Respondió",
+          "failed": "Sin respuesta",
+          "pending": "Esperando al agente"
+        },
+        "snmp": {
+          "ok": "Consultando",
+          "failing": "Con fallas",
+          "no_template": "Sin plantilla",
+          "no_agent": "Sin agente en el sitio",
+          "asset_moved": "Activo trasladado",
+          "never_polled": "Nunca consultado"
+        },
+        "snmpFailures": "{{count}} fallas consecutivas",
+        "snmpNote": "Una falla de SNMP puede deberse al agente intermediario y no al dispositivo — las fallas se cuentan al enviar la consulta.",
+        "scan": {
+          "seen": "Detectado",
+          "missed": "No detectado"
+        },
+        "emptyTitle": "No hay reportes sobre este dispositivo",
+        "emptyDescription": "Ningún escaneo, verificación, consulta o sondeo manual ha producido una observación todavía."
+      }
+    },
+    "collection": {
+      "viewOids": "Ver OID"
+    }
   },
   "osIcons": {
     "linux": "Linux",
