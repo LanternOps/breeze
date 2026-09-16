@@ -62,6 +62,8 @@ Defined in W01 and consumed verbatim by later waves:
 - `type BackupHealthRow` and `type BackupHealthSummary` exactly as the spec's Unified read model section
   (lives in shared so web and portal import it).
 - `type BackupProviderAlertCondition = 'failed' | 'over_quota' | 'no_selection' | 'no_backups' | 'completed_with_errors' | 'stale'`.
+- Status buckets (the Cove-email bars; one grouping for the overview AND the report): `BACKUP_STATUS_BUCKET_IDS = ['no_backups', 'completed', 'completed_with_errors', 'in_progress', 'unsuccessful', 'other'] as const`, `type BackupStatusBucketId`, `BACKUP_STATUS_BUCKET_MEMBERS: Record<BackupStatusBucketId, readonly ExternalBackupStatus[]>` (`unsuccessful = failed | over_quota | no_selection | interrupted`, `other = not_started | unknown`), `bucketForBackupStatus(status): BackupStatusBucketId`. UIs render `other` only when its count is non-zero.
+- Everything under `packages/shared/src/utils/backupHealth.ts` is re-exported from `packages/shared/src/utils/index.ts` and imported by API code from the package root (`@breeze/shared`), never by deep path — deep paths are absent from the package `exports` map and break the integration runner.
 
 ### Provider adapter (`apps/api/src/services/backupProviders/`)
 - `types.ts`: `interface BackupProviderAdapter { key; label; credentialsSchema; testConnection(creds, baseUrl); listCustomers(creds, baseUrl, rootId); listDevices(creds, baseUrl, rootId) }`,
@@ -81,12 +83,17 @@ Defined in W01 and consumed verbatim by later waves:
 
 ### Sync (W02, `apps/api/src/jobs/backupProviderSync.ts` + `apps/api/src/services/backupProviders/`)
 - Queue `backup-provider-sync`; repeatable job `sync-all` (every 5 min); per-connection job name `sync-connection`, `jobId = backup-provider-sync-${connectionId}`.
-- `initializeBackupProviderSyncJob()`, `shutdownBackupProviderSyncJob()`, `enqueueBackupProviderSync(connectionId: string): Promise<void>` (W01's sync-now and create routes call this — W01 ships it as a stub that only enqueues; W02 ships the worker), `syncConnectionById(connectionId: string): Promise<void>`.
+- `initializeBackupProviderSyncJob()`, `shutdownBackupProviderSyncJob()`, `enqueueBackupProviderSync(connectionId: string): Promise<string>` (returns the BullMQ job id; W01's sync-now and create routes call this — W01 ships it as a stub that only enqueues via `enqueueOrReplaceStale` on a `createInstrumentedQueue`, every call site wrapped in `runOutsideDbContext`; W02 ships the worker), `syncConnectionById(connectionId: string): Promise<void>`.
 - `persist.ts`: `persistVendorSnapshot(tx, connection, snapshot: { customers: VendorCustomer[]; devices: VendorDevice[] }): Promise<SyncCounters>`.
-- `mapping.ts`: `autoMapCustomers(tx, connectionId, partnerId): Promise<number>`, `remapCustomer(customerId, orgId: string | null, actor): Promise<void>` (W01 ships `remapCustomer`; the atomic route uses it).
+- `mapping.ts`: `autoMapCustomers(tx, connectionId, partnerId): Promise<number>`, `remapCustomer(customerId, orgId: string | null, actor): Promise<RemapCustomerResult>` (`{ deletedDevices: number; deletedHistory: number; resolvedAlerts: number; jobId: string }`; W01 ships it; alerts are resolved BEFORE the inventory transaction because `resolveAlert` publishes on the event bus).
 - `deviceMatching.ts`: `matchProviderDevices(tx, connectionId): Promise<{ linked: number; ambiguous: number }>`.
 - `alerts.ts`: `evaluateProviderAlerts(connectionId: string): Promise<{ raised: number; resolved: number }>`; `BACKUP_PROVIDER_ALERT_SOURCE = 'backup_provider'`, publisher `'backup-provider-sync'`.
+- `alertsResolve.ts` (W01): `resolveProviderAlertsForConnection(connectionId: string): Promise<number>` and `resolveProviderAlertsForCustomer(customerId: string): Promise<number>` — resolve open alerts whose `context->>'source' = 'backup_provider'` and matching `connectionId` / customer's `providerDeviceId`s via `resolveAlert`; called by connection DELETE, `PATCH isActive:false`, and `remapCustomer`.
 - Worker registry entry name `backupProviderSyncWorker` (`placement: 'global'`).
+
+### Route registration lists (W01)
+- Routes that call the vendor (`POST /backup/providers/connections`, `PATCH /backup/providers/connections/:id`, `POST /backup/providers/connections/:id/test`) are registered in `SELF_MANAGED_DB_CONTEXT_ROUTES` (`apps/api/src/middleware/selfManagedDbContextRoutes.ts`) so no pooled connection is held across the HTTP call (`safeFetch`'s `assertOutsideHeldDbContext` throws otherwise).
+- Permissions: reads `BACKUP_READ`; connection/mapping writes `ORGS_WRITE` + `requireMfa()` + `canManagePartnerWidePolicies` (Huntress parity); `PUT /backup/providers/devices/:id/link` uses `BACKUP_WRITE` without MFA.
 
 ### Events (`apps/api/src/services/eventBus.ts`)
 - `backup.provider_device_unhealthy` → `EVENT_TYPES.BACKUP_PROVIDER_DEVICE_UNHEALTHY`,
@@ -98,8 +105,8 @@ Defined in W01 and consumed verbatim by later waves:
   `POST /backup/providers/connections/:id/test`, `POST /backup/providers/connections/:id/sync`,
   `GET /backup/providers/connections/:id/customers`, `PUT /backup/providers/customers/:id/mapping`,
   `GET /backup/providers/devices`, `PUT /backup/providers/devices/:id/link`.
-- `apps/api/src/routes/backup/health.ts` (W03): `GET /backup/health` → `{ data: { rows: BackupHealthRow[]; summary: BackupHealthSummary; nextCursor: string | null; stale: boolean; unmappedDevices: number } }`.
-- `apps/api/src/services/backupHealthReadModel.ts` (W03): `listBackupHealthRows(scope: { orgIds: string[]; siteIds?: string[] }, opts: BackupHealthListOptions): Promise<{ rows: BackupHealthRow[]; nextCursor: string | null }>`,
+- `apps/api/src/routes/backup/health.ts` (W03): `GET /backup/health/devices` → `{ data: { rows: BackupHealthRow[]; summary: BackupHealthSummary; nextCursor: string | null; stale: boolean; unmappedDevices: number } }`. (`GET /backup/health` already exists — `routes/backup/verification.ts:69`, the verification/readiness summary consumed by `BackupVerificationOverview.tsx` — so the device-health listing lives one segment deeper.)
+- `apps/api/src/services/backupHealthReadModel.ts` (W03): `BackupHealthListOptions = { sources?: ('breeze' | 'provider')[]; onlyWithBackup?: boolean; labels?: 'vendor' | 'portal'; filter?: { health?: BackupHealth; status?: ExternalBackupStatus; search?: string }; page: { limit: number; cursor: string | null } }`; `listBackupHealthRows(scope: { orgIds: string[]; siteIds?: string[] }, opts: BackupHealthListOptions): Promise<{ rows: BackupHealthRow[]; nextCursor: string | null }>`,
   `summarizeBackupHealth(scope, opts): Promise<BackupHealthSummary>`, `getProviderCoverageForDevices(orgId, deviceIds: string[]): Promise<Map<string, { covered: boolean; health: BackupHealth }>>` (used by the dashboard overdue panel and the posture report).
 
 ### Web (W03, consumed by W04/W05)
