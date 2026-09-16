@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "AI activity",
+    "count": "{{count}} actions dispatched in the last {{days}} days",
+    "tooltip": "Counts AI-dispatched scripts and commands recorded on this device. A cancel counts as its own action. Recorded on a best-effort basis."
+  },
   "deviceChangeHistoryTab": {
     "title": "Change History",
     "loading": "Loading change history…",
@@ -279,7 +284,20 @@
     "couldnTLoadMore": "Couldn't load more.",
     "viewAllActivity2": "View all activity",
     "text": "→",
-    "viewProposal": "View proposal"
+    "viewProposal": "View proposal",
+    "trigger": {
+      "manual": "Manual",
+      "schedule": "Schedule",
+      "sweep_finding": "Sweep finding",
+      "alert": "Alert",
+      "monitor": "Monitor",
+      "fleet_finding": "Fleet finding",
+      "policy": "Policy",
+      "automation": "Automation",
+      "ticket": "Ticket",
+      "anomaly": "Anomaly",
+      "api": "API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Failed to fetch alert history",

@@ -136,7 +136,7 @@ export function buildCompiledTemplate(
     partnerId: def.partnerId,
     name: `[monitor] ${def.name}`,
     description: def.description,
-    category: 'monitor',
+    category: spec.alertCategory ?? 'monitor',
     // A SINGLE root condition object, never an array: `validateConditions`
     // accepts both, but the sweep's override path replaces this wholesale from
     // the kind spec, which only ever produces one root node.

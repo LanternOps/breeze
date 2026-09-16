@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Checkliste",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Noch keine Schritte.",
+    "addPlaceholder": "Schritt hinzufügen",
+    "add": "Hinzufügen",
+    "internalOnly": "Intern — wird dem Kunden nie angezeigt",
+    "detailPlaceholder": "Optionale Notiz zu diesem Schritt"
+  },
+  "actions": {
+    "moveUp": "Nach oben",
+    "moveDown": "Nach unten",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "retry": "Erneut versuchen"
+  },
+  "source": {
+    "manual": "Manuell",
+    "deliverable": "Leistung",
+    "checklist_template": "Vorlage"
+  },
+  "editDoneWarning": "Das Bearbeiten eines erledigten Schritts löscht, wer ihn wann erledigt hat.",
+  "resolveConfirm": {
+    "title": "Unvollständige Checkliste",
+    "body_one": "{{count}} von {{total}} Schritten ist nicht erledigt. Trotzdem lösen?",
+    "body_other": "{{count}} von {{total}} Schritten sind nicht erledigt. Trotzdem lösen?",
+    "confirm": "Trotzdem lösen",
+    "cancel": "Zurück"
+  },
+  "errors": {
+    "loadFailed": "Checkliste konnte nicht geladen werden.",
+    "saveFailed": "Checklisten-Schritt konnte nicht gespeichert werden.",
+    "reorderFailed": "Checkliste konnte nicht neu angeordnet werden.",
+    "tickRequiresUser": "Zum Abhaken eines Schritts ist eine angemeldete Benutzersitzung erforderlich."
+  },
+  "templates": {
+    "title": "Checklisten-Vorlagen",
+    "subtitle": "Wiederverwendbare Abläufe, die Ihre Techniker auf jedes Ticket anwenden können.",
+    "allOrganizations": "Alle Orgs",
+    "partnerWideHint": "Gilt für jede von Ihnen verwaltete Organisation, jetzt und in Zukunft.",
+    "thisOrganizationOnly": "Nur diese Organisation",
+    "scope": "Wer kann diese Vorlage verwenden",
+    "name": "Name",
+    "description": "Beschreibung",
+    "instructions": "Interne Anweisungen",
+    "instructionsHint": "Intern — wird dem Kunden nie angezeigt.",
+    "isActive": "Aktiv",
+    "inactiveHint": "Inaktive Vorlagen bleiben dort verknüpft, wo sie bereits verwendet werden, erscheinen aber nicht mehr in Auswahllisten.",
+    "steps": "Schritte",
+    "addStep": "Schritt hinzufügen",
+    "stepLabelPlaceholder": "Schrittbezeichnung",
+    "empty": "Noch keine Vorlagen.",
+    "create": "Neue Vorlage",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "delete": "Löschen",
+    "apply": "Vorlage anwenden",
+    "applyCta": "Anwenden",
+    "choosePlaceholder": "Vorlage auswählen",
+    "applyMode": {
+      "append": "Diese Schritte zur bestehenden Checkliste hinzufügen",
+      "replaceUnticked": "Die nicht erledigten Schritte ersetzen (erledigte Schritte bleiben erhalten)"
+    },
+    "errors": {
+      "loadFailed": "Checklisten-Vorlagen konnten nicht geladen werden.",
+      "saveFailed": "Checklisten-Vorlage konnte nicht gespeichert werden.",
+      "applyFailed": "Checklisten-Vorlage konnte nicht angewendet werden."
+    }
+  }
+}

@@ -77,6 +77,14 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
   // ticket_email_links (#4643) closes the gap called out below: it now joins
   // BOTH axes, appended last after ticket_attachments on each.
   'ticket_email_links',
+  // ticket_checklist_items (#5783 W01) denormalizes org_id from its ticket and
+  // has no device_id, so it joins BOTH axes, appended last after
+  // ticket_email_links on each — extending, not reordering, the documented
+  // order. Unlike the six tables above it, its composite (ticket_id, org_id)
+  // FK is DEFERRABLE INITIALLY IMMEDIATE, so both movers must ALSO name
+  // ticket_checklist_items_ticket_org_fk in their SET CONSTRAINTS … DEFERRED
+  // statements — list membership alone is not sufficient here.
+  'ticket_checklist_items',
 ] as const;
 
 /**
@@ -113,6 +121,13 @@ export const TICKET_CHILD_ORG_REWRITE_LOCK_ORDER = [
  * `device_id`, same shape as ticket_attachments. It is now rewritten on BOTH
  * axes, appended last after ticket_attachments so the two movers keep
  * touching the ticket-linked child tables in the same relative order.
+ *
+ * ticket_checklist_items (#5783 W01) is the seventh and the first whose
+ * composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so both
+ * movers additionally name `ticket_checklist_items_ticket_org_fk` in their
+ * `SET CONSTRAINTS … DEFERRED` statements. Completeness of this list is now
+ * derived from the Drizzle schema by moveOrg.coverage.test.ts rather than
+ * trusted to review.
  */
 export const TICKET_ORG_DENORMALIZED_TABLES = [
   'time_entries',
@@ -121,6 +136,7 @@ export const TICKET_ORG_DENORMALIZED_TABLES = [
   'ticket_outbox',
   'ticket_attachments',
   'ticket_email_links',
+  'ticket_checklist_items',
 ] as const;
 
 /**

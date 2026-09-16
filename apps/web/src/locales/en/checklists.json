@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Checklist",
+    "progress": "{{done}} / {{total}}",
+    "empty": "No steps yet.",
+    "addPlaceholder": "Add a step",
+    "add": "Add",
+    "internalOnly": "Internal — never shown to the customer",
+    "detailPlaceholder": "Optional note for this step"
+  },
+  "actions": {
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "delete": "Delete",
+    "edit": "Edit",
+    "save": "Save",
+    "cancel": "Cancel",
+    "retry": "Try again"
+  },
+  "source": {
+    "manual": "Manual",
+    "deliverable": "Deliverable",
+    "checklist_template": "Template"
+  },
+  "editDoneWarning": "Editing a completed step clears who completed it and when.",
+  "resolveConfirm": {
+    "title": "Unfinished checklist",
+    "body_one": "{{count}} of {{total}} steps is unticked. Resolve anyway?",
+    "body_other": "{{count}} of {{total}} steps are unticked. Resolve anyway?",
+    "confirm": "Resolve anyway",
+    "cancel": "Go back"
+  },
+  "errors": {
+    "loadFailed": "Failed to load the checklist.",
+    "saveFailed": "Failed to save the checklist step.",
+    "reorderFailed": "Failed to reorder the checklist.",
+    "tickRequiresUser": "Ticking a step requires a signed-in user session."
+  },
+  "templates": {
+    "title": "Checklist templates",
+    "subtitle": "Reusable procedures your technicians can apply to any ticket.",
+    "allOrganizations": "All orgs",
+    "partnerWideHint": "Applies to every organization you manage, now and in future.",
+    "thisOrganizationOnly": "This organization only",
+    "scope": "Who can use this template",
+    "name": "Name",
+    "description": "Description",
+    "instructions": "Internal instructions",
+    "instructionsHint": "Internal — never shown to the customer.",
+    "isActive": "Active",
+    "inactiveHint": "Inactive templates stay linked where they are already used but stop appearing in pickers.",
+    "steps": "Steps",
+    "addStep": "Add a step",
+    "stepLabelPlaceholder": "Step label",
+    "empty": "No templates yet.",
+    "create": "New template",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "apply": "Apply template",
+    "applyCta": "Apply",
+    "choosePlaceholder": "Choose a template",
+    "applyMode": {
+      "append": "Add these steps to the existing checklist",
+      "replaceUnticked": "Replace the unticked steps (completed steps are kept)"
+    },
+    "errors": {
+      "loadFailed": "Failed to load checklist templates.",
+      "saveFailed": "Failed to save the checklist template.",
+      "applyFailed": "Failed to apply the checklist template."
+    }
+  }
+}

@@ -1,4 +1,13 @@
 {
+  "aiInitiator": {
+    "assistant": "Yapay zekâ asistanı",
+    "agent": "Yapay zekâ ajanı",
+    "originUnavailable": "Kaynak kullanılamıyor",
+    "openSession": "Görüşmeyi aç",
+    "openAgentRun": "Ajan çalıştırmasını aç",
+    "tool": "Araç: {{name}}",
+    "occurredAt": "{{time}} tarihinde gerçekleşti"
+  },
   "lists": {
     "separator": ", "
   },
@@ -34,6 +43,7 @@
     "quotes": "Alıntılar",
     "invoices": "Faturalar",
     "contracts": "Sözleşmeler",
+    "agreements": "Anlaşmalar",
     "timesheets": "Zaman Çizelgeleri",
     "productCatalog": "Ürün Kataloğu",
     "deviceGroups": "Cihaz Grupları",

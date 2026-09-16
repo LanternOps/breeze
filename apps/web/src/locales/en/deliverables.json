@@ -73,7 +73,13 @@
     "owner": "Owner",
     "ticketCategory": "Ticket category",
     "portalVisible": "Show in customer portal",
-    "sortOrder": "Sort order"
+    "sortOrder": "Sort order",
+    "instructions": "Internal instructions",
+    "instructionsHint": "Internal — never shown to the customer.",
+    "checklistTemplate": "Checklist template",
+    "checklistTemplateNone": "None",
+    "checklistTemplateAllOrgs": "All orgs",
+    "checklistTemplateManage": "Manage checklist templates"
   },
   "drawer": {
     "title": "Occurrences",
@@ -87,7 +93,10 @@
     "uploadEvidence": "Upload a file as evidence",
     "uploadEvidenceHint": "PDF, JPEG, PNG or WebP, up to 10 MB. The file is filed in this organization’s document library.",
     "evidenceDocument": "Document",
-    "upload": "Upload"
+    "upload": "Upload",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Show checklist",
+    "hideChecklist": "Hide checklist"
   },
   "evidence": {
     "reportRun": "Report run",

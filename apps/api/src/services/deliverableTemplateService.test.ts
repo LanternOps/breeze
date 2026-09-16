@@ -16,6 +16,15 @@ vi.mock('../db', () => {
   return { db: chain() };
 });
 
+// #5808 W03 — the owner-axis RULES have their own suite
+// (checklistTemplateReference.test.ts). Mocked here so these cases assert WHICH
+// owner axis this service hands over, which is the thing that goes wrong.
+const refMocks = vi.hoisted(() => ({
+  assertChecklistTemplateUsableByTemplateItemOwner: vi.fn(),
+  assertChecklistTemplateUsableByOrg: vi.fn(),
+}));
+vi.mock('./checklistTemplateReference', () => refMocks);
+
 // The db chain mock cannot feed W01's real createDeliverable (it would read an
 // empty queue and throw INSERT_FAILED), so the collaborator is mocked here and
 // the REAL create path is proven against Postgres in
@@ -64,7 +73,11 @@ function compile(fragment: unknown): { sql: string; params: unknown[] } {
 }
 
 describe('deliverableTemplateService', () => {
-  beforeEach(() => { dbMocks.rows.length = 0; });
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
+    refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+  });
 
   it('a partner tech without full org access cannot create a partner-wide set', async () => {
     await expect(createTemplateSet({ name: 'Best plan', ownerScope: 'partner', items: [] }, partnerTech))
@@ -158,10 +171,78 @@ describe('deliverableTemplateService', () => {
     await expect(addTemplateItem('s9', { name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, partnerAdmin))
       .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
   });
+
+  // ── #5808 W03: instructions + the checklist-template pointer on an item ───
+  it('an item writes instructions and checklistTemplateId', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' }]);
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+    await addTemplateItem('s1', { ...{ name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, instructions: 'Runbook prose', checklistTemplateId: 'tcl-1' }, partnerAdmin);
+    const { db } = await import('../db');
+    expect((db as any).values.mock.calls.at(-1)?.[0]).toMatchObject({
+      instructions: 'Runbook prose',
+      checklistTemplateId: 'tcl-1',
+    });
+  });
+
+  it('validates the reference against the SET’S owner axis, not the caller’s org', async () => {
+    // The caller is a partner admin with accessibleOrgIds ['org1'], but the SET
+    // is partner-wide. Validating against the caller's org would let a
+    // partner-wide item point at an org-owned template that is invisible to
+    // every other org the set is applied to.
+    dbMocks.rows.push([{ id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' }]);
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+    await addTemplateItem('s1', { ...{ name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, checklistTemplateId: 'tcl-1' }, partnerAdmin);
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
+      .toHaveBeenCalledWith('tcl-1', { orgId: null, partnerId: 'p1' });
+  });
+
+  it('refuses the write when the reference is not usable, before inserting', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' }]);
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockRejectedValueOnce(
+      Object.assign(new Error('nf'), { status: 404, code: 'NOT_FOUND' }),
+    );
+    const { db } = await import('../db');
+    (db as any).values.mockClear();
+    await expect(addTemplateItem('s1', { ...{ name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, checklistTemplateId: 'FOREIGN' }, partnerAdmin))
+      .rejects.toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    expect((db as any).values).not.toHaveBeenCalled();
+  });
+
+  it('skips validation entirely when no checklistTemplateId is supplied', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]);
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+    await addTemplateItem('s1', { name: 'x', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0 }, partnerAdmin);
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner).not.toHaveBeenCalled();
+  });
+
+  it('updateTemplateItem validates and writes both fields, and a null clears without a lookup', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]);
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+    await updateTemplateItem('s1', 'i1', { instructions: null, checklistTemplateId: null }, partnerAdmin);
+    const { db } = await import('../db');
+    expect((db as any).set.mock.calls.at(-1)?.[0]).toMatchObject({
+      instructions: null,
+      checklistTemplateId: null,
+    });
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner).not.toHaveBeenCalled();
+  });
+
+  it('updateTemplateItem validates a NON-null pointer against the set owner', async () => {
+    dbMocks.rows.push([{ id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' }]);
+    dbMocks.rows.push([{ id: 'i1', setId: 's1' }]);
+    await updateTemplateItem('s1', 'i1', { checklistTemplateId: 'tcl-1' }, partnerAdmin);
+    expect(refMocks.assertChecklistTemplateUsableByTemplateItemOwner)
+      .toHaveBeenCalledWith('tcl-1', { orgId: 'org1', partnerId: null });
+  });
 });
 
 describe('applyTemplateSet', () => {
-  beforeEach(() => { dbMocks.rows.length = 0; createdCalls.length = 0; });
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    createdCalls.length = 0;
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
+    refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+  });
   const set = { id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' };
   const items = [
     { id: 'i1', setId: 's1', name: 'Sign-in log review', cadence: 'monthly', leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve', sortOrder: 0, description: null },
@@ -205,6 +286,70 @@ describe('applyTemplateSet', () => {
     dbMocks.rows.push([set], items, []);                        // set, items, contract lookup empty
     await expect(applyTemplateSet('org1', 's1', { contractId: '11111111-1111-4111-8111-111111111111' }, partnerAdmin))
       .rejects.toMatchObject({ status: 400, code: 'CONTRACT_NOT_IN_ORG' });
+  });
+
+  // ── #5808 W03: the checklist wiring is copied, and cross-org is refused ───
+  //
+  // The hole this closes: loadSetOr404 authorizes the SOURCE set and
+  // requireOrgAccess the TARGET org, independently — so an actor holding both
+  // may apply org A's set to org B. Copying org A's PRIVATE checklist template
+  // into an org-B deliverable would create a cross-org pointer that RLS hides
+  // from org B while the system-context sweep still reads and acts on it.
+  const withChecklist = (checklistTemplateId: string | null) => [
+    { ...items[0]!, instructions: 'Runbook prose', checklistTemplateId },
+  ];
+
+  it('copies instructions and checklistTemplateId onto the new deliverable', async () => {
+    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ partnerId: 'p1' }], [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
+    await applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] });
+    expect(createdCalls[0]!.input).toMatchObject({
+      instructions: 'Runbook prose',
+      checklistTemplateId: 'tcl-shared',
+    });
+  });
+
+  it('409s CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG for org A’s PRIVATE template applied to org B', async () => {
+    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ partnerId: 'p1' }], [{ id: 'tcl-A', orgId: 'org1', partnerId: null }]);
+    await expect(applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] }))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-A'] } });
+    // Nothing is written: the check runs BEFORE the transaction.
+    expect(createdCalls).toEqual([]);
+  });
+
+  it('ALLOWS a PARTNER-WIDE checklist template across orgs of the same partner', async () => {
+    // This is the whole point of partner-wide: one procedure, every customer.
+    dbMocks.rows.push([set], withChecklist('tcl-shared'), [{ partnerId: 'p1' }], [{ id: 'tcl-shared', orgId: null, partnerId: 'p1' }], []);
+    await expect(applyTemplateSet('org2', 's1', {}, { ...partnerAdmin, accessibleOrgIds: ['org1', 'org2'] }))
+      .resolves.toBeDefined();
+  });
+
+  it('ALLOWS an org-owned checklist template when the target IS that org', async () => {
+    dbMocks.rows.push([set], withChecklist('tcl-A'), [{ partnerId: 'p1' }], [{ id: 'tcl-A', orgId: 'org1', partnerId: null }], []);
+    await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin)).resolves.toBeDefined();
+  });
+
+  it('409s a DANGLING pointer rather than applying it silently', async () => {
+    dbMocks.rows.push([set], withChecklist('tcl-GONE'), [{ partnerId: 'p1' }], []);   // owner lookup resolves nothing
+    await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-GONE'] } });
+  });
+
+  it('409s a FOREIGN partner’s partner-wide template too, not just a foreign org’s', async () => {
+    // A partner-wide template is only "visible to both orgs by construction"
+    // when it belongs to the TARGET ORG'S OWN partner. One owned by a different
+    // MSP is exactly as unreachable as a foreign org's private template, so the
+    // guard must reject it here rather than leaning on createDeliverable's
+    // second-layer 404 mid-transaction.
+    dbMocks.rows.push([set], withChecklist('tcl-FOREIGN'), [{ partnerId: 'p-TARGET' }], [{ id: 'tcl-FOREIGN', orgId: null, partnerId: 'p-OTHER' }]);
+    await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin))
+      .rejects.toMatchObject({ status: 409, code: 'CHECKLIST_TEMPLATE_NOT_IN_TARGET_ORG', details: { templateIds: ['tcl-FOREIGN'] } });
+    expect(createdCalls).toEqual([]);
+  });
+
+  it('does not query template owners at all when no item carries one', async () => {
+    dbMocks.rows.push([set], withChecklist(null), []);
+    await expect(applyTemplateSet('org1', 's1', {}, partnerAdmin)).resolves.toBeDefined();
+    expect(createdCalls[0]!.input).toMatchObject({ checklistTemplateId: undefined });
   });
 
   describe('auto-evidence type resolution at apply time (#5784 OD-6 = A)', () => {
@@ -291,7 +436,11 @@ describe('autoEvidenceReportType is carried by every item write (#5784)', () => 
 });
 
 describe('partner-wide write gate on every mutator (visibility is not permission)', () => {
-  beforeEach(() => { dbMocks.rows.length = 0; });
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
+    refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+  });
   const partnerWideSet = { id: 's1', orgId: null, partnerId: 'p1', name: 'Best plan' };
   const item = { name: 'x', cadence: 'monthly' as const, leadDays: 7, graceDays: 14, artifactRequired: true, completionMode: 'on_ticket_resolve' as const, sortOrder: 0 };
 
@@ -329,7 +478,11 @@ describe('partner-wide write gate on every mutator (visibility is not permission
 });
 
 describe('item writes are scoped to the set in the path', () => {
-  beforeEach(() => { dbMocks.rows.length = 0; });
+  beforeEach(() => {
+    dbMocks.rows.length = 0;
+    refMocks.assertChecklistTemplateUsableByTemplateItemOwner.mockReset().mockResolvedValue(undefined);
+    refMocks.assertChecklistTemplateUsableByOrg.mockReset().mockResolvedValue(undefined);
+  });
   const orgSet = { id: 's1', orgId: 'org1', partnerId: null, name: 'Org set' };
 
   it('updateTemplateItem binds BOTH the item id and the set id, and 404s on zero rows', async () => {

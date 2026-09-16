@@ -173,6 +173,7 @@ export type EventType =
   | 'ai.agent.policy_changed'
   | 'ai.agent.run.queued'
   | 'ai.agent.run.started'
+  | 'ai.agent.run.progress'
   | 'ai.agent.run.awaiting_approval'
   | 'ai.agent.run.completed'
   | 'ai.agent.run.failed'
@@ -673,6 +674,7 @@ export const EVENT_TYPES = {
   AI_AGENT_POLICY_CHANGED: 'ai.agent.policy_changed' as const,
   AI_AGENT_RUN_QUEUED: 'ai.agent.run.queued' as const,
   AI_AGENT_RUN_STARTED: 'ai.agent.run.started' as const,
+  AI_AGENT_RUN_PROGRESS: 'ai.agent.run.progress' as const,
   AI_AGENT_RUN_AWAITING_APPROVAL: 'ai.agent.run.awaiting_approval' as const,
   AI_AGENT_RUN_COMPLETED: 'ai.agent.run.completed' as const,
   AI_AGENT_RUN_FAILED: 'ai.agent.run.failed' as const,

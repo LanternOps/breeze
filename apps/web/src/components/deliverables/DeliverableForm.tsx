@@ -10,6 +10,7 @@ import {
   type DeliverableCompletionMode,
   type Fetcher,
 } from '../../lib/api/serviceDeliverables';
+import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
 
@@ -57,6 +58,11 @@ interface FormState {
   autoEvidenceReportId: string;
   portalVisible: boolean;
   sortOrder: string;
+  /** #5808 W03 — internal runbook prose. Never shown to the customer. */
+  instructions: string;
+  /** #5808 W03 — a pointer to a checklist template seeded onto occurrences'
+   *  tickets. '' means none. */
+  checklistTemplateId: string;
 }
 
 function todayISO(): string {
@@ -80,6 +86,8 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
       autoEvidenceReportId: initial.autoEvidenceReportId ?? '',
       portalVisible: initial.portalVisible,
       sortOrder: String(initial.sortOrder),
+      instructions: initial.instructions ?? '',
+      checklistTemplateId: initial.checklistTemplateId ?? '',
     };
   }
   const today = todayISO();
@@ -98,6 +106,8 @@ function initialState(initial: Deliverable | undefined, fixedContractId: string 
     autoEvidenceReportId: '',
     portalVisible: true,
     sortOrder: '0',
+    instructions: '',
+    checklistTemplateId: '',
   };
 }
 
@@ -128,6 +138,31 @@ export default function DeliverableForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evidenceReports, setEvidenceReports] = useState<EvidenceReportOption[]>([]);
+  // #5808 W03 — the checklist-template picker. A failed load must not block
+  // the form: it just falls back to offering only "None" (no toast — this is
+  // a picker convenience, not a mutation).
+  const [templates, setTemplates] = useState<ChecklistTemplate[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listChecklistTemplates(fetcher)
+      .then((rows) => {
+        if (!cancelled) setTemplates(rows.filter((tpl) => tpl.isActive));
+      })
+      .catch((err) => {
+        // A failed fetch is NOT "this MSP has no checklist templates", and the
+        // picker cannot tell the two apart on its own. console.error is the
+        // only trace this path can leave — the web app has no client-side
+        // Sentry — so log it even though the degrade itself is correct
+        // (blocking deliverable creation over an optional picker would be
+        // worse). Same precedent as TicketChecklistCard.tsx.
+        console.error('[DeliverableForm] failed to load checklist templates', err);
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetcher]);
 
   // The picker is always offered when no contract is pinned — an empty list
   // still lets the user confirm "not tied to a contract" deliberately.
@@ -193,6 +228,8 @@ export default function DeliverableForm({
         autoEvidenceReportId: form.autoEvidenceReportId ? form.autoEvidenceReportId : null,
         portalVisible: form.portalVisible,
         sortOrder: intOr(form.sortOrder, 0),
+        instructions: form.instructions.trim() || null,
+        checklistTemplateId: form.checklistTemplateId || null,
       };
       const contractId = resolvedContractId();
       let saved: Deliverable;
@@ -422,6 +459,43 @@ export default function DeliverableForm({
           />
           {t('form.portalVisible')}
         </label>
+      </div>
+      <div>
+        <label htmlFor={id('instructions')} className={labelClass}>{t('form.instructions')}</label>
+        <textarea
+          id={id('instructions')}
+          className={inputClass}
+          rows={3}
+          value={form.instructions}
+          onChange={(e) => set('instructions', e.target.value)}
+          maxLength={10000}
+        />
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="deliverable-instructions-hint">
+          {t('form.instructionsHint')}
+        </p>
+      </div>
+      <div>
+        <label htmlFor={id('checklistTemplate')} className={labelClass}>{t('form.checklistTemplate')}</label>
+        <select
+          id={id('checklistTemplate')}
+          className={inputClass}
+          value={form.checklistTemplateId}
+          onChange={(e) => set('checklistTemplateId', e.target.value)}
+          data-testid="deliverable-checklist-template"
+        >
+          <option value="">{t('form.checklistTemplateNone')}</option>
+          {templates.map((tpl) => (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.orgId === null ? `${tpl.name} — ${t('form.checklistTemplateAllOrgs')}` : tpl.name}
+            </option>
+          ))}
+        </select>
+        <a
+          href="/settings/ticket-checklist-templates"
+          className="mt-1 inline-block text-xs text-muted-foreground underline hover:text-foreground"
+        >
+          {t('form.checklistTemplateManage')}
+        </a>
       </div>
       {error && (
         <p className="text-sm text-destructive" role="alert" data-testid="deliverable-form-error">

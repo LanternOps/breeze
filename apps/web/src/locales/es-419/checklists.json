@@ -1,0 +1,73 @@
+{
+  "card": {
+    "title": "Lista de verificación",
+    "progress": "{{done}} / {{total}}",
+    "empty": "Aún no hay pasos.",
+    "addPlaceholder": "Agregar un paso",
+    "add": "Agregar",
+    "internalOnly": "Interno — nunca se muestra al cliente",
+    "detailPlaceholder": "Nota opcional para este paso"
+  },
+  "actions": {
+    "moveUp": "Subir",
+    "moveDown": "Bajar",
+    "delete": "Eliminar",
+    "edit": "Editar",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "retry": "Reintentar"
+  },
+  "source": {
+    "manual": "Manual",
+    "deliverable": "Entregable",
+    "checklist_template": "Plantilla"
+  },
+  "editDoneWarning": "Editar un paso completado borra quién lo completó y cuándo.",
+  "resolveConfirm": {
+    "title": "Lista de verificación incompleta",
+    "body_one": "{{count}} de {{total}} paso no está marcado. ¿Resolver de todos modos?",
+    "body_other": "{{count}} de {{total}} pasos no están marcados. ¿Resolver de todos modos?",
+    "confirm": "Resolver de todos modos",
+    "cancel": "Volver"
+  },
+  "errors": {
+    "loadFailed": "No se pudo cargar la lista de verificación.",
+    "saveFailed": "No se pudo guardar el paso de la lista de verificación.",
+    "reorderFailed": "No se pudo reordenar la lista de verificación.",
+    "tickRequiresUser": "Marcar un paso requiere una sesión de usuario con inicio de sesión."
+  },
+  "templates": {
+    "title": "Plantillas de lista de verificación",
+    "subtitle": "Procedimientos reutilizables que tus técnicos pueden aplicar a cualquier ticket.",
+    "allOrganizations": "Todas las orgs",
+    "partnerWideHint": "Se aplica a todas las organizaciones que administras, ahora y en el futuro.",
+    "thisOrganizationOnly": "Solo esta organización",
+    "scope": "Quién puede usar esta plantilla",
+    "name": "Nombre",
+    "description": "Descripción",
+    "instructions": "Instrucciones internas",
+    "instructionsHint": "Interno — nunca se muestra al cliente.",
+    "isActive": "Activa",
+    "inactiveHint": "Las plantillas inactivas permanecen vinculadas donde ya se usan, pero dejan de aparecer en los selectores.",
+    "steps": "Pasos",
+    "addStep": "Agregar un paso",
+    "stepLabelPlaceholder": "Etiqueta del paso",
+    "empty": "Aún no hay plantillas.",
+    "create": "Nueva plantilla",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "delete": "Eliminar",
+    "apply": "Aplicar plantilla",
+    "applyCta": "Aplicar",
+    "choosePlaceholder": "Elige una plantilla",
+    "applyMode": {
+      "append": "Agregar estos pasos a la lista de verificación existente",
+      "replaceUnticked": "Reemplazar los pasos no marcados (los pasos completados se conservan)"
+    },
+    "errors": {
+      "loadFailed": "No se pudieron cargar las plantillas de lista de verificación.",
+      "saveFailed": "No se pudo guardar la plantilla de lista de verificación.",
+      "applyFailed": "No se pudo aplicar la plantilla de lista de verificación."
+    }
+  }
+}

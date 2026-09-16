@@ -222,4 +222,22 @@ describe('LifecyclePage', () => {
     expect(screen.getByTestId('lifecycle-plan-row-WS-0')).toBeInTheDocument();
     expect(screen.getByTestId('lifecycle-plan-row-WS-119')).toBeInTheDocument();
   });
+
+  // #5880: the enableSelfService flag has to reach both LifecyclePlanTable
+  // instantiations (workstations and servers), not just one.
+  it('threads enableSelfService=false through to both the workstations and servers tables', () => {
+    const summary = summaryWith([SAM4, LAW_SRV]);
+    render(
+      <LifecyclePage initialRun={RUN} initialSummary={summary} enableSelfService={false} />,
+    );
+    expect(screen.queryByTestId('lifecycle-plan-row-link-SAM4')).toBeNull();
+    expect(screen.queryByTestId('lifecycle-plan-row-link-LAW-SRV')).toBeNull();
+    expect(screen.getByTestId('lifecycle-plan-row-SAM4')).toHaveTextContent('Sam Lee');
+  });
+
+  it('still links device rows when enableSelfService is true (or omitted)', () => {
+    const summary = summaryWith([SAM4]);
+    render(<LifecyclePage initialRun={RUN} initialSummary={summary} />);
+    expect(screen.getByTestId('lifecycle-plan-row-link-SAM4')).toBeInTheDocument();
+  });
 });

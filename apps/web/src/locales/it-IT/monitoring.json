@@ -105,6 +105,8 @@
       "test": "Prova fallita",
       "generic": "Qualcosa è andato storto"
     },
+    "saved": "Monitor salvato",
+    "deleted": "Monitor eliminato",
     "loading": "Caricamento monitor…",
     "noAttachments": "Non ancora distribuito in nessun criterio.",
     "testResult": {
@@ -246,6 +248,7 @@
     },
     "selectPolicy": "Criterio di configurazione",
     "selectTarget": "Destinazione",
+    "noOrgSelected": "Seleziona un'organizzazione per la distribuzione.",
     "policyName": "Nome del criterio",
     "attach": "Collega",
     "cancel": "Annulla",

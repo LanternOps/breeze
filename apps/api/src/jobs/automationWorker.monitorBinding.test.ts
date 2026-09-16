@@ -132,6 +132,17 @@ function mockAutomation(row: Record<string, unknown>) {
   });
 }
 
+function mockUnmanagedAutomation(row: Record<string, unknown>) {
+  for (const rows of [[row], [{ orgId: row.orgId, partnerId: row.partnerId }]]) {
+    selectMock.mockReturnValueOnce({
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockResolvedValue(rows),
+    });
+  }
+}
+
 describe('monitor-managed automation event-target binding (#5289)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -193,9 +204,9 @@ describe('monitor-managed automation event-target binding (#5289)', () => {
     );
   });
 
-  it('a row whose managedByMonitorId is absent is treated as UNMANAGED', async () => {
+  it('a row whose managedByMonitorId is absent is treated as UNMANAGED: bound to the event device, no triggerContext', async () => {
     const { managedByMonitorId: _omitted, ...withoutColumn } = MONITOR_AUTOMATION;
-    mockAutomation(withoutColumn);
+    mockUnmanagedAutomation(withoutColumn);
 
     await __testOnly.processTriggerEvent({
       ...BASE_EVENT,
@@ -203,6 +214,7 @@ describe('monitor-managed automation event-target binding (#5289)', () => {
     });
 
     const createOptions = createAutomationRunRecordMock.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(Object.keys(createOptions)).not.toContain('boundDeviceIds');
+    expect(createOptions.boundDeviceIds).toEqual(['dev-1']);
+    expect('triggerContext' in addMock.mock.calls[0]?.[1]).toBe(false);
   });
 });

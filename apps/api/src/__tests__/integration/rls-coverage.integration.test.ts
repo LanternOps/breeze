@@ -359,6 +359,18 @@ const DUAL_AXIS_TENANT_TABLES: ReadonlySet<string> = new Set<string>([
   // cross-partner forge proof: deliverableTemplatesPartnerRls.integration.test.ts.
   'deliverable_template_sets',
   'deliverable_template_items',
+  // ticket_checklist_templates / ticket_checklist_template_items (spec #5783
+  // §4.2, §4.3): a checklist template is org-scoped (org_id set) OR
+  // partner-wide (partner_id set, org_id NULL — one MSP-authored procedure
+  // every customer inherits). Created dual-axis from day one in
+  // 2026-10-16-191300-ticket-checklist-templates. The org_id column means
+  // org-tenant auto-discovery already asserts the breeze_has_org_access branch,
+  // so these entries are what assert the breeze_has_partner_access
+  // (partner-wide) branch. CHECKs <table>_one_owner_chk enforce exactly one
+  // axis. Functional cross-partner forge proof:
+  // ticketChecklistTemplatesPartnerRls.integration.test.ts.
+  'ticket_checklist_templates',
+  'ticket_checklist_template_items',
   'users',
   'deployment_invites',
   'access_reviews',
@@ -642,6 +654,13 @@ const XOR_OWNERSHIP_DUAL_AXIS_TABLES: ReadonlySet<string> = new Set<string>([
   // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-100500.
   'deliverable_template_sets',
   'deliverable_template_items',
+  // ticket_checklist_templates_one_owner_chk /
+  // ticket_checklist_template_items_one_owner_chk
+  // ((org_id IS NULL) <> (partner_id IS NULL)), 2026-10-16-191300. Both
+  // partner-wide SELECT branches ship in that same migration, so neither needs
+  // a PARTNER_WIDE_SELECT_BRANCH_EXEMPT entry.
+  'ticket_checklist_templates',
+  'ticket_checklist_template_items',
   'access_reviews',
   'custom_field_definitions',
   'configuration_policies',
@@ -770,6 +789,15 @@ const PARENT_FK_JOIN_POLICY_TABLES: ReadonlyMap<string, readonly string[]> = new
   ['role_permissions', ['roles']],
   ['plugin_logs', ['plugin_installations']],
   ['report_runs', ['reports']],
+  // #4248 W03: per-recipient narrative delivery. Declared parent is `reports`,
+  // NOT `report_runs` -- the strict per-command assertion below runs
+  // predicateCoversParent, which needs breeze_has_org_access(<alias>.org_id) on
+  // the DECLARED parent's alias, and report_runs has no org_id. The policy
+  // therefore reaches `reports` through a scalar subquery, exactly like the
+  // config_policy_* children do (2026-06-23-sec-review-1-fk-child-rls-backstop.sql).
+  // Its ONLY registration: the FK is ON DELETE CASCADE, so the existing
+  // report_runs pre-clear in tenantCascade.ts removes deliveries for free.
+  ['report_run_deliveries', ['reports']],
   ['maintenance_occurrences', ['maintenance_windows']],
   // 2026-06-23 security-review #1 backstop: five tenant child tables that
   // shipped with NO rls and reach their org only through a parent FK. The three

@@ -1515,14 +1515,24 @@
       "kinds": {
         "sweep": "Scansione",
         "narrative": "Report settimanale",
-        "design": "Progettazione della flotta"
+        "design": "Progettazione della flotta",
+        "patch": "Piano patch"
       },
       "kindsLabel": "Controlli da eseguire",
       "kind": "Tipo di pianificazione",
       "weeklyOnlyHint": "Un report settimanale viene attivato esattamente una volta a settimana: minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana da 0 a 6. Ad esempio, 0 7 * * 1 viene eseguito ogni lunedì alle 07:00.",
       "monthlyOrRarerHint": "Una progettazione della flotta viene attivata al massimo una volta al mese: minuto, ora e giorno-del-mese (1-28) letterali, mese come * o un elenco separato da virgole di mesi letterali, e * per il giorno della settimana. Ad esempio, 0 6 1 1,4,7,10 * viene eseguito trimestralmente il giorno 1 alle 06:00.",
+      "dailyOrRarerHint": "Un piano patch viene attivato al massimo una volta al giorno: minuto e ora letterali, e * o un elenco letterale per giorno-del-mese, mese e giorno della settimana. Ad esempio, 0 2 * * * viene eseguito ogni notte alle 02:00.",
       "kindsRequired": "Seleziona almeno un controllo.",
       "enabled": "Abilitato",
+      "actMode": {
+        "label": "Modalità azione",
+        "hint": "Se attivata, questa pianificazione può applicare automaticamente alcune correzioni invece di attendere l'approvazione.",
+        "disabledHint": "Per attivare la modalità azione è necessario l'accesso completo del partner a tutte le organizzazioni.",
+        "scopeNote": "Le correzioni non supervisionate si limitano al riavvio di un servizio arrestato, e solo sui dispositivi la cui organizzazione ha già ricevuto l'autorizzazione manage_services:restart. Tutto il resto attende ancora l'approvazione.",
+        "disableForOrg": "Disattiva la modalità azione per questa organizzazione",
+        "disableForOrgHint": "Questa organizzazione eredita sempre l'impostazione della modalità azione della baseline del partner, a meno che non venga disattivata qui — non può mai essere attivata in modo indipendente."
+      },
       "override": "Personalizza per questa organizzazione",
       "editOverride": "Modifica l'eccezione di questa organizzazione",
       "overrideHint": "L'eccezione di questa organizzazione rispetto alla baseline del partner. Segue sempre la cadenza della baseline.",
@@ -1541,7 +1551,8 @@
         "pending_reboots": "Riavvii in sospeso",
         "failed_backups": "Backup non riusciti",
         "service_down": "Servizio non attivo",
-        "unpatched_critical": "Vulnerabilità critiche non corrette"
+        "unpatched_critical": "Vulnerabilità critiche non corrette",
+        "expiring_certs": "Certificati in scadenza"
       },
       "toasts": {
         "saved": "Pianificazione salvata",
@@ -1561,8 +1572,10 @@
         "agentNotPartnerWide": "Le pianificazioni di scansione richiedono un agente valido per tutto il partner.",
         "agentKindNotTriage": "Solo un agente di triage può essere pianificato.",
         "agentKindNotDesigner": "Una pianificazione di progettazione della flotta deve avere come destinazione un agente Progettista della flotta.",
+        "agentKindNotPatch": "Una pianificazione di piano patch deve avere come destinazione un agente Patch.",
         "kindsNotEmpty": "Una pianificazione di report settimanale non esegue controlli. Rimuovi i controlli selezionati prima di salvare.",
-        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana."
+        "invalidCronForKind": "Un report settimanale deve essere attivato esattamente una volta a settimana. Usa minuto e ora letterali, * per giorno-del-mese e mese e un solo giorno della settimana.",
+        "actModeOrgCannotArm": "La modalità azione è attiva sulla baseline del partner; un'eccezione dell'organizzazione può solo disattivarla, mai attivarla."
       }
     },
     "title": "Agenti AI",
@@ -1622,6 +1635,8 @@
       "never": "Mai eseguito",
       "at": "Ultima esecuzione {{at}}"
     },
+    "nextOccurrence": "Prossima esecuzione {{at}}",
+    "runNowNoOrg": "Seleziona un'organizzazione per eseguire un piano patch.",
     "disableDialog": {
       "title": "Disattivare {{name}}?",
       "message": "Le esecuzioni future si fermano, le pianificazioni collegate smettono di attivarsi e le sostituzioni dell’organizzazione per questo agente smettono di applicarsi. Un’esecuzione già in corso prosegue fino al suo limite di tempo.",
@@ -1653,6 +1668,7 @@
       "invalidSupervisedActionKeys": "Una o più azioni selezionate non possono essere autorizzate dalla policy.",
       "supervisedKeyRejected": "{{key}}: {{reason}}",
       "notDisabled": "Questo agente è già attivo.",
+      "noPatchAgent": "Nessun agente patch si applica a questa organizzazione.",
       "actRecipientsUnreachable": "I ruoli di notifica selezionati non hanno membri attivi, quindi nessuno potrebbe essere interpellato. Scegli un ruolo con membri prima di attivare la modalità Agire.",
       "invalidScriptIds": "Uno o più script non possono essere autorizzati per questo agente.",
       "scriptRejected": "Script {{id}}: {{reason}}",
@@ -1670,7 +1686,8 @@
       "disable": "Disattiva",
       "confirmDisable": "Conferma disattivazione",
       "reenable": "Riattiva",
-      "runs": "Esecuzioni"
+      "runs": "Esecuzioni",
+      "runNow": "Esegui ora"
     },
     "toasts": {
       "saved": "Agente salvato",
@@ -1678,7 +1695,9 @@
       "disabled": "Agente disattivato",
       "disableFailed": "Impossibile disattivare l’agente.",
       "reenabled": "Agente riattivato",
-      "reenableFailed": "Impossibile riattivare l’agente."
+      "reenableFailed": "Impossibile riattivare l’agente.",
+      "runNowQueued": "Esecuzione del piano patch in coda",
+      "runNowFailed": "Impossibile avviare un'esecuzione del piano patch."
     },
     "issues": {
       "name": "Assegna un nome all’agente.",
@@ -1767,6 +1786,9 @@
       "supervisedActionKeysFailed": "Impossibile caricare l'elenco delle azioni decidibili tramite policy, quindi l'autorizzazione non presidiata non può essere modificata al momento.",
       "ticketAutonomousWrites": "Scritture autonome dei ticket",
       "ticketAutonomousWritesHint": "Solo override a livello di organizzazione — le scritture autonome dei ticket richiedono la modalità azione e questa attivazione a livello di organizzazione",
+      "alertCategories": "Categorie di avvisi",
+      "alertCategoriesHint": "Solo gli avvisi la cui categoria di modello è elencata qui attivano questo agente. Lasciare vuoto per qualsiasi categoria. Gli avvisi di patch portano \"patching\".",
+      "alertCategoriesPlaceholder": "es. patching, monitor",
       "enabledHint": "«Attivo» e la modalità sono due interruttori distinti e un’esecuzione ha bisogno di entrambi: con questo spento non viene eseguito nulla qualunque sia la modalità, e in modalità Disattivo non viene eseguito nulla nemmeno se questo è acceso.",
       "enabledCreateHint": "I nuovi agenti vengono creati spenti. Controlla l’elenco degli strumenti consentiti e i limiti qui sotto, poi accendi questo quando vuoi che l’agente inizi a essere eseguito.",
       "actKeysCleared": "Le autorizzazioni della modalità azione vengono mantenute, ma non verranno salvate finché questo agente non torna alla modalità Azione.",
@@ -1854,6 +1876,20 @@
         "empty": "Nessuna rilevazione segnalata.",
         "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all’agente.",
         "proposalCreated": "Approvazione richiesta",
+        "actSummary": "Intervento non presidiato su {{acted}} dispositivi su {{proposed}}: gli altri attendono un’approvazione.",
+        "outcomes": {
+          "auto_executing": "In esecuzione non presidiata",
+          "executed": "Completato",
+          "failed": "Non riuscito",
+          "declined": "Rifiutato",
+          "expired": "Scaduto",
+          "unknown": "Esito sconosciuto"
+        },
+        "stoppedBy": {
+          "fleet_cap": "raggiunto il limite giornaliero del parco",
+          "day_cap": "raggiunto il limite giornaliero di azioni",
+          "occurrence_cap": "raggiunto il tetto di dispositivi per scansione"
+        },
         "columns": {
           "kind": "Controllo",
           "severity": "Gravità",
@@ -1868,7 +1904,8 @@
           "pending_reboots": "Riavvii in sospeso",
           "failed_backups": "Backup non riusciti",
           "service_down": "Servizio non attivo",
-          "unpatched_critical": "Vulnerabilità critiche non corrette"
+          "unpatched_critical": "Vulnerabilità critiche non corrette",
+          "expiring_certs": "Certificati prossimi alla scadenza"
         },
         "severities": {
           "critical": "Critica",
@@ -1879,11 +1916,90 @@
         },
         "reasons": {
           "device_not_in_evidence": "Dispositivo assente nelle evidenze della scansione",
+          "subject_not_in_evidence": "Elemento non presente nelle evidenze della scansione",
           "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
           "not_allowlisted": "Strumento non consentito per questo agente",
           "no_eligible_approvers": "Nessun approvatore idoneo",
           "intent_error": "Impossibile creare l’approvazione",
-          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione"
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "intent_invalid_provenance": "Impossibile convalidare l’approvazione (errore interno)"
+        }
+      },
+      "patch": {
+        "title": "Piano patch",
+        "empty": "L'agente non ha proposto alcun lavoro di patch.",
+        "evidenceTruncated": "Le evidenze sono state troncate: non tutte le righe corrispondenti sono state mostrate all'agente.",
+        "posture": "{{compliance}}% conforme · {{count}} dispositivo a rischio",
+        "posture_other": "{{compliance}}% conforme · {{count}} dispositivi a rischio",
+        "patchCount": "{{count}} aggiornamento",
+        "patchCount_other": "{{count}} aggiornamenti",
+        "refused": "Non registrato: {{reason}}",
+        "unconfirmed": "Questo piano non è mai stato confermato — l'agente non ha potuto riverificare le sue voci rispetto alle evidenze, quindi nulla di quanto segue è stato convalidato.",
+        "unconfirmedItem": "Non confermato — questa voce non è mai stata riverificata.",
+        "intentCreated": "In attesa di approvazione — apri la scheda",
+        "suppressed": "Già proposto: {{reason}}",
+        "capReached": "Non proposto: {{reason}}",
+        "intentError": "Impossibile creare la scheda di approvazione: {{reason}}",
+        "dropped": "{{count}} aggiornamento è stato escluso dalla scheda",
+        "dropped_other": "{{count}} aggiornamenti sono stati esclusi dalla scheda",
+        "counts": "{{created}} in attesa di approvazione · {{suppressed}} già proposti",
+        "failureClass": "Classe di errore: {{label}}",
+        "attempts": "{{count}} tentativo non riuscito",
+        "attempts_other": "{{count}} tentativi non riusciti",
+        "rebootWindow": "Finestra: {{start}} – {{end}}",
+        "redundancyGroup": "Gruppo di ridondanza: {{group}}",
+        "escalation": "Richiede una persona: non verrà ritentato automaticamente.",
+        "escalations": "{{count}} inoltro urgente",
+        "escalations_other": "{{count}} inoltri urgenti",
+        "classes": {
+          "install": "Installazione",
+          "approval_advisory": "Consiglio di approvazione",
+          "reboot_plan": "Piano di riavvio",
+          "chase": "Sollecito per errore",
+          "escalation": "Inoltro urgente"
+        },
+        "reasons": {
+          "device_not_in_evidence": "Dispositivo assente nelle evidenze delle patch",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione",
+          "patch_not_in_evidence": "Aggiornamento assente dalle evidenze delle patch",
+          "window_not_resolved": "Impossibile risolvere la finestra di manutenzione",
+          "job_result_not_in_evidence": "Risultato del lavoro di patch assente dalle evidenze",
+          "no_eligible_patches": "Nessun aggiornamento è attualmente idoneo per questo dispositivo",
+          "not_allowlisted": "L'agente non è autorizzato a proporre installazioni",
+          "max_actions_per_run": "Limite di azioni raggiunto per questa esecuzione",
+          "no_eligible_approvers": "Nessuno può approvare questa azione",
+          "intent_error": "Impossibile creare l'approvazione",
+          "live_intent_exists": "Una scheda di approvazione per questo aggiornamento è già aperta",
+          "recently_rejected": "Questo aggiornamento è stato rifiutato di recente",
+          "recently_cancelled": "La scheda di questo aggiornamento è stata annullata di recente",
+          "recently_completed": "Questo aggiornamento è stato installato di recente",
+          "failure_class_mismatch": "La classe di errore citata non corrisponde alle evidenze",
+          "class_not_retryable": "Questo tipo di errore non viene mai ritentato automaticamente",
+          "chase_attempts_exhausted": "Raggiunto il limite di tentativi per questo aggiornamento: inoltrato invece",
+          "attempt_count_mismatch": "Il numero di tentativi citato non corrisponde alle evidenze",
+          "failure_history_truncated": "La cronologia degli errori era incompleta, quindi il numero di tentativi non era affidabile",
+          "reboot_policy_not_window_gated": "La politica di riavvio del dispositivo riavvia al di fuori delle finestre di manutenzione, quindi un piano a finestra non verrebbe rispettato",
+          "redundancy_unknown": "Il gruppo di ridondanza del dispositivo è sconosciuto, quindi non è stato possibile verificare l'ordine",
+          "redundancy_collision": "Un altro dispositivo dello stesso gruppo di ridondanza è già pianificato per questa finestra"
+        },
+        "ineligible": {
+          "not_outstanding": "Non in sospeso su questo dispositivo",
+          "superseded": "Sostituito da un aggiornamento più recente",
+          "blocked_by_source": "Escluso dalle origini di aggiornamento della policy",
+          "held_by_deferral": "Trattenuto dalla finestra di differimento",
+          "blocked_by_category": "Escluso dalle regole di categoria dell'anello",
+          "blocked_by_app_rule": "Bloccato da una regola dell'app",
+          "awaiting_manual_approval": "In attesa di approvazione manuale",
+          "no_ring_resolved": "Il dispositivo non ha un anello di aggiornamento",
+          "device_not_in_org": "Il dispositivo non appartiene a questa organizzazione"
+        },
+        "failureClasses": {
+          "transient": "Transitorio",
+          "needs_reboot": "Riavvio necessario",
+          "disk_space": "Spazio su disco",
+          "store_corrupt": "Archivio aggiornamenti danneggiato",
+          "permanent": "Permanente",
+          "unknown": "Sconosciuto"
         }
       },
       "narrative": {
@@ -1892,7 +2008,17 @@
         "truncatedNote": "Il contesto dell'agente è stato troncato: questa sintesi non ha visto l'intera settimana.",
         "openReport": "Apri il report",
         "download": "Scarica il PDF",
-        "downloadFailed": "Impossibile scaricare il PDF."
+        "downloadFailed": "Impossibile scaricare il PDF.",
+        "delivery": {
+          "sent": "Inviato via e-mail a {{sent}} destinatari su {{total}}",
+          "refused_one": "{{count}} destinatario non ha ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "refused_other": "{{count}} destinatari non hanno ricevuto l’e-mail: autorizzazione al report, indirizzo mancante o rifiuto del provider.",
+          "pending_one": "{{count}} consegna non è ancora stata inviata: verrà ritentata.",
+          "pending_other": "{{count}} consegne non sono ancora state inviate: verranno ritentate.",
+          "unknown_one": "{{count}} consegna non ha potuto essere confermata: il provider e-mail non ha dato una risposta definitiva.",
+          "unknown_other": "{{count}} consegne non hanno potuto essere confermate: il provider e-mail non ha dato una risposta definitiva.",
+          "recipientsUnresolved": "La ricerca dei destinatari non è riuscita, quindi questa sintesi non è stata inviata a nessuno. Il report è stato comunque salvato."
+        }
       },
       "fleetDesign": {
         "title": "Progettazione della flotta",
@@ -1934,7 +2060,9 @@
           "startedAt": "Avviata",
           "finishedAt": "Terminata",
           "turnCount": "Turni",
-          "summary": "Riepilogo"
+          "summary": "Riepilogo",
+          "computeCost": "Calcolo",
+          "computeEstimated": "(stimato)"
         },
         "flags": {
           "budgetExceeded": "Budget superato",
@@ -1966,6 +2094,32 @@
             "skipped": "Verifica saltata"
           },
           "viewApproval": "Rivedi in Approvazioni"
+        },
+        "artifacts": {
+          "title": "File prodotti da questa esecuzione",
+          "download": "Scarica",
+          "preview": "Anteprima",
+          "attachToTicket": "Allega a un ticket",
+          "attach": "Allega {{name}}",
+          "ticketIdPlaceholder": "ID ticket",
+          "attachedToTicket": "Allegato al ticket",
+          "attachFailed": "Impossibile allegare il file a quel ticket"
+        },
+        "workspace": {
+          "title": "Cosa è stato eseguito nella sandbox",
+          "region": "Regione",
+          "status": "Sandbox",
+          "cpu": "Tempo CPU",
+          "steps": "Passaggi",
+          "script": "Script",
+          "stdout": "Output",
+          "exitCode": "uscita",
+          "timedOut": "timeout",
+          "noExitCode": "nessun codice di uscita",
+          "artifactExpired": "scaduto"
+        },
+        "progress": {
+          "title": "Avanzamento"
         },
         "ledger": {
           "title": "Esecuzioni degli strumenti",
@@ -2172,6 +2326,31 @@
         },
         "weightRowLabel": "{{label}} (minuti accreditati)",
         "neverRebuilt": "Mai ricostruito"
+      },
+      "measured": {
+        "heading": "Misurato (correlazionale)",
+        "caption": "Lavoro toccato dall'IA rispetto a lavoro non toccato, dello stesso tipo e nella stessa finestra. Non è un confronto prima/dopo né un'affermazione causale: l'IA di solito arriva prima ai casi più semplici.",
+        "alertResolution": "Risoluzione degli avvisi, per regola",
+        "ticketFirstResponse": "Prima risposta al ticket, per priorità e categoria",
+        "technicianMinutes": "Minuti tecnico registrati",
+        "armAiTouched": "Toccato dall'IA",
+        "armUntouched": "Non toccato",
+        "withinHorizonAlerts": "Risolti entro 24 h",
+        "withinHorizonTickets": "Prima risposta entro 4 h",
+        "cohortSize": "{n} nella coorte",
+        "percentileP50": "p50: {minutes} min",
+        "percentileP90": "p90: {minutes} min",
+        "recordedMinutesValue": "{minutes} min (mediana)",
+        "loggingCoverage": "Tempo registrato sul {ai} dei ticket toccati dall'IA e sul {untouched} degli altri. Una mediana su ticket registrati solo in parte non è una mediana del lavoro.",
+        "censoredNote": "Ogni percentile mostrato è censurato a destra: i casi ancora aperti contano come non conclusi invece di essere scartati.",
+        "loading": "Caricamento del confronto misurato…",
+        "error": "Impossibile caricare il confronto misurato.",
+        "omitted": {
+          "insufficientData": "Dati insufficienti: nessun gruppo di lavoro confrontabile ha almeno 20 casi per ciascun lato.",
+          "insufficientFollowup": "Questa finestra è troppo breve per osservare l'esito di un numero sufficiente di casi. Prova una finestra più lunga.",
+          "insufficientAuthority": "Non disponi dell'autorizzazione sulle registrazioni di tempo necessaria per vedere i minuti tecnico registrati.",
+          "siteRestricted": "Il confronto misurato non viene mostrato con accesso limitato per sede, perché aggrega dati di un'intera organizzazione."
+        }
       }
     },
     "graduation": {
@@ -2229,7 +2408,8 @@
         "below_threshold": "Non ci sono ancora abbastanza esecuzioni verificate.",
         "too_recent": "La prima esecuzione verificata è ancora troppo recente.",
         "has_failures": "In questo periodo è stato registrato un errore o una ricomparsa.",
-        "not_policy_decidable": "Questa operazione non può mai essere preautorizzata."
+        "not_policy_decidable": "Questa operazione non può mai essere preautorizzata.",
+        "below_sweep_threshold": "Servono più correzioni verificate in cui una scansione pianificata ha scelto il bersaglio."
       },
       "confirm": {
         "title": "Richiedi la preautorizzazione",
@@ -2318,6 +2498,10 @@
         "tenancy": {
           "label": "Gestione organizzazioni",
           "description": "Gestire organizzazioni, sedi e integrazioni tra organizzazioni."
+        },
+        "workspace": {
+          "label": "Sandbox di analisi dei dati",
+          "description": "Esporta i set di dati della flotta ed esegui codice di analisi in una sandbox isolata, senza rete e senza accesso ai dispositivi. I risultati tornano come proposte che un tecnico approva."
         }
       },
       "tools": {
@@ -4217,6 +4401,12 @@
       "organizationId": "ID organizzazione",
       "copyOrganizationId": "Copia ID organizzazione",
       "organizationIdHelp": "Usa questo ID quando inviti utenti o configuri integrazioni."
+    },
+    "ai": {
+      "externalProcessing": "Consenti analisi IA in sandbox",
+      "externalProcessingDescription": "Consente alle esecuzioni di analisi IA di eseguire codice per questa organizzazione in una sandbox isolata senza accesso alla rete, ospitata nella regione di questa organizzazione. Disattivato per impostazione predefinita.",
+      "externalProcessingSaved": "Salvato",
+      "externalProcessingSaveFailed": "Impossibile modificare questa impostazione"
     },
     "breadcrumbs": {
       "settings": "Impostazioni",

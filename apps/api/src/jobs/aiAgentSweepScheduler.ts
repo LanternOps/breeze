@@ -563,7 +563,8 @@ export async function processSweepOccurrence(
   // A narrative or design baseline sweeps NOTHING —
   // `ai_agent_schedules_kind_kinds_chk` forbids any other shape for either —
   // so the empty-`sweepKinds` guard below is sweep-only.
-  const hasNoSweepKinds = kind === 'narrative' || kind === 'design';
+  // AI patch agent W01: a patch baseline sweeps nothing too (same CHECK arm).
+  const hasNoSweepKinds = kind === 'narrative' || kind === 'design' || kind === 'patch';
 
   let summary: AiAgentScheduleRunSummary;
   try {
@@ -634,6 +635,20 @@ export async function processSweepOccurrence(
                 scheduleId: baseline.id,
                 triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'design' },
                 dedupeKey: `design-${baseline.id}-${orgId}-${occurrenceKey}`,
+              };
+            // AI patch agent W01 (#5747) — one device-less patch-plan run per
+            // org, driven by the patch agent (runService rule 8a pins
+            // profile 'patch' to kind 'patch' and no device).
+            case 'patch':
+              return {
+                orgId,
+                kind: 'patch',
+                triggerKind: 'schedule',
+                deviceId: null,
+                profile: 'patch',
+                scheduleId: baseline.id,
+                triggerRef: { scheduleId: baseline.id, occurrenceKey, kind: 'patch' },
+                dedupeKey: `patch-${baseline.id}-${orgId}-${occurrenceKey}`,
               };
             case 'sweep':
               return {

@@ -17,6 +17,7 @@ import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
+import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { BuiltInBadge } from './BuiltInBadge';
 import ActionsEditor, {
@@ -35,6 +36,8 @@ import Breadcrumbs from '../layout/Breadcrumbs';
 // an island that hydrates before whichever other island happens to pull i18n in
 // would otherwise render raw keys (and mismatch the SSR markup).
 import '../../lib/i18n';
+
+const UNAUTHORIZED = () => void navigateTo('/login', { replace: true });
 
 type KindMeta = {
   kind: MonitorKind;
@@ -169,6 +172,9 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const [escalationPolicies, setEscalationPolicies] = useState<EscalationPolicy[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [builtinKey, setBuiltinKey] = useState<string | null>(null);
+  // Null for a partner-wide monitor — DeployMonitorDialog falls back to the
+  // currently selected org from the org store in that case.
+  const [monitorOrgId, setMonitorOrgId] = useState<string | null>(null);
 
   const [hashTab, setHashTab] = useHashState<EditorTab>('settings', tabFromHash);
   // The Activity tab needs a saved monitor id (#5290); an unsaved monitor
@@ -280,6 +286,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       const monitor = data?.data ?? data;
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
       setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
+      setMonitorOrgId(typeof monitor.orgId === 'string' ? monitor.orgId : null);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -359,12 +366,12 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
 
       const url = isNew ? '/monitor-definitions' : `/monitor-definitions/${monitorId}`;
       const method = isNew ? 'POST' : 'PATCH';
-      const response = await fetchWithAuth(url, { method, body: JSON.stringify(payload) });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('monitoring:editor.errors.save')));
-      }
-      const data = await response.json();
+      const data = await runAction<{ data?: { id?: string } }>({
+        request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
+        errorFallback: t('monitoring:editor.errors.save'),
+        successMessage: t('monitoring:editor.saved'),
+        onUnauthorized: UNAUTHORIZED,
+      });
       const savedId = data?.data?.id ?? monitorId;
       if (isNew) {
         void navigateTo(`/alerts/monitors/${savedId}`);
@@ -372,6 +379,8 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         void fetchMonitor();
       }
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      handleActionError(err, t('monitoring:editor.errors.save'));
       setError(err instanceof Error ? err.message : t('monitoring:editor.errors.save'));
     } finally {
       setSaving(false);
@@ -382,13 +391,16 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
     if (!monitorId) return;
     setDeleting(true);
     try {
-      const response = await fetchWithAuth(`/monitor-definitions/${monitorId}`, { method: 'DELETE' });
-      if (!response.ok && response.status !== 204) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(extractApiError(data, t('monitoring:editor.errors.delete')));
-      }
+      await runAction({
+        request: () => fetchWithAuth(`/monitor-definitions/${monitorId}`, { method: 'DELETE' }),
+        errorFallback: t('monitoring:editor.errors.delete'),
+        successMessage: t('monitoring:editor.deleted'),
+        onUnauthorized: UNAUTHORIZED,
+      });
       void navigateTo('/alerts/monitors');
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
+      handleActionError(err, t('monitoring:editor.errors.delete'));
       setError(err instanceof Error ? err.message : t('monitoring:editor.errors.delete'));
     } finally {
       setDeleting(false);
@@ -924,6 +936,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         {!isNew && monitorId && (
           <DeployMonitorDialog
             monitorId={monitorId}
+            orgId={monitorOrgId}
             open={deployOpen}
             onClose={() => setDeployOpen(false)}
             onDeployed={() => {

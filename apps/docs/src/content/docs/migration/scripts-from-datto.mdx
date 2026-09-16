@@ -1,0 +1,144 @@
+---
+title: Migrating scripts from Datto RMM
+description: Map Datto RMM components — input variables, site variables, UDF reads and writes, exit-code alerting, response components — onto Breeze scripts, parameters, variables and custom fields, and load the library in bulk.
+sidebar:
+  order: 3.5
+  label: Scripts from Datto RMM
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Datto RMM components are ordinary PowerShell, bash or batch with an environment-variable wrapper, so the bodies port with a handful of edits. What trips people up is that the Breeze side of each Datto feature lives on a different page: parameters and variables under [Scripts](/features/scripts/), write-back under [Custom fields](/features/custom-fields/#writing-custom-fields-from-a-script), bulk loading under [Script bundles](/features/scripts/#importing-and-exporting-script-bundles). This page is the map between the two, with one component worked end to end.
+
+For the rest of the migration — tenancy tree, UDF values, agent deployment, decommission — see [Datto RMM → Breeze](/migration/datto-rmm/).
+
+## Concept map
+
+| Datto RMM | Breeze |
+|---|---|
+| Component | Script |
+| Component input variable (prompted when the job is created) | Script [parameter](/features/scripts/#script-parameters) with source **Asked at run time**. Read it as `{{name}}` in the body, or as the environment variable `BREEZE_PARAM_<NAME>`. |
+| Site / account variable (`$env:VarName`) | [Variable](/features/scripts/#variables) under **Settings → Variables**, referenced as `{{var.key}}`. An organization's value overrides the partner-wide one with the same key. |
+| Secret site variable | [Secret variable](/features/scripts/#secret-variables-in-scripts), bound through a parameter with source **From a secret variable (environment variable)**. Delivered only as `BREEZE_VAR_<NAME>`, never substituted into the body. |
+| Read a UDF (`$env:UDF_7`) | Parameter with source **From a device custom field**, bound to the field key. |
+| Write a UDF (`<-Start Result->key=value<-End Result->`, or the `HKLM:\SOFTWARE\CentraStage` `Custom1`…`Custom300` registry values) | Print `::breeze:custom-fields:: {"key":"value"}` to stdout. The field must have **Allow scripts to write this field** on. See [Writing custom fields from a script](/features/custom-fields/#writing-custom-fields-from-a-script). |
+| Component exit-code alerting | [`exitCodeSeverityMapping`](/features/scripts/#severity-by-exit-code) on the script: `0` never alerts, map `1`…`n` to `low`, `medium`, `high` or `critical`. |
+| Monitor → response component | [Automation](/features/automations/) with trigger **Event → `alert.triggered`** and action **Run script**. See the caution below. |
+| ComStore component | Check the Breeze [system script library](/features/scripts/#importing-from-the-system-library) first. |
+| Bulk component export | **Import bundle** from loose `.ps1` / `.sh` / `.py` / `.bat` / `.cmd` files (200 per bundle), or a Breeze `.json` bundle. |
+
+## Worked example: one component, before and after
+
+A component called **Set maintenance window tag**. In Datto it reads a prompted input variable `WindowLabel`, a site variable `SiteTz`, and UDF 7 (`last_maintenance`), then writes the next window into UDF 8 and exits `0` or `1`.
+
+<Tabs>
+  <TabItem label="Datto RMM component">
+```powershell
+# Datto injects every component and site variable as an environment variable.
+$label   = $env:WindowLabel          # component input variable, prompted at job creation
+$tz      = $env:SiteTz               # site variable
+$last    = $env:UDF_7                # read UDF 7 (last maintenance)
+
+if (-not $label) { Write-Host 'WindowLabel is required'; exit 1 }
+
+$next = ([datetime]$last).AddDays(30).ToString('yyyy-MM-dd')
+Write-Host "Next window for $tz is $next ($label)"
+
+# Write UDF 8 through the Datto result marker.
+Write-Host "<-Start Result->UDF_8=$next<-End Result->"
+exit 0
+```
+  </TabItem>
+  <TabItem label="Breeze script">
+```powershell
+# {{window_label}} is a parameter (source: Asked at run time) — substituted before the run.
+# {{var.site_tz}} is a Variable from Settings → Variables — resolved per device's organization.
+# last_maintenance is a parameter (source: From a device custom field) — read from the environment.
+$label = '{{window_label}}'
+$tz    = '{{var.site_tz}}'
+$last  = $env:BREEZE_PARAM_LAST_MAINTENANCE
+
+if (-not $label) { Write-Output 'window_label is required'; exit 1 }
+
+$next = ([datetime]$last).AddDays(30).ToString('yyyy-MM-dd')
+Write-Output "Next window for $tz is $next ($label)"
+
+# Write the next_maintenance custom field through the Breeze marker.
+Write-Output "::breeze:custom-fields:: $(@{ next_maintenance = $next } | ConvertTo-Json -Compress)"
+exit 0
+```
+  </TabItem>
+</Tabs>
+
+The edits, in order:
+
+<Steps>
+
+1. In the script editor, add a parameter `window_label` with source **Asked at run time**. Replace `$env:WindowLabel` with `'{{window_label}}'`.
+
+2. Under **Settings → Variables**, create `site_tz` with **Applies to: All organizations** and a default, then override it per organization where the timezone differs. Replace `$env:SiteTz` with `'{{var.site_tz}}'`.
+
+3. Add a parameter `last_maintenance` with source **From a device custom field**, bound to the `last_maintenance` field. Replace `$env:UDF_7` with `$env:BREEZE_PARAM_LAST_MAINTENANCE`.
+
+4. Replace the `<-Start Result->` line with the `::breeze:custom-fields::` marker. The value after the marker is one JSON object keyed by field key.
+
+5. Keep the exit codes. Set `exitCodeSeverityMapping` to `{"1": "low"}` if a missing label should raise a low-severity alert instead of the default `medium`.
+
+</Steps>
+
+The `next_maintenance` field definition needs **Allow scripts to write this field** turned on, or the write is rejected as `not_script_writable` in the run's custom-field summary. Field keys that look secret-shaped (`token`, `password`, …) break the marker's JSON through output sanitization; see the [caution on that page](/features/custom-fields/#writing-custom-fields-from-a-script).
+
+## Secrets
+
+Datto site variables are plaintext to the component. Breeze never pastes a secret into a script body: `{{var.key}}` pointing at a secret variable is rejected when the script is saved.
+
+<Steps>
+
+1. Create the variable under **Settings → Variables** with **Secret** ticked. The value is write-once.
+
+2. In the script, add a parameter with source **From a secret variable (environment variable)** and bind it to that key. Name it in lowercase with underscores.
+
+3. Read it as `$env:BREEZE_VAR_<NAME>` (PowerShell) or `$BREEZE_VAR_<NAME>` (bash), where `<NAME>` is the parameter name in uppercase.
+
+</Steps>
+
+Secret parameters require system-context execution and an agent at **v0.106.0 or later**; a script that binds one is refused on older agents rather than run with the variable unset. The exact secret value is redacted from stored output. Full rules: [Secret variables in scripts](/features/scripts/#secret-variables-in-scripts).
+
+## Loading the library in bulk
+
+<Steps>
+
+1. Export each component body from Datto as a file. Name the file after the component and give it the extension for its language (`.ps1`, `.sh`, `.py`, `.bat`, `.cmd`). The importer infers language and OS from the extension and the script name from the filename.
+
+2. Go to **Scripts → Import bundle** and drop the loose files. A bundle holds at most 200 scripts, so a 1,326-component library is seven batches.
+
+3. Review the preview. Each script shows as **New** or **Name conflict**; for conflicts choose skip, import under a new name, or add as a new version of the existing script.
+
+4. Set availability to **All organizations** so one copy serves every customer.
+
+5. Open each imported script and add its parameters, variables and `exitCodeSeverityMapping`. Loose-file import carries only the body; a Breeze `.json` bundle carries the metadata too, so once one instance is configured you can export it and import into another.
+
+</Steps>
+
+The same flow is available as `POST /api/v1/scripts/bundle/preview` and `POST /api/v1/scripts/bundle/import`; the [migration toolkit](/migration/toolkit/#recipe-6--bulk-script-import) has a ready-to-run script.
+
+<Aside type="caution">
+  Bundles are unsigned and imported scripts can run as SYSTEM. Migrate what you have actually run in the last year, and read anything you did not write.
+</Aside>
+
+## Alert-driven components
+
+A Datto monitor that fires a response component becomes an automation: trigger **Event → `alert.triggered`**, filtered to the alert type, with action **Run script**. The monitor itself is rebuilt on the Breeze side; see [Monitors and alerting](/migration/datto-rmm/#monitors-and-alerting).
+
+<Aside type="caution">
+  An event-triggered automation currently runs its actions across every device in the automation's scope, not only the device that raised the alert ([#5240](https://github.com/LanternOps/breeze/issues/5240)). Until that lands, scope such automations to a device group narrow enough that running the script on every member is acceptable, or prefer a scheduled script.
+</Aside>
+
+## What does not carry over
+
+- **Component categories.** Bundles carry a category and tags by name and create them on import. Datto's category tree is flatter than most Breeze libraries end up, so review them after the first batch.
+- **Datto-only environment variables** (`$env:CS_PROFILE_UID`, `$env:CS_DOMAIN`, `$env:CS_*`). There is no equivalent. For hostname, OS or similar, add a parameter with source **From a device property**.
+- **The result-marker convention.** `<-Start Result->` lines are plain output in Breeze. Replace them with the custom-fields marker.
+- **Monitors.** Components ported; monitors are re-authored as Breeze monitors and alert rules.
+- **ComStore entitlements.** Check the system script library for the equivalent.
+- **Job schedules.** Bundles never carry schedules or automations. Recreate them as Breeze schedules once the scripts are in.

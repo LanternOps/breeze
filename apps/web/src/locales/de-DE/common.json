@@ -1,4 +1,13 @@
 {
+  "aiInitiator": {
+    "assistant": "KI-Assistent",
+    "agent": "KI-Agent",
+    "originUnavailable": "Ursprung nicht verfügbar",
+    "openSession": "Unterhaltung öffnen",
+    "openAgentRun": "Agentenlauf öffnen",
+    "tool": "Verwendetes Tool: {{name}}",
+    "occurredAt": "Aufgetreten am {{time}}"
+  },
   "lists": {
     "separator": ", "
   },
@@ -34,6 +43,7 @@
     "quotes": "Angebote",
     "invoices": "Rechnungen",
     "contracts": "Verträge",
+    "agreements": "Vereinbarungen",
     "timesheets": "Zeiterfassungen",
     "productCatalog": "Produktkatalog",
     "deviceGroups": "Gerätegruppen",

@@ -87,6 +87,16 @@ export const PERMISSION_GRANTS = {
   DOCUMENTS_READ: { resource: 'documents', action: 'read' },
   DOCUMENTS_WRITE: { resource: 'documents', action: 'write' },
 
+  // Agreement templates + signed agreements (agreements vocabulary & IA split,
+  // spec §4). Deliberately NOT folded into `contracts`: a billing contract and
+  // the MSA a customer signs are different objects with different audiences —
+  // an MSP may want a technician who can pull up the signed MSA without
+  // touching recurring billing, and a billing clerk who runs contracts without
+  // authoring legal terms. No `manage` action: publish and archive are write
+  // operations on a template, so there is nothing left for a third verb to gate.
+  AGREEMENTS_READ: { resource: 'agreements', action: 'read' },
+  AGREEMENTS_WRITE: { resource: 'agreements', action: 'write' },
+
   // Quotes / Proposals (billing program — sub-project 4)
   QUOTES_READ: { resource: 'quotes', action: 'read' },
   QUOTES_WRITE: { resource: 'quotes', action: 'write' },

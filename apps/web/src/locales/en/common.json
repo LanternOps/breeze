@@ -2,6 +2,15 @@
   "lists": {
     "separator": ", "
   },
+  "aiInitiator": {
+    "assistant": "AI assistant",
+    "agent": "AI agent",
+    "originUnavailable": "Origin not available",
+    "openSession": "Open conversation",
+    "openAgentRun": "Open agent run",
+    "tool": "Tool: {{name}}",
+    "occurredAt": "Occurred {{time}}"
+  },
   "nav": {
     "fleetPosture": "Fleet Posture",
     "dashboard": "Dashboard",
@@ -34,6 +43,7 @@
     "quotes": "Quotes",
     "invoices": "Invoices",
     "contracts": "Contracts",
+    "agreements": "Agreements",
     "timesheets": "Timesheets",
     "productCatalog": "Product Catalog",
     "deviceGroups": "Device Groups",

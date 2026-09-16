@@ -41,6 +41,7 @@ import { getRedis } from './redis';
 import { teardownDisconnectedSessions } from './remoteSessionTeardown';
 import { commitDesktopTerminalIntent, type TerminalSessionRow } from './remoteDesktopTerminalIntent';
 import { resolveDesktopSessionPolicy } from './remoteAccessPolicy';
+import { remoteDesktopFenceRequired } from '../config/env';
 
 // ---------------------------------------------------------------------------
 // Constants — owned here, never borrowed from remoteWsSharedLease.ts
@@ -119,8 +120,29 @@ export type RenewRevocationLeaseResult =
       hardDeadline: number;
       renewEverySec: number;
       graceSec: number;
+      /**
+       * SEC-038: the session's current `desktop_start_generation`, as a
+       * canonical decimal string (it is a bigint — it must never pass through
+       * a JS number). The agent's durable start fence resyncs from this, so a
+       * renewal answer doubles as the fence's authority on what the server
+       * currently considers the live start. Undefined only for a session row
+       * that could not be read.
+       */
+      startGeneration?: string;
+      /** The session's `termination_phase` at the same snapshot. */
+      terminationPhase?: 'none' | 'pending' | 'confirmed';
     }
-  | { status: 'revoked'; reason: RevocationReason }
+  | {
+      status: 'revoked';
+      reason: RevocationReason;
+      /**
+       * The generation at which the session was declared terminal, when it is
+       * known. Deliberately optional: the row may be missing, or the terminal
+       * bookkeeping may have failed while the revocation verdict still
+       * stands. The agent tombstones on the revocation itself, not on this.
+       */
+      terminalGeneration?: string;
+    }
   | { status: 'forbidden' }
   | { status: 'unavailable' };
 
@@ -136,6 +158,11 @@ export interface RevocationRecheckRow {
     startedAt: Date | null;
     createdAt: Date;
     permissionsEpochSnapshot: number | null;
+    /** SEC-038 monotonic start/terminal generation, bumped by both intents. */
+    desktopStartGeneration: bigint;
+    /** The generation at which the session was declared terminal. */
+    terminalGeneration: bigint | null;
+    terminationPhase: 'none' | 'pending' | 'confirmed';
   };
   device: {
     id: string;
@@ -144,6 +171,8 @@ export interface RevocationRecheckRow {
     agentId: string | null;
     /** Agent-declared revocation-lease protocol version; 0 = not capable. */
     revocationLeaseProtocolVersion: number;
+    /** SEC-038 agent-declared desktop start/terminal fence version; 0 = unfenced. */
+    desktopFenceProtocolVersion: number;
   };
   user: {
     status: string;
@@ -305,11 +334,15 @@ export async function loadRevocationRecheckRow(
           sessionStartedAt: remoteSessions.startedAt,
           sessionCreatedAt: remoteSessions.createdAt,
           permissionsEpochSnapshot: remoteSessions.permissionsEpochSnapshot,
+          desktopStartGeneration: remoteSessions.desktopStartGeneration,
+          terminalGeneration: remoteSessions.terminalGeneration,
+          terminationPhase: remoteSessions.terminationPhase,
           deviceId: devices.id,
           deviceOrgId: devices.orgId,
           deviceSiteId: devices.siteId,
           deviceAgentId: devices.agentId,
           deviceLeaseVersion: devices.revocationLeaseProtocolVersion,
+          deviceFenceVersion: devices.desktopFenceProtocolVersion,
           userStatus: users.status,
           userPermissionsEpoch: users.permissionsEpoch,
           userOrgId: users.orgId,
@@ -378,6 +411,15 @@ export async function loadRevocationRecheckRow(
             found.permissionsEpochSnapshot === undefined
               ? null
               : Number(found.permissionsEpochSnapshot),
+          // Generations stay bigint end to end — see the SEC-038 constraint:
+          // they are produced, transported and compared as canonical decimal
+          // strings and never as a JS number.
+          desktopStartGeneration: BigInt(found.desktopStartGeneration ?? 0n),
+          terminalGeneration:
+            found.terminalGeneration === null || found.terminalGeneration === undefined
+              ? null
+              : BigInt(found.terminalGeneration),
+          terminationPhase: found.terminationPhase ?? 'none',
         },
         device: {
           id: found.deviceId,
@@ -385,6 +427,7 @@ export async function loadRevocationRecheckRow(
           siteId: found.deviceSiteId ?? null,
           agentId: found.deviceAgentId ?? null,
           revocationLeaseProtocolVersion: Number(found.deviceLeaseVersion ?? 0),
+          desktopFenceProtocolVersion: Number(found.deviceFenceVersion ?? 0),
         },
         user: {
           status: found.userStatus,
@@ -636,6 +679,13 @@ export async function renewRevocationLease(
       hardDeadline,
       renewEverySec: REVOCATION_LEASE_RENEW_EVERY_MS / 1000,
       graceSec: REVOCATION_LEASE_GRACE_MS / 1000,
+      // SEC-038 fence resync: this same row snapshot, not a second query.
+      ...(row
+        ? {
+            startGeneration: row.session.desktopStartGeneration.toString(),
+            terminationPhase: row.session.terminationPhase,
+          }
+        : {}),
     };
   }
 
@@ -656,12 +706,29 @@ export async function renewRevocationLease(
     );
   }
 
-  return { status: 'revoked', reason: verdict.reason };
+  return {
+    status: 'revoked',
+    reason: verdict.reason,
+    // Best effort: a revocation is authoritative with or without it. Reading
+    // the pre-revocation snapshot is enough for the agent — its tombstone is
+    // absolute, and the generation only raises its high-water mark.
+    ...(row?.session.terminalGeneration !== null && row?.session.terminalGeneration !== undefined
+      ? { terminalGeneration: row.session.terminalGeneration.toString() }
+      : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Desktop-start capability gate
 // ---------------------------------------------------------------------------
+
+/**
+ * SEC-038: the only desktop start/terminal fence protocol version this server
+ * speaks. An agent reporting exactly this value keeps the durable per-session
+ * generation fence (W04/W05); anything else is unfenced. Enforced only while
+ * REMOTE_DESKTOP_FENCE_REQUIRED is on (default off — owner decision 1).
+ */
+export const DESKTOP_FENCE_PROTOCOL_VERSION = 1;
 
 /** Machine code every desktop-start dispatch site returns with its 503. */
 export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
@@ -673,7 +740,7 @@ export const AGENT_UPGRADE_REQUIRED_CODE = 'agent_upgrade_required';
  * heartbeat interval (default 60 s).
  */
 export const AGENT_UPGRADE_REQUIRED_MESSAGE =
-  'Remote desktop needs an agent update on this device (session revocation lease support). '
+  'Remote desktop needs an agent update on this device (session revocation lease and start fence support). '
   + 'The agent updates itself automatically — this usually clears within a minute. '
   + 'Terminal and file transfer are unaffected.';
 
@@ -709,6 +776,12 @@ export async function prepareRevocationLeaseForStart(
   if (row.device.revocationLeaseProtocolVersion !== REVOCATION_LEASE_PROTOCOL_VERSION) {
     return { ok: false, reason: 'agent_upgrade_required' };
   }
+  // SEC-038 W06: behind the flag, an agent without the durable start fence is
+  // refused with the same code — the generation in the start payload is only
+  // meaningful when the endpoint honours it.
+  if (!isDesktopFenceCapable(row.device.desktopFenceProtocolVersion)) {
+    return { ok: false, reason: 'agent_upgrade_required' };
+  }
   if (row.session.permissionsEpochSnapshot === null) {
     // No durable baseline means no renew can ever prove authority — refusing
     // here is the same fail-closed answer the renew path would give anyway.
@@ -735,18 +808,35 @@ export async function prepareRevocationLeaseForStart(
 }
 
 /**
- * Cheap standalone capability probe for callers that only need to fail fast
- * (session creation) and have no session row yet.
+ * SEC-038 W06 fence admission. Gate off (the default) admits every agent so
+ * the release that introduces the gate is a fleet no-op; gate on admits only
+ * an agent declaring exactly DESKTOP_FENCE_PROTOCOL_VERSION. Read at call time
+ * so the flag can be flipped without a restart-sensitive module constant.
  */
-export async function isRevocationLeaseCapable(deviceId: string): Promise<boolean> {
+export function isDesktopFenceCapable(desktopFenceProtocolVersion: number): boolean {
+  if (!remoteDesktopFenceRequired()) return true;
+  return desktopFenceProtocolVersion === DESKTOP_FENCE_PROTOCOL_VERSION;
+}
+
+/**
+ * Cheap standalone capability probe for callers that only need to fail fast
+ * (session creation) and have no session row yet. Covers both desktop-start
+ * capability gates: the unconditional revocation lease (#5481) and the
+ * flag-gated start fence (SEC-038 W06).
+ */
+export async function isDesktopStartCapable(deviceId: string): Promise<boolean> {
   const [row] = await runOutsideDbContext(() =>
     withSystemDbAccessContext(() =>
       db
-        .select({ version: devices.revocationLeaseProtocolVersion })
+        .select({
+          leaseVersion: devices.revocationLeaseProtocolVersion,
+          fenceVersion: devices.desktopFenceProtocolVersion,
+        })
         .from(devices)
         .where(eq(devices.id, deviceId))
         .limit(1),
     ),
   );
-  return Number(row?.version ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION;
+  return Number(row?.leaseVersion ?? 0) === REVOCATION_LEASE_PROTOCOL_VERSION
+    && isDesktopFenceCapable(Number(row?.fenceVersion ?? 0));
 }

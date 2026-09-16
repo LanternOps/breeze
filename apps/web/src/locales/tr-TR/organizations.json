@@ -128,7 +128,8 @@
       "sections": {
         "contracts": "Sözleşmeler",
         "invoices": "Faturalar",
-        "quotes": "Alıntılar"
+        "quotes": "Alıntılar",
+        "agreements": "Anlaşmalar"
       }
     },
     "documents": {

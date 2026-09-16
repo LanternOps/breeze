@@ -628,8 +628,24 @@ monitorRoutes.patch(
       }
     }
 
+    // #5754: a check result already in flight was produced under the OLD
+    // target/config, and recordMonitorCheckResult overwrites monitor state
+    // unconditionally — so without this the arriving certificate would be
+    // attributed to an endpoint it never came from. Only the identity of the
+    // thing being observed invalidates it; a rename or a polling-interval
+    // change does not. Deactivation deliberately does NOT clear either: the
+    // loader's `is_active = true` predicate already excludes those rows, and
+    // clearing would lose the last known expiry from the UI.
+    const existing = monitorResult.monitor;
+    const targetChanged = payload.target !== undefined && payload.target !== existing.target;
+    const configChanged = payload.config !== undefined
+      && JSON.stringify(payload.config) !== JSON.stringify(existing.config);
+    const tlsReset = (targetChanged || configChanged)
+      ? { tlsState: null, tlsNotAfter: null, tlsIssuer: null, tlsObservedHost: null, tlsObservedAt: null }
+      : {};
+
     const [updated] = await db.update(networkMonitors)
-      .set({ ...payload, updatedAt: new Date() })
+      .set({ ...payload, ...tlsReset, updatedAt: new Date() })
       .where(eq(networkMonitors.id, monitorId))
       .returning();
     if (!updated) {

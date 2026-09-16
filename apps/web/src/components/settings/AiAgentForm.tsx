@@ -464,7 +464,8 @@ export default function AiAgentForm({
               draft: kind is create-only, so the two cannot diverge on this
               form. `agentKind` tells the section which schedule kinds
               (sweep/narrative vs. design) its create chooser may offer. */}
-          {(agent.kind === 'triage' || agent.kind === 'designer') && (
+          {/* AI patch agent W01 (#5747) adds the third schedulable kind. */}
+          {(agent.kind === 'triage' || agent.kind === 'designer' || agent.kind === 'patch') && (
             <AiAgentSchedulesSection
               agentId={agent.id}
               agentOwnerScope={agent.ownerScope}

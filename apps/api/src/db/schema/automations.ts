@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, index, uniqueIndex, check, foreignKey } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
@@ -185,6 +186,15 @@ export const automationActionResults = pgTable('automation_action_results', {
   orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   actionIndex: integer('action_index').notNull(),
   actionType: varchar('action_type', { length: 64 }).notNull(),
+  /** Creation-time cause, distinct from the initiator/execution lane.
+   * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+   * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+   * action_intents_block_content_update guards all three on action intents.
+   */
+  triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+  triggerRefId: uuid('trigger_ref_id'),
+  triggerKey: varchar('trigger_key', { length: 200 }),
+
   status: automationActionResultStatusEnum('status').notNull().default('pending'),
   terminalSource: automationActionTerminalSourceEnum('terminal_source'),
   commandId: uuid('command_id'),

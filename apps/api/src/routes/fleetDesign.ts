@@ -41,7 +41,7 @@ import { fleetDesignApprovalSchema, triggerFleetDesignRunSchema, type FleetDesig
 import { zValidator } from '../lib/validation';
 import { db } from '../db';
 import { reportRuns, reports, sites } from '../db/schema';
-import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS, hasPermission, type UserPermissions } from '../services/permissions';
 import { PartnerWideWriteDeniedError } from '../services/partnerWideAccess';
 import { applyFleetDesign } from '../services/fleetDesign/apply';
@@ -56,6 +56,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { captureException } from '../services/sentry';
 
 export const fleetDesignRoutes = new Hono();
+fleetDesignRoutes.use('*', authMiddleware);
 
 const UUID = z.string().uuid();
 

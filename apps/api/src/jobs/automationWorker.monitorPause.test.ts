@@ -93,6 +93,7 @@ vi.mock('./workerObservability', () => ({
   attachWorkerObservability: vi.fn(),
 }));
 
+import { devices, monitorDeviceState } from '../db/schema';
 import { __testOnly, shutdownAutomationWorker } from './automationWorker';
 
 const MONITOR_AUTOMATION = {
@@ -134,7 +135,7 @@ const PAYLOAD = { alertId: 'alert-1', ruleId: 'rule-1', deviceId: 'dev-1', sever
 /**
  * Queue of results for successive `db.select()` chains. The FIRST is always the
  * automation lookup; the SECOND, when the automation is monitor-managed, is the
- * pause lookup.
+ * pause lookup. For unmanaged device events, the SECOND is the ownership lookup.
  */
 function mockSelects(...results: unknown[][]) {
   const queue = [...results];
@@ -146,7 +147,11 @@ function mockSelects(...results: unknown[][]) {
       then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
         Promise.resolve(rows).then(res, rej),
     };
-    return { from: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue(terminal) }) };
+    return {
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue(terminal),
+    };
   });
 }
 
@@ -228,7 +233,7 @@ describe('processTriggerEvent — monitor response pause (#5290)', () => {
   });
 
   it('does not consult the pause table for an ordinary customer automation', async () => {
-    mockSelects([PLAIN_AUTOMATION]);
+    mockSelects([PLAIN_AUTOMATION], [{ orgId: PLAIN_AUTOMATION.orgId, partnerId: null }]);
 
     await __testOnly.processTriggerEvent({
       ...BASE_EVENT,
@@ -236,7 +241,16 @@ describe('processTriggerEvent — monitor response pause (#5290)', () => {
       eventPayload: PAYLOAD,
     });
 
-    expect(selectMock).toHaveBeenCalledTimes(1);
+    expect(createAutomationRunRecordMock).toHaveBeenCalledWith(
+      expect.objectContaining({ boundDeviceIds: ['dev-1'] }),
+    );
+    expect('triggerContext' in addMock.mock.calls[0]?.[1]).toBe(false);
+    // Automation lookup + event-device ownership lookup; no pause read.
+    expect(selectMock).toHaveBeenCalledTimes(2);
+    expect(selectMock.mock.results[1]?.value.from).toHaveBeenCalledWith(devices);
+    for (const query of selectMock.mock.results) {
+      expect(query.value.from).not.toHaveBeenCalledWith(monitorDeviceState);
+    }
     expect(recordEpisodeResponseMock).not.toHaveBeenCalled();
   });
 

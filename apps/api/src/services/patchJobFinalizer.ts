@@ -37,6 +37,7 @@ import { evaluateRebootPolicy, executeReboot } from './patchRebootHandler';
 import { checkDeviceMaintenanceWindow } from './featureConfigResolver';
 import { registerTypeHold } from './commandClaimEligibility';
 import { captureException } from './sentry';
+import { emitPatchJobFailureAlert } from './patchAlerts';
 import type { CommandResultHandler } from './commandResultHandlers';
 
 /**
@@ -240,6 +241,21 @@ type PendingRebootEvaluation = {
   resultUnparsable: boolean;
 };
 
+/**
+ * What `emitPatchJobFailureAlert` needs. Populated only for a terminal that is
+ * a GENUINE install failure — see the `isGenuineFailure` classification in
+ * `applyDeviceTransition` below. `hostname` is deliberately absent: the
+ * emitter loads it itself, so this module never pays for the query on every
+ * device, only on the ones that actually failed.
+ */
+type PendingFailureAlert = {
+  orgId: string;
+  patchJobId: string;
+  deviceId: string;
+  failedCount: number;
+  errorExcerpt: string | null;
+};
+
 export type FinalizePatchJobDeviceInput = {
   patchJobId: string;
   deviceId: string;
@@ -270,13 +286,18 @@ export async function finalizePatchJobDevice(
   // already been told to restart.
   if (outcome.reboot) await evaluateRebootForResult(outcome.reboot);
 
+  // Same reasoning as the reboot evaluation above: fire the alert only once
+  // the write has actually committed. `emitPatchJobFailureAlert` never throws
+  // (alerting must not break finalisation), so no try/catch is needed here.
+  if (outcome.failureAlert) await emitPatchJobFailureAlert(outcome.failureAlert);
+
   return { applied: outcome.applied };
 }
 
 async function applyDeviceTransition(
   executor: PatchFinalizerExecutor,
   input: FinalizePatchJobDeviceInput,
-): Promise<{ applied: boolean; reboot: PendingRebootEvaluation | null }> {
+): Promise<{ applied: boolean; reboot: PendingRebootEvaluation | null; failureAlert: PendingFailureAlert | null }> {
   const { patchJobId, deviceId, terminal, completedAt, source } = input;
 
   const existing: ExistingResultRow[] = await executor
@@ -296,14 +317,14 @@ async function applyDeviceTransition(
   // touching a counter — a second decrement is how `devices_pending` goes
   // negative and the job never finalises.
   if (existing.length > 0 && active.length === 0) {
-    return { applied: false, reboot: null };
+    return { applied: false, reboot: null, failureAlert: null };
   }
 
   // A deferred door with no rows is looking at a device whose install is still
   // owned by the running `pollForPatchCommandResult` task. See
   // `PatchFinalizeSource`.
   if (source.kind === 'deferred' && active.length === 0) {
-    return { applied: false, reboot: null };
+    return { applied: false, reboot: null, failureAlert: null };
   }
 
   // Which counter this device is leaving. A `queued` row was moved out of
@@ -317,7 +338,7 @@ async function applyDeviceTransition(
       : await loadDeviceContext(executor, patchJobId, active, terminal);
   if (!context) {
     // No job row: the job was hard-deleted under us. Nothing to count.
-    return { applied: false, reboot: null };
+    return { applied: false, reboot: null, failureAlert: null };
   }
 
   const writes = buildRowWrites(terminal, context, active);
@@ -338,7 +359,7 @@ async function applyDeviceTransition(
   // and a job could reach 0/0 and report `completed` while another device was
   // still genuinely waiting to reconnect (OD-9).
   if (writes.rows.length > 0 && written === 0) {
-    return { applied: false, reboot: null };
+    return { applied: false, reboot: null, failureAlert: null };
   }
 
   await executor
@@ -354,6 +375,18 @@ async function applyDeviceTransition(
     .where(eq(patchJobs.id, patchJobId));
 
   await checkAndFinalizeJob(patchJobId, executor);
+
+  // A GENUINE install failure — the alert-worthy subset of "not completed".
+  // Deliberately narrower than `!writes.countsAsCompleted`: that is also false
+  // for `expired` (the device never got the command — it did not fail an
+  // install, #5128 W3) and would over-fire there if used directly. `timeout`
+  // (the execution clock ran out on a device that WAS running the command) is
+  // a genuine failure; `cancelled`/`superseded` are not failures at all.
+  const isGenuineFailure =
+    (terminal.kind === 'result' && !writes.countsAsCompleted) || terminal.kind === 'timeout';
+
+  const failedRows = writes.rows.filter((row) => row.status === 'failed');
+  const firstFailedRow = failedRows[0];
 
   return {
     applied: true,
@@ -373,6 +406,18 @@ async function applyDeviceTransition(
             resultUnparsable: writes.resultUnparsable,
           }
         : null,
+    failureAlert: isGenuineFailure
+      ? {
+          orgId: context.orgId,
+          patchJobId,
+          deviceId,
+          // "1 when only a summary row" falls out of the same filter: a
+          // summary row (patchId null) carrying `status: 'failed'` is exactly
+          // one row.
+          failedCount: failedRows.length,
+          errorExcerpt: firstFailedRow?.errorMessage ? firstFailedRow.errorMessage.slice(0, 200) : null,
+        }
+      : null,
   };
 }
 

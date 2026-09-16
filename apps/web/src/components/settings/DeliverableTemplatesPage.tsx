@@ -17,6 +17,7 @@ import {
   type TemplateItem,
   type TemplateSet,
 } from '../../lib/api/deliverableTemplates';
+import { listChecklistTemplates, type ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
 import type { DeliverableCadence, DeliverableCompletionMode } from '../../lib/api/serviceDeliverables';
 import { ActionError, handleActionError } from '../../lib/runAction';
 import { runClientAction } from '../../lib/runClientAction';
@@ -45,6 +46,10 @@ interface ItemFormState {
   artifactRequired: boolean;
   completionMode: DeliverableCompletionMode;
   autoEvidenceReportType: ManagedEvidenceReportType | null;
+  /** #5808 W03 — internal runbook prose. Never shown to the customer. */
+  instructions: string;
+  /** #5808 W03 — a pointer to a checklist template. '' means none. */
+  checklistTemplateId: string;
 }
 
 function blankItemForm(): ItemFormState {
@@ -56,6 +61,8 @@ function blankItemForm(): ItemFormState {
     artifactRequired: true,
     completionMode: 'on_ticket_resolve',
     autoEvidenceReportType: null,
+    instructions: '',
+    checklistTemplateId: '',
   };
 }
 
@@ -68,7 +75,23 @@ function itemFormFrom(item: TemplateItem): ItemFormState {
     artifactRequired: item.artifactRequired,
     completionMode: item.completionMode,
     autoEvidenceReportType: item.autoEvidenceReportType,
+    instructions: item.instructions ?? '',
+    checklistTemplateId: item.checklistTemplateId ?? '',
   };
+}
+
+/**
+ * #5808 W03 — the checklist-template options offered for a given set's items.
+ * A partner-wide set (`orgId === null`) may point ONLY at a partner-wide
+ * checklist template: offering an org-owned one would offer a choice the API
+ * refuses with a 404 (the owner-axis rule in
+ * `services/checklistTemplateReference.ts`). An org-owned set may point at
+ * either its own org's templates or a partner-wide one.
+ */
+function checklistTemplateOptionsFor(set: TemplateSet, all: ChecklistTemplate[]): ChecklistTemplate[] {
+  return set.orgId === null
+    ? all.filter((tpl) => tpl.orgId === null)
+    : all.filter((tpl) => tpl.orgId === set.orgId || tpl.orgId === null);
 }
 
 function intOr(value: string, fallback: number): number {
@@ -93,6 +116,11 @@ export default function DeliverableTemplatesPage() {
   const uid = useId();
 
   const [sets, setSets] = useState<TemplateSet[] | LoadFailure | null>(null);
+  // #5808 W03 — the full set of ACTIVE checklist templates this partner-scoped
+  // actor can see, filtered per-set (see checklistTemplateOptionsFor) when the
+  // item form renders. A failed load just leaves the picker showing only
+  // "None" — it is a picker convenience, not a mutation, so no toast.
+  const [checklistTemplates, setChecklistTemplates] = useState<ChecklistTemplate[]>([]);
 
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
   const currentOrgId = useOrgStore((s) => s.currentOrgId);
@@ -130,6 +158,21 @@ export default function DeliverableTemplatesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listChecklistTemplates(fetchWithAuth)
+      .then((rows) => {
+        if (!cancelled) setChecklistTemplates(rows.filter((tpl) => tpl.isActive));
+      })
+      .catch((err) => {
+        console.error('[DeliverableTemplatesPage] failed to load checklist templates', err);
+        if (!cancelled) setChecklistTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const resetSetForm = () => {
     setFormName('');
@@ -293,6 +336,8 @@ export default function DeliverableTemplatesPage() {
         graceDays: intOr(itemForm.graceDays, 14),
         artifactRequired: itemForm.artifactRequired,
         completionMode: itemForm.completionMode,
+        instructions: itemForm.instructions.trim() || null,
+        checklistTemplateId: itemForm.checklistTemplateId || null,
         sortOrder,
         autoEvidenceReportType: itemForm.autoEvidenceReportType,
       };
@@ -545,6 +590,42 @@ export default function DeliverableTemplatesPage() {
                           </p>
                         )}
                       </div>
+                    </div>
+                    <div>
+                      <label htmlFor={`${uid}-item-instructions-${set.id}`} className={labelClass}>{t('form.instructions')}</label>
+                      <textarea
+                        id={`${uid}-item-instructions-${set.id}`}
+                        data-testid="deliverable-template-item-instructions"
+                        className={inputClass}
+                        rows={3}
+                        value={itemForm.instructions}
+                        onChange={(e) => setItemForm((f) => ({ ...f, instructions: e.target.value }))}
+                        maxLength={10000}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">{t('form.instructionsHint')}</p>
+                    </div>
+                    <div>
+                      <label htmlFor={`${uid}-item-checklist-${set.id}`} className={labelClass}>{t('form.checklistTemplate')}</label>
+                      <select
+                        id={`${uid}-item-checklist-${set.id}`}
+                        data-testid="deliverable-template-item-checklist-template"
+                        className={inputClass}
+                        value={itemForm.checklistTemplateId}
+                        onChange={(e) => setItemForm((f) => ({ ...f, checklistTemplateId: e.target.value }))}
+                      >
+                        <option value="">{t('form.checklistTemplateNone')}</option>
+                        {checklistTemplateOptionsFor(set, checklistTemplates).map((tpl) => (
+                          <option key={tpl.id} value={tpl.id}>
+                            {tpl.orgId === null ? `${tpl.name} — ${t('form.checklistTemplateAllOrgs')}` : tpl.name}
+                          </option>
+                        ))}
+                      </select>
+                      <a
+                        href="/settings/ticket-checklist-templates"
+                        className="mt-1 inline-block text-xs text-muted-foreground underline hover:text-foreground"
+                      >
+                        {t('form.checklistTemplateManage')}
+                      </a>
                     </div>
                     {itemError && (
                       <p className="text-sm text-destructive" role="alert" data-testid="deliverable-template-item-error">

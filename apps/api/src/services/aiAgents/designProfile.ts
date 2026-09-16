@@ -4,12 +4,24 @@ import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentLimits, type AiAgentRunProfile } f
  * Fleet Designer (W01). The read-only drill-down floor a design run gets so
  * the model can check a function guess against one device — the evidence
  * bundle cannot carry every device's detail (spec §4.2, D6). Every name is a
- * tier-1 / read-only tier-2 catalog tool (designProfile.test.ts asserts it).
- * Floor, not intersection: the agent's own allowlist is ignored, like
+ * tier-1 / read-only tier-2 catalog tool (designProfile.test.ts asserts it)
+ * AND is declared in `createBreezeMcpServer` — the single MCP server a
+ * design run attaches (also asserted in designProfile.test.ts). Floor, not
+ * intersection: the agent's own allowlist is ignored, like
  * narrativeToolAllowlist / sweepToolAllowlist.
+ *
+ * `get_script_details` is deliberately absent: it is a `TOOL_TIERS` key and
+ * a catalog tool, but it is only declared on the separate `script_builder`
+ * MCP server (`scriptBuilderTools.ts`; see `NOT_IN_BREEZE_MCP_SERVER` in
+ * `aiAgentSdkTools.mcpCoverage.test.ts`), so `createBreezeMcpServer`'s
+ * `onlyTools` rejected it with "referenced unknown tool name(s)" and every
+ * design run died at turn 0. No breeze-MCP-declared tool serves the same
+ * "read one script's content/metadata" purpose today (`get_script_proposal`
+ * reads an authoring proposal, not a library script; `get_script_execution`
+ * reads a run's result, not the script) — dropped rather than swapped.
  */
 export const DESIGN_TOOL_ALLOWLIST = [
-  'get_device_details', 'get_device_context', 'search_logs', 'get_script_details',
+  'get_device_details', 'get_device_context', 'search_logs',
   'get_configuration_policy', 'get_playbook_history',
 ] as const;
 

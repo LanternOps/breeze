@@ -100,7 +100,7 @@ vi.mock('../services/remoteAccessPolicy', () => ({
 vi.mock('../services/remoteRevocationLease', () => ({
   AGENT_UPGRADE_REQUIRED_CODE: 'agent_upgrade_required',
   AGENT_UPGRADE_REQUIRED_MESSAGE: 'agent update required',
-  isRevocationLeaseCapable: vi.fn(async () => true),
+  isDesktopStartCapable: vi.fn(async () => true),
   prepareRevocationLeaseForStart: vi.fn(async () => ({
     ok: true,
     lease: {

@@ -1019,8 +1019,10 @@ export * from './aiOperator';
 export * from './orgNarrative';
 export * from './fleetDesign';
 export * from './fleetDesignApply';
+export * from './aiPatchPlan';
 export * from './ticketTriage';
 export * from './aiAgentImpact';
+export * from './aiAgentImpactMeasured';
 
 // ============================================
 // Tenant Variable Validators (#3409)
@@ -1096,6 +1098,33 @@ export {
   type AddEvidenceInput,
   type EvidenceRef,
 } from './serviceDeliverables';
+export {
+  CHECKLIST_ITEM_SOURCES,
+  checklistItemSourceSchema,
+  checklistItemCreateSchema,
+  checklistItemPatchSchema,
+  checklistReorderSchema,
+  type ChecklistItemSource,
+  type ChecklistItemCreateInput,
+  type ChecklistItemPatchInput,
+  type ChecklistReorderInput,
+  checklistTemplateOwnerScopeSchema,
+  createChecklistTemplateSchema,
+  updateChecklistTemplateSchema,
+  createChecklistTemplateItemSchema,
+  updateChecklistTemplateItemSchema,
+  checklistTemplateItemReorderSchema,
+  listChecklistTemplatesQuerySchema,
+  applyChecklistTemplateSchema,
+  type ChecklistTemplateOwnerScope,
+  type CreateChecklistTemplateInput,
+  type UpdateChecklistTemplateInput,
+  type CreateChecklistTemplateItemInput,
+  type UpdateChecklistTemplateItemInput,
+  type ChecklistTemplateItemReorderInput,
+  type ListChecklistTemplatesQuery,
+  type ApplyChecklistTemplateInput,
+} from './ticketChecklists';
 export {
   templateOwnerScopeSchema,
   createTemplateItemSchema,

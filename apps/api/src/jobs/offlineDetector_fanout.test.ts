@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 
-const { addBulkMock, addMock, warnSpy, devicesSchema, fleetState } = vi.hoisted(() => ({
+const { addBulkMock, addMock, warnSpy, captureMessageMock, devicesSchema, fleetState } = vi.hoisted(() => ({
   addBulkMock: vi.fn(async (_jobs: unknown[]) => undefined),
   addMock: vi.fn(async (_name: string, _data: unknown, _opts?: unknown) => ({ id: 'continuation' })),
   warnSpy: vi.fn(),
+  captureMessageMock: vi.fn(),
   devicesSchema: {
     id: 'devices.id',
     orgId: 'devices.orgId',
@@ -111,6 +112,16 @@ vi.mock('../services/bullmqUtils', () => ({
   isReusableState: vi.fn(() => false)
 }));
 
+vi.mock('../services/sentry', () => ({
+  captureMessage: (message: string, options: unknown) => captureMessageMock(message, options)
+}));
+
+// Bypass the real 5-minute throttle window so a skipped-row test's assertion
+// doesn't depend on being the first such test to run in this file/process.
+vi.mock('../services/sentryThrottle', () => ({
+  throttledReporter: (_windowMs: number, report: (suppressed: number) => void) => () => report(0)
+}));
+
 import {
   offlineContinuationJobId,
   offlineTransitionId,
@@ -124,6 +135,7 @@ describe('offlineDetector.processDetectOffline cursor fan-out', () => {
     addBulkMock.mockClear();
     addMock.mockClear();
     warnSpy.mockClear();
+    captureMessageMock.mockClear();
     vi.spyOn(console, 'warn').mockImplementation(warnSpy);
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     delete process.env.OFFLINE_DETECTOR_MAX_DEVICES_PER_RUN;
@@ -282,15 +294,72 @@ describe('offlineDetector.processDetectOffline cursor fan-out', () => {
       .toBe(`offline-continuation-${createHash('sha256').update(`sweep-1\0${deviceId}`).digest('hex')}`);
   });
 
-  it('rejects invalid UUIDs and timestamps before queue publication', async () => {
+  it('rejects invalid UUIDs and timestamps at the transition-id helper level', () => {
     expect(() => offlineTransitionId('not-a-uuid', 'also-bad', 'not-a-date')).toThrow();
-    fleetState.fleet = [{
-      ...buildFleet(1)[0]!,
-      orgId: 'not-a-uuid',
-    }];
+  });
 
-    await expect(processDetectOffline({ type: 'detect-offline' })).rejects.toThrow('Invalid orgId');
-    expect(addBulkMock).not.toHaveBeenCalled();
+  it('skips a device row with a non-v4 orgId and logs instead of failing the whole sweep (#5867)', async () => {
+    const errorSpy = vi.fn();
+    vi.spyOn(console, 'error').mockImplementation(errorSpy);
+    const [badDevice] = buildFleet(1);
+    const goodDevice = { ...buildFleet(1)[0]!, id: '00000000-0000-4000-8000-000000000099' };
+    fleetState.fleet = [{ ...badDevice!, orgId: 'not-a-uuid' }, goodDevice];
+
+    await expect(processDetectOffline({ type: 'detect-offline' })).resolves.toMatchObject({
+      detected: 1,
+      skipped: 1,
+    });
+
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+    const [jobs] = addBulkMock.mock.calls[0]! as [Array<{ data: { deviceId: string } }>];
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.data.deviceId).toBe(goodDevice.id);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`Skipping device ${badDevice!.id}`),
+      expect.any(Error),
+    );
+    // The skip is a permanent condition (the row re-fails every sweep until
+    // fixed by hand), so it must reach a durable signal, not just a console
+    // line the file's other benign/self-healing paths rely on.
+    expect(captureMessageMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ eventCode: 'offline_detector_invalid_device_row' }),
+    );
+  });
+
+  it('skips a device row with a non-v4 id, not just orgId', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const goodDevice = { ...buildFleet(1)[0]!, id: '00000000-0000-4000-8000-000000000099' };
+    fleetState.fleet = [{ ...buildFleet(1)[0]!, id: 'not-a-uuid' }, goodDevice];
+
+    const result = await processDetectOffline({ type: 'detect-offline' });
+
+    expect(result.detected).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(addBulkMock).toHaveBeenCalledTimes(1);
+    const [jobs] = addBulkMock.mock.calls[0]! as [Array<{ data: { deviceId: string } }>];
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.data.deviceId).toBe(goodDevice.id);
+  });
+
+  it('advances past a chunk consisting entirely of bad rows instead of stalling the sweep', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    process.env.OFFLINE_DETECTOR_CHUNK_SIZE = '2';
+    const badChunk = buildFleet(2).map(d => ({ ...d, orgId: 'not-a-uuid' }));
+    const goodDevice = { ...buildFleet(1)[0]!, id: '00000000-0000-4000-8000-000000000099' };
+    fleetState.fleet = [...badChunk, goodDevice];
+
+    const result = await processDetectOffline({ type: 'detect-offline' });
+
+    // First chunk (the two bad rows) enqueues nothing; second chunk (the good
+    // row) enqueues one job — addBulk must still be called (even with an
+    // empty array) for the all-bad chunk, and the cursor must have advanced
+    // past it rather than re-selecting it forever.
+    expect(result.detected).toBe(1);
+    expect(result.skipped).toBe(2);
+    const allEnqueued = addBulkMock.mock.calls.flatMap(([jobs]) => jobs as Array<{ data: { deviceId: string } }>);
+    expect(allEnqueued).toHaveLength(1);
+    expect(allEnqueued[0]!.data.deviceId).toBe(goodDevice.id);
   });
 
   it('treats cap=0 as unlimited', async () => {

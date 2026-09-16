@@ -56,6 +56,7 @@ import { orgSummaryRoutes } from './routes/orgSummary';
 import { orgAccountReadinessRoutes } from './routes/orgAccountReadiness';
 import { serviceDeliverableRoutes } from './routes/serviceDeliverables';
 import { deliverableTemplateRoutes } from './routes/deliverableTemplates';
+import { ticketChecklistTemplateRoutes } from './routes/ticketChecklistTemplates';
 import { orgDocumentRoutes } from './routes/orgDocuments';
 import { orgKeyDateRoutes } from './routes/orgKeyDates';
 import { oauthRoutes } from './routes/oauth';
@@ -150,6 +151,7 @@ import { aiAgentsRoutes } from './routes/aiAgents';
 import { aiArtifactRoutes } from './routes/aiArtifacts';
 import { aiAgentSchedulesRoutes } from './routes/aiAgentSchedules';
 import { fleetDesignRoutes } from './routes/fleetDesign';
+import { patchPlanRoutes } from './routes/patchPlan';
 import { aiOperatorTasksRoutes } from './routes/aiOperatorTasks';
 import { scriptAiRoutes } from './routes/scriptAi';
 import { mcpServerRoutes, initMcpBootstrapForStartup } from './routes/mcpServer';
@@ -239,11 +241,13 @@ import { getWebhookWorker } from './workers/webhookDelivery';
 import { startRegisteredWorkers, buildWorkerShutdownTasks } from './services/workerRegistry';
 import { registerAiAgentEnqueuer } from './jobs/aiAgentEnqueuer';
 import { backfillC2cConnectionSecrets } from './services/c2cSecrets';
+import { backfillDefaultPatchSchedules } from './jobs/patchScheduleBackfill';
 import { registerAllEventSubscribers } from './services/eventSubscribers';
 import { initializeDeviceEventHandlers } from './events/deviceEvents';
 import { buildWebhookFanoutDeps } from './services/webhookFanoutDeps';
 import { closeRedis, getRedis, isRedisAvailable } from './services/redis';
 import { shutdownEventDispatcher } from './services/eventDispatcher';
+import { shutdownChatRunBridge } from './services/workspace/chatRunBridge';
 import { initializeEventDispatchWorker, shutdownEventDispatchWorker } from './jobs/eventDispatchWorker';
 import { shutdownEventDispatchQueue } from './services/eventDispatchQueue';
 import {
@@ -262,6 +266,7 @@ import { drainLlmEgressQueue } from './services/llm/llmEgressRecorder';
 import { createCorsOriginResolver } from './services/corsOrigins';
 import { validateConfig } from './config/validate';
 import { initializeDatabaseForStartup } from './db/databaseStartup';
+import { clearPermissionCache } from './services/permissions';
 import { loadBuiltinExtensions } from './extensions/builtinExtensions';
 import { extensionContributionRegistry } from './extensions/contributionRegistry';
 import { mountExtensionGateway } from './extensions/gateway';
@@ -855,6 +860,7 @@ api.route('/orgs', orgSummaryRoutes);
 api.route('/orgs', orgAccountReadinessRoutes); // GET /orgs/account-readiness — Organizations board bulk read (#5721 W01)
 api.route('/orgs', serviceDeliverableRoutes); // /orgs/:orgId/deliverables/* (#5573 W01)
 api.route('/deliverable-templates', deliverableTemplateRoutes); // (#5573 W05)
+api.route('/ticket-checklist-templates', ticketChecklistTemplateRoutes); // (#5783 W02)
 api.route('/orgs', orgDocumentRoutes); // /orgs/:orgId/documents/* (#5573 W03)
 api.route('/orgs', orgKeyDateRoutes);         // /orgs/:orgId/key-dates/* (#5573 W01)
 api.route('/users', userRoutes);
@@ -1008,6 +1014,9 @@ api.route('/ai/agents', aiAgentsRoutes);
 // Distinct path prefix from '/ai/agents', so registration order relative to
 // it doesn't matter the way '/ai/agents/schedules' does.
 api.route('/ai/fleet-design', fleetDesignRoutes);
+// AI patch agent W01 (#5747): "Run now" for a patch plan. Same reasoning as
+// the line above — its own prefix, so registration order is irrelevant.
+api.route('/ai/patch-plan', patchPlanRoutes);
 // Read-only Operator task surface (W07 of #5205, P3-1e) — a separate route
 // module from the already-large aiAgentsRoutes per spec §12.
 api.route('/ai/operator', aiOperatorTasksRoutes);
@@ -1407,6 +1416,10 @@ async function shutdownRuntime(signal: NodeJS.Signals): Promise<void> {
       name: 'queues',
       tasks: [
         shutdownEventDispatcher,
+        // Execution plane W05: the chat run bridge owns its own per-org ioredis
+        // subscribers. A leaked one keeps the process alive past SIGTERM, which
+        // is how a rolling deploy turns into a stuck pod.
+        shutdownChatRunBridge,
         shutdownEventDispatchWorker,
         shutdownEventDispatchQueue,
         shutdownAgentCommandRelayWorker,
@@ -1616,6 +1629,15 @@ async function bootstrap(): Promise<void> {
     autoMigrateEnabled: process.env.AUTO_MIGRATE !== 'false',
     production: config.NODE_ENV === 'production',
   });
+  // Migrations may have changed role_permissions (W02 seeded agreements:* and
+  // back-filled it onto every role holding the equivalent contracts grant), and
+  // the permission resolver caches UserPermissions for CACHE_TTL = 5 minutes
+  // (services/permissions.ts:36-37). A warm replica in a rolling deploy would
+  // otherwise serve pre-migration grants — a 403 on a surface the operator can
+  // see they have access to — until the TTL expired. Calling this with no
+  // userId bumps the shared Redis version key, so every replica invalidates at
+  // once rather than each aging out independently.
+  await clearPermissionCache();
   console.log(`[config] Validated: NODE_ENV=${config.NODE_ENV}, port=${config.API_PORT}`);
   if ((process.env.AGENT_BACKUP_SERVER_URL ?? '').trim()) {
     console.log(`[config] AGENT_BACKUP_SERVER_URL active: ${process.env.AGENT_BACKUP_SERVER_URL!.trim()}`);
@@ -1708,6 +1730,16 @@ async function bootstrap(): Promise<void> {
     });
   } catch (err) {
     console.error('[startup] Failed to backfill C2C connection secrets:', err);
+  }
+
+  // AI patch agent W01 (#5747, #5382): partner-wide patch agents enabled
+  // before the default-cadence hook shipped have no schedule and never run.
+  // Idempotent (per-agent advisory lock + existing-row check) and manages its
+  // own system DB context, so it is safe on every boot and every replica.
+  try {
+    await backfillDefaultPatchSchedules();
+  } catch (err) {
+    console.error('[startup] Failed to backfill default patch schedules:', err);
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)

@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import { captureException } from './sentry';
 import {
@@ -27,13 +27,45 @@ export type SoftwareInventoryRow = {
 export type SoftwarePolicyComplianceStatus = 'compliant' | 'violation' | 'unknown';
 export type SoftwarePolicyRemediationStatus = 'none' | 'pending' | 'in_progress' | 'completed' | 'failed';
 
+/**
+ * Feature #5505 (contract D1): the install verb's own status axis. It is a
+ * SUPERSET of SoftwarePolicyRemediationStatus, adding two install-specific
+ * terminal states:
+ *  - 'gave_up'  — the consecutive-attempt counter hit
+ *                 SOFTWARE_INSTALL_REMEDIATION_MAX_ATTEMPTS. This is the
+ *                 install-loop terminator (spec Risks §1); a policy whose rule
+ *                 never matches what the installer registers would otherwise
+ *                 reinstall every 15 minutes forever.
+ *  - 'skipped'  — nothing was attempted and nothing is wrong with the device:
+ *                 the rule carries no catalogId (so there is nothing to
+ *                 install), the per-pass cap was reached, or (W03) the
+ *                 catalog item has no install method for this device's OS.
+ * Deliberately NOT a DB enum — remediation_status is a bare varchar(20) too.
+ */
+export type SoftwarePolicyInstallRemediationStatus =
+  | 'none'
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'gave_up'
+  | 'skipped';
+
 export type SoftwareComplianceUpsertInput = {
   deviceId: string;
   policyId: string;
   status: SoftwarePolicyComplianceStatus;
   violations: SoftwarePolicyViolation[];
   checkedAt?: Date;
+  /**
+   * OPTIONAL ON PURPOSE, for all three of these. `undefined` means "this pass
+   * has nothing to say about that column" and the generated statement must not
+   * name it at all — see upsertSoftwareComplianceStatuses. Passing a value when
+   * you mean "leave it alone" silently overwrites a live status.
+   */
   remediationStatus?: SoftwarePolicyRemediationStatus;
+  installRemediationStatus?: SoftwarePolicyInstallRemediationStatus;
+  installRemediationAttempts?: number;
 };
 
 type DeviceSoftwareInventoryRow = SoftwareInventoryRow & {
@@ -260,6 +292,20 @@ export const SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS = {
   failed: 'install_failed',
   /** Consecutive attempts exhausted; the install loop guard stopped retrying. */
   gaveUp: 'install_gave_up',
+  /**
+   * The pass ran to completion and created NO deployment, with nothing having
+   * errored — every candidate was skipped (unreachable catalog item, no
+   * install target for the device's OS, or a payload id the policy no longer
+   * reports missing).
+   *
+   * Added by #5505 W03. Without it the emit site had to fall back to `queued`
+   * for this outcome, which put "an install was queued for this device" in the
+   * durable audit trail when nothing was: `action` is the dimension a
+   * technician filters on, and the contradiction was visible only by reading
+   * details.deploymentsCreated. The reason for each skip travels in
+   * details.skipped.
+   */
+  skipped: 'install_skipped',
 } as const;
 
 export type SoftwarePolicyInstallAuditAction =
@@ -517,6 +563,24 @@ export async function evaluateSoftwarePolicyForDevice(
   return evaluateSoftwarePolicyAgainstInventory(policy, inventory);
 }
 
+/**
+ * Optional columns of software_compliance_status, keyed by their
+ * SoftwareComplianceUpsertInput field name. Values are FACTORIES, not shared
+ * SQL objects, so each generated statement gets its own fragment.
+ */
+type ComplianceUpsertOptionalKey = keyof SoftwareComplianceUpsertInput
+  & ('remediationStatus' | 'installRemediationStatus' | 'installRemediationAttempts');
+
+const COMPLIANCE_UPSERT_OPTIONAL_COLUMNS: Record<ComplianceUpsertOptionalKey, () => SQL> = {
+  remediationStatus: () => sql`excluded.remediation_status`,
+  installRemediationStatus: () => sql`excluded.install_remediation_status`,
+  installRemediationAttempts: () => sql`excluded.install_remediation_attempts`,
+};
+
+const COMPLIANCE_UPSERT_OPTIONAL_KEYS = Object.keys(
+  COMPLIANCE_UPSERT_OPTIONAL_COLUMNS
+) as ComplianceUpsertOptionalKey[];
+
 export async function upsertSoftwareComplianceStatuses(
   inputs: SoftwareComplianceUpsertInput[]
 ): Promise<void> {
@@ -530,51 +594,63 @@ export async function upsertSoftwareComplianceStatuses(
   ));
   if (normalized.length === 0) return;
 
-  const withRemediationStatus = normalized.filter((input) => input.remediationStatus !== undefined);
-  const withoutRemediationStatus = normalized.filter((input) => input.remediationStatus === undefined);
-
-  for (const chunk of chunkArray(withoutRemediationStatus)) {
-    if (chunk.length === 0) continue;
-    await db
-      .insert(softwareComplianceStatus)
-      .values(chunk.map((input) => ({
-        deviceId: input.deviceId,
-        policyId: input.policyId,
-        status: input.status,
-        violations: input.violations,
-        lastChecked: input.checkedAt ?? new Date(),
-      })))
-      .onConflictDoUpdate({
-        target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
-        set: {
-          status: sql`excluded.status`,
-          violations: sql`excluded.violations`,
-          lastChecked: sql`excluded.last_checked`,
-        },
-      });
+  // Group by WHICH optional columns each input actually carries.
+  //
+  // A bulk onConflictDoUpdate shares ONE `set` clause across its whole chunk,
+  // and `excluded.<col>` reads the value of the row this statement tried to
+  // insert. So an input that says nothing about a column must not travel in the
+  // same statement as one that does — otherwise the silent input's insert-time
+  // DEFAULT ('none' / 0) is written over a live value. That is exactly why the
+  // original implementation split on "was remediationStatus provided"; this
+  // generalises the same split to every optional column and is byte-equivalent
+  // for callers that pass only remediationStatus (they still produce the same
+  // two groups, with the same set clauses, as before).
+  //
+  // The membership test is `!== undefined`, NOT truthiness:
+  // installRemediationAttempts: 0 is the counter RESET and must be written.
+  const byShape = new Map<string, SoftwareComplianceUpsertInput[]>();
+  for (const input of normalized) {
+    const presentKeys = COMPLIANCE_UPSERT_OPTIONAL_KEYS.filter((key) => input[key] !== undefined);
+    const shapeKey = presentKeys.join('|');
+    const bucket = byShape.get(shapeKey);
+    if (bucket) bucket.push(input);
+    else byShape.set(shapeKey, [input]);
   }
 
-  for (const chunk of chunkArray(withRemediationStatus)) {
-    if (chunk.length === 0) continue;
-    await db
-      .insert(softwareComplianceStatus)
-      .values(chunk.map((input) => ({
-        deviceId: input.deviceId,
-        policyId: input.policyId,
-        status: input.status,
-        violations: input.violations,
-        lastChecked: input.checkedAt ?? new Date(),
-        remediationStatus: input.remediationStatus,
-      })))
-      .onConflictDoUpdate({
-        target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
-        set: {
-          status: sql`excluded.status`,
-          violations: sql`excluded.violations`,
-          lastChecked: sql`excluded.last_checked`,
-          remediationStatus: sql`excluded.remediation_status`,
-        },
-      });
+  for (const [shapeKey, group] of byShape) {
+    const optionalKeys = shapeKey.length > 0
+      ? (shapeKey.split('|') as ComplianceUpsertOptionalKey[])
+      : [];
+
+    for (const chunk of chunkArray(group)) {
+      if (chunk.length === 0) continue;
+      await db
+        .insert(softwareComplianceStatus)
+        .values(chunk.map((input) => {
+          const row: Record<string, unknown> = {
+            deviceId: input.deviceId,
+            policyId: input.policyId,
+            status: input.status,
+            violations: input.violations,
+            lastChecked: input.checkedAt ?? new Date(),
+          };
+          for (const key of optionalKeys) {
+            row[key] = input[key];
+          }
+          return row as typeof softwareComplianceStatus.$inferInsert;
+        }))
+        .onConflictDoUpdate({
+          target: [softwareComplianceStatus.deviceId, softwareComplianceStatus.policyId],
+          set: {
+            status: sql`excluded.status`,
+            violations: sql`excluded.violations`,
+            lastChecked: sql`excluded.last_checked`,
+            ...Object.fromEntries(
+              optionalKeys.map((key) => [key, COMPLIANCE_UPSERT_OPTIONAL_COLUMNS[key]()])
+            ),
+          },
+        });
+    }
   }
 }
 

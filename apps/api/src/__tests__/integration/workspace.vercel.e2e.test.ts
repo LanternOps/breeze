@@ -158,7 +158,10 @@ describe.skipIf(!ENABLED)('workspace vercel e2e (nightly)', () => {
       teamId: process.env.VERCEL_TEAM_ID as string,
       projectId: process.env.VERCEL_PROJECT_ID as string,
     };
-    const sandboxes = await (await Sandbox.list({ namePrefix: handle.providerRef, ...credentials })).toArray();
+    // Vercel rejects `namePrefix` unless `sortBy` is `name` (400 "Invalid
+    // request: `namePrefix` is only valid when `sortBy` is `name`") — seen on
+    // the first live nightly run, 2026-09-14, once the credentials landed.
+    const sandboxes = await (await Sandbox.list({ namePrefix: handle.providerRef, sortBy: 'name', ...credentials })).toArray();
     const live = sandboxes.filter((s) => s.status !== 'stopped' && s.status !== 'aborted');
     expect(live).toEqual([]);
 

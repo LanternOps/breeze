@@ -30,7 +30,12 @@
     "toast": {
       "approved": "Patch aprovado",
       "declined": "Patch recusado",
+      "declinedAllRings": "Patch recusado em todos os anéis de atualização",
       "deferred": "Patch adiado"
+    },
+    "allRings": {
+      "label": "Limpar todas as aprovações de anéis",
+      "description": "Também revoga a aprovação deste patch em todos os outros anéis de atualização deste parceiro, não apenas no escopo atual."
     },
     "confirm": {
       "title": "Confirmar aprovação do patch",
@@ -264,6 +269,7 @@
     "actions": {
       "deploy": "Implantar",
       "review": "Revisar",
+      "unapprove": "Remover aprovação",
       "details": "Detalhes",
       "approveCount": "Aprovar {{count}}",
       "declineCount": "Recusar {{count}}",

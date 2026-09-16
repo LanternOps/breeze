@@ -59,6 +59,10 @@ describe('IntegrationBadges', () => {
     expect(qbo).toHaveTextContent('QuickBooks');
     expect(qbo).toHaveAttribute('aria-label', 'Acme: QuickBooks, Linked');
     expect(qbo.querySelector('[data-dot]')?.className).toContain('bg-success');
+    // Regression: a linked badge with no reason and not muted had no `title`
+    // at all — mouse users got zero information on hover. It should fall
+    // back to the same text as the accessible name.
+    expect(qbo).toHaveAttribute('title', 'Acme: QuickBooks, Linked');
 
     const m365 = screen.getByTestId(`org-board-badge-${ORG}-m365`);
     expect(m365).toHaveAttribute('aria-label', 'Acme: Microsoft 365, Pending (Waiting for Microsoft consent)');
@@ -72,6 +76,7 @@ describe('IntegrationBadges', () => {
     const ext = screen.getByTestId(`org-board-badge-${ORG}-external-datto_rmm`);
     expect(ext).toHaveTextContent('datto_rmm');
     expect(ext).toHaveAttribute('aria-label', 'Acme: datto_rmm, Identity only');
+    expect(ext).toHaveAttribute('title', 'Acme: datto_rmm, Identity only');
 
     const psa = screen.getByTestId(`org-board-badge-${ORG}-psa`);
     expect(psa).toHaveTextContent('ConnectWise not linked');

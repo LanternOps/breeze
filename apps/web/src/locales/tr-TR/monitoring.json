@@ -105,6 +105,8 @@
       "test": "Test başarısız oldu",
       "generic": "Bir şeyler ters gitti"
     },
+    "saved": "Monitör kaydedildi",
+    "deleted": "Monitör silindi",
     "loading": "Monitör yükleniyor…",
     "noAttachments": "Henüz herhangi bir politikaya dağıtılmadı.",
     "testResult": {
@@ -246,6 +248,7 @@
     },
     "selectPolicy": "Yapılandırma politikası",
     "selectTarget": "Hedef",
+    "noOrgSelected": "Dağıtılacak bir kuruluş seçin.",
     "policyName": "Politika adı",
     "attach": "Ekle",
     "cancel": "İptal",

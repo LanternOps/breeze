@@ -44,6 +44,34 @@ describe('deliverableTemplates validators', () => {
     expect(updateTemplateItemSchema.parse({ graceDays: 21 })).toEqual({ graceDays: 21 });
   });
 
+  // ── #5808 W03: instructions + checklistTemplateId on the template ITEM ───
+  it('createTemplateItemSchema accepts both new fields', () => {
+    const parsed = createTemplateItemSchema.parse({ ...item, instructions: 'Runbook prose', checklistTemplateId: '11111111-1111-4111-8111-111111111111' });
+    expect(parsed.instructions).toBe('Runbook prose');
+    expect(parsed.checklistTemplateId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('updateTemplateItemSchema accepts both, still with no resurrected defaults', () => {
+    expect(updateTemplateItemSchema.parse({ instructions: null, checklistTemplateId: null }))
+      .toEqual({ instructions: null, checklistTemplateId: null });
+    expect(updateTemplateItemSchema.parse({ checklistTemplateId: '11111111-1111-4111-8111-111111111111' }))
+      .toEqual({ checklistTemplateId: '11111111-1111-4111-8111-111111111111' });
+  });
+
+  it('rejects a non-guid checklistTemplateId on both item schemas', () => {
+    expect(createTemplateItemSchema.safeParse({ ...item, checklistTemplateId: 'nope' }).success).toBe(false);
+    expect(updateTemplateItemSchema.safeParse({ checklistTemplateId: 'nope' }).success).toBe(false);
+  });
+
+  it('a set created with items carries the new fields through', () => {
+    const parsed = createTemplateSetSchema.parse({
+      name: 'Best plan',
+      items: [{ ...item, instructions: 'Prose', checklistTemplateId: '11111111-1111-4111-8111-111111111111' }],
+    });
+    expect(parsed.items[0]!.instructions).toBe('Prose');
+    expect(parsed.items[0]!.checklistTemplateId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
   it('apply requires a setId and an ISO effectiveFrom when present', () => {
     expect(applyTemplateSetSchema.safeParse({ setId: 'nope' }).success).toBe(false);
     expect(applyTemplateSetSchema.safeParse({ setId: '11111111-1111-4111-8111-111111111111', effectiveFrom: '31/10/2026' }).success).toBe(false);

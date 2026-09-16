@@ -1,3 +1,4 @@
+import type { RemediationTriggerKind } from '@breeze/shared';
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, numeric, index, unique, char, primaryKey, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import type { ScriptApprovalMethod, ScriptParameterDefinition } from '@breeze/shared';
@@ -222,7 +223,19 @@ export const scriptExecutions = pgTable('script_executions', {
   deviceId: uuid('device_id').notNull().references(() => devices.id),
   orgId: uuid('org_id').notNull().references(() => organizations.id),
   triggeredBy: uuid('triggered_by').references(() => users.id),
+  // Shipped execution lane; independent from the creation-time cause below.
   triggerType: triggerTypeEnum('trigger_type').notNull().default('manual'),
+  /** An automation caused by a sweep can have triggerType 'automation' and
+   * triggerKind 'sweep_finding'; these columns may legitimately disagree.
+   * Creation-time cause, distinct from the initiator/execution lane.
+   * refId identifies the occurrence (sweep run, alert, monitor, fleet finding),
+   * deliberately without a FK. Build stable keys with @breeze/shared helpers.
+   * action_intents_block_content_update guards all three on action intents.
+   */
+  triggerKind: text('trigger_kind').$type<RemediationTriggerKind>(),
+  triggerRefId: uuid('trigger_ref_id'),
+  triggerKey: varchar('trigger_key', { length: 200 }),
+
   // The automation run that queued this execution, when trigger_type is
   // 'automation' (#3162). Deliberately NOT a Drizzle `.references()`:
   // schema/automations.ts already imports this module, so pointing back at

@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Atividade de IA",
+    "count": "{{count}} ações despachadas nos últimos {{days}} dias",
+    "tooltip": "Conta os scripts e comandos despachados por IA registrados neste dispositivo. Um cancelamento conta como uma ação própria. Registrado em caráter de melhor esforço."
+  },
   "deviceChangeHistoryTab": {
     "title": "Histórico de alterações",
     "loading": "Carregando histórico de alterações…",
@@ -279,7 +284,20 @@
     "couldnTLoadMore": "Não foi possível carregar mais.",
     "viewAllActivity2": "Ver toda a atividade",
     "text": "→",
-    "viewProposal": "Ver proposta"
+    "viewProposal": "Ver proposta",
+    "trigger": {
+      "manual": "Acionamento manual",
+      "schedule": "Agendamento",
+      "sweep_finding": "Constatação da varredura",
+      "alert": "Alerta",
+      "monitor": "Monitoramento",
+      "fleet_finding": "Constatação da frota",
+      "policy": "Política",
+      "automation": "Automação",
+      "ticket": "Chamado",
+      "anomaly": "Anomalia",
+      "api": "Chamada de API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Falha ao buscar o histórico de alertas",

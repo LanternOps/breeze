@@ -181,6 +181,10 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
   // LLM default rather than the policy snapshot's configured model.
   promptVersion: text('prompt_version'),
   resolvedModel: text('resolved_model'),
+  // Execution plane W04 (spec §6.3): the frozen input allowlist of an
+  // `analysis`-profile run — `{ handles, deviceIds, region }`. NULL for every
+  // other profile. Read DEFENSIVELY (jsonb has no compile-time shape).
+  stagedInputs: jsonb('staged_inputs').$type<AiAgentRunStagedInputs>(),
 }, (table) => ({
   // Tenant-scoped (see 2026-09-02-ai-agents.sql): a global unique on
   // dedupe_key is enforced below RLS and leaks cross-tenant existence.
@@ -229,4 +233,14 @@ export const aiAgentRuns = pgTable('ai_agent_runs', {
 }));
 
 export type AiAgentRow = typeof aiAgents.$inferSelect;
+/**
+ * Execution plane W04 — shape of `ai_agent_runs.staged_inputs`: the frozen
+ * artifact handles and device set an `analysis` run may reach.
+ */
+export interface AiAgentRunStagedInputs {
+  handles: string[];
+  deviceIds: string[];
+  region: 'eu' | 'us';
+}
+
 export type AiAgentRunRow = typeof aiAgentRuns.$inferSelect;

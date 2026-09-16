@@ -215,6 +215,10 @@ export const organizations = pgTable('organizations', {
   purgeAt: timestamp('purge_at', { withTimezone: true }),
   // Which terminal status finalizeOrganizationOffboarding lands on.
   offboardingTarget: varchar('offboarding_target', { length: 16 }).notNull().default('churn'),
+  // Execution plane W04 (spec 2026-09-13 §8): per-org opt-in for model-written
+  // code to execute on a vendor sandbox. Default false until the DPA review;
+  // enforced at analysis-run ADMISSION (runService.ts), never in the catalog.
+  aiExternalProcessing: boolean('ai_external_processing').notNull().default(false),
   deletedAt: timestamp('deleted_at')
 }, (table) => ({
   orgPartnerUnique: uniqueIndex('organizations_id_partner_id_unique').on(table.id, table.partnerId),

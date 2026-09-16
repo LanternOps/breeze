@@ -17,6 +17,7 @@ vi.mock('../../services/contractTemplateService', async (importOriginal) => {
     createUploadedVersion: vi.fn(),
     getTemplateVersion: vi.fn(),
     publishVersion: vi.fn(),
+    getTemplateUsage: vi.fn(),
   };
 });
 
@@ -393,5 +394,29 @@ describe('contract template routes', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.code).toBe('INVALID_FILE');
+  });
+  it('GET /:id/usage returns the quote and signed-agreement counts', async () => {
+    (svc.getTemplateUsage as any).mockResolvedValue({ quoteCount: 3, signedCount: 7 });
+    const res = await app().request(`${BASE}/${TEMPLATE_ID}/usage`, { method: 'GET' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { quoteCount: 3, signedCount: 7 } });
+    expect(svc.getTemplateUsage).toHaveBeenCalledWith(expect.anything(), TEMPLATE_ID);
+  });
+
+  it('GET /:id/usage 404s a template the caller cannot see, leaking no counts', async () => {
+    (svc.getTemplateUsage as any).mockRejectedValue(
+      new ContractTemplateServiceError('Contract template not found', 404, 'TEMPLATE_NOT_FOUND'),
+    );
+    const res = await app().request(`${BASE}/${TEMPLATE_ID}/usage`, { method: 'GET' });
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('TEMPLATE_NOT_FOUND');
+    expect(body).not.toHaveProperty('data');
+  });
+
+  it('GET /:id/usage rejects a non-uuid id before the service is called', async () => {
+    const res = await app().request(`${BASE}/not-a-uuid/usage`, { method: 'GET' });
+    expect(res.status).toBe(400);
+    expect(svc.getTemplateUsage).not.toHaveBeenCalled();
   });
 });

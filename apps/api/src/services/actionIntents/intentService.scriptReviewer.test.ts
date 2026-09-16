@@ -95,7 +95,7 @@ const { schema, dbState, authMock, guardrailMock, aiToolsState, permState, pushS
     effectDigestState: {
       computeEffectDigestOutcome: vi.fn(async () => ({ kind: 'not_applicable' }) as { kind: string }),
     },
-    envMock: { policyDecideEnabled: vi.fn(() => false) },
+    envMock: { policyDecideEnabled: vi.fn(() => false), sweepActEnabled: vi.fn(() => false) },
     policyDecideMock: { attemptPolicyDecision: vi.fn(async () => {}) },
     ticketAutonomyState: {
       evaluateTicketAutonomy: vi.fn(async () => ({ granted: false, reason: 'not_requested' }) as
@@ -206,7 +206,11 @@ vi.mock('../expoPush', () => ({
 vi.mock('../userNotifications', () => ({ createNotification: notifyState.createNotification }));
 vi.mock('./metrics', () => ({ recordActionIntentEvent: metricsMock.recordActionIntentEvent }));
 vi.mock('./effectDigest', () => ({ computeEffectDigestOutcome: effectDigestState.computeEffectDigestOutcome }));
-vi.mock('../../config/env', () => ({ policyDecideEnabled: envMock.policyDecideEnabled }));
+vi.mock('../../config/env', () => ({
+  policyDecideEnabled: envMock.policyDecideEnabled,
+  // #4442 W04 sub-flag, default OFF (dark-ship).
+  sweepActEnabled: envMock.sweepActEnabled,
+}));
 vi.mock('./policyDecide', () => ({ attemptPolicyDecision: policyDecideMock.attemptPolicyDecision }));
 vi.mock('./ticketAutonomy', () => ({ evaluateTicketAutonomy: ticketAutonomyState.evaluateTicketAutonomy }));
 vi.mock('./scriptReviewerAutonomy', () => ({

@@ -468,3 +468,10 @@ describe('aiToolsAgentLogs', () => {
     });
   });
 });
+
+describe('exported builders for export_dataset reuse', () => {
+  it('exports the shared agent-log predicate builder', async () => {
+    const mod = await import('./aiToolsAgentLogs');
+    expect(typeof mod.buildAgentLogConditions).toBe('function');
+  });
+});

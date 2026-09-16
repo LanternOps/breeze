@@ -13,6 +13,7 @@ import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import type { AiTool, AiToolTier } from './aiTools';
+import type { ToolExecutionContext } from './toolExecutionContext';
 import {
   createTicket,
   changeTicketStatus,
@@ -41,6 +42,7 @@ import {
 import { findStatusByName, listActiveStatusNames } from './ticketConfigService';
 import { TicketMoveCurrencyBlockedError } from './ticketMoveCurrencyGuard';
 import { getUserPermissions, hasPermission, PERMISSIONS } from './permissions';
+import { listChecklist } from './ticketChecklistService';
 
 type ParseResult<T> = { value: T } | { error: string };
 
@@ -64,6 +66,39 @@ function actorFrom(auth: AuthContext) {
  */
 function agentRunIdFrom(auth: AuthContext): string | null {
   return isAiAgentPrincipal(auth) && auth.principal.kind === 'ai_agent' ? auth.principal.runId : null;
+}
+
+/**
+ * #4209 (W03): the refusal the three users-FK actions return for an ai_agent
+ * principal.
+ *
+ * `assign` writes `tickets.assigned_to`; `update_status` and `create` write
+ * `created_by`/actor columns and emit `actorUserId`. All three go through
+ * `actorFrom(auth)`, whose `auth.user.id` for an ai_agent principal is an
+ * `aiAgents.id` — attribution only, never a `users` row (agentAuthContext.ts).
+ * Writing it into any of those columns forges a foreign key and fails at
+ * runtime with a 23503 the agent cannot interpret.
+ *
+ * The `comment`, `update_fields` and `draft` branches each got a real
+ * agent-principal design (addAiTriageNote, applyAiFieldUpdates, ticket_drafts);
+ * these three did not, so they refuse rather than guess. Supporting them means
+ * designing agent attribution for assignment, status and creation — a product
+ * decision, tracked separately. A stable, typed error code is what lets the
+ * agent's tool loop relay the limitation instead of retrying a 23503.
+ *
+ * Review finding: the payload carries NO `success` key, on purpose. The SDK's
+ * error classifier (`aiAgentSdkTools.ts`, "Detect error responses returned as
+ * JSON strings by tool handlers") flags a result as a tool error only when
+ * `'error' in parsed && !('success' in parsed) && !('data' in parsed) &&
+ * !('configured' in parsed)`. Adding `success: false` would EXEMPT the refusal
+ * from that check, so it would be recorded by `safePostToolUse` as an ordinary
+ * successful tool call and the MCP content block would omit `isError: true` —
+ * a policy refusal indistinguishable from a success in the execution log,
+ * which is precisely the observability this wave exists to add. The bare
+ * `{ error, … }` shape is also what every other refusal in this file uses.
+ */
+function refuseAgentPrincipal(action: string): string {
+  return JSON.stringify({ error: 'agent_principal_unsupported_action', action });
 }
 
 /** Postgres unique-violation, however the driver happens to wrap it (mirrors ticketService.ts's isUniqueViolation). */
@@ -421,7 +456,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
       }
     },
 
-    handler: async (input, auth) => {
+    handler: async (input, auth, context?: ToolExecutionContext) => {
       const action = input.action as string;
       const actor = actorFrom(auth);
 
@@ -469,11 +504,28 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // defense-in-depth is folded into the single query (no extra round-trip).
         const ticket = await findTicketWithAccess(String(input.ticketId), auth);
         if (!ticket) return JSON.stringify({ error: 'Ticket not found' });
-        return JSON.stringify({ ticket });
+        // #5808 W03 — READ ONLY. Labels and progress, so "summarise where this
+        // ticket stands" works. No per-step detail and no doneByUserId: the
+        // attestation is a compliance record, not context for a summary. There
+        // is deliberately NO tick-off action (spec §6.5, OD-7 A) — an agent
+        // ticking a box it did not perform is a falsified record. The control
+        // that actually enforces that is W01's isInteractiveUserSession gate on
+        // the `done` branch, not the absence of a tool here: an MCP API key
+        // carries its creator's real user id.
+        const checklist = await listChecklist(ticket.id);
+        return JSON.stringify({
+          ticket,
+          checklist: checklist.total === 0 ? null : {
+            done: checklist.done,
+            total: checklist.total,
+            items: checklist.items.map((i) => ({ label: i.label, done: i.done })),
+          },
+        });
       }
 
       // ── create ────────────────────────────────────────────────────────────
       if (action === 'create') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.subject) return JSON.stringify({ error: 'subject is required for create action' });
         if (!input.orgId) return JSON.stringify({ error: 'orgId is required for create action' });
         // auth.canAccessOrg is pre-computed from accessibleOrgIds (system → true,
@@ -540,6 +592,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── assign ────────────────────────────────────────────────────────────
       if (action === 'assign') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for assign action' });
         // Scoped pre-check: ensure ticket is visible in caller's org scope before mutating.
         const found = await findTicketWithAccess(String(input.ticketId), auth);
@@ -554,6 +607,7 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── update_status ─────────────────────────────────────────────────────
       if (action === 'update_status') {
+        if (agentRunIdFrom(auth)) return refuseAgentPrincipal(action);
         if (!input.ticketId) return JSON.stringify({ error: 'ticketId is required for update_status action' });
         if (!input.status && !input.statusName) return JSON.stringify({ error: 'status or statusName is required for update_status action' });
         // Exactly one of status / statusName must be provided.
@@ -914,6 +968,22 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
 
       // ── log_time_entry ────────────────────────────────────────────────────
       if (action === 'log_time_entry') {
+        // #4177 (W04): an agent may PROPOSE a time entry (an action_intents
+        // row, see services/aiTimeEntryProposal.ts) but never create one
+        // inline — the row needs a real `users` owner, which only the release
+        // path (executing as `decided_by_user_id`) can supply. Distinct code
+        // from `agent_principal_unsupported_action` because the correct route
+        // EXISTS; the agent's loop should relay "propose it", not "can't".
+        if (agentRunIdFrom(auth)) {
+          return JSON.stringify({ error: 'agent_principal_requires_intent_release', action });
+        }
+        // A released proposal arrives with the APPROVER's auth and their id
+        // in the context bag (intentReleaseWorker.ts). Refuse rather than
+        // trust if the two ever disagree — the entry's owner is the one
+        // thing this branch must never get wrong.
+        if (context?.approverRelease && context.approverRelease.approverUserId !== auth.user.id) {
+          return JSON.stringify({ error: 'approver_auth_mismatch', action });
+        }
         if (!input.startedAt) return JSON.stringify({ error: 'startedAt is required for log_time_entry action' });
         if (!input.endedAt) return JSON.stringify({ error: 'endedAt is required for log_time_entry action' });
         // Site-scope parity: if a ticketId is given, pre-check the ticket is in scope
@@ -932,7 +1002,11 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
               isBillable: typeof input.isBillable === 'boolean' ? input.isBillable : undefined,
               hourlyRate: typeof input.hourlyRate === 'number' ? input.hourlyRate : undefined
             },
-            timeEntryActorFrom(auth)
+            timeEntryActorFrom(auth),
+            // Provenance: a released AI proposal is `ai_suggested` (#4177) so
+            // invoiceAssembly / time-saved reporting can tell it apart; a
+            // human's own tool call stays the column default.
+            { source: context?.approverRelease ? 'ai_suggested' : 'manual' }
           );
           return JSON.stringify({ timeEntry: entry, currencyCode: entryCurrency(entry) });
         } catch (err) {

@@ -43,12 +43,40 @@ export type Severity = (typeof ALERT_SEVERITIES)[number];
  * omitted from the payload: on PATCH the one-level merge preserves whatever
  * is stored, and on create the server's `aiAgentTriggersSchema` supplies its
  * own `['critical', 'high']` default, so omission is never a `.min(1)` 400.
+ *
+ * AI patch agent W04 (#5750): `patch` joined this set. Patch-classified
+ * alerts now route to the patch agent through the same `alertContext`
+ * admission path triage uses (`runService.ts`'s `evaluateAgentTriggerFilters`
+ * reads `triggers.alertSeverities` whenever the admission input carries an
+ * `alertContext`, and the patch-alert bridge now produces one), so the
+ * severity picker is live — and meaningful — for a patch agent too.
  */
-export const ALERT_SEVERITY_KINDS: ReadonlySet<AiAgentKind> = new Set<AiAgentKind>(['triage']);
+export const ALERT_SEVERITY_KINDS: ReadonlySet<AiAgentKind> = new Set<AiAgentKind>(['triage', 'patch']);
 
 /** Newline-separated textarea → trimmed, de-duplicated list. */
 export function lines(value: string): string[] {
   return [...new Set(value.split('\n').map((entry) => entry.trim()).filter(Boolean))];
+}
+
+/**
+ * Comma-separated text input → trimmed, de-duplicated list, capped the same
+ * way `triggers.alertCategories` is server-side
+ * (packages/shared/src/validators/aiAgents.ts): each entry 1-100 chars, at
+ * most 50 entries. An out-of-range entry is dropped rather than truncated —
+ * silently chopping a category name to 100 chars would save a filter that
+ * matches nothing the operator meant.
+ */
+export function commaSeparated(value: string, maxEntries = 50, maxLength = 100): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of value.split(',')) {
+    if (out.length >= maxEntries) break;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0 || trimmed.length > maxLength || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 export function toggle<T>(list: T[], value: T): T[] {
@@ -93,6 +121,11 @@ export interface Draft {
   enabled: boolean;
   mode: AiAgentMode;
   severities: Severity[];
+  /** AI patch agent W04 (#5750), Task 6. Only read/sent for `kind === 'patch'`
+   *  (see `buildAgentSaveBody` below) — the alert TEMPLATE category filter,
+   *  `undefined`/omitted-means-unrestricted like `triggers.alertCategories`
+   *  itself. `[]` here means "cleared", never "matches nothing". */
+  alertCategories: string[];
   respectMaintenanceWindows: boolean;
   toolAllowlist: string;
   services: string;
@@ -145,6 +178,7 @@ export function draftFrom(
     enabled: agent?.enabled ?? false,
     mode: agent?.mode ?? 'shadow',
     severities,
+    alertCategories: agent?.triggers?.alertCategories ?? [],
     respectMaintenanceWindows: agent?.triggers?.respectMaintenanceWindows ?? true,
     toolAllowlist: (agent?.toolAllowlist ?? []).join('\n'),
     services: (agent?.protectedResources?.services ?? []).join('\n'),
@@ -224,6 +258,26 @@ export function buildAgentSaveBody(
       // offered would silently rewrite a stored list they cannot see. The
       // PATCH merge keeps what is stored; create takes the server default.
       ...(ALERT_SEVERITY_KINDS.has(draft.kind) ? { alertSeverities: draft.severities } : {}),
+      // AI patch agent W04 (#5750), Task 6 — same shape-only rule as
+      // alertSeverities above: shown and sent only for a patch agent.
+      //
+      // Below that gate, a second one: `triggers.alertCategories` is an
+      // undefined-means-unrestricted, `.min(1)` list on the server (same
+      // convention as siteIds/deviceGroupIds/ticketCategories —
+      // packages/shared/src/validators/aiAgents.ts). The PATCH merge is a
+      // shallow `{ ...stored.triggers, ...input.triggers }`
+      // (apps/api/src/services/aiAgents/agentService.ts,
+      // updatePolicyColumns): a key genuinely ABSENT from the parsed body
+      // leaves the stored value untouched, and `[]` is rejected by
+      // `.min(1)`. `null` is the one value the UPDATE schema accepts as
+      // "clear to unrestricted" (`aiAgentTriggersUpdateSchema`; the service
+      // deletes the key), so a cleared filter sends `null` on an update and
+      // nothing at all on create (where there is nothing stored to clear).
+      ...(draft.kind === 'patch' && draft.alertCategories.length > 0
+        ? { alertCategories: draft.alertCategories }
+        : draft.kind === 'patch' && !opts.isCreate
+          ? { alertCategories: null }
+          : {}),
       respectMaintenanceWindows: draft.respectMaintenanceWindows,
       ticketAutonomousWrites: draft.ticketAutonomousWrites,
     },

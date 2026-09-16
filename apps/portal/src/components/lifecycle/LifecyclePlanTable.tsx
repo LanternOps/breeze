@@ -8,6 +8,7 @@ import {
   rowSecondary,
 } from '@breeze/shared';
 import type { HardwareLifecycleDeviceRow, ReplacementStatus } from '@breeze/shared';
+import { withBase } from '@/lib/basePath';
 import { CELL, ROW, TH } from '../portal/ui';
 import { TimelineCell } from './TimelineCell';
 
@@ -51,11 +52,16 @@ export function LifecyclePlanTable({
   title,
   ruleSentence,
   rows,
+  // Defaults true (matching the schema's own `enable_self_service` default)
+  // so an omitted prop keeps the pre-#5880 link behavior for any caller that
+  // hasn't threaded the flag through yet.
+  enableSelfService = true,
 }: {
   sectionId: string;
   title: string;
   ruleSentence: string;
   rows: HardwareLifecycleDeviceRow[];
+  enableSelfService?: boolean;
 }) {
   const counts = countByReplacement(rows);
   const hasVendorSourcedDate = rows.some((r) => r.purchaseDateSource === 'vendor');
@@ -99,7 +105,17 @@ export function LifecyclePlanTable({
               return (
                 <tr key={row.id} data-testid={`lifecycle-plan-row-${row.id}`} className={ROW}>
                   <td className={cn(CELL, 'font-semibold text-foreground')}>
-                    <span className="block font-semibold text-foreground">{label}</span>
+                    {row.kind === 'device' && enableSelfService ? (
+                      <a
+                        href={withBase(`/devices#${row.id}`)}
+                        data-testid={`lifecycle-plan-row-link-${row.id}`}
+                        className="block font-semibold text-foreground underline-offset-4 hover:underline"
+                      >
+                        {label}
+                      </a>
+                    ) : (
+                      <span className="block font-semibold text-foreground">{label}</span>
+                    )}
                     {secondary && <span className="block text-xs text-muted-foreground">{secondary}</span>}
                   </td>
                   <td className={CELL}>

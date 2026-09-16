@@ -169,6 +169,7 @@ vi.mock('./ticketConfigService', () => ({
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { registerTicketingTools } from './aiToolsTicketing';
+import { createTimeEntry } from './timeEntryService';
 import { tickets, devices, deviceHardware, ticketDrafts } from '../db/schema';
 
 function getTool(): AiTool {
@@ -483,5 +484,102 @@ describe('comment routes ai_agent-principal calls to addAiTriageNote (P2-4, #419
 
     expect(JSON.parse(out)).toEqual({ comment: { id: 'c-1' } });
     expect(serviceMocks.addAiTriageNote).not.toHaveBeenCalled();
+  });
+});
+
+// #4209 (W03). `assign`, `update_status` and `create` call actorFrom(auth)
+// unconditionally, and for an ai_agent principal `auth.user.id` is an
+// `aiAgents.id` (attribution only — agentAuthContext.ts), never a `users` row.
+// Writing it into tickets.assigned_to / created_by is a users-FK forge that
+// would surface in production as a 23503. They refuse instead, loudly and by a
+// stable error code, until agent attribution for assignment/status is designed.
+describe('manage_tickets refuses the three users-FK actions for an ai_agent principal (#4209)', () => {
+  const CASES = [
+    { action: 'assign', input: { action: 'assign', ticketId: TICKET_ID, assigneeId: 'user-9' }, humanMock: 'assignTicket' },
+    { action: 'update_status', input: { action: 'update_status', ticketId: TICKET_ID, status: 'resolved' }, humanMock: 'changeTicketStatus' },
+    { action: 'create', input: { action: 'create', subject: 'Printer down', orgId: ORG_ID }, humanMock: 'createTicket' },
+  ] as const;
+
+  for (const { action, input, humanMock } of CASES) {
+    it(`${action} returns a typed refusal and writes nothing`, async () => {
+      // Queue a visible ticket anyway: the refusal must fire even when every
+      // other precondition is satisfiable, so a green here is not "the lookup
+      // happened to miss".
+      queueSelect(tickets, [accessibleTicket()]);
+
+      const out = await getTool().handler(input as Record<string, unknown>, makeAgentAuth());
+
+      const parsed = JSON.parse(out);
+      expect(parsed).toEqual({ error: 'agent_principal_unsupported_action', action });
+      // Guards the classifier contract in aiAgentSdkTools.ts: a payload
+      // carrying `success`/`data`/`configured` is EXEMPTED from being flagged
+      // as a tool error, which would log this refusal as an ordinary success.
+      expect(parsed).not.toHaveProperty('success');
+      expect(parsed).not.toHaveProperty('data');
+      expect(parsed).not.toHaveProperty('configured');
+      expect(serviceMocks[humanMock]).not.toHaveBeenCalled();
+      expect(topUpdateSetMock).not.toHaveBeenCalled();
+      expect(txInsertValuesMock).not.toHaveBeenCalled();
+    });
+
+    it(`${action} still works for a user_session principal`, async () => {
+      queueSelect(tickets, [accessibleTicket()]);
+      serviceMocks[humanMock].mockResolvedValue({ id: TICKET_ID });
+
+      const out = await getTool().handler(input as Record<string, unknown>, makeHumanAuth());
+
+      expect(JSON.parse(out)).not.toMatchObject({ error: 'agent_principal_unsupported_action' });
+      expect(serviceMocks[humanMock]).toHaveBeenCalledTimes(1);
+    });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// #4177 (W04): log_time_entry and the agent principal.
+//
+// A time entry is OWNED by a real technician (`time_entries.user_id` is a
+// users FK, NOT NULL). An agent may PROPOSE one (an action_intents row) but
+// never create one inline — `timeEntryActorFrom(auth).userId` would be the
+// agent's synthetic id, a guaranteed 23503. The release path swaps in the
+// APPROVER's auth and marks the call via `context.approverRelease`, which is
+// what stamps `source: 'ai_suggested'`.
+// -----------------------------------------------------------------------------
+describe('log_time_entry ownership (#4177, W04)', () => {
+  const block = { action: 'log_time_entry', ticketId: TICKET_ID, startedAt: '2026-06-11T09:00:00Z', endedAt: '2026-06-11T09:15:00Z' };
+
+  it('an agent principal calling log_time_entry directly (not via release) is refused', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    const out = await getTool().handler(block, makeAgentAuth());
+    expect(JSON.parse(out)).toEqual({ error: 'agent_principal_requires_intent_release', action: 'log_time_entry' });
+    expect(createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('a released proposal runs as the approver with source ai_suggested', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    vi.mocked(createTimeEntry).mockResolvedValueOnce({ id: 'te-1', orgId: ORG_ID, currencyCode: 'USD', durationMinutes: 15 } as never);
+    const approver = makeHumanAuth();
+
+    const out = await getTool().handler(block, approver, { actionIntentId: 'intent-1', approverRelease: { approverUserId: 'user-1' } });
+
+    expect(JSON.parse(out)).toMatchObject({ timeEntry: { id: 'te-1' } });
+    expect(createTimeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: TICKET_ID }),
+      expect.objectContaining({ userId: 'user-1', manageAll: false }),
+      { source: 'ai_suggested' },
+    );
+  });
+
+  it('a released proposal whose auth is not the approver is refused (never writes under a mismatched owner)', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    const out = await getTool().handler(block, makeHumanAuth(), { actionIntentId: 'intent-1', approverRelease: { approverUserId: 'someone-else' } });
+    expect(JSON.parse(out)).toEqual({ error: 'approver_auth_mismatch', action: 'log_time_entry' });
+    expect(createTimeEntry).not.toHaveBeenCalled();
+  });
+
+  it('a human calling log_time_entry directly keeps source manual', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    vi.mocked(createTimeEntry).mockResolvedValueOnce({ id: 'te-2', orgId: ORG_ID, currencyCode: 'USD', durationMinutes: 15 } as never);
+    await getTool().handler(block, makeHumanAuth());
+    expect(createTimeEntry).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: 'user-1' }), { source: 'manual' });
   });
 });

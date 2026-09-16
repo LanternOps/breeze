@@ -191,19 +191,37 @@ async function tightenPortalReportStatementTimeout(): Promise<void> {
 }
 
 /**
- * The org's `enable_lifecycle` visibility flag, read inside the ambient
- * organization-scoped RLS transaction the portal auth middleware already
- * opened. Fail closed exactly like `createPortalFeatureGateStrict`: a missing
- * portal_branding row, or anything that is not literally `true`, is `false`.
+ * The org's `enable_lifecycle` and `enable_self_service` visibility flags in
+ * one row read, inside the ambient organization-scoped RLS transaction the
+ * portal auth middleware already opened. Fail closed exactly like
+ * `createPortalFeatureGateStrict`: a missing portal_branding row, or anything
+ * that is not literally `true`, is `false` for either flag.
+ *
+ * Both flags live on the same `portal_branding` row, so `latestPortalHardwareLifecycleRun`
+ * (which needs both — see #5880) reads them together rather than issuing a
+ * second query; `portalLifecycleEnabled` below is a thin boolean view onto
+ * this for its other callers, which only ever needed the one flag.
  */
-export async function portalLifecycleEnabled(orgId: string): Promise<boolean> {
+async function portalBrandingLifecycleFlags(
+  orgId: string,
+): Promise<{ enableLifecycle: boolean; enableSelfService: boolean }> {
   const [row] = await db
-    .select({ enableLifecycle: portalBranding.enableLifecycle })
+    .select({
+      enableLifecycle: portalBranding.enableLifecycle,
+      enableSelfService: portalBranding.enableSelfService,
+    })
     .from(portalBranding)
     .where(eq(portalBranding.orgId, orgId))
     .limit(1);
 
-  return row?.enableLifecycle === true;
+  return {
+    enableLifecycle: row?.enableLifecycle === true,
+    enableSelfService: row?.enableSelfService === true,
+  };
+}
+
+export async function portalLifecycleEnabled(orgId: string): Promise<boolean> {
+  return (await portalBrandingLifecycleFlags(orgId)).enableLifecycle;
 }
 
 // Decision B2: the portal's hardware_lifecycle run inherits the MSP's own
@@ -575,13 +593,20 @@ export async function generatePortalReport(args: {
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
+  // The org's `enable_self_service` flag (#5880): the portal page needs this
+  // to decide whether a device row's Computer cell may link to
+  // /portal/devices — that route itself redirects home when self-service is
+  // off, so linking there unconditionally silently dumps the customer on
+  // Proposals instead.
+  enableSelfService: boolean;
 };
 
 export async function latestPortalHardwareLifecycleRun(
   orgId: string,
   timezone: string,
 ): Promise<HardwareLifecyclePortalLatestDto> {
-  if (!await portalLifecycleEnabled(orgId)) {
+  const flags = await portalBrandingLifecycleFlags(orgId);
+  if (!flags.enableLifecycle) {
     throw new PortalReportNotFoundError();
   }
 
@@ -617,6 +642,7 @@ export async function latestPortalHardwareLifecycleRun(
   return {
     run: { id: row.id, generatedAt },
     summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+    enableSelfService: flags.enableSelfService,
   };
 }
 

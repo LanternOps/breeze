@@ -12,6 +12,13 @@ describe('lifecycle page structure', () => {
     expect(pageSource).toMatch(/<LifecyclePage[^>]*initialRun={run}/);
     expect(pageSource).toMatch(/<LifecyclePage[^>]*initialSummary={summary}/);
   });
+
+  // #5880: the Computer-cell link must not be rendered for orgs with
+  // self-service off, so the flag has to reach LifecyclePage from the DTO.
+  it('threads the DTO\'s enableSelfService flag through to LifecyclePage', () => {
+    expect(pageSource).toMatch(/<LifecyclePage[^>]*enableSelfService={enableSelfService}/);
+    expect(pageSource).toContain('response.data?.enableSelfService ?? false');
+  });
 });
 
 describe('lifecycle page visibility gate', () => {

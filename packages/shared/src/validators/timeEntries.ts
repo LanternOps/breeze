@@ -115,7 +115,10 @@ export type TicketPartInput = z.infer<typeof ticketPartSchema>;
 // ── W06 (#3900): provenance vocabulary + suggestion routes ──────────────────
 // `source` is READ-side only in this wave. It is never accepted on any
 // create/update schema: provenance is stamped by the server (spec D5).
-export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session'] as const;
+// `ai_suggested` (#4177, W04) is stamped only by the action-intent release
+// path when a technician approves an AI time-entry proposal — like every
+// other value it is never accepted from a public create/update payload.
+export const TIME_ENTRY_SOURCES = ['manual', 'timer', 'location', 'remote_session', 'support_session', 'ai_suggested'] as const;
 export const timeEntrySourceSchema = z.enum(TIME_ENTRY_SOURCES);
 export type TimeEntrySource = z.infer<typeof timeEntrySourceSchema>;
 

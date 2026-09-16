@@ -173,9 +173,47 @@ export function originPrincipalFor(intent: ActionIntent): AuthContext['principal
   }
 }
 
+/**
+ * #4177 (W04): the APPROVER's own AuthContext for releasing an agent-originated
+ * intent whose action creates a row a real user must own (today
+ * `manage_tickets:log_time_entry` — `time_entries.user_id` is a users FK).
+ *
+ * Same revalidation as a user-owned intent (account active, current
+ * permissions still reach `intent.orgId`, same-partner target widening) —
+ * the approver read the proposal and accepted the work as theirs, so they
+ * must be able to stand behind it NOW, not just at decision time. `null` ⇒
+ * the worker fails the release closed (`actor_invalid`).
+ *
+ * The principal is `user_session`, NOT the intent's recorded `ai_agent`
+ * origin: this context executes AS the human who approved (the tool handler
+ * refuses the ai_agent principal on exactly this action), and the decision
+ * itself is what put the human present. The AI origin still travels on
+ * `aiOrigin` so dispatch attribution is not lost.
+ *
+ * The context is PARTNER-scoped, and the approver must resolve on the
+ * partner axis (a `partner_users` member of `intent.partnerId`). `time_entries`
+ * is a partner-axis table (RLS Shape 3: `breeze_has_partner_access(partner_id)`)
+ * and its own HTTP surface is `requireScope('partner', 'system')` — an
+ * org-axis approver (a customer-side user) can never log time through the UI
+ * and must not be able to through a release either. The generic user-owned
+ * builder synthesises `scope: 'organization'` (accessiblePartnerIds = []),
+ * under which the insert is an RLS violation — proven live by
+ * aiTimeEntryProposal.integration.test.ts before this branch existed.
+ */
+export async function buildApproverAuthContextForIntent(
+  intent: ActionIntent,
+  approverUserId: string,
+): Promise<AuthContext | null> {
+  return buildUserOwnedAuthContext(intent, approverUserId, {
+    principal: { kind: 'user_session' },
+    requirePartnerAxis: true,
+  });
+}
+
 async function buildUserOwnedAuthContext(
   intent: ActionIntent,
   userId: string,
+  overrides: { principal?: AuthContext['principal']; requirePartnerAxis?: boolean } = {},
 ): Promise<AuthContext | null> {
   return withSystemDbAccessContext(async (): Promise<AuthContext | null> => {
     const [user] = await db
@@ -230,6 +268,16 @@ async function buildUserOwnedAuthContext(
     if (!permsCanAccessOrg(perms, intent.orgId)) {
       return null;
     }
+
+    // #4177: a user-owned release runs partner-scoped (see
+    // buildApproverAuthContextForIntent). Fail closed unless the approver's
+    // CURRENT permissions resolved on the partner axis for the intent's own
+    // partner — never widen an org-axis member to partner scope.
+    const partnerAxis = overrides.requirePartnerAxis === true;
+    if (partnerAxis && (perms.scope !== 'partner' || !intent.partnerId || perms.partnerId !== intent.partnerId)) {
+      return null;
+    }
+    const scope: 'partner' | 'organization' = partnerAxis ? 'partner' : 'organization';
 
     // #4650: for an allowlisted tenant-shape-mutation tool/action (e.g.
     // manage_tickets:move_org), widen accessibleOrgIds to also cover the
@@ -288,7 +336,7 @@ async function buildUserOwnedAuthContext(
       roleId: perms.roleId,
       orgId: intent.orgId,
       partnerId: intent.partnerId ?? null,
-      scope: 'organization',
+      scope,
       type: 'access',
       mfa: true,
     };
@@ -306,7 +354,10 @@ async function buildUserOwnedAuthContext(
       // being softened to user_session — a human-required gate must fail on
       // it. It is NOT a valid AuthContext principal, so it maps to the
       // closest fail-closed kind and is refused by any interactive gate.
-      principal: originPrincipalFor(intent),
+      //
+      // The ONE sanctioned override is `buildApproverAuthContextForIntent`
+      // (#4177), which executes as the approving human on purpose.
+      principal: overrides.principal ?? originPrincipalFor(intent),
       // #5022 W01: read the AI origin back off the intent's own columns. This
       // context is synthesised from the `users` row, so a chat-minted origin
       // would otherwise be lost across the durable approval boundary — the
@@ -328,7 +379,7 @@ async function buildUserOwnedAuthContext(
       // orgCondition below.
       partnerId: intent.partnerId ?? null,
       orgId: intent.orgId,
-      scope: 'organization',
+      scope,
       accessibleOrgIds,
       orgCondition,
       canAccessOrg,

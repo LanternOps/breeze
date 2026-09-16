@@ -22,12 +22,14 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import { getBullMQConnection } from '../services/redis';
 import { isReusableState } from '../services/bullmqUtils';
 import {
-  resolveApprovedPatchesForDevice,
   type CategoryRule,
   type PolicyAppRule,
   type PolicyAutoApproveConfig,
   type RingConfig,
 } from '../services/patchApprovalEvaluator';
+// W02 (#5748): the DB-facing resolver moved to patchEligibility.ts; the call
+// below and its behaviour are unchanged (golden-fixture parity test there).
+import { resolveApprovedPatchesForDevice } from '../services/patchEligibility';
 import { dispatchDeviceCommand } from '../services/dispatchDeviceCommand';
 import {
   deliveryTtlMs,

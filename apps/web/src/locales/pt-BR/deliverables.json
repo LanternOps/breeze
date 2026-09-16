@@ -73,7 +73,13 @@
     "owner": "Responsável",
     "ticketCategory": "Categoria do chamado",
     "portalVisible": "Exibir no portal do cliente",
-    "sortOrder": "Ordem de exibição"
+    "sortOrder": "Ordem de exibição",
+    "instructions": "Instruções internas",
+    "instructionsHint": "Interno — nunca exibido ao cliente.",
+    "checklistTemplate": "Modelo de checklist",
+    "checklistTemplateNone": "Nenhum",
+    "checklistTemplateAllOrgs": "Todas as orgs",
+    "checklistTemplateManage": "Gerenciar modelos de checklist"
   },
   "drawer": {
     "title": "Ocorrências",
@@ -87,7 +93,10 @@
     "uploadEvidence": "Enviar um arquivo como evidência",
     "uploadEvidenceHint": "PDF, JPEG, PNG ou WebP, até 10 MB. O arquivo é arquivado na biblioteca de documentos desta organização.",
     "evidenceDocument": "Documento",
-    "upload": "Enviar"
+    "upload": "Enviar",
+    "checklistProgress": "{{done}} / {{total}}",
+    "showChecklist": "Mostrar checklist",
+    "hideChecklist": "Ocultar checklist"
   },
   "evidence": {
     "reportRun": "Execução de relatório",

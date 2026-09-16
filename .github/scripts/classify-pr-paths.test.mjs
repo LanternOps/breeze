@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 // Contract for the docs-only fold-in: `ci.yml` is the ONLY workflow that
@@ -53,6 +55,125 @@ test('classifier: an empty file list fails closed to code=true docs=true', () =>
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), 'code=true\ndocs=true');
   assert.match(run.stderr, /fail-closed/u);
+});
+
+// ─── merge_group classification ──────────────────────────────────────
+// The queue used to run the full ~70-job matrix for every entry, docs-only
+// ones included, which is pure waste against the concurrency cap. The SAME
+// classifier now runs under `merge_group`, driven by a real `git diff` of
+// base_sha...head_sha. It must fail SAFE: anything unresolvable runs the full
+// suite (code=true), never a docs bypass.
+
+// Pull the classify step's shell out of the `changes` job and execute it for
+// real, the same way the ci-success summary is executed below.
+const classifyScript = job('changes').split('        run: |\n')[1]
+  .split('\n').filter((line) => line.startsWith('          '))
+  .map((line) => line.slice(10)).join('\n');
+
+const runClassifier = (env, { seed } = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), 'classify-mg-'));
+  try {
+    mkdirSync(join(dir, '.github/scripts'), { recursive: true });
+    copyFileSync(new URL('./classify-pr-paths.sh', import.meta.url), join(dir, '.github/scripts/classify-pr-paths.sh'));
+    const git = (...args) => {
+      const r = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout.trim();
+    };
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'ci@example.com');
+    git('config', 'user.name', 'CI');
+    const commit = (files) => {
+      for (const [path, body] of Object.entries(files)) {
+        mkdirSync(join(dir, path, '..'), { recursive: true });
+        writeFileSync(join(dir, path), body);
+      }
+      git('add', '-A');
+      git('commit', '-q', '-m', 'c');
+      return git('rev-parse', 'HEAD');
+    };
+    const shas = { base: commit({ 'seed.txt': 'seed\n' }) };
+    if (seed) shas.head = commit(seed);
+    const outputFile = join(dir, 'gh-output');
+    writeFileSync(outputFile, '');
+    const execution = spawnSync('bash', ['-c', classifyScript], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputFile,
+        GITHUB_REPOSITORY: 'LanternOps/breeze',
+        BASE_SHA: env.BASE_SHA === undefined ? shas.base : env.BASE_SHA,
+        HEAD_SHA: env.HEAD_SHA === undefined ? (shas.head ?? shas.base) : env.HEAD_SHA,
+        ...env,
+        EVENT_NAME: env.EVENT_NAME,
+      },
+    });
+    return { execution, output: readFileSync(outputFile, 'utf8').trim() };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test('merge_group: a docs-only entry is classified docs-only', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=false\ndocs=true');
+});
+
+test('merge_group: a mixed entry is classified as code', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=true');
+});
+
+test('merge_group: a code-only entry is classified as code', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'apps/api/src/index.ts': 'b\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=false');
+});
+
+test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
+  for (const env of [
+    { EVENT_NAME: 'merge_group', BASE_SHA: '' },
+    { EVENT_NAME: 'merge_group', HEAD_SHA: '' },
+    { EVENT_NAME: 'merge_group', BASE_SHA: '0000000000000000000000000000000000000000' },
+    { EVENT_NAME: 'merge_group', HEAD_SHA: 'refs/heads/does-not-exist' },
+  ]) {
+    const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
+    assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+    assert.equal(output, 'code=true\ndocs=true', JSON.stringify(env));
+  }
+});
+
+test('merge_group: an empty diff fails closed to the full suite', () => {
+  const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=true');
+});
+
+test('workflow_dispatch and any other event still run the full suite', () => {
+  for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
+    const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
+    assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+    assert.equal(output, 'code=true\ndocs=true', EVENT_NAME);
+  }
+});
+
+test('the changes job checks out enough history to diff a merge-group entry', () => {
+  const body = job('changes');
+  assert.match(body, /fetch-depth: \$\{\{ github\.event_name == 'merge_group' && '0' \|\| '1' \}\}/u);
+  assert.match(body, /BASE_SHA: \$\{\{ github\.event\.merge_group\.base_sha \}\}/u);
+  assert.match(body, /HEAD_SHA: \$\{\{ github\.event\.merge_group\.head_sha \}\}/u);
 });
 
 test('ci.yml is the only CI Success reporter and runs on every PR', () => {

@@ -161,7 +161,11 @@
     "timesheet": "Foglio ore",
     "vulnerabilities": "Vulnerabilità",
     "workspace": "Assistente IA",
-    "aiAgentsFleetDesign": "Progettazione flotta"
+    "aiAgentsFleetDesign": "Progettazione flotta",
+    "agreementTemplates": "Modelli di accordo",
+    "agreementTemplateDetail": "Modello di accordo",
+    "agreementTemplateNew": "Nuovo modello di accordo",
+    "signedAgreements": "Accordi firmati"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Monitoraggio e gestione remota",
@@ -224,6 +228,10 @@
       "deliverableTemplates": {
         "title": "Modelli di deliverable",
         "description": "Definisci un livello di servizio una volta e applica i suoi deliverable a qualsiasi cliente."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modelli di checklist per i ticket",
+        "description": "Elenchi di passaggi riutilizzabili che i tuoi tecnici possono applicare a qualsiasi ticket."
       }
     }
   },

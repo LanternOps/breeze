@@ -9,8 +9,14 @@ on:
   # `gh workflow run CI --ref main` so main-red-alert can evaluate it.
   workflow_dispatch:
   # Merge queue: the queue builds a temporary merge ref and needs the same
-  # `CI Success` check as a PR. No path filters here on purpose — the queue is
-  # the last gate before main and always runs the full suite.
+  # `CI Success` check as a PR. No path filter here on purpose — a
+  # path-filtered workflow simply never reports, and the queue would wait
+  # forever for `CI Success`. Instead the `changes` job below classifies the
+  # entry from a real `git diff` of merge_group.base_sha...head_sha, using the
+  # SAME script and the SAME rules as a PR, so a docs-only queue entry skips
+  # the code jobs instead of burning the whole matrix against the concurrency
+  # cap. It fails SAFE: an unresolvable base/head or a classifier error runs
+  # the full suite.
   merge_group:
   # No `paths-ignore` here on purpose. The merge queue requires `CI Success`
   # on every PR, including docs-only ones, and a path-filtered workflow simply
@@ -42,9 +48,12 @@ jobs:
   # Classifies the PR diff so a docs-only PR (docs/**, apps/docs/**, *.md,
   # *.mdx — the set `ci-docs-only.yml` and `docs-ci.yml` used to own) skips
   # every code job, runs only `docs-check`, and still gets a `CI Success`,
-  # which the merge queue requires before it will enqueue anything. Only
-  # `pull_request` is classified: a merge-group ref and a manual dispatch run
-  # everything, exactly as before.
+  # which the merge queue requires before it will enqueue anything.
+  #
+  # `pull_request` and `merge_group` are both classified, with the same script
+  # and the same rules — a PR from the files API, a queue entry from a
+  # `git diff` of base_sha...head_sha. Every other event (a manual dispatch on
+  # main has no base ref to diff) runs everything, exactly as before.
   #
   # Fail-closed by construction: `ci-success` only honours the bypass when this
   # output is the literal string `false`. If this job fails, is skipped, or
@@ -66,6 +75,15 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
+          # A merge-group entry is classified from a real `git diff` between the
+          # queue's base and head shas, which needs the history connecting them.
+          # The compare API is not used here: it caps `files` at 300, and a
+          # silent truncation could DROP the one code path in a docs-heavy
+          # entry — the exact direction that must never happen. Sparse checkout
+          # still keeps the working tree to `.github/scripts`; `fetch-depth: 0`
+          # only affects history. Every other event classifies without git, so
+          # it stays shallow.
+          fetch-depth: ${{ github.event_name == 'merge_group' && '0' || '1' }}
 
       - name: Classify changed files
         id: classify
@@ -73,19 +91,45 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
-          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
-            echo "Event ${EVENT_NAME}: not a PR, running the full suite."
-            echo "code=true" >> "${GITHUB_OUTPUT}"
-            echo "docs=true" >> "${GITHUB_OUTPUT}"
+          # Fail SAFE for merge_group: anything unresolvable runs the FULL
+          # suite rather than reddening the queue entry or, far worse, letting
+          # a code change through as docs-only.
+          full_suite() {
+            echo "$1" >&2
+            printf 'code=true\ndocs=true\n' | tee -a "${GITHUB_OUTPUT}"
+          }
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            # The PR files API needs no checkout and sees renames/deletes too.
+            # Any failure here aborts the job (set -e), which fails closed above.
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
+              | bash .github/scripts/classify-pr-paths.sh \
+              | tee -a "${GITHUB_OUTPUT}"
             exit 0
           fi
-          # The PR files API needs no checkout and sees renames/deletes too.
-          # Any failure here aborts the job (set -e), which fails closed above.
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' \
-            | bash .github/scripts/classify-pr-paths.sh \
-            | tee -a "${GITHUB_OUTPUT}"
+          if [[ "${EVENT_NAME}" != "merge_group" ]]; then
+            full_suite "Event ${EVENT_NAME}: no base ref to diff, running the full suite."
+            exit 0
+          fi
+          if [[ -z "${BASE_SHA}" ]] || [[ -z "${HEAD_SHA}" ]]; then
+            full_suite "merge_group: base/head sha missing, running the full suite."
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}"); then
+            full_suite "merge_group: cannot diff ${BASE_SHA}...${HEAD_SHA}, running the full suite."
+            exit 0
+          fi
+          # Only stdout is captured, so the classifier's own fail-closed notice
+          # still reaches the log. An empty diff yields an empty list, which the
+          # classifier itself fails closed on (code=true docs=true).
+          if ! classified=$(printf '%s\n' "${changed}" | bash .github/scripts/classify-pr-paths.sh); then
+            full_suite "merge_group: classifier failed, running the full suite."
+            exit 0
+          fi
+          printf '%s\n' "${classified}" | tee -a "${GITHUB_OUTPUT}"
 
   # ─── Docs check ─────────────────────────────────────────────────────
   # Was `docs-ci.yml`, whose job was ALSO named `CI Success` — the third
@@ -251,6 +295,12 @@ jobs:
 
       - name: Run TypeScript type check
         run: pnpm exec tsc --noEmit --project apps/api/tsconfig.json
+
+      # packages/shared is consumed through source imports, so apps/api's tsc
+      # only reaches the files it happens to import; its own test files were
+      # never checked anywhere and drifted (#5552).
+      - name: Type-check shared package
+        run: pnpm --filter @breeze/shared typecheck
 
       - name: Run Astro check
         working-directory: apps/web
@@ -1916,6 +1966,11 @@ jobs:
         run: |
           cd agent
           export BREEZE_BACKUP_BIN="$PWD/breeze-backup-linux-amd64"
+          # Static assertions on run-qemu.sh's own QEMU command lines
+          # (~1 s, no QEMU/root needed) — cheap enough to run right before
+          # the ~35 min emulated restore below, and the only place they are
+          # enforced. See recovery-media/e2e/run-qemu_test.sh.
+          bash recovery-media/e2e/run-qemu_test.sh
           sudo -E env "PATH=$PATH" ./recovery-media/e2e/seed-snapshot.sh e2e-store
           sudo -E env "PATH=$PATH" ./recovery-media/e2e/run-qemu.sh out/breeze-recovery-linux-amd64.iso e2e-store e2e-out
 
@@ -1963,13 +2018,45 @@ jobs:
         working-directory: agent
         run: go vet ./...
 
+      # #5892: the pinned binary is ~130MB and `go install` re-fetches its own
+      # dependency graph from proxy.golang.org/sum.golang.org every run, which
+      # both wastes time and is the most common source of the transient
+      # network failures that redden this job for reasons unrelated to actual
+      # lint findings. Cache it keyed on the pinned version so a cache hit
+      # skips the install (and its network calls) entirely.
+      - name: Cache golangci-lint binary
+        id: golangci-lint-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/bin/golangci-lint
+          key: golangci-lint-v2.12.2-${{ runner.os }}
+
+      - name: Install golangci-lint
+        if: steps.golangci-lint-cache.outputs.cache-hit != 'true'
+        run: |
+          # #5892: on a cache miss, `go install` can still fail transiently
+          # with proxy.golang.org / sum.golang.org connection errors. Retry
+          # with backoff before failing the job outright.
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2; then
+              echo "golangci-lint installed (attempt ${attempt})."
+              exit 0
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              break
+            fi
+            echo "::warning::golangci-lint install failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Failed to install golangci-lint after ${attempts} attempts — see the last attempt's output above. A repeated proxy.golang.org/sum.golang.org connection error is the known transient case this retry targets; any other error (e.g. an unresolvable module) means the pin itself is broken and retrying will never help."
+          exit 1
+
       - name: golangci-lint (new issues only)
         working-directory: agent
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}
-        run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-          golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
+        run: golangci-lint run --new-from-rev="origin/${BASE_REF}" ./...
 
   # ─── Go agent race tests (broad) ──────────────────────────────────────
   # test-agent runs the suite CGO-off (no race detector). This job races the
@@ -2387,11 +2474,14 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # ~1/4 of the suite (~6 min) + env/container setup + one autoMigrate
-    # pass. 25 leaves generous headroom for suite growth; before sharding
-    # this ceiling had to be raised twice (30→40→55) as the sequential
-    # runtime grew.
-    timeout-minutes: 25
+    # ~1/4 of the suite + env/container setup + one autoMigrate pass. Raised
+    # 25→40 on 2026-09-14: shard 3 hit exactly 25:00 on three consecutive
+    # merge-group runs (shards 1 and 4 at 23–24) after the day's integration
+    # suites landed, and a job timeout reports as `cancelled`, so every queue
+    # entry was silently dequeued with `failed_checks`. Before sharding this
+    # ceiling had been raised twice (30→40→55) as the sequential runtime grew;
+    # when a shard passes ~32 min, add a fifth shard instead of raising again.
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
@@ -2415,6 +2505,24 @@ jobs:
 
       - name: Start test-stack containers
         run: |
+          # #5892: `docker compose pull` can fail transiently with ECONNRESET
+          # from Docker Hub, reddening this job for reasons unrelated to the
+          # actual tests. Retry the pull with backoff, separately from `up
+          # -d`, so a flaky pull doesn't need the whole step to fail once
+          # before a rerun.
+          attempts=3
+          for attempt in $(seq 1 "${attempts}"); do
+            if docker compose -f docker-compose.test.yml pull; then
+              echo "Test-stack images pulled (attempt ${attempt})."
+              break
+            fi
+            if [ "${attempt}" -eq "${attempts}" ]; then
+              echo "::error::Failed to pull test-stack images after ${attempts} attempts — see the last attempt's output above. A repeated Docker Hub ECONNRESET/connection-reset is the known transient case this retry targets; any other error (e.g. a bad image tag or registry auth failure) means retrying will never help."
+              exit 1
+            fi
+            echo "::warning::docker compose pull failed (attempt ${attempt}/${attempts}); retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
           docker compose -f docker-compose.test.yml up -d
           timeout 60 bash -c 'until docker exec breeze-postgres-test pg_isready -U breeze_test -d breeze_test; do sleep 1; done'
           timeout 60 bash -c 'until docker exec breeze-redis-test redis-cli ping | grep -q PONG; do sleep 1; done'

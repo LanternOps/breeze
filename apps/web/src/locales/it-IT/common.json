@@ -1,4 +1,13 @@
 {
+  "aiInitiator": {
+    "assistant": "Assistente IA",
+    "agent": "Agente IA",
+    "originUnavailable": "Origine non disponibile",
+    "openSession": "Apri conversazione",
+    "openAgentRun": "Apri esecuzione dell'agente",
+    "tool": "Strumento: {{name}}",
+    "occurredAt": "Avvenuto il {{time}}"
+  },
   "lists": {
     "separator": ", "
   },
@@ -34,6 +43,7 @@
     "quotes": "Preventivi",
     "invoices": "Fatture",
     "contracts": "Contratti",
+    "agreements": "Accordi",
     "timesheets": "Fogli ore",
     "productCatalog": "Catalogo prodotti",
     "deviceGroups": "Gruppi di dispositivi",

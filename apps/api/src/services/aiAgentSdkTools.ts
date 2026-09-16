@@ -14,6 +14,7 @@ import { db, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
 import { eq } from 'drizzle-orm';
 import { executeTool, aiTools, type ExecuteToolOptions } from './aiTools';
+import { WORKSPACE_MCP_SHAPES, WORKSPACE_TOOL_DESCRIPTIONS } from './workspace/workspaceTools';
 import type { CaptureScope } from './artifacts/toolResultCapture';
 import { LIST_DELIVERABLE_TEMPLATES_TOOL, LIST_DELIVERABLES_TOOL, MANAGE_DELIVERABLES_TOOL, MANAGE_KEY_DATES_TOOL } from './aiToolsDeliverables';
 import type { ToolExecutionContext } from './toolExecutionContext';
@@ -52,6 +53,14 @@ import {
   googleResetTwoSvHandler, googleAddMailDelegateHandler, googleRemoveMailDelegateHandler,
   googleListLicensesHandler, googleAssignLicenseHandler, googleRemoveLicenseHandler,
 } from './aiToolsGoogle';
+// Execution plane (spec §5.5) — session-only, dispatched through
+// makeSessionAwareHandler like the M365/Google helpdesk handlers above.
+import { workspaceLaunchAnalysisHandler } from './workspace/workspaceLaunchTool';
+import {
+  WORKSPACE_LAUNCH_MAX_GOAL_CHARS,
+  WORKSPACE_LAUNCH_MAX_INPUT_DEVICES,
+  WORKSPACE_LAUNCH_MAX_INPUT_HANDLES,
+} from './workspace/workspaceLaunchLimits';
 import {
   sealToolSecrets,
   isSecretBearingTool,
@@ -241,6 +250,18 @@ export const TOOL_TIERS = {
   search_logs: 1,
   get_log_trends: 1,
   detect_log_correlations: 2,
+  // Execution plane (spec §5.7) — reads nothing the caller cannot already read;
+  // it just refuses to throw the result away. Tier 1 like its source tools.
+  export_dataset: 1,
+  // Execution plane W04 — sandbox workspace tools. Tier 1: they execute
+  // nothing on the fleet. NOT read-only (see TIER1_NON_READONLY_TOOLS in
+  // aiGuardrails.ts) — the allowlist is what gates them. A tool absent from
+  // this map is invisible to chat AND to every run profile even when it is
+  // registered in `aiTools`.
+  workspace_stage: 1,
+  workspace_run: 1,
+  workspace_collect: 1,
+  workspace_cancel: 1,
   // Configuration policy tools
   list_configuration_policies: 1,
   get_configuration_policy: 1,
@@ -344,6 +365,10 @@ export const TOOL_TIERS = {
   google_list_licenses: 1,
   google_assign_license: 3,
   google_remove_license: 3,
+  // Execution plane (spec §5.5). Tier 1: it queues work, it touches nothing.
+  // Absent here, a tool is invisible to chat and to every run profile even
+  // though it is registered in `aiTools`.
+  workspace_launch_analysis: 1,
 } as const satisfies Readonly<Record<string, AiToolTier>> as Readonly<Record<string, AiToolTier>>;
 
 // All tool names, prefixed for SDK MCP format
@@ -1848,12 +1873,15 @@ export function createBreezeMcpServer(
 
     tool(
       'manage_patches',
-      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies.',
+      'Manage patches: list, compliance, scan, approve, decline, defer, bulk approve, install, rollback, or setup auto-approval policies. approve/decline/defer accept patchId or patchName (a title/KB lookup, for when the UUID is unknown), plus an optional ringId to scope to one update ring; decline also accepts allRings to revoke the approval in every ring at once, not just the current/blanket scope.',
       {
         action: z.enum(['list', 'compliance', 'scan', 'approve', 'decline', 'defer', 'bulk_approve', 'install', 'rollback', 'setup_auto_approval']),
         patchId: uuid.optional(),
+        patchName: z.string().min(1).max(300).optional(),
         patchIds: z.array(uuid).max(50).optional(),
         deviceIds: z.array(uuid).max(50).optional(),
+        ringId: uuid.optional(),
+        allRings: z.boolean().optional(),
         source: z.enum(['microsoft', 'apple', 'linux', 'third_party', 'custom']).optional(),
         severity: z.enum(['critical', 'important', 'moderate', 'low', 'unknown']).optional(),
         status: z.enum(['pending', 'approved', 'rejected', 'deferred']).optional(),
@@ -2147,6 +2175,48 @@ export function createBreezeMcpServer(
         sortOrder: z.enum(['asc', 'desc']).optional(),
       },
       makeHandler('search_logs', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'export_dataset',
+      registryDescription('export_dataset'),
+      {
+        dataset: z.enum(['event_logs', 'agent_logs', 'device_inventory', 'software_inventory', 'metrics', 'vulnerabilities', 'custom_fields']),
+        format: z.enum(['jsonl', 'csv']).optional(),
+        filters: z.record(z.string(), z.unknown()).optional(),
+        deviceIds: z.array(z.string()).optional(),
+        siteId: z.string().optional(),
+        maxRows: z.number().optional(),
+      },
+      makeHandler('export_dataset', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_stage',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_stage,
+      WORKSPACE_MCP_SHAPES.workspace_stage,
+      makeHandler('workspace_stage', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_run',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_run,
+      WORKSPACE_MCP_SHAPES.workspace_run,
+      makeHandler('workspace_run', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_collect',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_collect,
+      WORKSPACE_MCP_SHAPES.workspace_collect,
+      makeHandler('workspace_collect', getAuth, onPreToolUse, onPostToolUse)
+    ),
+
+    tool(
+      'workspace_cancel',
+      WORKSPACE_TOOL_DESCRIPTIONS.workspace_cancel,
+      WORKSPACE_MCP_SHAPES.workspace_cancel,
+      makeHandler('workspace_cancel', getAuth, onPreToolUse, onPostToolUse)
     ),
 
     tool(
@@ -2998,6 +3068,27 @@ export function createBreezeMcpServer(
     // Google Workspace helpdesk tools (gated on GOOGLE_WORKSPACE_ENABLED + a
     // per-org connection). Same enforcement path as every other tool.
     ...googleToolDefinitions(getAuth, getActiveSession, onPreToolUse, onPostToolUse),
+
+    // Execution plane (spec §5.5): start a sandboxed `analysis` run from chat.
+    // Session-aware, not `makeHandler`: the handler is called as
+    // `(args, auth, session.breezeSessionId)` and the factory refuses with
+    // `no_active_session` BEFORE any enforcement when there is no live chat
+    // session — so no run is ever admitted without one to deliver it to.
+    // Declared here, inside createBreezeMcpServer, because `getActiveSession`
+    // is its parameter: a factory that was never handed it compiles happily and
+    // then answers `no_active_session` to every call.
+    tool(
+      'workspace_launch_analysis',
+      'Start a sandboxed analysis run that computes over fleet data and returns findings plus '
+        + 'downloadable files. Returns a run id immediately; the result arrives later in this conversation.',
+      {
+        goal: z.string().min(1).max(WORKSPACE_LAUNCH_MAX_GOAL_CHARS),
+        deviceIds: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_DEVICES).optional(),
+        siteId: uuid.optional(),
+        inputHandles: z.array(uuid).max(WORKSPACE_LAUNCH_MAX_INPUT_HANDLES).optional(),
+      },
+      makeSessionAwareHandler('workspace_launch_analysis', getAuth, getActiveSession, workspaceLaunchAnalysisHandler, onPreToolUse, onPostToolUse),
+    ),
   ];
 
   // extraTools (e.g. headless-run outcome tools like submit_alert_verdict) are

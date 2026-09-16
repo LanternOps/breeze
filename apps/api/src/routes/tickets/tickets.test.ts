@@ -202,6 +202,14 @@ vi.mock('../../db/schema', () => ({
     description: 'description', isBillable: 'isBillable', billingStatus: 'billingStatus',
     hourlyRate: 'hourlyRate', isApproved: 'isApproved', addedBy: 'addedBy', runningTimerId: 'runningTimerId'
   },
+  // #5783 W01: ticketChecklistService is reachable from routes/tickets/index.ts,
+  // and its module-scope CHECKLIST_ORDER reads these columns at import time.
+  ticketChecklistItems: {
+    id: 'id', orgId: 'orgId', ticketId: 'ticketId', label: 'label', detail: 'detail',
+    position: 'position', doneAt: 'doneAt', doneByUserId: 'doneByUserId', source: 'source',
+    sourceTemplateItemId: 'sourceTemplateItemId', createdBy: 'createdBy',
+    createdAt: 'createdAt', updatedAt: 'updatedAt',
+  },
   ticketParts: {
     id: 'id', ticketId: 'ticketId', orgId: 'orgId', addedBy: 'addedBy',
     description: 'description', quantity: 'quantity', unitPrice: 'unitPrice',
@@ -635,6 +643,41 @@ describe('GET /tickets/stats', () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body).toHaveProperty('error', 'Partner context required');
+  });
+
+  it('narrows counts to the requested orgId, matching GET /tickets', async () => {
+    // A partner-scoped caller viewing one org's ticket queue must get that
+    // org's counts, not partner-wide counts — same bug shape as the /tickets
+    // list, which already applies q.orgId (line ~302 above). accessibleOrgIds
+    // deliberately does NOT include ORG_ID, so a pass here can only come from
+    // an explicit orgId condition the handler adds — not from the ambient
+    // partner-wide inArray(accessibleOrgIds) scope condition.
+    authRef.current = {
+      ...DEFAULT_AUTH,
+      scope: 'partner',
+      partnerId: 'p-1',
+      accessibleOrgIds: ['some-other-org'],
+      canAccessOrg: () => true,
+    };
+    dbGroupByMock.mockResolvedValue([]);
+    dbSelectMock.mockResolvedValue([{ atRisk: 0 }]);
+
+    const res = await makeApp().request(`/tickets/stats?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(lastWhereArgs.length).toBeGreaterThan(0);
+    const serialized = JSON.stringify(lastWhereArgs[0]!.conditions);
+    expect(serialized).toContain(ORG_ID);
+  });
+
+  it('403s when the requested orgId is outside the caller access', async () => {
+    authRef.current = { ...DEFAULT_AUTH, scope: 'partner', partnerId: 'p-1', canAccessOrg: () => false };
+
+    const res = await makeApp().request(`/tickets/stats?orgId=${ORG_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(dbGroupByMock).not.toHaveBeenCalled();
+    expect(dbSelectMock).not.toHaveBeenCalled();
   });
 });
 

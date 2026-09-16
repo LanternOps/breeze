@@ -99,6 +99,68 @@ with anything.
   the rule; that list is capped at a cutoff filename, so a new migration
   **cannot** be silenced by adding it. See issue #4518.
 
+- **Set-based writes on partner-export material tables require pre-locks.**
+  Before any `UPDATE`, `DELETE`, `MERGE`, or `INSERT … SELECT` against a table carrying
+  `breeze_partner_export_(device_child|site_child|material)_(insert|update|delete)`
+  triggers, acquire **all partners shared first, then all orgs exclusive**, each
+  in ascending UUID order, over the union of rows every write will touch.
+  Configuration-material tables instead require **all partners exclusive first,
+  then all orgs under those exclusive partners**, using
+  `breeze_partner_export_lock_partners_exclusive` and
+  `breeze_partner_export_lock_orgs_under_exclusive_partners`. This covers
+  `configuration_owner_*`, `direct_org_*`, `policy_child_*`, `assignment_*`,
+  `custom_values_update`, and `normalized_policy_child` trigger functions.
+  System scope must precede the discovery reads too. Use this shape from
+  `2026-10-14-100050-discovered-assets-source-backfill-prelock.sql` (#5357):
+
+  ```sql
+  SELECT set_config('breeze.scope', 'system', true);
+
+  SELECT public.breeze_partner_export_lock_partners_shared(ARRAY(
+    SELECT DISTINCT o.partner_id
+      FROM public.discovered_assets d
+      JOIN public.organizations o ON o.id = d.org_id
+     WHERE d.source IS NULL
+       AND o.partner_id IS NOT NULL
+     ORDER BY 1
+  ));
+
+  SELECT public.breeze_partner_export_lock_orgs_exclusive(ARRAY(
+    SELECT DISTINCT d.org_id
+      FROM public.discovered_assets d
+     WHERE d.source IS NULL
+       AND d.org_id IS NOT NULL
+     ORDER BY 1
+  ));
+
+  -- All backfill statements follow here, in the same transaction.
+  ```
+
+  Adapt the discovery predicates to cover **every** affected org and partner,
+  including both old and new owners when changing ownership. Statement triggers
+  share a transaction-wide lock ledger; a later write introducing a new partner
+  or a lower org UUID can otherwise abort the migration with a lock hierarchy
+  violation. Locks acquired in a previous migration do not carry into this one.
+  In a `-- @no-transaction` file, acquire locks and write inside the same `DO`
+  statement. `PERFORM` calls inside that block are supported.
+
+  A reviewed exception must carry a standalone annotation with a reason:
+  `-- @partner-export-locks: pre-acquired <reason explaining why locking is safe>`.
+  The static guard verifies preceding calls to both helpers; reviewers must
+  verify partner-before-org order and complete, sorted lock sets.
+
+  Enforced without a database by `apps/api/src/db/migrationPartnerExportLocks.test.ts`
+  in **Test API** (#5360). It derives tables from literal trigger declarations
+  and `FOREACH … IN ARRAY ARRAY[...]` trigger-installation loops. Its literal
+  baselines record exactly seven shipped device/site/material offenders and
+  fourteen configuration-material offenders (#5912), each with its own frozen
+  cutoff; neither baseline **may ever grow**. Both families use the same scanner
+  and reasoned annotation exception. Configuration tables are also derived from
+  the literal declarations and loops in the 2026-07-24 configuration-material-state
+  and 2026-07-25 canonical-configuration migrations, including normalized policy
+  children. Shipped offenders need fix-forward repairs; new files must satisfy
+  their family's helper pair before writing.
+
 ## Never edit a shipped migration
 
 `breeze_migrations` records a SHA-256 of each applied file, and the API refuses

@@ -44,6 +44,14 @@ export const SENTRY_EVENT_CODES = [
    * incident #5283 fixed — invisible until Postgres was inspected by hand.
    */
   'metric_anomaly_stage_stalled',
+  /**
+   * offlineDetector's detect-offline sweep skipped a device row whose id/orgId
+   * failed the v4 UUID check (or whose lastSeenAt was unparseable) instead of
+   * failing the whole sweep. Unreachable through the API (routes only mint v4
+   * UUIDs), but the row is skipped again every ~30s until fixed by hand — a
+   * silent, indefinite gap in offline detection for that one device (#5867).
+   */
+  'offline_detector_invalid_device_row',
 
   // --- database / pool --------------------------------------------------
   /** Pool-health watchdog published a non-healthy verdict. */
@@ -155,6 +163,12 @@ export const SENTRY_EVENT_CODES = [
   'ai_billing_credits_deduct_failed',
   /** An org reached the AI billing path with no partner row to bill. */
   'ai_billing_org_partner_missing',
+  /**
+   * Execution plane W04 (#5715): the sandbox backend's create circuit opened
+   * after 5 consecutive failures — no analysis run can start in this region
+   * until it closes.
+   */
+  'ai_workspace_breaker_open',
   /** A rejected partner AI key could not be stamped (config moved under us). */
   'ai_partner_key_error_stamp_stale',
   /**

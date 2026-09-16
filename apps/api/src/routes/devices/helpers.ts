@@ -39,6 +39,7 @@ export const PUBLIC_DEVICE_FIELDS = [
   'pamLifetimeProtocolVersion', 'rollbackComponentVersions',
   'agentEdition', 'migrationRequired', 'editionMigrationDispatchedAt',
   'uninstallIntentAt', 'possibleReplacementOfDeviceId', 'decommissionedAt',
+  'purchaseDate', 'purchaseDateSource',
   'createdAt', 'updatedAt', 'partnerExportUpdatedAt',
 ] as const satisfies readonly (keyof typeof devices.$inferSelect)[];
 

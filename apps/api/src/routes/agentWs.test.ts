@@ -5221,4 +5221,89 @@ describe('agent websocket revocation_lease_renew', () => {
     expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
     expect(ws.send).not.toHaveBeenCalled();
   });
+
+  // SEC-038 W05: the renewal answer is also how an agent resyncs its durable
+  // desktop start fence, so it echoes the session's current start generation
+  // and termination phase — as canonical decimal strings, never JSON numbers,
+  // because the generation is a bigint.
+  it('echoes the start generation and termination phase on a renewed answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'renewed',
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease',
+      sessionId: SESSION_ID,
+      expiresAt: 111,
+      hardDeadline: 222,
+      renewEverySec: 25,
+      graceSec: 90,
+      startGeneration: '9007199254740993',
+      terminationPhase: 'none',
+    });
+  });
+
+  it('echoes the terminal generation on a revoked answer', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({
+      status: 'revoked',
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    expect(JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string)).toEqual({
+      type: 'revocation_lease_revoked',
+      sessionId: SESSION_ID,
+      reason: 'membership_removed',
+      terminalGeneration: '12',
+    });
+  });
+
+  it('omits the terminal generation when the service could not determine one', async () => {
+    renewRevocationLeaseMock.mockResolvedValue({ status: 'forbidden' });
+    const ws = await sendRenew({ type: 'revocation_lease_renew', sessionId: SESSION_ID });
+
+    const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+    expect(answer.type).toBe('revocation_lease_revoked');
+    // Non-disclosure: another device's session metadata never leaves here.
+    expect(answer).not.toHaveProperty('terminalGeneration');
+  });
+
+  // The agent correlates its fence resync with a nonce so a stalled answer to
+  // an earlier renewal cannot certify a later one. Every answer type echoes it.
+  it('echoes the sync nonce on every answer type', async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ status: 'renewed', expiresAt: 1, hardDeadline: 2, renewEverySec: 25, graceSec: 90 }, 'revocation_lease'],
+      [{ status: 'revoked', reason: 'membership_removed' }, 'revocation_lease_revoked'],
+      [{ status: 'unavailable' }, 'revocation_lease_unavailable'],
+    ];
+    for (const [result, type] of cases) {
+      renewRevocationLeaseMock.mockResolvedValue(result);
+      const ws = await sendRenew({
+        type: 'revocation_lease_renew',
+        sessionId: SESSION_ID,
+        syncNonce: 'nonce-1',
+      });
+      const answer = JSON.parse(vi.mocked(ws.send).mock.calls[0]![0] as string);
+      expect(answer.type).toBe(type);
+      expect(answer.syncNonce).toBe('nonce-1');
+    }
+  });
+
+  it('drops a renew whose sync nonce is not a short opaque string', async () => {
+    const ws = await sendRenew({
+      type: 'revocation_lease_renew',
+      sessionId: SESSION_ID,
+      syncNonce: 'x'.repeat(200),
+    });
+    expect(renewRevocationLeaseMock).not.toHaveBeenCalled();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
 });

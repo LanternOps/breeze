@@ -93,6 +93,8 @@ function makeHook(args: {
     executionIdPending: new Map(),
     actPinPending: new Map(),
     actReservation: { count: 0 },
+    runTargets: [],
+    stagedBytesRemaining: 256 * 1024 * 1024,
     deadlineMs: Date.now() + 600_000,
   });
 }

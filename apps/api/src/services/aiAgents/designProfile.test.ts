@@ -1,7 +1,24 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { AI_AGENT_LIMIT_DEFAULTS, type AiAgentLimits } from '@breeze/shared';
 import { DESIGN_TOOL_ALLOWLIST, designLimits, designToolAllowlist, isDesignProfile } from './designProfile';
 import { buildAgentToolCatalog } from './agentToolCatalog';
+
+/**
+ * Tool names actually declared via `tool('<name>', ...)` in the single MCP
+ * server (`createBreezeMcpServer`) a design run's `onlyTools` is validated
+ * against — same approach as `declaredToolNames()` in
+ * `aiAgentSdkTools.mcpCoverage.test.ts`. Being a `TOOL_TIERS` key (what the
+ * "read-only catalog tool" test above checks) is NOT enough: a name can be
+ * tiered and catalog-listed while only being declared on the separate
+ * `script_builder` MCP server (`scriptBuilderTools.ts`), which is exactly
+ * how `get_script_details` broke every design run at turn 0 (#createBreezeMcpServer
+ * `onlyTools referenced unknown tool name(s)`).
+ */
+function declaredBreezeMcpToolNames(): Set<string> {
+  const source = readFileSync(new URL('../aiAgentSdkTools.ts', import.meta.url), 'utf8');
+  return new Set(Array.from(source.matchAll(/\btool\(\s*'([a-z0-9_]+)'/g), (m) => m[1]!));
+}
 
 describe('design profile', () => {
   it('detects the profile', () => {
@@ -30,5 +47,15 @@ describe('design profile', () => {
       expect(tool, `${name} is not a catalog tool`).toBeDefined();
       expect(tool!.readOnly, `${name} must be read-only`).toBe(true);
     }
+  });
+  it('every floor tool is declared in the breeze MCP server the design run actually attaches', () => {
+    const declared = declaredBreezeMcpToolNames();
+    const undeclared = DESIGN_TOOL_ALLOWLIST.filter((name) => !declared.has(name));
+    expect(
+      undeclared,
+      'these names are TOOL_TIERS/catalog tools but createBreezeMcpServer never declares them '
+        + '(e.g. they only exist on the separate script_builder MCP server) — onlyTools throws '
+        + '"referenced unknown tool name(s)" at turn 0 for a design run',
+    ).toEqual([]);
   });
 });

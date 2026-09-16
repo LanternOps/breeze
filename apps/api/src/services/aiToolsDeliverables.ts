@@ -322,7 +322,9 @@ export const LIST_DELIVERABLE_TEMPLATES_TOOL: AiTool = {
     description:
       'List deliverable template sets the caller can use: sets owned by an accessible organization, plus the partner-wide sets '
       + '("all organizations") when the caller holds a partner token. Each set lists its items with cadence, lead and grace days and '
-      + 'whether an artifact is required. Read-only.',
+      + 'whether an artifact is required, plus its internal `instructions` runbook prose and the '
+      + '`checklistTemplateId` of the ticket checklist that will be seeded onto each occurrence\'s ticket. '
+      + 'Both are INTERNAL — never repeat them to a customer. Read-only.',
     input_schema: {
       type: 'object' as const,
       properties: { orgId: { type: 'string', description: 'Filter to sets owned by one organization (UUID)' } },

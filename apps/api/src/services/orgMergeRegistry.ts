@@ -463,6 +463,26 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and child may
   // repoint in separate statements under SET CONSTRAINTS ALL DEFERRED.
   deliverable_template_items: { kind: 'repoint' },
+  // ticket_checklist_templates_org_name_uq (org_id, name) WHERE org_id IS NOT
+  // NULL (2026-10-16-191300) — a plain repoint raises 23505 when both orgs own
+  // a template with the same name. NOT repoint-dedupe: unlike
+  // deliverable_template_sets, a checklist template IS live-referenced —
+  // service_deliverables.checklist_template_id and
+  // deliverable_template_items.checklist_template_id (#5783 W03) both point at
+  // it with ON DELETE SET NULL, so deleting a colliding loser would silently
+  // NULL those pointers and empty every future occurrence's checklist, with no
+  // error and no signal. That is the exact failure the W03 delete guard exists
+  // to prevent; the merge path must not open a second door to it. Rename on
+  // collision instead, exactly as service_deliverables does, then repoint.
+  // Partner-wide templates (org_id NULL) are never merge participants, and the
+  // collision predicate carries `org_id IS NOT NULL` on both sides.
+  ticket_checklist_templates: { kind: 'custom', note: "rename colliding loser templates (same name under the survivor org) with a ' (merged <org8>)' suffix, then repoint all rows; NEVER delete — service_deliverables.checklist_template_id and deliverable_template_items.checklist_template_id reference it with ON DELETE SET NULL (#5783 W03), so a delete silently empties future checklists" },
+  // Items ride the parent: their only unique is (template_id, label), which no
+  // repoint can collide on, and both (template_id, org_id)/(template_id,
+  // partner_id) branch FKs are DEFERRABLE INITIALLY IMMEDIATE so parent and
+  // child may repoint in separate statements under SET CONSTRAINTS ALL
+  // DEFERRED.
+  ticket_checklist_template_items: { kind: 'repoint' },
   delegant_m365_connections: { kind: 'repoint-dedupe', key: ['customer_label'] }, // verified: delegant_m365_org_customer_uniq (org_id, customer_label)
   remediation_suggestions: { kind: 'repoint-dedupe', key: ['source_type', 'source_id'] }, // superset of its four partial uniques (org_id, source_type, source_id, {script_id|script_template_id|playbook_id|target_type}); derived rows, over-dropping is safe
   // service_deliverables_org_contract_name_uq (org_id, COALESCE(contract_id, nil), name)
@@ -885,6 +905,14 @@ const REPOINT_TABLES: readonly string[] = [
   // so no dedupe key is needed. Pending rows (comment_id NULL) repoint too:
   // the claim predicate in addTicketComment matches on the ticket's org_id.
   "ticket_attachments",
+  // #5783 W01. Own org_id (shape 1), so plain repoint like its siblings — the
+  // only unique index is the pkey on `id`, which cannot collide across orgs, so
+  // no dedupe key is needed, and there is no history to preserve by renaming.
+  // Its composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // orgMerge's `SET CONSTRAINTS ALL DEFERRED` lets tickets and this child
+  // repoint in separate statements without a 23503 — unlike ticket_drafts,
+  // whose non-deferrable legs forced a custom executor.
+  "ticket_checklist_items",
   "ticket_email_links",
   "ticket_forms",
   "ticket_outbox",

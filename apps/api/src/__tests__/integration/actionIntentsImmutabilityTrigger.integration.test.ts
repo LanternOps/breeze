@@ -236,6 +236,9 @@ describe('action_intents immutability trigger (live DB)', () => {
     // direction, and the BEFORE UPDATE trigger raises before either the
     // all-or-none CHECK (`action_intents_task_link_chk`) or the FK gets to
     // complain — which is what makes a single-column patch a valid probe here.
+    trigger_kind: { triggerKind: 'alert' },
+    trigger_ref_id: { triggerRefId: randomUUID() },
+    trigger_key: { triggerKey: 'alert:disk low' },
     task_id: { taskId: randomUUID() },
     task_step_key: { taskStepKey: 'restart-service' },
     operation_key: { operationKey: 'restart:spooler:1' },

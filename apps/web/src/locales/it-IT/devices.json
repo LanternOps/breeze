@@ -1,4 +1,9 @@
 {
+  "aiActivity": {
+    "title": "Attività IA",
+    "count": "{{count}} azioni inviate negli ultimi {{days}} giorni",
+    "tooltip": "Conta gli script e i comandi inviati dall'IA registrati su questo dispositivo. Un annullamento conta come azione a sé stante. Registrato con impegno ragionevole, senza garanzia di completezza."
+  },
   "deviceChangeHistoryTab": {
     "title": "Cronologia modifiche",
     "loading": "Caricamento della cronologia modifiche…",
@@ -279,7 +284,20 @@
     "couldnTLoadMore": "Impossibile caricare altri elementi.",
     "viewAllActivity2": "Visualizza tutta l'attività",
     "text": "→",
-    "viewProposal": "Visualizza proposta"
+    "viewProposal": "Visualizza proposta",
+    "trigger": {
+      "manual": "Avvio manuale",
+      "schedule": "Pianificazione",
+      "sweep_finding": "Riscontro della scansione",
+      "alert": "Avviso",
+      "monitor": "Monitoraggio",
+      "fleet_finding": "Riscontro del parco dispositivi",
+      "policy": "Criterio",
+      "automation": "Automazione",
+      "ticket": "Richiesta di assistenza",
+      "anomaly": "Anomalia",
+      "api": "Chiamata API"
+    }
   },
   "deviceAlertHistory": {
     "failedToFetchAlertHistory": "Impossibile recuperare la cronologia degli avvisi",

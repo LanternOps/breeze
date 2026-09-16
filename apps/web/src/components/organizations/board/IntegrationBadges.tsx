@@ -93,7 +93,11 @@ export default function IntegrationBadges({
         const ariaLabel = reasonText
           ? t('orgBoard.integrations.badgeLabelWithReason', { orgName, system, state: stateLabel, reason: reasonText })
           : t('orgBoard.integrations.badgeLabel', { orgName, system, state: stateLabel });
-        const title = badge.muted ? t('orgBoard.integrations.connectorMuted', { system }) : (reasonText ?? undefined);
+        // Every badge must have a `title` — mouse users have no other way to see
+        // this info on hover. Muted explains itself; otherwise prefer the reason
+        // and fall back to the same text as the accessible name so a linked/identity
+        // badge with no reason still shows something on hover.
+        const title = badge.muted ? t('orgBoard.integrations.connectorMuted', { system }) : (reasonText ?? ariaLabel);
         const testId = badge.system === 'external'
           ? `${testIdPrefix}-${orgId}-external-${badge.label ?? ''}`
           : `${testIdPrefix}-${orgId}-${badge.system}`;

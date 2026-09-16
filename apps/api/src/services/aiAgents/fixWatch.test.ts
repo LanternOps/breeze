@@ -191,6 +191,14 @@ vi.mock('../sentry', () => ({
   captureException: (...args: unknown[]) => captureExceptionMock(...args),
 }));
 
+// #5751 W02 (#5753) — the condition probe, mocked at the module boundary. Its
+// own SQL/freshness/fail-closed contract is pinned in sweepSubjectProbe.test.ts;
+// what THIS file proves is which VERDICT drives which watch transition.
+const probeSweepSubjectMock = vi.fn(async () => 'unknown' as 'present' | 'cleared' | 'unknown');
+vi.mock('./sweepSubjectProbe', () => ({
+  probeSweepSubject: (...args: unknown[]) => probeSweepSubjectMock(...(args as [])),
+}));
+
 // P2-5 (#4192) Task 6 — auto-demote. Mocked at the module boundary: the
 // revoke's own advisory-lock / FOR UPDATE / SET-clause contract is pinned
 // against the real dialect in `supervisedKeyDemote.test.ts`. What THIS file
@@ -212,6 +220,7 @@ import {
   checkFixWatchPhase2,
   createFixWatchRow,
   createIntentFixWatchRow,
+  createSweepFixWatchRow,
   FIX_HOLD_MINUTES,
   listPendingWatchesForRecovery,
   RECOVERY_TIMEOUT_HOURS,
@@ -220,6 +229,7 @@ import {
   type FinishedRunForWatch,
   type FixWatchOutcomeInput,
   type IntentForWatch,
+  type SweepIntentForWatch,
 } from './fixWatch';
 // Type-only (erased at runtime, so no module cycle and no runLoop mock): the
 // structural `actOpKey` field `FixWatchOutcomeInput` snapshots must keep
@@ -281,8 +291,28 @@ function watchRow(overrides: Record<string, unknown> = {}) {
     // `insertCount`-based assertion below unchanged.
     sourceKind: 'act_run',
     opKeys: [] as string[],
+    // #5751 W02 (#5753) — NULL is the predicate for "alert-anchored", so the
+    // default fixture stays on the alert branch and every existing case below
+    // is unchanged.
+    subjectKind: null as string | null,
+    subjectKey: null as string | null,
     ...overrides,
   };
+}
+
+/** A SUBJECT-anchored (sweep) watch: no alert, no rule, a probeable subject. */
+function subjectWatchRow(overrides: Record<string, unknown> = {}) {
+  return watchRow({
+    alertId: null,
+    ruleId: null,
+    configItemName: null,
+    sourceKind: 'intent',
+    intentId: INTENT_ID,
+    opKeys: [OP_KEY],
+    subjectKind: 'service_down',
+    subjectKey: 'MSSQLSERVER',
+    ...overrides,
+  });
 }
 
 beforeEach(() => {
@@ -292,6 +322,7 @@ beforeEach(() => {
   demoteSupervisedKeyMock.mockReset().mockResolvedValue({ revoked: false, orgAgentId: null });
   notifyDemotionMock.mockReset().mockResolvedValue(undefined);
   captureExceptionMock.mockReset();
+  probeSweepSubjectMock.mockReset().mockResolvedValue('unknown');
 });
 
 afterEach(() => {
@@ -620,6 +651,112 @@ describe('createIntentFixWatchRow', () => {
 });
 
 // ---------------------------------------------------------------------------
+// createSweepFixWatchRow — the ALERT-LESS sibling (#5751 W02, #5753)
+// ---------------------------------------------------------------------------
+describe('createSweepFixWatchRow', () => {
+  function sweepIntentForWatch(overrides: Partial<SweepIntentForWatch> = {}): SweepIntentForWatch {
+    return {
+      intentId: INTENT_ID,
+      orgId: ORG_ID,
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+      deviceId: DEVICE_ID,
+      subjectKind: 'service_down',
+      subjectKey: 'MSSQLSERVER',
+      opKey: OP_KEY,
+      ...overrides,
+    };
+  }
+
+  it('inserts alert_id NULL, rule_id NULL, source_kind intent, the subject pair and the scoped device', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]); // org lookup only — there is no alert to read
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+    expect(state.insertValues).toHaveLength(1);
+    expect(state.insertValues[0]).toMatchObject({
+      orgId: ORG_ID,
+      partnerId: PARTNER_ID,
+      agentId: AGENT_ID,
+      runId: RUN_ID,
+      intentId: INTENT_ID,
+      alertId: null,
+      ruleId: null,
+      configItemName: null,
+      // The INTENT's scope device, not the run's — a sweep run is device-less.
+      deviceId: DEVICE_ID,
+      subjectKind: 'service_down',
+      subjectKey: 'MSSQLSERVER',
+      state: 'pending',
+      // LOAD-BEARING: recordWatchVerdictEvidence maps 'intent' to namespace
+      // 'policy_key', the namespace the graduation ladder reads. A third
+      // source kind would silently move sweep evidence out of the ladder.
+      sourceKind: 'intent',
+      opKeys: [OP_KEY],
+    });
+  });
+
+  it('reads no alert at all — a sweep run has none, and loadWatchAnchor would return null for every sweep intent', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createSweepFixWatchRow(sweepIntentForWatch());
+
+    // Exactly ONE select: the partner lookup.
+    expect(state.selectCount).toBe(1);
+    expect(sqlText(state.selectWheres[0])).toContain('"organizations"."id"');
+  });
+
+  it('arbitrates on the partial intent_id UNIQUE, predicate repeated (a partial index cannot be inferred without it — 42P10)', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+
+    await createSweepFixWatchRow(sweepIntentForWatch());
+
+    const clause = state.insertConflicts[0]!;
+    expect(sqlText(clause.where)).toContain('"intent_id" is not null');
+  });
+
+  it('returns the EXISTING watch id on redelivery — null must keep meaning "nothing will ever verify this"', async () => {
+    state.selectQueue.push(
+      [{ partnerId: PARTNER_ID }],
+      [{ id: WATCH_ID }], // the row the partial UNIQUE already holds
+    );
+    state.insertReturningQueue.push([]); // ON CONFLICT DO NOTHING — no row back
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBe(WATCH_ID);
+  });
+
+  it('returns null when the org has no resolvable partner — the same fail-closed rule as the alert sibling', async () => {
+    state.selectQueue.push([]); // org lookup — nothing found
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch());
+
+    expect(id).toBeNull();
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('issues every statement through the SAVEPOINT executor it was handed, never the ambient db', async () => {
+    state.selectQueue.push([{ partnerId: PARTNER_ID }]);
+    state.insertReturningQueue.push([{ id: WATCH_ID }]);
+    const executor = {
+      select: vi.fn((...args: unknown[]) => (db.select as (...a: unknown[]) => unknown)(...args)),
+      insert: vi.fn((...args: unknown[]) => (db.insert as (...a: unknown[]) => unknown)(...args)),
+    };
+
+    const id = await createSweepFixWatchRow(sweepIntentForWatch(), executor as never);
+
+    expect(id).toBe(WATCH_ID);
+    expect(executor.select).toHaveBeenCalledTimes(1);
+    expect(executor.insert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // listPendingWatchesForRecovery — the durable-enqueue recovery reader
 // ---------------------------------------------------------------------------
 describe('listPendingWatchesForRecovery', () => {
@@ -820,6 +957,233 @@ describe('checkFixWatchPhase1', () => {
 // ---------------------------------------------------------------------------
 // checkFixWatchPhase2
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// #5751 W02 (#5753) — a SUBJECT watch is graded by re-probing the condition,
+// not by reading an alert. Phase 1.
+// ---------------------------------------------------------------------------
+describe('checkFixWatchPhase1 — subject watch', () => {
+  it('probe cleared -> watching, recovery_observed_at set, due_at FIX_HOLD_MINUTES out', async () => {
+    state.selectQueue.push([subjectWatchRow()]);
+    probeSweepSubjectMock.mockResolvedValueOnce('cleared');
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recovered' });
+    const set = state.updateSets[0] as { state: string; recoveryObservedAt: Date; dueAt: Date };
+    expect(set.state).toBe('watching');
+    expect(set.dueAt.getTime() - set.recoveryObservedAt.getTime()).toBe(FIX_HOLD_MINUTES * 60_000);
+    // The probe is pinned to the watch's own org, device and subject.
+    expect(probeSweepSubjectMock).toHaveBeenCalledWith('service_down', ORG_ID, DEVICE_ID, 'MSSQLSERVER');
+    // It reads NO alert — there is none, and reading `alerts` at all would
+    // mean the alert branch was taken.
+    expect(state.selectCount).toBe(1);
+  });
+
+  it('probe present -> still_pending: the fix has not taken yet', async () => {
+    state.selectQueue.push([subjectWatchRow({ createdAt: new Date() })]);
+    probeSweepSubjectMock.mockResolvedValueOnce('present');
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'still_pending' });
+    expect(state.updateCount).toBe(0);
+  });
+
+  it('probe unknown -> still_pending: never cancelled, and never inconclusive before the ceiling', async () => {
+    state.selectQueue.push([subjectWatchRow({ createdAt: new Date() })]);
+    probeSweepSubjectMock.mockResolvedValueOnce('unknown');
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'still_pending' });
+    expect(state.updateCount).toBe(0);
+  });
+
+  it('unknown for RECOVERY_TIMEOUT_HOURS -> inconclusive, and no evidence row', async () => {
+    const old = new Date(Date.now() - (RECOVERY_TIMEOUT_HOURS * 60 * 60 * 1000 + 60_000));
+    state.selectQueue.push([subjectWatchRow({ createdAt: old })]);
+    probeSweepSubjectMock.mockResolvedValueOnce('unknown');
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'timed_out' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'inconclusive' });
+    // `inconclusive` grades nothing — phase 1 never writes evidence at all.
+    expect(state.insertCount).toBe(0);
+  });
+
+  it('consults the probe on every verdict and never reaches the cancel path', async () => {
+    // Review finding, PR #5889: asserting only `!== 'cancelled'` would pass
+    // with this whole branch reverted, since a subject watch has a null
+    // alert_id and the alert branch's `dismissed -> cancelled` transition
+    // needs a readable alert row. The discriminating half is that the probe
+    // WAS consulted — reverted code never calls it at all.
+    for (const verdict of ['present', 'cleared', 'unknown'] as const) {
+      resetDbState();
+      probeSweepSubjectMock.mockClear();
+      state.selectQueue.push([subjectWatchRow({ createdAt: new Date() })]);
+      probeSweepSubjectMock.mockResolvedValueOnce(verdict);
+
+      const result = await checkFixWatchPhase1(WATCH_ID);
+
+      expect(probeSweepSubjectMock).toHaveBeenCalledTimes(1);
+      expect(result.action).not.toBe('cancelled');
+    }
+  });
+
+  it('a subject watch already watching WITH recovery observed re-reports recovered without probing', async () => {
+    state.selectQueue.push([subjectWatchRow({ state: 'watching', recoveryObservedAt: new Date() })]);
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recovered' });
+    expect(probeSweepSubjectMock).not.toHaveBeenCalled();
+  });
+
+  it('an ALERT watch never probes — the two branches are exclusive', async () => {
+    state.selectQueue.push([watchRow()], [{ status: 'resolved' }]);
+
+    const result = await checkFixWatchPhase1(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recovered' });
+    expect(probeSweepSubjectMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5751 W02 (#5753) — phase 2.
+// ---------------------------------------------------------------------------
+describe('checkFixWatchPhase2 — subject watch', () => {
+  const recoveredAt = new Date('2026-09-13T00:00:00Z');
+
+  it('probe cleared -> held_qualified, one `verified` evidence row on the policy_key namespace', async () => {
+    state.selectQueue.push([subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })]);
+    probeSweepSubjectMock.mockResolvedValueOnce('cleared');
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'held_qualified' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'held_qualified' });
+    // recordWatchVerdictEvidence is UNCHANGED by this wave: source_kind
+    // 'intent' already maps to namespace 'policy_key', the namespace the
+    // graduation ladder reads.
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({
+        metric: 'verified', namespace: 'policy_key', opKey: OP_KEY,
+        sourceKind: 'watch', sourceId: `${WATCH_ID}:${OP_KEY}`, runId: RUN_ID,
+      }),
+    ]);
+    // No alert lookup at any point.
+    expect(state.selectCount).toBe(1);
+  });
+
+  it('probe present after an observed clear -> recurred, one evidence row per op key', async () => {
+    state.selectQueue.push(
+      [subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ name: 'Service Restarter', orgId: null, partnerId: PARTNER_ID }], // agent
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }], // run
+      [], // episode guard
+    );
+    probeSweepSubjectMock.mockResolvedValueOnce('present');
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'recurred' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'recurred' });
+    // There is no recurrence ALERT behind a subject recurrence.
+    expect(state.updateSets[0]).not.toHaveProperty('recurrenceAlertId');
+    expect(state.insertValues[0]).toEqual([
+      expect.objectContaining({ metric: 'recurred', namespace: 'policy_key', opKey: OP_KEY }),
+    ]);
+  });
+
+  it('probe unknown -> inconclusive, NO evidence row and never `failed`', async () => {
+    // A device that is offline, or a probe that cannot answer, is not a
+    // failed remediation.
+    state.selectQueue.push([subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })]);
+    probeSweepSubjectMock.mockResolvedValueOnce('unknown');
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'inconclusive' });
+    expect(state.updateSets[0]).toMatchObject({ state: 'inconclusive' });
+    expect(state.insertCount).toBe(0);
+    expect(createNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('a recurred subject watch auto-demotes the colon key exactly as a recurred alert watch does', async () => {
+    state.selectQueue.push(
+      [subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ name: 'Service Restarter', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      [],
+    );
+    probeSweepSubjectMock.mockResolvedValueOnce('present');
+    demoteSupervisedKeyMock.mockResolvedValueOnce({ revoked: true, orgAgentId: 'org-agent-1' });
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(demoteSupervisedKeyMock).toHaveBeenCalledTimes(1);
+    expect(demoteSupervisedKeyMock.mock.calls[0]![0]).toMatchObject({
+      opKey: OP_KEY, reason: 'recurrence', watchId: WATCH_ID, intentId: INTENT_ID,
+    });
+    expect(notifyDemotionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('the recurrence notification and attention alert are keyed on (run, watch) — a subject recurrence has no recurrence alert id to key on', async () => {
+    state.selectQueue.push(
+      [subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ name: 'Service Restarter', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: { userIds: [USER_ID] } } } }],
+      [], // episode guard — nothing raised yet
+    );
+    probeSweepSubjectMock.mockResolvedValueOnce('present');
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    expect(createNotificationMock.mock.calls[0]![0]).toMatchObject({
+      dedupeKey: `fix-watch-${RUN_ID}-${WATCH_ID}-recurred`,
+    });
+    // insertValues[0] is the watch-verdict evidence array, written inside the
+    // winning CAS; the attention alert is the SEPARATE later insert.
+    const alertValues = state.insertValues[1] as Record<string, unknown>;
+    expect(alertValues).toMatchObject({
+      deviceId: DEVICE_ID,
+      configItemName: 'ai_agent_fix_watch',
+      context: expect.objectContaining({ watchId: WATCH_ID, runId: RUN_ID, recurrenceAlertId: null }),
+    });
+    // The operator needs to know WHICH condition came back.
+    expect(String(alertValues.message)).toContain('service_down:MSSQLSERVER');
+  });
+
+  it('skips the attention alert when a sibling of the same episode already raised it', async () => {
+    state.selectQueue.push(
+      [subjectWatchRow({ state: 'watching', recoveryObservedAt: recoveredAt })],
+      [{ name: 'Service Restarter', orgId: null, partnerId: PARTNER_ID }],
+      [{ policySnapshot: { effective: { recipients: {} } } }],
+      [{ id: 'already-raised' }], // episode guard hit
+    );
+    probeSweepSubjectMock.mockResolvedValueOnce('present');
+    resolveRecipientUserIdsMock.mockResolvedValueOnce([]);
+
+    await checkFixWatchPhase2(WATCH_ID);
+
+    // Only the watch-verdict evidence insert — no second attention alert.
+    expect(state.insertCount).toBe(1);
+    // The guard probes on the watch id, not on a recurrence alert id.
+    expect(sqlText(state.selectWheres[3])).toContain('watchId');
+  });
+
+  it('a subject watch that never reached `watching` is not_found — the recoveryObservedAt invariant is unchanged', async () => {
+    state.selectQueue.push([subjectWatchRow({ state: 'watching', recoveryObservedAt: null })]);
+
+    const result = await checkFixWatchPhase2(WATCH_ID);
+
+    expect(result).toEqual({ action: 'not_found' });
+    expect(probeSweepSubjectMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('checkFixWatchPhase2', () => {
   it('not_found for a missing watch', async () => {
     state.selectQueue.push([]);

@@ -161,7 +161,11 @@
     "timesheet": "Feuille de temps",
     "vulnerabilities": "Vulnérabilités",
     "workspace": "Assistant IA",
-    "aiAgentsFleetDesign": "Conception de flotte"
+    "aiAgentsFleetDesign": "Conception de flotte",
+    "agreementTemplates": "Modèles de convention",
+    "agreementTemplateDetail": "Modèle de convention",
+    "agreementTemplateNew": "Nouveau modèle de convention",
+    "signedAgreements": "Conventions signées"
   },
   "layout": {
     "metaDescription": "Breeze RMM - Supervision et gestion à distance",
@@ -224,6 +228,10 @@
       "deliverableTemplates": {
         "title": "Modèles de livrables",
         "description": "Définissez une offre de service une seule fois et appliquez ses livrables à tout client."
+      },
+      "ticketChecklistTemplates": {
+        "title": "Modèles de liste de contrôle de tickets",
+        "description": "Des listes d'étapes réutilisables que vos techniciens peuvent appliquer à n'importe quel ticket."
       }
     }
   },

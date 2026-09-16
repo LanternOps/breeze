@@ -408,6 +408,12 @@ export const CUSTOM_ORG_REWRITE_TABLES = [
   'ticket_outbox',
   'ticket_attachments',
   'ticket_email_links',
+  // ticket_checklist_items (#5783 W01): rewritten through the tickets join,
+  // appended last to extend — not reorder — the shared lock order. Its
+  // composite (ticket_id, org_id) FK is DEFERRABLE INITIALLY IMMEDIATE, so
+  // moveOrg.ts also names ticket_checklist_items_ticket_org_fk in its
+  // SET CONSTRAINTS … DEFERRED statement.
+  'ticket_checklist_items',
 ] as const;
 
 /**
@@ -1200,6 +1206,11 @@ coreRoutes.get(
         // silently dropped (#800/#1273/#2138) — asserted by
         // core.list-response-shape.test.ts.
         possibleReplacementOfDeviceId: d.possibleReplacementOfDeviceId ?? null,
+        // #5701 follow-up: purchaseDate/purchaseDateSource are selected above
+        // but were dropped here — the same list-mapper failure mode as
+        // #800/#1273/#2138 (see the comment above).
+        purchaseDate: d.purchaseDate ?? null,
+        purchaseDateSource: d.purchaseDateSource ?? null,
         batteryStatus: d.batteryStatus ?? null,
         activeVpns: d.activeVpns ?? null,
         linkGroupId: d.linkGroupId ?? null,

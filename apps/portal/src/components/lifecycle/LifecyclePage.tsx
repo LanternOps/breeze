@@ -31,9 +31,14 @@ function withRetryHint(message: string, seconds: number | null): string {
 export function LifecyclePage({
   initialRun,
   initialSummary,
+  // Defaults true (matching LifecyclePlanTable's own default) so an omitted
+  // prop keeps the pre-#5880 link behavior for any caller that hasn't
+  // threaded the flag through yet.
+  enableSelfService = true,
 }: {
   initialRun: LifecycleRun | null;
   initialSummary: HardwareLifecycleSummary | null;
+  enableSelfService?: boolean;
 }) {
   const [run, setRun] = useState<LifecycleRun | null>(initialRun);
   const [summary, setSummary] = useState<HardwareLifecycleSummary | null>(initialSummary);
@@ -123,6 +128,7 @@ export function LifecyclePage({
         title={workstationsHeading}
         ruleSentence={`We plan to replace a computer ${replaceAgeYears} years after purchase, or when its warranty ends if it is still covered past that point.`}
         rows={workstations}
+        enableSelfService={enableSelfService}
       />
       {servers.length > 0 && (
         <LifecyclePlanTable
@@ -130,6 +136,7 @@ export function LifecyclePage({
           title="Servers"
           ruleSentence={`We plan to replace a server ${serverReplaceAgeYears} years after purchase, or when its warranty ends if it is still covered past that point. Server replacements are scheduled outside your business hours.`}
           rows={servers}
+          enableSelfService={enableSelfService}
         />
       )}
 

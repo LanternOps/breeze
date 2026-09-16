@@ -28,6 +28,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/backupipc"
 	"github.com/breeze-rmm/agent/internal/collectors"
 	"github.com/breeze-rmm/agent/internal/config"
+	"github.com/breeze-rmm/agent/internal/desktopfence"
 	"github.com/breeze-rmm/agent/internal/executor"
 	"github.com/breeze-rmm/agent/internal/health"
 	"github.com/breeze-rmm/agent/internal/helper"
@@ -220,8 +221,15 @@ type SecurityCapabilities struct {
 	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
 	// session's revocation lease alive and stops streaming when it lapses. The
 	// API refuses to start a desktop session against an agent reporting 0.
-	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
-	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	RevocationLeaseProtocolVersion int `json:"revocationLeaseProtocolVersion,omitempty"`
+	// DesktopFenceProtocolVersion (SEC-038 W06) declares that this build keeps
+	// the durable per-session start/terminal generation fence (W04/W05): it
+	// refuses any desktop start not strictly newer than everything it has
+	// already seen, and refuses all starts after a terminal. Behind
+	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
+	// against an agent reporting 0, same shape as the revocation-lease gate.
+	DesktopFenceProtocolVersion int                      `json:"desktopFenceProtocolVersion,omitempty"`
+	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -365,8 +373,8 @@ type Heartbeat struct {
 	// fields above (see lifecycleMode()); read every beat by
 	// recoveryMarker() and cleared once the server acks it.
 	recoveryMarkerVal *RecoveryMarker
-	securityScanner    *security.SecurityScanner
-	wsClient           *websocket.Client
+	securityScanner   *security.SecurityScanner
+	wsClient          *websocket.Client
 	// backupOutbox persists terminal backup results that failed to send over
 	// the WS connection, so a transient blip doesn't orphan the job
 	// server-side. Flushed on WS reconnect (see SetWebSocketClient). Never
@@ -461,6 +469,21 @@ type Heartbeat struct {
 	// absolute terminal tombstone. See desktop_fence.go. Carries its own lock
 	// and its zero value is ready to use, so it is never nil.
 	desktopStartFence desktopFence
+	// desktopFenceSyncTimeout bounds one fence resync round trip; zero means
+	// defaultDesktopFenceSyncTimeout. Tests shrink it.
+	desktopFenceSyncTimeout time.Duration
+	// leaseSyncRequester sends a nonce-correlated lease renewal for a fence
+	// resync. Defaults to requestRevocationLeaseSync; a nil requester means
+	// no control plane, which means no admission.
+	leaseSyncRequester func(sessionID, nonce string) error
+	// desktopFenceQueue serialises fence updates off the WS read pump: the
+	// hook must not block, and a fence write touches the disk.
+	desktopFenceQueue      chan websocket.RevocationLeaseMessage
+	desktopFenceWorkerOnce sync.Once
+	// helperFenceSynced records which helper sessions have acknowledged a
+	// fence seed, so the seed costs one round trip per helper rather than one
+	// per start. Cleared when the helper session ends.
+	helperFenceSynced map[string]bool
 
 	// desktopTargets maps remote desktop session id -> explicitly targeted
 	// Windows session ("" for untargeted/legacy connects) so the stop path can
@@ -1108,6 +1131,13 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 	// watchdog lives in the helper process, so its renewals arrive here as
 	// ipc.TypeDesktopLeaseRenew and are forwarded onto the command socket.
 	h.leaseRenewRequester = h.requestRevocationLeaseRenew
+	h.leaseSyncRequester = h.requestRevocationLeaseSync
+
+	// SEC-038: make the desktop start fence durable. A restart must not forget
+	// a tombstone; anything the file does not cover fails closed through the
+	// resync above.
+	h.desktopStartFence.attachStore(desktopfence.NewStore(
+		filepath.Join(config.GetDataDir(), "desktop-fence-state.json")))
 
 	// Clean up any orphaned Screen Sharing left running from a previous crash.
 	h.tunnelMgr.CleanupOrphanedVNC()
@@ -1153,6 +1183,20 @@ func (h *Heartbeat) SetWebSocketClient(ws *websocket.Client) {
 // helper that owns the session, and falls back to the direct manager otherwise.
 func (h *Heartbeat) applyRevocationLeaseAnswer(msg websocket.RevocationLeaseMessage) {
 	if msg.SessionID == "" {
+		return
+	}
+	// SEC-038: every answer feeds the durable start fence — this is also the
+	// resync channel a start for an unknown session waits on. Queued, never
+	// applied inline: this callback runs on the WS read pump and a fence write
+	// hits the disk.
+	h.enqueueDesktopFenceAnswer(msg)
+
+	// "I cannot answer right now" is not a renewal and not a revocation. It
+	// ends a session whose FIRST renewal it is (owner decision 2) and is
+	// otherwise the silence the grace window budgets for.
+	if msg.Unavailable {
+		h.desktopMgr.NoteLeaseUnavailable(msg.SessionID)
+		go h.forwardRevocationLeaseToHelper(msg)
 		return
 	}
 	// The answer must reach whichever process actually hosts the session. On a
@@ -1226,6 +1270,7 @@ func (h *Heartbeat) forwardRevocationLeaseToHelper(msg websocket.RevocationLease
 		HardDeadlineUnixMs: msg.HardDeadlineUnixMs,
 		Revoked:            msg.Revoked,
 		Reason:             msg.Reason,
+		Unavailable:        msg.Unavailable,
 	}
 	if err := owner.SendNotify("desk-lease-"+msg.SessionID, ipc.TypeDesktopLeaseUpdate, update); err != nil {
 		log.Warn("failed to forward revocation lease update to the owning helper",
@@ -7464,5 +7509,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		PeripheralPolicyProtocolVersion: 2,
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
+		DesktopFenceProtocolVersion:     1,
 	}
 }

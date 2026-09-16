@@ -43,6 +43,11 @@ const TARGET_GLOBS = [
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
+  // Execution plane W05 (#5716) — the per-org AI external-processing consent
+  // switch and the attach-artifact-to-ticket control. Both mutate through
+  // runAction; the count assertion below was bumped by exactly these two.
+  'src/components/settings/OrgAiProcessingToggle.tsx',
+  'src/components/aiAgents/AttachArtifactToTicket.tsx',
   // Account board (W02): org create and restore go through runAction in the
   // page; the drag/arrow-key reorder PATCH lives in its own hook. Both are
   // listed because TARGET_GLOBS is a literal file list, not directory-wide.
@@ -169,10 +174,11 @@ const TARGET_GLOBS = [
   // never guarded, so a future bare mutation would ship with no CI signal.
   'src/components/billing/quotes/QuoteActions.tsx',
   'src/components/billing/quotes/QuoteDocument.tsx',
-  'src/components/contracts/TemplateEditor.tsx',
-  'src/components/contracts/DocumentsTab.tsx',
-  'src/components/contracts/ContractDocumentsSection.tsx',
-  'src/components/contracts/TemplatesTab.tsx',
+  // W03 moved these three into the /agreements area; ContractDocumentsSection
+  // was deleted (contract detail now embeds SignedAgreementsPage).
+  'src/components/agreements/AgreementTemplateEditor.tsx',
+  'src/components/agreements/SignedAgreementsPage.tsx',
+  'src/components/agreements/TemplatesPage.tsx',
   'src/components/settings/PartnerCompanyTab.tsx',
   // Invoice/quote money-moment hosts (issue / send / delete / title / line
   // mutations): every mutation already routes through runAction, but the files
@@ -626,8 +632,12 @@ describe('no silent mutations in targeted set', () => {
     // #5723) replaces the deleted OrganizationsPage.tsx entry with two files
     // (OrganizationsBoardPage.tsx, useManualOrder.ts), so the count is now 131.
     // Monitor Activity tab (#5287 W03 / #5290) adds MonitorActivityTab.tsx, so
-    // the count is now 132.
-    expect(absoluteFiles.length).toBe(132);
+    // the count is now 132. Agreements W03 (#5825) moves three contracts files
+    // into components/agreements/ and DELETES ContractDocumentsSection.tsx
+    // (contract detail embeds the shared list instead), so the count is 131.
+    // Execution plane W05 (#5716) adds two adopters (AiRunCard attach-to-ticket
+    // and the per-org external-processing switch), so the count is 133.
+    expect(absoluteFiles.length).toBe(133);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

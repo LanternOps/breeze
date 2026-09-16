@@ -2766,6 +2766,41 @@ describe('outboundNetworkPolicyVersion capability handshake (Wave 6)', () => {
     expect(updateArg.rollbackProtocolVersion).toBe(expectedRollback);
     expect(updateArg.pamLifetimeProtocolVersion).toBe(expectedPam);
   });
+
+  // SEC-038 W06 (#5537): desktopFenceProtocolVersion is recorded non-sticky on
+  // every beat exactly like revocationLeaseProtocolVersion — omitted, zero,
+  // unknown, fractional and string values all persist as 0 so an agent
+  // downgrade stops the fence gate trusting a stale claim.
+  it.each([
+    { name: 'recognized version 1', capabilities: { desktopFenceProtocolVersion: 1, revocationLeaseProtocolVersion: 1 }, expectedFence: 1, expectedLease: 1 },
+    { name: 'omitted capability object', capabilities: undefined, expectedFence: 0, expectedLease: 0 },
+    { name: 'omitted fence key (pre-W06 agent)', capabilities: { revocationLeaseProtocolVersion: 1 }, expectedFence: 0, expectedLease: 1 },
+    { name: 'explicit zero downgrade', capabilities: { desktopFenceProtocolVersion: 0, revocationLeaseProtocolVersion: 0 }, expectedFence: 0, expectedLease: 0 },
+    { name: 'unknown integer version', capabilities: { desktopFenceProtocolVersion: 2, revocationLeaseProtocolVersion: 1 }, expectedFence: 0, expectedLease: 1 },
+    { name: 'fractional version', capabilities: { desktopFenceProtocolVersion: 1.5, revocationLeaseProtocolVersion: 1 }, expectedFence: 0, expectedLease: 1 },
+    { name: 'string version', capabilities: { desktopFenceProtocolVersion: '1', revocationLeaseProtocolVersion: 1 }, expectedFence: 0, expectedLease: 1 },
+  ])('persists tolerant non-sticky desktop fence capability: $name', async ({
+    capabilities,
+    expectedFence,
+    expectedLease,
+  }) => {
+    const setSpy = vi.fn(() => ({ where: vi.fn(() => whereResultWithReturning()) }));
+    await setupMocks(setSpy);
+
+    const body = capabilities === undefined
+      ? minimalHeartbeatBody
+      : { ...minimalHeartbeatBody, securityCapabilities: capabilities };
+    const resp = await buildApp().request('/agents/device-1/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(resp.status).toBe(200);
+    const updateArg = (setSpy.mock.calls as any[])[0]?.[0] as Record<string, unknown>;
+    expect(updateArg.desktopFenceProtocolVersion).toBe(expectedFence);
+    expect(updateArg.revocationLeaseProtocolVersion).toBe(expectedLease);
+  });
 });
 
 // ---------------------------------------------------------------------
