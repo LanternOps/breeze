@@ -416,10 +416,10 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
   }, [fetchOrgDetails]);
 
   const handleSaveSettings = useCallback(async (section: string, data: Record<string, unknown>) => {
-    if (!effectiveOrgId) return;
+    if (!effectiveOrgId) return false;
     if (isArchived) {
       setError(t('orgSettingsPage.archived.saveBlocked'));
-      return;
+      return false;
     }
 
     try {
@@ -435,7 +435,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             method: 'PATCH',
             body: JSON.stringify({ settings: updatedSettings })
           }),
-        successMessage: t('orgSettingsPage.toasts.settingsSaved'),
+        successMessage: section === 'branding' ? undefined : t('orgSettingsPage.toasts.settingsSaved'),
         errorFallback: t('orgSettingsPage.errors.saveSettings'),
         onUnauthorized: () => void navigateTo('/login', { replace: true })
       });
@@ -445,11 +445,13 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         hasUnsavedChanges: false,
         lastSavedAt: formatTime(new Date())
       });
+      return true;
     } catch (err) {
       // runAction already toasts non-401 ActionErrors; only surface unexpected errors.
       if (!(err instanceof ActionError)) {
         setError(err instanceof Error ? err.message : t('orgSettingsPage.errors.saveSettings'));
       }
+      return false;
     }
   }, [effectiveOrgId, orgDetails, isArchived, fetchOrgDetails, t]);
 
@@ -595,7 +597,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
             orgId={effectiveOrgId}
             branding={orgDetails?.settings?.branding}
             onDirty={handleDirty}
-            onSave={(data) => handleSave('branding', data)}
+            onSave={(data) => handleSaveSettings('branding', data)}
             locked={locked}
           />
         );

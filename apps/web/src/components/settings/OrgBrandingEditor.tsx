@@ -29,7 +29,7 @@ type OrgBrandingEditorProps = {
   orgId?: string;
   branding?: BrandingData;
   onDirty?: () => void;
-  onSave?: (data: BrandingData) => void;
+  onSave?: (data: BrandingData) => boolean | void | Promise<boolean | void>;
   locked?: string[];
 };
 
@@ -159,17 +159,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
       theme,
       portalSubdomain
     };
-    onSave?.(data);
-
-    // customCss (#5952): canonical write path is portal_branding via
-    // orgPortalSettings, not organizations.settings.branding — saved here as
-    // a separate, sanitised-server-side call so a rejection (disallowed CSS
-    // pattern, over the length cap) surfaces as its own toast rather than
-    // getting silently absorbed into the branding-fields save above.
-    if (!orgId) {
-      setStatusMessage(t('orgBrandingEditor.saved'));
-      return;
-    }
+    setStatusMessage(null);
 
     if (customCssLoadFailed) {
       // The initial load never confirmed what's actually persisted, so
@@ -182,18 +172,25 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
 
     setSavingCustomCss(true);
     try {
-      await runAction({
-        request: () => fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`, {
-          method: 'PATCH',
-          body: JSON.stringify({ customCss: customCss.trim() ? customCss : null })
-        }),
-        successMessage: t('orgBrandingEditor.saved'),
-        errorFallback: t('orgBrandingEditor.customCss.saveError'),
-        onUnauthorized: () => void navigateTo('/login', { replace: true })
-      });
+      // Validate/save CSS first, then await the remaining branding settings.
+      // Neither individual write should announce success for a partial save.
+      if (orgId) {
+        await runAction({
+          request: () => fetchWithAuth(`/orgs/organizations/${orgId}/portal-settings`, {
+            method: 'PATCH',
+            body: JSON.stringify({ customCss: customCss.trim() ? customCss : null })
+          }),
+          errorFallback: t('orgBrandingEditor.customCss.saveError'),
+          onUnauthorized: () => void navigateTo('/login', { replace: true })
+        });
+      }
+      if (await onSave?.(data) === false) return;
+      showToast({ message: t('orgBrandingEditor.saved'), type: 'success' });
       setStatusMessage(t('orgBrandingEditor.saved'));
     } catch (err) {
-      if (!(err instanceof ActionError)) throw err;
+      if (!(err instanceof ActionError)) {
+        showToast({ message: t('orgBrandingEditor.customCss.saveError'), type: 'error' });
+      }
     } finally {
       setSavingCustomCss(false);
     }
@@ -223,6 +220,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
           </button>
           <button
             type="button"
+            data-testid="branding-save"
             onClick={() => void handleSave()}
             disabled={savingCustomCss}
             className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
@@ -234,7 +232,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
       </div>
 
       {statusMessage ? (
-        <div className="rounded-md border bg-muted/50 px-4 py-2 text-sm text-muted-foreground">
+        <div data-testid="branding-save-status" className="rounded-md border bg-muted/50 px-4 py-2 text-sm text-muted-foreground">
           {statusMessage}
         </div>
       ) : null}
@@ -402,6 +400,7 @@ export default function OrgBrandingEditor({ organizationName, orgId, branding, o
           <div className="space-y-2 rounded-lg border bg-muted/40 p-4">
             <div className="text-sm font-medium">{t('orgBrandingEditor.customCss.title')}</div>
             <textarea
+              data-testid="branding-custom-css"
               value={customCss}
               disabled={isLocked('customCss') || customCssLoadFailed}
               onChange={event => {

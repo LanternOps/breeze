@@ -26,7 +26,11 @@ vi.mock('@/lib/navigation', () => ({
 
 // Stub the heavy child editors — they're unrelated to name editing, and several
 // pull in their own fetches/effects; stubbing keeps these tests focused and fast.
-vi.mock('./OrgBrandingEditor', () => ({ default: () => <div data-testid="branding-editor" /> }));
+const brandingProps: Array<{ onSave: (data: Record<string, unknown>) => unknown }> = [];
+vi.mock('./OrgBrandingEditor', () => ({ default: (props: { onSave: (data: Record<string, unknown>) => unknown }) => {
+  brandingProps.push(props);
+  return <div data-testid="branding-editor" />;
+} }));
 vi.mock('./OrgDefaultsEditor', () => ({ default: () => <div data-testid="defaults-editor" /> }));
 vi.mock('./OrgNotificationSettings', () => ({ default: () => <div data-testid="notifications" /> }));
 vi.mock('./OrgSecuritySettings', () => ({ default: ({ onDirty, onSave }: {
@@ -379,6 +383,22 @@ describe('OrgSettingsPage sidebar nav & save-state honesty', () => {
     expect(window.location.hash).toBe('#branding');
     expect(screen.getByRole('link', { name: /^branding$/i }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByTestId('branding-editor')).not.toBeNull();
+  });
+
+  it.each([true, false])('returns branding save success (%s) without an independent success toast', async (ok) => {
+    window.location.hash = '#branding';
+    fetchWithAuthMock.mockImplementation(async (url, init) => {
+      if (url.endsWith('/effective-settings')) return makeJsonResponse({ locked: [] });
+      if (init?.method === 'PATCH') return makeJsonResponse(ok ? {} : { error: 'Branding rejected' }, ok);
+      return makeJsonResponse(orgDetails);
+    });
+    render(<OrgSettingsPage orgId="org-1" />);
+    await screen.findByTestId('branding-editor');
+    let result: unknown;
+    await act(async () => { result = await brandingProps.at(-1)!.onSave({ primaryColor: '#123456' }); });
+    expect(result).toBe(ok);
+    expect(showToastMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    if (!ok) expect(showToastMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
   });
 
   it('deep-links the hash to the right section on mount', async () => {

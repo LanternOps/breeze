@@ -210,3 +210,56 @@ describe('OrgBrandingEditor', () => {
     });
   });
 });
+
+
+describe('OrgBrandingEditor coordinated save (#6030)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockImplementation(async (_input, init) => makeJsonResponse(
+      init?.method === 'PATCH' ? { success: true } : { data: { customCss: 'body{}' } }
+    ));
+  });
+
+  it('does not save branding or report success when CSS is rejected', async () => {
+    fetchMock.mockImplementation(async (_input, init) => init?.method === 'PATCH'
+      ? makeJsonResponse({ error: 'Custom CSS contains a disallowed pattern: @import' }, false, 400)
+      : makeJsonResponse({ data: { customCss: 'body{}' } }));
+    const onSave = vi.fn();
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
+    const css = await screen.findByTestId('branding-custom-css');
+    await waitFor(() => expect(css).toHaveValue('body{}'));
+    fireEvent.change(css, { target: { value: '@import "evil.css";' } });
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: 'Custom CSS contains a disallowed pattern: @import'
+    })));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByTestId('branding-save-status')).toBeNull();
+  });
+
+  it('waits for both writes and reports only one success', async () => {
+    let finish!: () => void;
+    const onSave = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('branding-custom-css')).toHaveValue('body{}'));
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(showToast).not.toHaveBeenCalled();
+    expect(screen.getByTestId('branding-save')).toBeDisabled();
+    finish();
+    await waitFor(() => expect(showToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: 'success' })));
+    expect(screen.getByTestId('branding-save-status')).toHaveTextContent('Branding settings saved.');
+  });
+
+  it('does not report success when the branding write fails after CSS succeeds', async () => {
+    const onSave = vi.fn(async () => false);
+    render(<OrgBrandingEditor organizationName="Acme" orgId={ORG_ID} onSave={onSave} />);
+    await waitFor(() => expect(screen.getByTestId('branding-custom-css')).toHaveValue('body{}'));
+    fireEvent.click(screen.getByTestId('branding-save'));
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByTestId('branding-save')).not.toBeDisabled());
+    expect(showToast).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
+    expect(screen.queryByTestId('branding-save-status')).toBeNull();
+  });
+});

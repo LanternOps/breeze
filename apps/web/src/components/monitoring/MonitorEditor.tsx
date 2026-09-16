@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -14,12 +14,14 @@ import {
   type MonitorDeliveryMode,
 } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
 import { extractApiError } from '@/lib/apiError';
 import { asList } from '@/lib/asList';
 import { runAction, handleActionError, ActionError } from '@/lib/runAction';
 import { useDefaultOwnerScope } from '@/hooks/useDefaultOwnerScope';
 import { BuiltInBadge } from './BuiltInBadge';
+import { ScopeBadge } from '../shared/ScopeBadge';
 import ActionsEditor, {
   type Script,
   type NotificationChannel,
@@ -47,7 +49,7 @@ type KindMeta = {
 };
 
 type AiAgent = { id: string; name: string };
-type EscalationPolicy = { id: string; name: string };
+type EscalationPolicy = { id: string; name: string; orgId: string | null; partnerId: string | null };
 type Attachment = {
   id: string;
   configPolicyId: string;
@@ -149,6 +151,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const { t } = useTranslation(['monitoring', 'common']);
   const isNew = !monitorId;
   const { isPartnerScope, defaultOwnerScope } = useDefaultOwnerScope();
+  const currentOrgId = useOrgStore((s) => s.currentOrgId);
 
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -175,6 +178,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   // Null for a partner-wide monitor — DeployMonitorDialog falls back to the
   // currently selected org from the org store in that case.
   const [monitorOrgId, setMonitorOrgId] = useState<string | null>(null);
+  const [monitorPartnerId, setMonitorPartnerId] = useState<string | null>(null);
 
   const [hashTab, setHashTab] = useHashState<EditorTab>('settings', tabFromHash);
   // The Activity tab needs a saved monitor id (#5290); an unsaved monitor
@@ -201,7 +205,28 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
   const watchKind = watch('kind');
   const watchAiAgentId = watch('aiAgentId');
   const watchDeliveryMode = watch('deliveryMode');
+  const watchOwnerScope = watch('ownerScope');
+  const watchEscalationPolicyId = watch('escalationPolicyId');
   const isLoading = saving || isSubmitting;
+  const isPartnerOwned = isNew ? watchOwnerScope === 'partner' : monitorPartnerId !== null;
+  const ownerOrgId = isNew ? currentOrgId : monitorOrgId;
+  const compatibleEscalationPolicies = useMemo(() => escalationPolicies.filter((policy) => {
+    if (policy.orgId === null && policy.partnerId !== null) {
+      // The policy endpoint is tenant-scoped; saved partner-wide monitors
+      // additionally pin the choice to their persisted owner.
+      return !isPartnerOwned || isNew || policy.partnerId === monitorPartnerId;
+    }
+    return !isPartnerOwned && policy.orgId === ownerOrgId;
+  }), [escalationPolicies, isPartnerOwned, isNew, monitorPartnerId, ownerOrgId]);
+
+  useEffect(() => {
+    // Changing create ownership must not submit a now-hidden org policy.
+    if (isNew && watchEscalationPolicyId
+      && escalationPolicies.some((policy) => policy.id === watchEscalationPolicyId)
+      && !compatibleEscalationPolicies.some((policy) => policy.id === watchEscalationPolicyId)) {
+      setValue('escalationPolicyId', null, { shouldDirty: true });
+    }
+  }, [isNew, watchEscalationPolicyId, escalationPolicies, compatibleEscalationPolicies, setValue]);
 
   const fetchKinds = useCallback(async () => {
     try {
@@ -287,6 +312,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
       setAttachments(Array.isArray(monitor.attachments) ? monitor.attachments : []);
       setBuiltinKey(typeof monitor.builtinKey === 'string' ? monitor.builtinKey : null);
       setMonitorOrgId(typeof monitor.orgId === 'string' ? monitor.orgId : null);
+      setMonitorPartnerId(typeof monitor.partnerId === 'string' ? monitor.partnerId : null);
       reset({
         name: monitor.name ?? '',
         description: monitor.description ?? '',
@@ -370,6 +396,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         request: () => fetchWithAuth(url, { method, body: JSON.stringify(payload) }),
         errorFallback: t('monitoring:editor.errors.save'),
         successMessage: t('monitoring:editor.saved'),
+        friendly: (_code, message) => message.replace(/^INVALID_MONITOR:\s*/, ''),
         onUnauthorized: UNAUTHORIZED,
       });
       const savedId = data?.data?.id ?? monitorId;
@@ -498,6 +525,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
             <h1 className="text-xl font-semibold tracking-tight">
               {isNew ? t('monitoring:editor.titleNew') : t('monitoring:editor.titleEdit')}
             </h1>
+            {!isNew && <ScopeBadge orgId={monitorOrgId} partnerId={monitorPartnerId} isSystem={false} />}
             {builtinKey && <BuiltInBadge label={t('monitoring:list.builtIn')} hint={t('monitoring:list.builtInHint')} />}
           </div>
           {!isNew && (
@@ -601,7 +629,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
         )}
 
         {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div data-testid="monitor-editor-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {error}
           </div>
         )}
@@ -613,7 +641,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 {t('monitoring:editor.ownerScope.legend')}
               </legend>
               <label className="flex items-center gap-2 text-sm">
-                <input type="radio" value="partner" {...register('ownerScope')} />
+                <input data-testid="monitor-editor-owner-partner" type="radio" value="partner" {...register('ownerScope')} />
                 {t('monitoring:editor.ownerScope.partner')}
               </label>
               <label className="flex items-center gap-2 text-sm">
@@ -851,7 +879,7 @@ export default function MonitorEditor({ monitorId }: MonitorEditorProps) {
                 {...register('escalationPolicyId')}
               >
                 <option value="">—</option>
-                {escalationPolicies.map((policy) => (
+                {compatibleEscalationPolicies.map((policy) => (
                   <option key={policy.id} value={policy.id}>
                     {policy.name}
                   </option>
