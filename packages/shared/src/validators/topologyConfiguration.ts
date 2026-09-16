@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 import { topologyFamilySchema, topologyHostnameSchema, topologyIpSchema, topologyJsonBytes, topologyPortSchema, topologyUtf8KeySchema } from './topologyPrimitives';
 export const topologyStableKeySchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);

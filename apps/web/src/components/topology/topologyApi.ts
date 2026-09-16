@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema } from '@breeze/shared';
+import { graphNodeSchema, graphRelationshipSchema, graphResponseSchema } from '@breeze/shared/validators/topology';
 import { fetchWithAuth } from '../../stores/auth';
 const capability = z.object({ available: z.boolean(), reason: z.string().nullable() });
 export const topologySettingsSchema = z.object({

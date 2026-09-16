@@ -1,4 +1,5 @@
-import { topologySiteSettingsSchema, topologyTemplateOptionsSchema, topologyTemplatePreviewRequestSchema, topologySiteSettingsPatchSchema, type TopologyTemplatePreviewRequest } from '@breeze/shared';
+import { topologySiteSettingsSchema, topologyTemplateOptionsSchema, topologyTemplatePreviewRequestSchema, topologySiteSettingsPatchSchema } from '@breeze/shared/validators/topologyConfiguration';
+import type { TopologyTemplatePreviewRequest } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { topologyRead } from './topologyApi';
 export const topologyConfigurationApi = {

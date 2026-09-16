@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 
 export const topologyUtf8KeySchema = z.string().min(1).refine(s => new TextEncoder().encode(s).length <= 255, 'Maximum 255 UTF-8 bytes');

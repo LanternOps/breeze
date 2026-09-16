@@ -1,4 +1,5 @@
-import { layoutPatchSchema, layoutWriteResultSchema, isLayoutPatchBodySizeAllowed, type LayoutWriteResult, type Position, type TopologyView } from '@breeze/shared';
+import { layoutPatchSchema, layoutWriteResultSchema, isLayoutPatchBodySizeAllowed } from '@breeze/shared/validators/topology';
+import type { LayoutWriteResult, Position, TopologyView } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
 import type { LayoutPosition } from './layoutTypes';

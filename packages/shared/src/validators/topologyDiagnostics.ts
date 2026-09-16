@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 import { diagnosticStateSchema, healthCoverageSchema, healthStatusSchema, topologyRevisionSchema, topologyScopeSchema } from './topology';
 import { topologyRecipeIdSchema, topologyTargetDefinitionSchema } from './topologyConfiguration';

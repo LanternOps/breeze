@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { graphResponseSchema, type GraphResponse, type TopologyView } from '@breeze/shared';
+import { graphResponseSchema } from '@breeze/shared/validators/topology';
+import type { GraphResponse, TopologyView } from '@breeze/shared';
 import { topologyApi, topologyHealthSchema, topologyRead, TopologyReadError } from './topologyApi';
 
 /** Passive reads only. Health updates preserve structure and never trigger layout. */

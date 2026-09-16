@@ -1,3 +1,4 @@
+import './topologyZod';
 import { z } from 'zod';
 
 export const NODE_KINDS = ['endpoint', 'network', 'gateway', 'internet', 'manual'] as const;

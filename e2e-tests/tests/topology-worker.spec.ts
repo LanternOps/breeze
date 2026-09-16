@@ -21,10 +21,7 @@ test('production module worker executes ELK under CSP and preserves pins without
   }
   expect(workers.some((url) => /\/_astro\/layout\.worker-/.test(url))).toBe(true);
   expect(workers.every((url) => new URL(url).origin === new URL(page.url()).origin)).toBe(true);
-  // Zod's optional capability probe is caught under the existing strict CSP.
-  // Report it separately; forbid blocked inline scripts or worker resources.
-  test.info().annotations.push({ type: 'csp-eval-probes', description: JSON.stringify(capture.violations.filter((item: string) => item.includes(': eval '))) });
-  expect(capture.violations.filter((item: string) => !item.includes(': eval '))).toEqual([]); expect(errors).toEqual([]); expect(fixture.mutations).toEqual([]);
+  expect(capture.violations).toEqual([]); expect(errors).toEqual([]); expect(fixture.mutations).toEqual([]);
   await topology.listToggle().click(); await topology.node(fixture.nodeId).click();
   await expect(topology.inspector()).toBeVisible();
   await topology.arrange().click(); expect(fixture.mutations).toEqual([]);

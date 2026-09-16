@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { topologyCollectorsResponseSchema, topologyDiagnosticRunSchema, type CreateTopologyDiagnosticRequest, type TopologyCollectorsResponse, type TopologyDiagnosticRun } from '@breeze/shared';
+import { topologyCollectorsResponseSchema, topologyDiagnosticRunSchema } from '@breeze/shared/validators/topologyDiagnostics';
+import type { CreateTopologyDiagnosticRequest, TopologyCollectorsResponse, TopologyDiagnosticRun } from '@breeze/shared';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction, handleActionError } from '../../lib/runAction';
 import { topologyRead } from './topologyApi';

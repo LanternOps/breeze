@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { topologySiteSettingsSchema, topologyConfigurationSchema, type TopologySiteSettings, type TopologyTemplateVersionList, type TopologyConfigurationPayload as Configuration } from '@breeze/shared';
+import { topologySiteSettingsSchema, topologyConfigurationSchema } from '@breeze/shared/validators/topologyConfiguration';
+import type { TopologySiteSettings, TopologyTemplateVersionList, TopologyConfigurationPayload as Configuration } from '@breeze/shared';
 import { ActionError, handleActionError, runAction } from '../../lib/runAction';
 import { topologyConfigurationApi } from './topologyConfigurationApi';
 import { useOrgStore } from '../../stores/orgStore';

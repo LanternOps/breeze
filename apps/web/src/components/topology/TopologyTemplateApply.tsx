@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { topologyTemplatePreviewSchema, topologyTemplateApplicationSchema, type TopologyTemplatePreview, type TopologyTemplateApplication, type TopologyTemplatePreviewRequest } from '@breeze/shared';
+import { topologyTemplatePreviewSchema, topologyTemplateApplicationSchema } from '@breeze/shared/validators/topologyConfiguration';
+import type { TopologyTemplatePreview, TopologyTemplateApplication, TopologyTemplatePreviewRequest } from '@breeze/shared';
 import { runAction, ActionError, handleActionError } from '../../lib/runAction';
 import { topologyRead } from './topologyApi';
 import { topologyConfigurationApi } from './topologyConfigurationApi';
