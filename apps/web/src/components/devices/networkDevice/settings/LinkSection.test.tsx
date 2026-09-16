@@ -55,8 +55,8 @@ describe('LinkSection — linked asset', () => {
     expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('set manually');
   });
 
-  it('confirms before unlinking, then DELETEs the link and reloads', async () => {
-    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'manual' }} />);
+  it.each(['manual', 'auto'] as const)('confirms before unlinking a %s link, then DELETEs and reloads', async (linkSource) => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource }} />);
 
     fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
     expect(writes()).toHaveLength(0); // opening the dialog must not write
@@ -102,6 +102,22 @@ describe('LinkSection — unlinked asset', () => {
     expect(screen.getByTestId('network-settings-link-suppressed')).toHaveTextContent(/Auto-linking is off/i);
   });
 
+  it('keeps the manual picker open and surfaces link failure inline', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (!init?.method) return Promise.resolve(res({ data: [{ id: 'dev-9', displayName: 'WS-FRONTDESK', status: 'online' }] }));
+      return Promise.resolve(res({ error: 'Device belongs to a different site' }, 400));
+    });
+    render(<LinkSection {...props} />);
+
+    fireEvent.click(screen.getByTestId('network-detail-link-manually'));
+    fireEvent.change(await screen.findByTestId('network-detail-link-manually-select'), { target: { value: 'dev-9' } });
+    fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
+
+    expect(await screen.findByTestId('network-detail-link-manually-error')).toHaveTextContent('Device belongs to a different site');
+    expect(screen.getByTestId('network-detail-link-manually-picker')).toBeInTheDocument();
+    expect(props.onSaved).not.toHaveBeenCalled();
+  });
+
   it('links manually through the mutation hook (POST /discovery/assets/:id/link)', async () => {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       if (!init?.method) return Promise.resolve(res({ data: [{ id: 'dev-9', displayName: 'WS-FRONTDESK', status: 'online' }] }));
@@ -110,6 +126,7 @@ describe('LinkSection — unlinked asset', () => {
     render(<LinkSection {...props} />);
 
     fireEvent.click(screen.getByTestId('network-detail-link-manually'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/devices?siteId=site-1'));
     fireEvent.change(await screen.findByTestId('network-detail-link-manually-select'), { target: { value: 'dev-9' } });
     fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
 

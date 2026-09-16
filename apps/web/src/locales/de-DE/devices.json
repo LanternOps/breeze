@@ -2548,8 +2548,14 @@
           "checks": "Alle diesem Asset zugeordneten Netzwerkprüfungen",
           "topology": "Seine gespeicherte Position auf der Topologiekarte"
         }
-      }
-    }
+      },
+      "openMonitoringSettings": "Überwachungseinstellungen bearbeiten",
+      "openLinkSettings": "Diese Verknüpfung verwalten"
+    },
+    "header": {
+      "settings": "Einstellungen"
+    },
+    "editInSettings": "In den Einstellungen bearbeiten"
   },
   "osIcons": {
     "linux": "Linux",

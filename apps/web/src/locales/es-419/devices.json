@@ -2548,8 +2548,14 @@
           "checks": "Todas las comprobaciones de red vinculadas a este activo",
           "topology": "Su posición guardada en el mapa de topología"
         }
-      }
-    }
+      },
+      "openMonitoringSettings": "Editar la configuración de monitoreo",
+      "openLinkSettings": "Administrar este vínculo"
+    },
+    "header": {
+      "settings": "Configuración"
+    },
+    "editInSettings": "Editar en configuración"
   },
   "osIcons": {
     "linux": "Linux",

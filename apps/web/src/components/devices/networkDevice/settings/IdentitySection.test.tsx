@@ -28,6 +28,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   fetchMock.mockResolvedValue(ok());
   props.onSaved = vi.fn();
+  props.onAnnounce = vi.fn();
 });
 
 describe('IdentitySection', () => {
@@ -88,6 +89,56 @@ describe('IdentitySection', () => {
     expect(screen.getByTestId('network-settings-identity-type-consequence')).toHaveTextContent(
       'Changes the suggested SNMP template',
     );
+  });
+
+  it('changing the type does not PATCH until Save commits the selected type', async () => {
+    render(<IdentitySection {...props} />);
+
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+
+    await waitFor(() => expect(props.onSaved).toHaveBeenCalled());
+    expect(fetchMock).toHaveBeenCalledWith('/discovery/assets/asset-1', expect.objectContaining({ method: 'PATCH' }));
+    expect(patchBody()).toEqual({ assetType: 'router' });
+    await waitFor(() => expect(props.onAnnounce).toHaveBeenCalledWith('Identity saved'));
+  });
+
+  it('Cancel discards a pending type selection without PATCHing', () => {
+    render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-cancel'));
+
+    expect(screen.getByTestId('network-settings-identity-type')).toHaveValue('switch');
+    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('discards a pending type edit if a background refresh returns a different type', () => {
+    const { rerender } = render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+
+    rerender(<IdentitySection {...props} asset={{ ...asset, type: 'printer' }} />);
+
+    expect(screen.getByTestId('network-settings-identity-type')).toHaveValue('printer');
+    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('disables the type select while Save is in flight, then re-enables it', async () => {
+    let resolvePatch!: (response: Response) => void;
+    fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => { resolvePatch = resolve; }));
+    render(<IdentitySection {...props} />);
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
+
+    expect(screen.getByTestId('network-settings-identity-type')).toBeDisabled();
+    expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled();
+    expect(props.onAnnounce).not.toHaveBeenCalled();
+    resolvePatch(ok());
+
+    await waitFor(() => expect(screen.getByTestId('network-settings-identity-type')).toBeEnabled());
+    expect(props.onSaved).toHaveBeenCalledOnce();
   });
 
   it('groups the type options and offers exactly the twelve the API accepts', () => {

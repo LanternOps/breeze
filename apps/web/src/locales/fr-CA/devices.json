@@ -2548,8 +2548,14 @@
           "checks": "Toutes les vérifications réseau associées à cet actif",
           "topology": "Sa position enregistrée sur la carte de topologie"
         }
-      }
-    }
+      },
+      "openMonitoringSettings": "Modifier les paramètres de surveillance",
+      "openLinkSettings": "Gérer ce lien"
+    },
+    "header": {
+      "settings": "Paramètres"
+    },
+    "editInSettings": "Modifier dans les paramètres"
   },
   "osIcons": {
     "linux": "Linux",

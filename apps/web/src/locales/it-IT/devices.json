@@ -2548,8 +2548,14 @@
           "checks": "Tutti i controlli di rete associati a questa risorsa",
           "topology": "La sua posizione salvata sulla mappa della topologia"
         }
-      }
-    }
+      },
+      "openMonitoringSettings": "Modifica le impostazioni di monitoraggio",
+      "openLinkSettings": "Gestisci questo collegamento"
+    },
+    "header": {
+      "settings": "Impostazioni"
+    },
+    "editInSettings": "Modifica nelle impostazioni"
   },
   "osIcons": {
     "linux": "Linux",

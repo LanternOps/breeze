@@ -2548,8 +2548,14 @@
           "checks": "Bu varlığa bağlı tüm ağ kontrolleri",
           "topology": "Topoloji haritasındaki kayıtlı konumu"
         }
-      }
-    }
+      },
+      "openMonitoringSettings": "İzleme ayarlarını düzenle",
+      "openLinkSettings": "Bu bağlantıyı yönet"
+    },
+    "header": {
+      "settings": "Ayarlar"
+    },
+    "editInSettings": "Ayarlarda düzenle"
   },
   "osIcons": {
     "linux": "Linux",

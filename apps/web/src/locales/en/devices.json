@@ -2451,7 +2451,9 @@
           "checks": "Every network check bound to this asset",
           "topology": "Its saved position on the topology map"
         }
-      }
+      },
+      "openMonitoringSettings": "Edit monitoring settings",
+      "openLinkSettings": "Manage this link"
     },
     "backToDevices": "Back to devices",
     "configurePrefix": "Configure SNMP polling and network monitors from the",
@@ -2569,7 +2571,11 @@
       "sysName": "System name",
       "sysDescr": "Description",
       "sysObjectId": "Object ID (OID)"
-    }
+    },
+    "header": {
+      "settings": "Settings"
+    },
+    "editInSettings": "Edit in settings"
   },
   "osIcons": {
     "linux": "Linux",
