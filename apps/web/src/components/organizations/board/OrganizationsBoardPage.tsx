@@ -250,7 +250,7 @@ export default function OrganizationsBoardPage() {
   }, [archivedRows, filter, rows, searchQuery, sort]);
 
   /** Manual order only means something against the full, server-ordered list. */
-  const manualOrderActive = !(isSystem && partnerIds.length > 1) && sort === 'manual' && filter === 'all' && searchQuery.trim().length === 0;
+  const manualOrderActive = !isSystem && sort === 'manual' && filter === 'all' && searchQuery.trim().length === 0;
   const columns = useMemo(() => visibleColumns(lens, capabilities), [lens, capabilities]);
   const filters = useMemo(() => visibleFilters(capabilities), [capabilities]);
   const readinessKnown = readiness.status === 'ready' || readiness.status === 'partial';
@@ -676,12 +676,21 @@ export default function OrganizationsBoardPage() {
       {error && <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
 
       {isSystem && partnerIds.length > 1 && (
-        <label className="flex items-center gap-2 text-sm">
-          {t('common:nav.partner')}
-          <select data-testid="board-partner-select" value={partnerId} onChange={(event) => setSelectedPartnerId(event.target.value)} className="h-9 rounded-md border bg-background py-0 pl-2 pr-7 text-sm">
-            {partnerIds.map((id) => <option key={id} value={id}>{id}</option>)}
-          </select>
-        </label>
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-sm">
+            {t('common:nav.partner')}
+            <select data-testid="board-partner-select" aria-describedby="board-partner-scope-hint" value={partnerId} onChange={(event) => setSelectedPartnerId(event.target.value)} className="h-9 rounded-md border bg-background py-0 pl-2 pr-7 text-sm">
+              {partnerIds.map((id) => (
+                <option key={id} value={id}>
+                  {t('orgBoard.partnerOption', { id: id.slice(0, 8), count: organizations.filter((org) => org.partnerId === id).length })}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p id="board-partner-scope-hint" data-testid="board-partner-scope-hint" className="text-xs text-muted-foreground">
+            {t('orgBoard.partnerScopeHint')}
+          </p>
+        </div>
       )}
 
       <RollupBand cells={bandCells} status={readiness.status} onRetry={readiness.retry} connectors={readiness.connectors} />

@@ -58,6 +58,7 @@ export interface EventTicketV2 {
 export interface EventTicketV3 extends Omit<EventTicketV2, 'version'> {
   version: 3;
   mobileDeviceId: string | null;
+  system?: true;
 }
 
 export type EventAuthorizationCheck =
@@ -102,6 +103,7 @@ export async function createEventWsTicket(
   orgIdOrIds: string | string[],
   allowedSiteIds?: string[] | null,
   authority?: {
+    scope?: 'system';
     orgId?: string | null;
     partnerId?: string | null;
     mobileDeviceId?: string | null;
@@ -119,6 +121,7 @@ export async function createEventWsTicket(
         permissionsEpoch: users.permissionsEpoch,
         partnerId: users.partnerId,
         orgId: users.orgId,
+        isPlatformAdmin: users.isPlatformAdmin,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -128,7 +131,11 @@ export async function createEventWsTicket(
   if (!liveUser || liveUser.status !== 'active') {
     throw new Error('Event WS authorization is unavailable');
   }
-  if (authority?.partnerId && authority.partnerId !== liveUser.partnerId) {
+  const isSystem = authority?.scope === 'system';
+  if (isSystem && (liveUser.isPlatformAdmin !== true || !authority.partnerId)) {
+    throw new Error('Event WS authorization is unavailable');
+  }
+  if (!isSystem && authority?.partnerId && authority.partnerId !== liveUser.partnerId) {
     throw new Error('Event WS authorization is unavailable');
   }
   if (authority?.orgId && authority.orgId !== liveUser.orgId) {
@@ -160,6 +167,11 @@ export async function createEventWsTicket(
     mobileDeviceId: authority?.mobileDeviceId ?? null,
     expiresAt: Date.now() + TICKET_TTL_MS,
   };
+  if (isSystem && authority.partnerId) {
+    record.partnerId = authority.partnerId;
+    record.orgId = null;
+    record.system = true;
+  }
 
   const ttlSeconds = Math.floor(TICKET_TTL_MS / 1000);
 
@@ -555,6 +567,7 @@ export async function resolveLiveEventAuthorization(
           permissionsEpoch: users.permissionsEpoch,
           partnerId: users.partnerId,
           orgId: users.orgId,
+          isPlatformAdmin: users.isPlatformAdmin,
         })
         .from(users)
         .where(eq(users.id, ticket.userId))
@@ -565,9 +578,31 @@ export async function resolveLiveEventAuthorization(
       }
       if (
         user.permissionsEpoch !== ticket.permissionsEpoch ||
-        user.partnerId !== ticket.partnerId
+        (ticket.system !== true && user.partnerId !== ticket.partnerId)
       ) {
         return { ok: false, reason: 'permission_epoch_mismatch' };
+      }
+
+      if (ticket.system === true) {
+        if (user.isPlatformAdmin !== true) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        const currentOrganizations = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(
+            and(
+              eq(organizations.partnerId, ticket.partnerId),
+              inArray(organizations.status, ['active', 'trial']),
+              isNull(organizations.deletedAt),
+            ),
+          )
+          .limit(10_000);
+        const currentOrgIds = new Set(currentOrganizations.map((org) => org.id));
+        if (ticket.allowedOrgIds.some((orgId) => !currentOrgIds.has(orgId))) {
+          return { ok: false, reason: 'membership_removed' };
+        }
+        return { ok: true, identity: ticket };
       }
 
       if (ticket.orgId) {
@@ -688,6 +723,7 @@ export function createEventWsTicketRoute(): Hono {
     const orgAccess = await resolveOrgAccess(auth, requestedOrgId);
 
     let orgIds: string[];
+    let systemPartnerId: string | undefined;
     if (auth.orgId) {
       orgIds = [auth.orgId];
     } else if (orgAccess.type === 'single') {
@@ -698,10 +734,15 @@ export function createEventWsTicketRoute(): Hono {
       const partnerId = c.req.query('partnerId');
       if (!partnerId) return c.json({ error: 'partnerId is required for system scope' }, 400);
       if (!PG_UUID_REGEX.test(partnerId)) return c.json({ error: 'partnerId must be a UUID' }, 400);
+      systemPartnerId = partnerId;
       const partnerOrganizations = await db
         .select({ id: organizations.id })
         .from(organizations)
-        .where(eq(organizations.partnerId, partnerId));
+        .where(and(
+          eq(organizations.partnerId, partnerId),
+          inArray(organizations.status, ['active', 'trial']),
+          isNull(organizations.deletedAt),
+        ));
       orgIds = partnerOrganizations.map((org) => org.id);
     } else {
       orgIds = [];
@@ -720,7 +761,12 @@ export function createEventWsTicketRoute(): Hono {
     // does not run here.
     const allowedSiteIds = auth.allowedSiteIds;
 
-    const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds, {
+    const result = await createEventWsTicket(auth.user.id, orgIds, allowedSiteIds, systemPartnerId ? {
+      scope: 'system',
+      partnerId: systemPartnerId,
+      orgId: null,
+      mobileDeviceId: auth.token?.mdid ?? null,
+    } : {
       orgId: auth.orgId ?? null,
       partnerId: auth.partnerId ?? null,
       mobileDeviceId: auth.token?.mdid ?? null,

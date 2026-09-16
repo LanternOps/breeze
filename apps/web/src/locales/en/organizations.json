@@ -202,6 +202,9 @@
     }
   },
   "orgBoard": {
+    "partnerOption": "{{id}}… ({{count}} orgs)",
+    "partnerOption_one": "{{id}}… ({{count}} org)",
+    "partnerScopeHint": "Showing one partner's accounts; totals below are for this partner only",
     "title": "Organizations",
     "description": "Every customer, what it still needs, and what is open.",
     "loading": "Loading organizations…",

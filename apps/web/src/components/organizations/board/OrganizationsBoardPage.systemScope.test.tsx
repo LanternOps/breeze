@@ -4,7 +4,7 @@ import '@/lib/i18n';
 import { fetchWithAuth } from '@/stores/auth';
 import OrganizationsBoardPage from './OrganizationsBoardPage';
 import { useEventStream } from '@/hooks/useEventStream';
-import { ALPHA, BETA, ALL_CAPS, readinessFor, jsonResponse } from './boardTestKit';
+import { ALPHA, BETA, GAMMA, ALL_CAPS, readinessFor, jsonResponse } from './boardTestKit';
 
 // Same mocking convention as W02's page tests. If W02's boardTestKit.ts exports a
 // fetch router (`mockBoardApi` or similar), use it instead of `mockApi` below so
@@ -41,10 +41,10 @@ function NotificationStream() {
   return null;
 }
 function mockApi(partners: string[]) {
-  const orgs = [ALPHA, BETA].map((org, i) => ({ ...org, partnerId: partners[i] }));
+  const orgs = [ALPHA, BETA, GAMMA].slice(0, partners.length).map((org, i) => ({ ...org, partnerId: partners[i] }));
   fetchMock.mockImplementation(async (input) => {
     const url = new URL(String(input), 'http://localhost');
-    if (url.pathname === '/orgs/organizations') return jsonResponse({ data: orgs, pagination: { page: 1, limit: 100, total: 2 } });
+    if (url.pathname === '/orgs/organizations') return jsonResponse({ data: orgs, pagination: { page: 1, limit: 100, total: orgs.length } });
     if (url.pathname === '/events/ws-ticket') return jsonResponse({ ticket: 'test-ticket' });
     const selected = orgs.filter((org) => org.partnerId === url.searchParams.get('partnerId'));
     return jsonResponse({ capabilities: ALL_CAPS, serviceManagementMode: 'native', orgs: selected.map((org) => readinessFor(org)) });
@@ -56,6 +56,7 @@ function requests(path: string) {
 beforeEach(() => {
   fetchMock.mockReset();
   window.location.hash = '';
+  window.localStorage.clear();
   vi.stubGlobal('WebSocket', class {
     static OPEN = 1;
     readyState = 0;
@@ -72,6 +73,25 @@ it('derives the only partner for readiness and the shared notification ticket', 
   expect(requests('/events/ws-ticket').every((url) => url.searchParams.get('partnerId') === P1)).toBe(true);
   expect(screen.queryByTestId('board-partner-select')).not.toBeInTheDocument();
   await waitFor(() => expect(screen.getAllByTestId('org-board-chips-complete').length).toBeGreaterThan(0));
+});
+it('disables manual reordering for a system session with only one partner', async () => {
+  mockApi([P1, P1]);
+  render(<OrganizationsBoardPage />);
+  await screen.findByTestId('org-board-table');
+  expect(screen.getByTestId('org-board-sort')).toHaveValue('manual');
+  expect(screen.queryAllByTestId('org-board-drag-handle')).toHaveLength(0);
+});
+it('labels partner options with shortened ids and organization counts and explains the totals', async () => {
+  mockApi([P1, P1, P2]);
+  render(<OrganizationsBoardPage />);
+  const select = await screen.findByTestId('board-partner-select') as HTMLSelectElement;
+  expect(Array.from(select.options, (option) => option.textContent)).toEqual([
+    '11111111… (2 orgs)',
+    '22222222… (1 org)',
+  ]);
+  expect(screen.getByTestId('board-partner-scope-hint')).toHaveTextContent(
+    "Showing one partner's accounts; totals below are for this partner only",
+  );
 });
 it('selects the first partner and refetches only the selected partner organizations on change', async () => {
   mockApi([P1, P2]);
