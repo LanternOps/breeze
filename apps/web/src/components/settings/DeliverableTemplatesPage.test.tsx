@@ -262,15 +262,22 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  it('renders the auto-evidence report type picker on the item form, with the empty state (W01: no types shipped)', async () => {
+  // W01 shipped this picker with an empty registry and asserted the empty
+  // hint. #5784 W04 registered the first managed evidence type, so the hint is
+  // gone and the type is selectable — the assertion W01 left for the first
+  // wave to flip.
+  it('renders the auto-evidence report type picker on the item form, offering the registered types', async () => {
     render(<DeliverableTemplatesPage />);
     const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
 
     fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
 
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    // Defaults to "None": auto-evidence stays opt-in per item.
     expect(select.value).toBe('');
-    expect(screen.getByTestId('deliverable-template-item-auto-evidence-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
+    expect([...select.options].map((option) => option.value))
+      .toContain('vulnerability_management');
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {
