@@ -227,4 +227,30 @@ describe('ReportRunList', () => {
     );
     expect(screen.getByTestId('portal-reports-status').textContent).toBe('');
   });
+
+  // #5784 W04, OD-10 = A. A delivered vulnerability-management run is LISTED
+  // and downloadable, but the portal user never gets a button to produce one.
+  it('lists a delivered vulnerability management run with no generate action for it', () => {
+    render(
+      <ReportRunList
+        initialRuns={[{
+          ...run,
+          id: 'run-vuln',
+          name: 'Service evidence — Vulnerability management',
+          type: 'vulnerability_management',
+        }]}
+        timezone="UTC"
+      />,
+    );
+
+    // `reportDisplayName` trims only the MSP's "Customer portal —" prefix; a
+    // managed-evidence name reads correctly to a customer as-is.
+    expect(screen.getByText('Service evidence — Vulnerability management')).toBeTruthy();
+    expect(screen.getByTestId('portal-report-runs-table')).toBeTruthy();
+    expect(screen.queryByTestId('portal-reports-generate-vulnerability')).toBeNull();
+    // Exactly the three self-service actions, unchanged.
+    expect(screen.getByTestId('portal-reports-generate-posture')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-executive')).toBeTruthy();
+    expect(screen.getByTestId('portal-reports-generate-lifecycle')).toBeTruthy();
+  });
 });

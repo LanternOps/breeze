@@ -13,14 +13,20 @@ import {
   PageHeader,
 } from './ui';
 
-type ReportType =
-  | 'security_compliance_posture'
-  | 'executive_summary'
-  | 'hardware_lifecycle';
+/** Every type a run row can carry, straight off the DTO so the two can never
+ *  drift. */
+type ReportType = PortalRunDto['type'];
+
+/** The subset a portal user may generate for themselves. `vulnerability_management`
+ *  is deliberately excluded (#5784 W04, OD-10 = A): it is delivered evidence a
+ *  technician reviews, never self-served — there is no button for it, and the
+ *  API refuses a portal-user authority for it. A later wave adding a type has
+ *  to choose a side here rather than inherit a button by accident. */
+type GeneratableReportType = Exclude<ReportType, 'vulnerability_management'>;
 
 /** What the reader is told is happening, in their own language. The MSP-side
  *  report definition names are technical; these are not. */
-const GENERATING_COPY: Record<ReportType, string> = {
+const GENERATING_COPY: Record<GeneratableReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
   hardware_lifecycle: 'Generating your hardware lifecycle plan…',
@@ -71,7 +77,7 @@ export function ReportRunList({
   error?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
-  const [busyType, setBusyType] = useState<ReportType | null>(null);
+  const [busyType, setBusyType] = useState<GeneratableReportType | null>(null);
   const [message, setMessage] = useState(error ?? null);
   // Announced by the polite live region below the actions: a report that takes
   // a few seconds must say it is coming, and say when it has arrived — a new
@@ -79,7 +85,7 @@ export function ReportRunList({
   // whose eyes are on the buttons.
   const [status, setStatus] = useState('');
 
-  async function generate(type: ReportType) {
+  async function generate(type: GeneratableReportType) {
     setBusyType(type);
     setMessage(null);
     setStatus(GENERATING_COPY[type]);

@@ -246,10 +246,17 @@ export interface SlaDto {
 export interface PortalRunDto {
   id: string;
   reportId: string;
+  /** Every type a portal run row can carry. `portalRunListPredicate` filters
+   *  on org, portal_self_service and status — it has NO type filter — so a
+   *  managed-evidence run of a new type flows through here. An unwidened union
+   *  is a type lie the compiler cannot see, because the value comes from the
+   *  database. Not every member is portal-GENERATABLE: see PORTAL_REPORT_TYPES. */
   type:
     | 'security_compliance_posture'
     | 'executive_summary'
-    | 'hardware_lifecycle';
+    | 'hardware_lifecycle'
+    // #5784 W04 — managed evidence, visible only once delivered.
+    | 'vulnerability_management';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;
