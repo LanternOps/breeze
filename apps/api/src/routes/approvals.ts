@@ -476,19 +476,49 @@ async function fetchAuthorizedRecentApprovals(
  * free-form jsonb that can hold sealed secret material
  * (`actionIntents/resultSecrets.ts`) and is never projected here.
  */
-function toIntentOutcome(intent: typeof actionIntents.$inferSelect | null) {
-  if (!intent || !isTerminalIntentStatus(intent.status)) return null;
-  const snapshot = {
-    status: intent.status,
-    errorCode: intent.errorCode ?? null,
-    result: intent.result ?? null,
-  };
-  return {
-    status: intent.status,
-    errorCode: intent.errorCode ?? null,
-    reason: intent.status === 'completed' ? null : intentTerminalReason(snapshot),
-    executedAt: intent.executedAt?.toISOString() ?? null,
-  };
+function toIntentOutcome(
+  intent: typeof actionIntents.$inferSelect | null,
+  approval: typeof approvalRequests.$inferSelect,
+) {
+  if (intent && isTerminalIntentStatus(intent.status)) {
+    const snapshot = {
+      status: intent.status,
+      errorCode: intent.errorCode ?? null,
+      result: intent.result ?? null,
+    };
+    return {
+      status: intent.status,
+      errorCode: intent.errorCode ?? null,
+      reason: intent.status === 'completed' ? null : intentTerminalReason(snapshot),
+      executedAt: intent.executedAt?.toISOString() ?? null,
+    };
+  }
+
+  // UNLINKED rows (PAM elevation, legacy execution-linked, dev seed) have no
+  // intent lifecycle at all — the `approval_requests_one_source_chk`
+  // constraint permits none of the three links to be set. Falling through to
+  // `null` here would have been the SAME BUG this issue is about, one path
+  // over: a DENIED elevation request would reach the Recent panel with no
+  // outcome, and a client that reads "no outcome" as "nothing went wrong"
+  // paints it green. Derive the outcome from the approval row's own status
+  // instead.
+  if (!intent && approval.status !== 'pending') {
+    return {
+      status: approval.status,
+      errorCode: null,
+      reason:
+        approval.status === 'denied'
+          ? approval.decisionReason?.trim() || 'the approval was denied, so it did not run'
+          : approval.status === 'expired'
+            ? 'the approval expired, so it did not run'
+            : approval.status === 'reported'
+              ? 'the request was reported as suspicious, so it did not run'
+              : null,
+      executedAt: null,
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -522,7 +552,7 @@ async function serializePage(page: AuthorizedApproval[]) {
       targetDevices.get(approval.id) ?? null,
       targetRef?.orgId ?? null,
       (targetRef?.orgId && orgNames.get(targetRef.orgId)) || null,
-      toIntentOutcome(intent ?? null),
+      toIntentOutcome(intent ?? null, approval),
     ),
   );
 }

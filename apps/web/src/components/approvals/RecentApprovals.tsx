@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle2,
+  HelpCircle,
+  Loader2,
+  XCircle,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
@@ -43,10 +51,21 @@ export interface RecentApprovalRow {
 const RECENT_LIMIT = 20;
 
 /** Terminal statuses that mean the action did NOT take effect. */
-const FAILURE_STATUSES = new Set(['failed', 'rejected', 'expired', 'cancelled']);
+const FAILURE_STATUSES = new Set(['failed', 'rejected', 'expired', 'cancelled', 'denied', 'reported']);
+/** Terminal statuses that mean it DID. */
+const SUCCESS_STATUSES = new Set(['completed', 'approved']);
 
-export function isFailedOutcome(row: RecentApprovalRow): boolean {
-  return FAILURE_STATUSES.has(row.intentOutcome?.status ?? '');
+/**
+ * Three-way on purpose. An outcome the client does not recognise — a missing
+ * projection, or a status added server-side later — must NOT fall into the
+ * success branch: "we don't know" rendered as a green check is the exact
+ * failure mode #6022 is about.
+ */
+export function outcomeKind(row: RecentApprovalRow): 'success' | 'failure' | 'unknown' {
+  const status = row.intentOutcome?.status ?? '';
+  if (FAILURE_STATUSES.has(status)) return 'failure';
+  if (SUCCESS_STATUSES.has(status)) return 'success';
+  return 'unknown';
 }
 
 export default function RecentApprovals() {
@@ -130,15 +149,17 @@ export default function RecentApprovals() {
           {!loading && !loadError && rows !== null && rows.length > 0 && (
             <ul className="divide-y">
               {rows.map((row) => {
-                const failed = isFailedOutcome(row);
+                const kind = outcomeKind(row);
                 const status = row.intentOutcome?.status ?? 'unknown';
                 return (
                   <li key={row.id} className="py-2" data-testid={`approvals-recent-row-${row.id}`}>
-                    <div className="flex items-start gap-2">
-                      {failed ? (
+                    <div className="flex items-start gap-2" data-outcome={kind}>
+                      {kind === 'failure' ? (
                         <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-                      ) : (
+                      ) : kind === 'success' ? (
                         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-green-600" aria-hidden="true" />
+                      ) : (
+                        <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                       )}
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{row.actionLabel}</p>

@@ -103,7 +103,11 @@
       "rejected": "Reddedildi",
       "expired": "Süresi doldu",
       "cancelled": "İptal edildi",
-      "completed": "Tamamlandı"
+      "completed": "Tamamlandı",
+      "denied": "Reddedildi",
+      "approved": "Onaylandı",
+      "reported": "Bildirildi",
+      "unknown": "Bilinmiyor"
     }
   }
 }

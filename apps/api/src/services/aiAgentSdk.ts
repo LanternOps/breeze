@@ -1048,7 +1048,19 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
         } catch (err) {
           // An unreadable outcome is NOT evidence the action failed — say
           // "still running" rather than inventing a failure.
+          //
+          // Captured, not just logged: `waitForIntentTerminalOutcome` already
+          // swallows every expected DB-poll failure internally, so anything
+          // reaching here is an unexpected bug in the read-back itself. Left
+          // on console only, a regression would degrade this whole feature
+          // back to "approved, running" forever — silently, which is the bug
+          // class #6022 is about.
           console.error(`[AI-SDK] terminal read-back failed for intent ${intentId}:`, err);
+          captureException(err instanceof Error ? err : new Error(String(err)), undefined, {
+            area: 'ai_intent_terminal_readback',
+            intent_id: intentId,
+            tool_name: toolName,
+          });
           outcome = describeIntentOutcome(null);
         } finally {
           readBack.end();

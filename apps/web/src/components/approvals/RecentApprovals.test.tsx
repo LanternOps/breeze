@@ -132,6 +132,49 @@ describe('RecentApprovals (#6022)', () => {
     expect(screen.getByTestId('approvals-recent-status-x').textContent).toBe('nonesuch');
   });
 
+  it('renders a denied unlinked (PAM) row as a failure, not a green check', async () => {
+    // The server derives an outcome from the approval's own status for rows
+    // with no linked intent. If it ever stops, the next test is the backstop.
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        {
+          ...failedRow,
+          id: 'pam',
+          intentOutcome: { status: 'denied', errorCode: null, reason: 'Not during change freeze', executedAt: null },
+        },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-pam')).toBeTruthy());
+    expect(screen.getByTestId('approvals-recent-row-pam').querySelector('[data-outcome]')?.getAttribute('data-outcome')).toBe('failure');
+    expect(screen.getByTestId('approvals-recent-reason-pam').textContent).toContain('change freeze');
+  });
+
+  it('never paints an UNKNOWN outcome green — "we don\'t know" is not "it worked"', async () => {
+    // A missing projection or a status the client does not recognise must not
+    // fall into the success branch; that is #6022 pointing the other way.
+    fetchWithAuth.mockResolvedValue(
+      jsonOk([
+        { ...failedRow, id: 'none', intentOutcome: null },
+        { ...failedRow, id: 'new', intentOutcome: { status: 'some_future_status', errorCode: null, reason: null, executedAt: null } },
+      ]),
+    );
+    render(<RecentApprovals />);
+    fireEvent.click(screen.getByTestId('approvals-recent-toggle'));
+
+    await waitFor(() => expect(screen.getByTestId('approvals-recent-row-none')).toBeTruthy());
+    for (const id of ['none', 'new']) {
+      const kind = screen
+        .getByTestId(`approvals-recent-row-${id}`)
+        .querySelector('[data-outcome]')
+        ?.getAttribute('data-outcome');
+      expect(kind).toBe('unknown');
+      expect(kind).not.toBe('success');
+    }
+  });
+
   it('surfaces a load failure inline instead of rendering a silently empty panel', async () => {
     fetchWithAuth.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
     render(<RecentApprovals />);

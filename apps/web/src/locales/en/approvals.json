@@ -103,7 +103,11 @@
       "rejected": "Rejected",
       "expired": "Expired",
       "cancelled": "Cancelled",
-      "completed": "Completed"
+      "completed": "Completed",
+      "denied": "Denied",
+      "approved": "Approved",
+      "reported": "Reported",
+      "unknown": "Unknown"
     }
   }
 }

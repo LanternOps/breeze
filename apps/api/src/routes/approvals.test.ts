@@ -4169,11 +4169,70 @@ describe('GET /approvals/pending?view=recent (#6022)', () => {
     expect(body.approvals[0].id).toBe('a-fallback');
   });
 
+  // An UNLINKED row (PAM elevation, legacy execution-linked, dev seed) has no
+  // intent lifecycle. Projecting `intentOutcome: null` for it would put a
+  // DENIED elevation request in the Recent panel with no outcome — and a
+  // client reading "no outcome" as "nothing went wrong" paints it green.
+  // That is #6022 again, one code path over.
+  it('derives an outcome for an unlinked row from the approval\'s own status', async () => {
+    mockRecentJoinResolves([
+      {
+        approval: buildPendingApproval({
+          id: 'a-pam',
+          intentId: null,
+          status: 'denied',
+          decidedAt: new Date(),
+          decisionReason: 'Not during change freeze',
+        }),
+        intent: null,
+      },
+    ]);
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+    expect(body.approvals).toHaveLength(1);
+    expect(body.approvals[0].intentOutcome).toMatchObject({
+      status: 'denied',
+      reason: 'Not during change freeze',
+    });
+  });
+
+  it('never reports an unlinked row as outcome-less', async () => {
+    for (const status of ['expired', 'reported']) {
+      mockRecentJoinResolves([
+        { approval: buildPendingApproval({ id: `a-${status}`, intentId: null, status }), intent: null },
+      ]);
+      const body = await (await buildApp().request('/approvals/pending?view=recent')).json();
+      expect(body.approvals[0].intentOutcome?.status).toBe(status);
+      expect(body.approvals[0].intentOutcome?.reason).toMatch(/did not run/i);
+    }
+  });
+
   it('bounds the recent query in SQL rather than fetching the whole history', async () => {
     const node = mockRecentJoinResolves([]);
 
     await buildApp().request('/approvals/pending?view=recent&limit=10');
-    expect(node.limit).toHaveBeenCalledWith(expect.any(Number));
-    expect(node.limit.mock.calls[0][0]).toBeGreaterThanOrEqual(10);
+    // 10 requested x the over-fetch factor that covers rows the app-layer
+    // authorization filter will drop.
+    expect(node.limit).toHaveBeenCalledWith(40);
+  });
+
+  it('clamps a caller-requested limit before over-fetching', async () => {
+    const node = mockRecentJoinResolves([]);
+
+    await buildApp().request('/approvals/pending?view=recent&limit=9999');
+    // Clamped to the page max (50) FIRST, then over-fetched — not 9999 x 4.
+    expect(node.limit).toHaveBeenCalledWith(200);
+  });
+
+  it('returns at most `limit` rows even when more are authorized', async () => {
+    mockRecentJoinResolves(
+      Array.from({ length: 5 }, (_, i) => ({
+        approval: buildPendingApproval({ id: `a-${i}`, intentId: null, status: 'denied' }),
+        intent: null,
+      })),
+    );
+
+    const body = await (await buildApp().request('/approvals/pending?view=recent&limit=2')).json();
+    expect(body.approvals).toHaveLength(2);
   });
 });
