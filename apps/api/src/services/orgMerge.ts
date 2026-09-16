@@ -558,15 +558,18 @@ export async function unfenceLoser(loser: OrgMergeCandidate): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Re-read both orgs inside the merge transaction, `FOR UPDATE`, and re-assert
+ * Re-read both orgs inside the merge transaction, `FOR NO KEY UPDATE`, and re-assert
  * the pair is still mergeable (I2). Must run after the advisory locks and
  * before any row write.
  *
  * The survivor is locked because it is the one that was NEVER fenced — it
  * stays fully live and writable while the loser drains, so its status,
  * `deleted_at` and `partner_id` are all still mutable right up to this point.
- * `FOR UPDATE` also blocks a concurrent status change for the rest of the
- * transaction, so the check cannot be invalidated the instant after it passes.
+ * `FOR NO KEY UPDATE` blocks concurrent row updates and deletion for the rest
+ * of the transaction, so the check cannot be invalidated after it passes. It
+ * permits FK KEY SHARE checks from an in-flight topology publisher whose site
+ * state the merge must acquire next; FOR UPDATE would deadlock that publisher's
+ * alias-audit insert against this transaction's state wait.
  *
  * The loser is re-checked differently: `validateMergePair` would reject it
  * (its status is now `merging`, deliberately), so it is asserted directly to
@@ -582,7 +585,7 @@ export async function assertPairStillMergeable(
       FROM organizations
      WHERE id IN (${uuid(loser.id)}, ${uuid(survivor.id)})
      ORDER BY id
-     FOR UPDATE`)) as unknown as Array<{
+     FOR NO KEY UPDATE`)) as unknown as Array<{
     id: string;
     partner_id: string;
     name: string;
@@ -1052,7 +1055,7 @@ export async function executeOrgMerge(input: ExecuteOrgMergeInput): Promise<OrgM
         // have been suspended, archived, soft-deleted or moved to another
         // partner. Nothing fences the SURVIVOR (it stays live and writable by
         // design), so its state must be re-read here, under the advisory lock
-        // and FOR UPDATE, and re-validated. Merging into a suspended or
+        // and FOR NO KEY UPDATE, and re-validated. Merging into a suspended or
         // deleted org would strand the loser's whole dataset somewhere the
         // partner can no longer reach.
         await self.assertPairStillMergeable(loser, survivor);

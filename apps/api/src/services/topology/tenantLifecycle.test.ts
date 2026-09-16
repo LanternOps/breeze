@@ -26,10 +26,10 @@ describe('topology tenant lifecycle', () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
-  it('takes the saved site set in sorted order and fences it before registry moves', async () => {
+  it('locks sorted sites without blocking foreign-key readers, then fences state before registry moves', async () => {
     mocks.execute.mockResolvedValueOnce([{ id: site }]);
     await expect(prepareTopologyOrgMerge(loser, survivor)).resolves.toEqual({ siteIds: [site] });
-    expect(queries()[0]!.sql).toMatch(/ORDER BY id.*FOR UPDATE/s);
+    expect(queries()[0]!.sql).toMatch(/ORDER BY id.*FOR NO KEY UPDATE/s);
     expect(queries().some(q => /build_fence = build_fence \+ 1/.test(q.sql))).toBe(true);
     expect(queries().every(q => !/UPDATE sites/.test(q.sql))).toBe(true);
     expect(mocks.assertInTransaction).toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe('topology tenant lifecycle', () => {
 
   it('delegates detachment to the same SQL backstop with explicit scopes', async () => {
     mocks.execute.mockResolvedValueOnce([{ detached: 1 }]);
-    const tx = { execute: mocks.execute } as Parameters<typeof detachTopologyInventoryBinding>[0];
+    const tx = { execute: mocks.execute } as unknown as Parameters<typeof detachTopologyInventoryBinding>[0];
     await expect(detachTopologyInventoryBinding(tx, { kind: 'device', id: node,
       oldScope: { orgId: loser, siteId: site }, newScope: null })).resolves.toBe(1);
     expect(queries()[0]!.sql).toContain('breeze_detach_topology_inventory_binding');

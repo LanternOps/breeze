@@ -41,7 +41,10 @@ function mergeScope(loserOrgId: string, survivorOrgId: string) {
  * transaction owns every write; there is no nested or post-commit transaction. */
 export async function prepareTopologyOrgMerge(loserOrgId: string, survivorOrgId: string): Promise<{ siteIds: string[] }> {
   const { loser } = mergeScope(loserOrgId, survivorOrgId);
-  const sites = await db.execute(sql`SELECT id FROM sites WHERE org_id = ${loser}::uuid ORDER BY id FOR UPDATE`);
+  // Block owner changes/deletion without blocking the FK KEY SHARE checks
+  // of a publisher that already holds site state. A stronger parent lock here
+  // would invert the publisher's state -> parent-FK order and deadlock.
+  const sites = await db.execute(sql`SELECT id FROM sites WHERE org_id = ${loser}::uuid ORDER BY id FOR NO KEY UPDATE`);
   const siteIds = sites.map(row => uuid.parse(row.id));
   for (const siteId of siteIds) {
     await db.execute(sql`INSERT INTO topology_site_state (org_id, site_id)

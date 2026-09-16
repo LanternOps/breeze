@@ -339,10 +339,10 @@ describe('assertPairStillMergeable (in-transaction TOCTOU re-check)', () => {
     mockState.executedParams = [];
   });
 
-  it('locks both rows FOR UPDATE and passes when nothing changed', async () => {
+  it('locks both rows FOR NO KEY UPDATE and passes when nothing changed', async () => {
     mockState.executeResponses = [[row({}), row({ id: S, status: 'active' })]];
     await expect(assertPairStillMergeable(loser, survivor)).resolves.toBeUndefined();
-    expect(mockState.executedSql.join(' ')).toMatch(/FOR UPDATE/);
+    expect(mockState.executedSql.join(' ')).toMatch(/FOR NO KEY UPDATE/);
   });
 
   it('rejects when the survivor was suspended during the drain', async () => {
