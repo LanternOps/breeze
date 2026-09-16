@@ -145,3 +145,41 @@ func TestParseSnmpPollRequest_RejectsBadPortAndMissingTarget(t *testing.T) {
 		t.Error("out-of-range port should return an error result")
 	}
 }
+
+func TestSnmpPollResultPayload_StampsProtocol2(t *testing.T) {
+	payload := snmpPollResultPayload("dev-1", []snmppoll.SNMPMetric{
+		{OID: ".1.3.6.1.2.1.1.3.0", BaseOID: "1.3.6.1.2.1.1.3.0", Name: "sysUpTime", Value: 1},
+	})
+
+	if payload["protocol"] != 2 {
+		t.Errorf("protocol = %v, want 2 — the server reads the row shape off this marker", payload["protocol"])
+	}
+	if payload["deviceId"] != "dev-1" {
+		t.Errorf("deviceId = %v, want dev-1", payload["deviceId"])
+	}
+	metrics, ok := payload["metrics"].([]snmppoll.SNMPMetric)
+	if !ok || len(metrics) != 1 {
+		t.Fatalf("metrics = %v, want the one row passed in", payload["metrics"])
+	}
+}
+
+func TestSnmpPollResultPayload_StampsProtocol2ForEmptyAndLegacyPolls(t *testing.T) {
+	// A poll that collected nothing, and a poll built from a legacy oids-only
+	// payload, both still declare the new row shape: the marker describes the
+	// AGENT, not the command it happened to receive.
+	if got := snmpPollResultPayload("dev-1", nil)["protocol"]; got != 2 {
+		t.Errorf("protocol on an empty poll = %v, want 2", got)
+	}
+}
+
+func TestSnmpPollResultPayload_KeysAreExactlyTheContract(t *testing.T) {
+	payload := snmpPollResultPayload("dev-1", nil)
+	for _, key := range []string{"deviceId", "metrics", "protocol"} {
+		if _, ok := payload[key]; !ok {
+			t.Errorf("result payload is missing %q", key)
+		}
+	}
+	if len(payload) != 3 {
+		t.Errorf("result payload has %d keys (%v), want exactly 3", len(payload), payload)
+	}
+}

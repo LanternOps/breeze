@@ -158,6 +158,21 @@ func parsePollLimits(payload map[string]any) snmppoll.PollLimits {
 	return limits
 }
 
+// SnmpResultProtocol marks the metric row shape this agent emits (spec §7.2):
+// every row carries baseOid, instance and an optional per-OID error. The server
+// treats a result with NO protocol field as the legacy shape (baseOid = oid,
+// instance = ""), so this must be stamped on every successful poll — including
+// one built from a legacy oids-only command, whose rows already have that shape.
+const SnmpResultProtocol = 2
+
+func snmpPollResultPayload(deviceID string, metrics []snmppoll.SNMPMetric) map[string]any {
+	return map[string]any{
+		"deviceId": deviceID,
+		"metrics":  metrics,
+		"protocol": SnmpResultProtocol,
+	}
+}
+
 func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
 	start := time.Now()
 
@@ -171,8 +186,8 @@ func handleSnmpPoll(_ *Heartbeat, cmd Command) tools.CommandResult {
 	if err != nil {
 		return tools.NewErrorResult(err, time.Since(start).Milliseconds())
 	}
-	return tools.NewSuccessResult(map[string]any{
-		"deviceId": tools.GetPayloadString(cmd.Payload, "deviceId", ""),
-		"metrics":  metrics,
-	}, time.Since(start).Milliseconds())
+	return tools.NewSuccessResult(
+		snmpPollResultPayload(tools.GetPayloadString(cmd.Payload, "deviceId", ""), metrics),
+		time.Since(start).Milliseconds(),
+	)
 }
