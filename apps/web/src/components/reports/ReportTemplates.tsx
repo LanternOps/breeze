@@ -5,6 +5,7 @@ import {
   Bell,
   CalendarClock,
   FileText,
+  KeyRound,
   Loader2,
   Plus,
   ShieldAlert,
@@ -24,6 +25,11 @@ import {
   ThreatDetectionOptionsForm,
   type ThreatDetectionOptions,
 } from './ThreatDetectionOptionsForm';
+import {
+  DEFAULT_IDENTITY_ACCESS_OPTIONS,
+  IdentityAccessOptionsForm,
+  type IdentityAccessOptions,
+} from './IdentityAccessOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -75,6 +81,7 @@ const reportTypeValues: TemplateReportType[] = [
   'security_compliance_posture',
   'hardware_lifecycle',
   'threat_detection_review',
+  'identity_access_review',
   'devices',
   'alerts',
   'patches',
@@ -137,6 +144,24 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-rose-500/15',
       iconColor: 'text-rose-600'
+    }
+  },
+  {
+    id: 'identity_access_review',
+    name: 'Identity & Access Review',
+    description:
+      'Interactive Microsoft 365 sign-ins for a period, with the identity inventory, dormant accounts, conditional access posture and remote-access client presence — and the window actually covered stated on the face of it.',
+    defaults: {
+      name: 'Identity & Access Review',
+      type: 'identity_access_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: KeyRound,
+    tone: {
+      iconBg: 'bg-sky-500/15',
+      iconColor: 'text-sky-600'
     }
   },
   {
@@ -347,6 +372,8 @@ export default function ReportTemplates() {
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
   const [threatTemplate, setThreatTemplate] = useState<ReportTemplate | null>(null);
   const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
+  const [identityTemplate, setIdentityTemplate] = useState<ReportTemplate | null>(null);
+  const [identityOptions, setIdentityOptions] = useState<IdentityAccessOptions>(DEFAULT_IDENTITY_ACCESS_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -436,6 +463,11 @@ export default function ReportTemplates() {
       if (type === 'threat_detection_review') {
         setThreatOptions(DEFAULT_THREAT_DETECTION_OPTIONS);
         setThreatTemplate(template);
+        return;
+      }
+      if (type === 'identity_access_review') {
+        setIdentityOptions(DEFAULT_IDENTITY_ACCESS_OPTIONS);
+        setIdentityTemplate(template);
         return;
       }
       if (type && !reportTypeSurvivesBuilder(type)) {
@@ -655,6 +687,30 @@ export default function ReportTemplates() {
                 onCancel={() => setThreatTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(threatTemplate, { ...threatOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {identityTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(identityTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <IdentityAccessOptionsForm
+                value={identityOptions}
+                onChange={setIdentityOptions}
+                busy={creatingId === identityTemplate.id}
+                submitLabel={t('reports.identityAccessOptions.createReport')}
+                onCancel={() => setIdentityTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(identityTemplate, { ...identityOptions });
                 }}
               />
             </div>

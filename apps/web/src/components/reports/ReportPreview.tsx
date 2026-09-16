@@ -350,8 +350,68 @@ export default function ReportPreview({
         );
       })()}
 
+      {/* Identity & Access Review (#5784 W06): coverage first, then the counts.
+          Every unmeasured value renders as N/A rather than a zero — an
+          unlicensed tenant, a `hidden` risk field and a NULL MFA state are all
+          gaps in what Microsoft released, not findings about the customer. Its
+          summary carries nested objects, so the generic cards are suppressed
+          below the same way the two branches above suppress them. */}
+      {data.type === 'identity_access_review' && data.data.summary && previewMode === 'table' && (() => {
+        const s = data.data.summary as {
+          coverage?: { note?: string; coveredFrom?: string | null; coveredTo?: string | null; unlicensed?: boolean };
+          identity?: {
+            usersTotal?: number | null; admins?: number | null;
+            mfaRegistered?: number | null; mfaUnknown?: number | null;
+            adminsWithoutMfa?: number | null; adminsMfaUnknown?: number | null;
+          };
+          signins?: {
+            total?: number | null; distinctUsers?: number | null; failures?: number | null;
+          };
+          dormant?: { rows?: unknown[] } | null;
+          dataGaps?: string[];
+        };
+        const na = t('reports.reportPreview.identityAccess.notMeasured');
+        const show = (v: number | null | undefined) => (v === null || v === undefined ? na : String(v));
+        const tiles: { key: string; value: string; unmeasured: boolean }[] = [
+          { key: 'signins', value: show(s.signins?.total), unmeasured: s.signins?.total == null },
+          { key: 'distinctUsers', value: show(s.signins?.distinctUsers), unmeasured: s.signins?.distinctUsers == null },
+          { key: 'failures', value: show(s.signins?.failures), unmeasured: s.signins?.failures == null },
+          { key: 'admins', value: show(s.identity?.admins), unmeasured: s.identity?.admins == null },
+          { key: 'adminsWithoutMfa', value: show(s.identity?.adminsWithoutMfa), unmeasured: s.identity?.adminsWithoutMfa == null },
+          // Counted separately and NEVER folded into "without MFA": a NULL is
+          // a gap in what Microsoft reported, not an absent registration.
+          { key: 'mfaUnknown', value: show(s.identity?.mfaUnknown), unmeasured: s.identity?.mfaUnknown == null },
+          {
+            key: 'dormant',
+            value: s.dormant ? String(s.dormant.rows?.length ?? 0) : na,
+            unmeasured: !s.dormant,
+          },
+        ];
+        const gaps = Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : [];
+        return (
+          <div className="space-y-4" data-testid="identity-access-summary">
+            {gaps.length > 0 && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4" data-testid="identity-access-coverage-note">
+                <h4 className="text-sm font-semibold mb-1">{t('reports.reportPreview.identityAccess.coverage')}</h4>
+                <ul className="space-y-1 text-sm">
+                  {gaps.map((line, i) => (<li key={i}>{line}</li>))}
+                </ul>
+              </div>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {tiles.map((tile) => (
+                <div key={tile.key} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.identityAccess.${tile.key}`)}</p>
+                  <p className={cn('text-2xl font-bold mt-1', tile.unmeasured && 'text-muted-foreground')}>{tile.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Summary Cards */}
-      {data.type !== 'hardware_lifecycle' && data.type !== 'threat_detection_review' && data.data.summary && previewMode === 'table' && (
+      {data.type !== 'hardware_lifecycle' && data.type !== 'threat_detection_review' && data.type !== 'identity_access_review' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">
