@@ -101,6 +101,35 @@ describe('executeTenantTool', () => {
     vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(false);
   });
 
+  // #6023: `opts.orgId` used to be audit-attribution-only. It is now ALSO the
+  // `targetOrgId` the dispatch-time reload re-derives ownership against, so a
+  // dropped/mis-threaded `opts.orgId` would silently deny a partner-scoped
+  // caller's otherwise-valid org-owned tool. Pin the forwarding explicitly —
+  // nothing else in this file asserts `loadTenantToolForExecution`'s args.
+  it('threads opts.orgId through to loadTenantToolForExecution as the targetOrgId for the dispatch-time reload', async () => {
+    vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
+
+    const descriptor = makeDescriptor();
+    const auth = makeAuth({ scope: 'partner', orgId: null, partnerId: 'partner-1' });
+    await executeTenantTool(descriptor, { id: 'a1' }, auth, { surface: 'test', orgId: 'org-1' });
+
+    expect(loadTenantToolForExecution).toHaveBeenCalledWith(descriptor.id, auth, 'org-1');
+  });
+
+  it('passes undefined targetOrgId through when the caller omits opts.orgId (partner-wide-only reload)', async () => {
+    vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);
+    vi.mocked(loadTenantToolForExecution).mockResolvedValue({ descriptor: makeDescriptor(), source: makeSource() });
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }], isError: false });
+
+    const descriptor = makeDescriptor();
+    const auth = makeAuth();
+    await executeTenantTool(descriptor, { id: 'a1' }, auth, { surface: 'test' });
+
+    expect(loadTenantToolForExecution).toHaveBeenCalledWith(descriptor.id, auth, undefined);
+  });
+
   it('wires TOOL_SOURCES_ALLOW_PRIVATE_EGRESS into the McpClient it constructs for dispatch', async () => {
     vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValue(true);
     vi.mocked(checkTenantToolRateLimit).mockResolvedValue(null);

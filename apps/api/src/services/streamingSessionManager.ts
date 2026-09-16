@@ -983,7 +983,17 @@ export class StreamingSessionManager {
         preToolUse,
         postToolUse,
         () => session,
-        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.orgId),
+        // `session.orgId` is set ONCE at session creation and never refreshed
+        // on reuse (unlike `session.toolAuth`, which the reuse branch above
+        // re-narrows to the CURRENT device org every turn, #3087). Since
+        // `execute.ts` now threads this org through the dispatch-time
+        // OWNER-predicate reload (#6023), a stale `session.orgId` would let a
+        // device-bound session keep dispatching a tool under its OLD org's
+        // credentials after the device moved — read `session.toolAuth.orgId`
+        // (fresh every turn for a device-bound session) and fall back to
+        // `session.orgId` only when `toolAuth` carries none (non-device
+        // sessions, whose org doesn't drift the same way).
+        buildTenantSdkTools(tenantDescriptors, () => session.toolAuth, () => session.toolAuth.orgId ?? session.orgId),
       );
     }
     session.mcpServer = mcpServer;
