@@ -2,6 +2,8 @@ package snmppoll
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -191,5 +193,225 @@ func TestCollectWithSource_GetTransportErrorFailsThePoll(t *testing.T) {
 func TestCollectMetrics_NoSpecsAndNoOIDsReturnsError(t *testing.T) {
 	if _, err := CollectMetrics(SNMPDevice{IP: "192.0.2.1"}); err == nil {
 		t.Fatal("CollectMetrics with neither Specs nor OIDs should return an error")
+	}
+}
+
+// walkRows builds n instance PDUs under base, numbered from 1.
+func walkRows(base string, n int) []gosnmp.SnmpPDU {
+	pdus := make([]gosnmp.SnmpPDU, 0, n)
+	for i := 1; i <= n; i++ {
+		pdus = append(pdus, gosnmp.SnmpPDU{
+			Name:  base + "." + itoa(i),
+			Type:  gosnmp.Integer,
+			Value: i,
+		})
+	}
+	return pdus
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }
+
+const suppliesLevel = ".1.3.6.1.2.1.43.11.1.1.9"
+
+func walkSpec() OIDSpec {
+	return OIDSpec{OID: "1.3.6.1.2.1.43.11.1.1.9", Name: "prtMarkerSuppliesLevel", Mode: ModeWalk, Cadence: CadenceFast}
+}
+
+func TestCollectWithSource_WalkEmitsOneRowPerInstance(t *testing.T) {
+	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{
+		"1.3.6.1.2.1.43.11.1.1.9": walkRows(suppliesLevel, 4),
+	}}
+
+	metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, DefaultPollLimits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+	if len(metrics) != 4 {
+		t.Fatalf("got %d metrics, want 4: %+v", len(metrics), metrics)
+	}
+	// No GET is issued for a walk spec — that was the bug.
+	if len(src.getCalls) != 0 {
+		t.Errorf("walk spec issued %d GET batches, want 0", len(src.getCalls))
+	}
+	for i, m := range metrics {
+		if m.BaseOID != "1.3.6.1.2.1.43.11.1.1.9" {
+			t.Errorf("row %d BaseOID = %q, want the template base", i, m.BaseOID)
+		}
+		if m.Instance != itoa(i+1) {
+			t.Errorf("row %d Instance = %q, want %q", i, m.Instance, itoa(i+1))
+		}
+		if m.Name != "prtMarkerSuppliesLevel" {
+			t.Errorf("row %d Name = %q, want the spec name", i, m.Name)
+		}
+		if m.Error != "" {
+			t.Errorf("row %d Error = %q, want empty", i, m.Error)
+		}
+	}
+}
+
+func TestCollectWithSource_WalkStopsAtMaxRowsPerOID(t *testing.T) {
+	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{
+		"1.3.6.1.2.1.43.11.1.1.9": walkRows(suppliesLevel, 40),
+	}}
+	limits := DefaultPollLimits
+	limits.MaxRowsPerOID = 10
+
+	metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, limits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+	// 10 value rows plus one truncation marker.
+	if len(metrics) != 11 {
+		t.Fatalf("got %d metrics, want 10 values + 1 truncated row: %+v", len(metrics), metrics)
+	}
+	last := metrics[len(metrics)-1]
+	if last.Error != ErrCodeTruncated {
+		t.Errorf("last row Error = %q, want %q", last.Error, ErrCodeTruncated)
+	}
+	if last.BaseOID != "1.3.6.1.2.1.43.11.1.1.9" || last.Instance != "" {
+		t.Errorf("truncation row = %+v, want the base OID with an empty instance", last)
+	}
+	for _, m := range metrics[:10] {
+		if m.Error != "" {
+			t.Errorf("row before the bound carries Error %q; rows collected before truncation must still be emitted", m.Error)
+		}
+	}
+}
+
+func TestCollectWithSource_PollRowBudgetStopsLaterSpecs(t *testing.T) {
+	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{
+		"1.3.6.1.2.1.43.11.1.1.9": walkRows(suppliesLevel, 10),
+		"1.3.6.1.2.1.43.11.1.1.6": walkRows(".1.3.6.1.2.1.43.11.1.1.6", 10),
+	}}
+	limits := DefaultPollLimits
+	limits.MaxRowsPerPoll = 6
+
+	specs := []OIDSpec{
+		walkSpec(),
+		{OID: "1.3.6.1.2.1.43.11.1.1.6", Name: "prtMarkerSuppliesDescription", Mode: ModeWalk, Cadence: CadenceFast},
+	}
+	metrics, err := collectWithSource(src, specs, limits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+
+	values := 0
+	truncated := map[string]bool{}
+	for _, m := range metrics {
+		if m.Error == ErrCodeTruncated {
+			truncated[m.BaseOID] = true
+			continue
+		}
+		values++
+	}
+	if values != 6 {
+		t.Errorf("collected %d value rows, want the poll budget of 6", values)
+	}
+	// The second spec never got to run, and that must be visible rather than
+	// looking like an OID that was never polled.
+	if !truncated["1.3.6.1.2.1.43.11.1.1.6"] {
+		t.Error("the skipped spec has no truncated row; it would read as never_polled in the UI")
+	}
+}
+
+func TestCollectWithSource_ByteBudgetTruncates(t *testing.T) {
+	big := make([]gosnmp.SnmpPDU, 0, 20)
+	for i := 1; i <= 20; i++ {
+		big = append(big, gosnmp.SnmpPDU{
+			Name:  suppliesLevel + "." + itoa(i),
+			Type:  gosnmp.OctetString,
+			Value: []byte(strings.Repeat("x", 512)),
+		})
+	}
+	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{"1.3.6.1.2.1.43.11.1.1.9": big}}
+	limits := DefaultPollLimits
+	limits.MaxBytesPerPoll = 2048
+
+	metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, limits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+	if len(metrics) >= 20 {
+		t.Fatalf("got %d metrics, want the byte budget to cut the walk short", len(metrics))
+	}
+	if metrics[len(metrics)-1].Error != ErrCodeTruncated {
+		t.Errorf("last row Error = %q, want %q", metrics[len(metrics)-1].Error, ErrCodeTruncated)
+	}
+}
+
+func TestCollectWithSource_UnimplementedTableBecomesNoSuchObject(t *testing.T) {
+	// gosnmp's walk loop breaks on NoSuchObject/NoSuchInstance/EndOfMibView
+	// WITHOUT calling the callback, so an unimplemented table looks exactly like
+	// an empty one here. It must not be silently empty.
+	src := &fakePDUSource{walkPDUs: map[string][]gosnmp.SnmpPDU{}}
+
+	metrics, err := collectWithSource(src, []OIDSpec{walkSpec()}, DefaultPollLimits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+	if len(metrics) != 1 || metrics[0].Error != ErrCodeNoSuchObject {
+		t.Fatalf("empty walk produced %+v, want one %q error row", metrics, ErrCodeNoSuchObject)
+	}
+}
+
+func TestCollectWithSource_WalkErrorIsPerOIDNotPerPoll(t *testing.T) {
+	src := &fakePDUSource{
+		getPDUs: []gosnmp.SnmpPDU{{Name: ".1.3.6.1.2.1.1.3.0", Type: gosnmp.TimeTicks, Value: uint32(9)}},
+		walkErrs: map[string]error{
+			"1.3.6.1.2.1.43.11.1.1.9": errors.New("request timeout"),
+		},
+	}
+	specs := []OIDSpec{
+		{OID: "1.3.6.1.2.1.1.3.0", Name: "sysUpTime", Mode: ModeGet, Cadence: CadenceFast},
+		walkSpec(),
+	}
+
+	metrics, err := collectWithSource(src, specs, DefaultPollLimits, stamp)
+	if err != nil {
+		t.Fatalf("one failing walk must not fail the whole poll, got %v", err)
+	}
+	if m := metricByOID(metrics, ".1.3.6.1.2.1.1.3.0"); m == nil || m.Error != "" {
+		t.Errorf("the healthy scalar was lost or errored: %v", m)
+	}
+	var errRow *SNMPMetric
+	for i := range metrics {
+		if metrics[i].BaseOID == "1.3.6.1.2.1.43.11.1.1.9" {
+			errRow = &metrics[i]
+		}
+	}
+	if errRow == nil || errRow.Error != ErrCodeTimeout {
+		t.Fatalf("failing walk produced %v, want a %q error row", errRow, ErrCodeTimeout)
+	}
+}
+
+func TestCollectWithSource_MixedSpecsIssueOneGetBatchAndOneWalkEach(t *testing.T) {
+	src := &fakePDUSource{
+		getPDUs: []gosnmp.SnmpPDU{
+			{Name: ".1.3.6.1.2.1.1.3.0", Type: gosnmp.TimeTicks, Value: uint32(1)},
+			{Name: ".1.3.6.1.2.1.1.5.0", Type: gosnmp.OctetString, Value: []byte("printer-1")},
+		},
+		walkPDUs: map[string][]gosnmp.SnmpPDU{"1.3.6.1.2.1.43.11.1.1.9": walkRows(suppliesLevel, 2)},
+	}
+	specs := []OIDSpec{
+		{OID: "1.3.6.1.2.1.1.3.0", Name: "sysUpTime", Mode: ModeGet, Cadence: CadenceFast},
+		walkSpec(),
+		{OID: "1.3.6.1.2.1.1.5.0", Name: "sysName", Mode: ModeGet, Cadence: CadenceFast},
+	}
+
+	metrics, err := collectWithSource(src, specs, DefaultPollLimits, stamp)
+	if err != nil {
+		t.Fatalf("collectWithSource returned %v", err)
+	}
+	if len(src.getCalls) != 1 {
+		t.Fatalf("issued %d GET batches, want exactly 1", len(src.getCalls))
+	}
+	if len(src.getCalls[0]) != 2 {
+		t.Errorf("GET batch = %v, want only the two get specs", src.getCalls[0])
+	}
+	if len(src.walkCalls) != 1 || src.walkCalls[0] != "1.3.6.1.2.1.43.11.1.1.9" {
+		t.Errorf("walk calls = %v, want one walk of the supplies column", src.walkCalls)
+	}
+	if len(metrics) != 4 {
+		t.Errorf("got %d metrics, want 2 scalars + 2 instances", len(metrics))
 	}
 }

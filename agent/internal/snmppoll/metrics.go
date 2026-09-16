@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"math/big"
 	"time"
 	"unicode"
@@ -68,8 +69,8 @@ type SNMPMetric struct {
 	ValueEncoding string    `json:"valueEncoding,omitempty"`
 }
 
-// pduSource is the SNMP transport CollectMetrics needs: a multi-OID GET.
-// Task 5 adds WalkBounded alongside the client implementation.
+// pduSource is the SNMP transport CollectMetrics needs: a multi-OID GET
+// and a streaming bounded walk.
 // *SNMPClient satisfies it.
 //
 // The seam exists for one reason: what this file does is decided entirely by
@@ -78,6 +79,7 @@ type SNMPMetric struct {
 // asked to produce. No production behaviour depends on the indirection.
 type pduSource interface {
 	GetMulti(oids []string) ([]gosnmp.SnmpPDU, error)
+	WalkBounded(rootOID string, fn gosnmp.WalkFunc) error
 }
 
 // CollectMetrics fetches all configured OIDs for a device.
@@ -111,13 +113,18 @@ func CollectMetrics(device SNMPDevice) ([]SNMPMetric, error) {
 // collectWithSource is CollectMetrics with the transport and the clock supplied.
 func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp time.Time) ([]SNMPMetric, error) {
 	getSpecs := make([]OIDSpec, 0, len(specs))
+	walkSpecs := make([]OIDSpec, 0, len(specs))
 	for _, spec := range specs {
-		// Task 5 routes ModeWalk specs to bounded walks; until then every spec
-		// goes through the GET batch, which is what the agent has always done.
+		if spec.Mode == ModeWalk {
+			walkSpecs = append(walkSpecs, spec)
+			continue
+		}
 		getSpecs = append(getSpecs, spec)
 	}
 
-	metrics := make([]SNMPMetric, 0, len(getSpecs))
+	metrics := make([]SNMPMetric, 0, len(getSpecs)+len(walkSpecs))
+
+	// All scalars in ONE GET, exactly as before.
 	if len(getSpecs) > 0 {
 		oids := make([]string, 0, len(getSpecs))
 		for _, spec := range getSpecs {
@@ -132,7 +139,131 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 		metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
 	}
 
+	budget := &walkBudget{
+		bytes:    totalMetricBytes(metrics),
+		rows:     len(metrics),
+		deadline: time.Now().Add(limits.MaxDuration),
+		limits:   limits,
+	}
+
+	for _, spec := range walkSpecs {
+		if budget.exhausted(time.Now()) {
+			// Explicit, not omitted: a spec that never ran must not read as
+			// "never polled" in the OID table.
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
+			continue
+		}
+
+		rows, truncated, err := collectWalkSpec(src, spec, budget, stamp)
+		metrics = append(metrics, rows...)
+
+		switch {
+		case err != nil:
+			// Per-OID, not per-poll: one unimplemented or slow table must not
+			// discard the scalars and the other columns that did answer. The
+			// code set is closed, so the underlying error goes to the log.
+			slog.Warn("SNMP walk failed", "oid", spec.OID, "name", spec.Name, "error", err)
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeTimeout, stamp))
+		case truncated:
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeTruncated, stamp))
+		case len(rows) == 0:
+			// gosnmp's walk swallows NoSuchObject/NoSuchInstance/EndOfMibView
+			// PDUs (v1.44.0 walk.go:129-133) without calling the callback, so a
+			// table the device does not implement arrives here as zero rows and
+			// a nil error. Emitting nothing would leave the server's per-OID
+			// state stuck on never_polled forever.
+			metrics = append(metrics, errorMetric(spec, "", ErrCodeNoSuchObject, stamp))
+		}
+	}
+
 	return metrics, nil
+}
+
+func totalMetricBytes(metrics []SNMPMetric) int {
+	total := 0
+	for _, m := range metrics {
+		total += metricByteSize(m)
+	}
+	return total
+}
+
+// errWalkStop unwinds a walk from inside its callback once a bound is hit. It
+// never escapes collectWalkSpec.
+var errWalkStop = errors.New("snmppoll: walk bound reached")
+
+// walkBudget carries the POLL-level bounds across every walk spec in one poll.
+// Per-OID bounds live in collectWalkSpec; both are needed, because one runaway
+// table and fifty modest ones fail differently.
+type walkBudget struct {
+	rows     int
+	bytes    int
+	deadline time.Time
+	limits   PollLimits
+}
+
+func (b *walkBudget) exhausted(now time.Time) bool {
+	return b.rows >= b.limits.MaxRowsPerPoll ||
+		b.bytes >= b.limits.MaxBytesPerPoll ||
+		!now.Before(b.deadline)
+}
+
+// jsonOverheadPerMetric is a flat allowance for the JSON keys, quoting and
+// RFC3339 timestamp every row carries. metricByteSize is a safety valve, not an
+// accounting ledger: it has to be cheap and to over- rather than under-estimate.
+const jsonOverheadPerMetric = 96
+
+func metricByteSize(m SNMPMetric) int {
+	size := jsonOverheadPerMetric + len(m.OID) + len(m.BaseOID) + len(m.Instance) + len(m.Name) + len(m.Error)
+	switch v := m.Value.(type) {
+	case nil:
+	case string:
+		size += len(v)
+	default:
+		size += 20 // every numeric form serialises to at most 20 bytes
+	}
+	return size
+}
+
+// errorMetric builds a value-less row carrying a per-OID failure code.
+func errorMetric(spec OIDSpec, instance, code string, stamp time.Time) SNMPMetric {
+	oid := spec.OID
+	if instance != "" {
+		oid = spec.OID + "." + instance
+	}
+	return SNMPMetric{
+		OID:       oid,
+		BaseOID:   spec.OID,
+		Instance:  instance,
+		Name:      spec.Name,
+		Value:     nil,
+		Error:     code,
+		Timestamp: stamp,
+	}
+}
+
+// collectWalkSpec walks one spec, stopping at the first bound it hits.
+func collectWalkSpec(src pduSource, spec OIDSpec, budget *walkBudget, stamp time.Time) (rows []SNMPMetric, truncated bool, err error) {
+	perOID := 0
+	specs := []OIDSpec{spec}
+
+	walkErr := src.WalkBounded(spec.OID, func(pdu gosnmp.SnmpPDU) error {
+		// Checked BEFORE the row is kept, so MaxRowsPerOID = 512 yields exactly
+		// 512 rows and the 513th trips truncation.
+		if perOID >= budget.limits.MaxRowsPerOID || budget.exhausted(time.Now()) {
+			truncated = true
+			return errWalkStop
+		}
+		metric := metricFromPDU(specs, pdu, stamp)
+		rows = append(rows, metric)
+		perOID++
+		budget.rows++
+		budget.bytes += metricByteSize(metric)
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, errWalkStop) {
+		return rows, truncated, walkErr
+	}
+	return rows, truncated, nil
 }
 
 // buildGetMetrics maps GET varbinds onto SNMPMetric rows, declaring the encoding

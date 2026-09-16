@@ -232,3 +232,24 @@ func ParsePrivProtocol(s string) gosnmp.SnmpV3PrivProtocol {
 		return gosnmp.NoPriv
 	}
 }
+
+// WalkBounded streams a GETBULK walk of rootOID, calling fn for each PDU, and
+// stops the moment fn returns an error.
+//
+// Deliberately NOT BulkWalkAll (which Walk and BulkWalk above use): BulkWalkAll
+// buffers the entire subtree before returning, so a caller that wants to cap
+// rows, bytes or wall clock has already paid all three by the time it can look.
+// A bound that only applies after the fact bounds nothing, and this walks
+// customer hardware — an FDB table on a busy switch is unbounded in practice.
+func (c *SNMPClient) WalkBounded(rootOID string, fn gosnmp.WalkFunc) error {
+	if rootOID == "" {
+		return errors.New("oid is required")
+	}
+	if c == nil || c.client == nil {
+		return errors.New("SNMP client is not connected")
+	}
+	if fn == nil {
+		return errors.New("walk callback is required")
+	}
+	return c.client.BulkWalk(rootOID, fn)
+}
