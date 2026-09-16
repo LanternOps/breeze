@@ -90,6 +90,11 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
   const [thresholds, setThresholds] = useState<number[] | undefined>(undefined);
   const [thresholdsValid, setThresholdsValid] = useState(true);
   const [loading, setLoading] = useState(true);
+  // A failed read must NOT fall through to the form: `locked` would still be
+  // `[]` and every draft empty, so a partner-managed field would render
+  // unlocked and editable and the user would only learn otherwise from a 403
+  // (silent-failure review, #6004). Block instead.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,6 +127,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
             : String(value);
       }
       setDraft(seeded);
+      setLoadFailed(false);
       setThresholds(
         aiBudgetSource('alertThresholdPercents', merged, lockedList) === 'default'
           ? undefined
@@ -129,6 +135,7 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       );
       setError(null);
     } catch (err) {
+      setLoadFailed(true);
       setError(err instanceof Error ? err.message : t('aiUsagePage.failedToLoadData'));
     } finally {
       setLoading(false);
@@ -162,8 +169,17 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
       case 'approvalMode':
         return raw === '' ? undefined : raw;
       case 'monthlyBudgetCents':
-      case 'dailyBudgetCents':
-        return raw === '' ? null : Math.round(parseFloat(raw) * 100);
+      case 'dailyBudgetCents': {
+        if (raw === '') return null;
+        const dollars = parseFloat(raw);
+        // Defence in depth, matching the integer branch below: `Math.round(NaN)`
+        // survives the `!== undefined` filter and JSON.stringify writes it as
+        // `null`, which would silently CLEAR the cap the user was setting.
+        // Unreachable from the UI today — `<input type="number">` already
+        // reports '' for unparseable text — so this guard is deliberately not
+        // driven by a DOM test; it exists for the day the control changes.
+        return Number.isNaN(dollars) ? undefined : Math.round(dollars * 100);
+      }
       case 'alertThresholdPercents':
         return thresholds ?? null;
       default: {
@@ -245,6 +261,17 @@ export default function OrgAiBudgetSettings({ orgId }: Props) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (loadFailed) {
+    return (
+      <div
+        data-testid="org-ai-budget-unavailable"
+        className="rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-sm text-destructive"
+      >
+        {error ?? t('aiUsagePage.failedToLoadData')}
       </div>
     );
   }

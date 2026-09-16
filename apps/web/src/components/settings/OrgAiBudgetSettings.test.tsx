@@ -18,6 +18,7 @@ vi.mock('@/hooks/useDefaultOwnerScope', () => ({
 }));
 
 vi.mock('../shared/Toast', () => ({ showToast: vi.fn() }));
+import { showToast } from '../shared/Toast';
 
 import OrgAiBudgetSettings from './OrgAiBudgetSettings';
 
@@ -173,6 +174,18 @@ describe('OrgAiBudgetSettings — inherited values are never pinned', () => {
     await waitFor(() => expect(budgetPut().body).toEqual({ monthlyBudgetCents: null }));
   });
 
+  it('sends a newly typed alert threshold ladder', async () => {
+    mockEffective({ ...DEFAULT_BUDGET });
+    const { findByTestId, getByTestId } = renderTab();
+
+    const input = await findByTestId('org-ai-budget-thresholds-input');
+    fireEvent.change(input, { target: { value: '60, 90' } });
+    fireEvent.blur(input);
+    fireEvent.click(getByTestId('org-ai-budget-save'));
+
+    await waitFor(() => expect(budgetPut().body).toEqual({ alertThresholdPercents: [60, 90] }));
+  });
+
   it('sends the edited alert threshold ladder, and null when it is cleared', async () => {
     mockEffective({ ...DEFAULT_BUDGET, alertThresholdPercents: [60, 90] });
     const { findByTestId, getByTestId } = renderTab();
@@ -196,6 +209,10 @@ describe('OrgAiBudgetSettings — inherited values are never pinned', () => {
     fireEvent.change(input, { target: { value: '100' } });
     fireEvent.blur(input);
     expect(save.disabled).toBe(true);
+
+    fireEvent.change(input, { target: { value: '95' } });
+    fireEvent.blur(input);
+    expect(save.disabled).toBe(false);
   });
 });
 
@@ -218,5 +235,48 @@ describe('OrgAiBudgetSettings — request shape', () => {
 
     await waitFor(() => expect(queryByTestId('org-ai-budget-save')).toBeNull());
     expect(fetchWithAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('OrgAiBudgetSettings — a failed read is never a usable form', () => {
+  it('blocks the form when effective settings cannot be read', async () => {
+    fetchWithAuth.mockImplementation((url: string) => {
+      if (url === '/orgs/organizations/org-1/effective-settings') {
+        return Promise.resolve(jsonRes({ error: 'nope' }, 500));
+      }
+      return Promise.resolve(jsonRes({ success: true }));
+    });
+    const { findByTestId, queryByTestId } = renderTab();
+
+    await findByTestId('org-ai-budget-unavailable');
+    // Rendering the form here would show every partner-LOCKED field as
+    // editable (locked would still be []) and every value as inherited.
+    expect(queryByTestId('org-ai-budget-save')).toBeNull();
+    expect(queryByTestId('org-ai-budget-monthly')).toBeNull();
+  });
+});
+
+describe('OrgAiBudgetSettings — save failures are surfaced', () => {
+  it('reports a rejected save and leaves the edit in place', async () => {
+    fetchWithAuth.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/orgs/organizations/org-1/effective-settings' && !init) {
+        return Promise.resolve(jsonRes({ effective: { aiBudgets: DEFAULT_BUDGET }, locked: [] }));
+      }
+      return Promise.resolve(jsonRes({ error: 'Field is managed by your partner' }, 403));
+    });
+    const { findByTestId, getByTestId } = renderTab();
+
+    const monthly = (await findByTestId('org-ai-budget-monthly')) as HTMLInputElement;
+    fireEvent.change(monthly, { target: { value: '25' } });
+    fireEvent.click(getByTestId('org-ai-budget-save'));
+
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'error', message: 'Field is managed by your partner' }),
+      ),
+    );
+    // The form is still editable and still holds what the user typed — a
+    // failed save must not look like a successful one.
+    expect((getByTestId('org-ai-budget-monthly') as HTMLInputElement).value).toBe('25');
   });
 });

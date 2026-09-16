@@ -226,6 +226,31 @@ describe('AiUsagePage effective budget panel (#6004)', () => {
     expect(queryByTestId('ai-budget-thresholds-input')).toBeNull();
   });
 
+  it('renders each field\'s effective value, not just its provenance', async () => {
+    mockOrg({
+      ...EFFECTIVE_DEFAULTS,
+      enabled: false,
+      approvalMode: 'auto_approve',
+      dailyBudgetCents: 1250,
+      alertThresholdPercents: [60, 90],
+    });
+    const { findByTestId, getByTestId } = renderPage();
+
+    expect((await findByTestId('ai-effective-budget-value-enabled')).textContent).toBe('Disabled');
+    expect(getByTestId('ai-effective-budget-value-approvalMode').textContent).toBe('Auto Approve');
+    expect(getByTestId('ai-effective-budget-value-dailyBudgetCents').textContent).toContain('12.50');
+    expect(getByTestId('ai-effective-budget-value-monthlyBudgetCents').textContent).toBe('No limit');
+    expect(getByTestId('ai-effective-budget-value-alertThresholdPercents').textContent).toBe('60%, 90%');
+    expect(getByTestId('ai-effective-budget-value-maxTurnsPerSession').textContent).toBe('50');
+  });
+
+  it('renders an empty threshold ladder as off rather than as a blank cell', async () => {
+    mockOrg({ ...EFFECTIVE_DEFAULTS, alertThresholdPercents: [] });
+    const { findByTestId } = renderPage();
+
+    expect((await findByTestId('ai-effective-budget-value-alertThresholdPercents')).textContent).toBe('Off');
+  });
+
   it('marks a partner-locked field as partner-sourced and links to the partner tab', async () => {
     mockOrg({ ...EFFECTIVE_DEFAULTS, monthlyBudgetCents: 9900 }, ['aiBudgets.monthlyBudgetCents']);
     const { findByTestId } = renderPage();
