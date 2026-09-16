@@ -1,3 +1,4 @@
+import TopologyEntry from '../topology/TopologyEntry';
 // Network device detail page (route `/devices/network/:id`): owns page-level
 // state (tab, type-editor, unlink) and composes the presentational/data
 // modules in `./networkDevice/` — kept thin so each concern stays reviewable
@@ -5,7 +6,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useHashState } from '@/lib/useHashState';
-import { Activity, LayoutGrid } from 'lucide-react';
+import { Activity, LayoutGrid, Network } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../stores/auth';
 import { runAction } from '../../lib/runAction';
@@ -255,6 +256,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   const tabDefs: OverflowTab[] = [
     { id: 'overview', label: t('networkDeviceDetailPage.tabs.overview'), icon: <LayoutGrid aria-hidden="true" className="h-4 w-4" /> },
     { id: 'monitoring', label: t('networkDeviceDetailPage.tabs.monitoring'), icon: <Activity aria-hidden="true" className="h-4 w-4" /> },
+    ...(extras.siteId ? [{ id: 'topology', label: t('topology:title'), icon: <Network aria-hidden="true" className="h-4 w-4" /> }] : []),
   ];
   // Must match the `testIdPrefix` passed to OverflowTabs below — it's the
   // same string OverflowTabs uses internally (via `overflowPanelId`) to build
@@ -505,6 +507,8 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           </Section>
         </div>
       )}
+
+      {activeTab === 'topology' && <div role="tabpanel" id={overflowPanelId(TAB_ID_PREFIX, 'topology')} data-testid="network-detail-topology"><TopologyEntry siteId={extras.siteId} assetId={asset.id} /></div>}
 
       <ConfirmDialog
         open={confirmUnlinkOpen}

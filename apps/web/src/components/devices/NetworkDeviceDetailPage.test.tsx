@@ -1,3 +1,4 @@
+import { topologyGraphFixture, topologySettingsFixture, SITE, NODE } from '../topology/topologyFixtures';
 import '@/lib/i18n';
 
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
@@ -10,6 +11,7 @@ import { showToast } from '../shared/Toast';
 
 vi.mock('../../stores/auth', () => ({
   fetchWithAuth: vi.fn(),
+  registerOrgIdProvider: vi.fn(),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -21,6 +23,8 @@ vi.mock('@/lib/navigation', () => ({
 vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
+
+vi.mock('../topology/TopologyCanvas', () => ({ default: () => <div data-testid="topology-canvas" /> }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
@@ -88,6 +92,25 @@ describe('NetworkDeviceDetailPage', () => {
 
   afterEach(() => {
     window.location.hash = '';
+  });
+
+  it('opens #topology with passive reads and resolves the canonical inventory binding', async () => {
+    window.location.hash = '#topology';
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    fetchWithAuthMock.mockImplementation(async (url) => {
+      const path = String(url);
+      if (path === `/discovery/assets/${ASSET_ID}`) return makeJsonResponse({ data: { ...baseAsset, siteId: SITE } });
+      if (path.endsWith('/settings')) return makeJsonResponse(topologySettingsFixture());
+      if (path.includes('/nodes?')) return makeJsonResponse({ siteId: SITE, graphRevision: '1', total: 1, nodes: topologyGraphFixture().nodes, cursor: null });
+      if (path.includes('/graph?')) return makeJsonResponse(topologyGraphFixture());
+      return makeJsonResponse({ data: [] });
+    });
+    const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('topology-explorer')).toBeVisible();
+    expect(await screen.findByTestId('topology-health-internet')).toHaveTextContent('Not measured');
+    expect(fetchWithAuthMock.mock.calls.some(([url]) => String(url).includes(`focusNodeId=${NODE}`))).toBe(true);
+    expect(fetchWithAuthMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+    unmount(); vi.unstubAllGlobals(); fetchWithAuthMock.mockReset();
   });
 
   it('renders identity, network, SNMP and ports from the discovery asset endpoint', async () => {

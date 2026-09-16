@@ -68,9 +68,8 @@ export function packTopologyLayout(request: LayoutRequest, proposed = new Map<st
 }
 
 /** Imported only by the module worker (unit tests exercise the real engine). */
-export async function computeTopologyLayout(request: LayoutRequest): Promise<LayoutResult> {
+export async function computeTopologyLayout(request: LayoutRequest, engine: { layout: (graph: ElkNode) => Promise<ElkNode> }): Promise<LayoutResult> {
   if (request.nodes.length + request.edges.length > 5000) return packTopologyLayout(request, undefined, true);
-  const { default: ELK } = await import('elkjs/lib/elk.bundled.js');
-  const layout = await new ELK().layout(toElkGraph(request));
+  const layout = await engine.layout(toElkGraph(request));
   return packTopologyLayout(request, elkPositions(layout));
 }
