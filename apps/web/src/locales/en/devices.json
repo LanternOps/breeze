@@ -2609,7 +2609,8 @@
       "openPorts": "Open ports",
       "snmpData": "SNMP data",
       "reachability": "Reachability",
-      "collection": "Collection"
+      "collection": "Collection",
+      "printerHealth": "Printer health"
     },
     "stats": {
       "asOf": "as of {{time}}",
@@ -2688,6 +2689,48 @@
       "noTemplate": "SNMP is on, but no template is assigned — so nothing is being polled.",
       "pickTemplate": "Choose a template",
       "viewAllOids": "View all {{count}} OIDs"
+    },
+    "printer": {
+      "low": "Low",
+      "supplyFallback": "Supply {{instance}}",
+      "pageCount": "Lifetime pages",
+      "sinceYesterday": "{{count}} since yesterday",
+      "sinceLastWeek": "{{count}} in the last week",
+      "notCollectedYet": "Printer health values have not been collected yet.",
+      "status": {
+        "other": "Other",
+        "unknown": "Unknown",
+        "idle": "Idle",
+        "printing": "Printing",
+        "warmup": "Warming up"
+      },
+      "deviceStatus": {
+        "unknown": "Unknown",
+        "running": "Running",
+        "warning": "Warning",
+        "testing": "Testing",
+        "down": "Down"
+      },
+      "errors": {
+        "lowPaper": "Paper low",
+        "noPaper": "Out of paper",
+        "lowToner": "Toner low",
+        "noToner": "Out of toner",
+        "doorOpen": "Door open",
+        "jammed": "Paper jam",
+        "offline": "Offline",
+        "serviceRequested": "Service required",
+        "inputTrayMissing": "Input tray missing",
+        "outputTrayMissing": "Output tray missing",
+        "markerSupplyMissing": "Supply missing",
+        "outputNearFull": "Output tray nearly full",
+        "outputFull": "Output tray full",
+        "inputTrayEmpty": "Input tray empty",
+        "overduePreventMaint": "Maintenance overdue"
+      }
+    },
+    "charts": {
+      "loadFailed": "Couldn’t load this metric’s history."
     }
   },
   "osIcons": {

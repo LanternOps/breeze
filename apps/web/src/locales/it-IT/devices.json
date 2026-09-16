@@ -2391,7 +2391,8 @@
       "openPorts": "Porte aperte",
       "snmpData": "Dati SNMP",
       "reachability": "Raggiungibilità",
-      "collection": "Raccolta"
+      "collection": "Raccolta",
+      "printerHealth": "Stato della stampante"
     },
     "stats": {
       "asOf": "aggiornato al {{time}}",
@@ -2656,6 +2657,48 @@
       "noTemplate": "SNMP è attivo, ma non è assegnato alcun modello, quindi non viene interrogato nulla.",
       "pickTemplate": "Scegli un modello",
       "viewAllOids": "Visualizza tutti i {{count}} OID"
+    },
+    "printer": {
+      "low": "Basso",
+      "supplyFallback": "Materiale di consumo {{instance}}",
+      "pageCount": "Pagine totali",
+      "sinceYesterday": "{{count}} da ieri",
+      "sinceLastWeek": "{{count}} nell’ultima settimana",
+      "notCollectedYet": "I dati sullo stato della stampante non sono ancora stati raccolti.",
+      "status": {
+        "other": "Altro",
+        "unknown": "Sconosciuto",
+        "idle": "In attesa",
+        "printing": "Stampa in corso",
+        "warmup": "Riscaldamento"
+      },
+      "deviceStatus": {
+        "unknown": "Sconosciuto",
+        "running": "In funzione",
+        "warning": "Avviso",
+        "testing": "Test in corso",
+        "down": "Fuori servizio"
+      },
+      "errors": {
+        "lowPaper": "Carta in esaurimento",
+        "noPaper": "Carta esaurita",
+        "lowToner": "Toner in esaurimento",
+        "noToner": "Toner esaurito",
+        "doorOpen": "Sportello aperto",
+        "jammed": "Carta inceppata",
+        "offline": "Non in linea",
+        "serviceRequested": "Assistenza necessaria",
+        "inputTrayMissing": "Vassoio di alimentazione mancante",
+        "outputTrayMissing": "Vassoio di uscita mancante",
+        "markerSupplyMissing": "Materiale di consumo mancante",
+        "outputNearFull": "Vassoio di uscita quasi pieno",
+        "outputFull": "Vassoio di uscita pieno",
+        "inputTrayEmpty": "Vassoio di alimentazione vuoto",
+        "overduePreventMaint": "Manutenzione scaduta"
+      }
+    },
+    "charts": {
+      "loadFailed": "Impossibile caricare la cronologia di questa metrica."
     }
   },
   "osIcons": {

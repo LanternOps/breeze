@@ -2391,7 +2391,8 @@
       "openPorts": "Puertos abiertos",
       "snmpData": "Datos SNMP",
       "reachability": "Accesibilidad",
-      "collection": "Recopilación"
+      "collection": "Recopilación",
+      "printerHealth": "Estado de la impresora"
     },
     "stats": {
       "asOf": "a partir de {{time}}",
@@ -2656,6 +2657,48 @@
       "noTemplate": "SNMP está activado, pero no hay ninguna plantilla asignada, por lo que no se está consultando nada.",
       "pickTemplate": "Elegir una plantilla",
       "viewAllOids": "Ver los {{count}} OID"
+    },
+    "printer": {
+      "low": "Bajo",
+      "supplyFallback": "Consumible {{instance}}",
+      "pageCount": "Páginas totales",
+      "sinceYesterday": "{{count}} desde ayer",
+      "sinceLastWeek": "{{count}} en la última semana",
+      "notCollectedYet": "Aún no se recopilaron datos del estado de la impresora.",
+      "status": {
+        "other": "Otro",
+        "unknown": "Desconocido",
+        "idle": "En espera",
+        "printing": "Imprimiendo",
+        "warmup": "Calentando"
+      },
+      "deviceStatus": {
+        "unknown": "Desconocido",
+        "running": "En funcionamiento",
+        "warning": "Advertencia",
+        "testing": "En prueba",
+        "down": "Fuera de servicio"
+      },
+      "errors": {
+        "lowPaper": "Poco papel",
+        "noPaper": "Sin papel",
+        "lowToner": "Poco tóner",
+        "noToner": "Sin tóner",
+        "doorOpen": "Tapa abierta",
+        "jammed": "Atasco de papel",
+        "offline": "Sin conexión",
+        "serviceRequested": "Requiere servicio",
+        "inputTrayMissing": "Falta la bandeja de entrada",
+        "outputTrayMissing": "Falta la bandeja de salida",
+        "markerSupplyMissing": "Falta un consumible",
+        "outputNearFull": "Bandeja de salida casi llena",
+        "outputFull": "Bandeja de salida llena",
+        "inputTrayEmpty": "Bandeja de entrada vacía",
+        "overduePreventMaint": "Mantenimiento vencido"
+      }
+    },
+    "charts": {
+      "loadFailed": "No se pudo cargar el historial de esta métrica."
     }
   },
   "osIcons": {

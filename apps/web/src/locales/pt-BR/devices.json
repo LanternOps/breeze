@@ -2391,7 +2391,8 @@
       "openPorts": "Portas abertas",
       "snmpData": "Dados SNMP",
       "reachability": "Acessibilidade",
-      "collection": "Coleta"
+      "collection": "Coleta",
+      "printerHealth": "Integridade da impressora"
     },
     "stats": {
       "asOf": "em {{time}}",
@@ -2656,6 +2657,48 @@
       "noTemplate": "O SNMP está ativado, mas nenhum modelo foi atribuído; por isso, nada está sendo consultado.",
       "pickTemplate": "Escolher um modelo",
       "viewAllOids": "Ver todos os {{count}} OIDs"
+    },
+    "printer": {
+      "low": "Baixo",
+      "supplyFallback": "Suprimento {{instance}}",
+      "pageCount": "Total de páginas",
+      "sinceYesterday": "{{count}} desde ontem",
+      "sinceLastWeek": "{{count}} na última semana",
+      "notCollectedYet": "Os dados de integridade da impressora ainda não foram coletados.",
+      "status": {
+        "other": "Outro",
+        "unknown": "Desconhecido",
+        "idle": "Em espera",
+        "printing": "Imprimindo",
+        "warmup": "Aquecendo"
+      },
+      "deviceStatus": {
+        "unknown": "Desconhecido",
+        "running": "Em funcionamento",
+        "warning": "Aviso",
+        "testing": "Em teste",
+        "down": "Fora de serviço"
+      },
+      "errors": {
+        "lowPaper": "Pouco papel",
+        "noPaper": "Sem papel",
+        "lowToner": "Pouco toner",
+        "noToner": "Sem toner",
+        "doorOpen": "Tampa aberta",
+        "jammed": "Papel atolado",
+        "offline": "Desconectada",
+        "serviceRequested": "Manutenção necessária",
+        "inputTrayMissing": "Bandeja de entrada ausente",
+        "outputTrayMissing": "Bandeja de saída ausente",
+        "markerSupplyMissing": "Suprimento ausente",
+        "outputNearFull": "Bandeja de saída quase cheia",
+        "outputFull": "Bandeja de saída cheia",
+        "inputTrayEmpty": "Bandeja de entrada vazia",
+        "overduePreventMaint": "Manutenção atrasada"
+      }
+    },
+    "charts": {
+      "loadFailed": "Não foi possível carregar o histórico desta métrica."
     }
   },
   "osIcons": {

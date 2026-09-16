@@ -2391,7 +2391,8 @@
       "openPorts": "Ports ouverts",
       "snmpData": "Données SNMP",
       "reachability": "Accessibilité",
-      "collection": "Collecte"
+      "collection": "Collecte",
+      "printerHealth": "État de l’imprimante"
     },
     "stats": {
       "asOf": "en date de {{time}}",
@@ -2656,6 +2657,48 @@
       "noTemplate": "SNMP est activé, mais aucun modèle n’est attribué : aucune donnée n’est donc interrogée.",
       "pickTemplate": "Choisir un modèle",
       "viewAllOids": "Afficher les {{count}} OID"
+    },
+    "printer": {
+      "low": "Faible",
+      "supplyFallback": "Consommable {{instance}}",
+      "pageCount": "Total des pages",
+      "sinceYesterday": "{{count}} depuis hier",
+      "sinceLastWeek": "{{count}} au cours de la dernière semaine",
+      "notCollectedYet": "Aucune donnée sur l’état de l’imprimante n’a encore été recueillie.",
+      "status": {
+        "other": "Autre",
+        "unknown": "Inconnu",
+        "idle": "En attente",
+        "printing": "Impression en cours",
+        "warmup": "Préchauffage"
+      },
+      "deviceStatus": {
+        "unknown": "Inconnu",
+        "running": "En fonction",
+        "warning": "Avertissement",
+        "testing": "Test en cours",
+        "down": "Hors service"
+      },
+      "errors": {
+        "lowPaper": "Peu de papier",
+        "noPaper": "Plus de papier",
+        "lowToner": "Peu de toner",
+        "noToner": "Plus de toner",
+        "doorOpen": "Capot ouvert",
+        "jammed": "Bourrage papier",
+        "offline": "Hors ligne",
+        "serviceRequested": "Entretien requis",
+        "inputTrayMissing": "Bac d’alimentation absent",
+        "outputTrayMissing": "Bac de sortie absent",
+        "markerSupplyMissing": "Consommable absent",
+        "outputNearFull": "Bac de sortie presque plein",
+        "outputFull": "Bac de sortie plein",
+        "inputTrayEmpty": "Bac d’alimentation vide",
+        "overduePreventMaint": "Entretien en retard"
+      }
+    },
+    "charts": {
+      "loadFailed": "Impossible de charger l’historique de cette mesure."
     }
   },
   "osIcons": {

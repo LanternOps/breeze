@@ -1,3 +1,10 @@
+// Pure RFC 3805 / HOST-RESOURCES-MIB decoding for the printer Health card.
+// Kept out of the component so every table below is unit-testable against a
+// real device's `collection` payload without rendering anything.
+//
+// The OIDs and names match the shipped built-in "Generic Printer (RFC 3805)"
+// template seed (apps/api/migrations/2026-05-22-snmp-multi-vendor-templates.sql).
+
 import type { Collection, CollectionOid, CollectionOidInstance } from '../types';
 
 export const PRINTER_OIDS = {
@@ -11,6 +18,24 @@ export const PRINTER_OIDS = {
   suppliesLevel: '1.3.6.1.2.1.43.11.1.1.9',
   colorantValue: '1.3.6.1.2.1.43.12.1.1.4',
 } as const;
+
+// hrPrinterStatus (1.3.6.1.2.1.25.3.5.1.1), RFC 2790.
+export const HR_PRINTER_STATUS: Record<number, string> = {
+  1: 'other', 2: 'unknown', 3: 'idle', 4: 'printing', 5: 'warmup',
+};
+
+// hrDeviceStatus (1.3.6.1.2.1.25.3.2.1.5), RFC 2790.
+export const HR_DEVICE_STATUS: Record<number, string> = {
+  1: 'unknown', 2: 'running', 3: 'warning', 4: 'testing', 5: 'down',
+};
+
+// hrPrinterDetectedErrorState (1.3.6.1.2.1.25.3.5.1.2) is an OCTET STRING of
+// BITS: bit 0 is the MOST significant bit of the first byte.
+export const PRINTER_ERROR_BITS = [
+  'lowPaper', 'noPaper', 'lowToner', 'noToner', 'doorOpen', 'jammed', 'offline', 'serviceRequested',
+  'inputTrayMissing', 'outputTrayMissing', 'markerSupplyMissing', 'outputNearFull', 'outputFull',
+  'inputTrayEmpty', 'overduePreventMaint',
+] as const;
 
 function oidRows(collection: Collection | null, baseOid: string): CollectionOidInstance[] {
   if (!collection) return [];
@@ -76,3 +101,70 @@ export function lowestSupply(collection: Collection | null): SupplyReading | nul
   return known.reduce((lowest, s) => (s.percent! < lowest.percent! ? s : lowest));
 }
 
+export function readPageCount(collection: Collection | null): { instanceOid: string; value: number } | null {
+  const rows = oidRows(collection, PRINTER_OIDS.lifeCount);
+  for (const row of rows) {
+    const value = toInt(row.value);
+    if (value !== null && value >= 0) return { instanceOid: row.oid, value };
+  }
+  return null;
+}
+
+/** Decodes the BITS octet string; tolerates hex ("0x0C", "0c 00") and a decimal byte. */
+export function decodeErrorState(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const trimmed = raw.trim();
+  if (trimmed === '') return [];
+
+  let bytes: number[] | null = null;
+  const hex = trimmed.replace(/^0x/i, '').replace(/\s+/g, '');
+  if (/^[0-9a-f]+$/i.test(hex) && (/^0x/i.test(trimmed) || /\s/.test(trimmed) || /[a-f]/i.test(hex))) {
+    const padded = hex.length % 2 === 1 ? `0${hex}` : hex;
+    bytes = [];
+    for (let i = 0; i < padded.length; i += 2) bytes.push(Number.parseInt(padded.slice(i, i + 2), 16));
+  } else if (/^\d+$/.test(trimmed)) {
+    // A plain decimal is a single byte from a legacy agent's integer parse.
+    const n = Number.parseInt(trimmed, 10);
+    bytes = n <= 0xff ? [n] : [(n >> 8) & 0xff, n & 0xff];
+  }
+  if (bytes === null) return [];
+
+  const set: string[] = [];
+  PRINTER_ERROR_BITS.forEach((name, bit) => {
+    const byte = bytes![bit >> 3];
+    if (byte !== undefined && (byte & (0x80 >> (bit & 7))) !== 0) set.push(name);
+  });
+  return set;
+}
+
+export function readStatusWords(collection: Collection | null): {
+  printerStatus: string | null;
+  deviceStatus: string | null;
+  errors: string[];
+} {
+  const printerRow = oidRows(collection, PRINTER_OIDS.printerStatus)[0];
+  const deviceRow = oidRows(collection, PRINTER_OIDS.deviceStatus)[0];
+  const errorRow = oidRows(collection, PRINTER_OIDS.detectedErrorState)[0];
+  const printerValue = toInt(printerRow?.value);
+  const deviceValue = toInt(deviceRow?.value);
+  return {
+    printerStatus: printerValue === null ? null : (HR_PRINTER_STATUS[printerValue] ?? null),
+    deviceStatus: deviceValue === null ? null : (HR_DEVICE_STATUS[deviceValue] ?? null),
+    errors: decodeErrorState(errorRow?.value ?? null),
+  };
+}
+
+/** `points` are already reset-aware deltas (`/metrics?delta=1`, bucket=1d), oldest first. */
+export function summariseDeltas(points: Array<[string, number]>): {
+  yesterday: number | null;
+  lastWeek: number | null;
+} {
+  if (points.length === 0) return { yesterday: null, lastWeek: null };
+  const yesterday = points[points.length - 1][1];
+  // Claiming a week from fewer than seven buckets would under-report it as a
+  // fact rather than a partial window, so it stays null.
+  const lastWeek = points.length >= 7
+    ? points.slice(-7).reduce((sum, [, value]) => sum + value, 0)
+    : null;
+  return { yesterday, lastWeek };
+}

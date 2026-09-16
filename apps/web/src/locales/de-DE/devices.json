@@ -2391,7 +2391,8 @@
       "openPorts": "Offene Ports",
       "snmpData": "SNMP-Daten",
       "reachability": "Erreichbarkeit",
-      "collection": "Datenerfassung"
+      "collection": "Datenerfassung",
+      "printerHealth": "Druckerzustand"
     },
     "stats": {
       "asOf": "Stand: {{time}}",
@@ -2656,6 +2657,48 @@
       "noTemplate": "SNMP ist aktiviert, aber es ist keine Vorlage zugewiesen — daher wird nichts abgefragt.",
       "pickTemplate": "Vorlage auswählen",
       "viewAllOids": "Alle {{count}} OIDs anzeigen"
+    },
+    "printer": {
+      "low": "Niedrig",
+      "supplyFallback": "Verbrauchsmaterial {{instance}}",
+      "pageCount": "Seiten insgesamt",
+      "sinceYesterday": "{{count}} seit gestern",
+      "sinceLastWeek": "{{count}} in der letzten Woche",
+      "notCollectedYet": "Es wurden noch keine Daten zum Druckerzustand erfasst.",
+      "status": {
+        "other": "Sonstiger Zustand",
+        "unknown": "Unbekannt",
+        "idle": "Bereit",
+        "printing": "Druckt",
+        "warmup": "Wärmt auf"
+      },
+      "deviceStatus": {
+        "unknown": "Unbekannt",
+        "running": "In Betrieb",
+        "warning": "Warnung",
+        "testing": "Test läuft",
+        "down": "Ausgefallen"
+      },
+      "errors": {
+        "lowPaper": "Wenig Papier",
+        "noPaper": "Kein Papier",
+        "lowToner": "Wenig Toner",
+        "noToner": "Kein Toner",
+        "doorOpen": "Klappe offen",
+        "jammed": "Papierstau",
+        "offline": "Nicht verbunden",
+        "serviceRequested": "Service erforderlich",
+        "inputTrayMissing": "Papierzufuhr fehlt",
+        "outputTrayMissing": "Ausgabefach fehlt",
+        "markerSupplyMissing": "Verbrauchsmaterial fehlt",
+        "outputNearFull": "Ausgabefach fast voll",
+        "outputFull": "Ausgabefach voll",
+        "inputTrayEmpty": "Papierzufuhr leer",
+        "overduePreventMaint": "Wartung überfällig"
+      }
+    },
+    "charts": {
+      "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden."
     }
   },
   "osIcons": {

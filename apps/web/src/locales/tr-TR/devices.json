@@ -2391,7 +2391,8 @@
       "openPorts": "Açık bağlantı noktaları",
       "snmpData": "SNMP verisi",
       "reachability": "Erişilebilirlik",
-      "collection": "Veri toplama"
+      "collection": "Veri toplama",
+      "printerHealth": "Yazıcı durumu"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",
@@ -2656,6 +2657,48 @@
       "noTemplate": "SNMP açık, ancak bir şablon atanmamış; bu nedenle hiçbir şey sorgulanmıyor.",
       "pickTemplate": "Şablon seç",
       "viewAllOids": "{{count}} OID’nin tümünü görüntüle"
+    },
+    "printer": {
+      "low": "Düşük",
+      "supplyFallback": "Sarf malzemesi {{instance}}",
+      "pageCount": "Toplam sayfa",
+      "sinceYesterday": "Dünden beri {{count}}",
+      "sinceLastWeek": "Son haftada {{count}}",
+      "notCollectedYet": "Yazıcı durum verileri henüz toplanmadı.",
+      "status": {
+        "other": "Diğer",
+        "unknown": "Bilinmiyor",
+        "idle": "Boşta",
+        "printing": "Yazdırılıyor",
+        "warmup": "Isınıyor"
+      },
+      "deviceStatus": {
+        "unknown": "Bilinmiyor",
+        "running": "Çalışıyor",
+        "warning": "Uyarı",
+        "testing": "Test ediliyor",
+        "down": "Devre dışı"
+      },
+      "errors": {
+        "lowPaper": "Kağıt az",
+        "noPaper": "Kağıt bitti",
+        "lowToner": "Toner az",
+        "noToner": "Toner bitti",
+        "doorOpen": "Kapak açık",
+        "jammed": "Kağıt sıkışması",
+        "offline": "Çevrimdışı",
+        "serviceRequested": "Servis gerekiyor",
+        "inputTrayMissing": "Giriş tepsisi eksik",
+        "outputTrayMissing": "Çıkış tepsisi eksik",
+        "markerSupplyMissing": "Sarf malzemesi eksik",
+        "outputNearFull": "Çıkış tepsisi dolmak üzere",
+        "outputFull": "Çıkış tepsisi dolu",
+        "inputTrayEmpty": "Giriş tepsisi boş",
+        "overduePreventMaint": "Bakım gecikti"
+      }
+    },
+    "charts": {
+      "loadFailed": "Bu metriğin geçmişi yüklenemedi."
     }
   },
   "osIcons": {
