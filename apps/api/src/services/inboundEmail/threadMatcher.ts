@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import addressparser from 'nodemailer/lib/addressparser/index.js';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
-import { tickets } from '../../db/schema';
+import { ticketEmailInbound, tickets, users } from '../../db/schema';
 import { findTicketIdsByMessageIds } from '../ticketEmailLinks';
 
 // Per-partner ticket display number, e.g. T-2026-0001.
@@ -27,6 +28,7 @@ export interface MatchedTicket {
   submittedBy: string | null;
   requesterContactId: string | null;
   submitterEmail: string | null;
+  assignedTo?: string | null;
 }
 
 const MATCH_COLS = {
@@ -38,6 +40,7 @@ const MATCH_COLS = {
   internalNumber: tickets.internalNumber,
   submittedBy: tickets.submittedBy,
   requesterContactId: tickets.requesterContactId,
+  assignedTo: tickets.assignedTo,
   submitterEmail: tickets.submitterEmail
 };
 
@@ -55,7 +58,8 @@ export interface SenderResolver {
 }
 
 /**
- * Bind inbound header and subject-token matches to the current requester.
+ * Bind enumerable subject-token matches to the current requester. Header matches
+ * additionally admit existing thread participants (see senderIsThreadParticipant).
  * Partner/org scoping and possession of a thread identifier are insufficient:
  * portal ticket reads are requester-scoped, so another sender in the same
  * organization must not append a public comment or reopen the requester's ticket.
@@ -92,6 +96,41 @@ export async function senderIsBoundToTicket(
   if (!matchesSnapshot) return false;
   const domain = await sender.domainOrg();
   return domain?.orgId === ticket.orgId;
+}
+
+// Header identifiers also reach CC'd colleagues, forwarded participants, and
+// technicians using mail clients. Only previously accepted mail on THIS ticket
+// establishes participation; quarantined/failed mail cannot authorize its sender.
+async function senderIsThreadParticipant(from: string, ticket: MatchedTicket): Promise<boolean> {
+  const normalizedFrom = from.trim().toLowerCase();
+  if (!normalizedFrom || !ticket.partnerId) return false;
+  const priorMessages = await db.select({
+    fromAddress: ticketEmailInbound.fromAddress,
+    raw: ticketEmailInbound.raw
+  }).from(ticketEmailInbound).where(and(
+    eq(ticketEmailInbound.ticketId, ticket.id),
+    eq(ticketEmailInbound.partnerId, ticket.partnerId),
+    inArray(ticketEmailInbound.parseStatus, ['matched', 'created'])
+  ));
+  for (const message of priorMessages) {
+    if (message.fromAddress?.trim().toLowerCase() === normalizedFrom) return true;
+    const raw = message.raw as Record<string, unknown> | null;
+    // Mailgun retains the original form fields; Graph retains structured CCs.
+    for (const cc of [raw?.Cc, raw?.cc]) {
+      if (typeof cc === 'string' && addressparser(cc, { flatten: true })
+        .some(({ address }) => address.trim().toLowerCase() === normalizedFrom)) return true;
+    }
+    if (Array.isArray(raw?.ccRecipients) && raw.ccRecipients.some((recipient: unknown) => {
+      const address = (recipient as { emailAddress?: { address?: unknown } } | null)?.emailAddress?.address;
+      return typeof address === 'string' && address.trim().toLowerCase() === normalizedFrom;
+    })) return true;
+  }
+  if (!ticket.assignedTo) return false;
+  const [tech] = await db.select({ id: users.id }).from(users).where(and(
+    eq(users.id, ticket.assignedTo),
+    sql`lower(trim(${users.email})) = ${normalizedFrom}`
+  )).limit(1);
+  return !!tech;
 }
 
 // Candidate threading keys: In-Reply-To + every References entry (a reply's parent
@@ -149,7 +188,8 @@ export async function findTicketInPartner(
       : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
       return row;
     }
   }
@@ -226,7 +266,8 @@ export async function findClosedTicketInPartner(
       : await query.limit(1);
     const row = rows[0] as MatchedTicket | undefined;
     if (row) {
-      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))
+        && !(await senderIsThreadParticipant(input.from ?? '', row))) return null;
       return row;
     }
   }

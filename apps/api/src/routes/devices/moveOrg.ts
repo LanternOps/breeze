@@ -40,7 +40,7 @@ import {
   PamDeviceMoveBlockedError,
 } from '../../services/pamDeviceMoveGuard';
 import { pgErrorNode } from '../../utils/pgErrors';
-import { assertDeviceTicketsNotPinnedToDeliverable, TicketServiceError } from '../../services/ticketService';
+import { assertDeviceTicketsNotPinnedToDeliverable, revalidateTicketAssignee, TicketServiceError } from '../../services/ticketService';
 
 /**
  * An organization that passed the pre-transaction existence check was gone at
@@ -731,11 +731,14 @@ moveOrgRoutes.post(
           if (DEVICE_ORG_FK_CASCADE_TABLES.includes(table)) continue;
           if (table === 'tickets') {
             // Read the target partner live under the org SHARE lock above.
-            await tx.execute(
+            const movedTickets = await tx.execute<{ id: string }>(
               sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid,
                   partner_id = (SELECT partner_id FROM organizations WHERE id = ${targetOrgId}::uuid)
-                  WHERE device_id = ${deviceId}::uuid`,
+                  WHERE device_id = ${deviceId}::uuid RETURNING id`,
             );
+            for (const ticket of movedTickets) {
+              await revalidateTicketAssignee(ticket.id, { userId: auth.user.id }, tx);
+            }
           } else {
             await tx.execute(
               sql`UPDATE ${sql.identifier(table)} SET org_id = ${targetOrgId}::uuid WHERE device_id = ${deviceId}::uuid`,

@@ -35,6 +35,11 @@ describe('normalizeGraphMessage', () => {
     expect(n.html).toBe('<p>help</p>');
   });
 
+  it('preserves CC participants in the inbound audit metadata', () => {
+    const ccRecipients = [{ emailAddress: { address: 'colleague@x.com' } }];
+    expect(normalizeGraphMessage({ ...msg, ccRecipients }, 'partner-9', 'support@a.com').raw.ccRecipients).toEqual(ccRecipients);
+  });
+
   it('extracts a full sender-auth verdict (dmarc=pass -> verified)', () => {
     const n = normalizeGraphMessage(msg, 'partner-9', 'support@a.com');
     expect(n.senderAuth).toEqual({ spf: 'pass', dkim: 'pass', dmarc: 'pass', verified: true });

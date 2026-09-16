@@ -88,6 +88,9 @@ vi.mock('../../db', () => {
         excludesDeleted = whereExcludesDeleted(w);
         return chain;
       },
+      then(resolve: (value: unknown) => unknown) {
+        return Promise.resolve(state.selectRows[resolvedTable + '_participants'] ?? []).then(resolve);
+      },
       limit(_n: number) {
         let rows = state.selectRows[resolvedTable] ?? [];
         // Honor a tickets `status` constraint so the mock can tell the live-match
@@ -158,15 +161,16 @@ vi.mock('../../db', () => {
 });
 
 vi.mock('../../db/schema', () => ({
-  ticketEmailInbound: { __t: 'ticket_email_inbound', id: 'id', partnerId: 'partnerId', providerMessageId: 'providerMessageId' },
+  ticketEmailInbound: { __t: 'ticket_email_inbound', id: 'id', partnerId: 'partnerId', providerMessageId: 'providerMessageId', ticketId: 'ticketId', fromAddress: 'fromAddress', raw: 'raw', parseStatus: 'parseStatus' },
   tickets: {
     __t: 'tickets',
     id: 'id', partnerId: 'partnerId', orgId: 'orgId', status: 'status', subject: 'subject',
     emailThreadKey: 'emailThreadKey', emailMessageId: 'emailMessageId',
     internalNumber: 'internalNumber', resolvedAt: 'resolvedAt', updatedAt: 'updatedAt',
     deletedAt: 'deletedAt', submittedBy: 'submittedBy', requesterContactId: 'requesterContactId',
-    submitterEmail: 'submitterEmail'
+    assignedTo: 'assignedTo', submitterEmail: 'submitterEmail'
   },
+  users: { __t: 'users', id: 'id', email: 'email' },
   ticketComments: { __t: 'ticket_comments', ticketId: 'ticketId' },
   portalUsers: { __t: 'portal_users', id: 'id', orgId: 'orgId', email: 'email' },
   organizations: { __t: 'organizations', id: 'id', partnerId: 'partnerId' },
@@ -554,11 +558,10 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [{
       id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
-      submitterEmail: 'jane@customer.com',
       emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
     }];
     state.selectRows['organizations'] = [{ id: 'o-1' }];
-    resolveOrgMock.mockResolvedValue({ orgId: 'o-1', autoCreateContact: false });
+    state.selectRows['ticket_email_inbound_participants'] = [{ fromAddress: 'jane@customer.com', raw: {} }];
     createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
 
     await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
@@ -708,11 +711,10 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [{
       id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
-      submitterEmail: 'jane@customer.com',
       emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
     }];
     state.selectRows['organizations'] = [{ id: 'o-1' }]; // org guard passes
-    resolveOrgMock.mockResolvedValue({ orgId: 'o-1', autoCreateContact: false });
+    state.selectRows['ticket_email_inbound_participants'] = [{ fromAddress: 'jane@customer.com', raw: {} }];
     createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
 
     await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
@@ -1574,7 +1576,25 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect(inboundOf()[0]!.parseStatus).toBe('matched');
   });
 
+  it.each([
+    { fromAddress: 'colleague@somewhere.example', raw: {} },
+    { fromAddress: 'victim@customer-b.example', raw: { Cc: 'Colleague <colleague@somewhere.example>' } },
+  ])('ALLOWED: a known participant can reply-all using the unguessable thread key (%j)', async (prior) => {
+    state.selectRows['ticket_email_inbound_participants'] = [prior];
+    await processInboundEmail(email({
+      from: 'colleague@somewhere.example',
+      subject: 'no token here at all',
+      inReplyTo: '<anchor-b@tickets.example.com>',
+    }));
+
+    expect(comments()).toHaveLength(1);
+    expect(reopened()).toHaveLength(1);
+    expect(inboundOf()[0]!.parseStatus).toBe('matched');
+    expect(inboundOf()[0]!.ticketId).toBe('t-victim');
+  });
+
   it('rejects an unbound sender even when they possess the thread key', async () => {
+    state.selectRows['ticket_email_inbound_participants'] = [{ fromAddress: 'known@somewhere.example', raw: {} }];
     await processInboundEmail(email({
       from: 'stranger@somewhere.example',
       subject: 'no token here at all',

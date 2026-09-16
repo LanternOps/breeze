@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ticketEmailInbound, users } from '../../db/schema';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const mocks = vi.hoisted(() => ({ rows: vi.fn(), lock: vi.fn(), where: vi.fn(), links: vi.fn() }));
+const mocks = vi.hoisted(() => ({ rows: vi.fn(), lock: vi.fn(), where: vi.fn(), links: vi.fn(), inbound: vi.fn(), tech: vi.fn() }));
 vi.mock('../../db', () => ({
   db: {
-    select: () => ({ from: () => ({ where: (predicate: unknown) => {
+    select: () => ({ from: (table: unknown) => ({ where: (predicate: unknown) => {
       mocks.where(predicate);
-      const query = { limit: mocks.rows, for: (mode: string) => { mocks.lock(mode); return query; } };
+      const rows = table === ticketEmailInbound ? mocks.inbound : table === users ? mocks.tech : mocks.rows;
+      const query = { then: (resolve: (value: unknown) => unknown) => rows().then(resolve), limit: rows, for: (mode: string) => { mocks.lock(mode); return query; } };
       return query;
     } }) })
   }
@@ -31,6 +33,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.rows.mockResolvedValue([ticket]);
   mocks.links.mockResolvedValue([]);
+  mocks.inbound.mockResolvedValue([]);
+  mocks.tech.mockResolvedValue([]);
 });
 
 describe.each([
@@ -41,6 +45,42 @@ describe.each([
     { references: ['<anchor@example.com>'] }
   ])('rejects another requester using header %j', async (headers) => {
     expect(await match({ ...headers, from: 'other@example.com' }, PARTNER, sender('other'))).toBeNull();
+  });
+
+  it.each([
+    { fromAddress: ' COLLEAGUE@EXAMPLE.COM ', raw: {} },
+    { fromAddress: 'requester@example.com', raw: { Cc: '"Colleague, Jane" <COLLEAGUE@example.com>, other@example.com' } },
+    { fromAddress: 'requester@example.com', raw: { cc: 'colleague@example.com' } },
+    { fromAddress: 'requester@example.com', raw: { ccRecipients: [{ emailAddress: { address: 'colleague@example.com' } }] } },
+  ])('accepts a prior inbound participant %j', async (prior) => {
+    mocks.inbound.mockResolvedValue([prior]);
+    expect(await match({ inReplyTo: '<anchor@example.com>', from: 'colleague@example.com' }, PARTNER, sender('other'))).toEqual(ticket);
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls[1]![0]);
+    expect(compiled.sql).toContain('"ticket_email_inbound"."ticket_id" =');
+    expect(compiled.sql).toContain('"ticket_email_inbound"."partner_id" =');
+    expect(compiled.params).toEqual(expect.arrayContaining([ticket.id, PARTNER, 'matched', 'created']));
+  });
+
+  it('accepts the assigned technician replying from a mail client', async () => {
+    mocks.rows.mockResolvedValue([{ ...ticket, assignedTo: 'tech-id' }]);
+    mocks.tech.mockResolvedValue([{ id: 'tech-id' }]);
+    expect(await match({ references: ['<anchor@example.com>'], from: 'tech@example.com' }, PARTNER, sender('other'))).toMatchObject({ id: ticket.id });
+    const compiled = new PgDialect().sqlToQuery(mocks.where.mock.calls.at(-1)![0]);
+    expect(compiled.params).toEqual(expect.arrayContaining(['tech-id', 'tech@example.com']));
+  });
+
+  it('rejects an unknown address even when other participants exist', async () => {
+    mocks.inbound.mockResolvedValue([
+      { fromAddress: 'known@example.com', raw: { Cc: '"other@example.com" <known@example.com>', ccRecipients: [null, {}, { emailAddress: { address: 42 } }] } },
+      { fromAddress: null, raw: null },
+    ]);
+    expect(await match({ references: ['<anchor@example.com>'], from: 'other@example.com' }, PARTNER, sender('other'))).toBeNull();
+  });
+
+  it('does not grant participant access to an enumerable subject token', async () => {
+    mocks.inbound.mockResolvedValue([{ fromAddress: 'other@example.com', raw: {} }]);
+    expect(await match({ subject: 'Re: T-2026-0001', from: 'other@example.com' }, PARTNER, sender('other'))).toBeNull();
+    expect(mocks.inbound).not.toHaveBeenCalled();
   });
 
   it('locks the matched ticket before checking requester identity', async () => {
