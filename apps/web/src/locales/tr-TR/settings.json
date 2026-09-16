@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "E-posta şablonları",
-        "description": "Müşteri bilet e-postaları"
+        "description": "Biletler, teklifler, faturalar, davetler"
       },
       "aiBudgets": {
         "label": "Yapay Zeka Bütçeleri",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "E-posta şablonları",
-    "description": "Müşterilerin biletler hakkında aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
+    "description": "Müşterilerin biletler, teklifler, faturalar ve portal davetleri için aldığı e-postaları özelleştirin. Yanıt bildirimi asla yanıt metnini içermez.",
     "usingDefault": "Varsayılan",
     "custom": "Özel",
     "subject": "Konu",

@@ -570,6 +570,8 @@ describe('PartnerSettingsPage Email templates tab', () => {
     await screen.findByText('Partner Settings');
     expect(screen.getByRole('link', { name: /^email templates$/i })).not.toBeNull();
     expect(screen.queryByTestId('stub-email-templates-tab')).toBeNull();
+    expect(screen.queryByText('Customer ticket emails')).toBeNull();
+    expect(screen.getByText(/quotes, invoices, invites/i)).not.toBeNull();
   });
 
   it('mounts the email templates tab as self-saving with hash #email-templates', async () => {

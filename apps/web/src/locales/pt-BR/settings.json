@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modelos de e-mail",
-        "description": "E-mails de chamados para clientes"
+        "description": "Chamados, orçamentos, faturas, convites"
       },
       "aiBudgets": {
         "label": "Orçamentos de IA",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "Modelos de e-mail",
-    "description": "Personalize os e-mails que os clientes recebem sobre chamados. O aviso de resposta nunca inclui o texto da resposta.",
+    "description": "Personalize os e-mails que os clientes recebem para chamados, orçamentos, faturas e convites do portal. O aviso de resposta nunca inclui o texto da resposta.",
     "usingDefault": "Padrão",
     "custom": "Personalizado",
     "subject": "Assunto",

@@ -148,6 +148,36 @@ describe('EmailTemplateEditor', () => {
     expect(screen.getByTestId('email-template-subject')).toBeTruthy();
   });
 
+  it.each([
+    {
+      id: 'quote_send' as const,
+      chips: ['quote_number', 'partner_name', 'total', 'expiry_date', 'accept_url'] as const,
+    },
+    {
+      id: 'invoice_send' as const,
+      chips: ['invoice_number', 'partner_name', 'total', 'due_date', 'portal_url'] as const,
+    },
+    {
+      id: 'portal_invite' as const,
+      chips: ['requester_name', 'partner_name', 'invite_url', 'org_name'] as const,
+    },
+  ])('shows merge chips and a button label for $id', ({ id, chips }) => {
+    render(
+      <EmailTemplateEditor
+        templateId={id}
+        value={{ subject: null, heading: null, buttonLabel: null, html: null }}
+        onBack={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('email-template-button-label')).toBeTruthy();
+    for (const key of chips) {
+      expect(screen.getByTestId(`email-template-var-${key}`)).toBeTruthy();
+    }
+    expect(screen.queryByTestId('email-template-var-ticket_number')).toBeNull();
+  });
+
   it('previews substituted html in a read-only prose div without running scripts', () => {
     render(
       <EmailTemplateEditor

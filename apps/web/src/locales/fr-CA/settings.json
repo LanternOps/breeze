@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modèles de courriel",
-        "description": "Courriels de billets clients"
+        "description": "Billets, soumissions, factures, invitations"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "Modèles de courriel",
-    "description": "Personnalisez les courriels que les clients reçoivent au sujet des billets. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "description": "Personnalisez les courriels que les clients reçoivent pour les billets, soumissions, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
     "usingDefault": "Par défaut",
     "custom": "Personnalisé",
     "subject": "Objet",

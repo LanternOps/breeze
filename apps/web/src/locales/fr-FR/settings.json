@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Modèles d'e-mail",
-        "description": "E-mails de tickets clients"
+        "description": "Tickets, devis, factures, invitations"
       },
       "aiBudgets": {
         "label": "Budgets IA",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "Modèles d'e-mail",
-    "description": "Personnalisez les e-mails que les clients reçoivent à propos des tickets. L'avis de réponse n'inclut jamais le texte de la réponse.",
+    "description": "Personnalisez les e-mails que les clients reçoivent pour les tickets, devis, factures et invitations au portail. L'avis de réponse n'inclut jamais le texte de la réponse.",
     "usingDefault": "Par défaut",
     "custom": "Personnalisé",
     "subject": "Objet",

@@ -19,6 +19,10 @@ The portal is served under the `/portal` path on your Breeze domain — for exam
 You can configure a per-organization custom domain in branding (`customDomain`, e.g. `support.acme.com`), but **serving the portal on a custom domain is not available yet** — for now all organizations reach the portal at `https://<your-breeze-domain>/portal`. The branding for an organization still applies once a user signs in.
 </Aside>
 
+### Portal invite email
+
+Inviting a customer from **Settings → Organizations → [organization] → Customer Portal** sends a laid-out email with a **Set your password** button. Partners edit that mail under **Settings → Partner → Email templates** (Portal invite) -- subject, heading, button label, and HTML body. Merge variables: `{{requester_name}}` (the inviter), `{{partner_name}}`, `{{org_name}}`, and `{{invite_url}}`. The button always uses the server invite link; partners cannot point it somewhere else. The invite expires in 7 days. This does not change the email card's accent bar or pull colors from the Branding tab.
+
 ## Key Concepts
 
 ### Portal Feature Toggles

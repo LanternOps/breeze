@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "E-Mail-Vorlagen",
-        "description": "Kunden-Ticket-E-Mails"
+        "description": "Tickets, Angebote, Rechnungen, Einladungen"
       },
       "aiBudgets": {
         "label": "KI-Budgets",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "E-Mail-Vorlagen",
-    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
+    "description": "Passen Sie die E-Mails an, die Kunden zu Tickets, Angeboten, Rechnungen und Portaleinladungen erhalten. Die Antwortbenachrichtigung enthält nie den Antworttext.",
     "usingDefault": "Standard",
     "custom": "Angepasst",
     "subject": "Betreff",

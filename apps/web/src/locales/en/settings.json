@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Email templates",
-        "description": "Customer ticket emails"
+        "description": "Tickets, quotes, invoices, invites"
       },
       "aiBudgets": {
         "label": "AI Budgets",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "Email templates",
-    "description": "Customize the emails customers receive about tickets. The ticket reply notice never includes the reply text.",
+    "description": "Customize the emails customers receive for tickets, quotes, invoices, and portal invites. The ticket reply notice never includes the reply text.",
     "usingDefault": "Using default",
     "custom": "Custom",
     "subject": "Subject",

@@ -553,7 +553,7 @@
       },
       "emailTemplates": {
         "label": "Plantillas de correo",
-        "description": "Correos de tickets al cliente"
+        "description": "Tickets, cotizaciones, facturas, invitaciones"
       },
       "aiBudgets": {
         "label": "AI Presupuestos",
@@ -745,7 +745,7 @@
   },
   "emailTemplates": {
     "title": "Plantillas de correo",
-    "description": "Personalice los correos que reciben los clientes sobre tickets. El aviso de respuesta nunca incluye el texto de la respuesta.",
+    "description": "Personalice los correos que reciben los clientes para tickets, cotizaciones, facturas e invitaciones al portal. El aviso de respuesta nunca incluye el texto de la respuesta.",
     "usingDefault": "Predeterminado",
     "custom": "Personalizado",
     "subject": "Asunto",
