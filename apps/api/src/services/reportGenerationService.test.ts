@@ -6,6 +6,12 @@ vi.mock('../db', () => ({
   db: {
     select: vi.fn(),
   },
+  // #5784 W04: vulnerability_management's shared loader elevates the GLOBAL CVE
+  // catalog read out of the request's org context, so the parameterized arms
+  // below reach these two. They pass the callback straight through — the site
+  // scope under test is bound by the DEVICE query, not by the context helper.
+  runOutsideDbContext: vi.fn((fn: () => unknown) => fn()),
+  withSystemDbAccessContext: vi.fn((fn: () => unknown) => fn()),
 }));
 
 import { db } from '../db';
