@@ -439,6 +439,15 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // (org_id, score_date), m365_posture_rollups_org_date_uniq (org_id, rollup_date).
   m365_secure_score_snapshots: { kind: 'repoint-dedupe', key: ['score_date'] },
   m365_posture_rollups: { kind: 'repoint-dedupe', key: ['rollup_date'] },
+  // #5784 W05. History, NOT a re-derivable snapshot: Graph retains sign-in logs
+  // ~30 days, so a merge that deleted these would destroy evidence nothing can
+  // reproduce. Same disposition as the two tables above, and for the same stated
+  // reason. Dedupe key is the Graph event id, which the unique index
+  // m365_signin_events_org_graph_uniq (org_id, graph_id) already enforces:
+  // a loser row whose graph_id already exists under the survivor is dropped,
+  // the rest repoint. There is no composite FK to violate at COMMIT — the table
+  // deliberately carries no connection_id.
+  m365_signin_events: { kind: 'repoint-dedupe', key: ['graph_id'] },
   tenant_variables: { kind: 'repoint-dedupe', key: ['key'] }, // verified: tenant_variables_org_key_uniq (org_id, key) WHERE org_id IS NOT NULL — trivially true for org-scoped rows
   catalog_item_org_pricing: { kind: 'repoint-dedupe', key: ['catalog_item_id'] }, // verified: catalog_item_org_pricing_item_org_uq (catalog_item_id, org_id)
   ticket_form_org_links: { kind: 'repoint-dedupe', key: ['form_id'] }, // verified: ticket_form_org_links_form_org_uq (form_id, org_id)

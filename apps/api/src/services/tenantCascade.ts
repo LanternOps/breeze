@@ -537,6 +537,11 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   'm365_license_skus',
   'm365_posture_rollups',
   'm365_secure_score_snapshots',
+  // #5784 W05. Append-only interactive sign-in events. Its only FK is
+  // org_id -> organizations, which is last in this array, so the
+  // children-before-parents property holds. DELETE is granted (the retention
+  // worker purges it), so no AUDIT_ADMIN_REQUIRED_TABLES entry either.
+  'm365_signin_events',
   'm365_sync_state',
   'm365_users',
   'maintenance_windows',

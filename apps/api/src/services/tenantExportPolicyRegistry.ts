@@ -346,6 +346,11 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   "m365_license_skus": tablePolicy("org_id", {"included":["id","org_id","graph_id","first_seen_at","last_changed_at","is_stale","stale_since","sku_part_number","consumed_units","prepaid_enabled","prepaid_suspended","prepaid_warning","capability_status","applies_to"],"reviewedIncluded":["core_hash"],"excludedSensitive":[],"excludedOpen":[]}),
   "m365_posture_rollups": tablePolicy("org_id", {"included":["id","org_id","tenant_id","rollup_date","users_total","users_enabled","users_admin","devices_total","devices_compliant","devices_noncompliant","devices_in_grace","devices_unknown","ca_policies_enabled","ca_policies_report_only","ca_policies_disabled","seats_purchased","seats_consumed","secure_score","secure_score_max","computed_at"],"reviewedIncluded":["users_mfa_registered","users_mfa_unknown","admins_without_mfa","admins_mfa_unknown"],"excludedSensitive":[],"excludedOpen":["domains_fresh"]}),
   "m365_secure_score_snapshots": tablePolicy("org_id", {"included":["id","org_id","tenant_id","score_date","current_score","max_score","active_user_count","licensed_user_count","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["control_scores"]}),
+  // #5784 W05. Every column is ordinary customer data or a tenant identifier:
+  // none matches SUSPICIOUS_NAME_PARTS, none is credential or verifier
+  // material, and there is deliberately no json/jsonb/bytea column — which is
+  // exactly why the table was designed without a raw-payload column.
+  "m365_signin_events": tablePolicy("org_id", {"included":["id","org_id","tenant_id","graph_id","signed_in_at","user_graph_id","user_principal_name","app_id","app_display_name","client_app_used","ip_address","location_city","location_country","conditional_access_status","status_error_code","status_failure_reason","risk_level_aggregated","risk_state","is_interactive","ingested_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // continuation is an executor-encrypted, tenant-bound opaque resume token
   // (spec §8) — a capability, not customer data, and never exported. Its name
   // trips no SUSPICIOUS_NAME_PARTS rule, which is exactly why it is called out.
