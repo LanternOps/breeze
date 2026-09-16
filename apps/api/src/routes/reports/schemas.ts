@@ -27,7 +27,10 @@ export const reportTypeSchema = z.enum([
   // the design run's own transaction.
   'ai_fleet_design',
   // Hardware Lifecycle: device replacement plan from purchase + warranty dates.
-  'hardware_lifecycle'
+  'hardware_lifecycle',
+  // Endpoint Management Review (#5784 W03): Intune posture evidence from the
+  // #5327 M365 sync tables.
+  'endpoint_management_review'
 ]);
 
 /** Report types a human may never create or generate on demand. */
@@ -105,6 +108,30 @@ export const hardwareLifecycleConfigFields = {
 };
 
 /**
+ * Config for the Endpoint Management Review report (#5784 W03).
+ * `staleEnrolmentDays` is judged against the 6 h Intune sync cadence, NOT
+ * against the reporting period: a 29-day-old enrolment inside a monthly period
+ * is stale. `trendDays` reads m365_posture_rollups, the only genuine time series
+ * available — entity rows cannot supply history (see endpointManagementReport.ts).
+ */
+export const endpointManagementConfigSchema = z.object({
+  sites: z.array(z.string().guid()).optional().default([]),
+  staleEnrolmentDays: z.number().int().min(1).max(180).optional().default(14),
+  trendDays: z.number().int().min(1).max(365).optional().default(30),
+  includeLicences: z.boolean().optional().default(true),
+});
+
+/** Same keys as `endpointManagementConfigSchema` without `.default()`s — see
+ *  `securityCompliancePostureConfigFields` for why the two are hand-parallel and
+ *  test-pinned (schemas.config.test.ts). */
+export const endpointManagementConfigFields = {
+  sites: z.array(z.string().guid()).optional(),
+  staleEnrolmentDays: z.number().int().min(1).max(180).optional(),
+  trendDays: z.number().int().min(1).max(365).optional(),
+  includeLicences: z.boolean().optional(),
+};
+
+/**
  * Cadence detail + delivery config persisted inside `config`. The builder
  * writes these and reportScheduleWorker reads them; they must be declared here
  * because zod strips unknown object keys — before this schema existed, creates
@@ -147,7 +174,8 @@ const reportConfigFields = {
   // already accepted as a chip.
   emailRecipients: z.array(z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/).max(254)).max(50).optional(),
   ...securityCompliancePostureConfigFields,
-  ...hardwareLifecycleConfigFields
+  ...hardwareLifecycleConfigFields,
+  ...endpointManagementConfigFields
 };
 
 // Loose: the builder round-trips presentation metadata (builderType, dataSource,
@@ -195,7 +223,8 @@ export const generateReportSchema = z.object({
       severity: z.array(z.string()).optional()
     }).optional(),
     ...securityCompliancePostureConfigFields,
-    ...hardwareLifecycleConfigFields
+    ...hardwareLifecycleConfigFields,
+    ...endpointManagementConfigFields
   }).optional().default({}),
   format: z.enum(['csv', 'pdf', 'excel']).default('csv'),
   orgId: z.string().guid().optional()
