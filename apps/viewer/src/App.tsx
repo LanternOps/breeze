@@ -116,28 +116,34 @@ export default function App() {
   if (windowLabel === 'main') {
     if (schemeError) {
       return (
-        <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
-          <AlertTriangle className="h-8 w-8 text-amber-400" />
-          <h1 className="text-base font-semibold text-white">Breeze links aren't registered</h1>
-          <p className="text-sm leading-relaxed text-gray-400">
-            Remote sessions won't open automatically on this machine.
-          </p>
-          <p className="max-w-full break-words text-xs text-gray-500">{schemeError}</p>
-        </div>
+        <>
+          <UpdateIndicator />
+          <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
+            <AlertTriangle className="h-8 w-8 text-amber-400" />
+            <h1 className="text-base font-semibold text-white">Breeze links aren't registered</h1>
+            <p className="text-sm leading-relaxed text-gray-400">
+              Remote sessions won't open automatically on this machine.
+            </p>
+            <p className="max-w-full break-words text-xs text-gray-500">{schemeError}</p>
+          </div>
+        </>
       );
     }
     return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
-        <Monitor className="h-8 w-8 text-accent-soft" />
-        <h1 className="text-base font-semibold text-white">Breeze Viewer is ready</h1>
-        <p className="text-sm leading-relaxed text-gray-400">
-          Remote sessions open automatically when you choose{' '}
-          <span className="font-medium text-gray-200">Connect Desktop</span> in the Breeze console.
-        </p>
-        <p className="text-xs text-gray-500">
-          You can close this window — Breeze reopens the viewer when a session starts.
-        </p>
-      </div>
+      <>
+        <UpdateIndicator />
+        <div className="flex h-screen flex-col items-center justify-center gap-3 bg-gray-900 px-8 text-center">
+          <Monitor className="h-8 w-8 text-accent-soft" />
+          <h1 className="text-base font-semibold text-white">Breeze Viewer is ready</h1>
+          <p className="text-sm leading-relaxed text-gray-400">
+            Remote sessions open automatically when you choose{' '}
+            <span className="font-medium text-gray-200">Connect Desktop</span> in the Breeze console.
+          </p>
+          <p className="text-xs text-gray-500">
+            You can close this window — Breeze reopens the viewer when a session starts.
+          </p>
+        </div>
+      </>
     );
   }
 
