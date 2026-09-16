@@ -246,7 +246,7 @@ export function TicketDetails({ ticket, error, statusCode }: TicketDetailsProps)
   const tone = ticketStatusTone(ticket.status);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="max-w-3xl">
       <div className="mb-6">
         <a
           href={withBase('/tickets')}

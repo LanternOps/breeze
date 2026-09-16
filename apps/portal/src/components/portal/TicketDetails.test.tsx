@@ -247,3 +247,12 @@ describe('TicketDetails — comment attachments (W08 #3902)', () => {
     expect(screen.queryByTestId('ticket-attachment-list')).toBeNull();
   });
 });
+
+describe('TicketDetails — column sits against the sheet edge', () => {
+  it('keeps a reading measure but does not centre itself inside the sheet', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/portal/TicketDetails.tsx', 'utf8');
+    expect(src).toMatch(/max-w-3xl/);
+    expect(src).not.toMatch(/mx-auto max-w-3xl|max-w-3xl mx-auto/);
+  });
+});
