@@ -98,6 +98,31 @@ async function recordSiteAuthorityFailure(
   );
 }
 
+/**
+ * Spec §6.1 (F2) — the device is configured for SNMP but has no template, so
+ * `buildSnmpPollCommand` would carry zero OIDs and the poll would ask the
+ * device nothing. Before this, that logged a console.warn and left
+ * `last_status` NULL forever: every page said "SNMP monitoring: Enabled" about
+ * a device that had never collected a single value.
+ *
+ * Deliberately NOT routed through recordSiteAuthorityFailure: this must not
+ * touch `consecutive_failures`. The poll never left the building, so counting
+ * it would multiply the polling interval by 2^n and eventually stamp 'offline'
+ * on a device nobody ever asked anything — and it would break the #3217
+ * scheduler contract that snmpWorkerScheduler.test.ts pins.
+ *
+ * A later successful poll clears it like any other status (processPollResults
+ * sets last_status = 'online' unconditionally on success).
+ */
+async function recordNoTemplate(deviceId: string): Promise<void> {
+  await runWithSystemDbAccess(() =>
+    db
+      .update(snmpDevices)
+      .set({ lastStatus: 'no_template', lastPollAttemptedAt: new Date() })
+      .where(eq(snmpDevices.id, deviceId))
+  );
+}
+
 let snmpQueue: Queue | null = null;
 
 export function getSnmpQueue(): Queue {
@@ -465,6 +490,7 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
     }
     case 'no-oids':
       console.warn(`[SnmpWorker] No OIDs configured for device ${data.deviceId}`);
+      await recordNoTemplate(data.deviceId);
       return { dispatched: false, agentId: null };
     case 'asset-missing':
       console.warn(`[SnmpWorker] Asset ${inputs.assetId} not found in org ${inputs.orgId}; refusing asset-bound SNMP poll`);
