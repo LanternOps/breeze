@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, integer, index } from 'drizzle-orm/pg-core';
-import { desc } from 'drizzle-orm';
+import { desc, sql } from 'drizzle-orm';
 import { organizations } from './orgs';
 import { discoveredAssets } from './discovery';
 import { alertSeverityEnum } from './alerts';
@@ -12,6 +12,11 @@ export const snmpTemplates = pgTable('snmp_templates', {
   vendor: varchar('vendor', { length: 100 }),
   deviceType: varchar('device_type', { length: 100 }),
   oids: jsonb('oids').notNull(),
+  // Enterprise sysObjectID prefixes this template claims, e.g.
+  // {'1.3.6.1.4.1.253'} for Xerox (spec §8). Matching is component-boundary
+  // aware in services/snmpTemplateSuggest.ts — '1.3.6.1.4.1.25' must never
+  // match a '1.3.6.1.4.1.253…' device.
+  sysObjectIdPrefixes: text('sys_object_id_prefixes').array().notNull().default(sql`'{}'::text[]`),
   isBuiltIn: boolean('is_built_in').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull()
 }, (table) => ({

@@ -68,6 +68,12 @@ const oidSchema = z.object({
   label: z.string().optional(),
   unit: z.string().optional(),
   type: z.string().optional(),
+  // Acquisition hints consumed by services/snmpOidSpecs.ts (W02). Optional:
+  // omitted entries fall back to the `.0` => get / else walk default and
+  // `fast`. Without these fields the non-strict z.object SILENTLY STRIPPED
+  // them from custom templates.
+  mode: z.enum(['get', 'walk']).optional(),
+  cadence: z.enum(['fast', 'slow']).optional(),
   description: z.string().optional()
 });
 

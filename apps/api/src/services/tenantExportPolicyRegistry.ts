@@ -568,7 +568,10 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // agent-supplied free-text blob. All three are varchar scalars, none is an
   // open container, none matches SUSPICIOUS_NAME_PARTS.
   "snmp_metrics": tablePolicy("org_id", {"included":["id","device_id","org_id","oid","base_oid","instance","name","value","value_type","error","timestamp"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "snmp_templates": tablePolicy("org_id", {"included":["id","org_id","name","description","vendor","device_type","is_built_in","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["oids"]}),
+  // sys_object_id_prefixes (#5988, spec §13): a list of PUBLIC IANA
+  // enterprise OID prefixes the template claims. Not a capability list and not
+  // an open container (text[]), so `included`. `oids` stays excludedOpen.
+  "snmp_templates": tablePolicy("org_id", {"included":["id","org_id","name","description","vendor","device_type","sys_object_id_prefixes","is_built_in","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":["oids"]}),
   "software_catalog": tablePolicy("org_id", {"included":["id","org_id","partner_id","integration_provider","name","vendor","description","category","icon_url","website_url","is_managed","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // dependency_fingerprint binds a deployment to the non-secret executable
   // metadata approved at creation. It is tenant-owned integrity provenance,
