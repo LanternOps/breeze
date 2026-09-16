@@ -66,13 +66,25 @@ export function signinEventsFilter(window: SigninEventsWindow): string {
 }
 
 /**
- * A 403 on this endpoint means the tenant has no Entra ID P1 — the same
- * "complete, zero-item success" signin_activity already reports for its own
- * sibling, not a failure to retry.
+ * Only a LICENSE failure is a "complete, zero-item success": the tenant has no
+ * Entra ID P1, there is nothing to enumerate, and no amount of re-consent will
+ * change that.
+ *
+ * `graph_permission_missing` is deliberately NOT folded in here, even though
+ * the older `signin_activity` reader folds it in for its own surface. That code
+ * is the catch-all for every OTHER 403 (`graphClient.ts`) — a revoked
+ * `AuditLog.Read.All` grant, a Conditional Access block on the app's service
+ * principal, a tenant Graph restriction. Reporting those as an unlicensed
+ * success would launder a self-service-fixable consent problem into a domain
+ * that "succeeds" with zero rows forever: `run.ts`'s
+ * `primaryState === 'permission_missing'` branch (which unschedules the domain
+ * and raises the customer-facing Retest prompt) would be dead code for this
+ * domain, and an evidence report would quietly cover nothing. Letting it throw
+ * sends it through `failureResponse` as `graph_permission_missing`, which
+ * `outcomeForFailure` already maps to `needs_consent`.
  */
 export function isUnlicensedSigninEventsError(error: unknown): boolean {
-  return error instanceof GraphClientError
-    && (error.code === 'graph_permission_missing' || error.code === 'graph_license_required');
+  return error instanceof GraphClientError && error.code === 'graph_license_required';
 }
 
 /** `truncated` is the item cap specifically; a page cap is paging, not loss. */

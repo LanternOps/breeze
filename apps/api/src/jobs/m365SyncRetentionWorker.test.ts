@@ -138,6 +138,25 @@ describe('m365 sync retention sweep', () => {
     expect(SIGNIN_EVENTS_RETENTION_DAYS).toBe(120);
   });
 
+  it('#5784 W05: the cutoff is strict — an event AT the boundary is kept', async () => {
+    await pruneM365SyncRetention();
+    const stmt = compiled().find((q) => q.sql.includes('m365_signin_events'))!;
+    // `<` not `<=`: a row at exactly 120 days survives. The nearest cases below
+    // are two days either side, so only this pins the comparison operator.
+    expect(stmt.sql).toMatch(/signed_in_at < now\(\)/);
+    expect(stmt.sql).not.toMatch(/signed_in_at <= now\(\)/);
+  });
+
+  it('#5784 W05: the sign-in-event sweep keeps batching past a full batch', async () => {
+    // Its own for(;;) loop, separate from deleteStaleEntities's — a dropped
+    // guard here would stop after 10k rows and leave the rest to accumulate.
+    state.rowCounts.push(0, 0, 0, 0, 0, 10000, 3);
+    const result = await pruneM365SyncRetention();
+    expect(result.deletedSigninEvents).toBe(10003);
+    const eventSweeps = compiled().filter((q) => q.sql.includes('m365_signin_events'));
+    expect(eventSweeps).toHaveLength(2);
+  });
+
   it('#5784 W05: m365_signin_events is NOT in the stale-entity sweep', () => {
     // It has no is_stale / stale_since columns; the stale sweep would error.
     expect(STALE_ENTITY_TABLES).not.toContain('m365_signin_events');

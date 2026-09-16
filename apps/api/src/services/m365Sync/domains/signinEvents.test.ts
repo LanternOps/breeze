@@ -113,6 +113,19 @@ describe('persistSigninEvents (#5784 W05)', () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
+  it('is NOT complete when the source throttled, even with no continuation', async () => {
+    // An empty token bucket on a fresh (non-continuation) call mints no
+    // continuation and returns zero items, so `continuation === null` and
+    // `!truncated` both hold. Only the `=== 'ok'` check stops that run from
+    // stamping last_complete_snapshot_at and claiming a freshness for W06 that
+    // the data does not have.
+    const res = await persistSigninEvents(ctx(), {
+      ...result([]), sources: { signinEvents: 'throttled' as const },
+    });
+    expect(res.complete).toBe(false);
+    expect(res.unlicensed).toBe(false);
+  });
+
   it('is not complete when the window was truncated', async () => {
     const res = await persistSigninEvents(ctx(), result([ev('g7')], { truncated: true }));
     expect(res.complete).toBe(false);
@@ -151,15 +164,32 @@ describe('persistSigninEvents (#5784 W05)', () => {
     expect(sql).not.toContain('ingested_at');   // DB default now() — late arrivals stay detectable
   });
 
-  it('drops an event with no id or no usable event time rather than inventing one', async () => {
-    await persistSigninEvents(ctx(), result([
-      ev('ok1'),
-      ev('', {}),
-      { ...ev('bad-time'), createdDateTime: 'not a date' },
-    ]));
-    const { params } = compiled(0);
-    expect(params).toContain('ok1');
-    expect(params).not.toContain('bad-time');
+  it('drops an event with no id or no usable event time rather than inventing one, and SAYS SO', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await persistSigninEvents(ctx(), result([
+        ev('ok1'),
+        ev('', {}),
+        { ...ev('bad-time'), createdDateTime: 'not a date' },
+      ]));
+      const { params } = compiled(0);
+      expect(params).toContain('ok1');
+      expect(params).not.toContain('bad-time');
+      // Silently shrinking a compliance evidence set is the failure mode here.
+      const line = log.mock.calls.find((c) => String(c[0]).includes('malformed_items'));
+      expect(line, 'malformed items were dropped with no log line').toBeDefined();
+      expect(JSON.parse(String(line![1]))).toMatchObject({ received: 3, malformed: 2 });
+    } finally { log.mockRestore(); }
+  });
+
+  it('does not report ordinary de-duplication as malformed', async () => {
+    // The overlapping window re-fetches recent events on purpose; that is not a
+    // data-quality signal and must not cry wolf in the logs.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await persistSigninEvents(ctx(), result([ev('dup'), ev('dup')]));
+      expect(log.mock.calls.filter((c) => String(c[0]).includes('malformed_items'))).toHaveLength(0);
+    } finally { log.mockRestore(); }
   });
 
   it('counts inserted and updated from the upsert, not from the item count', async () => {
@@ -191,13 +221,22 @@ describe('signinEventsWindow (#5784 W05)', () => {
     expect(SIGNIN_EVENTS_OVERLAP_MINUTES).toBeGreaterThan(0);
   });
 
-  it('never returns a window longer than the cold-start bound', async () => {
-    // An org whose newest event is ancient (sync was off for a month) must not
-    // ask Graph for the whole backlog in one call.
-    executeMock.mockResolvedValueOnce([{ watermark: '2026-06-01T00:00:00.000Z' }]);
+  it('walks forward from an OLD watermark instead of clamping past the gap', async () => {
+    // The load-bearing one. An org whose sync was down for a fortnight has a
+    // watermark older than any fixed lookback. Clamping `since` forward to
+    // `now - 7d` would move the window PAST the gap, and no later run would
+    // ever come back for it (each recomputes the clamp against a newer `now`
+    // while the watermark now sits inside it) — Graph purges at ~30 days, so
+    // those events would be gone, silently, with no error and no truncation.
+    const watermark = new Date(NOW.getTime() - 21 * 24 * 3600_000);
+    executeMock.mockResolvedValueOnce([{ watermark: watermark.toISOString() }]);
     const window = await signinEventsWindow(ORG, NOW);
+    expect(window.since)
+      .toBe(new Date(watermark.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    // The window covers the whole gap; the per-run item cap and the executor's
+    // continuation are what bound the WALK, not a silent truncation in time.
     expect(Date.parse(window.until) - Date.parse(window.since))
-      .toBeLessThanOrEqual(7 * 24 * 3600_000);
+      .toBeGreaterThan(20 * 24 * 3600_000);
   });
 
   it('scopes the watermark read to the org', async () => {

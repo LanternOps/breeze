@@ -118,6 +118,17 @@ describe('m365.sync.signin_events', () => {
     expect(result.continuation).toBeUndefined();
   });
 
+  it('does NOT launder a missing permission into an unlicensed success', async () => {
+    // graph_permission_missing is the catch-all for every OTHER 403 — a revoked
+    // AuditLog.Read.All grant, a Conditional Access block on the app. Reporting
+    // it as an unlicensed success would leave the domain "succeeding" with zero
+    // rows forever and make run.ts's needs_consent/Retest branch dead code for
+    // this domain, so an evidence report would quietly cover nothing.
+    const { client } = stubClient({ [PATH]: new GraphClientError('graph_permission_missing') });
+    const result = await executeGraphSyncAction(action, context(client));
+    expect(result).toEqual({ success: false, code: 'graph_permission_missing' });
+  });
+
   it('refuses a continuation minted for another action', async () => {
     const codec = createSyncContinuationCodec({ key: Buffer.alloc(32, 1) });
     const foreign = codec.seal({

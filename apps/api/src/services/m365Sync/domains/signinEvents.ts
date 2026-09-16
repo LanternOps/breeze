@@ -82,14 +82,18 @@ function eventTime(value: unknown): string | null {
  * columns HERE. Nothing object-shaped is ever bound, which is what keeps the
  * table free of a jsonb column and out of the `excludedOpen` export bucket.
  */
-function parseEvents(items: Record<string, unknown>[]): SigninEventRow[] {
+function parseEvents(items: Record<string, unknown>[]): { rows: SigninEventRow[]; malformed: number } {
   const byGraphId = new Map<string, SigninEventRow>();
+  let malformed = 0;
   for (const item of items) {
     const graphId = str(item.id);
     const signedInAt = eventTime(item.createdDateTime);
     // An event with no id cannot be deduplicated and one with no usable event
-    // time cannot be placed in a period. Dropping beats inventing either.
-    if (!graphId || !signedInAt) continue;
+    // time cannot be placed in a period. Dropping beats inventing either — but
+    // the count is reported, so a Graph payload that starts returning junk is
+    // visible rather than a quietly shrinking evidence set. Counted separately
+    // from de-duplication, which is expected on every overlapping window.
+    if (!graphId || !signedInAt) { malformed += 1; continue; }
     const location = isRecord(item.location) ? item.location : {};
     const status = isRecord(item.status) ? item.status : {};
     byGraphId.set(graphId, {
@@ -113,7 +117,7 @@ function parseEvents(items: Record<string, unknown>[]): SigninEventRow[] {
       isInteractive: typeof item.isInteractive === 'boolean' ? item.isInteractive : null,
     });
   }
-  return [...byGraphId.values()];
+  return { rows: [...byGraphId.values()], malformed };
 }
 
 function rowsOf(result: unknown): Record<string, unknown>[] {
@@ -145,7 +149,17 @@ export async function persistSigninEvents(
   };
   if (unlicensed) return base;
 
-  const events = parseEvents(result.items);
+  const { rows: events, malformed } = parseEvents(result.items);
+  // Dropping a malformed item is the right call (see parseEvents), but doing it
+  // SILENTLY is not: this feeds a compliance artifact, so a Graph payload that
+  // starts returning items with no id or an unparseable createdDateTime would
+  // shrink the evidence set with no trace at all. Counts only — never a UPN, an
+  // IP or any other row content.
+  if (malformed > 0) {
+    console.log('[M365Sync] m365.sync.signin_events.malformed_items', JSON.stringify({
+      orgId: ctx.orgId, received: result.items.length, malformed,
+    }));
+  }
   if (events.length === 0) return base;
 
   let inserted = 0;
@@ -232,9 +246,21 @@ export async function persistSigninEvents(
  * truncated page leaves the watermark where it was (nothing here writes it —
  * it IS the data) and the run returns a continuation.
  *
- * The window is never wider than the cold-start bound, so an org whose sync was
- * off for a month catches up over several runs instead of asking Graph for the
- * whole backlog in one call.
+ * `since` is deliberately NOT clamped forward to a fixed lookback. An org whose
+ * sync was down for a fortnight has a watermark older than any such clamp, and
+ * clamping would move `since` PAST the gap — the missing range would never be
+ * queried again, because every later run recomputes the clamp against a newer
+ * `now` while the watermark sits inside it. Graph purges audit logs at ~30 days,
+ * so those events would be unrecoverable, silently, with no error and no
+ * `truncated` flag. The window's real bound is the per-run item cap
+ * (`M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS`) plus the executor's page and deadline
+ * caps, which hand back a continuation and re-claim the domain immediately —
+ * the walk finishes over successive pages rather than being silently truncated
+ * in time.
+ *
+ * Only the COLD start (no events at all for the org) uses the fixed
+ * `SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS` lookback: there is no watermark to walk
+ * forward from, and a first run has nothing to lose by starting a week back.
  */
 export const SIGNIN_EVENTS_OVERLAP_MINUTES = 60;
 
@@ -262,10 +288,9 @@ export async function signinEventsWindow(
     : (typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? Date.parse(raw) : null);
 
   const until = now.getTime();
-  const coldStart = until - SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS * MS_PER_DAY;
   const since = watermark === null
-    ? coldStart
-    : Math.max(watermark - SIGNIN_EVENTS_OVERLAP_MINUTES * MS_PER_MINUTE, coldStart);
+    ? until - SIGNIN_EVENTS_DEFAULT_WINDOW_DAYS * MS_PER_DAY
+    : watermark - SIGNIN_EVENTS_OVERLAP_MINUTES * MS_PER_MINUTE;
 
   return { since: new Date(since).toISOString(), until: new Date(until).toISOString() };
 }

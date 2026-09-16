@@ -117,16 +117,27 @@ describe('loadSyncSummary', () => {
     expect(byDomain.ca_policies).not.toHaveProperty('needsConsent');
   });
 
-  it('flags truncated per domain and unlicensed only from sources.signInActivity', async () => {
+  it("flags truncated per domain and unlicensed from the domain's OWN primary source", async () => {
+    // #5784 W05: this used to read the literal `signInActivity` key for every
+    // domain, so a seventh domain with its own primary source could never be
+    // flagged. It now keys off M365_SYNC_PRIMARY_SOURCE_KEY — a secondary
+    // source reporting 'unlicensed' still must NOT flag the domain.
     mocks.stateRows = [
       state({ domain: 'users', lastStatus: 'partial', truncated: true }),
       state({ domain: 'signin_activity', sources: { signInActivity: 'unlicensed' } }),
+      state({ domain: 'signin_events', sources: { signinEvents: 'unlicensed' } }),
       state({ domain: 'skus', sources: { subscribedSkus: 'unlicensed' } }),
+      // secureScores is the PRIMARY for secure_score; controlProfiles is not.
+      state({ domain: 'secure_score', sources: { secureScores: 'ok', controlProfiles: 'unlicensed' } }),
     ];
     const byDomain = Object.fromEntries((await loadSyncSummary(ORG, TENANT))!.domains.map((d) => [d.domain, d]));
     expect(byDomain.users!.truncated).toBe(true);
     expect(byDomain.signin_activity!.unlicensed).toBe(true);
-    expect(byDomain.skus!.unlicensed).toBe(false);
+    expect(byDomain.signin_events!.unlicensed).toBe(true);
+    expect(byDomain.skus!.unlicensed).toBe(true);
+    expect(byDomain.secure_score!.unlicensed).toBe(false);
+    // A domain with no state row at all is not "unlicensed", just never synced.
+    expect(byDomain.ca_policies!.unlicensed).toBe(false);
   });
 
   it("takes users and devices from the newest rollup of the CURRENT connection's tenant", async () => {

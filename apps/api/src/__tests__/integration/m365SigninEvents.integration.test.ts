@@ -290,6 +290,22 @@ describe('m365_signin_events — the delta window', () => {
     expect(Date.parse(steady.since)).toBeLessThan(watermark.getTime());
   });
 
+  runDb('Case 4c: an org behind by weeks gets a window covering the WHOLE gap', async () => {
+    // Clamping `since` forward to a fixed lookback would move the window past
+    // the gap, and no later run would come back for it — Graph purges audit
+    // logs at ~30 days, so the range would be unrecoverable, silently.
+    const fx = await withSystemDbAccessContext(() => seedOrg('catchup'));
+    const now = new Date();
+    const stale = new Date(now.getTime() - 21 * DAY_MS);
+    await withSystemDbAccessContext(() => db.insert(m365SigninEvents).values({
+      orgId: fx.org.id, tenantId: fx.tenantId, graphId: randomUUID(), signedInAt: stale,
+    }));
+    const window = await withSystemDbAccessContext(() => signinEventsWindow(fx.org.id, now));
+    expect(window.since)
+      .toBe(new Date(stale.getTime() - SIGNIN_EVENTS_OVERLAP_MINUTES * 60_000).toISOString());
+    expect(Date.parse(window.until) - Date.parse(window.since)).toBeGreaterThan(20 * DAY_MS);
+  });
+
   runDb('Case 4b: a truncated page does not advance completeness', async () => {
     const fx = await withSystemDbAccessContext(() => seedOrg('truncated'));
     const truncated = await withSystemDbAccessContext(() => persistSigninEvents(
