@@ -52,6 +52,9 @@ export interface RemoteIncomeAccount extends RemoteEntity {
 }
 
 export interface RemoteRef {
+  /** Customer addresses returned by upsertCustomer; absent for other entities. */
+  billAddr?: RemoteAddress;
+  shipAddr?: RemoteAddress;
   id: string;
   syncToken?: string;
   docNumber?: string;

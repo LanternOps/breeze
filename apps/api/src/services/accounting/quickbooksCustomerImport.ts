@@ -118,7 +118,7 @@ async function fetchCustomers(partnerId: string): Promise<RemoteCustomer[]> {
   }
 }
 
-function siteAddressFrom(addr: RemoteAddress | undefined): Record<string, string> | undefined {
+export function siteAddressFrom(addr: RemoteAddress | undefined): Record<string, string> | undefined {
   if (!addr) return undefined;
   // Match the web SiteForm convention so imported sites render correctly.
   const out: Record<string, string> = {};

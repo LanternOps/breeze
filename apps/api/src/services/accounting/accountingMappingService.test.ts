@@ -16,6 +16,7 @@ const {
   upsertCustomerMock,
   upsertItemMock,
   captureExceptionMock,
+  writeAuditEventMock,
   ReauthRequiredError,
 } = vi.hoisted(() => {
   class ReauthRequiredError extends Error {
@@ -34,6 +35,7 @@ const {
     upsertCustomerMock: vi.fn(),
     upsertItemMock: vi.fn(),
     captureExceptionMock: vi.fn(),
+    writeAuditEventMock: vi.fn(),
     ReauthRequiredError,
   };
 });
@@ -85,12 +87,16 @@ vi.mock('./providerRegistry', () => ({
   }),
 }));
 
+vi.mock('../auditEvents', () => ({ writeAuditEvent: writeAuditEventMock, requestLikeFromSnapshot: () => ({}) }));
+
+vi.mock('../tenantLifecycle', () => ({ restoreOrganizationTenantAccess: vi.fn() }));
+
 vi.mock('../sentry', () => ({ captureException: captureExceptionMock }));
 
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
-  organizations, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
+  organizations, sites, organizationExternalLinks, catalogItems, accountingEntityMappings, partners, catalogItemPrices,
 } from '../../db/schema';
 import {
   listMappingProposals,
@@ -995,6 +1001,85 @@ describe('syncMappedEntity', () => {
     // sparse update, proving persistRemoteRef's write is what the retry reads.
     expect(upsertCustomerMock.mock.calls[1]?.[2]).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '0' });
     expect(second).toMatchObject({ remoteEntityId: 'qb-new', remoteSyncToken: '1' });
+  });
+
+  it.each(['shipping', 'billing-fallback', 'shipping-only'])('imports an empty org address and site address (%s)', async (scenario) => {
+    const hasShipping = scenario !== 'billing-fallback';
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }], mappings: [orgMappingRow({
+      linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3',
+    })] });
+    const writes: Array<{ table: unknown; patch: Record<string, unknown>; condition: SQL }> = [];
+    const mappingUpdate = updateMock.getMockImplementation()!;
+    updateMock.mockImplementation((table) => table === accountingEntityMappings ? mappingUpdate(table) : ({
+      set: (patch: Record<string, unknown>) => ({ where: (condition: SQL) => {
+        writes.push({ table, patch, condition });
+        return { returning: async () => [{ id: ORG_A }] };
+      } }),
+    }));
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4',
+      billAddr: scenario === 'shipping-only' ? undefined : { line1: '1 Billing St', city: 'Austin', country: 'United States' },
+      shipAddr: hasShipping ? { line1: '2 Shipping St', country: 'US' } : undefined,
+    });
+
+    await syncMappedEntity(syncOrg(), runCtx);
+
+    if (scenario !== 'shipping-only') {
+      expect(writes.find((w) => w.table === organizations)?.patch).toMatchObject({
+        billingAddressLine1: '1 Billing St', billingAddressCity: 'Austin', billingAddressCountry: null,
+      });
+    }
+    expect(writes.find((w) => w.table === sites)?.patch).toMatchObject({ address: {
+      addressLine1: hasShipping ? '2 Shipping St' : '1 Billing St',
+      ...(hasShipping ? {} : { city: 'Austin' }), country: hasShipping ? 'US' : 'United States',
+    } });
+    expect(writeAuditEventMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      orgId: ORG_A, details: { source: 'quickbooks', message: 'Address imported from QuickBooks' },
+    }));
+    for (const write of writes) {
+      const query = new PgDialect().sqlToQuery(write.condition);
+      expect(query.params).toContain(PARTNER);
+      expect(query.params).toContain(ORG_A);
+    }
+    const orgGuard = new PgDialect().sqlToQuery(writes[0]!.condition).sql;
+    for (const column of ['line1', 'line2', 'city', 'region', 'postal_code', 'country']) {
+      expect(orgGuard).toContain(`coalesce(trim("organizations"."billing_address_${column}"), '') = ''`);
+    }
+    const siteGuard = new PgDialect().sqlToQuery(writes[1]!.condition).sql;
+    expect(siteGuard).toContain('order by created_at, id limit 1');
+    expect(siteGuard).toContain('not exists (select 1 from jsonb_each_text');
+    expect(siteGuard).toContain("coalesce(trim(entry.value), '') <> ''");
+  });
+
+  it.each(['billingAddressLine1', 'billingAddressLine2', 'billingAddressCity', 'billingAddressRegion', 'billingAddressPostalCode', 'billingAddressCountry'])('preserves an existing %s', async (field) => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme', [field]: 'existing' }], mappings: [orgMappingRow({
+      linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3',
+    })] });
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4', billAddr: { line1: 'Remote' } });
+    await syncMappedEntity(syncOrg(), runCtx);
+    expect(updateMock.mock.calls.every(([table]) => table === accountingEntityMappings)).toBe(true);
+  });
+
+  it('does not touch the site or emit an import audit if a concurrent org edit prevents the guarded update', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }], mappings: [orgMappingRow({
+      linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3',
+    })] });
+    const mappingUpdate = updateMock.getMockImplementation()!;
+    updateMock.mockImplementation((table) => table === accountingEntityMappings ? mappingUpdate(table) : ({
+      set: () => ({ where: () => ({ returning: async () => [] }) }),
+    }));
+    upsertCustomerMock.mockResolvedValueOnce({ id: 'qb-1', syncToken: '4', billAddr: { line1: 'Remote' } });
+    await expect(syncMappedEntity(syncOrg(), runCtx)).resolves.toMatchObject({ syncStatus: 'synced' });
+    expect(updateMock).not.toHaveBeenCalledWith(sites);
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
+  });
+
+  it('does not write addresses or import audits when QuickBooks has no address', async () => {
+    stubReads({ orgs: [{ id: ORG_A, name: 'Acme' }], mappings: [orgMappingRow({
+      linkStatus: 'confirmed', remoteEntityId: 'qb-1', remoteSyncToken: '3',
+    })] });
+    await syncMappedEntity(syncOrg(), runCtx);
+    expect(updateMock.mock.calls.every(([table]) => table === accountingEntityMappings)).toBe(true);
+    expect(writeAuditEventMock).not.toHaveBeenCalled();
   });
 
   it('create_new sync persists remoteCurrencyCode from the create response for an org', async () => {
