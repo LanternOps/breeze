@@ -21,7 +21,7 @@ import type { ToolExecutionContext } from './toolExecutionContext';
 import type { AiToolTier, ActionPlanStep } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { buildToolHandoffResult, type ToolHandoffStatus } from './aiToolHandoff';
+import { buildToolHandoffResult, handoffIsError, type ToolHandoffStatus } from './aiToolHandoff';
 import type { ActiveSession } from './streamingSessionManager';
 import type { SdkTool } from './aiAgents/outcomeTools';
 import { waitForPlanApproval } from './aiAgent';
@@ -409,6 +409,12 @@ export const POST_TOOL_USE_TIMEOUT_MS = 10_000; // 10s for postToolUse DB writes
  * handoff payload carries `status` (machine-readable, what the clients switch
  * on) and never an `error` field, so nothing downstream can mistake it for a
  * failure by shape either.
+ *
+ * `isError` is derived from the handoff STATUS, not from "a handoff marker is
+ * present" (#6022). The read-back added there rides this same channel, and
+ * `approved_failed` — an action the worker ran and that did NOT take effect —
+ * is a genuine failure. Treating the marker itself as "not an error" would
+ * paint a guardrail refusal as "Approved · running", which is the bug.
  */
 function preToolUseDenialResult(
   toolName: string,
@@ -419,7 +425,7 @@ function preToolUseDenialResult(
     : { error: check.error };
   return {
     text: compactToolResultForChat(toolName, JSON.stringify(payload)),
-    isError: !check.handoff,
+    isError: check.handoff ? handoffIsError(check.handoff) : true,
   };
 }
 

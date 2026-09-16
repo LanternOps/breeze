@@ -48,6 +48,7 @@ import {
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
 import { PERMISSION_GRANTS, serializeAiOrigin } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
+import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHandoff';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { recordActionIntentEvent } from './metrics';
 import {
@@ -2944,4 +2945,79 @@ export async function waitForIntentDecision(
   }
 
   return lastStatus;
+}
+
+// ============================================================================
+// waitForIntentTerminalOutcome — the post-handoff read-back (#6022)
+// ============================================================================
+
+/**
+ * Read an intent's TERMINAL outcome back, for a chat turn that handed the
+ * action off to the durable release worker.
+ *
+ * Strictly an OBSERVER, and that is the whole safety argument: like
+ * `waitForIntentDecision` it never writes, never releases, never retries and
+ * never terminalizes. Giving up simply returns the last row it read (or `null`
+ * if it never managed one), so the worker remains the sole owner of the
+ * intent's lifecycle and the `approved -> executing` CAS stays the single
+ * mutual-exclusion point.
+ *
+ * Why it exists: #5107's handoff told the model "approved and running, the
+ * outcome is reported separately" and nothing ever reported it. When the
+ * worker's execution failed — #6022's autoInstall guardrail refusal — the chat
+ * kept saying "Approved · running" and the model narrated a success that never
+ * happened. A guardrail refusal terminalizes in milliseconds, so a SHORT wait
+ * converts the overwhelmingly common failure case into a truthful tool error
+ * while leaving genuinely long-running work to time out honestly.
+ *
+ * Returns as soon as the status is terminal (see `TERMINAL_INTENT_STATUSES`),
+ * with the `result`/`error_code` needed to describe it. `null` means "no
+ * readable outcome" — NOT a failure; `describeIntentOutcome` maps it back to
+ * "still running" precisely so a failed read can never be narrated as a failed
+ * action.
+ */
+export async function waitForIntentTerminalOutcome(
+  intentId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<IntentOutcomeSnapshot | null> {
+  const startTime = Date.now();
+  let pollInterval = 250;
+  let last: IntentOutcomeSnapshot | null = null;
+
+  // Always take one read, even on a zero/negative budget: a sibling wait may
+  // have exhausted the shared approval budget, and the guardrail refusal this
+  // exists to surface is already committed by then.
+  for (;;) {
+    if (signal?.aborted) return last;
+
+    try {
+      const [row] = await withSystemDbAccessContext(() =>
+        db
+          .select({
+            status: actionIntents.status,
+            errorCode: actionIntents.errorCode,
+            result: actionIntents.result,
+          })
+          .from(actionIntents)
+          .where(eq(actionIntents.id, intentId))
+          .limit(1),
+      );
+
+      if (!row) return last;
+      last = { status: row.status, errorCode: row.errorCode ?? null, result: row.result ?? null };
+      if (isTerminalIntentStatus(last.status)) return last;
+    } catch (err) {
+      console.error(
+        `[intentService] waitForIntentTerminalOutcome poll error for intent ${intentId}:`,
+        err,
+      );
+    }
+
+    const remaining = timeoutMs - (Date.now() - startTime);
+    if (remaining <= 0) return last;
+
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollInterval, remaining)));
+    pollInterval = Math.min(pollInterval * 1.5, 1000);
+  }
 }
