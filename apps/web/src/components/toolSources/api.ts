@@ -71,27 +71,38 @@ export async function getToolSource(f: Fetcher, id: string): Promise<ToolSourceD
   return unwrapData<ToolSourceDto>(await f(sourcePath(id)));
 }
 
+export type DiscoveryWarning = { warning?: 'discovery_not_queued' };
+export type SavedToolSource = ToolSourceDto & DiscoveryWarning;
+
+async function unwrapDiscoveryResult<T>(response: Response): Promise<T & DiscoveryWarning> {
+  const envelope = await response.clone().json().catch(() => null);
+  const data = await unwrapData<T>(response);
+  return envelope?.warning === 'discovery_not_queued'
+    ? { ...data, warning: 'discovery_not_queued' }
+    : data as T & DiscoveryWarning;
+}
+
 export async function createToolSource(
   f: Fetcher,
   body: CreateToolSourceBody,
-): Promise<ToolSourceDto> {
-  return unwrapData<ToolSourceDto>(await f(BASE, jsonInit('POST', body)));
+): Promise<SavedToolSource> {
+  return unwrapDiscoveryResult<ToolSourceDto>(await f(BASE, jsonInit('POST', body)));
 }
 
 export async function updateToolSource(
   f: Fetcher,
   id: string,
   body: UpdateToolSourceBody,
-): Promise<ToolSourceDto> {
-  return unwrapData<ToolSourceDto>(await f(sourcePath(id), jsonInit('PATCH', body)));
+): Promise<SavedToolSource> {
+  return unwrapDiscoveryResult<ToolSourceDto>(await f(sourcePath(id), jsonInit('PATCH', body)));
 }
 
 export async function deleteToolSource(f: Fetcher, id: string): Promise<void> {
   await unwrapData<unknown>(await f(sourcePath(id), { method: 'DELETE' }));
 }
 
-export async function discoverToolSource(f: Fetcher, id: string): Promise<void> {
-  await unwrapData<unknown>(await f(`${sourcePath(id)}/discover`, { method: 'POST' }));
+export async function discoverToolSource(f: Fetcher, id: string): Promise<DiscoveryWarning> {
+  return unwrapDiscoveryResult<DiscoveryWarning>(await f(`${sourcePath(id)}/discover`, { method: 'POST' }));
 }
 
 export async function listSourceTools(f: Fetcher, id: string): Promise<ToolSourceToolDto[]> {

@@ -33,6 +33,18 @@ export const updateToolSourceSchema = z.intersection(
   sourceCore.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial(),
   z.union([toolSourceAuthConfigSchema, z.object({})]),
 );
+// Explicit opt-in for self-hosted APIs; the default schemas remain HTTPS-only.
+const sourceCoreWithHttp = sourceCore.extend({
+  endpointUrl: z.string().url().refine(
+    (url) => url.startsWith('https://') || url.startsWith('http://'),
+    'must be an http or https URL',
+  ),
+});
+export const createToolSourceSchemaWithHttp = z.intersection(sourceCoreWithHttp, toolSourceAuthConfigSchema);
+export const updateToolSourceSchemaWithHttp = z.intersection(
+  sourceCoreWithHttp.omit({ slug: true, kind: true, ownerScope: true, orgId: true }).partial(),
+  z.union([toolSourceAuthConfigSchema, z.object({})]),
+);
 export const patchToolSourceToolSchema = z.object({
   tier: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
   enabled: z.boolean().optional(),

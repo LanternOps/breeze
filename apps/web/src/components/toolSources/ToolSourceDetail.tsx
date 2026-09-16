@@ -4,6 +4,7 @@ import '@/lib/i18n';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
 import { handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { runClientAction } from '../../lib/runClientAction';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { Dialog } from '../shared/Dialog';
@@ -67,10 +68,14 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
   const rediscover = async () => {
     const before = source?.lastDiscoveredAt ?? null;
     try {
-      await runClientAction(() => discoverToolSource(fetchWithAuth, sourceId), {
+      const result = await runClientAction(() => discoverToolSource(fetchWithAuth, sourceId), {
         errorFallback: t('toasts.discoveryFailed'),
-        successMessage: t('toasts.discoveryQueued'),
+        successMessage: (result) => result?.warning ? '' : t('toasts.discoveryQueued'),
       });
+      if (result?.warning === 'discovery_not_queued') {
+        showToast({ type: 'warning', message: t('toasts.discoveryNotQueued') });
+        return;
+      }
     } catch (err) {
       handleActionError(err, t('toasts.discoveryFailed'));
       return;

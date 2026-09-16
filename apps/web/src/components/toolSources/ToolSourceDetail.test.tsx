@@ -35,6 +35,7 @@ vi.mock('../../hooks/useDefaultOwnerScope', () => ({
   useDefaultOwnerScope: () => ({ isPartnerScope: true, defaultOwnerScope: 'partner' }),
 }));
 
+import { showToast } from '../shared/Toast';
 import ToolSourceDetail from './ToolSourceDetail';
 
 function source(overrides: Record<string, unknown> = {}) {
@@ -72,6 +73,21 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('ToolSourceDetail', () => {
+  it('warns without polling when re-discovery was not queued', async () => {
+    api.discoverToolSource.mockResolvedValueOnce({ warning: 'discovery_not_queued' });
+    render(<ToolSourceDetail sourceId="s-1" />);
+    await screen.findByTestId('tool-source-detail');
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByTestId('tool-source-rediscover'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(showToast).toHaveBeenCalledExactlyOnceWith({
+      type: 'warning', message: 'Tool source saved, but discovery could not be queued. Try re-discovering tools.',
+    });
+    await vi.advanceTimersByTimeAsync(61000);
+    expect(api.getToolSource).toHaveBeenCalledTimes(1);
+    expect((screen.getByTestId('tool-source-rediscover') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('renders the source facts and its partner-wide badge', async () => {
     render(<ToolSourceDetail sourceId="s-1" />);
     await screen.findByTestId('tool-source-detail');

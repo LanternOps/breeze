@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { AuthContext } from '../middleware/auth';
 import type { ToolSourceRow, ToolSourceToolRow } from '../db/schema';
 
-vi.mock('../config/env', () => ({ toolSourcesEnabled: vi.fn(() => true) }));
+vi.mock('../config/env', () => ({ toolSourcesEnabled: vi.fn(() => true), toolSourcesAllowPrivateEgress: vi.fn(() => false) }));
 
 // `requirePermission(resource, action)` is a FACTORY called once per const
 // at module load (`requireToolSourcesRead`/`Write`/`requireExternalToolsUse`
@@ -66,9 +66,10 @@ vi.mock('../services/toolSources/service', async (importOriginal) => {
   };
 });
 
+import { writeRouteAudit } from '../services/auditEvents';
 import { toolSourcesRoutes } from './toolSources';
-import { authMiddleware } from '../middleware/auth';
-import { toolSourcesEnabled } from '../config/env';
+import { withAuthDbAccessContext, authMiddleware } from '../middleware/auth';
+import { toolSourcesAllowPrivateEgress, toolSourcesEnabled } from '../config/env';
 import { enqueueToolSourceDiscovery } from '../jobs/toolSourceDiscoveryWorker';
 import { resolveTenantToolByName } from '../services/toolSources/resolver';
 import { executeTenantToolDetailed } from '../services/toolSources/execute';
@@ -185,6 +186,96 @@ describe('toolSourcesRoutes', () => {
     const res = await app.request('/tool-sources');
 
     expect(res.status).toBe(404);
+  });
+
+  describe('discovery scheduling boundary', () => {
+    beforeEach(() => {
+      setAuth(orgAuth());
+      vi.mocked(service.resolveToolSourceOwner).mockResolvedValue({ owner: { orgId: ORG_ID, partnerId: null } });
+      vi.mocked(service.slugShadowsPartnerSource).mockResolvedValue(false);
+      vi.mocked(service.createToolSourceRow).mockResolvedValue(makeRow());
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValue(makeRow());
+      vi.mocked(service.updateToolSourceRow).mockResolvedValue({ row: makeRow(), discoveryTriggered: true });
+    });
+
+    it.each(['create', 'update', 'discover'])('audits %s inside DB context and enqueues after commit, returning a warning on failure', async (operation) => {
+      let held = false;
+      const events: string[] = [];
+      vi.mocked(withAuthDbAccessContext).mockImplementationOnce(async (_auth, fn) => {
+        held = true;
+        const result = await fn();
+        held = false;
+        events.push('commit');
+        return result;
+      });
+      vi.mocked(writeRouteAudit).mockImplementationOnce(() => {
+        events.push(held ? 'audit' : 'audit outside context');
+      });
+      vi.mocked(enqueueToolSourceDiscovery).mockImplementationOnce(async () => {
+        events.push(held ? 'enqueue inside context' : 'enqueue');
+        throw new Error('Redis unavailable');
+      });
+      const path = operation === 'create' ? '/tool-sources' : `/tool-sources/${SRC_ID}${operation === 'discover' ? '/discover' : ''}`;
+      const res = await app.request(path, {
+        method: operation === 'update' ? 'PATCH' : 'POST', headers: JSON_HEADERS,
+        body: JSON.stringify(operation === 'create' ? { name: 'Hudu', slug: 'hudu', kind: 'mcp', endpointUrl: 'https://host.example/mcp', authKind: 'none' } : {}),
+      });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toMatchObject({ success: true, source: { id: SRC_ID }, warning: 'discovery_not_queued' });
+      expect(events).toEqual(['audit', 'commit', 'enqueue']);
+    });
+
+    it.each(['update', 'discover'])('does not audit or enqueue %s for an inaccessible source', async (operation) => {
+      vi.mocked(service.getToolSourceWithAccess).mockResolvedValueOnce(null);
+      const res = await app.request(`/tool-sources/${SRC_ID}${operation === 'discover' ? '/discover' : ''}`, {
+        method: operation === 'update' ? 'PATCH' : 'POST', headers: JSON_HEADERS, body: '{}',
+      });
+      expect(res.status).toBe(404);
+      expect(service.getToolSourceWithAccess).toHaveBeenCalledWith(expect.objectContaining({ orgId: ORG_ID }), SRC_ID);
+      expect(writeRouteAudit).not.toHaveBeenCalled();
+      expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue when the source transaction fails to commit', async () => {
+      vi.mocked(withAuthDbAccessContext).mockImplementationOnce(async (_auth, fn) => {
+        await fn();
+        throw new Error('Commit failed');
+      });
+      app.onError((_err, c) => c.json({ error: 'Failed' }, 500));
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS, body: '{}',
+      });
+      expect(res.status).toBe(500);
+      expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
+    });
+
+    it('does not enqueue an update that needs no discovery', async () => {
+      vi.mocked(service.updateToolSourceRow).mockResolvedValueOnce({ row: makeRow(), discoveryTriggered: false });
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name: 'Renamed' }),
+      });
+      expect(res.status).toBe(200);
+      expect(writeRouteAudit).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'tool_source.updated' }));
+      expect(enqueueToolSourceDiscovery).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])('allows HTTP updates only with the private-egress flag = %s', async (allow) => {
+      vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValueOnce(allow);
+      const res = await app.request(`/tool-sources/${SRC_ID}`, {
+        method: 'PATCH', headers: JSON_HEADERS,
+        body: JSON.stringify({ endpointUrl: 'http://host.example/mcp' }),
+      });
+      expect(res.status).toBe(allow ? 200 : 400);
+    });
+
+    it.each([false, true])('allows HTTP only with the private-egress flag = %s', async (allow) => {
+      vi.mocked(toolSourcesAllowPrivateEgress).mockReturnValueOnce(allow);
+      const res = await app.request('/tool-sources', {
+        method: 'POST', headers: JSON_HEADERS,
+        body: JSON.stringify({ name: 'Hudu', slug: 'hudu', kind: 'mcp', endpointUrl: 'http://host.example/mcp', authKind: 'none' }),
+      });
+      expect(res.status).toBe(allow ? 201 : 400);
+    });
   });
 
   describe('POST / — create', () => {

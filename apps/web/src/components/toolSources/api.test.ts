@@ -29,7 +29,7 @@ import { ActionError } from '../../lib/runAction';
 const fetcher = vi.fn();
 
 function ok(body: unknown, status = 200): Response {
-  return { ok: status < 400, status, json: async () => body } as Response;
+  return new Response(JSON.stringify(body), { status });
 }
 
 beforeEach(() => {
@@ -37,6 +37,19 @@ beforeEach(() => {
 });
 
 describe('tool sources API client', () => {
+  it('preserves discovery warnings on create, update, and re-discover', async () => {
+    fetcher.mockImplementation(async () => ok({
+      success: true, data: { id: 's-1' }, source: { id: 's-1' }, warning: 'discovery_not_queued',
+    }, 202));
+    const body = {
+      ownerScope: 'partner' as const, name: 'Hudu', slug: 'hudu', kind: 'mcp' as const,
+      endpointUrl: 'https://hudu.example.test/mcp', rateLimitPerMinute: 120, authKind: 'none' as const,
+    };
+    await expect(createToolSource(fetcher, body)).resolves.toMatchObject({ id: 's-1', warning: 'discovery_not_queued' });
+    await expect(updateToolSource(fetcher, 's-1', {})).resolves.toMatchObject({ id: 's-1', warning: 'discovery_not_queued' });
+    await expect(discoverToolSource(fetcher, 's-1')).resolves.toMatchObject({ warning: 'discovery_not_queued' });
+  });
+
   it('lists sources and unwraps the data envelope', async () => {
     fetcher.mockResolvedValueOnce(ok({ data: [{ id: 's-1' }], pagination: { total: 1, limit: 50, offset: 0 } }));
     await expect(listToolSources(fetcher)).resolves.toEqual([{ id: 's-1' }]);
@@ -98,7 +111,7 @@ describe('tool sources API client', () => {
   });
 
   it('routes the rest of the surface at the paths the API mounts', async () => {
-    fetcher.mockResolvedValue(ok({ data: {} }));
+    fetcher.mockImplementation(async () => ok({ data: {} }));
     await getToolSource(fetcher, 's-1');
     await updateToolSource(fetcher, 's-1', { name: 'New' });
     await deleteToolSource(fetcher, 's-1');

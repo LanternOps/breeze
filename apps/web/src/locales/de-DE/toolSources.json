@@ -26,7 +26,7 @@
     "kindMcp": "MCP-Server",
     "kindOpenapiSoon": "OpenAPI (kommt in einer späteren Version)",
     "endpoint": "Endpunkt-URL",
-    "endpointHelp": "Muss eine https-URL sein. Anmeldedaten werden nur an diesen Ursprung gesendet.",
+    "endpointHelp": "Verwenden Sie HTTPS oder HTTP, wenn private ausgehende Verbindungen auf einem selbst gehosteten Server aktiviert sind. Zugangsdaten werden nur an diesen Ursprung gesendet.",
     "authKind": "Authentifizierung",
     "rateLimit": "Aufrufe pro Minute",
     "scope": "Verfügbarkeit",
@@ -101,6 +101,7 @@
     "duration": "Abgeschlossen in {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "Tool-Quelle gespeichert, aber die Erkennung konnte nicht eingeplant werden. Versuchen Sie erneut, die Tools zu erkennen.",
     "created": "Tool-Quelle hinzugefügt. Die Erkennung wurde in die Warteschlange gestellt.",
     "saved": "Tool-Quelle gespeichert.",
     "deleted": "Tool-Quelle gelöscht.",

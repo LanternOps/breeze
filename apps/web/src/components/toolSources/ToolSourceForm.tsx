@@ -6,11 +6,13 @@ import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import { useDefaultOwnerScope, type OwnerScope } from '../../hooks/useDefaultOwnerScope';
 import { ActionError, handleActionError } from '../../lib/runAction';
+import { showToast } from '../shared/Toast';
 import { runClientAction } from '../../lib/runClientAction';
 import {
   createToolSource,
   updateToolSource,
   type CreateToolSourceBody,
+  type SavedToolSource,
   type ToolSourceDto,
   type UpdateToolSourceBody,
 } from './api';
@@ -134,7 +136,7 @@ export function ToolSourceForm({
     setFormError(null);
     try {
       const rateLimitPerMinute = Number(rateLimit) || 120;
-      let saved: ToolSourceDto;
+      let saved: SavedToolSource;
       if (isEdit && source) {
         // NOTE: no ownerScope, slug or kind. Ownership and addressability are
         // create-only — the API rejects them here, so offering them would
@@ -147,7 +149,7 @@ export function ToolSourceForm({
         } as UpdateToolSourceBody;
         saved = await runClientAction(() => updateToolSource(fetchWithAuth, source.id, body), {
           errorFallback: t('toasts.saveFailed'),
-          successMessage: t('toasts.saved'),
+          successMessage: (result) => result.warning ? '' : t('toasts.saved'),
         });
       } else {
         const scope: OwnerScope = showOwnerScope && ownerScope === 'partner' ? 'partner' : 'organization';
@@ -167,8 +169,11 @@ export function ToolSourceForm({
         } as CreateToolSourceBody;
         saved = await runClientAction(() => createToolSource(fetchWithAuth, body), {
           errorFallback: t('toasts.saveFailed'),
-          successMessage: t('toasts.created'),
+          successMessage: (result) => result.warning ? '' : t('toasts.created'),
         });
+      }
+      if (saved.warning === 'discovery_not_queued') {
+        showToast({ type: 'warning', message: t('toasts.discoveryNotQueued') });
       }
       onSaved(saved);
     } catch (err) {

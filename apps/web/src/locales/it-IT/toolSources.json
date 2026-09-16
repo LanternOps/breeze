@@ -26,7 +26,7 @@
     "kindMcp": "Server MCP",
     "kindOpenapiSoon": "OpenAPI (disponibile in una versione futura)",
     "endpoint": "URL dell’endpoint",
-    "endpointHelp": "Deve essere un URL https. Le credenziali vengono inviate solo a questa origine.",
+    "endpointHelp": "Usa HTTPS, oppure HTTP se le connessioni in uscita verso reti private sono abilitate su un server autogestito. Le credenziali vengono inviate solo a questa origine.",
     "authKind": "Autenticazione",
     "rateLimit": "Chiamate al minuto",
     "scope": "Disponibilità",
@@ -101,6 +101,7 @@
     "duration": "Completato in {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "Fonte degli strumenti salvata, ma non è stato possibile accodare il rilevamento. Prova a rilevare nuovamente gli strumenti.",
     "created": "Fonte di strumenti aggiunta. Il rilevamento è stato messo in coda.",
     "saved": "Fonte di strumenti salvata.",
     "deleted": "Fonte di strumenti eliminata.",

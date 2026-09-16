@@ -26,7 +26,7 @@
     "kindMcp": "Servidor MCP",
     "kindOpenapiSoon": "OpenAPI (disponible en una versión futura)",
     "endpoint": "Punto final URL",
-    "endpointHelp": "Debe ser una URL https. Las credenciales solo se envían a este origen.",
+    "endpointHelp": "Usa HTTPS o HTTP si el acceso saliente a redes privadas está habilitado en un servidor autohospedado. Las credenciales solo se envían a este origen.",
     "authKind": "Autenticación",
     "rateLimit": "Llamadas por minuto",
     "scope": "Disponibilidad",
@@ -101,6 +101,7 @@
     "duration": "Completado en {{ms}} ms"
   },
   "toasts": {
+    "discoveryNotQueued": "Se guardó la fuente de herramientas, pero no se pudo programar el descubrimiento. Intenta descubrir las herramientas de nuevo.",
     "created": "Fuente de herramientas agregada. El descubrimiento se puso en cola.",
     "saved": "Fuente de herramientas guardada.",
     "deleted": "Fuente de herramientas eliminada.",
