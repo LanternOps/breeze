@@ -6,6 +6,7 @@ import { STATUS_LABELS, statusTone } from '@/lib/invoiceStatus';
 import { depositBadgeState } from '@/lib/invoiceDeposit';
 import { cn } from '@/lib/utils';
 import { ROW, CELL, TH, PageHeader, StatusMark, EmptyState, ErrorNotice } from './ui';
+import { BilledByMonth } from './BilledByMonth';
 
 interface InvoiceListProps {
   invoices: InvoiceSummary[];
@@ -36,6 +37,8 @@ export function InvoiceList({ invoices, error }: InvoiceListProps) {
           </p>
         </EmptyState>
       ) : (
+        <>
+        <BilledByMonth invoices={invoices} />
         <div className="overflow-x-auto">
           <table className="block w-full sm:table sm:min-w-[44rem]">
             <thead className="hidden border-b border-border sm:table-header-group">
@@ -149,6 +152,7 @@ export function InvoiceList({ invoices, error }: InvoiceListProps) {
             </div>
           )}
         </div>
+        </>
       )}
     </div>
   );
