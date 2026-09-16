@@ -2632,7 +2632,30 @@
       }
     },
     "collection": {
-      "viewOids": "Voir les OID"
+      "viewOids": "Voir les OID",
+      "oidState": {
+        "collecting": "Collecte en cours",
+        "unsupported": "Non pris en charge",
+        "stale": "Périmé",
+        "neverPolled": "Jamais interrogé",
+        "unknown": "Inconnu"
+      },
+      "unknownNeedsAgentUpdate": "Cette version de l’agent ne peut pas lire les valeurs des tables. Mettez à jour l’agent sur l’appareil relais.",
+      "partialRows": "Résultats partiels : le parcours a atteint sa limite de lignes."
+    },
+    "health": {
+      "empty": {
+        "title": "Aucune surveillance n’est encore en place",
+        "action": "Configurer la surveillance",
+        "benefit": {
+          "printer": "Activez SNMP pour afficher les niveaux de toner et d’encre, les bacs à papier, les compteurs de pages et les erreurs de l’imprimante.",
+          "switch": "Activez SNMP pour afficher l’état des interfaces, le débit par port et la durée de fonctionnement.",
+          "generic": "Activez SNMP pour recueillir les données d’état de cet appareil, ou ajoutez une vérification ping ou de port."
+        }
+      },
+      "noTemplate": "SNMP est activé, mais aucun modèle n’est attribué : aucune donnée n’est donc interrogée.",
+      "pickTemplate": "Choisir un modèle",
+      "viewAllOids": "Afficher les {{count}} OID"
     }
   },
   "osIcons": {

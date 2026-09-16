@@ -2632,7 +2632,30 @@
       }
     },
     "collection": {
-      "viewOids": "Visualizza OID"
+      "viewOids": "Visualizza OID",
+      "oidState": {
+        "collecting": "Raccolta in corso",
+        "unsupported": "Non supportato",
+        "stale": "Obsoleto",
+        "neverPolled": "Mai interrogato",
+        "unknown": "Sconosciuto"
+      },
+      "unknownNeedsAgentUpdate": "Questa versione dell’agente non può leggere i valori delle tabelle. Aggiorna l’agente sul dispositivo ponte.",
+      "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe."
+    },
+    "health": {
+      "empty": {
+        "title": "Non è ancora attivo alcun monitoraggio",
+        "action": "Configura il monitoraggio",
+        "benefit": {
+          "printer": "Attiva SNMP per visualizzare i livelli di toner e inchiostro, i vassoi della carta, i contatori delle pagine e gli errori della stampante.",
+          "switch": "Attiva SNMP per visualizzare lo stato delle interfacce, il traffico per porta e il tempo di attività.",
+          "generic": "Attiva SNMP per raccogliere dati sullo stato di questo dispositivo oppure aggiungi un controllo ping o di porta."
+        }
+      },
+      "noTemplate": "SNMP è attivo, ma non è assegnato alcun modello, quindi non viene interrogato nulla.",
+      "pickTemplate": "Scegli un modello",
+      "viewAllOids": "Visualizza tutti i {{count}} OID"
     }
   },
   "osIcons": {

@@ -2632,7 +2632,30 @@
       }
     },
     "collection": {
-      "viewOids": "OID’leri görüntüle"
+      "viewOids": "OID’leri görüntüle",
+      "oidState": {
+        "collecting": "Toplanıyor",
+        "unsupported": "Desteklenmiyor",
+        "stale": "Güncel değil",
+        "neverPolled": "Hiç sorgulanmadı",
+        "unknown": "Bilinmiyor"
+      },
+      "unknownNeedsAgentUpdate": "Bu ajan sürümü tablo değerlerini okuyamıyor. Köprü cihazındaki ajanı güncelleyin.",
+      "partialRows": "Kısmi sonuç: tarama satır sınırına ulaştı."
+    },
+    "health": {
+      "empty": {
+        "title": "Henüz hiçbir şey izlenmiyor",
+        "action": "İzlemeyi ayarla",
+        "benefit": {
+          "printer": "Toner ve mürekkep seviyelerini, kağıt tepsilerini, sayfa sayaçlarını ve yazıcı hatalarını görmek için SNMP’yi açın.",
+          "switch": "Arayüz durumunu, bağlantı noktası başına aktarım hızını ve çalışma süresini görmek için SNMP’yi açın.",
+          "generic": "Bu cihazdan sağlık verileri toplamak için SNMP’yi açın veya bir ping ya da bağlantı noktası denetimi ekleyin."
+        }
+      },
+      "noTemplate": "SNMP açık, ancak bir şablon atanmamış; bu nedenle hiçbir şey sorgulanmıyor.",
+      "pickTemplate": "Şablon seç",
+      "viewAllOids": "{{count}} OID’nin tümünü görüntüle"
     }
   },
   "osIcons": {

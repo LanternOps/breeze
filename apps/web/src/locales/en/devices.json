@@ -2384,7 +2384,16 @@
         "neverPolled": "{{count}} never polled",
         "noOids": "No OIDs in this template"
       },
-      "viewOids": "View OIDs"
+      "viewOids": "View OIDs",
+      "oidState": {
+        "collecting": "Collecting",
+        "unsupported": "Unsupported",
+        "stale": "Stale",
+        "neverPolled": "Never polled",
+        "unknown": "Unknown"
+      },
+      "unknownNeedsAgentUpdate": "This agent version cannot read table values — update the agent on the bridging device.",
+      "partialRows": "Partial — the walk hit its row limit."
     },
     "settings": {
       "toasts": {
@@ -2665,7 +2674,21 @@
     "header": {
       "settings": "Settings"
     },
-    "editInSettings": "Edit in settings"
+    "editInSettings": "Edit in settings",
+    "health": {
+      "empty": {
+        "title": "Nothing is being monitored yet",
+        "action": "Set up monitoring",
+        "benefit": {
+          "printer": "Turn on SNMP to see toner and ink levels, paper trays, page counts and printer error states.",
+          "switch": "Turn on SNMP to see interface status, throughput per port and uptime.",
+          "generic": "Turn on SNMP to collect health data from this device, or add a ping or port check."
+        }
+      },
+      "noTemplate": "SNMP is on, but no template is assigned — so nothing is being polled.",
+      "pickTemplate": "Choose a template",
+      "viewAllOids": "View all {{count}} OIDs"
+    }
   },
   "osIcons": {
     "linux": "Linux",

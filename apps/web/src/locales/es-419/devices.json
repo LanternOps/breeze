@@ -2632,7 +2632,30 @@
       }
     },
     "collection": {
-      "viewOids": "Ver OID"
+      "viewOids": "Ver OID",
+      "oidState": {
+        "collecting": "Recopilando",
+        "unsupported": "No compatible",
+        "stale": "Desactualizado",
+        "neverPolled": "Nunca consultado",
+        "unknown": "Desconocido"
+      },
+      "unknownNeedsAgentUpdate": "Esta versión del agente no puede leer valores de tablas. Actualiza el agente en el dispositivo puente.",
+      "partialRows": "Parcial: el recorrido alcanzó su límite de filas."
+    },
+    "health": {
+      "empty": {
+        "title": "Todavía no se está monitoreando nada",
+        "action": "Configurar monitoreo",
+        "benefit": {
+          "printer": "Activa SNMP para ver los niveles de tóner y tinta, las bandejas de papel, los contadores de páginas y los errores de la impresora.",
+          "switch": "Activa SNMP para ver el estado de las interfaces, el tráfico por puerto y el tiempo de actividad.",
+          "generic": "Activa SNMP para recopilar datos de estado de este dispositivo o agrega una verificación de ping o de puerto."
+        }
+      },
+      "noTemplate": "SNMP está activado, pero no hay ninguna plantilla asignada, por lo que no se está consultando nada.",
+      "pickTemplate": "Elegir una plantilla",
+      "viewAllOids": "Ver los {{count}} OID"
     }
   },
   "osIcons": {

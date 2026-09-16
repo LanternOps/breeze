@@ -2632,7 +2632,30 @@
       }
     },
     "collection": {
-      "viewOids": "OIDs anzeigen"
+      "viewOids": "OIDs anzeigen",
+      "oidState": {
+        "collecting": "Wird erfasst",
+        "unsupported": "Nicht unterstützt",
+        "stale": "Veraltet",
+        "neverPolled": "Noch nie abgefragt",
+        "unknown": "Unbekannt"
+      },
+      "unknownNeedsAgentUpdate": "Diese Agent-Version kann keine Tabellenwerte lesen — aktualisieren Sie den Agent auf dem Vermittlungsgerät.",
+      "partialRows": "Unvollständig — die Tabellenabfrage hat ihr Zeilenlimit erreicht."
+    },
+    "health": {
+      "empty": {
+        "title": "Es wird noch nichts überwacht",
+        "action": "Überwachung einrichten",
+        "benefit": {
+          "printer": "Aktivieren Sie SNMP, um Toner- und Tintenstände, Papierfächer, Seitenzähler und Druckerfehler anzuzeigen.",
+          "switch": "Aktivieren Sie SNMP, um Schnittstellenstatus, Durchsatz pro Port und Betriebszeit anzuzeigen.",
+          "generic": "Aktivieren Sie SNMP, um Zustandsdaten dieses Geräts zu erfassen, oder fügen Sie eine Ping- oder Portprüfung hinzu."
+        }
+      },
+      "noTemplate": "SNMP ist aktiviert, aber es ist keine Vorlage zugewiesen — daher wird nichts abgefragt.",
+      "pickTemplate": "Vorlage auswählen",
+      "viewAllOids": "Alle {{count}} OIDs anzeigen"
     }
   },
   "osIcons": {
