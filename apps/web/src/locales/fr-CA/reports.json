@@ -294,7 +294,8 @@
         "hardware_lifecycle": "Cycle de vie du matériel",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "endpoint_management_review": "Revue de gestion des postes"
       },
       "tryAgain": "Réessayer",
       "values": {
@@ -304,6 +305,15 @@
       "viewModes": {
         "chart": "Classement",
         "table": "Tableau"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Appareils Breeze non inscrits",
+        "dataGaps": "Ce que nous n'avons pas pu mesurer",
+        "intuneDevices": "Inscrits dans Intune",
+        "intuneWithoutBreezeLink": "Enregistrements Intune non liés",
+        "noncompliant": "Non conformes",
+        "notMeasured": "S. O.",
+        "staleEnrolments": "Inscriptions périmées"
       }
     },
     "reportsList": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Cycle de vie du matériel",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "endpoint_management_review": "Revue de gestion des postes"
       },
       "runsTable": {
         "actions": "Actions",
@@ -865,7 +876,8 @@
         "patches": "Correctifs",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
-        "software_inventory": "Inventaire logiciel"
+        "software_inventory": "Inventaire logiciel",
+        "endpoint_management_review": "Revue de gestion des postes"
       },
       "schedules": {
         "daily": "Quotidien",
@@ -903,11 +915,25 @@
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
+        },
+        "endpoint_management_review": {
+          "description": "Preuve tirée de Microsoft Intune : couverture des inscriptions, répartition de la conformité avec une tendance sur 30 jours, inscriptions périmées et sièges de licence, avec la fraîcheur de chaque synchronisation.",
+          "name": "Revue de gestion des postes Intune"
         }
       },
       "title": "Modèles de rapports",
       "useTemplate": "Utiliser le modèle",
       "useTemplateTitle": "Utilisez {{name}}"
+    },
+    "endpointManagementOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "includeLicences": "Inclure les sièges de licence",
+      "includeLicencesHelp": "Affiche les sièges utilisés par rapport aux sièges achetés pour chaque produit Microsoft 365.",
+      "staleEnrolmentDays": "Signaler les inscriptions inactives depuis (jours)",
+      "staleEnrolmentDaysHelp": "Un appareil qui n'a pas communiqué avec Intune depuis ce nombre de jours compte comme une inscription périmée. La mesure se fait selon la cadence de synchronisation d'Intune, et non selon la période du rapport.",
+      "trendDays": "Fenêtre de tendance de conformité (jours)",
+      "trendDaysHelp": "Jusqu'où la tendance quotidienne de conformité remonte dans les relevés d'état Microsoft 365."
     }
   }
 }

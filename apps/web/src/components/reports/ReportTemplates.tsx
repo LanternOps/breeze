@@ -5,6 +5,7 @@ import {
   Bell,
   CalendarClock,
   FileText,
+  Laptop,
   Loader2,
   Plus,
   ShieldCheck,
@@ -18,6 +19,11 @@ import {
   HardwareLifecycleOptionsForm,
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
+import {
+  DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
+  EndpointManagementOptionsForm,
+  type EndpointManagementOptions,
+} from './EndpointManagementOptionsForm';
 import type { ReportFormat, ReportSchedule } from './ReportsList';
 import { fetchWithAuth } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
@@ -68,6 +74,7 @@ const reportTypeValues: TemplateReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'endpoint_management_review',
   'devices',
   'alerts',
   'patches',
@@ -112,6 +119,24 @@ const defaultTemplates: ReportTemplate[] = [
     tone: {
       iconBg: 'bg-emerald-500/15',
       iconColor: 'text-emerald-600'
+    }
+  },
+  {
+    id: 'endpoint_management_review',
+    name: 'Intune Endpoint Management Review',
+    description:
+      'Microsoft Intune evidence: enrolment coverage, compliance breakdown with a 30-day trend, stale enrolments and licence seats, with the freshness of each sync stated.',
+    defaults: {
+      name: 'Intune Endpoint Management Review',
+      type: 'endpoint_management_review',
+      dateRange: { preset: 'last_30_days' },
+      schedule: 'monthly',
+      format: 'pdf'
+    },
+    icon: Laptop,
+    tone: {
+      iconBg: 'bg-cyan-500/15',
+      iconColor: 'text-cyan-600'
     }
   },
   {
@@ -320,6 +345,8 @@ export default function ReportTemplates() {
   const [backupRequired, setBackupRequired] = useState(false);
   const [lifecycleTemplate, setLifecycleTemplate] = useState<ReportTemplate | null>(null);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [endpointManagementTemplate, setEndpointManagementTemplate] = useState<ReportTemplate | null>(null);
+  const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -404,6 +431,11 @@ export default function ReportTemplates() {
       if (type === 'hardware_lifecycle') {
         setLifecycleOptions(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
         setLifecycleTemplate(template);
+        return;
+      }
+      if (type === 'endpoint_management_review') {
+        setEndpointManagementOptions(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
+        setEndpointManagementTemplate(template);
         return;
       }
       if (type && !reportTypeSurvivesBuilder(type)) {
@@ -599,6 +631,30 @@ export default function ReportTemplates() {
                 onCancel={() => setLifecycleTemplate(null)}
                 onSubmit={() => {
                   void handleCreateDirect(lifecycleTemplate, { ...lifecycleOptions });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {endpointManagementTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+            <h2 className="text-lg font-semibold">
+              {t('reports.reportTemplates.useTemplateTitle', {
+                name: getTemplateDisplayName(endpointManagementTemplate),
+              })}
+            </h2>
+            <div className="mt-5">
+              <EndpointManagementOptionsForm
+                value={endpointManagementOptions}
+                onChange={setEndpointManagementOptions}
+                busy={creatingId === endpointManagementTemplate.id}
+                submitLabel={t('reports.endpointManagementOptions.createReport')}
+                onCancel={() => setEndpointManagementTemplate(null)}
+                onSubmit={() => {
+                  void handleCreateDirect(endpointManagementTemplate, { ...endpointManagementOptions });
                 }}
               />
             </div>

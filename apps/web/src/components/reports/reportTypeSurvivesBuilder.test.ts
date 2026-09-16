@@ -35,5 +35,9 @@ describe('reportTypeSurvivesBuilder', () => {
     expect(reportTypeSurvivesBuilder('ai_fleet_design')).toBe(false);
     // hardware_lifecycle → devices: curated template with its own options form.
     expect(reportTypeSurvivesBuilder('hardware_lifecycle')).toBe(false);
+    // endpoint_management_review → devices: curated #5784 W03 evidence type
+    // with its own options form; the freeform builder cannot represent the
+    // Intune freshness/trend config at all.
+    expect(reportTypeSurvivesBuilder('endpoint_management_review')).toBe(false);
   });
 });

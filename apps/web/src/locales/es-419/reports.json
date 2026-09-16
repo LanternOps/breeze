@@ -294,7 +294,8 @@
         "hardware_lifecycle": "Ciclo de vida del hardware",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
-        "software_inventory": "Inventario de software"
+        "software_inventory": "Inventario de software",
+        "endpoint_management_review": "Revisión de administración de endpoints"
       },
       "tryAgain": "Intentar otra vez",
       "values": {
@@ -304,6 +305,15 @@
       "viewModes": {
         "chart": "Cuadro",
         "table": "Tabla"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Dispositivos de Breeze sin inscribir",
+        "dataGaps": "Lo que no pudimos medir",
+        "intuneDevices": "Inscritos en Intune",
+        "intuneWithoutBreezeLink": "Registros de Intune sin vincular",
+        "noncompliant": "Sin cumplimiento",
+        "notMeasured": "N/D",
+        "staleEnrolments": "Inscripciones obsoletas"
       }
     },
     "reportsList": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Ciclo de vida del hardware",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
-        "software_inventory": "Inventario de software"
+        "software_inventory": "Inventario de software",
+        "endpoint_management_review": "Revisión de administración de endpoints"
       },
       "runsTable": {
         "actions": "Acciones",
@@ -865,7 +876,8 @@
         "patches": "Parches",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
-        "software_inventory": "Inventario de software"
+        "software_inventory": "Inventario de software",
+        "endpoint_management_review": "Revisión de administración de endpoints"
       },
       "schedules": {
         "daily": "A diario",
@@ -903,11 +915,25 @@
         "security_compliance_posture": {
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",
           "name": "Postura de seguridad y cumplimiento (seguros)"
+        },
+        "endpoint_management_review": {
+          "description": "Evidencia de Microsoft Intune: cobertura de inscripción, desglose de cumplimiento con tendencia de 30 días, inscripciones obsoletas y licencias, indicando la actualidad de cada sincronización.",
+          "name": "Revisión de administración de endpoints de Intune"
         }
       },
       "title": "Plantillas de informes",
       "useTemplate": "Usar plantilla",
       "useTemplateTitle": "Utilice {{name}}"
+    },
+    "endpointManagementOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Crear informe",
+      "includeLicences": "Incluir licencias",
+      "includeLicencesHelp": "Muestra las licencias en uso frente a las licencias compradas de cada producto de Microsoft 365.",
+      "staleEnrolmentDays": "Marcar inscripciones inactivas desde (días)",
+      "staleEnrolmentDaysHelp": "Un dispositivo que no se comunica con Intune durante esta cantidad de días cuenta como inscripción obsoleta. Se mide contra la cadencia de sincronización de Intune, no contra el período del informe.",
+      "trendDays": "Ventana de tendencia de cumplimiento (días)",
+      "trendDaysHelp": "Hasta dónde llega la tendencia diaria de cumplimiento en los resúmenes de estado de Microsoft 365."
     }
   }
 }

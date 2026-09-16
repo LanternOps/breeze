@@ -294,8 +294,66 @@ export default function ReportPreview({
         );
       })()}
 
+      {/* Endpoint Management Review (#5784 W03): enrolment and compliance tiles
+          instead of the generic summary cards (its summary carries nested
+          objects/arrays). An unmeasured count renders as "N/A", never 0 — the
+          same rule the PDF and the generator follow. */}
+      {data.type === 'endpoint_management_review' && data.data.summary && previewMode === 'table' && (() => {
+        const s = data.data.summary as {
+          enrolment?: {
+            intuneDevices?: number | null;
+            breezeDevices?: number | null;
+            breezeWithoutIntune?: number | null;
+            intuneWithoutBreezeLink?: number | null;
+          };
+          compliance?: { byState?: Record<string, number> | null };
+          staleEnrolments?: { count?: number | null };
+          dataGaps?: string[];
+          historyCaveat?: string;
+        };
+        const byState = s.compliance?.byState ?? null;
+        const tiles: { key: string; value: number | null | undefined; tone: string }[] = [
+          { key: 'intuneDevices', value: s.enrolment?.intuneDevices, tone: '' },
+          { key: 'breezeWithoutIntune', value: s.enrolment?.breezeWithoutIntune, tone: 'text-warning' },
+          { key: 'intuneWithoutBreezeLink', value: s.enrolment?.intuneWithoutBreezeLink, tone: 'text-muted-foreground' },
+          { key: 'noncompliant', value: byState ? byState.noncompliant ?? 0 : null, tone: 'text-destructive' },
+          { key: 'staleEnrolments', value: s.staleEnrolments?.count, tone: 'text-warning' },
+        ];
+        return (
+          <div className="space-y-4" data-testid="endpoint-management-summary">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              {tiles.map((tile) => (
+                <div key={tile.key} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.endpointManagement.${tile.key}`)}</p>
+                  <p className={cn('text-2xl font-bold mt-1', typeof tile.value === 'number' ? tile.tone : 'text-muted-foreground')}>
+                    {typeof tile.value === 'number'
+                      ? tile.value
+                      : t('reports.reportPreview.endpointManagement.notMeasured')}
+                  </p>
+                </div>
+              ))}
+            </div>
+            {Array.isArray(s.dataGaps) && s.dataGaps.length > 0 && (
+              <div className="rounded-lg border bg-card p-4" data-testid="endpoint-management-data-gaps">
+                <h4 className="text-sm font-semibold mb-3">{t('reports.reportPreview.endpointManagement.dataGaps')}</h4>
+                <ul className="space-y-2 text-sm">
+                  {s.dataGaps.map((line, i) => (
+                    <li key={i} className="flex gap-2"><span className="text-warning">›</span><span>{line}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {s.historyCaveat && (
+              <p className="text-xs text-muted-foreground" data-testid="endpoint-management-history-caveat">
+                {s.historyCaveat}
+              </p>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Summary Cards */}
-      {data.type !== 'hardware_lifecycle' && data.data.summary && previewMode === 'table' && (
+      {data.type !== 'hardware_lifecycle' && data.type !== 'endpoint_management_review' && data.data.summary && previewMode === 'table' && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Object.entries(data.data.summary).map(([key, value]) => (
             <div key={key} className="rounded-lg border bg-card p-4">

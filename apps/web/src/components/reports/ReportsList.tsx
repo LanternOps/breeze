@@ -39,7 +39,10 @@ export type ReportType =
   | 'security_compliance_posture'
   | 'ai_org_narrative'
   | 'ai_fleet_design'
-  | 'hardware_lifecycle';
+  | 'hardware_lifecycle'
+  // #5784 W03. No hardcoded label: getReportTypeLabel does a dynamic i18n
+  // lookup on reports.reportsList.reportTypes.<type>.
+  | 'endpoint_management_review';
 
 /**
  * Report types the API owns end to end: the AI schedule creates the definition,

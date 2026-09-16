@@ -40,6 +40,7 @@ import { showToast } from '../shared/Toast';
 import DeliverableTemplatesPage from './DeliverableTemplatesPage';
 import type { TemplateSet } from '../../lib/api/deliverableTemplates';
 import type { ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
+import { MANAGED_EVIDENCE_REPORT_TYPES } from '@breeze/shared';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -262,7 +263,10 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  it('renders the auto-evidence report type picker on the item form, with the empty state (W01: no types shipped)', async () => {
+  // #5784 W03 shipped the first managed-evidence type, so the picker now has
+  // options and the empty state is gone. The picker still defaults to None —
+  // auto-evidence is opt-in, never inherited by an existing template item.
+  it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
     render(<DeliverableTemplatesPage />);
     const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
 
@@ -270,7 +274,10 @@ describe('DeliverableTemplatesPage', () => {
 
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
     expect(select.value).toBe('');
-    expect(screen.getByTestId('deliverable-template-item-auto-evidence-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
+    );
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {

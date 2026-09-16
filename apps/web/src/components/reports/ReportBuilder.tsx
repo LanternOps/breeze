@@ -181,7 +181,12 @@ const legacyToBuilderType: Record<LegacyReportType, BuilderReportType> = {
   // Hardware Lifecycle is delivered via a curated template with its own
   // options form; the builder never offers it. Mapping to the devices source
   // keeps the Record exhaustive and `reportTypeSurvivesBuilder` false.
-  hardware_lifecycle: 'devices'
+  hardware_lifecycle: 'devices',
+  // Endpoint Management Review (#5784 W03) is a curated evidence template with
+  // its own options form; the freeform builder cannot represent its Intune
+  // freshness/trend config and never offers it. Mapping to the devices source
+  // keeps the Record exhaustive and `reportTypeSurvivesBuilder` false.
+  endpoint_management_review: 'devices'
 };
 
 const scheduleOptions: { value: ReportSchedule; label: string; description: string }[] = [

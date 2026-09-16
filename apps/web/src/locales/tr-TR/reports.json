@@ -294,7 +294,8 @@
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "tryAgain": "Tekrar deneyin",
       "values": {
@@ -304,6 +305,15 @@
       "viewModes": {
         "chart": "Grafik",
         "table": "Masa"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Kaydı olmayan Breeze cihazları",
+        "dataGaps": "Ölçemediklerimiz",
+        "intuneDevices": "Intune'a kayıtlı",
+        "intuneWithoutBreezeLink": "Eşleşmemiş Intune kayıtları",
+        "noncompliant": "Uyumlu değil",
+        "notMeasured": "Yok",
+        "staleEnrolments": "Eskimiş kayıtlar"
       }
     },
     "reportsList": {
@@ -354,7 +364,8 @@
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -865,7 +876,8 @@
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "schedules": {
         "daily": "Günlük",
@@ -903,11 +915,25 @@
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
           "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
+        },
+        "endpoint_management_review": {
+          "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
+          "name": "Intune Uç Nokta Yönetimi İncelemesi"
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
       "useTemplateTitle": "{{name}} kullanın"
+    },
+    "endpointManagementOptions": {
+      "cancel": "Vazgeç",
+      "createReport": "Rapor oluştur",
+      "includeLicences": "Lisans koltuklarını dahil et",
+      "includeLicencesHelp": "Her Microsoft 365 ürünü için kullanılan koltukları satın alınan koltuklarla karşılaştırarak gösterir.",
+      "staleEnrolmentDays": "Şu kadar gündür sessiz kayıtları işaretle (gün)",
+      "staleEnrolmentDaysHelp": "Bu kadar gündür Intune ile iletişim kurmayan bir cihaz eskimiş kayıt sayılır. Ölçüt, rapor dönemi değil Intune eşitleme sıklığıdır.",
+      "trendDays": "Uyumluluk eğilimi penceresi (gün)",
+      "trendDaysHelp": "Günlük uyumluluk eğiliminin Microsoft 365 durum özetlerinde ne kadar geriye gittiği."
     }
   }
 }
