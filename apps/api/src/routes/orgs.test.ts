@@ -1631,6 +1631,202 @@ describe('org routes', () => {
     });
   });
 
+  describe('PATCH /orgs/partners/me — emailTemplates', () => {
+    function mockCurrentPartnerSelect(settings: Record<string, unknown>) {
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            }),
+            limit: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings }])
+          })
+        })
+      } as any);
+    }
+
+    function mockUpdateCapture() {
+      let captured: any;
+      vi.mocked(db.update).mockReturnValue({
+        set: vi.fn().mockImplementation((data: any) => {
+          captured = data;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: 'partner-123', name: 'P', settings: data.settings }])
+            })
+          };
+        })
+      } as any);
+      return () => captured;
+    }
+
+    function patchMe(body: unknown) {
+      return app.request('/orgs/partners/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    const fourFields = {
+      subject: 'New reply: {{ticket_subject}}',
+      heading: 'Hello {{requester_name}}',
+      buttonLabel: 'View ticket',
+      html: '<p>Your ticket {{ticket_number}} has a reply.</p>',
+    };
+
+    it('accepts the four fields for a known template id', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: { ticket_comment_notification: fourFields } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates.ticket_comment_notification).toEqual(fourFields);
+    });
+
+    it('rejects an unknown template id with 400 and never writes', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: {
+        not_a_template: { subject: 'x', heading: null, buttonLabel: null, html: '<p>x</p>' },
+      } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('rejects html longer than 20_000 with 400 and never writes', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: {
+        ticket_comment_notification: { ...fourFields, html: 'a'.repeat(20_001) },
+      } } });
+
+      expect(res.status).toBe(400);
+      expect(getCaptured()).toBeUndefined();
+    });
+
+    it('preserves a sibling template id when only one id is patched', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({
+        emailTemplates: {
+          ticket_resolved: {
+            subject: 'Keep me',
+            heading: null,
+            buttonLabel: null,
+            html: '<p>Resolved</p>',
+          },
+        },
+      });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: { ticket_comment_notification: fourFields } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates.ticket_resolved).toEqual({
+        subject: 'Keep me',
+        heading: null,
+        buttonLabel: null,
+        html: '<p>Resolved</p>',
+      });
+      expect(getCaptured().settings.emailTemplates.ticket_comment_notification).toEqual(fourFields);
+    });
+
+    it('sanitizes stored html and returns strip warnings', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: {
+        ticket_comment_notification: {
+          subject: null,
+          heading: null,
+          buttonLabel: null,
+          html: '<script>alert(1)</script><p>Hi</p>',
+        },
+      } } });
+
+      expect(res.status).toBe(200);
+      const stored = getCaptured().settings.emailTemplates.ticket_comment_notification.html as string;
+      expect(stored).not.toMatch(/script/i);
+      expect(stored).toContain('Hi');
+      const body = await res.json() as { warnings?: unknown };
+      expect(body.warnings).toEqual([
+        {
+          code: 'UNSUPPORTED_HTML_TAGS_REMOVED',
+          field: 'emailTemplates.ticket_comment_notification.html',
+          removedTags: ['script'],
+        },
+      ]);
+    });
+
+    it('preserves ticketing.inbound and emailTemplates when only inbound is patched', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({
+        ticketing: { inbound: { enabled: false, address: 'support@tickets.acme.com' } },
+        emailTemplates: {
+          ticket_resolved: {
+            subject: 'Keep resolved',
+            heading: null,
+            buttonLabel: null,
+            html: '<p>Done</p>',
+          },
+        },
+      });
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { ticketing: { inbound: {
+        enabled: true,
+        defaultTriageOrgId: null,
+        autoresponderEnabled: false,
+        address: 'support@tickets.acme.com',
+      } } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.ticketing.inbound).toMatchObject({
+        enabled: true,
+        defaultTriageOrgId: null,
+        autoresponderEnabled: false,
+        address: 'support@tickets.acme.com',
+      });
+      expect(getCaptured().settings.emailTemplates.ticket_resolved).toEqual({
+        subject: 'Keep resolved',
+        heading: null,
+        buttonLabel: null,
+        html: '<p>Done</p>',
+      });
+    });
+
+    it('stores trimmed empty subject/heading/buttonLabel/html as null', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: {
+        ticket_autoresponse: {
+          subject: '  ',
+          heading: '',
+          buttonLabel: '   ',
+          html: '\n',
+        },
+      } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates.ticket_autoresponse).toEqual({
+        subject: null,
+        heading: null,
+        buttonLabel: null,
+        html: null,
+      });
+    });
+  });
+
   describe('PATCH /orgs/partners/me — timeTracking.sessionSuggestions (W06 #3900)', () => {
     // Local copies of the helpers above (plain functions, safe to duplicate —
     // same pattern the ticketing.inbound describe uses).
