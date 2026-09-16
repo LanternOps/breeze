@@ -3,8 +3,8 @@ import { z } from 'zod';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSchema, evidenceClassSchema, directnessSchema, type TopologyScope } from '@breeze/shared';
 import { db, assertInTransaction } from '../../db';
-import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNodePositions, topologySiteState, auditLogs, discoveredAssets } from '../../db/schema';
-import { canonicalIdentityKey, normalizedTopologyScope, planCanonicalMerge } from './identity';
+import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNodePositions, topologyLayouts, topologySiteState, auditLogs, discoveredAssets } from '../../db/schema';
+import { canonicalIdentityKey, normalizedTopologyScope, planCanonicalMerge, planAliasPosition } from './identity';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -99,6 +99,9 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     const nodes = await tx.select().from(topologyNodes).where(scopedWhere(topologyNodes, normalized));
     const relationships = await tx.select().from(topologyRelationships).where(scopedWhere(topologyRelationships, normalized));
     const bindings = await tx.select().from(topologyNodeBindings).where(scopedWhere(topologyNodeBindings, normalized));
+    // Shared with layout reads/writes: site state, sorted layout headers, then
+    // positions. A merge's pin-conflict decision must see protected positions.
+    await tx.select().from(topologyLayouts).where(scopedWhere(topologyLayouts, normalized)).orderBy(topologyLayouts.id).for('update');
     const positions = await tx.select().from(topologyNodePositions).where(scopedWhere(topologyNodePositions, normalized));
     const oldNodesById = new Map(nodes.map(n => [n.id, n]));
     const oldNodesByIdentity = new Map(nodes.map(n => [n.identityKey, n]));
@@ -152,7 +155,10 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       const source = nodeMap.get(node.id!); const target = nodeMap.get(resolve(node.aliasTargetId));
       if (!source || !target || source.kind !== 'endpoint' || target.kind !== 'endpoint' || target.aliasTargetId) throw new Error('Invalid canonical alias target');
       const candidateBindings = [...bindings, ...bindingWrites].filter(b => b.nodeId === source.id || b.nodeId === target.id);
-      const assets = await tx.select().from(discoveredAssets).where(and(eq(discoveredAssets.orgId, normalized.orgId), eq(discoveredAssets.siteId, normalized.siteId))).for('share');
+      // Capture takes asset -> site-state locks. While we own site state, a
+      // committed MVCC read is the preceding captured identity; row-locking
+      // assets here would deadlock an ordinary UPDATE blocked in capture.
+      const assets = await tx.select().from(discoveredAssets).where(and(eq(discoveredAssets.orgId, normalized.orgId), eq(discoveredAssets.siteId, normalized.siteId)));
       if (!assets.some(a => !a.autoLinkSuppressedAt && a.linkedDeviceId
         && candidateBindings.some(assetBinding => assetBinding.discoveredAssetId === a.id
           && candidateBindings.some(deviceBinding => deviceBinding.deviceId === a.linkedDeviceId
@@ -180,7 +186,7 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     for (const binding of finalBindings.values()) bindingGroups.set(binding.nodeId, [...(bindingGroups.get(binding.nodeId) ?? []), binding]);
     const sharedIdentities = [...bindingGroups.values()].filter(group => group.length > 1);
     if (sharedIdentities.length) {
-      const assets = await tx.select().from(discoveredAssets).where(and(eq(discoveredAssets.orgId, normalized.orgId), eq(discoveredAssets.siteId, normalized.siteId))).for('share');
+      const assets = await tx.select().from(discoveredAssets).where(and(eq(discoveredAssets.orgId, normalized.orgId), eq(discoveredAssets.siteId, normalized.siteId)));
       for (const group of sharedIdentities) {
         const managed = group.filter(b => b.deviceId);
         if (managed.length !== 1 || group.some(b => b.manualNodeId)
@@ -240,15 +246,21 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
       if (oldBindingsById.has(id!)) await tx.update(topologyNodeBindings).set(changes).where(and(scopedWhere(topologyNodeBindings, normalized), eq(topologyNodeBindings.id, id!)));
       else await tx.insert(topologyNodeBindings).values(row);
     }
+    const changedLayouts = new Set<string>();
     for (const merge of merges) {
-      for (const position of positions.filter(p => p.nodeId === merge.aliasId && !p.deletedAt)) {
-        const existing = positions.find(p => p.layoutId === position.layoutId && p.nodeId === merge.canonicalId && !p.deletedAt);
-        const chosen = existing?.pinned ? existing : position;
-        if (!existing || position.pinned) await tx.insert(topologyNodePositions).values({ ...chosen, nodeId: merge.canonicalId }).onConflictDoUpdate({ target: [topologyNodePositions.layoutId, topologyNodePositions.nodeId], set: { x: chosen.x, y: chosen.y, pinned: chosen.pinned, positionSource: chosen.positionSource, updatedBy: chosen.updatedBy, deletedAt: null, updatedAt: now } });
+      // Tombstoned slots carry replay high-waters too. Transfer those fences
+      // before removing the alias slot; neither retention nor alias resolution
+      // may make an older source event eligible again.
+      for (const position of positions.filter(p => p.nodeId === merge.aliasId)) {
+        const existing = positions.find(p => p.layoutId === position.layoutId && p.nodeId === merge.canonicalId);
+        const chosen = planAliasPosition(merge.canonicalId, position, existing);
+        await tx.insert(topologyNodePositions).values({ ...chosen, updatedAt: now }).onConflictDoUpdate({ target: [topologyNodePositions.layoutId, topologyNodePositions.nodeId], set: { x: chosen.x, y: chosen.y, pinned: chosen.pinned, positionSource: chosen.positionSource, updatedBy: chosen.updatedBy, deletedAt: chosen.deletedAt, revision: chosen.revision, legacySourceRevision: chosen.legacySourceRevision, updatedAt: now } });
         await tx.delete(topologyNodePositions).where(and(scopedWhere(topologyNodePositions, normalized), eq(topologyNodePositions.layoutId, position.layoutId), eq(topologyNodePositions.nodeId, merge.aliasId)));
+        changedLayouts.add(position.layoutId);
       }
       await tx.insert(auditLogs).values({ orgId: normalized.orgId, actorType: 'system', actorId: '00000000-0000-0000-0000-000000000000', action: 'topology.alias_merged', resourceType: 'topology_node', resourceId: merge.canonicalId, result: 'success', initiatedBy: 'automation', details: { ...merge, siteId: normalized.siteId, evidence: 'accepted_link', inputRevision: staged.inputRevision, buildFence: staged.buildFence } });
     }
+    for (const layoutId of [...changedLayouts].sort()) await tx.update(topologyLayouts).set({ revision: sql`${topologyLayouts.revision} + 1`, updatedAt: now }).where(and(scopedWhere(topologyLayouts, normalized), eq(topologyLayouts.id, layoutId)));
     return { published: true, graphRevision };
   });
 }

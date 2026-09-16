@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalIdentityKey, planCanonicalMerge } from './identity';
+import { canonicalIdentityKey, planCanonicalMerge, planAliasPosition } from './identity';
 
 const scope = { orgId: '00000000-0000-4000-8000-000000000001', siteId: '00000000-0000-4000-8000-000000000002' };
 const a = { ...scope, id: '00000000-0000-4000-8000-000000000003', createdAt: new Date('2020-01-01'), labelOverride: 'Pinned label' };
@@ -23,6 +23,26 @@ describe('scoped canonical identity', () => {
   });
   it('rejects missing scope', () => {
     expect(() => canonicalIdentityKey({ ...scope, siteId: '' }, 'endpoint', 'device:immutable')).toThrow();
+  });
+});
+
+describe('alias position migration', () => {
+  const position = { nodeId: a.id, layoutId: a.id, x: 1, y: 2, pinned: false, revision: 2n, legacySourceRevision: 2n, deletedAt: null as Date | null };
+  it('carries the pinned source and advances both replay and row revision fences', () => {
+    const alias = { ...position, nodeId: b.id, x: 11, pinned: true, revision: 4n, legacySourceRevision: 10n };
+    expect(planAliasPosition(a.id, alias, position)).toMatchObject({ nodeId: a.id, x: 11, pinned: true, revision: 5n, legacySourceRevision: 10n });
+  });
+  it('retains the destination tombstone high-water when transferring an active alias pin', () => {
+    const alias = { ...position, nodeId: b.id, x: 11, pinned: true, revision: 4n, legacySourceRevision: 10n };
+    expect(planAliasPosition(a.id, alias, { ...position, revision: 12n, legacySourceRevision: 20n, deletedAt: new Date() })).toMatchObject({ x: 11, pinned: true, revision: 13n, legacySourceRevision: 20n, deletedAt: null });
+  });
+  it('retains the removed alias tombstone fence while preserving a canonical pin', () => {
+    const alias = { ...position, nodeId: b.id, legacySourceRevision: 30n, deletedAt: new Date() };
+    expect(planAliasPosition(a.id, alias, { ...position, pinned: true })).toMatchObject({ x: 1, pinned: true, revision: 3n, legacySourceRevision: 30n, deletedAt: null });
+  });
+  it('keeps a tombstone and null source fence when neither slot is live or captured', () => {
+    const alias = { ...position, nodeId: b.id, legacySourceRevision: null, deletedAt: new Date() };
+    expect(planAliasPosition(a.id, alias)).toMatchObject({ nodeId: a.id, revision: 3n, legacySourceRevision: null, deletedAt: alias.deletedAt });
   });
 });
 

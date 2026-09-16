@@ -9,7 +9,7 @@ const input = { buildFence: '2', inputRevision: '3', nodes: [], relationships: [
 const state = { buildFence: 2n, materializedInputRevision: 2n, graphRevision: 7n, dirtyRevision: 3n };
 function transactionWithState(row = state) {
   const locked = vi.fn().mockResolvedValue([row]);
-  const where = vi.fn(() => Object.assign(Promise.resolve([]), { for: locked }));
+  const where = vi.fn(() => Object.assign(Promise.resolve([]), { for: locked, orderBy: vi.fn(() => ({ for: vi.fn().mockResolvedValue([]) })) }));
   const tx = { select: vi.fn(() => ({ from: vi.fn(() => ({ where })) })), execute: vi.fn().mockResolvedValue([{ graph_revision: '8' }]), insert: vi.fn(), update: vi.fn() };
   mocks.transaction.mockImplementation(async work => work(tx));
   return tx;

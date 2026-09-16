@@ -4,11 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import type { TopologyScope } from '@breeze/shared';
 import { db, withDbAccessContext } from '../../db';
-import { topologyNodes, topologyNodeBindings, topologyRelationships, topologySiteState, topologyLayouts, topologyNodePositions, devices, discoveredAssets, auditLogs } from '../../db/schema';
+import { topologyNodes, topologyNodeBindings, topologyRelationships, topologySiteState, topologyLayouts, topologyNodePositions, topologyChangeOutbox, devices, discoveredAssets, auditLogs } from '../../db/schema';
 import { publishTopologyBuild, type NodePublication, type PublicationInput, type RelationshipPublication } from '../../services/topology/publish';
 import { canonicalIdentityKey } from '../../services/topology/identity';
 import { createTopologyTenant, orgContext } from './topology-fixtures';
 import { getTestDb } from './setup';
+import { legacyNodeIdentity } from '../../services/topology/legacyProjection';
+import { replayLegacyBatch } from '../../services/topology/legacyReplay';
+import { emptyLegacyCounts } from '../../services/topology/legacyImportState';
 
 const scoped = <T>(scope: TopologyScope, run: () => Promise<T>) => withDbAccessContext(orgContext(scope.orgId), run);
 async function fixture() {
@@ -27,6 +30,29 @@ function relationship(scope: TopologyScope, sourceNodeId: string, targetNodeId: 
 const input = (nodes: NodePublication[], relationships: RelationshipPublication[] = [], overrides: Partial<PublicationInput> = {}): PublicationInput => ({ buildFence: '2', inputRevision: '1', nodes, relationships, bindings: [], ...overrides });
 const publish = (scope: TopologyScope, value: PublicationInput) => scoped(scope, () => publishTopologyBuild(scope, value));
 async function state(scope: TopologyScope) { return (await getTestDb().select().from(topologySiteState).where(eq(topologySiteState.siteId, scope.siteId)))[0]!; }
+
+async function aliasPair(scope: TopologyScope, ipAddress = '192.0.2.1') {
+  const deviceId = randomUUID(); const assetId = randomUUID();
+  const a = { ...node(scope), ...legacyNodeIdentity(scope, 'devices', deviceId) };
+  const b = { ...node(scope), ...legacyNodeIdentity(scope, 'discovered_assets', assetId) };
+  await getTestDb().insert(devices).values({ ...scope, id: deviceId, agentId: deviceId, hostname: 'fixture', osType: 'linux', osVersion: '1', architecture: 'amd64', agentVersion: '1' });
+  await getTestDb().insert(discoveredAssets).values({ ...scope, id: assetId, ipAddress, linkedDeviceId: deviceId, linkSource: 'manual' });
+  await publish(scope, input([a, b], [], { inputRevision: ((await state(scope)).materializedInputRevision + 1n).toString(), bindings: [
+    { ...scope, id: randomUUID(), nodeId: a.id, deviceId }, { ...scope, id: randomUUID(), nodeId: b.id, discoveredAssetId: assetId },
+  ] }));
+  await getTestDb().update(topologyNodes).set({ createdAt: new Date('2020-01-01') }).where(eq(topologyNodes.id, a.id));
+  return { a, b, assetId };
+}
+
+async function waitForBlocking(waiter: number, holder: number) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const rows = await getTestDb().execute(sql`SELECT ${holder}::int = ANY(pg_blocking_pids(${waiter}::int)) AS blocked`);
+    if (rows[0]?.blocked === true) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error('Asset UPDATE never reached the held capture barrier');
+}
 
 describe('atomic fenced topology publication', () => {
   it('rejects an older fence and equal checkpoint without changing any rows', async () => {
@@ -187,5 +213,94 @@ describe('atomic fenced topology publication', () => {
     expect((await getTestDb().select().from(topologyRelationships))[0]).toMatchObject({ sourceNodeId: a.id, attributes: { method: 'manual', notes: 'Retain manual assertion' } });
     expect(await getTestDb().select().from(topologyNodePositions)).toMatchObject([{ nodeId: a.id, x: 11, y: 22, pinned: true }]);
     expect((await getTestDb().select().from(auditLogs).where(eq(auditLogs.action, 'topology.alias_merged')))[0]!.details).toMatchObject({ canonicalId: a.id, aliasId: b.id, evidence: 'accepted_link' });
+  });
+
+  it('advances alias layout CAS once per affected header, rows and no-change replay independently', async () => {
+    const scope = await fixture(); const first = await aliasPair(scope); const second = await aliasPair(scope, '192.0.2.2');
+    const layouts = await getTestDb().insert(topologyLayouts).values([
+      { ...scope, view: 'overview', revision: 7n }, { ...scope, view: 'physical', revision: 11n }, { ...scope, view: 'logical', revision: 15n },
+    ]).returning();
+    const overview = layouts.find(l => l.view === 'overview')!; const physical = layouts.find(l => l.view === 'physical')!;
+    for (const pair of [first, second]) await getTestDb().insert(topologyNodePositions).values([
+      { ...scope, layoutId: overview.id, nodeId: pair.a.id, x: 0, y: 0, revision: 2n, legacySourceRevision: 2n },
+      { ...scope, layoutId: overview.id, nodeId: pair.b.id, x: 11, y: 22, pinned: true, revision: 4n, legacySourceRevision: 10n },
+    ]);
+    await getTestDb().insert(topologyNodePositions).values({ ...scope, layoutId: physical.id, nodeId: first.b.id, x: 3, y: 4, pinned: true, revision: 0n });
+    const build = input([first, second].map(pair => ({ ...pair.b, aliasTargetId: pair.a.id })), [], { inputRevision: '3' });
+    expect((await publish(scope, build)).published).toBe(true);
+    const after = await getTestDb().select().from(topologyLayouts);
+    expect(Object.fromEntries(after.map(l => [l.view, l.revision]))).toEqual({ overview: 8n, physical: 12n, logical: 15n });
+    const positions = await getTestDb().select().from(topologyNodePositions).where(eq(topologyNodePositions.layoutId, overview.id));
+    expect(positions).toHaveLength(2);
+    for (const position of positions) expect(position).toMatchObject({ pinned: true, x: 11, y: 22, revision: 5n, legacySourceRevision: 10n });
+    // The old expected revision can no longer authorize an editor's CAS.
+    expect(await getTestDb().update(topologyLayouts).set({ revision: 999n }).where(and(eq(topologyLayouts.id, overview.id), eq(topologyLayouts.revision, 7n))).returning()).toHaveLength(0);
+    expect((await publish(scope, build)).published).toBe(false);
+    expect(await getTestDb().select().from(topologyLayouts)).toEqual(after);
+  });
+
+  it.each([false, true])('retains alias replay high-water through a destination tombstone=%s and outbox removal', async deleted => {
+    const scope = await fixture(); const pair = await aliasPair(scope);
+    const [layout] = await getTestDb().insert(topologyLayouts).values({ ...scope, view: 'overview', revision: 7n }).returning();
+    await getTestDb().insert(topologyNodePositions).values([
+      { ...scope, layoutId: layout!.id, nodeId: pair.a.id, x: 0, y: 0, revision: 2n, legacySourceRevision: deleted ? 20n : 2n, deletedAt: deleted ? new Date(0) : null },
+      { ...scope, layoutId: layout!.id, nodeId: pair.b.id, x: 11, y: 22, pinned: true, revision: 4n, legacySourceRevision: 10n },
+    ]);
+    await publish(scope, input([{ ...pair.b, aliasTargetId: pair.a.id }], [], { inputRevision: '2' }));
+    const before = (await getTestDb().select().from(topologyNodePositions))[0]!;
+    expect(before).toMatchObject({ nodeId: pair.a.id, pinned: true, x: 11, legacySourceRevision: deleted ? 20n : 10n, revision: 5n, deletedAt: null });
+    await getTestDb().delete(topologyChangeOutbox).where(eq(topologyChangeOutbox.siteId, scope.siteId));
+    expect(await getTestDb().select().from(topologyChangeOutbox)).toHaveLength(0);
+    // A retained/recovered old snapshot is delivered at a newer outbox ordinal.
+    // Its source revision remains 5, and alias resolution must consult the
+    // destination's durable fence rather than the now-removed outbox history.
+    const sourceId = randomUUID(); const runId = randomUUID();
+    const [event] = await getTestDb().insert(topologyChangeOutbox).values({ ...scope, eventKind: 'legacy.snapshot', aggregateId: sourceId, sourceRevision: 100n,
+      idempotencyKey: `test-replay:${sourceId}`, payload: { version: 1, kind: 'legacy.snapshot', runId, sourceRevision: '5', item: { sourceTable: 'topology_layout', sourceId, data: { nodeType: 'discovered_asset', nodeId: pair.assetId, x: 99, y: 99, pinned: false, updatedBy: null } } } }).returning();
+    await getTestDb().update(topologySiteState).set({ dirtyRevision: 100n }).where(eq(topologySiteState.siteId, scope.siteId));
+    const result = await scoped(scope, async () => {
+      await db.select().from(topologySiteState).where(eq(topologySiteState.siteId, scope.siteId)).for('update');
+      return replayLegacyBatch(scope, [event!], 2n, { version: 1, runId, capturedThrough: '20', snapshotThrough: '100', deliveredThrough: '2', status: 'staged', snapshotRows: 1, counts: emptyLegacyCounts(), mismatches: [] });
+    });
+    expect(result.counts.skipped).toBeGreaterThan(0); expect(result.counts.conflicted).toBe(0);
+    expect((await getTestDb().select().from(topologyNodePositions))[0]).toEqual(before);
+    expect((await getTestDb().select().from(topologyLayouts))[0]!.revision).toBe(8n);
+  });
+
+  it('publishes accepted identity while an asset UPDATE holds its row and waits in capture', async () => {
+    const scope = await fixture(); const pair = await aliasPair(scope); const before = await state(scope);
+    let signalState!: (pid: number) => void; const heldState = new Promise<number>(resolve => { signalState = resolve; });
+    let allowPublish!: () => void; const mayPublish = new Promise<void>(resolve => { allowPublish = resolve; });
+    const publisher = scoped(scope, async () => {
+      await db.execute(sql`SET LOCAL statement_timeout = '8s'`);
+      await db.select().from(topologySiteState).where(eq(topologySiteState.siteId, scope.siteId)).for('update');
+      signalState(Number((await db.execute(sql`SELECT pg_backend_pid() AS pid`))[0]!.pid));
+      await mayPublish;
+      return publishTopologyBuild(scope, input([{ ...pair.b, aliasTargetId: pair.a.id }], [], { inputRevision: '2' }));
+    });
+    const publisherSettled = publisher.then(value => ({ value }), error => ({ error }));
+    let updater: Promise<unknown> | undefined; let updaterSettled: Promise<unknown> | undefined;
+    try {
+      const holder = await Promise.race([heldState, publisher.then(() => { throw new Error('Publisher exited before holding site state'); })]);
+      let signalUpdater!: (pid: number) => void; const updaterStarted = new Promise<number>(resolve => { signalUpdater = resolve; });
+      updater = scoped(scope, async () => {
+        await db.execute(sql`SET LOCAL statement_timeout = '8s'`);
+        signalUpdater(Number((await db.execute(sql`SELECT pg_backend_pid() AS pid`))[0]!.pid));
+        // Label is in the capture projection, so this is a meaningful UPDATE.
+        await db.update(discoveredAssets).set({ label: 'Changed while publishing' }).where(eq(discoveredAssets.id, pair.assetId));
+      });
+      updaterSettled = updater.then(() => ({ completed: true }), error => ({ error }));
+      const waiter = await Promise.race([updaterStarted, updater.then(() => { throw new Error('Updater exited before signaling its backend'); })]);
+      await waitForBlocking(waiter, holder);
+      allowPublish();
+      expect(await publisherSettled).toMatchObject({ value: { published: true } });
+      expect(await updaterSettled).toEqual({ completed: true });
+      expect((await state(scope))).toMatchObject({ materializedInputRevision: 2n, dirtyRevision: before.dirtyRevision + 1n });
+      const events = await getTestDb().select().from(topologyChangeOutbox).where(and(eq(topologyChangeOutbox.aggregateId, pair.assetId), eq(topologyChangeOutbox.sourceRevision, before.dirtyRevision + 1n)));
+      expect(events).toHaveLength(1); expect(events[0]!.payload).toMatchObject({ data: { label: 'Changed while publishing' } });
+    } finally {
+      allowPublish();
+      await Promise.allSettled([publisherSettled, ...(updaterSettled ? [updaterSettled] : [])]);
+    }
   });
 });

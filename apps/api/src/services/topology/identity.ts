@@ -27,6 +27,22 @@ export function canonicalIdentityKey(scope: TopologyScope, kind: NodeKind | Rela
 
 type MergeNode = TopologyScope & { id: string; createdAt: Date; labelOverride?: string | null; attributes?: { notes?: string } };
 type MergePosition = { nodeId: string; layoutId: string; x: number; y: number; pinned: boolean };
+type VersionedPosition = MergePosition & { revision: bigint; legacySourceRevision: bigint | null; deletedAt: Date | null };
+
+/** Identity collapse preserves live pins rather than replaying either source's
+ * deletion over the other identity. Both source high-waters survive, including
+ * tombstones, so an older event cannot later undo the chosen position. */
+export function planAliasPosition<T extends VersionedPosition>(canonicalId: string, alias: T, canonical?: T) {
+  const liveCanonical = canonical && !canonical.deletedAt ? canonical : undefined;
+  const liveAlias = !alias.deletedAt ? alias : undefined;
+  const chosen = liveCanonical?.pinned ? liveCanonical
+    : liveAlias?.pinned ? liveAlias : liveCanonical ?? liveAlias ?? canonical ?? alias;
+  const fences = [canonical?.legacySourceRevision, alias.legacySourceRevision].filter((v): v is bigint => v != null);
+  const legacySourceRevision = fences.length ? fences.reduce((a, b) => a > b ? a : b) : null;
+  const canonicalRevision = canonical?.revision ?? 0n;
+  const revision = (alias.revision > canonicalRevision ? alias.revision : canonicalRevision) + 1n;
+  return { ...chosen, nodeId: canonicalId, revision, legacySourceRevision };
+}
 
 /** Pure decision only: the caller must verify the accepted inventory relation
  * and apply references, positions, manual facts and audit atomically. */
