@@ -16,8 +16,8 @@ func TestBackupVerificationTimeoutCancelsHelperAndAbsorbsLateResult(t *testing.T
 	for _, commandType := range []string{"backup_verify", "backup_test_restore"} {
 		t.Run(commandType, func(t *testing.T) {
 			serverConn, clientConn := net.Pipe()
-			defer serverConn.Close()
-			defer clientConn.Close()
+			defer func() { _ = serverConn.Close() }()
+			defer func() { _ = clientConn.Close() }()
 
 			brokerSideConn := ipc.NewConn(serverConn)
 			helperSideConn := ipc.NewConn(clientConn)

@@ -496,7 +496,6 @@ func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
 	}
 }
 
-
 type cancelAfterDownloadProvider struct {
 	manifestKey string
 	manifest    []byte
