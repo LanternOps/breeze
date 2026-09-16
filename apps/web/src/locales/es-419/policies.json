@@ -1662,7 +1662,8 @@
       "dryRunLoading": "Comprobando cuántos dispositivos se verán afectados...",
       "dryRunResult": "Esto instalará el software faltante en aproximadamente {{count}} dispositivo(s).",
       "dryRunUnavailable": "La vista previa del número de dispositivos aún no está disponible. La activación tendrá efecto de todos modos en el próximo análisis de cumplimiento.",
-      "dryRunNewPolicy": "Esta es una política nueva — el impacto en los dispositivos no se conocerá hasta el primer análisis de cumplimiento después de guardar."
+      "dryRunNewPolicy": "Esta es una política nueva — el impacto en los dispositivos no se conocerá hasta el primer análisis de cumplimiento después de guardar.",
+      "catalogUnavailable": "No se pudo cargar el catálogo de software, por lo que los selectores de vínculo de catálogo de abajo están vacíos. Esto no es lo mismo que no tener elementos de catálogo: recargue la página antes de suponer que una regla no se puede vincular."
     },
     "softwareCatalog": {
       "ready": "Listo",

@@ -97,6 +97,35 @@ describe("PolicyForm — catalog link + autoInstall arming (#5509)", () => {
       screen.queryByTestId("autoinstall-catalog-warning"),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps the auto-install checkbox hidden on an allowlist policy that is not enforcing", () => {
+    render(<PolicyForm catalogItems={CATALOG} />);
+    fireEvent.change(screen.getByLabelText("Mode"), {
+      target: { value: "allowlist" },
+    });
+    expect(
+      screen.queryByTestId("policy-auto-install-checkbox"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("counts only the unlinked rules when linkage is partial", () => {
+    render(<PolicyForm catalogItems={CATALOG} />);
+    fireEvent.click(screen.getByText("Add"));
+    fireEvent.change(screen.getByLabelText("Mode"), {
+      target: { value: "allowlist" },
+    });
+    fireEvent.click(screen.getByLabelText("Enforce (auto-remediate)"));
+    fireEvent.click(screen.getByTestId("policy-auto-install-checkbox"));
+    expect(screen.getByTestId("autoinstall-catalog-warning")).toHaveTextContent(
+      "2 of 2 rule(s) have no linked catalog item",
+    );
+    fireEvent.change(screen.getByTestId("software-rule-catalog-0"), {
+      target: { value: "cat-1" },
+    });
+    expect(screen.getByTestId("autoinstall-catalog-warning")).toHaveTextContent(
+      "1 of 2 rule(s) have no linked catalog item",
+    );
+  });
 });
 
 describe("PolicyForm — dry-run device count preview (#5509)", () => {

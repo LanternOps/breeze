@@ -153,12 +153,24 @@ export default function ComplianceDashboard({
   // Fetched on its own rather than inside refresh()'s Promise.all: a catalog
   // hiccup must not blank the whole dashboard.
   const [catalogItems, setCatalogItems] = useState<CatalogOption[]>([]);
+  // An empty picker because the fetch failed must never look like an empty
+  // picker because the org has no catalog items — the authoring warning would
+  // otherwise blame the operator for a broken data source.
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetchWithAuth("/software/catalog");
-        if (!res.ok || cancelled) return;
+        if (cancelled) return;
+        if (!res.ok) {
+          console.warn(
+            "[ComplianceDashboard] Software catalog fetch failed for policy linking:",
+            res.status,
+          );
+          setCatalogUnavailable(true);
+          return;
+        }
         const payload = await res.json();
         const rows = asList<Record<string, unknown>>(payload, "catalog");
         const items = rows
@@ -170,11 +182,12 @@ export default function ComplianceDashboard({
           .filter((item) => item.id.length > 0);
         if (!cancelled) setCatalogItems(items);
       } catch (err) {
-        // Non-fatal: the picker just shows no options.
+        // Non-fatal for the rest of the dashboard, but the picker must say so.
         console.warn(
           "[ComplianceDashboard] Failed to load software catalog for policy linking:",
           err,
         );
+        if (!cancelled) setCatalogUnavailable(true);
       }
     })();
     return () => {
@@ -385,8 +398,10 @@ export default function ComplianceDashboard({
     setSubmitting(false);
     setModalMode("closed");
     setSelectedPolicy(null);
-    // The save genuinely succeeded — a throw from refresh() must not read
-    // back to the operator as a failed save.
+    // refresh() surfaces its own failures via setError()'s banner and does not
+    // rethrow, so this catch is belt-and-braces rather than the operative error
+    // path — it exists only so that if refresh() ever starts throwing, the save
+    // (which genuinely succeeded) is not reported back as a failure.
     try {
       await refresh();
     } catch (err) {
@@ -870,6 +885,7 @@ export default function ComplianceDashboard({
                   modalMode === "edit" ? selectedPolicy?.id || undefined : undefined
                 }
                 catalogItems={catalogItems}
+                catalogUnavailable={catalogUnavailable}
               />
             </div>
           </div>

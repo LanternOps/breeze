@@ -1662,7 +1662,8 @@
       "dryRunLoading": "Kaç cihazın etkileneceği kontrol ediliyor...",
       "dryRunResult": "Bu, eksik yazılımı yaklaşık {{count}} cihaza yükleyecek.",
       "dryRunUnavailable": "Cihaz sayısı önizlemesi henüz kullanılamıyor. Etkinleştirme yine de bir sonraki uyumluluk taramasında geçerli olacak.",
-      "dryRunNewPolicy": "Bu yeni bir politika — cihaz etkisi, kaydettikten sonraki ilk uyumluluk taramasına kadar bilinmeyecek."
+      "dryRunNewPolicy": "Bu yeni bir politika — cihaz etkisi, kaydettikten sonraki ilk uyumluluk taramasına kadar bilinmeyecek.",
+      "catalogUnavailable": "Yazılım kataloğu yüklenemedi, bu yüzden aşağıdaki katalog bağlantısı seçicileri boş. Bu, katalog öğesi bulunmamasıyla aynı şey değildir — bir kuralın bağlanamayacağını varsaymadan önce sayfayı yeniden yükleyin."
     },
     "softwareCatalog": {
       "ready": "Hazır",

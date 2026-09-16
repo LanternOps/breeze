@@ -61,6 +61,10 @@ type PolicyFormProps = {
    *  parent (ComplianceDashboard); an empty array degrades the picker to "no
    *  catalog items" rather than blocking the form (#5509). */
   catalogItems?: CatalogOption[];
+  /** True when the catalog fetch failed. An empty picker then means "we could
+   *  not load it", not "this org has no catalog items" — the two must not look
+   *  alike, or the authoring warning blames the operator for a broken feed. */
+  catalogUnavailable?: boolean;
 };
 export default function PolicyForm({
   onSubmit,
@@ -71,6 +75,7 @@ export default function PolicyForm({
   showOwnerScope = false,
   policyId,
   catalogItems = [],
+  catalogUnavailable = false,
 }: PolicyFormProps) {
   useTranslation("policies");
   const {
@@ -152,7 +157,13 @@ export default function PolicyForm({
           return;
         }
         setDryRun({ status: "ready", eligibleDeviceCount: count });
-      } catch {
+      } catch (err) {
+        // The UI says "unavailable" honestly either way, but without a log a
+        // genuinely 500ing endpoint is indistinguishable from an unshipped one.
+        console.warn(
+          "[PolicyForm] install-preview dry run failed; showing it as unavailable:",
+          err,
+        );
         if (!cancelled) setDryRun({ status: "unavailable" });
       }
     })();
@@ -376,6 +387,15 @@ export default function PolicyForm({
               )}
             </p>
           </div>
+        )}
+
+        {catalogUnavailable && (
+          <p
+            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700"
+            data-testid="software-catalog-unavailable"
+          >
+            {i18n.t("policies:software.policyForm.catalogUnavailable")}
+          </p>
         )}
 
         {watchMode === "allowlist" && (

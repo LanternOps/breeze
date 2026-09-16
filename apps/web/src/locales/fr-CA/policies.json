@@ -1662,7 +1662,8 @@
       "dryRunLoading": "Vérification du nombre d'appareils touchés...",
       "dryRunResult": "Ceci installera les logiciels manquants sur environ {{count}} appareil(s).",
       "dryRunUnavailable": "L'aperçu du nombre d'appareils n'est pas encore disponible. L'activation prendra quand même effet lors de la prochaine vérification de conformité.",
-      "dryRunNewPolicy": "Il s'agit d'une nouvelle politique — l'impact sur les appareils ne sera connu qu'après la première vérification de conformité suivant l'enregistrement."
+      "dryRunNewPolicy": "Il s'agit d'une nouvelle politique — l'impact sur les appareils ne sera connu qu'après la première vérification de conformité suivant l'enregistrement.",
+      "catalogUnavailable": "Le catalogue de logiciels n'a pas pu être chargé, donc les sélecteurs de lien de catalogue ci-dessous sont vides. Ce n'est pas la même chose que de n'avoir aucun élément de catalogue — rechargez la page avant de conclure qu'une règle ne peut pas être liée."
     },
     "softwareCatalog": {
       "ready": "Prêt",

@@ -1662,7 +1662,8 @@
       "dryRunLoading": "Wird geprüft, wie viele Geräte betroffen sind...",
       "dryRunResult": "Dies installiert fehlende Software auf etwa {{count}} Gerät(en).",
       "dryRunUnavailable": "Die Geräteanzahl-Vorschau ist noch nicht verfügbar. Die Aktivierung wirkt trotzdem beim nächsten Compliance-Durchlauf.",
-      "dryRunNewPolicy": "Dies ist eine neue Richtlinie — die Auswirkung auf Geräte ist erst nach dem ersten Compliance-Durchlauf nach dem Speichern bekannt."
+      "dryRunNewPolicy": "Dies ist eine neue Richtlinie — die Auswirkung auf Geräte ist erst nach dem ersten Compliance-Durchlauf nach dem Speichern bekannt.",
+      "catalogUnavailable": "Der Softwarekatalog konnte nicht geladen werden, daher sind die Katalogverknüpfungs-Auswahlfelder unten leer. Das ist nicht dasselbe wie „keine Katalogeinträge vorhanden“ — laden Sie die Seite neu, bevor Sie annehmen, dass eine Regel nicht verknüpft werden kann."
     },
     "softwareCatalog": {
       "ready": "Bereit",

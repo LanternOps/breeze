@@ -179,6 +179,163 @@ describe("ComplianceDashboard — autoInstall arming (#5509)", () => {
   });
 });
 
+describe("ComplianceDashboard — catalog fetch failure is not indistinguishable from an empty catalog (#5509)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockCatalog(catalogResponse: Response | Promise<never>) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/software/catalog")
+        return catalogResponse instanceof Promise
+          ? catalogResponse
+          : Promise.resolve(catalogResponse);
+      if (url.startsWith("/software-policies/compliance/overview"))
+        return Promise.resolve(json(OVERVIEW));
+      if (url.startsWith("/software-policies/violations"))
+        return Promise.resolve(json({ data: [] }));
+      if (url.startsWith("/software-policies?"))
+        return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+  }
+
+  it("tells the operator the catalog could not be loaded when the fetch returns a non-2xx", async () => {
+    mockCatalog(json({ error: "boom" }, false, 500));
+    await renderLoaded();
+    fireEvent.click(screen.getByText("Create Policy"));
+    expect(
+      await screen.findByTestId("software-catalog-unavailable"),
+    ).toHaveTextContent("couldn't be loaded");
+  });
+
+  it("tells the operator the catalog could not be loaded when the fetch throws", async () => {
+    mockCatalog(Promise.reject(new Error("offline")));
+    await renderLoaded();
+    fireEvent.click(screen.getByText("Create Policy"));
+    expect(
+      await screen.findByTestId("software-catalog-unavailable"),
+    ).toHaveTextContent("couldn't be loaded");
+  });
+
+  it("shows no such notice when the catalog loads and is simply empty", async () => {
+    mockCatalog(json({ data: [] }));
+    await renderLoaded();
+    fireEvent.click(screen.getByText("Create Policy"));
+    expect(
+      screen.queryByTestId("software-catalog-unavailable"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("ComplianceDashboard — edit-mode arming round-trip (#5509)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const ARMED_POLICY = {
+    id: "pol-1",
+    name: "Required Apps",
+    orgId: "org-1",
+    mode: "allowlist" as const,
+    isActive: true,
+    enforceMode: true,
+    rules: {
+      software: [{ name: "Zoom", catalogId: "cat-1" }],
+      allowUnknown: false,
+    },
+    remediationOptions: { autoUninstall: false, autoInstall: true, gracePeriod: 24 },
+  };
+
+  function mockEditEndpoints() {
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/software-policies/pol-1")
+        return Promise.resolve(json({ data: ARMED_POLICY }));
+      if (url === "/software-policies/pol-1/install-preview")
+        return Promise.resolve(json({ eligibleDeviceCount: 7 }));
+      if (url.startsWith("/software-policies/compliance/overview"))
+        return Promise.resolve(json(OVERVIEW));
+      if (url.startsWith("/software-policies/violations"))
+        return Promise.resolve(json({ data: [] }));
+      if (url.startsWith("/software-policies?"))
+        return Promise.resolve(json({ data: [ARMED_POLICY] }));
+      if (url === "/software/catalog")
+        return Promise.resolve(
+          json({ data: [{ id: "cat-1", name: "Zoom", vendor: "Zoom Video" }] }),
+        );
+      return Promise.resolve(json({ data: [] }));
+    });
+  }
+
+  async function openEditModal() {
+    mockEditEndpoints();
+    render(<ComplianceDashboard />);
+    await waitFor(() =>
+      expect(screen.getByText("Required Apps")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTitle("Edit"));
+    await waitFor(() =>
+      expect(screen.getByText("Edit Software Policy")).toBeInTheDocument(),
+    );
+  }
+
+  it("pre-checks the auto-install checkbox and pre-selects the catalog link for an already-armed policy", async () => {
+    await openEditModal();
+    expect(screen.getByTestId("policy-auto-install-checkbox")).toBeChecked();
+    expect(
+      (screen.getByTestId("software-rule-catalog-0") as HTMLSelectElement).value,
+    ).toBe("cat-1");
+  });
+
+  it("runs the install-preview dry run on open (policyId is only passed in edit mode)", async () => {
+    await openEditModal();
+    await screen.findByText(
+      "This will install missing software on approximately 7 device(s).",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/software-policies/pol-1/install-preview",
+    );
+  });
+
+  it("preserves autoInstall and catalogId in the PATCH body when saving an unchanged armed policy", async () => {
+    await openEditModal();
+    fireEvent.click(
+      screen.getByText("Update Policy", { selector: 'button[type="submit"]' }),
+    );
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/software-policies/pol-1" &&
+          (c[1] as RequestInit)?.method === "PATCH",
+      );
+      expect(patch).toBeTruthy();
+      const parsed = JSON.parse((patch![1] as RequestInit).body as string);
+      expect(parsed.remediationOptions).toMatchObject({ autoInstall: true });
+      expect(parsed.rules.software[0].catalogId).toBe("cat-1");
+    });
+  });
+
+  it("sends autoInstall: false when the operator disarms an armed policy", async () => {
+    await openEditModal();
+    fireEvent.click(screen.getByTestId("policy-auto-install-checkbox"));
+    fireEvent.click(
+      screen.getByText("Update Policy", { selector: 'button[type="submit"]' }),
+    );
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/software-policies/pol-1" &&
+          (c[1] as RequestInit)?.method === "PATCH",
+      );
+      expect(patch).toBeTruthy();
+      expect(
+        JSON.parse((patch![1] as RequestInit).body as string).remediationOptions
+          .autoInstall,
+      ).toBe(false);
+    });
+  });
+});
+
 describe("ComplianceDashboard — honest 403 refusal on arming (#5509)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -304,6 +461,22 @@ describe("ComplianceDashboard — install-remediation status display (#5509)", (
     const badge = screen.getByText("Gave up after repeated failures");
     expect(badge.className).toContain("text-destructive");
     expect(badge.className).not.toContain("text-amber-700");
+  });
+
+  // Both lookup maps fall back to the 'failed' entry on an unknown key, so a
+  // renamed/typo'd status would silently render as "Install failed" — assert
+  // each label explicitly rather than inferring from the two interesting ones.
+  it.each([
+    ["pending", "Install queued"],
+    ["in_progress", "Installing…"],
+    ["completed", "Installed"],
+    ["failed", "Install failed"],
+    ["skipped", "Skipped this pass"],
+  ])("labels the '%s' status as %s", async (status, label) => {
+    mockViolationsWith({ installRemediationStatus: status });
+    render(<ComplianceDashboard />);
+    const block = await screen.findByTestId("install-remediation-dev-1");
+    expect(block).toHaveTextContent(label);
   });
 
   it("shows the last install-attempt time when present", async () => {
