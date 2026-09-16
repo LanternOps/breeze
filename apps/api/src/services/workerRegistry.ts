@@ -75,6 +75,20 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'topologyReconcileWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyReconcileWorker');
+      return { init: m.initializeTopologyReconcileWorker, shutdown: m.shutdownTopologyReconcileWorker };
+    },
+  },
+  {
+    name: 'topologyCollectionRetentionWorker', placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyCollectionRetentionWorker');
+      return { init: m.initializeTopologyCollectionRetentionWorker, shutdown: m.shutdownTopologyCollectionRetentionWorker };
+    },
+  },
+  {
     name: 'topologyOutboxWorker',
     placement: 'global',
     load: async () => {

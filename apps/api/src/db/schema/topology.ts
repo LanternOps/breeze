@@ -14,7 +14,7 @@ export interface TopologyIdentityMaterial {
   sourceKey: string;
 }
 export interface TopologyNodeAttributes { label?: string; notes?: string; prefix?: string; addressFamily?: 4 | 6; }
-export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy'; createdBy?: string; }
+export interface TopologyRelationshipAttributes { label?: string; notes?: string; method?: 'manual' | 'legacy' | 'os_network_context'; createdBy?: string; }
 export interface TopologyBindingProvenance { method?: 'inventory' | 'accepted_link' | 'manual' | 'legacy'; sourceId?: string; createdBy?: string; }
 
 // SQL owns DEFERRABLE INITIALLY IMMEDIATE; Drizzle does not expose that option.

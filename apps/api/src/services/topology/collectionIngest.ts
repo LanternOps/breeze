@@ -1,3 +1,5 @@
+import { planConfirmedRevivals } from './collectionAging';
+import { topologyPositiveKeys } from './collectionFactKeys';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { networkContextV1Schema, type NetworkContextFull, type NetworkContextUnchanged } from '@breeze/shared';
@@ -41,10 +43,12 @@ async function confirm(p: AuthenticatedTopologyProducer,source: Source,input: {
   if (!timing.effectiveAt) return {...receipt(source),accepted:false,reason:'invalid_capture_time'};
   const section=source.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
   const absence=advanceTopologyAbsence(readTopologyAbsence(source.pendingMisses),{digest:input.contentDigest,sequence:input.sequence,effectiveAt:timing.effectiveAt,
-    outcome:source.lastOutcome,positiveKeys:section?.rows.map(row=>row.rowKey)??[],previousKeys:[],generation:randomUUID()});
-  if (absence.newTransitions.length) {
+    outcome:source.lastOutcome,positiveKeys:section?topologyPositiveKeys(section):[],previousKeys:[],generation:randomUUID()});
+  const revivals=await planConfirmedRevivals(source,input.sequence,timing.effectiveAt,timing.freshUntil!,absence.state);
+  if (absence.newTransitions.length || revivals.length) {
     const inputRevision=await dirty(p);
-    for (const transition of absence.newTransitions) transition.inputRevision=inputRevision;
+    for (const transition of [...absence.newTransitions,...revivals]) transition.inputRevision=inputRevision;
+    absence.state.lifecycle=[...(absence.state.lifecycle??[]),...revivals];
   }
   const [updated]=await db.update(topologyCollectionSources).set({acceptedSequence:input.sequence,confirmedSequence:input.sequence,
     confirmedThroughAt:outcomeHasPositives(source.lastOutcome)?timing.effectiveAt:source.confirmedThroughAt,
@@ -92,7 +96,7 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
   if (previousSnapshot.length) return {key:snapshot.key,accepted:false,reason:'snapshot_conflict'};
   const bytes=Buffer.byteLength(JSON.stringify(snapshot));
   if (!await budget(p,source!,bytes)) {
-    await db.update(topologyCollectionSources).set({quotaRejectedCount:sql`quota_rejected_count+1`,pendingMisses:{active:[],transitions:readTopologyAbsence(source!.pendingMisses).transitions},updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id));
+    await db.update(topologyCollectionSources).set({quotaRejectedCount:sql`quota_rejected_count+1`,pendingMisses:{...readTopologyAbsence(source!.pendingMisses),active:[]},updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id));
     return {key:snapshot.key,accepted:false,reason:'snapshot_budget_exceeded'};
   }
   const inputRevision=await dirty(p);
@@ -104,11 +108,11 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
     snapshot:{...snapshot},rowCount:snapshot.section.rowCount,omittedRowCount:snapshot.section.omittedRowCount??0,normalizedBytes:bytes,expectedIntervalSeconds:snapshot.expectedIntervalSeconds});
   const old=source!.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
   const absence=advanceTopologyAbsence(readTopologyAbsence(source!.pendingMisses),{digest:snapshot.contentDigest,sequence:snapshot.sequence,effectiveAt:timing.effectiveAt,
-    outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?snapshot.section.rows.map(row=>row.rowKey):[],
-    previousKeys:(source!.currentBaseline._knownKeys as string[]|undefined)??old?.rows.map(row=>row.rowKey)??[],generation:randomUUID()});
+    outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?topologyPositiveKeys(snapshot.section):[],
+    previousKeys:(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]),generation:randomUUID()});
   for (const transition of absence.newTransitions) transition.inputRevision=inputRevision;
   const [updated]=await db.update(topologyCollectionSources).set({acceptedSequence:snapshot.sequence,confirmedSequence:snapshot.sequence,
-    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:[...new Set([...(source!.currentBaseline._knownKeys as string[]|undefined ?? old?.rows.map(row=>row.rowKey)??[]),...snapshot.section.rows.map(row=>row.rowKey)])]},firstBaselineAt:source!.firstBaselineAt??new Date(),
+    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:[...new Set([...(source!.currentBaseline._knownKeys as string[]|undefined ?? (old?topologyPositiveKeys(old):[])),...topologyPositiveKeys(snapshot.section)])]},firstBaselineAt:source!.firstBaselineAt??new Date(),
     pendingMisses:{...absence.state},lastOutcome:snapshot.section.outcome,lastFullValidationAt:new Date(),lastReceivedAt:new Date(),
     expectedIntervalSeconds:snapshot.expectedIntervalSeconds,confirmedThroughAt:outcomeHasPositives(snapshot.section.outcome)?timing.effectiveAt:source!.confirmedThroughAt,
     freshUntil:outcomeHasPositives(snapshot.section.outcome)?timing.freshUntil:source!.freshUntil,updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id)).returning();
@@ -136,10 +140,17 @@ export async function ingestTopologyNetworkContext(p: AuthenticatedTopologyProdu
     const capture=effectiveTopologyCapture(report.capturedAt,report.captureAgeAtSendMs,report.expectedIntervalSeconds,new Date());
     if (!capture.effectiveAt) return {producerEpoch:p.producerEpoch,accepted:false,reason:'invalid_capture_time',sourceReceipts:[]};
     if (compareTopologySequences(report.sequence,root.acceptedSequence)<0) return {producerEpoch:p.producerEpoch,accepted:false,reason:'stale_sequence',sourceReceipts:[]};
+    if (root.contentDigest) {
+      const last=lastCapture(root),comparison=compareTopologySequences(report.sequence,root.acceptedSequence);
+      const conflict=comparison===0
+        ? report.snapshotId!==last.snapshotId || report.capturedAt!==last.capturedAt || report.contentDigest!==root.contentDigest
+        : report.snapshotId===last.snapshotId || report.capturedAt===last.capturedAt;
+      if(conflict)return {producerEpoch:p.producerEpoch,accepted:false,reason:'snapshot_conflict',sourceReceipts:[]};
+    }
     if (report.reportKind==='unchanged') return confirmEnvelope(p,root,report);
     const receipts:TopologySourceReceipt[]=[];
     for (const entry of normalized) if (entry.reportKind==='full') receipts.push(await admit(p,entry.snapshot));
-    const hasAllSections=report.contextManifest.contexts.every(context => ['interfaces','routes','rules','resolvers','neighbors'].every(kind => report.sections.some(s=>s.contextKey===context.contextKey&&s.kind===kind)));
+    const hasAllSections=report.contextManifest.contexts.every(context => ['interfaces','routes','rules','resolvers','neighbors'].every(kind => context.families.every(family => report.sections.some(s=>s.contextKey===context.contextKey&&s.kind===kind&&(!s.addressFamily||s.addressFamily===family)))));
     // A complete vanished-context manifest is a real empty collection for its
     // retained scopes; omission of a section in a present context is never one.
     if (report.contextManifest.outcome==='complete') {

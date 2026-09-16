@@ -32,3 +32,5 @@ export function sourceKey(section: Pick<TopologyContextSection, 'kind' | 'contex
 }
 export function sourceKeyString(key: TopologySourceKey): string { return JSON.stringify([key.protocol,key.contextKey,key.addressFamily]); }
 export function outcomeHasPositives(outcome: CollectionOutcome): boolean { return outcome === 'complete' || outcome === 'partial'; }
+
+export type PendingTopologyLifecycle = {generation:string;relationshipId:string;producerEpoch:string;sequence:string;contentDigest:string;inputRevision:string;lifecycle:'active'|'archived';effectiveAt:string;freshUntil:string};

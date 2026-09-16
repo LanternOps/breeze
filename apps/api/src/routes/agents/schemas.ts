@@ -148,6 +148,9 @@ const agentHealthObservationWireV1Schema = z.object({
 }).strict();
 
 export const heartbeatSchema = z.object({
+  // Version/shape failures are report-local and must not reject the heartbeat.
+  networkContextV1: z.unknown().optional(),
+  networkContextReset: z.unknown().optional(),
   metrics: z.object({
     cpuPercent: z.number(),
     ramPercent: z.number(),

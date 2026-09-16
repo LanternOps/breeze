@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
@@ -24,6 +25,10 @@ function relationProjection(row: typeof topologyRelationships.$inferSelect): Rel
 }
 
 function decode(scope: TopologyScope, row: OutboxRow): SourceEvent | null {
+  if (row.eventKind === 'configuration.change') {
+    z.object({ version:z.literal(1), settingsRevision:z.string().regex(/^(0|[1-9]\d*)$/), configurationDigest:z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(row.payload);
+    return null;
+  }
   if (row.eventKind === 'legacy.checkpoint') {
     if (row.payload.version !== 1 || row.payload.kind !== 'legacy.checkpoint') throw new Error('Invalid legacy checkpoint envelope');
     return null;

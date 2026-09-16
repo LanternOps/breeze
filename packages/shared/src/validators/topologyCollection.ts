@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectionOutcomeSchema } from './topology';
 import { topologyCidrSchema, topologyDigestSchema, topologyFamilySchema, topologyIpSchema, topologyMacSchema, topologyPortSchema, topologyReasonSchema, topologySequenceSchema, topologyTimestampSchema, topologyUint32Schema, topologyUtf8KeySchema, topologyHostnameSchema, topologyWireGuard } from './topologyPrimitives';
-export { topologySequenceSchema } from './topologyPrimitives';
+export { topologySequenceSchema, topologyCidrSchema } from './topologyPrimitives';
 export const NETWORK_CONTEXT_MAX_BYTES = 512 * 1024;
 const key = topologyUtf8KeySchema;
 const uint = topologyUint32Schema;

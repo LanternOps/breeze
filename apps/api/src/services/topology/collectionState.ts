@@ -1,4 +1,4 @@
-import type { TopologyCaptureTime, PendingTopologyMiss } from './collectionTypes';
+import type { TopologyCaptureTime, PendingTopologyMiss, PendingTopologyLifecycle } from './collectionTypes';
 import { compareTopologySequences } from './sequence';
 
 export function effectiveTopologyCapture(capturedAt: string, ageMs: number | null, cadence: number, receivedAt: Date): TopologyCaptureTime {
@@ -18,9 +18,9 @@ export function qualifyTopologyMiss(pending: PendingTopologyMiss | null, input: 
   return {...pending,qualifyingSequence:input.sequence,qualifyingEffectiveAt:input.effectiveAt.toISOString()};
 }
 
-export type TopologyAbsenceState = { active: PendingTopologyMiss[]; transitions: PendingTopologyMiss[] };
+export type TopologyAbsenceState = { active: PendingTopologyMiss[]; transitions: PendingTopologyMiss[]; lifecycle?:PendingTopologyLifecycle[] };
 export function readTopologyAbsence(value: Record<string,unknown>): TopologyAbsenceState {
-  return {active:Array.isArray(value.active)?value.active as PendingTopologyMiss[]:[],transitions:Array.isArray(value.transitions)?value.transitions as PendingTopologyMiss[]:[]};
+  return {active:Array.isArray(value.active)?value.active as PendingTopologyMiss[]:[],transitions:Array.isArray(value.transitions)?value.transitions as PendingTopologyMiss[]:[],lifecycle:Array.isArray(value.lifecycle)?value.lifecycle as PendingTopologyLifecycle[]:[]};
 }
 /** Preserve already accepted transitions until publication even when a later
  * positive arrives. Only unresolved streaks are invalidated by quota gaps. */
@@ -41,5 +41,5 @@ export function advanceTopologyAbsence(state: TopologyAbsenceState,input:{
       return next;
     });
   }
-  return {state:{active,transitions:[...state.transitions,...newTransitions]},newTransitions};
+  return {state:{...state,active,transitions:[...state.transitions,...newTransitions]},newTransitions};
 }

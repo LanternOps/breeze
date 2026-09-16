@@ -6,6 +6,8 @@ const NON_CONSUMERS = [
   'desktopSessionOrphanRecovery',
   'oauthRevocationRetryWorker',
   'topologyOutboxWorker',
+  'topologyReconcileWorker',
+  'topologyCollectionRetentionWorker',
   'incidentCorrelationWorker',
   'incidentTimelineEnricher',
   'incidentSlaMonitor',
