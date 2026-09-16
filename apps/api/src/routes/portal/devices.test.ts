@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   where: null as unknown,
   selfServiceEnabled: false,
   devicesEnabled: false,
+  brandingExists: true,
 }));
 
 vi.mock('../../services/portal/deviceReadModel', () => ({
@@ -28,7 +29,9 @@ vi.mock('../../db', () => ({
           if ('enableSelfService' in selection) {
             return {
               limit: vi.fn(() =>
-                Promise.resolve([{ enableSelfService: mocks.selfServiceEnabled, enableDevices: mocks.devicesEnabled }]),
+                Promise.resolve(mocks.brandingExists
+                  ? [{ enableSelfService: mocks.selfServiceEnabled, enableDevices: mocks.devicesEnabled }]
+                  : []),
               ),
             };
           }
@@ -107,6 +110,7 @@ beforeEach(() => {
   mocks.where = null;
   mocks.selfServiceEnabled = false;
   mocks.devicesEnabled = false;
+  mocks.brandingExists = true;
 });
 
 afterEach(() => {
@@ -190,6 +194,46 @@ describe('real portal router auth and Devices gate', () => {
         '11111111-1111-4111-8111-111111111111', expect.any(Object));
     },
   );
+
+  it.each(['/devices', '/devices/export.csv'])(
+    'preserves legacy access without a portal_branding row for GET %s',
+    async (path) => {
+      mocks.brandingExists = false;
+      mocks.enriched.mockResolvedValue({ data: [], pagination: { page: 1, limit: 50, total: 0 } });
+      mocks.csv.mockImplementation(async function* () {
+        yield 'Device,Status\nLaptop,online\n';
+      });
+
+      const response = await portalRoutes.request(path, {
+        headers: { Authorization: 'Bearer portal-token' },
+      });
+
+      expect(response.status).toBe(200);
+      const reader = path.endsWith('.csv') ? mocks.csv : mocks.enriched;
+      expect(reader).toHaveBeenCalledWith(
+        '11111111-1111-4111-8111-111111111111', expect.any(Object));
+    },
+  );
+
+  it('allows CSV export with Devices enabled and self-service disabled', async () => {
+    mocks.devicesEnabled = true;
+    mocks.selfServiceEnabled = false;
+    mocks.csv.mockImplementation(async function* () {
+      yield 'Device,Status\nLaptop,online\n';
+    });
+
+    const response = await portalRoutes.request('/devices/export.csv', {
+      headers: { Authorization: 'Bearer portal-token' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/csv');
+    expect(await response.text()).toBe('Device,Status\nLaptop,online\n');
+    expect(mocks.csv).toHaveBeenCalledWith(
+      '11111111-1111-4111-8111-111111111111',
+      expect.objectContaining({ timezone: 'America/Denver' }),
+    );
+  });
 
   it.each(['/devices', '/devices/export.csv'])(
     'returns 401 for unauthenticated GET %s',
