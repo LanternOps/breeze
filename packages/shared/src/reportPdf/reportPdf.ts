@@ -4,6 +4,8 @@ import type { PostureControls, PostureProduct, PostureSummary } from '../types/p
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
 import { renderHardwareLifecycleReport } from './hardwareLifecyclePdf';
+import type { EndpointManagementSummary } from '../types/endpointManagementReport';
+import { renderEndpointManagementReport } from './endpointManagementPdf';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -140,7 +142,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | EndpointManagementSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -168,6 +170,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ai_agent_impact: 'AI Agent Impact',
   ai_fleet_design: 'Fleet Design',
   hardware_lifecycle: 'Hardware Lifecycle',
+  endpoint_management_review: 'Endpoint Management Review',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2006,6 +2009,34 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as HardwareLifecycleSummary,
       { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'endpoint_management_review'
+    && opts.summary
+    && Array.isArray((opts.summary as EndpointManagementSummary).rows)
+  ) {
+    // #5784 W03. Self-contained chrome for the same reason as the arm above:
+    // the device, trend and licence tables paginate on their own.
+    //
+    // A type with NO arm here silently falls through to renderGenericReport,
+    // which drops the entire designed summary and prints a plain row table —
+    // a plausible-looking, wrong PDF on both the portal (renderRunPdf) and the
+    // scheduled-email path. reportPdf.endpointManagement.test.ts is what
+    // catches that regression.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    renderEndpointManagementReport(
+      doc,
+      opts.summary as EndpointManagementSummary,
+      { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null },
       {
         C,
         PAGE,
