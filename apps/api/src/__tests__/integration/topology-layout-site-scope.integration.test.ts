@@ -64,7 +64,7 @@ async function createLayoutAsset(orgId: string, siteId: string): Promise<string>
   return asset!.id;
 }
 
-function layoutBody(siteId: string, orgId?: string, nodeId = crypto.randomUUID()) {
+function layoutBody(siteId: string, orgId?: string, nodeId: string = crypto.randomUUID()) {
   return {
     siteId,
     ...(orgId ? { orgId } : {}),
