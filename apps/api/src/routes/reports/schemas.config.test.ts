@@ -5,6 +5,8 @@ import {
   hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
+  identityAccessConfigFields,
+  identityAccessConfigSchema,
   threatDetectionConfigFields,
   threatDetectionConfigSchema,
   updateReportSchema,
@@ -174,5 +176,37 @@ describe('report config schema', () => {
     });
     expect(parsed.config?.topIncidents).toBe(25);
     expect(parsed.config?.includeCarriedIn).toBe(false);
+  });
+
+  // #5784 W06 — the identity and access review.
+  it('keeps the identity access persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(identityAccessConfigFields).sort()).toEqual(
+      Object.keys(identityAccessConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults an identity access config to the spec values', () => {
+    expect(identityAccessConfigSchema.parse({})).toEqual({
+      dormantDays: 45, homeCountries: [], adminDetail: true,
+    });
+  });
+
+  it('has no sites key — the report is org-wide by construction', () => {
+    // A site selector would promise a filter M365 identity data cannot deliver.
+    expect(Object.keys(identityAccessConfigSchema.shape)).not.toContain('sites');
+  });
+
+  it('rejects a malformed home country code', () => {
+    expect(() => identityAccessConfigSchema.parse({ homeCountries: ['United States'] })).toThrow();
+  });
+
+  it('preserves identity access dormantDays and homeCountries on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Identity', type: 'identity_access_review',
+      config: { dormantDays: 60, homeCountries: ['US', 'CA'], adminDetail: false },
+    });
+    expect(parsed.config.dormantDays).toBe(60);
+    expect(parsed.config.homeCountries).toEqual(['US', 'CA']);
+    expect(parsed.config.adminDetail).toBe(false);
   });
 });
