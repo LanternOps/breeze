@@ -26,6 +26,7 @@ import { ActionError, runAction } from '@/lib/runAction';
 import { formatRelativeTime } from '@/lib/utils';
 import { fetchWithAuth } from '../../stores/auth';
 import ScriptProposalApprovalCard from '../ai/ScriptProposalApprovalCard';
+import RecentApprovals from './RecentApprovals';
 import { badgeClass } from '../aiAgents/statusBadge';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
 import { EmptyState } from '../shared/EmptyState';
@@ -1644,6 +1645,12 @@ export default function ApprovalsInbox() {
           )}
         </div>
       )}
+
+      {/* #6022: terminal intents (failed / rejected / expired / cancelled)
+          previously had no UI home — the inbox listed pending rows only, so a
+          guardrail refusal after approval was invisible. Read-only, collapsed
+          by default, and fetched only when opened: pending stays first. */}
+      <RecentApprovals />
 
       <ConfirmDialog
         open={alwaysAllowTarget !== null}

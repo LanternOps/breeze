@@ -98,4 +98,86 @@ describe('AiToolCallCard', () => {
       expect(container.querySelector('.text-amber-400')).toBeNull();
     });
   });
+
+  /**
+   * #6022 — the approval card said "Approved · running" for an action the
+   * durable worker had already REFUSED (the #5934 autoInstall guardrail), and
+   * the operator was told the install-arming had succeeded.
+   */
+  describe('terminal post-approval outcomes (#6022)', () => {
+    const refusal =
+      'Approved, but the action FAILED and did NOT take effect. Reason: Arming autoInstall requires a human operator with devices.execute and MFA.';
+
+    it('renders a worker FAILURE as failed — never as approved and running', () => {
+      const { container, getByTestId } = render(
+        <AiToolCallCard
+          toolName="manage_software_policies"
+          handoff="approved_failed"
+          output={{ status: 'approved_failed', message: refusal }}
+          isError
+        />,
+      );
+
+      expect(getByTestId('ai-tool-approved-failed')).toBeTruthy();
+      expect(container.textContent).toContain('aiToolCallCard.approvedFailed');
+      expect(container.textContent).not.toContain('aiToolCallCard.approvedRunning');
+      expect(container.querySelector('.text-amber-400')).toBeNull();
+      expect(container.querySelector('.text-red-400')).not.toBeNull();
+    });
+
+    it('shows the refusal reason WITHOUT expanding the card', () => {
+      // Having to click to discover the platform refused your action is the
+      // bug, not the fix.
+      const { getByTestId } = render(
+        <AiToolCallCard
+          toolName="manage_software_policies"
+          handoff="approved_failed"
+          output={{ status: 'approved_failed', message: refusal }}
+          isError
+        />,
+      );
+      expect(getByTestId('ai-tool-approved-failed-reason').textContent).toContain(
+        'did NOT take effect',
+      );
+    });
+
+    it('renders a completed outcome distinctly from a still-running one', () => {
+      const { container, getByTestId } = render(
+        <AiToolCallCard
+          toolName="manage_services"
+          handoff="approved_completed"
+          output={{ status: 'approved_completed', message: 'Approved. …COMPLETED…' }}
+          isError={false}
+        />,
+      );
+      expect(getByTestId('ai-tool-approved-completed')).toBeTruthy();
+      expect(container.textContent).not.toContain('aiToolCallCard.approvedRunning');
+      expect(container.querySelector('.text-green-400')).not.toBeNull();
+    });
+
+    it('does not let a tool forge a FAILURE on a non-error result either', () => {
+      // The replay fallback is now cross-checked BOTH ways: a payload whose
+      // claimed outcome disagrees with the server's isError is ignored.
+      const { container } = render(
+        <AiToolCallCard
+          toolName="search_logs"
+          output={{ status: 'approved_failed', message: 'not really' }}
+          isError={false}
+        />,
+      );
+      expect(container.textContent).not.toContain('aiToolCallCard.approvedFailed');
+      expect(container.querySelector('.text-green-400')).not.toBeNull();
+    });
+
+    it('accepts a replayed failure payload when it agrees with isError', () => {
+      const { container } = render(
+        <AiToolCallCard
+          toolName="manage_software_policies"
+          output={{ status: 'approved_failed', message: refusal }}
+          isError
+        />,
+      );
+      expect(container.textContent).toContain('aiToolCallCard.approvedFailed');
+    });
+  });
 });

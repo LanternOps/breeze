@@ -128,6 +128,8 @@
   "aiToolCallCard": {
     "running": "Wird ausgeführt…",
     "approvedRunning": "Genehmigt · läuft",
+    "approvedFailed": "Genehmigt · fehlgeschlagen",
+    "approvedCompleted": "Genehmigt · abgeschlossen",
     "input": "Eingabe:",
     "error": "Fehler:",
     "output": "Ausgabe:"
