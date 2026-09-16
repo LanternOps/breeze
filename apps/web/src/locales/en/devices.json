@@ -2313,6 +2313,28 @@
     "genericError": "Failed to start maintenance mode."
   },
   "networkDeviceDetailPage": {
+    "settings": {
+      "toasts": {
+        "identitySaved": "Identity saved",
+        "identitySaveFailed": "Couldn't save the identity changes",
+        "approved": "Asset approved",
+        "approveFailed": "Couldn't approve the asset",
+        "dismissed": "Asset dismissed",
+        "dismissFailed": "Couldn't dismiss the asset",
+        "assetDeleted": "Asset deleted",
+        "assetDeleteFailed": "Couldn't delete the asset",
+        "snmpSaved": "SNMP settings saved",
+        "snmpSaveFailed": "Couldn't save the SNMP settings",
+        "pollingPaused": "SNMP polling paused",
+        "pollingResumed": "SNMP polling resumed",
+        "monitoringDisabled": "Monitoring disabled for this asset",
+        "monitoringDisableFailed": "Couldn't disable monitoring",
+        "checkCreated": "Network check added",
+        "checkCreateFailed": "Couldn't add the network check",
+        "checkRemoved": "Network check removed",
+        "checkRemoveFailed": "Couldn't remove the network check"
+      }
+    },
     "backToDevices": "Back to devices",
     "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
