@@ -1658,7 +1658,7 @@ export async function activateContract(contractId: string, actor: ContractActor,
       .where(eq(contracts.id, contractId)).returning();
     return { row: row!, c };
   });
-  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
   return row;
 }
 
@@ -1670,7 +1670,7 @@ export async function pauseContract(contractId: string, actor: ContractActor) {
   const [row] = await db.update(contracts)
     .set({ status: 'paused', nextBillingAt: null, updatedAt: new Date() })
     .where(eq(contracts.id, contractId)).returning();
-  await emitContractEvent({ type: 'contract.paused', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  await emitContractEvent({ type: 'contract.paused', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
   return row!;
 }
 
@@ -1684,7 +1684,7 @@ export async function resumeContract(contractId: string, actor: ContractActor, a
   const [row] = await db.update(contracts)
     .set({ status: 'active', nextBillingAt: nextAt, updatedAt: new Date() })
     .where(eq(contracts.id, contractId)).returning();
-  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  await emitContractEvent({ type: 'contract.activated', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
   return row!;
 }
 
@@ -1694,7 +1694,7 @@ export async function cancelContract(contractId: string, actor: ContractActor) {
   const [row] = await db.update(contracts)
     .set({ status: 'cancelled', nextBillingAt: null, updatedAt: new Date() })
     .where(eq(contracts.id, contractId)).returning();
-  await emitContractEvent({ type: 'contract.cancelled', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId });
+  await emitContractEvent({ type: 'contract.cancelled', contractId, orgId: c.orgId, partnerId: c.partnerId, actorUserId: actor.userId ?? undefined });
   return row!;
 }
 

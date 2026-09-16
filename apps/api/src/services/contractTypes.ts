@@ -4,7 +4,8 @@ export type ContractStatus = 'draft' | 'active' | 'paused' | 'cancelled' | 'expi
 export type BillingTiming = 'advance' | 'arrears';
 
 export interface ContractActor {
-  userId: string;
+  /** The user who initiated the action, or null for a machine principal. */
+  userId: string | null;
   partnerId: string | null;
   accessibleOrgIds: string[] | null;
   /**

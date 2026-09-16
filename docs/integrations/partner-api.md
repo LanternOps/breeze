@@ -41,19 +41,20 @@ never request. A read-only principal may leave `sourceCidrs` empty and
 `expiresAt` null, as above; a principal carrying `enrollment-keys:write` may
 not — see the worked example below.
 
-Three further scopes are **write** scopes, for unattended provisioning and
-migration integrations. They are create/update only — deleting an organization,
-site, or key remains a human, MFA-gated action on the main API — and none of
-them is part of any default scope set, including the Weavestream delegation.
-They must be granted explicitly, per principal:
+Further scopes are **write** scopes, for unattended provisioning and
+migration integrations. Tenancy writes are create/update only — deleting an
+organization, site, or key remains a human, MFA-gated action on the main API.
+None of these write scopes is part of any default scope set, including the
+Weavestream delegation. They must be granted explicitly, per principal:
 
 | Write scope | Grants |
 |---|---|
 | `organizations:write` | Create organizations, subject to the partner's `maxOrganizations` quota |
 | `sites:write` | Create sites within an accessible organization |
 | `enrollment-keys:write` | Mint device-join enrollment credentials |
+| `contracts:write` | Create a contract, update header fields, add/patch/remove lines, and GET one contract to confirm contents. Does not grant activate/pause/cancel, documents, or the human JWT `/api/v1/contracts` surface. Line removal is contents, not tenancy deletion. |
 
-`enrollment-keys:write` is the most sensitive of the three, because the
+`enrollment-keys:write` is the most sensitive write scope, because the
 credentials it mints let a machine join the tenant. A principal holding it must
 additionally set a future expiry **and** at least one source IP/CIDR; Breeze
 enforces that pair in the management API, in the web UI, and as a database
@@ -115,6 +116,16 @@ or user management.
 | `POST /api/v1/partner-api/organizations` | `organizations:write` |
 | `POST /api/v1/partner-api/sites` | `sites:write` |
 | `POST /api/v1/partner-api/enrollment-keys` | `enrollment-keys:write` |
+| `POST /api/v1/partner-api/contracts` | `contracts:write` |
+| `GET /api/v1/partner-api/contracts/<contract-uuid>` | `contracts:write` |
+| `PATCH /api/v1/partner-api/contracts/<contract-uuid>` | `contracts:write` |
+| `POST /api/v1/partner-api/contracts/<contract-uuid>/lines` | `contracts:write` |
+| `PATCH /api/v1/partner-api/contracts/<contract-uuid>/lines/<line-uuid>` | `contracts:write` |
+| `DELETE /api/v1/partner-api/contracts/<contract-uuid>/lines/<line-uuid>` | `contracts:write` |
+
+Contract writes use the same field validation and draft/active line-edit rules
+as the human editor. A `brz_sp_…` key still cannot call `/api/v1/contracts`
+(401). Existing principals without `contracts:write` keep today's behavior.
 
 ### Issue and capture the key once
 
