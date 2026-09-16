@@ -54,6 +54,10 @@ export async function prepareTopologyOrgMerge(loserOrgId: string, survivorOrgId:
     await db.execute(sql`UPDATE topology_site_state SET build_fence = build_fence + 1, updated_at = now()
       WHERE org_id = ${loser}::uuid AND site_id = ${siteId}::uuid`);
   }
+  await db.execute(sql`UPDATE topology_config_templates a SET key=substring(a.key,1,27)||'-'||a.id::text
+    WHERE a.org_id=${loser}::uuid AND EXISTS(SELECT 1 FROM topology_config_templates b WHERE b.org_id=${survivorOrgId}::uuid AND b.key=a.key)`);
+  await db.execute(sql`UPDATE topology_config_templates a SET name=substring(a.name,1,218)||'-'||a.id::text
+    WHERE a.org_id=${loser}::uuid AND EXISTS(SELECT 1 FROM topology_config_templates b WHERE b.org_id=${survivorOrgId}::uuid AND b.name=a.name)`);
   // Merge revokes execution authority before ownership changes; snapshots remain historical.
   await db.execute(sql`UPDATE topology_monitoring_policies SET enabled=false, authority_digest=NULL,
     authority_generation=authority_generation+1, blocked_reason='organization_merged', updated_at=now() WHERE org_id=${loser}::uuid`);

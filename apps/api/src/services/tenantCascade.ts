@@ -796,6 +796,9 @@ const CORE_ORG_CASCADE_DELETE_ORDER: ReadonlyArray<string> = Object.freeze([
   // the alphabetical and FK-order properties do not fight here.
   'tool_source_tools',
   'tool_sources',
+  'topology_site_template_bindings',
+  'topology_config_template_versions',
+  'topology_config_templates',
   'topology_diagnostic_steps',
   'topology_diagnostic_runs',
   'topology_monitor_bindings',

@@ -169,3 +169,5 @@ export * from './topology';
 
 export * from "./topologyCollections";
 export * from './topologyOperations';
+
+export * from './topologyTemplates';

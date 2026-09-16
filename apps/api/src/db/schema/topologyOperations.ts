@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { pgTable, uuid, varchar, timestamp, bigint, integer, boolean, jsonb, uniqueIndex, foreignKey, check } from 'drizzle-orm/pg-core';
 import type { TopologyTargetDefinition, TopologyPolicyDefinition, TopologyDiagnosticPlan, TopologyDiagnosticStep } from '@breeze/shared';
+import { topologyConfigTemplateVersions } from './topologyTemplates';
 import { sites } from './orgs';
 import { topologyNodes, topologyRelationships } from './topology';
 import { networkMonitors } from './monitors';
@@ -11,6 +12,9 @@ export const topologyProbeTargets = pgTable('topology_probe_targets', {
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull(),
   siteId: uuid('site_id').notNull(),
+  partnerVersionId: uuid('partner_version_id').references(()=>topologyConfigTemplateVersions.id,{onDelete:'set null'}),
+  orgVersionId: uuid('org_version_id').references(()=>topologyConfigTemplateVersions.id,{onDelete:'set null'}),
+  configurationDigest: varchar('configuration_digest',{length:64}),
   key: varchar('key', { length: 64 }).notNull(),
   revision: bigint('revision', { mode: 'bigint' }).notNull().default(1n),
   label: varchar('label', { length: 255 }).notNull(),
@@ -35,6 +39,9 @@ export const topologyMonitoringPolicies = pgTable('topology_monitoring_policies'
   id: uuid('id').primaryKey().defaultRandom(),
   orgId: uuid('org_id').notNull(),
   siteId: uuid('site_id').notNull(),
+  partnerVersionId: uuid('partner_version_id').references(()=>topologyConfigTemplateVersions.id,{onDelete:'set null'}),
+  orgVersionId: uuid('org_version_id').references(()=>topologyConfigTemplateVersions.id,{onDelete:'set null'}),
+  configurationDigest: varchar('configuration_digest',{length:64}),
   key: varchar('key', { length: 64 }).notNull(),
   revision: bigint('revision', { mode: 'bigint' }).notNull().default(1n),
   enabled: boolean('enabled').notNull().default(false),
