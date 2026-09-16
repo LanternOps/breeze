@@ -65,12 +65,12 @@ func parseSnmpPollRequest(payload map[string]any) (snmppoll.SNMPDevice, *tools.C
 
 	var snmpVersion snmppoll.SNMPVersion
 	switch tools.GetPayloadString(payload, "version", "v2c") {
-	case "v1":
-		snmpVersion = 0x00
-	case "v3":
-		snmpVersion = 0x03
+	case "v1", "1":
+		snmpVersion = snmppoll.Version1
+	case "v3", "3":
+		snmpVersion = snmppoll.Version3
 	default:
-		snmpVersion = 0x01
+		snmpVersion = snmppoll.Version2c
 	}
 
 	// The port narrows to uint16 below; an out-of-range value would silently

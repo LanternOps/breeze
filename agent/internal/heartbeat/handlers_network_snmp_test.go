@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -257,5 +258,38 @@ func TestSnmpPollResultPayload_KeysAreExactlyTheContract(t *testing.T) {
 	}
 	if len(payload) != 3 {
 		t.Errorf("result payload has %d keys (%v), want exactly 3", len(payload), payload)
+	}
+}
+
+func TestParseSnmpPollRequest_VersionStrings(t *testing.T) {
+	for _, tc := range []struct {
+		wire string
+		want snmppoll.SNMPVersion
+	}{
+		{`"v1"`, snmppoll.Version1}, {`"1"`, snmppoll.Version1},
+		{`"v2c"`, snmppoll.Version2c}, {`"2c"`, snmppoll.Version2c},
+		{`"v3"`, snmppoll.Version3}, {`"3"`, snmppoll.Version3},
+		{`""`, snmppoll.Version2c}, {`null`, snmppoll.Version2c},
+		{`"unknown"`, snmppoll.Version2c},
+	} {
+		t.Run(tc.wire, func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(`{"target":"192.0.2.1","version":`+tc.wire+`}`), &payload); err != nil {
+				t.Fatal(err)
+			}
+			device, errResult := parseSnmpPollRequest(payload)
+			if errResult != nil {
+				t.Fatal(errResult)
+			}
+			if got := device.ClientConfig().Version; got != tc.want {
+				t.Fatalf("version = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	payload := basePayload()
+	delete(payload, "version")
+	device, errResult := parseSnmpPollRequest(payload)
+	if errResult != nil || device.Version != snmppoll.Version2c {
+		t.Fatalf("missing version: %+v, %v", device, errResult)
 	}
 }
