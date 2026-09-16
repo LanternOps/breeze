@@ -516,12 +516,12 @@ describe("ComplianceDashboard — install-remediation status display (#5509)", (
 describe("ComplianceDashboard — policy list feedback (#6026)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  function mockPolicy(autoInstall: boolean, checkResponse = json({ jobId: "raw-bullmq-job-123" })) {
+  function mockPolicy(autoInstall: boolean, checkResponse = json({ jobId: "raw-bullmq-job-123" }), enforceMode = true) {
     fetchMock.mockImplementation((url: string) => {
       if (url.endsWith("/check")) return Promise.resolve(checkResponse);
       if (url.startsWith("/software-policies?")) return Promise.resolve(json({ data: [{
         id: "pol-1", name: "Required Apps", mode: "allowlist", isActive: true,
-        enforceMode: true, remediationOptions: { autoInstall },
+        enforceMode, remediationOptions: { autoInstall },
       }] }));
       if (url.includes("/overview")) return Promise.resolve(json(OVERVIEW));
       return Promise.resolve(json({ data: [] }));
@@ -532,6 +532,13 @@ describe("ComplianceDashboard — policy list feedback (#6026)", () => {
     mockPolicy(true);
     render(<ComplianceDashboard />);
     expect(await screen.findByTestId("policy-autoinstall-badge")).toHaveTextContent("Auto-install armed");
+  });
+
+  it("does not show the armed badge when enforcement is off, even with a stale autoInstall flag", async () => {
+    mockPolicy(true, undefined, false);
+    render(<ComplianceDashboard />);
+    await screen.findByText("Required Apps");
+    expect(screen.queryByTestId("policy-autoinstall-badge")).not.toBeInTheDocument();
   });
 
   it("does not show the armed badge on disarmed policies", async () => {

@@ -1612,7 +1612,7 @@
       "s": "s"
     },
     "policyForm": {
-      "dryRunUnassigned": "0 cihaz — bu ilke henüz hiçbir cihaza atanmamış",
+      "dryRunUnassigned": "0 cihaz — genellikle bu ilke henüz hiçbir cihaza atanmadığı için; tamamen uyumlu bir filo veya boş bir site izin listesi de 0 verir",
       "manageAssignments": "Yapılandırma ilkesi atamalarını yönet",
       "gracePeriodHelp": "Bir sonraki uyumluluk denetiminde uygulanır",
       "scope": "Kapsam",

@@ -1612,7 +1612,7 @@
       "s": "s"
     },
     "policyForm": {
-      "dryRunUnassigned": "0 dispositivos — esta política ainda não foi atribuída a nenhum dispositivo",
+      "dryRunUnassigned": "0 dispositivos — geralmente porque esta política ainda não foi atribuída a nenhum dispositivo, mas uma frota totalmente conforme ou uma lista de sites vazia também resulta em 0",
       "manageAssignments": "Gerenciar atribuições de políticas de configuração",
       "gracePeriodHelp": "Aplicado na próxima verificação de conformidade",
       "scope": "Escopo",

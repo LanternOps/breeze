@@ -1612,7 +1612,7 @@
       "s": "s"
     },
     "policyForm": {
-      "dryRunUnassigned": "0 Geräte — diese Richtlinie ist noch keinem Gerät zugewiesen",
+      "dryRunUnassigned": "0 Geräte — meist, weil diese Richtlinie noch keinem Gerät zugewiesen ist; eine vollständig konforme Flotte oder eine leere Standort-Freigabeliste ergibt ebenfalls 0",
       "manageAssignments": "Zuweisungen von Konfigurationsrichtlinien verwalten",
       "gracePeriodHelp": "Wird beim nächsten Konformitätsprüflauf angewendet",
       "scope": "Umfang",

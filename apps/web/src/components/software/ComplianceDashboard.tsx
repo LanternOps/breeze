@@ -639,7 +639,7 @@ export default function ComplianceDashboard({
                   <td className="px-4 py-3 font-medium">
                     <div className="flex flex-wrap items-center gap-2">
                       <span>{policy.name}</span>
-                      {policy.remediationOptions?.autoInstall && (
+                      {policy.enforceMode && policy.remediationOptions?.autoInstall && (
                         <span
                           data-testid="policy-autoinstall-badge"
                           className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 dark:text-amber-300"

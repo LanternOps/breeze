@@ -180,7 +180,7 @@ describe("PolicyForm — assignment and grace-period guidance (#6026)", () => {
     fetchMock.mockResolvedValue(jsonRes({ eligibleDeviceCount: 0 }));
     render(<PolicyForm policyId="pol-1" defaultValues={{ mode: "allowlist", enforceMode: true, autoInstall: true }} />);
     await vi.waitFor(() => expect(screen.getByTestId("autoinstall-dry-run")).toHaveTextContent(
-      "0 devices — this policy is not assigned to any device yet",
+      "0 devices — usually because this policy is not assigned to any device yet",
     ));
     expect(screen.getByTestId("autoinstall-assignment-link")).toHaveAttribute("href", "/configuration-policies");
   });
