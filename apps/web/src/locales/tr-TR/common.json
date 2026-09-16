@@ -1834,7 +1834,9 @@
         "assetsDescription": "SNMP yoklamasının ve keşfedilen varlık başına ağ kontrollerinin birleşik görünümü.",
         "table": {
           "asset": "Varlık",
-          "overall": "Genel"
+          "overall": "Genel",
+          "reachability": "Erişilebilirlik",
+          "collection": "Veri toplama"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1886,7 +1888,29 @@
         "disabling": "Devre dışı bırakılıyor...",
         "yesDisable": "Evet, devre dışı bırak",
         "monitoringNotActive": "Bu varlık için izleme etkin değil.",
-        "saving": "Kaydediliyor..."
+        "saving": "Kaydediliyor...",
+        "openSettings": "Ayarlar…",
+        "reachability": {
+          "responding": "Yanıt veriyor",
+          "notResponding": "Yanıt vermiyor",
+          "unverified": "Doğrulanmamış",
+          "sources": {
+            "networkCheck": "ağ denetimi",
+            "probe": "şimdi denetle",
+            "scan": "tarama",
+            "unifi": "UniFi",
+            "snmp": "SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Veri toplanıyor",
+          "partial": "Kısmi",
+          "no_template": "Şablon yok",
+          "failing": "Başarısız",
+          "paused": "Duraklatıldı",
+          "never_polled": "Hiç sorgulanmadı",
+          "not_configured": "Yapılandırılmamış"
+        }
       },
       "MonitoringPage": {
         "tabs": {
