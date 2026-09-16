@@ -247,4 +247,22 @@ describe('ReportRunList', () => {
     // Downloadable, though: delivery already gated visibility server-side.
     expect(screen.getByTestId('portal-report-run-pdf-run-td')).toBeInTheDocument();
   });
+
+  // #5784 W06 / OD-10 = A, and the PII case: this artifact carries user
+  // principal names and IP addresses, so it must be listed-but-not-generatable
+  // for exactly the same reason as the threat review above, only more so.
+  it('labels an identity access run without offering a generate button', () => {
+    const identityRun: PortalRunDto = {
+      ...run,
+      id: 'run-ia',
+      name: 'Service evidence — Identity and access review',
+      type: 'identity_access_review',
+    };
+    render(<ReportRunList initialRuns={[identityRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-ia')).toBeInTheDocument();
+    expect(screen.getByText(/identity and access review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-identity_access_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-ia')).toBeInTheDocument();
+  });
 });

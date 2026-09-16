@@ -253,7 +253,11 @@ export interface PortalRunDto {
     // #5784 W02 — managed evidence. Visible (after delivery) but never
     // generatable by a portal user, so it belongs in this union without
     // belonging in PORTAL_REPORT_TYPES.
-    | 'threat_detection_review';
+    | 'threat_detection_review'
+    // #5784 W06 — managed evidence, same rule. `portalRunListPredicate` has no
+    // type filter, so an unwidened union here is a type lie the compiler cannot
+    // see: the value comes from the database.
+    | 'identity_access_review';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;

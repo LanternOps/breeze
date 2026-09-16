@@ -27,7 +27,8 @@ type GeneratableReportType =
  *  compile-time fact rather than a convention. */
 type ReportType =
   | GeneratableReportType
-  | 'threat_detection_review';
+  | 'threat_detection_review'
+  | 'identity_access_review';
 
 /** What the reader is told is happening, in their own language. The MSP-side
  *  report definition names are technical; these are not. */
@@ -38,6 +39,7 @@ const GENERATING_COPY: Record<ReportType, string> = {
   // Never shown in practice — there is no button that starts one — but the
   // map is a total Record, so a missed entry is a typecheck failure.
   threat_detection_review: 'Preparing your threat detection review…',
+  identity_access_review: 'Preparing your identity and access review…',
 };
 
 /**

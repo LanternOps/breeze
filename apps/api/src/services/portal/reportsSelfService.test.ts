@@ -119,7 +119,9 @@ describe('provisionPortalReportDefinitions', () => {
       { type: 'security_compliance_posture' },
       { type: 'hardware_lifecycle' },
       { type: 'threat_detection_review' },
+      { type: 'identity_access_review' },
     ]);
+
     state.insertReturning.mockResolvedValue([]);
     state.updateReturning.mockResolvedValue([]);
     state.generateReport.mockReset();
@@ -192,8 +194,33 @@ describe('provisionPortalReportDefinitions', () => {
         executionScopeUserId: USER_ID,
         executionScopePrincipalKind: 'user',
       }),
+      // #5784 W06 — managed evidence, provisioned but never self-service.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Identity and access review',
+        type: 'identity_access_review',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
     ]);
     expect(state.conflict).toHaveBeenCalledOnce();
+  });
+
+  // #5784 W06.
+  it('provisions an identity access definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const values = vi.mocked(state.inserted).mock.calls[0]?.[0] as Array<{ type: string; portalSelfService: boolean; name: string; config: Record<string, unknown> }>;
+    const row = values.find((v) => v.type === 'identity_access_review');
+    expect(row).toBeTruthy();
+    expect(row?.portalSelfService).toBe(true);
+    expect(row?.name).toBe('Service evidence — Identity and access review');
+    // No `sites` key: the report is org-wide by construction (OD-8 = A).
+    expect(row?.config).toEqual({ dormantDays: 45, homeCountries: [], adminDetail: true });
   });
 
   it('provisions a threat detection definition for an org enabling portal reports', async () => {
@@ -332,6 +359,14 @@ describe('portal report SQL scope', () => {
 describe('threat_detection_review portal provisioning (#5784 W02)', () => {
   it('keeps threat_detection_review OUT of the portal generate allowlist (OD-10 = A)', () => {
     expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('threat_detection_review');
+  });
+});
+
+describe('identity_access_review portal provisioning (#5784 W06)', () => {
+  it('keeps identity_access_review OUT of the portal generate allowlist (OD-10 = A)', () => {
+    // A customer generating an identity report on demand would be a new compute
+    // surface AND a new PII surface (user principal names, IP addresses).
+    expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('identity_access_review');
   });
 });
 
