@@ -3,6 +3,7 @@ import type { WSContext } from 'hono/ws';
 import type Redis from 'ioredis';
 import { z } from 'zod';
 import { renewRevocationLease } from '../services/remoteRevocationLease';
+import { applyProbeResult, parseProbeCommandId } from '../services/assetProbe';
 import { eq, and, ne, notInArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'crypto';
 import { db, withDbAccessContext, withSystemDbAccessContext, runOutsideDbContext } from '../db';
@@ -499,18 +500,12 @@ const VAULT_AUTO_SYNC_SNAPSHOT_FRESHNESS_MS = 24 * 60 * 60 * 1000; // 24h
 const MONITOR_COMMAND_TYPES = new Set(['network_ping', 'network_tcp_check', 'network_http_check', 'network_dns_check']);
 
 type OrphanedResultExpectation =
-  | {
-      agentId: string;
-      kind: 'snmp';
-      targetId: string;
-      expiresAt: number;
-    }
-  | {
-      agentId: string;
-      kind: 'monitor';
-      targetId: string;
-      expiresAt: number;
-    };
+  | { agentId: string; kind: 'snmp'; targetId: string; expiresAt: number }
+  | { agentId: string; kind: 'monitor'; targetId: string; expiresAt: number }
+  // Spec §5 — a manual probe. The expected ip/site are captured at DISPATCH so
+  // the result handler can refuse a result for an asset that has since moved or
+  // been re-addressed; they are not derivable from the agent's reply.
+  | { agentId: string; kind: 'probe'; targetId: string; ipAddress: string; siteId: string; expiresAt: number };
 
 const orphanedResultExpectations = new Map<string, OrphanedResultExpectation>();
 
@@ -533,6 +528,25 @@ function recordOrphanedResultExpectation(agentId: string, command: AgentCommand)
       agentId,
       kind: 'snmp',
       targetId: deviceId,
+      expiresAt,
+    });
+    return;
+  }
+
+  // Spec §5 — a probe is a network_ping carrying probeAssetId instead of a
+  // monitorId. Checked FIRST: the monitor branch below would otherwise swallow
+  // it and record nothing, because a probe has no monitorId.
+  if (command.type === 'network_ping' && typeof payload.probeAssetId === 'string') {
+    const probeAssetId = payload.probeAssetId;
+    const probeSiteId = typeof payload.probeSiteId === 'string' ? payload.probeSiteId : null;
+    const target = typeof payload.target === 'string' ? payload.target : null;
+    if (!probeSiteId || !target) return;
+    orphanedResultExpectations.set(command.id, {
+      agentId,
+      kind: 'probe',
+      targetId: probeAssetId,
+      ipAddress: target,
+      siteId: probeSiteId,
       expiresAt,
     });
     return;
@@ -1220,6 +1234,53 @@ export async function processOrphanedCommandResult(
       }
     } catch (err) {
       console.error(`[AgentWs] Failed to process SNMP poll results for ${agentId}:`, err);
+      captureException(err);
+    }
+    return;
+  }
+
+  // Spec §5 — a manual "Check now" result. Matched on the command id (the agent
+  // echoes an empty monitorId for a probe, so the monitor branch below would
+  // fall through anyway; matching here first keeps the intent explicit).
+  const probeAssetId = parseProbeCommandId(result.commandId);
+  if (probeAssetId) {
+    const expectation = consumeOrphanedResultExpectation(agentId, result.commandId);
+    if (!expectation || expectation.kind !== 'probe' || expectation.targetId !== probeAssetId) {
+      console.warn(
+        `[AgentWs] Rejecting unexpected probe result ${result.commandId} from agent ${agentId}: ` +
+        `sentAsset=${probeAssetId} expected=${expectation?.kind === 'probe' ? expectation.targetId : 'none'}`
+      );
+      return;
+    }
+    const probeData = result.result as { status?: string; responseMs?: number; error?: string } | undefined;
+    // The agent reports monitor-shaped statuses ('online' | 'offline' |
+    // 'degraded'). Only an explicit success is `ok`; everything else, including
+    // a transport-level failure with no body at all, is `failed`.
+    const probeStatus: 'ok' | 'failed' =
+      result.status === 'completed' && (probeData?.status === 'online' || probeData?.status === 'degraded')
+        ? 'ok'
+        : 'failed';
+    try {
+      const applied = await applyProbeResult({
+        commandId: result.commandId,
+        assetId: probeAssetId,
+        expectedIp: expectation.ipAddress,
+        expectedSiteId: expectation.siteId,
+        status: probeStatus,
+        responseMs: typeof probeData?.responseMs === 'number' ? probeData.responseMs : null,
+        error: probeData?.error ?? result.error ?? null,
+      });
+      if (!applied) {
+        // The asset moved, was re-addressed, or a newer probe superseded this
+        // dispatch. Dropping it is the point — a stale reachability claim about
+        // a host we are no longer describing is worse than no claim.
+        console.warn(
+          `[AgentWs] Probe result ${result.commandId} for asset ${probeAssetId} did not correlate ` +
+          '(asset moved, re-addressed, or superseded); dropped.'
+        );
+      }
+    } catch (err) {
+      console.error(`[AgentWs] Failed to persist probe result for ${agentId}:`, err);
       captureException(err);
     }
     return;
