@@ -6,6 +6,8 @@ import {
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
   updateReportSchema,
+  vulnerabilityManagementConfigFields,
+  vulnerabilityManagementConfigSchema,
 } from './schemas';
 
 const builderConfig = {
@@ -98,6 +100,32 @@ describe('report config schema', () => {
     expect(Object.keys(hardwareLifecycleConfigFields).sort()).toEqual(
       Object.keys(hardwareLifecycleConfigSchema.shape).sort(),
     );
+  });
+
+  it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
+      Object.keys(vulnerabilityManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a vulnerability management config to the spec values', () => {
+    expect(vulnerabilityManagementConfigSchema.parse({})).toEqual({
+      sites: [], severityFloor: 'high', topN: 25, includeAccepted: true,
+    });
+  });
+
+  it('rejects an unknown severity floor', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ severityFloor: 'catastrophic' })).toThrow();
+  });
+
+  it('preserves vulnerability management options on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Vulns', type: 'vulnerability_management',
+      config: { severityFloor: 'medium', topN: 50, includeAccepted: false },
+    });
+    expect(parsed.config.severityFloor).toBe('medium');
+    expect(parsed.config.topN).toBe(50);
+    expect(parsed.config.includeAccepted).toBe(false);
   });
 
   it('preserves hardware lifecycle replaceAgeYears on create', () => {

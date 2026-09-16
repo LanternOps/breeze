@@ -47,7 +47,12 @@ export type ReportType =
   | 'ai_fleet_design'
   // Hardware Lifecycle: generated on demand from devices/manual assets +
   // warranty; see services/hardwareLifecycleReport.ts.
-  | 'hardware_lifecycle';
+  | 'hardware_lifecycle'
+  // #5784 W04. Service-plan evidence: the vulnerability DETAIL artifact.
+  // security_compliance_posture keeps its single control line; this is the
+  // findings, exceptions and remediation ranking a vulnerability-management
+  // deliverable needs. See services/vulnerabilityManagementReport.ts.
+  | 'vulnerability_management';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -826,7 +831,7 @@ async function dispatchReportGeneration(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
-  _evidence?: EvidenceRunContext,
+  evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
     throw new UnexecutableReportScopeError(
@@ -888,6 +893,12 @@ async function dispatchReportGeneration(
     case 'hardware_lifecycle': {
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, requestAuthority());
+    }
+    // #5784 W04. The dynamic import keeps a heavy generator out of the hot path
+    // and avoids the module cycle back to `assertReportExecutionPreflight`.
+    case 'vulnerability_management': {
+      const { generateVulnerabilityManagementReport } = await import('./vulnerabilityManagementReport');
+      return generateVulnerabilityManagementReport(orgId, config, authority, evidence);
     }
     default: {
       const exhaustive: never = type;
@@ -956,6 +967,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    // #5784 W04 — generated on demand, so an empty scope is an empty (but
+    // shaped) artifact, never a stored-artifact refusal.
+    case 'vulnerability_management':
       return emptyRowsReport();
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before

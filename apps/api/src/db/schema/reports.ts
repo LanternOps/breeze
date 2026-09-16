@@ -36,7 +36,11 @@ export const reportTypeEnum = pgEnum('report_type', [
   'ai_fleet_design',
   // Hardware Lifecycle report: device replacement plan from purchase +
   // warranty dates (ported from the LanternOps portal PDF).
-  'hardware_lifecycle'
+  'hardware_lifecycle',
+  // Service-plan evidence W04 (#5784): the vulnerability DETAIL artifact —
+  // findings, exceptions and remediation ranking. `security_compliance_posture`
+  // keeps its single vulnerability control line; neither replaces the other.
+  'vulnerability_management'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

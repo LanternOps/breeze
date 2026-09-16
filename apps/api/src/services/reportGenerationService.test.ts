@@ -33,6 +33,7 @@ const REPORT_TYPES: readonly ReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'vulnerability_management',
 ];
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
  *  one: a weekly AI narrative's artifact is written once by the agent run and

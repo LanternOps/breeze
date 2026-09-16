@@ -27,10 +27,25 @@ export interface ManagedEvidenceEntry {
   readonly definitionName: string;
 }
 
+/**
+ * Managed definitions are named with this prefix so the reports list, the portal
+ * run list and `routes/reports/helpers.ts` can tell one apart at a glance. The
+ * prefix is cosmetic — the authoritative test is `isManagedEvidenceType(type)`
+ * AND `reports.portal_self_service = true`.
+ */
+export const MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX = 'Service evidence — ';
+
 export const MANAGED_EVIDENCE_REGISTRY = Object.freeze({
   // W02 adds 'threat_detection_review'.
   // W03 adds 'endpoint_management_review'.
-  // W04 adds 'vulnerability_management'.
+  // #5784 W04. The vulnerability DETAIL artifact. Config keys are the spec's
+  // (§3.4) and are spelled identically in `vulnerabilityManagementConfigSchema`
+  // and the portal `PORTAL_DEFINITIONS` entry.
+  vulnerability_management: {
+    type: 'vulnerability_management',
+    definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}Vulnerability management`,
+    defaultConfig: { sites: [], severityFloor: 'high', topN: 25, includeAccepted: true },
+  },
   // W06 adds 'identity_access_review'.
 } as const satisfies Readonly<Record<string, ManagedEvidenceEntry>>);
 
@@ -45,11 +60,3 @@ export function managedEvidenceEntry(type: ManagedEvidenceType): ManagedEvidence
   if (!entry) throw new Error(`${type} is not a managed evidence type`);
   return entry;
 }
-
-/**
- * Managed definitions are named with this prefix so the reports list, the portal
- * run list and `routes/reports/helpers.ts` can tell one apart at a glance. The
- * prefix is cosmetic — the authoritative test is `isManagedEvidenceType(type)`
- * AND `reports.portal_self_service = true`.
- */
-export const MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX = 'Service evidence — ';
