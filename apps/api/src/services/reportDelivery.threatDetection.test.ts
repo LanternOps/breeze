@@ -16,9 +16,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const sendEmail = vi.fn(async () => undefined);
+type SentEmail = { attachments?: Array<{ filename: string; content: Buffer }> };
+const sendEmail = vi.fn(async (_payload: SentEmail) => undefined);
 vi.mock('./email', () => ({
-  getEmailService: () => ({ sendEmail: (...args: unknown[]) => sendEmail(...(args as [])) }),
+  getEmailService: () => ({ sendEmail: (payload: SentEmail) => sendEmail(payload) }),
 }));
 
 import { emailReportRun } from './reportDelivery';
@@ -77,10 +78,7 @@ async function deliver(over: Partial<Parameters<typeof emailReportRun>[0]> = {})
     branding,
     ...over,
   });
-  const call = sendEmail.mock.calls[0]?.[0] as {
-    attachments?: Array<{ filename: string; content: Buffer }>;
-  } | undefined;
-  return call;
+  return sendEmail.mock.calls[0]?.[0];
 }
 
 beforeEach(() => sendEmail.mockClear());
