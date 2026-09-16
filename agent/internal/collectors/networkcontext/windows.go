@@ -391,7 +391,7 @@ func (r *WindowsReader) LookupRoute(ctx context.Context, request RouteLookupRequ
 	if e != nil {
 		return RouteSelection{}, e
 	}
-	out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, SourceAddress: ip.String(), Attribution: "observed"}
+	out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, OSIndex: row.InterfaceIndex, SourceAddress: ip.String(), Attribution: "observed"}
 	if !hop.IsUnspecified() {
 		out.NextHop = ptr(hop.String())
 		if hop.Is6() && hop.IsLinkLocalUnicast() {

@@ -146,7 +146,7 @@ func (r *LinuxReader) LookupRoute(parent context.Context, request RouteLookupReq
 			if e != nil {
 				return RouteSelection{}, e
 			}
-			out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, NextHop: hop.Address, Zone: hop.Zone, Attribution: "observed"}
+			out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, OSIndex: index, NextHop: hop.Address, Zone: hop.Zone, Attribution: "observed"}
 			if source, ok := attrs[7]; ok {
 				ip, e := linuxIP(source, m.Data[0])
 				if e != nil {

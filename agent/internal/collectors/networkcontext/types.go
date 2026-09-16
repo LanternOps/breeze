@@ -159,10 +159,12 @@ type RouteLookupRequest struct {
 	InterfaceKey string
 }
 type RouteSelection struct {
-	ContextKey    string  `json:"contextKey"`
-	InterfaceKey  string  `json:"interfaceKey"`
-	SourceAddress string  `json:"sourceAddress"`
-	NextHop       *string `json:"nextHop"`
-	Zone          *string `json:"zone"`
-	Attribution   string  `json:"attribution"`
+	OSIndex       uint32   `json:"-"`
+	LocalPrefixes []string `json:"-"`
+	ContextKey    string   `json:"contextKey"`
+	InterfaceKey  string   `json:"interfaceKey"`
+	SourceAddress string   `json:"sourceAddress"`
+	NextHop       *string  `json:"nextHop"`
+	Zone          *string  `json:"zone"`
+	Attribution   string   `json:"attribution"`
 }

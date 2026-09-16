@@ -91,7 +91,7 @@ func lookupDarwinRoute(ctx context.Context, request RouteLookupRequest, keys map
 			if request.InterfaceKey != "" && request.InterfaceKey != key {
 				return RouteSelection{}, ErrUnsupported
 			}
-			out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, Attribution: "observed"}
+			out := RouteSelection{ContextKey: request.ContextKey, InterfaceKey: key, OSIndex: uint32(m.Index), Attribution: "observed"}
 			if ip, _, ok := nativeAddr(addrAt(m.Addrs, syscall.RTAX_GATEWAY)); ok && !ip.IsUnspecified() {
 				out.NextHop = ptr(ip.String())
 				if ip.Is6() && ip.IsLinkLocalUnicast() {
