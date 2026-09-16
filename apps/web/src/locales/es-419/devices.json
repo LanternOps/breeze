@@ -2331,7 +2331,8 @@
       "unexpected": "Algo salió mal. Vuelve a intentarlo.",
       "load": "No se pudo cargar este dispositivo de red. Comprueba tu conexión e inténtalo de nuevo.",
       "malformed": "El servidor devolvió una respuesta inesperada para este dispositivo de red. Inténtalo de nuevo y, si el problema persiste, comunícate con soporte.",
-      "notFound": "Dispositivo de red no encontrado"
+      "notFound": "Dispositivo de red no encontrado",
+      "monitoringLoad": "No se pudieron cargar los datos de monitoreo de este dispositivo. Inténtalo de nuevo."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2359,7 +2360,11 @@
       "site": "Sitio",
       "sysObjectId": "sysObjectID (sin procesar)",
       "legacyScanVerdict": "Resultado del último escaneo",
-      "legacyScanVerdictHint": "— lo que registró el último barrido de la subred, no la accesibilidad en tiempo real"
+      "legacyScanVerdictHint": "— lo que registró el último barrido de la subred, no la accesibilidad en tiempo real",
+      "pollStatus": "Estado de consulta",
+      "template": "Plantilla",
+      "pollingInterval": "Intervalo de consulta",
+      "snmpTransport": "Transporte SNMP"
     },
     "goBack": "Volver",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Accesibilidad",
       "collection": "Recopilación",
       "printerHealth": "Estado de la impresora",
-      "scanDetails": "Todos los detalles del escaneo"
+      "scanDetails": "Todos los detalles del escaneo",
+      "pollConfiguration": "Configuración de consultas",
+      "oids": "OID",
+      "networkChecks": "Comprobaciones de red",
+      "thresholds": "Alertas de umbral SNMP"
     },
     "stats": {
       "asOf": "a partir de {{time}}",
@@ -2651,7 +2660,8 @@
         "unknown": "Desconocido"
       },
       "unknownNeedsAgentUpdate": "Esta versión del agente no puede leer valores de tablas. Actualiza el agente en el dispositivo puente.",
-      "partialRows": "Parcial: el recorrido alcanzó su límite de filas."
+      "partialRows": "Parcial: el recorrido alcanzó su límite de filas.",
+      "unsupportedWithCode": "El dispositivo respondió {{code}} — este OID no está implementado en él."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "No se pudo cargar el historial de esta métrica."
-    }
+    },
+    "poll": {
+      "everySeconds": "cada {{count}} s",
+      "everyMinutes": "cada {{count}} min",
+      "everyHours": "cada {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "No hay comprobaciones de red para este dispositivo",
+      "emptyDescription": "Una comprobación de ping o de puerto determina la accesibilidad de este dispositivo independientemente del escaneo de descubrimiento.",
+      "add": "Agregar una comprobación",
+      "paused": "En pausa",
+      "status": {
+        "online": "En línea",
+        "degraded": "Degradado",
+        "offline": "Sin conexión",
+        "never": "Nunca comprobado"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "No hay alertas de umbral SNMP configuradas",
+      "emptyDescription": "Los valores consultados de este dispositivo todavía no generarán ninguna alerta."
+    },
+    "loadingMonitoring": "Cargando datos de monitoreo…"
   },
   "osIcons": {
     "linux": "Linux",

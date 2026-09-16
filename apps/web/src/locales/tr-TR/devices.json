@@ -2331,7 +2331,8 @@
       "unexpected": "Bir sorun oluştu. Lütfen tekrar deneyin.",
       "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
       "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
-      "notFound": "Ağ cihazı bulunamadı"
+      "notFound": "Ağ cihazı bulunamadı",
+      "monitoringLoad": "Bu cihazın izleme verileri yüklenemedi. Tekrar deneyin."
     },
     "fields": {
       "assetType": "Tür",
@@ -2359,7 +2360,11 @@
       "site": "Konum",
       "sysObjectId": "sysObjectID (ham)",
       "legacyScanVerdict": "Son tarama sonucu",
-      "legacyScanVerdictHint": "— son alt ağ taramasının kaydettiği sonuç; anlık erişilebilirlik değil"
+      "legacyScanVerdictHint": "— son alt ağ taramasının kaydettiği sonuç; anlık erişilebilirlik değil",
+      "pollStatus": "Sorgulama durumu",
+      "template": "Şablon",
+      "pollingInterval": "Sorgulama aralığı",
+      "snmpTransport": "SNMP aktarımı"
     },
     "goBack": "Geri dön",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Erişilebilirlik",
       "collection": "Veri toplama",
       "printerHealth": "Yazıcı durumu",
-      "scanDetails": "Tüm tarama ayrıntıları"
+      "scanDetails": "Tüm tarama ayrıntıları",
+      "pollConfiguration": "Sorgulama yapılandırması",
+      "oids": "OID’ler",
+      "networkChecks": "Ağ kontrolleri",
+      "thresholds": "SNMP eşik uyarıları"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",
@@ -2651,7 +2660,8 @@
         "unknown": "Bilinmiyor"
       },
       "unknownNeedsAgentUpdate": "Bu ajan sürümü tablo değerlerini okuyamıyor. Köprü cihazındaki ajanı güncelleyin.",
-      "partialRows": "Kısmi sonuç: tarama satır sınırına ulaştı."
+      "partialRows": "Kısmi sonuç: tarama satır sınırına ulaştı.",
+      "unsupportedWithCode": "Cihaz {{code}} yanıtını verdi — bu OID cihazda uygulanmamış."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "Bu metriğin geçmişi yüklenemedi."
-    }
+    },
+    "poll": {
+      "everySeconds": "her {{count}} sn.",
+      "everyMinutes": "her {{count}} dk.",
+      "everyHours": "her {{count}} sa."
+    },
+    "checks": {
+      "emptyTitle": "Bu cihazda ağ kontrolü yok",
+      "emptyDescription": "Ping veya bağlantı noktası kontrolü, keşif taramasından bağımsız olarak bu cihazın erişilebilirliğini belirler.",
+      "add": "Kontrol ekle",
+      "paused": "Duraklatıldı",
+      "status": {
+        "online": "Çevrimiçi",
+        "degraded": "Performansı düşük",
+        "offline": "Çevrimdışı",
+        "never": "Hiç kontrol edilmedi"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Yapılandırılmış SNMP eşik uyarısı yok",
+      "emptyDescription": "Bu cihazda sorgulanan değerler henüz herhangi bir uyarı oluşturmayacak."
+    },
+    "loadingMonitoring": "İzleme verileri yükleniyor…"
   },
   "osIcons": {
     "linux": "Linux",

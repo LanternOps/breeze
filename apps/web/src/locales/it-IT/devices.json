@@ -2331,7 +2331,8 @@
       "unexpected": "Si è verificato un errore. Riprova.",
       "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
       "malformed": "Il server ha restituito una risposta imprevista per questo dispositivo di rete. Riprova e, se il problema persiste, contatta l'assistenza.",
-      "notFound": "Dispositivo di rete non trovato"
+      "notFound": "Dispositivo di rete non trovato",
+      "monitoringLoad": "Impossibile caricare i dati di monitoraggio di questo dispositivo. Riprova."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2359,7 +2360,11 @@
       "site": "Sede",
       "sysObjectId": "sysObjectID (grezzo)",
       "legacyScanVerdict": "Esito dell’ultima scansione",
-      "legacyScanVerdictHint": "— quanto registrato dall’ultima scansione della sottorete, non la raggiungibilità in tempo reale"
+      "legacyScanVerdictHint": "— quanto registrato dall’ultima scansione della sottorete, non la raggiungibilità in tempo reale",
+      "pollStatus": "Stato delle interrogazioni",
+      "template": "Modello",
+      "pollingInterval": "Intervallo di interrogazione",
+      "snmpTransport": "Trasporto SNMP"
     },
     "goBack": "Torna indietro",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Raggiungibilità",
       "collection": "Raccolta",
       "printerHealth": "Stato della stampante",
-      "scanDetails": "Tutti i dettagli della scansione"
+      "scanDetails": "Tutti i dettagli della scansione",
+      "pollConfiguration": "Configurazione delle interrogazioni",
+      "oids": "OID",
+      "networkChecks": "Controlli di rete",
+      "thresholds": "Avvisi di soglia SNMP"
     },
     "stats": {
       "asOf": "aggiornato al {{time}}",
@@ -2651,7 +2660,8 @@
         "unknown": "Sconosciuto"
       },
       "unknownNeedsAgentUpdate": "Questa versione dell’agente non può leggere i valori delle tabelle. Aggiorna l’agente sul dispositivo ponte.",
-      "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe."
+      "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe.",
+      "unsupportedWithCode": "Il dispositivo ha risposto {{code}} — questo OID non è implementato sul dispositivo."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "Impossibile caricare la cronologia di questa metrica."
-    }
+    },
+    "poll": {
+      "everySeconds": "ogni {{count}} s",
+      "everyMinutes": "ogni {{count}} min",
+      "everyHours": "ogni {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Nessun controllo di rete per questo dispositivo",
+      "emptyDescription": "Un controllo ping o di porta determina la raggiungibilità di questo dispositivo indipendentemente dalla scansione di rilevamento.",
+      "add": "Aggiungi un controllo",
+      "paused": "In pausa",
+      "status": {
+        "online": "In linea",
+        "degraded": "Degradato",
+        "offline": "Non in linea",
+        "never": "Mai controllato"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Nessun avviso di soglia SNMP configurato",
+      "emptyDescription": "I valori rilevati su questo dispositivo non genereranno ancora alcun avviso."
+    },
+    "loadingMonitoring": "Caricamento dei dati di monitoraggio…"
   },
   "osIcons": {
     "linux": "Linux",

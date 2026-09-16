@@ -2331,7 +2331,8 @@
       "unexpected": "Une erreur est survenue. Veuillez réessayer.",
       "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
       "malformed": "Le serveur a renvoyé une réponse inattendue pour cet appareil réseau. Réessayez et, si le problème persiste, contactez l'assistance.",
-      "notFound": "Périphérique réseau non trouvé"
+      "notFound": "Périphérique réseau non trouvé",
+      "monitoringLoad": "Impossible de charger les données de supervision de cet appareil. Réessayez."
     },
     "fields": {
       "assetType": "Type",
@@ -2359,7 +2360,11 @@
       "site": "Emplacement",
       "sysObjectId": "sysObjectID (brut)",
       "legacyScanVerdict": "Résultat de la dernière analyse",
-      "legacyScanVerdictHint": "— ce que la dernière analyse du sous-réseau a enregistré, et non la joignabilité en temps réel"
+      "legacyScanVerdictHint": "— ce que la dernière analyse du sous-réseau a enregistré, et non la joignabilité en temps réel",
+      "pollStatus": "État des interrogations",
+      "template": "Modèle",
+      "pollingInterval": "Intervalle d’interrogation",
+      "snmpTransport": "Transport SNMP"
     },
     "goBack": "Retour",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Accessibilité",
       "collection": "Collecte",
       "printerHealth": "État de l’imprimante",
-      "scanDetails": "Tous les détails de l’analyse"
+      "scanDetails": "Tous les détails de l’analyse",
+      "pollConfiguration": "Configuration des interrogations",
+      "oids": "OID",
+      "networkChecks": "Contrôles réseau",
+      "thresholds": "Alertes de seuil SNMP"
     },
     "stats": {
       "asOf": "à la date du {{time}}",
@@ -2651,7 +2660,8 @@
         "unknown": "Inconnu"
       },
       "unknownNeedsAgentUpdate": "Cette version de l’agent ne peut pas lire les valeurs des tables. Mettez à jour l’agent sur l’appareil relais.",
-      "partialRows": "Résultats partiels : le parcours a atteint sa limite de lignes."
+      "partialRows": "Résultats partiels : le parcours a atteint sa limite de lignes.",
+      "unsupportedWithCode": "L’appareil a répondu {{code}} — cet OID n’est pas implémenté sur cet appareil."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "Impossible de charger l’historique de cette mesure."
-    }
+    },
+    "poll": {
+      "everySeconds": "toutes les {{count}} s",
+      "everyMinutes": "toutes les {{count}} min",
+      "everyHours": "toutes les {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Aucun contrôle réseau pour cet appareil",
+      "emptyDescription": "Un contrôle par ping ou par port détermine si cet appareil est joignable, indépendamment de l’analyse de découverte.",
+      "add": "Ajouter un contrôle",
+      "paused": "En pause",
+      "status": {
+        "online": "En ligne",
+        "degraded": "Dégradé",
+        "offline": "Hors ligne",
+        "never": "Jamais contrôlé"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Aucune alerte de seuil SNMP configurée",
+      "emptyDescription": "Aucune valeur relevée sur cet appareil ne déclenchera d’alerte pour le moment."
+    },
+    "loadingMonitoring": "Chargement des données de supervision…"
   },
   "osIcons": {
     "linux": "Linux",

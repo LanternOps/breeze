@@ -2331,7 +2331,8 @@
       "unexpected": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
-      "notFound": "Netzwerkgerät nicht gefunden"
+      "notFound": "Netzwerkgerät nicht gefunden",
+      "monitoringLoad": "Die Überwachungsdaten dieses Geräts konnten nicht geladen werden. Versuchen Sie es erneut."
     },
     "fields": {
       "assetType": "Typ",
@@ -2359,7 +2360,11 @@
       "site": "Standort",
       "sysObjectId": "sysObjectID (Rohwert)",
       "legacyScanVerdict": "Ergebnis des letzten Scans",
-      "legacyScanVerdictHint": "— das Ergebnis des letzten Subnetzscans, nicht die aktuelle Erreichbarkeit"
+      "legacyScanVerdictHint": "— das Ergebnis des letzten Subnetzscans, nicht die aktuelle Erreichbarkeit",
+      "pollStatus": "Abfragestatus",
+      "template": "Vorlage",
+      "pollingInterval": "Abfrageintervall",
+      "snmpTransport": "SNMP-Verbindung"
     },
     "goBack": "Zurück",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Erreichbarkeit",
       "collection": "Datenerfassung",
       "printerHealth": "Druckerzustand",
-      "scanDetails": "Alle Scandetails"
+      "scanDetails": "Alle Scandetails",
+      "pollConfiguration": "Abfragekonfiguration",
+      "oids": "Objektkennungen (OIDs)",
+      "networkChecks": "Netzwerkprüfungen",
+      "thresholds": "SNMP-Schwellenwertalarme"
     },
     "stats": {
       "asOf": "Stand: {{time}}",
@@ -2651,7 +2660,8 @@
         "unknown": "Unbekannt"
       },
       "unknownNeedsAgentUpdate": "Diese Agent-Version kann keine Tabellenwerte lesen — aktualisieren Sie den Agent auf dem Vermittlungsgerät.",
-      "partialRows": "Unvollständig — die Tabellenabfrage hat ihr Zeilenlimit erreicht."
+      "partialRows": "Unvollständig — die Tabellenabfrage hat ihr Zeilenlimit erreicht.",
+      "unsupportedWithCode": "Das Gerät hat mit {{code}} geantwortet — diese OID ist darauf nicht implementiert."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden."
-    }
+    },
+    "poll": {
+      "everySeconds": "alle {{count}} Sek.",
+      "everyMinutes": "alle {{count}} Min.",
+      "everyHours": "alle {{count}} Std."
+    },
+    "checks": {
+      "emptyTitle": "Keine Netzwerkprüfungen für dieses Gerät",
+      "emptyDescription": "Eine Ping- oder Portprüfung ermittelt die Erreichbarkeit dieses Geräts unabhängig vom Erkennungsscan.",
+      "add": "Prüfung hinzufügen",
+      "paused": "Pausiert",
+      "status": {
+        "online": "Erreichbar",
+        "degraded": "Beeinträchtigt",
+        "offline": "Nicht erreichbar",
+        "never": "Noch nie geprüft"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Keine SNMP-Schwellenwertalarme eingerichtet",
+      "emptyDescription": "Abgefragte Werte dieses Geräts lösen bisher keine Alarme aus."
+    },
+    "loadingMonitoring": "Überwachungsdaten werden geladen…"
   },
   "osIcons": {
     "linux": "Linux",

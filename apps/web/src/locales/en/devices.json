@@ -2393,7 +2393,8 @@
         "unknown": "Unknown"
       },
       "unknownNeedsAgentUpdate": "This agent version cannot read table values — update the agent on the bridging device.",
-      "partialRows": "Partial — the walk hit its row limit."
+      "partialRows": "Partial — the walk hit its row limit.",
+      "unsupportedWithCode": "The device answered {{code}} — this OID is not implemented on it."
     },
     "settings": {
       "toasts": {
@@ -2549,7 +2550,8 @@
       "unexpected": "Something went wrong. Please try again.",
       "load": "Couldn't load this network device. Check your connection and try again.",
       "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
-      "notFound": "Network device not found"
+      "notFound": "Network device not found",
+      "monitoringLoad": "Couldn't load this device's monitoring data. Try again."
     },
     "fields": {
       "assetType": "Type",
@@ -2577,7 +2579,11 @@
       "site": "Site",
       "sysObjectId": "sysObjectID (raw)",
       "legacyScanVerdict": "Last scan verdict",
-      "legacyScanVerdictHint": "— what the last subnet sweep recorded, not live reachability"
+      "legacyScanVerdictHint": "— what the last subnet sweep recorded, not live reachability",
+      "pollStatus": "Poll status",
+      "template": "Template",
+      "pollingInterval": "Polling interval",
+      "snmpTransport": "SNMP"
     },
     "goBack": "Go back",
     "live": {
@@ -2619,7 +2625,11 @@
       "reachability": "Reachability",
       "collection": "Collection",
       "printerHealth": "Printer health",
-      "scanDetails": "All scan details"
+      "scanDetails": "All scan details",
+      "pollConfiguration": "Poll configuration",
+      "oids": "OIDs",
+      "networkChecks": "Network checks",
+      "thresholds": "SNMP threshold alerts"
     },
     "stats": {
       "asOf": "as of {{time}}",
@@ -2740,7 +2750,29 @@
     },
     "charts": {
       "loadFailed": "Couldn’t load this metric’s history."
-    }
+    },
+    "poll": {
+      "everySeconds": "every {{count}} sec",
+      "everyMinutes": "every {{count}} min",
+      "everyHours": "every {{count}} hr"
+    },
+    "checks": {
+      "emptyTitle": "No network checks on this device",
+      "emptyDescription": "A ping or port check gives this device a reachability verdict of its own, independent of the discovery scan.",
+      "add": "Add a check",
+      "paused": "Paused",
+      "status": {
+        "online": "Online",
+        "degraded": "Degraded",
+        "offline": "Offline",
+        "never": "Never checked"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "No SNMP threshold alerts are armed",
+      "emptyDescription": "Nothing on this device will raise an alert from a polled value yet."
+    },
+    "loadingMonitoring": "Loading monitoring data…"
   },
   "osIcons": {
     "linux": "Linux",

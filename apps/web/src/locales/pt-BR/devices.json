@@ -2331,7 +2331,8 @@
       "unexpected": "Algo deu errado. Tente novamente.",
       "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
       "malformed": "O servidor retornou uma resposta inesperada para este dispositivo de rede. Tente novamente e, se o problema persistir, entre em contato com o suporte.",
-      "notFound": "Dispositivo de rede não encontrado"
+      "notFound": "Dispositivo de rede não encontrado",
+      "monitoringLoad": "Não foi possível carregar os dados de monitoramento deste dispositivo. Tente novamente."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2359,7 +2360,11 @@
       "site": "Local",
       "sysObjectId": "sysObjectID (bruto)",
       "legacyScanVerdict": "Resultado da última varredura",
-      "legacyScanVerdictHint": "— o que a última varredura da sub-rede registrou, não a acessibilidade em tempo real"
+      "legacyScanVerdictHint": "— o que a última varredura da sub-rede registrou, não a acessibilidade em tempo real",
+      "pollStatus": "Status da consulta",
+      "template": "Modelo",
+      "pollingInterval": "Intervalo de consulta",
+      "snmpTransport": "Transporte SNMP"
     },
     "goBack": "Voltar",
     "live": {
@@ -2401,7 +2406,11 @@
       "reachability": "Acessibilidade",
       "collection": "Coleta",
       "printerHealth": "Integridade da impressora",
-      "scanDetails": "Todos os detalhes da varredura"
+      "scanDetails": "Todos os detalhes da varredura",
+      "pollConfiguration": "Configuração de consultas",
+      "oids": "OID",
+      "networkChecks": "Verificações de rede",
+      "thresholds": "Alertas de limite SNMP"
     },
     "stats": {
       "asOf": "em {{time}}",
@@ -2651,7 +2660,8 @@
         "unknown": "Desconhecido"
       },
       "unknownNeedsAgentUpdate": "Esta versão do agente não consegue ler valores de tabelas. Atualize o agente no dispositivo de ponte.",
-      "partialRows": "Parcial: a varredura atingiu o limite de linhas."
+      "partialRows": "Parcial: a varredura atingiu o limite de linhas.",
+      "unsupportedWithCode": "O dispositivo respondeu {{code}} — este OID não está implementado nele."
     },
     "health": {
       "empty": {
@@ -2708,7 +2718,29 @@
     },
     "charts": {
       "loadFailed": "Não foi possível carregar o histórico desta métrica."
-    }
+    },
+    "poll": {
+      "everySeconds": "a cada {{count}} s",
+      "everyMinutes": "a cada {{count}} min",
+      "everyHours": "a cada {{count}} h"
+    },
+    "checks": {
+      "emptyTitle": "Nenhuma verificação de rede neste dispositivo",
+      "emptyDescription": "Uma verificação de ping ou de porta determina a acessibilidade deste dispositivo independentemente da varredura de descoberta.",
+      "add": "Adicionar uma verificação",
+      "paused": "Em pausa",
+      "status": {
+        "online": "Conectado",
+        "degraded": "Degradado",
+        "offline": "Desconectado",
+        "never": "Nunca verificado"
+      }
+    },
+    "thresholds": {
+      "emptyTitle": "Nenhum alerta de limite SNMP configurado",
+      "emptyDescription": "Os valores consultados neste dispositivo ainda não gerarão nenhum alerta."
+    },
+    "loadingMonitoring": "Carregando dados de monitoramento…"
   },
   "osIcons": {
     "linux": "Linux",
