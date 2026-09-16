@@ -2622,6 +2622,20 @@
     },
     "editInSettings": "Editar nas configurações",
     "reachability": {
+      "state": {
+        "responding": "Respondendo",
+        "notResponding": "Sem resposta",
+        "unverified": "Não verificado"
+      },
+      "source": {
+        "networkCheck": "Verificação de rede",
+        "probe": "Sondagem",
+        "scan": "Varredura",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "detectado pela última vez por {{source}} {{relative}}",
+      "neverObserved": "nunca observado",
       "detail": {
         "check": {
           "online": "Conectado",
@@ -2652,6 +2666,24 @@
       }
     },
     "collection": {
+      "status": {
+        "ok": "Consultando",
+        "failing": "Com falhas",
+        "noTemplate": "Sem modelo",
+        "noAgent": "Nenhum agente no local",
+        "assetMoved": "Ativo movido",
+        "neverPolled": "Nunca consultado",
+        "paused": "Pausado",
+        "notConfigured": "Não configurado"
+      },
+      "count": {
+        "collecting": "{{count}} em coleta",
+        "unsupported": "{{count}} não compatíveis",
+        "stale": "{{count}} desatualizados",
+        "unknown": "{{count}} desconhecidos",
+        "neverPolled": "{{count}} nunca consultados",
+        "noOids": "Nenhum OID neste modelo"
+      },
       "viewOids": "Ver OIDs",
       "oidState": {
         "collecting": "Coletando",

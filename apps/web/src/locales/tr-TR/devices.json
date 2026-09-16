@@ -2622,6 +2622,20 @@
     },
     "editInSettings": "Ayarlarda düzenle",
     "reachability": {
+      "state": {
+        "responding": "Yanıt veriyor",
+        "notResponding": "Yanıt vermiyor",
+        "unverified": "Doğrulanmadı"
+      },
+      "source": {
+        "networkCheck": "Ağ kontrolü",
+        "probe": "Yoklama",
+        "scan": "Tarama",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "son gözlem: {{source}}, {{relative}}",
+      "neverObserved": "hiç gözlemlenmedi",
       "detail": {
         "check": {
           "online": "Çevrimiçi",
@@ -2652,6 +2666,24 @@
       }
     },
     "collection": {
+      "status": {
+        "ok": "Sorgulanıyor",
+        "failing": "Başarısız",
+        "noTemplate": "Şablon yok",
+        "noAgent": "Sitede aracı yok",
+        "assetMoved": "Varlık taşındı",
+        "neverPolled": "Hiç sorgulanmadı",
+        "paused": "Duraklatıldı",
+        "notConfigured": "Yapılandırılmadı"
+      },
+      "count": {
+        "collecting": "{{count}} için veri toplanıyor",
+        "unsupported": "{{count}} desteklenmiyor",
+        "stale": "{{count}} güncel değil",
+        "unknown": "{{count}} bilinmiyor",
+        "neverPolled": "{{count}} hiç sorgulanmadı",
+        "noOids": "Bu şablonda OID yok"
+      },
       "viewOids": "OID’leri görüntüle",
       "oidState": {
         "collecting": "Toplanıyor",

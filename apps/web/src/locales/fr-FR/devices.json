@@ -2622,6 +2622,20 @@
     },
     "editInSettings": "Modifier dans les paramètres",
     "reachability": {
+      "state": {
+        "responding": "Répond",
+        "notResponding": "Ne répond pas",
+        "unverified": "Non vérifié"
+      },
+      "source": {
+        "networkCheck": "Contrôle réseau",
+        "probe": "Sonde",
+        "scan": "Analyse",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "dernière détection par {{source}} {{relative}}",
+      "neverObserved": "jamais observé",
       "detail": {
         "check": {
           "online": "En ligne",
@@ -2652,6 +2666,24 @@
       }
     },
     "collection": {
+      "status": {
+        "ok": "Interrogation en cours",
+        "failing": "En échec",
+        "noTemplate": "Aucun modèle",
+        "noAgent": "Aucun agent sur le site",
+        "assetMoved": "Actif déplacé",
+        "neverPolled": "Jamais interrogé",
+        "paused": "En pause",
+        "notConfigured": "Non configuré"
+      },
+      "count": {
+        "collecting": "{{count}} en cours de collecte",
+        "unsupported": "{{count}} non pris en charge",
+        "stale": "{{count}} obsolètes",
+        "unknown": "{{count}} inconnus",
+        "neverPolled": "{{count}} jamais interrogés",
+        "noOids": "Aucun OID dans ce modèle"
+      },
       "viewOids": "Voir les OID",
       "oidState": {
         "collecting": "Collecte en cours",

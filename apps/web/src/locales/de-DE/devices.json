@@ -2622,6 +2622,20 @@
     },
     "editInSettings": "In den Einstellungen bearbeiten",
     "reachability": {
+      "state": {
+        "responding": "Antwortet",
+        "notResponding": "Antwortet nicht",
+        "unverified": "Ungeprüft"
+      },
+      "source": {
+        "networkCheck": "Netzwerkprüfung",
+        "probe": "Erreichbarkeitsprüfung",
+        "scan": "Netzwerkscan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "zuletzt von {{source}} gesehen: {{relative}}",
+      "neverObserved": "noch nie beobachtet",
       "detail": {
         "check": {
           "online": "Erreichbar",
@@ -2652,6 +2666,24 @@
       }
     },
     "collection": {
+      "status": {
+        "ok": "Abfrage läuft",
+        "failing": "Fehlgeschlagen",
+        "noTemplate": "Keine Vorlage",
+        "noAgent": "Kein Agent am Standort",
+        "assetMoved": "Asset verschoben",
+        "neverPolled": "Noch nie abgefragt",
+        "paused": "Pausiert",
+        "notConfigured": "Nicht konfiguriert"
+      },
+      "count": {
+        "collecting": "{{count}} werden erfasst",
+        "unsupported": "{{count}} nicht unterstützt",
+        "stale": "{{count}} veraltet",
+        "unknown": "{{count}} unbekannt",
+        "neverPolled": "{{count}} noch nie abgefragt",
+        "noOids": "Keine OIDs in dieser Vorlage"
+      },
       "viewOids": "OIDs anzeigen",
       "oidState": {
         "collecting": "Wird erfasst",

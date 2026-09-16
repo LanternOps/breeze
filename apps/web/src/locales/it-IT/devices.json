@@ -2649,7 +2649,21 @@
         },
         "emptyTitle": "Nessuna segnalazione per questo dispositivo",
         "emptyDescription": "Nessuna scansione, verifica, interrogazione o sonda manuale ha ancora prodotto un’osservazione."
-      }
+      },
+      "state": {
+        "responding": "Risponde",
+        "notResponding": "Non risponde",
+        "unverified": "Non verificato"
+      },
+      "source": {
+        "networkCheck": "Verifica di rete",
+        "probe": "Sonda",
+        "scan": "Scansione",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "ultima rilevazione tramite {{source}} {{relative}}",
+      "neverObserved": "mai osservato"
     },
     "collection": {
       "viewOids": "Visualizza OID",
@@ -2662,7 +2676,25 @@
       },
       "unknownNeedsAgentUpdate": "Questa versione dell’agente non può leggere i valori delle tabelle. Aggiorna l’agente sul dispositivo ponte.",
       "partialRows": "Risultati parziali: la scansione ha raggiunto il limite di righe.",
-      "unsupportedWithCode": "Il dispositivo ha risposto {{code}} — questo OID non è implementato sul dispositivo."
+      "unsupportedWithCode": "Il dispositivo ha risposto {{code}} — questo OID non è implementato sul dispositivo.",
+      "status": {
+        "ok": "Interrogazione in corso",
+        "failing": "In errore",
+        "noTemplate": "Nessun modello",
+        "noAgent": "Nessun agente nella sede",
+        "assetMoved": "Risorsa spostata",
+        "neverPolled": "Mai interrogato",
+        "paused": "In pausa",
+        "notConfigured": "Non configurato"
+      },
+      "count": {
+        "collecting": "{{count}} in raccolta",
+        "unsupported": "{{count}} non supportati",
+        "stale": "{{count}} obsoleti",
+        "unknown": "{{count}} sconosciuti",
+        "neverPolled": "{{count}} mai interrogati",
+        "noOids": "Nessun OID in questo modello"
+      }
     },
     "health": {
       "empty": {
