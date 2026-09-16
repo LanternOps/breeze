@@ -66,11 +66,57 @@ type ViolationRow = {
     policyId: string;
     violations?: Array<{
       type: string;
+      rule?: {
+        catalogId?: string;
+      };
     }>;
     remediationStatus?: string;
+    // Desired-state install remediation, projected by GET /violations (#5509).
+    // Absent on a policy that was never armed.
+    installRemediationStatus?: string;
+    lastInstallRemediationAttempt?: string;
+    installRemediationAttempts?: number;
     lastChecked: string;
   };
 };
+
+const installStatusLabelKeys: Record<string, string> = {
+  pending: "policies:software.complianceDashboard.installStatusPending",
+  in_progress: "policies:software.complianceDashboard.installStatusInProgress",
+  completed: "policies:software.complianceDashboard.installStatusCompleted",
+  failed: "policies:software.complianceDashboard.installStatusFailed",
+  gave_up: "policies:software.complianceDashboard.installStatusGaveUp",
+  skipped: "policies:software.complianceDashboard.installStatusSkipped",
+};
+
+const installStatusBadgeStyles: Record<string, string> = {
+  pending: "bg-blue-100 text-blue-700",
+  in_progress: "bg-blue-100 text-blue-700",
+  completed: "bg-emerald-100 text-emerald-700",
+  failed: "bg-amber-100 text-amber-700",
+  // 'gave_up' is a distinct TERMINAL state, not another shade of "failed":
+  // the install loop has stopped retrying this device entirely. Destructive
+  // red so it reads as "Breeze stopped trying", not "one attempt failed".
+  gave_up: "bg-destructive/10 text-destructive",
+  skipped: "bg-slate-100 text-slate-600",
+};
+
+function installStatusBadgeClass(status: string): string {
+  return installStatusBadgeStyles[status] ?? installStatusBadgeStyles.failed;
+}
+
+// A 'skipped' status collapses three causes the worker does not persist
+// separately: no catalogId on the rule, the per-pass install cap, or no
+// install method for the device's platform. Only the first is reconstructable
+// from data this route already returns (the violation's own rule carries
+// catalogId), so only that case gets a specific, actionable explanation; the
+// other two share one honest, hedged sentence rather than a false claim of
+// precision the data cannot support.
+function installSkipHasMissingCatalogLink(row: ViolationRow): boolean {
+  return (row.compliance.violations ?? []).some(
+    (violation) => violation.type === "missing" && !violation.rule?.catalogId,
+  );
+}
 type ModalMode = "closed" | "create" | "edit" | "delete";
 type ComplianceDashboardProps = {
   prefill?: {
@@ -716,6 +762,56 @@ export default function ComplianceDashboard({
                 {row.compliance.remediationStatus ??
                   i18n.t("policies:software.complianceDashboard.none")}
               </div>
+              {row.compliance.installRemediationStatus &&
+                row.compliance.installRemediationStatus !== "none" && (
+                  <div
+                    className="flex flex-col items-start gap-1 text-xs text-muted-foreground sm:items-end"
+                    data-testid={`install-remediation-${row.device.id}`}
+                  >
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${installStatusBadgeClass(
+                        row.compliance.installRemediationStatus,
+                      )}`}
+                    >
+                      {i18n.t(
+                        /* i18n-dynamic */ installStatusLabelKeys[
+                          row.compliance.installRemediationStatus
+                        ] ?? installStatusLabelKeys.failed,
+                      )}
+                    </span>
+                    {row.compliance.installRemediationStatus === "skipped" && (
+                      <span>
+                        {installSkipHasMissingCatalogLink(row)
+                          ? i18n.t(
+                              "policies:software.complianceDashboard.installSkippedNoCatalog",
+                            )
+                          : i18n.t(
+                              "policies:software.complianceDashboard.installSkippedCapOrPlatform",
+                            )}
+                      </span>
+                    )}
+                    {!!row.compliance.installRemediationAttempts && (
+                      <span>
+                        {i18n.t(
+                          "policies:software.complianceDashboard.installAttempts",
+                          {
+                            count: row.compliance.installRemediationAttempts,
+                          },
+                        )}
+                      </span>
+                    )}
+                    {row.compliance.lastInstallRemediationAttempt && (
+                      <span>
+                        {i18n.t(
+                          "policies:software.complianceDashboard.installLastAttempt",
+                        )}
+                        {formatDateTime(
+                          row.compliance.lastInstallRemediationAttempt,
+                        )}
+                      </span>
+                    )}
+                  </div>
+                )}
               <div className="text-xs text-muted-foreground">
                 {i18n.t("policies:software.complianceDashboard.checked")}
                 {formatDateTime(row.compliance.lastChecked)}

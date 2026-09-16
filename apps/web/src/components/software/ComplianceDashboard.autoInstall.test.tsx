@@ -241,3 +241,100 @@ describe("ComplianceDashboard — honest 403 refusal on arming (#5509)", () => {
     expect(screen.getByText("Create Software Policy")).toBeInTheDocument();
   });
 });
+
+describe("ComplianceDashboard — install-remediation status display (#5509)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockViolationsWith(complianceOverrides: Record<string, unknown>) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/software-policies/compliance/overview"))
+        return Promise.resolve(json(OVERVIEW));
+      if (url.startsWith("/software-policies/violations")) {
+        return Promise.resolve(
+          json({
+            data: [
+              {
+                device: { id: "dev-1", hostname: "workstation-1" },
+                compliance: {
+                  policyId: "pol-1",
+                  violations: [{ type: "missing", rule: { name: "Zoom" } }],
+                  lastChecked: "2026-09-10T10:00:00Z",
+                  ...complianceOverrides,
+                },
+              },
+            ],
+          }),
+        );
+      }
+      if (url.startsWith("/software-policies?"))
+        return Promise.resolve(json({ data: [] }));
+      if (url === "/software/catalog")
+        return Promise.resolve(json({ data: [] }));
+      return Promise.resolve(json({ data: [] }));
+    });
+  }
+
+  it("renders nothing extra when installRemediationStatus is absent", async () => {
+    mockViolationsWith({});
+    await renderLoaded();
+    expect(
+      screen.queryByTestId("install-remediation-dev-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders nothing extra when installRemediationStatus is 'none'", async () => {
+    mockViolationsWith({ installRemediationStatus: "none" });
+    await renderLoaded();
+    expect(
+      screen.queryByTestId("install-remediation-dev-1"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows 'gave_up' as a visually distinct terminal state (not styled like 'failed'), with the consecutive attempt count", async () => {
+    mockViolationsWith({
+      installRemediationStatus: "gave_up",
+      installRemediationAttempts: 3,
+    });
+    render(<ComplianceDashboard />);
+    const block = await screen.findByTestId("install-remediation-dev-1");
+    expect(block).toHaveTextContent("Gave up after repeated failures");
+    expect(block).toHaveTextContent("3 attempt(s)");
+    const badge = screen.getByText("Gave up after repeated failures");
+    expect(badge.className).toContain("text-destructive");
+    expect(badge.className).not.toContain("text-amber-700");
+  });
+
+  it("shows the last install-attempt time when present", async () => {
+    mockViolationsWith({
+      installRemediationStatus: "failed",
+      lastInstallRemediationAttempt: "2026-09-10T09:30:00Z",
+    });
+    render(<ComplianceDashboard />);
+    const block = await screen.findByTestId("install-remediation-dev-1");
+    expect(block).toHaveTextContent("Last install attempt:");
+  });
+
+  it("explains a skipped device with a missing catalog link distinctly from the generic cap/platform hedge", async () => {
+    mockViolationsWith({
+      installRemediationStatus: "skipped",
+      violations: [{ type: "missing", rule: { name: "Zoom" } }],
+    });
+    render(<ComplianceDashboard />);
+    const block = await screen.findByTestId("install-remediation-dev-1");
+    expect(block).toHaveTextContent("has no linked catalog item");
+  });
+
+  it("falls back to the generic cap/platform hedge for a skipped device whose rule already has a catalog link", async () => {
+    mockViolationsWith({
+      installRemediationStatus: "skipped",
+      violations: [
+        { type: "missing", rule: { name: "Zoom", catalogId: "cat-1" } },
+      ],
+    });
+    render(<ComplianceDashboard />);
+    const block = await screen.findByTestId("install-remediation-dev-1");
+    expect(block).toHaveTextContent("per-pass install cap");
+  });
+});

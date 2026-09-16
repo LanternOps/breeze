@@ -1377,7 +1377,17 @@
       "policyUpdated": "Policy updated successfully",
       "policyCreated": "Policy created successfully",
       "armInstallRequiresMfa": "Arming automatic install requires multi-factor authentication. Complete MFA, then try again.",
-      "armInstallRequiresPermission": "Arming automatic install requires the devices.execute permission. Ask an administrator to grant it, then try again."
+      "armInstallRequiresPermission": "Arming automatic install requires the devices.execute permission. Ask an administrator to grant it, then try again.",
+      "installStatusPending": "Install queued",
+      "installStatusInProgress": "Installing…",
+      "installStatusCompleted": "Installed",
+      "installStatusFailed": "Install failed",
+      "installStatusGaveUp": "Gave up after repeated failures",
+      "installStatusSkipped": "Skipped this pass",
+      "installSkippedNoCatalog": "A required rule has no linked catalog item, so there's nothing to install. Add a catalog link in the policy editor to fix this.",
+      "installSkippedCapOrPlatform": "Not a failure — either the per-pass install cap was reached or this device's platform has no install method for the software. May be attempted again next pass.",
+      "installAttempts": "{{count}} attempt(s)",
+      "installLastAttempt": "Last install attempt: "
     },
     "deploymentList": {
       "running": "Running",
