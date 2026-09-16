@@ -43,6 +43,10 @@ export interface ExecutorSyncConfig {
   maxItemsDevices: number;
   maxItemsCaPolicies: number;
   maxItemsSkus: number;
+  /** #5784 W05. Per-run item budget for the /auditLogs/signIns walk. */
+  maxItemsSigninEvents: number;
+  /** #5784 W05. Own bucket rate: /auditLogs/signIns is not signin_activity's surface. */
+  signinEventsRpm: number;
   /**
    * Continuation encryption secret. `null` means "mint an ephemeral one at
    * boot": continuations then die with the process and do not cross replicas,
@@ -227,6 +231,8 @@ function parseSyncConfig(source: Environment): ExecutorSyncConfig {
     maxItemsDevices: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_DEVICES', 25_000, 1, 200_000),
     maxItemsCaPolicies: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_CA', 500, 1, 5_000),
     maxItemsSkus: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SKUS', 200, 1, 5_000),
+    maxItemsSigninEvents: boundedInteger(source, 'M365_SYNC_MAX_ITEMS_SIGNIN_EVENTS', 25_000, 1, 200_000),
+    signinEventsRpm: boundedInteger(source, 'M365_SIGNIN_EVENTS_RPM', 6, 1, 60),
     continuationKey: parseContinuationKey(source),
   };
 }
