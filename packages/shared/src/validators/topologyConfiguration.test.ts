@@ -24,3 +24,26 @@ describe('topology configuration', () => {
     expect(() => assertM1PolicyActivation(false)).not.toThrow();
   });
 });
+
+import { topologyTemplatePreviewRequestSchema, topologyTemplateOptionsSchema, topologyTemplateApplicationSchema, topologyRuntimeCapabilitiesSchema } from './topologyConfiguration';
+describe('template HTTP contracts', () => {
+  const siteId = '10000000-0000-4000-8000-000000000001';
+  it('bounds bulk sites and rejects duplicates or uploaded authority', () => {
+    const request = { partnerVersionId: null, orgVersionId: null, sites: [{ siteId, expectedBindingRevision: '1' }] };
+    expect(topologyTemplatePreviewRequestSchema.parse(request).sites[0]!.enableRecurring).toBe(false);
+    expect(topologyTemplatePreviewRequestSchema.safeParse({ ...request, sites: [...request.sites, ...request.sites] }).success).toBe(false);
+    expect(topologyTemplatePreviewRequestSchema.safeParse({ ...request, sites: Array(501).fill(request.sites[0]) }).success).toBe(false);
+    expect(topologyTemplatePreviewRequestSchema.safeParse({ ...request, actorId: siteId }).success).toBe(false);
+  });
+  it('permits authorized empty/redacted operation results without hidden counts', () => {
+    expect(topologyTemplateApplicationSchema.parse({ id: siteId, state: 'partial', sites: [] }).sites).toEqual([]);
+    expect(topologyTemplateApplicationSchema.safeParse({ id: siteId, state: 'partial', sites: [], forbiddenSiteCount: 1 }).success).toBe(false);
+    expect(topologyTemplateOptionsSchema.parse({ items: [], nextCursor: null }).items).toEqual([]);
+  });
+  it('requires explicit capability reasons and distinguishes M0 capabilities', () => {
+    const unavailable = { available: false, reason: 'capability_unavailable' };
+    const capabilities = Object.fromEntries(['materialization', 'ui', 'collection', 'physical', 'interfaceHealth', 'diagnostics', 'ai', 'recurringMonitoring'].map(key => [key, unavailable]));
+    expect(topologyRuntimeCapabilitiesSchema.safeParse(capabilities).success).toBe(true);
+    expect(topologyRuntimeCapabilitiesSchema.safeParse({ ...capabilities, recurringMonitoring: { available: false, reason: null } }).success).toBe(false);
+  });
+});
