@@ -505,20 +505,39 @@ export async function generateIdentityAccessReport(
   const caMeasured = caRows.length > 0 || freshness.ca_policies.asOf !== null;
 
   // --- 6. Remote access — CLIENT PRESENCE, never policy -----------------------
+  // `devices.active_vpns` is NULL until the VPN collector has run on a device.
+  // An org with no devices, or whose devices have never reported, has not been
+  // MEASURED — and `{}` would print as "None observed at last check-in", which
+  // reads as "we looked and found nothing". Same gate as identity and CA above.
   const deviceRows = await db
     .select({ activeVpns: devices.activeVpns })
     .from(devices)
     .where(eq(devices.orgId, orgId));
+  const vpnReportingDevices = deviceRows.filter((row) => Array.isArray(row.activeVpns));
+  const remoteAccessMeasured = vpnReportingDevices.length > 0;
   const byProvider: Record<string, number> = {};
-  for (const row of deviceRows) {
+  for (const row of vpnReportingDevices) {
     for (const vpn of row.activeVpns ?? []) {
       if (vpn?.active !== true) continue;
       const provider = vpn.provider ?? 'generic';
       byProvider[provider] = (byProvider[provider] ?? 0) + 1;
     }
   }
+  // A fleet where only SOME devices have reported would otherwise under-count
+  // silently, so the shortfall is disclosed rather than folded into the total.
+  const vpnSilentDevices = deviceRows.length - vpnReportingDevices.length;
 
   // --- 7. Coverage and the printed limits ------------------------------------
+  // `byRiskLevel` is null for TWO different reasons and the artifact must not
+  // conflate them: either every value came back as Graph's `hidden` sentinel
+  // (the tenant genuinely has no Entra ID P2 — say so), or there were simply no
+  // sign-ins in the period to assess (a quiet, possibly fully-licensed tenant —
+  // telling them they need P2 would be a false claim about their licensing on a
+  // customer-facing document). Only the first case is a licensing statement.
+  const riskUnmeasured = signins.byRiskLevel === null
+    && !signinFreshness.unlicensed
+    && signinEventRows.length > 0;
+
   const coverage: SigninCoverage = {
     ...baseCoverage,
     coveredFrom: isoOrNull(held?.earliest as Date | string | null | undefined),
@@ -527,13 +546,22 @@ export async function generateIdentityAccessReport(
     asOf: signinFreshness.asOf,
     lastStatus: signinFreshness.lastStatus,
     unlicensed: signinFreshness.unlicensed,
+    riskUnmeasured,
   };
   const coverageNote = signinCoverageLine(coverage);
   if (coverageNote) gaps.unshift(coverageNote);
-  if (signins.byRiskLevel === null && !signinFreshness.unlicensed && signinEventRows.length > 0) {
+  if (riskUnmeasured) {
     gaps.push('Microsoft returned no risk assessment for these sign-ins. Sign-in risk '
       + 'requires an Entra ID P2 licence; this section is unmeasured, not a finding that '
       + 'no risk was detected.');
+  }
+  if (!remoteAccessMeasured) {
+    gaps.push('No device has reported which remote-access client is running, so remote-access '
+      + 'client presence is unmeasured for this organization. It is not a finding that no '
+      + 'remote-access tooling is in use.');
+  } else if (vpnSilentDevices > 0) {
+    gaps.push(`${vpnSilentDevices} device(s) have never reported remote-access client presence, `
+      + 'so the figures below cover only the devices that have.');
   }
   coverage.note = coverageNote;
 
@@ -550,7 +578,7 @@ export async function generateIdentityAccessReport(
       policies: caMeasured ? caPolicies : null,
       changedThisPeriod: caMeasured ? caPolicies.filter((p) => p.changedThisPeriod).length : null,
     },
-    remoteAccess: { byProvider, caveat: CLIENT_PRESENCE_CAVEAT },
+    remoteAccess: remoteAccessMeasured ? { byProvider, caveat: CLIENT_PRESENCE_CAVEAT } : null,
     rows: cfg.adminDetail ? adminSigninRows : [],
     dataGaps: gaps,
   } satisfies IdentityAccessSummary;

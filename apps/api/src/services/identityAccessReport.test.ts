@@ -309,6 +309,121 @@ describe('generateIdentityAccessReport', () => {
     expect(s.remoteAccess?.byProvider).toEqual({ tailscale: 1 });
   });
 
+  // Review finding (#6034): remoteAccess had no measured-gate, so an org whose
+  // devices have never reported VPN presence got `{}` — which the renderer
+  // prints as "None observed at last check-in", i.e. a measurement of zero over
+  // data nobody collected.
+  it('reports remote access as UNMEASURED when no device has ever reported presence', async () => {
+    queueHappyPath({ devices: [{ activeVpns: null }, { activeVpns: null }] });
+    const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.remoteAccess).toBeNull();
+    expect(s.dataGaps?.join(' ')).toMatch(/no device has reported/i);
+    expect(s.dataGaps?.join(' ')).not.toMatch(/none observed/i);
+  });
+
+  it('reports remote access as UNMEASURED for an org with no devices at all', async () => {
+    queueHappyPath({ devices: [] });
+    expect(summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP)).remoteAccess)
+      .toBeNull();
+  });
+
+  it('discloses the devices that have never reported rather than folding them into the total', async () => {
+    queueHappyPath({
+      devices: [
+        { activeVpns: [{ provider: 'tailscale', active: true }] },
+        { activeVpns: null },
+      ],
+    });
+    const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.remoteAccess?.byProvider).toEqual({ tailscale: 1 });
+    expect(s.dataGaps?.join(' ')).toMatch(/1 device\(s\) have never reported/i);
+  });
+
+  it('does not count an installed-but-inactive remote-access client as presence', async () => {
+    queueHappyPath({ devices: [{ activeVpns: [{ provider: 'tailscale', active: false }] }] });
+    const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    // Measured (the device reported), but nothing is up.
+    expect(s.remoteAccess?.byProvider).toEqual({});
+  });
+
+  // Review finding (#6034): the identity "unmeasured" arm was never exercised —
+  // every test seeded at least one user, so a regression that always computed
+  // zeros would have passed.
+  it('reports the identity inventory as UNMEASURED when no users have ever synced', async () => {
+    queueHappyPath({ users: [], rollup: [] });
+    const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.identity?.usersTotal).toBeNull();
+    expect(s.identity?.admins).toBeNull();
+    expect(s.identity?.adminsWithoutMfa).toBeNull();
+    expect(s.dormant).toBeNull();
+    expect(s.dataGaps?.join(' ')).toMatch(/no microsoft 365 user inventory/i);
+  });
+
+  // Review finding (#6034): caMeasured has two independent inputs and they were
+  // never varied apart, so collapsing it to `caRows.length > 0` would have gone
+  // unnoticed — and would print "0 policies" for a tenant whose CA sync never ran.
+  it('distinguishes "CA never synced" (null) from "synced, no policies" (empty)', async () => {
+    freshnessMock.mockResolvedValue({
+      signin_events: {
+        asOf: '2026-09-30T04:00:00.000Z', lastStatus: 'success',
+        truncated: false, sources: { signinEvents: 'ok' }, unlicensed: false,
+      },
+      users: { asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false },
+      // The CA domain has NEVER run: no rows and no snapshot.
+      ca_policies: { asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false },
+    });
+    queueHappyPath({ ca: [] });
+    const neverSynced = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(neverSynced.conditionalAccess?.policies).toBeNull();
+    expect(neverSynced.conditionalAccess?.changedThisPeriod).toBeNull();
+
+    freshnessMock.mockResolvedValue({
+      signin_events: {
+        asOf: '2026-09-30T04:00:00.000Z', lastStatus: 'success',
+        truncated: false, sources: { signinEvents: 'ok' }, unlicensed: false,
+      },
+      users: { asOf: null, lastStatus: null, truncated: false, sources: null, unlicensed: false },
+      ca_policies: {
+        asOf: '2026-09-30T04:00:00.000Z', lastStatus: 'success',
+        truncated: false, sources: null, unlicensed: false,
+      },
+    });
+    queueHappyPath({ ca: [] });
+    const syncedEmpty = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(syncedEmpty.conditionalAccess?.policies).toEqual([]);
+    expect(syncedEmpty.conditionalAccess?.changedThisPeriod).toBe(0);
+  });
+
+  // Review finding (#6034): the admin-detail cap silently truncated a
+  // PII-bearing table with no test — the exact silent-truncation failure this
+  // report type exists to prevent.
+  it('caps the administrator table and DISCLOSES how many were withheld', async () => {
+    const signins = Array.from({ length: 502 }, () => signinRow({ userPrincipalName: ADMIN_UPN }));
+    queueHappyPath({ users: [userRow({ isAdmin: true, userPrincipalName: ADMIN_UPN })], signins });
+    const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.adminSignins).toHaveLength(500);
+    // The totals still reflect every event — the cap is a display limit, and the
+    // artifact says so rather than truncating in silence.
+    expect(s.signins?.total).toBe(502);
+    expect(s.dataGaps?.join(' ')).toMatch(/first 500 of 502/i);
+  });
+
+  // Review finding (#6034): byRiskLevel is null for two different reasons and
+  // only ONE of them is a licensing statement. Claiming a tenant needs P2 when
+  // they simply had a quiet month is a false claim about their subscription.
+  it('marks risk unmeasured only when events existed but every value was hidden', async () => {
+    queueHappyPath({ signins: [signinRow({ riskLevelAggregated: 'hidden' })] });
+    const hidden = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(hidden.coverage?.riskUnmeasured).toBe(true);
+    expect(hidden.dataGaps?.join(' ')).toMatch(/P2/);
+
+    queueHappyPath({ signins: [] });
+    const quiet = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(quiet.signins?.byRiskLevel).toBeNull();
+    expect(quiet.coverage?.riskUnmeasured).toBe(false);
+    expect(quiet.dataGaps?.join(' ')).not.toMatch(/P2/);
+  });
+
   it('uses the occurrence period, not now()', async () => {
     queueHappyPath();
     const s = summaryOf(await generateIdentityAccessReport(ORG_ID, {}, authority(), PERIOD_SEP));

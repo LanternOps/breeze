@@ -266,15 +266,22 @@ export function renderIdentityAccessReport(
       : `Sign-ins from outside the configured home countries — ${signins.outsideHomeCountries}`,
     y, 8.4, C.muted,
   );
-  // Risk: 'hidden' without Entra ID P2. Unmeasured, never "no risk detected".
+  // Risk: 'hidden' without Entra ID P2. Unmeasured, never "no risk detected" —
+  // and the P2 sentence is printed ONLY when the tenant actually had sign-ins
+  // whose risk came back hidden. A quiet period with no sign-ins at all is not
+  // evidence of a licensing gap, and claiming one on a customer-facing document
+  // would be a false statement about their subscription.
   y = drawProse(
     doc,
     chrome,
-    signins?.byRiskLevel === null || signins?.byRiskLevel === undefined
-      ? `Sign-in risk — ${NA}. Microsoft returned no risk assessment for these sign-ins; sign-in `
-        + 'risk requires an Entra ID P2 licence. This section is not measured and is not a '
-        + 'statement that the period was clean.'
-      : `Sign-in risk — ${bucketLine(signins.byRiskLevel, 'No risk levels recorded')}`,
+    signins?.byRiskLevel != null
+      ? `Sign-in risk — ${bucketLine(signins.byRiskLevel, 'No risk levels recorded')}`
+      : coverage?.riskUnmeasured === true
+        ? `Sign-in risk — ${NA}. Microsoft returned no risk assessment for these sign-ins; sign-in `
+          + 'risk requires an Entra ID P2 licence. This section is not measured and is not a '
+          + 'statement that the period was clean.'
+        : `Sign-in risk — ${NA}. There were no interactive sign-ins in the covered window to `
+          + 'assess, so no risk assessment was made.',
     y, 8.4,
     signins?.byRiskLevel == null ? C.warning : C.muted,
   );

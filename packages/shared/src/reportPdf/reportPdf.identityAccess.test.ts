@@ -164,6 +164,44 @@ describe('buildReportPdf: identity_access_review', () => {
     expect(admin).toBeLessThan(ca);
   });
 
+  // Review finding (#6034): byRiskLevel is null for two different reasons, and
+  // only one of them is a statement about the customer's licensing.
+  it('claims an Entra ID P2 gap ONLY when risk was genuinely hidden', () => {
+    const hidden = extractText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...SUMMARY,
+        coverage: { ...SUMMARY.coverage, riskUnmeasured: true },
+        signins: { ...SUMMARY.signins!, byRiskLevel: null },
+      },
+    }));
+    expect(hidden).toMatch(/P2 licence/);
+
+    const quiet = extractText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...SUMMARY,
+        coverage: { ...SUMMARY.coverage, riskUnmeasured: false },
+        signins: { ...SUMMARY.signins!, total: 0, byRiskLevel: null },
+      },
+    }));
+    // A quiet month is not evidence the tenant lacks a licence, and saying so on
+    // a customer-facing document would be a false claim about their subscription.
+    expect(quiet).not.toMatch(/P2 licence/);
+    expect(quiet).toMatch(/no interactive sign-ins in the covered window to assess/i);
+  });
+
+  // Review finding (#6034): a null remoteAccess must not print "None observed".
+  it('renders remote access as not measured when the section is null', () => {
+    const text = extractText(buildReportPdf([], {
+      ...opts,
+      summary: { ...SUMMARY, remoteAccess: null },
+    }));
+    expect(text).toMatch(/Remote-access client presence/);
+    expect(text).toMatch(/not measured/i);
+    expect(text).not.toMatch(/None observed at last check-in/i);
+  });
+
   it('falls through to the generic renderer when the summary is absent', () => {
     const spy = vi.spyOn(ident, 'renderIdentityAccessReport');
     buildReportPdf([{ a: 1 }], opts);

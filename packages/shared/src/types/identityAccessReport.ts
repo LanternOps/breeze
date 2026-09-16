@@ -35,6 +35,17 @@ export type SigninCoverage = {
   /** True when the tenant has no Entra ID P1/P2: permission was granted, the
    *  licence was not. A complete, zero-row success — NOT "no sign-ins". */
   unlicensed?: boolean;
+  /**
+   * True when sign-in events WERE held for the period but every risk value came
+   * back as Graph's `hidden` sentinel — i.e. the tenant has no Entra ID P2.
+   *
+   * Load-bearing because `signins.byRiskLevel` is null for two different
+   * reasons: this one, and "there were no sign-ins to assess". Rendering the
+   * P2 sentence for the second would assert a licensing gap that may not exist,
+   * on a customer-facing evidence document. Absent on a legacy snapshot, which
+   * renders as the neutral line.
+   */
+  riskUnmeasured?: boolean;
   /** Any stretch inside the period with no events AND no successful sync —
    *  unrecoverable, because Graph's own retention has passed. */
   gapNote?: string | null;
