@@ -3,6 +3,7 @@ import type { Device } from '@/lib/api';
 import type { HardwareLifecycleSummary } from '@breeze/shared';
 import { cn } from '@/lib/utils';
 import { DeviceList } from './DeviceList';
+import { PageHeader } from './ui';
 import { LifecyclePage } from '../lifecycle/LifecyclePage';
 
 type Tab = 'devices' | 'lifecycle';
@@ -61,11 +62,14 @@ export function DevicesPage({
 
   return (
     <div>
+      {/* One title for the page; the tabs are its sub-navigation and each
+          panel renders embedded (no H1 of its own). */}
+      <PageHeader title="Devices" lede="The machines your IT team looks after for you." />
       <div
         role="tablist"
         aria-label="Device views"
         data-testid="devices-tabs"
-        className="mb-7 flex gap-6 border-b border-border"
+        className="-mt-2 mb-7 flex gap-6 border-b border-border"
       >
         {tabs.map((t) => {
           const selected = t.key === tab;
@@ -97,13 +101,14 @@ export function DevicesPage({
       {tab === 'devices' ? (
         // Keyed so a tab switch remounts the register and its hash-driven
         // scroll-and-highlight effect runs for a `#<deviceId>` arrival.
-        <DeviceList key="devices" devices={devices} error={error} />
+        <DeviceList key="devices" devices={devices} error={error} embedded />
       ) : (
         <LifecyclePage
           key="lifecycle"
           initialRun={lifecycle.run}
           initialSummary={lifecycle.summary}
           enableSelfService
+          embedded
         />
       )}
     </div>

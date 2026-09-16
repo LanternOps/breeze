@@ -38,3 +38,18 @@ describe('PortalLayout navigation', () => {
     expect(mobileNav()).not.toContain('bg-accent font-semibold');
   });
 });
+
+describe('portal layout column alignment', () => {
+  const src = readFileSync(new URL('./PortalLayout.astro', import.meta.url), 'utf8');
+
+  it('caps the header to the same column as main so the actions sit above the content, not the viewport edge', () => {
+    const header = src.match(/<header class="([^"]+)"/)?.[1] ?? '';
+    expect(header).toContain('max-w-5xl');
+  });
+
+  it('left-aligns the content column against the sidebar instead of centering it in the leftover space', () => {
+    const main = src.match(/<main id="portal-main" class="([^"]+)"/)?.[1] ?? '';
+    expect(main).toContain('max-w-5xl');
+    expect(main).not.toContain('mx-auto');
+  });
+});

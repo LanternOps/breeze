@@ -95,3 +95,16 @@ describe('DevicesPage', () => {
     expect(screen.getByText('Front desk laptop')).toBeInTheDocument();
   });
 });
+
+describe('DevicesPage header ownership', () => {
+  it('owns the single H1 and lets the tab panels drop their own page headers', () => {
+    render(<DevicesPage devices={[laptop]} error={null} lifecycle={lifecycle} />);
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Devices');
+    expect(screen.getByTestId('portal-devices-export')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Hardware lifecycle' }));
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 2, name: 'Hardware lifecycle' })).toBeInTheDocument();
+    expect(screen.getByTestId('lifecycle-refresh')).toBeInTheDocument();
+  });
+});
