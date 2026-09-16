@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { z } from 'zod';
 import { zValidator } from '../lib/validation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
@@ -6,7 +7,7 @@ import { organizations, portalBranding } from '../db/schema';
 import { requireMfa, requirePermission, requireScope, type AuthContext } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { writeRouteAudit } from '../services/auditEvents';
-import { updatePortalSettingsSchema } from '@breeze/shared';
+import { updatePortalSettingsSchema, PORTAL_CHROME_ACCENT_KEYS } from '@breeze/shared';
 import {
   PORTAL_VISIBILITY_FLAG_KEYS,
   onPortalFlagsChanged,
@@ -19,6 +20,17 @@ import {
 // portal lookup routes in routes/portal/branding.ts stay read-only/pre-auth;
 // this is the only write surface. Visual branding + customDomain are excluded
 // by the strict schema — they ship with the domain-verification project.
+//
+// chromeAccent is extended in HERE rather than added to
+// packages/shared's updatePortalSettingsSchema, so the enum key list
+// (PORTAL_CHROME_ACCENT_KEYS) stays the single source of truth without a
+// second copy drifting in the shared validator. `.extend()` on a `.strict()`
+// zod object preserves both the unknown-key rejection and per-field
+// validation (verified: unrecognized keys still 400, and an invalid enum
+// value still 400).
+const patchPortalSettingsSchema = updatePortalSettingsSchema.extend({
+  chromeAccent: z.enum(PORTAL_CHROME_ACCENT_KEYS).nullable().optional()
+});
 
 const PORTAL_SETTINGS_DEFAULTS = {
   enableTickets: true,
@@ -33,6 +45,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
   enableService: false,
   enableDocuments: false,
   enableLifecycle: false,
+  chromeAccent: null,
   supportEmail: null,
   supportPhone: null,
   welcomeMessage: null,
@@ -52,6 +65,7 @@ type PortalSettingsRow = {
   enableService: boolean;
   enableDocuments: boolean;
   enableLifecycle: boolean;
+  chromeAccent: string | null;
   supportEmail: string | null;
   supportPhone: string | null;
   welcomeMessage: string | null;
@@ -78,6 +92,7 @@ const portalSettingsColumns = () => ({
   enableService: portalBranding.enableService,
   enableDocuments: portalBranding.enableDocuments,
   enableLifecycle: portalBranding.enableLifecycle,
+  chromeAccent: portalBranding.chromeAccent,
   supportEmail: portalBranding.supportEmail,
   supportPhone: portalBranding.supportPhone,
   welcomeMessage: portalBranding.welcomeMessage,
@@ -100,6 +115,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     enableService: row.enableService,
     enableDocuments: row.enableDocuments,
     enableLifecycle: row.enableLifecycle,
+    chromeAccent: row.chromeAccent,
     supportEmail: row.supportEmail,
     supportPhone: row.supportPhone,
     welcomeMessage: row.welcomeMessage,
@@ -151,7 +167,7 @@ export function registerOrgPortalSettingsRoutes(orgRoutes: Hono) {
     requireScope('partner', 'system'),
     requireOrgWrite,
     requireMfa(),
-    zValidator('json', updatePortalSettingsSchema),
+    zValidator('json', patchPortalSettingsSchema),
     async (c) => {
       const body = c.req.valid('json');
       if (Object.keys(body).length === 0) {

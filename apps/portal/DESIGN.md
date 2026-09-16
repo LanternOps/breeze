@@ -116,7 +116,7 @@ One warm family of paper neutrals, one green working ink, and three warm-shifted
 - **Brick** (`hsl(8 62% 40%)`): overdue, urgent, declined, errors. A warm brick red, not signal red.
 
 ### Named Rules
-**The One Ink Rule.** Service green is the only working accent in the portal chrome. Blue is banned; a second accent hue is banned. Partner brand color appears only inside the paper document world via `.doc-accent-*`.
+**The One Ink Rule.** The portal chrome carries exactly one working accent at a time. Service green (Spruce) is the default; a partner may swap it for one of the curated presets in `packages/shared/src/types/portalChromeAccent.ts` (Ink, Oxblood, Navy, Plum, Bronze, Teal, Forest), each shipped with pre-checked light and dark tokens and applied via `data-accent` on `<html>`. A free-form colour on the chrome is banned, a second simultaneous accent hue is banned, and status colours never follow the accent. The partner's own brand colour still appears only inside the paper document world via `.doc-accent-*`.
 
 **The On-Tint Rule.** The base status tokens are tuned as *backgrounds* (dots, fills). Any status-colored *text* — on the plaster ground or on a 10%-alpha tint — must use the `-on-tint` variant (`text-success-on-tint`, `text-warning-on-tint`, `text-destructive-on-tint`, `text-primary-on-tint`). The base tokens fail WCAG AA as 12px text; the pairings are asserted in `src/styles/tokenContrast.test.ts`, which is the contract, not a suggestion.
 

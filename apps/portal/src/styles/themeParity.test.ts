@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PORTAL_CHROME_ACCENTS, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 
 /**
  * Contract test for the portal's two theme blocks.
@@ -87,5 +88,46 @@ describe('theme token parity', () => {
     // Proposals and invoices carry partner brand colours chosen against white,
     // and are what a customer prints or forwards to their accountant.
     expect(CSS).toMatch(/\[data-doc-theme\]\s*\{[\s\S]*?color-scheme: light/);
+  });
+});
+
+/**
+ * The curated chrome accents (packages/shared/src/types/portalChromeAccent.ts)
+ * duplicate the same dark-mode palette a second time, once more: a
+ * `.dark[data-accent="…"]` block for the explicit opt-in and a
+ * `:root[data-accent="…"]:not(.light)` block inside the `prefers-color-scheme`
+ * media query for the OS-preference path. Same drift risk as the base
+ * palette, so the same identity check applies to each accent's pair.
+ * chromeAccents.test.ts separately checks both against the shared spec
+ * values; this only checks the two CSS blocks agree with EACH OTHER.
+ */
+describe('chrome accent dark-mode parity', () => {
+  const nonDefaultKeys = (Object.keys(PORTAL_CHROME_ACCENTS) as (keyof typeof PORTAL_CHROME_ACCENTS)[]).filter(
+    (key) => key !== PORTAL_CHROME_ACCENT_DEFAULT
+  );
+
+  function accentBlock(selectorPattern: string, label: string): string {
+    // `[^}]*` (not `[\s\S]*?\n\}`) so this works regardless of the block's
+    // indentation — the media-query accent rules are nested one level deeper
+    // than the top-level `:root[data-accent]` / `.dark[data-accent]` rules,
+    // and none of these declaration blocks nest braces of their own.
+    const m = new RegExp(`${selectorPattern}\\s*\\{([^}]*)\\}`).exec(CSS);
+    if (!m) throw new Error(`${label} block not found in globals.css`);
+    return m[1];
+  }
+
+  it('covers every non-default accent key', () => {
+    expect(nonDefaultKeys.length).toBe(7);
+  });
+
+  it.each(nonDefaultKeys)('%s: .dark override matches its prefers-color-scheme override exactly', (key) => {
+    const darkClassBlock = accentBlock(`\\.dark\\[data-accent='${key}'\\]`, `.dark[data-accent='${key}']`);
+    const mediaAccentBlock = accentBlock(
+      `:root\\[data-accent='${key}'\\]:not\\(\\.light\\)`,
+      `:root[data-accent='${key}']:not(.light)`
+    );
+    expect(Object.fromEntries(declarations(mediaAccentBlock))).toEqual(
+      Object.fromEntries(declarations(darkClassBlock))
+    );
   });
 });

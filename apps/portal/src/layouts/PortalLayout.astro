@@ -5,6 +5,7 @@ import { loadPortalBranding, loadPortalProfile } from '../lib/server';
 import { buildPortalNavItems } from '../lib/navItems';
 import { stripBase, withBase } from '../lib/basePath';
 import { buildDocAccentCss } from '../lib/docAccent';
+import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared';
 
 interface Props {
   title: string;
@@ -39,6 +40,15 @@ const navItems = buildPortalNavItems(branding);
 const accentCss = buildDocAccentCss(docAccent ?? branding.primaryColor);
 const cspNonce = Astro.locals.cspNonce;
 
+// Curated chrome accent (packages/shared/src/types/portalChromeAccent.ts).
+// The default key ('spruce') needs no override block, so it's treated the
+// same as null/unset/unrecognized — the attribute is simply omitted and the
+// base :root tokens (already spruce) apply.
+const chromeAccent =
+  isPortalChromeAccent(branding.chromeAccent) && branding.chromeAccent !== PORTAL_CHROME_ACCENT_DEFAULT
+    ? branding.chromeAccent
+    : undefined;
+
 const isActive = (href: string) => {
   if (href === '/') return pathname === '/';
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -46,7 +56,7 @@ const isActive = (href: string) => {
 ---
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-accent={chromeAccent}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

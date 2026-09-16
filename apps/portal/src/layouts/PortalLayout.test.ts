@@ -89,3 +89,27 @@ describe('portal layout figure and ground', () => {
     expect(src).toMatch(/branding\.footerText/);
   });
 });
+
+describe('portal layout chrome accent', () => {
+  const src = readFileSync(new URL('./PortalLayout.astro', import.meta.url), 'utf8');
+  const authSrc = readFileSync(new URL('./AuthLayout.astro', import.meta.url), 'utf8');
+
+  it('gates the data-accent attribute on isPortalChromeAccent, not a raw pass-through', () => {
+    // A raw `branding.chromeAccent` on <html> would let an unrecognized or
+    // stale stored value reach the DOM as an attribute with no matching CSS
+    // block — silently inert, but also a tell that validation was skipped.
+    expect(src).toContain("import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared'");
+    expect(src).toMatch(/isPortalChromeAccent\(branding\.chromeAccent\)/);
+    expect(src).toContain('<html lang="en" data-accent={chromeAccent}>');
+  });
+
+  it('omits the attribute for the default key so the base (spruce) tokens apply', () => {
+    expect(src).toMatch(/branding\.chromeAccent\s*!==\s*PORTAL_CHROME_ACCENT_DEFAULT/);
+  });
+
+  it('the sign-in page (AuthLayout) wires the same accent — branding loads before login too', () => {
+    expect(authSrc).toContain("import { isPortalChromeAccent, PORTAL_CHROME_ACCENT_DEFAULT } from '@breeze/shared'");
+    expect(authSrc).toMatch(/isPortalChromeAccent\(branding\.chromeAccent\)/);
+    expect(authSrc).toContain('<html lang="en" data-accent={chromeAccent}>');
+  });
+});

@@ -741,6 +741,9 @@ export interface BrandingConfig {
   enableService?: boolean;
   enableDocuments?: boolean;
   enableLifecycle?: boolean;
+  /** Curated chrome accent key (packages/shared/src/types/portalChromeAccent.ts).
+   *  null/unset/unrecognized means the default ('spruce') — nothing to apply. */
+  chromeAccent?: string | null;
 }
 
 export interface ListParams {
