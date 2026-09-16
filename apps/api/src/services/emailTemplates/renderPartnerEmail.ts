@@ -28,9 +28,15 @@ export interface RenderPartnerEmailArgs {
   custom?: PartnerEmailCustom | null;
   vars: Record<string, string>;
   ctaUrl?: string;
+  /** Overrides the catalog default button label when custom.buttonLabel is empty. */
+  ctaLabel?: string;
   brandName?: string;
   footer?: string;
   preheader?: string;
+  /** Already-escaped HTML inserted after the partner body and before the CTA. */
+  bodyBeforeCta?: string;
+  /** Already-escaped HTML inserted after the CTA. */
+  bodyAfterCta?: string;
   /** Ticket number / subject used only to build default subject lines. */
   internalNumber?: string | null;
   ticketSubject?: string;
@@ -41,6 +47,27 @@ export interface RenderPartnerEmailArgs {
    * extra sanitizer loss; DO still wrap the final document in renderLayout.
    */
   inboundAutoresponseFallback?: { subject: string | null; body: string | null };
+}
+
+export function parsePartnerEmailCustom(raw: unknown): PartnerEmailCustom | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    subject: typeof o.subject === 'string' ? o.subject : null,
+    heading: typeof o.heading === 'string' ? o.heading : null,
+    buttonLabel: typeof o.buttonLabel === 'string' ? o.buttonLabel : null,
+    html: typeof o.html === 'string' ? o.html : null,
+  };
+}
+
+export function partnerEmailCustomFromSettings(
+  settings: unknown,
+  id: EmailTemplateId,
+): PartnerEmailCustom | null {
+  if (settings == null || typeof settings !== 'object') return null;
+  const bag = (settings as { emailTemplates?: unknown }).emailTemplates;
+  if (bag == null || typeof bag !== 'object') return null;
+  return parsePartnerEmailCustom((bag as Record<string, unknown>)[id]);
 }
 
 const CTA_TOKEN_RE = /\{\{\s*cta_button\s*\}\}/g;
@@ -112,6 +139,14 @@ function applyCta(
   return inner.replaceAll(CTA_SENTINEL, '');
 }
 
+function spliceBeforeCta(inner: string, beforeCta: string | undefined): string {
+  if (!beforeCta) return inner;
+  if (inner.includes(CTA_SENTINEL)) {
+    return inner.replace(CTA_SENTINEL, `${beforeCta}${CTA_SENTINEL}`);
+  }
+  return `${inner}${beforeCta}`;
+}
+
 export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: string; html: string } {
   const vars = catalogVars(args.id, args.vars);
   const escaped = htmlEscaped(vars);
@@ -133,13 +168,15 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
   } else if (inboundSubject) {
     subject = substitute(inboundSubject, vars).replace(/[\r\n]+/g, ' ').trim();
   } else {
-    subject = defaultSubject(args.id, { internalNumber: args.internalNumber, ticketSubject });
+    subject = defaultSubject(args.id, { internalNumber: args.internalNumber, ticketSubject, vars });
   }
 
-  const heading = customHeading ? substitute(customHeading, vars) : defaultHeading(args.id);
+  const heading = customHeading
+    ? substitute(customHeading, vars)
+    : substitute(defaultHeading(args.id, vars), vars);
   const buttonLabel = customButtonLabel
     ? substitute(customButtonLabel, vars)
-    : defaultButtonLabel(args.id);
+    : (args.ctaLabel ?? defaultButtonLabel(args.id));
 
   let inner: string;
   if (customHtml) {
@@ -150,7 +187,9 @@ export function renderPartnerEmail(args: RenderPartnerEmailArgs): { subject: str
     inner = renderRichInner(defaultHtml(args.id, vars), escaped);
   }
 
+  inner = spliceBeforeCta(inner, args.bodyBeforeCta);
   inner = applyCta(inner, args.id, args.ctaUrl, buttonLabel);
+  if (args.bodyAfterCta) inner = `${inner}${args.bodyAfterCta}`;
 
   return {
     subject,

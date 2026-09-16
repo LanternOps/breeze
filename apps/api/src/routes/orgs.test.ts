@@ -1686,6 +1686,17 @@ describe('org routes', () => {
       expect(getCaptured().settings.emailTemplates.ticket_comment_notification).toEqual(fourFields);
     });
 
+    it('accepts quote_send as a template id', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      mockCurrentPartnerSelect({});
+      const getCaptured = mockUpdateCapture();
+
+      const res = await patchMe({ settings: { emailTemplates: { quote_send: fourFields } } });
+
+      expect(res.status).toBe(200);
+      expect(getCaptured().settings.emailTemplates.quote_send).toEqual(fourFields);
+    });
+
     it('rejects an unknown template id with 400 and never writes', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
       mockCurrentPartnerSelect({});

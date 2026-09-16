@@ -181,4 +181,22 @@ describe('renderPartnerEmail', () => {
     expect(out.html).toContain(`href="${PORTAL_HREF}"`);
     expect(out.html).toContain('View ticket');
   });
+
+  it('inserts trusted beforeCta/afterCta around the server-built button', () => {
+    const out = renderPartnerEmail(commentArgs({
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Hello.</p>' },
+      bodyBeforeCta: '<p>NOTE</p>',
+      bodyAfterCta: '<p>SIG</p>',
+    }));
+    expect(out.html).toContain('Hello.');
+    expect(out.html).toContain('NOTE');
+    expect(out.html).toContain('SIG');
+    const hello = out.html.indexOf('Hello.');
+    const note = out.html.indexOf('NOTE');
+    const href = out.html.indexOf(`href="${PORTAL_HREF}"`);
+    const sig = out.html.indexOf('SIG');
+    expect(hello).toBeLessThan(note);
+    expect(note).toBeLessThan(href);
+    expect(href).toBeLessThan(sig);
+  });
 });

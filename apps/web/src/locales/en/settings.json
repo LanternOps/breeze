@@ -771,7 +771,14 @@
       "partner_name": "Company name",
       "portal_url": "Portal URL",
       "email_only_hint": "Email-only hint",
-      "resolution_note": "Resolution note"
+      "resolution_note": "Resolution note",
+      "quote_number": "Quote number",
+      "total": "Total",
+      "expiry_date": "Expiry date",
+      "accept_url": "Accept URL",
+      "invoice_number": "Invoice number",
+      "due_date": "Due date",
+      "invite_url": "Invite URL"
     }
   },
   "inboundEmail": {

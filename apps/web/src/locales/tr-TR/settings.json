@@ -771,7 +771,14 @@
       "partner_name": "Şirket adı",
       "portal_url": "Portal URL'si",
       "email_only_hint": "Yalnızca e-posta ipucu",
-      "resolution_note": "Çözüm notu"
+      "resolution_note": "Çözüm notu",
+      "quote_number": "Teklif numarası",
+      "total": "Toplam",
+      "expiry_date": "Son geçerlilik tarihi",
+      "accept_url": "Kabul URL'si",
+      "invoice_number": "Fatura numarası",
+      "due_date": "Vade tarihi",
+      "invite_url": "Davet URL'si"
     }
   },
   "inboundEmail": {

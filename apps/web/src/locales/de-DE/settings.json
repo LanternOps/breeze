@@ -771,7 +771,14 @@
       "partner_name": "Firmenname",
       "portal_url": "Portal-URL",
       "email_only_hint": "Hinweis nur per E-Mail",
-      "resolution_note": "Lösungshinweis"
+      "resolution_note": "Lösungshinweis",
+      "quote_number": "Angebotsnummer",
+      "total": "Gesamtbetrag",
+      "expiry_date": "Ablaufdatum",
+      "accept_url": "Annahme-URL",
+      "invoice_number": "Rechnungsnummer",
+      "due_date": "Fälligkeitsdatum",
+      "invite_url": "Einladungs-URL"
     }
   },
   "inboundEmail": {

@@ -1,5 +1,9 @@
-import { renderLayout, renderButton, escapeHtml, getSupportEmail } from './emailLayout';
+import { escapeHtml, getSupportEmail } from './emailLayout';
 import { supportFooter, BODY_PARA, MUTED_PARA, type EmailTemplate } from './email';
+import {
+  renderPartnerEmail,
+  type PartnerEmailCustom,
+} from './emailTemplates/renderPartnerEmail';
 
 export interface QuoteEmailParams {
   quoteNumber: string;
@@ -16,6 +20,8 @@ export interface QuoteEmailParams {
   pdfAttached?: boolean;
   /** Partner's configured plain-text signature, rendered muted under the CTA. */
   signature?: string;
+  /** Partner-saved template override; null/absent uses code defaults. */
+  custom?: PartnerEmailCustom | null;
 }
 
 /**
@@ -25,35 +31,48 @@ export interface QuoteEmailParams {
  */
 export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
   const number = params.quoteNumber.trim();
-  const subject = params.subject?.trim() || `Proposal ${number} from ${params.partnerName}`;
-  const preheader = `Proposal ${number} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`;
   const pdfAttached = params.pdfAttached ?? true;
   const introSuffix = pdfAttached ? ' A PDF copy is attached.' : '';
-  const expiryLine = params.expiryDate
-    ? `<p style="${MUTED_PARA}">This proposal is valid until <strong>${escapeHtml(params.expiryDate)}</strong>.</p>`
-    : '';
-  // Sender's personal note, if any. Escaped, with newlines preserved as <br> so a
-  // multi-line note keeps its shape. Rendered between the intro and the CTA.
   const note = params.message?.trim();
+  const signature = params.signature?.trim();
+  const pdfBlock = pdfAttached
+    ? `<p style="${BODY_PARA}">A PDF copy is attached.</p>`
+    : '';
   const messageBlock = note
     ? `<p style="${BODY_PARA}">${escapeHtml(note).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  // Partner signature: muted, under the CTA — reads as a sign-off, not content.
-  const signature = params.signature?.trim();
+  const expiryLine = params.expiryDate
+    ? `<p style="${MUTED_PARA}">This proposal is valid until <strong>${escapeHtml(params.expiryDate)}</strong>.</p>`
+    : '';
   const signatureBlock = signature
     ? `<p style="${MUTED_PARA}">${escapeHtml(signature).replace(/\r?\n/g, '<br>')}</p>`
     : '';
-  const body = `
-      <p style="${BODY_PARA}">Hi there,</p>
-      <p style="${BODY_PARA}">${escapeHtml(params.partnerName)} has sent you proposal <strong>${escapeHtml(number)}</strong> for <strong>${escapeHtml(params.total)}</strong>.${introSuffix}</p>
-      ${messageBlock}
-      ${renderButton('Review & accept', params.acceptUrl)}
-      ${expiryLine}
-      ${signatureBlock}
-  `;
-  // brandName: the customer is the MSP's client — the faint brand line under
-  // the card shows the MSP, not the platform.
-  const html = renderLayout({ title: subject, preheader, heading: `Proposal ${number}`, body, footer: supportFooter(params.supportEmail, 'Questions about this proposal? Contact'), brandName: params.partnerName });
+
+  const custom: PartnerEmailCustom | null = params.custom ?? null;
+  const perSendSubject = params.subject?.trim() || null;
+  const rendered = renderPartnerEmail({
+    id: 'quote_send',
+    custom: {
+      subject: perSendSubject ?? custom?.subject ?? null,
+      heading: custom?.heading ?? null,
+      buttonLabel: custom?.buttonLabel ?? null,
+      html: custom?.html ?? null,
+    },
+    vars: {
+      quote_number: number,
+      partner_name: params.partnerName,
+      total: params.total,
+      expiry_date: params.expiryDate ?? '',
+      accept_url: params.acceptUrl,
+    },
+    ctaUrl: params.acceptUrl,
+    brandName: params.partnerName,
+    footer: supportFooter(params.supportEmail, 'Questions about this proposal? Contact'),
+    preheader: `Proposal ${number} — ${params.total}${params.expiryDate ? `, valid until ${params.expiryDate}` : ''}.`,
+    bodyBeforeCta: `${pdfBlock}${messageBlock}`,
+    bodyAfterCta: `${expiryLine}${signatureBlock}`,
+  });
+
   const support = getSupportEmail(params.supportEmail);
   const text = [
     'Hi there,',
@@ -64,5 +83,5 @@ export function buildQuoteTemplate(params: QuoteEmailParams): EmailTemplate {
     signature || null,
     support ? `Questions? Contact ${support}.` : null,
   ].filter(Boolean).join('\n');
-  return { subject, html, text };
+  return { subject: rendered.subject, html: rendered.html, text };
 }

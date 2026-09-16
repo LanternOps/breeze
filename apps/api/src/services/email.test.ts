@@ -324,6 +324,59 @@ describe('buildInvoiceTemplate', () => {
     expect(t.html).not.toContain('Paid to date');
     expect(t.text).not.toContain('Paid to date');
   });
+
+  it('null custom keeps current wording and the server pay URL', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({ ...base, custom: null });
+    expect(t.html).toContain('Hi there,');
+    expect(t.html).toContain('has sent you invoice');
+    expect(t.html).toContain('INV-0001');
+    expect(t.html).toContain('Amount due now');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.text).toContain(base.portalUrl);
+  });
+
+  it('custom html substitutes invoice_number and keeps the server pay URL', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Invoice {{invoice_number}} is due.</p>' },
+    });
+    expect(t.html).toContain('Invoice INV-0001 is due.');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.html).not.toContain('{{invoice_number}}');
+  });
+
+  it('strips javascript: from a custom href using invoice_number', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      invoiceNumber: 'javascript:alert(1)',
+      custom: {
+        subject: 'Invoice',
+        heading: 'Invoice',
+        buttonLabel: null,
+        html: '<a href="{{invoice_number}}">x</a>',
+      },
+    });
+    expect(t.html).not.toMatch(/href\s*=\s*["']javascript:/i);
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+    expect(t.html).toContain('<a>x</a>');
+  });
+
+  it('keeps the per-send note and signature around custom html', async () => {
+    const { buildInvoiceTemplate } = await import('./email');
+    const t = buildInvoiceTemplate({
+      ...base,
+      message: 'Pay when you can.',
+      signature: 'Billing',
+      custom: { subject: null, heading: null, buttonLabel: null, html: '<p>Custom {{invoice_number}}</p>' },
+    });
+    expect(t.html).toContain('Custom INV-0001');
+    expect(t.html).toContain('Pay when you can.');
+    expect(t.html).toContain('Billing');
+    expect(t.html).toContain(`href="${base.portalUrl}"`);
+  });
 });
 
 // #3905 — the send transports had no client-side deadline at all. Nodemailer's

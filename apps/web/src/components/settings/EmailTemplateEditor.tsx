@@ -36,6 +36,13 @@ const SAMPLE_VARS: Record<string, string> = {
   portal_url: 'https://portal.example.com/tickets/1',
   email_only_hint: 'If you do not have a portal account, reply to this email instead.',
   resolution_note: 'Replaced the failing drive.',
+  quote_number: 'Q-2026-0001',
+  total: '$1,200.00',
+  expiry_date: '2026-07-01',
+  accept_url: 'https://portal.example.com/quote/TOKEN',
+  invoice_number: 'INV-0001',
+  due_date: '2026-09-01',
+  invite_url: 'https://portal.example.com/accept-invite?token=abc',
 };
 
 /** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */

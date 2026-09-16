@@ -771,7 +771,14 @@
       "partner_name": "Nome da empresa",
       "portal_url": "URL do portal",
       "email_only_hint": "Aviso só por e-mail",
-      "resolution_note": "Nota de resolução"
+      "resolution_note": "Nota de resolução",
+      "quote_number": "Número da proposta",
+      "total": "Total",
+      "expiry_date": "Data de validade",
+      "accept_url": "URL de aceitação",
+      "invoice_number": "Número da fatura",
+      "due_date": "Data de vencimento",
+      "invite_url": "URL do convite"
     }
   },
   "inboundEmail": {

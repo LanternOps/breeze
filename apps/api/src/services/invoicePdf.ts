@@ -23,6 +23,7 @@ import { stripeConnectAccounts } from '../db/schema/stripePayments';
 import { getOrMintInvoiceLink, buildPublicInvoiceUrl } from './invoiceLinkToken';
 import { escapeHtml } from './emailLayout';
 import { getEmailService, buildInvoiceTemplate } from './email';
+import { partnerEmailCustomFromSettings } from './emailTemplates/renderPartnerEmail';
 import { emitInvoiceEvent } from './invoiceEvents';
 import { portalBase } from './portalUrl';
 import { InvoiceServiceError } from './invoiceTypes';
@@ -911,6 +912,7 @@ async function deliverInvoiceEmail(
     pdfAttached: includePdf && pdf != null,
     signature: partner?.emailSignature ?? undefined,
     payEnabled,
+    custom: partnerEmailCustomFromSettings(partner?.settings, 'invoice_send'),
   });
   try {
     await emailService.sendEmail({
