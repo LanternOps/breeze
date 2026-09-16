@@ -549,6 +549,11 @@ describe('monitoring routes', () => {
       expect(body.snmpDevice.snmpVersion).toBe('v2c');
       expect(body.recentMetrics).toHaveLength(1);
       expect(body.networkMonitors.totalCount).toBe(2);
+      // W01 (spec §6.2) — collection health rides the same response. This
+      // fixture's device has no template and has never succeeded (lastPolled
+      // null), so the honest answer is never_polled with no OIDs — not a
+      // fabricated 'ok'.
+      expect(body.collection).toMatchObject({ templateId: null, status: 'never_polled', oids: [] });
       // W01 (spec §4.4) — the detail route carries the derived reachability.
       expect(body.reachability).toEqual({
         state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
@@ -592,6 +597,8 @@ describe('monitoring routes', () => {
       const body = await res.json();
       expect(body.snmpDevice).toBeNull();
       expect(body.reachability.state).toBe('responding');
+      // No SNMP row at all — collection says so explicitly (spec §6.2).
+      expect(body.collection).toMatchObject({ templateId: null, status: 'never_polled', oids: [] });
     });
 
     it('returns 404 for nonexistent asset', async () => {

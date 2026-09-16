@@ -8,6 +8,7 @@ import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
 import { loadReachability } from '../services/assetReachabilityLoader';
+import { deriveCollection, type CollectionTemplateEntry } from '../services/snmpCollectionState';
 import { isRedisAvailable } from '../services/redis';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
@@ -315,15 +316,66 @@ monitoringRoutes.get(
           activeCount: Number(networkMonitorActive?.count ?? 0)
         },
         reachability,
+        collection: deriveCollection({ templateId: null, templateOids: [], snmpDevice: null, metrics: [] }),
         recentMetrics: []
       });
     }
 
-    const recentMetrics = await db.select()
+    // The template's OID list is what `collection` enumerates: an OID the
+    // template never asked for cannot have a collection state.
+    let templateOids: CollectionTemplateEntry[] = [];
+    if (snmpDevice.templateId) {
+      const [template] = await db
+        .select({ oids: snmpTemplates.oids })
+        .from(snmpTemplates)
+        .where(and(
+          eq(snmpTemplates.id, snmpDevice.templateId),
+          or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, asset.orgId))!,
+        ))
+        .limit(1);
+      if (template && Array.isArray(template.oids)) templateOids = template.oids as CollectionTemplateEntry[];
+    }
+
+    // Newest row per (base_oid, instance) for this device. DISTINCT ON does the
+    // per-series pick in Postgres so a 48-port switch does not ship 138k rows a
+    // day into this handler; the composite index of §7.5 serves the ORDER BY.
+    const latestMetrics = await db
+      .select({
+        id: snmpMetrics.id,
+        oid: snmpMetrics.oid,
+        baseOid: snmpMetrics.baseOid,
+        instance: snmpMetrics.instance,
+        name: snmpMetrics.name,
+        value: snmpMetrics.value,
+        valueType: snmpMetrics.valueType,
+        error: snmpMetrics.error,
+        timestamp: snmpMetrics.timestamp,
+      })
       .from(snmpMetrics)
       .where(eq(snmpMetrics.deviceId, snmpDevice.id))
-      .orderBy(desc(snmpMetrics.timestamp))
-      .limit(20);
+      .orderBy(
+        sql`coalesce(${snmpMetrics.baseOid}, ${snmpMetrics.oid})`,
+        sql`coalesce(${snmpMetrics.instance}, '')`,
+        desc(snmpMetrics.timestamp),
+      )
+      .limit(2000);
+
+    const collection = deriveCollection({
+      templateId: snmpDevice.templateId,
+      templateOids,
+      snmpDevice: {
+        isActive: snmpDevice.isActive,
+        lastStatus: snmpDevice.lastStatus,
+        lastPolled: snmpDevice.lastPolled,
+        pollingInterval: snmpDevice.pollingInterval,
+        consecutiveFailures: snmpDevice.consecutiveFailures,
+      },
+      metrics: latestMetrics,
+    });
+
+    // Kept for one release — MonitoringAssetsDashboard.tsx still reads it and
+    // W04 deletes that modal. Sliced from latestMetrics, not a second query.
+    const recentMetrics = latestMetrics.slice(0, 20);
 
     return c.json({
       enabled: snmpDevice.isActive || Number(networkMonitorActive?.count ?? 0) > 0,
@@ -333,6 +385,7 @@ monitoringRoutes.get(
         activeCount: Number(networkMonitorActive?.count ?? 0)
       },
       reachability,
+      collection,
       recentMetrics: recentMetrics.map((m) => ({
         id: m.id,
         oid: m.oid,
