@@ -56,6 +56,9 @@ export function looseFileToEntry(fileName: string, content: string): ScriptBundl
   if (!mapping || !base || content.length === 0) return null;
   return {
     name: base,
+    // Same default the editor uses for a brand-new script; a NULL category
+    // fails the form's required check and the AI assistant's snapshot schema.
+    category: 'Custom',
     osTypes: mapping.osTypes,
     language: mapping.language,
     content
