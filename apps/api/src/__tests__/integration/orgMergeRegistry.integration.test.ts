@@ -246,6 +246,9 @@ const CUSTOM_EXECUTORS_THAT_NEVER_WRITE_ORG_ID: Readonly<Record<string, string>>
 const ORG_ID_BENIGN_TRIGGERS: Readonly<Record<string, string>> = {
   // These detach only on DELETE or an actual site change. Org-only repoints
   // retain bindings; topology's ambient merge hooks fence and rekey them.
+  'devices.breeze_topology_source_lifecycle': 'same-site org-only updates retain source snapshots; merge prepare/finalize fences authority',
+  'topology_collection_runs.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
+  'topology_observations.topology_evidence_immutable': 'permits org_id ownership updates while preserving historical content',
   'devices.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
   'discovered_assets.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',
   'topology_manual_nodes.breeze_topology_inventory_lifecycle': 'same-site org-only updates retain topology bindings',

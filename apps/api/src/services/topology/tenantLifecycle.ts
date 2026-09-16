@@ -99,6 +99,8 @@ export async function finalizeTopologyOrgMerge(loserOrgId: string, survivorOrgId
       ELSE COALESCE(payload->'newIdentity', 'null'::jsonb) END), updated_at = now()
     WHERE org_id = ${survivor}::uuid AND site_id = ANY(${siteList}) AND delivered_at IS NULL
       AND payload ? 'oldIdentity' AND payload ? 'newIdentity'`);
+  await db.execute(sql`UPDATE topology_collection_sources SET revoked_at = now(), pending_misses = '{}'::jsonb, updated_at = now()
+    WHERE org_id = ${survivor}::uuid AND site_id = ANY(${siteList}) AND revoked_at IS NULL`);
   await db.execute(sql`UPDATE topology_site_state SET graph_revision = graph_revision + 1,
     settings_revision = settings_revision + 1, updated_at = now()
     WHERE org_id = ${survivor}::uuid AND site_id = ANY(${siteList})`);
