@@ -352,6 +352,9 @@
       },
       "loading": "Carregando relatórios...",
       "never": "Nunca",
+      "success": {
+        "generated": "Relatório \"{{name}}\" gerado."
+      },
       "visibleInPortal": "Visível no portal do cliente",
       "newReport": "Novo Relatório",
       "nextOccurrence": "Proximo: {{next}}",
