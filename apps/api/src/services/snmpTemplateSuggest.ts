@@ -63,6 +63,7 @@ interface Candidate {
   name: string;
   vendor: string | null;
   isBuiltIn: boolean;
+  deviceType: string | null;
   matchLength: number;
   typeMatch: boolean;
 }
@@ -108,7 +109,7 @@ export async function suggestTemplate(input: TemplateSuggestionInput): Promise<T
     .from(snmpTemplates)
     .where(or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, input.orgId))!);
 
-  const candidates: Candidate[] = [];
+  let candidates: Candidate[] = [];
   for (const row of rows) {
     const prefixes = Array.isArray(row.prefixes) ? row.prefixes : [];
     let matchLength = 0;
@@ -121,10 +122,17 @@ export async function suggestTemplate(input: TemplateSuggestionInput): Promise<T
       id: row.id,
       name: row.name,
       vendor: row.vendor,
+      deviceType: row.deviceType,
       isBuiltIn: row.isBuiltIn,
       matchLength,
       typeMatch: Boolean(input.assetType) && row.deviceType === input.assetType,
     });
+  }
+
+  // A shared enterprise arc is not sufficient when the device types contradict.
+  if (input.assetType && input.assetType !== 'unknown') {
+    candidates = candidates.filter((candidate) =>
+      candidate.deviceType === null || candidate.deviceType === input.assetType);
   }
 
   if (candidates.length === 0) return null;

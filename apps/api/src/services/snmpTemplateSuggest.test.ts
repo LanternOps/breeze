@@ -1,17 +1,8 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../db', () => ({ db: { select: vi.fn() } }));
-vi.mock('../db/schema', () => ({
-  snmpTemplates: {
-    id: 'snmpTemplates.id',
-    orgId: 'snmpTemplates.orgId',
-    name: 'snmpTemplates.name',
-    vendor: 'snmpTemplates.vendor',
-    deviceType: 'snmpTemplates.deviceType',
-    isBuiltIn: 'snmpTemplates.isBuiltIn',
-    sysObjectIdPrefixes: 'snmpTemplates.sysObjectIdPrefixes',
-  },
-}));
+
 
 import { db } from '../db';
 import { normalizeOid, oidHasPrefix, suggestTemplate } from './snmpTemplateSuggest';
@@ -24,9 +15,11 @@ type Row = {
 };
 
 function mockTemplates(rows: Row[]) {
+  const where = vi.fn().mockResolvedValue(rows);
   vi.mocked(db.select).mockReturnValue({
-    from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+    from: vi.fn().mockReturnValue({ where }),
   } as never);
+  return where;
 }
 
 const XEROX: Row = { id: 'tpl-xerox', name: 'Xerox Printer', vendor: 'Xerox', deviceType: 'printer', isBuiltIn: true, prefixes: ['1.3.6.1.4.1.253'] };
@@ -69,6 +62,29 @@ describe('oidHasPrefix — component boundaries (spec §15)', () => {
 });
 
 describe('suggestTemplate', () => {
+  it.each(['printer', 'switch', 'unknown'])('handles HP PEN 11 with asset type %s', async (assetType) => {
+    mockTemplates([{
+      id: 'tpl-aruba', name: 'Aruba / HPE ProCurve Switch', vendor: 'HPE',
+      deviceType: 'switch', isBuiltIn: true, prefixes: ['1.3.6.1.4.1.11'],
+    }]);
+    const result = await suggestTemplate({ sysObjectId: '1.3.6.1.4.1.11.2.3.9.1', assetType, orgId: ORG });
+    if (assetType === 'printer') expect(result).toBeNull();
+    else expect(result?.templateId).toBe('tpl-aruba');
+  });
+
+  it('keeps an untyped candidate for a known asset type', async () => {
+    mockTemplates([{ ...XEROX, deviceType: null }]);
+    expect((await suggestTemplate({ sysObjectId: '1.3.6.1.4.1.253.1', assetType: 'printer', orgId: ORG }))?.templateId).toBe(XEROX.id);
+  });
+
+  it('queries only built-ins or templates belonging to the input org', async () => {
+    const where = mockTemplates([]);
+    await suggestTemplate({ sysObjectId: '1.3.6.1.4.1.253.1', assetType: 'printer', orgId: ORG });
+    const query = new PgDialect().sqlToQuery(where.mock.calls[0]![0]);
+    expect(query.sql).toBe('("snmp_templates"."is_built_in" = $1 or "snmp_templates"."org_id" = $2)');
+    expect(query.params).toEqual([true, ORG]);
+  });
+
   it('suggests the Xerox template for a Xerox sysObjectID', async () => {
     mockTemplates([XEROX, GENERIC, CISCO_SW]);
     const result = await suggestTemplate({ sysObjectId: '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1', assetType: 'printer', orgId: ORG });
@@ -90,12 +106,12 @@ describe('suggestTemplate', () => {
     expect(result?.templateId).toBe('tpl-sw');
   });
 
-  it('prefers the longer prefix when no device_type matches', async () => {
+  it('prefers the longer prefix when the asset type is unknown', async () => {
     mockTemplates([
       { ...CISCO_SW, id: 'tpl-broad', name: 'Broad', deviceType: 'switch', prefixes: ['1.3.6.1.4.1.9'] },
       { ...CISCO_SW, id: 'tpl-narrow', name: 'Narrow', deviceType: 'router', prefixes: ['1.3.6.1.4.1.9.1.516'] },
     ]);
-    const result = await suggestTemplate({ sysObjectId: '1.3.6.1.4.1.9.1.516.2', assetType: 'printer', orgId: ORG });
+    const result = await suggestTemplate({ sysObjectId: '1.3.6.1.4.1.9.1.516.2', assetType: 'unknown', orgId: ORG });
     expect(result?.templateId).toBe('tpl-narrow');
   });
 

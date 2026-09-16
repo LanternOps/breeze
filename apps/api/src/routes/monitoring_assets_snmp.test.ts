@@ -814,6 +814,26 @@ describe('monitoring routes', () => {
       });
     });
 
+    it('reports applied false when the returned row did not retain the suggested template', async () => {
+      mockPutChain(null);
+      vi.mocked(suggestTemplate).mockResolvedValue({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      const res = await put({ snmpVersion: 'v2c', community: 'public' });
+
+      expect(res.status).toBe(200);
+      expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
+      expect((await res.json()).templateSuggestion).toEqual({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
+        reason: 'Detected Xerox printer, using Xerox Printer', applied: false,
+      });
+    });
+
     it('does not suggest, and stores null, when templateId is explicitly null', async () => {
       mockPutChain(null);
       const insertValues = vi.fn().mockReturnValue({

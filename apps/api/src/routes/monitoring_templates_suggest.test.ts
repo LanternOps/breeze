@@ -193,6 +193,20 @@ describe('GET /monitoring/templates/suggest', () => {
     expect(await res.json()).toEqual({ sysObjectId: null, assetType: 'unknown', suggestion: null });
   });
 
+  it('treats a non-string sysObjectID as null in the response and suggestion input', async () => {
+    mockAssetLookup({
+      id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, assetType: 'printer',
+      snmpData: { sysObjectId: 253 },
+    });
+    vi.mocked(suggestTemplate).mockResolvedValue(null);
+
+    const res = await get(ASSET_ID, SITE_ALLOWED);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sysObjectId: null, assetType: 'printer', suggestion: null });
+    expect(suggestTemplate).toHaveBeenCalledWith({ sysObjectId: null, assetType: 'printer', orgId: ORG_ID });
+  });
+
   it('404s for an asset outside the caller\'s org', async () => {
     mockAssetLookup(null);
     const res = await get(OTHER_ORG_ASSET);

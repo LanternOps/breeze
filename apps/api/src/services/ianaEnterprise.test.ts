@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   GENERIC_AGENT_ENTERPRISE_NUMBERS,
@@ -79,14 +80,11 @@ describe('IANA_ENTERPRISE_VENDORS table integrity', () => {
   });
 
   it('carries every vendor the built-in template prefixes are seeded with', () => {
-    // Mirrors the seed list in 2026-10-17-110300-…; a PEN dropped from one side
-    // must be dropped from the other.
-    for (const pen of [
-      9, 11, 232, 253, 318, 367, 534, 641, 674, 1248, 1347, 1602, 2385, 2435, 2636,
-      3808, 4526, 6574, 6876, 8072, 8741, 10642, 10876, 11863, 12356, 14823, 14988,
-      15446, 18334, 19046, 24681, 25053, 29671, 41112, 47196, 50919, 53869, 55062,
-    ]) {
-      expect(IANA_ENTERPRISE_VENDORS[pen], `PEN ${pen}`).toBeTruthy();
+    const migration = readFileSync(new URL('../../migrations/2026-10-17-110300-snmp-templates-prefixes-modes-xerox.sql', import.meta.url), 'utf8');
+    const pens = [...migration.matchAll(/1\.3\.6\.1\.4\.1\.(\d+)/g)].map((match) => Number(match[1]));
+    expect(pens.length).toBeGreaterThan(0);
+    for (const pen of pens) {
+      expect(Object.hasOwn(IANA_ENTERPRISE_VENDORS, pen), `PEN ${pen}`).toBe(true);
     }
   });
 

@@ -117,6 +117,7 @@ BEGIN
      AND t.is_built_in = true
      AND t.sys_object_id_prefixes = '{}';
   GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 29 THEN RAISE WARNING 'expected 29 seeded prefix rows, got %', n; END IF;
   RAISE NOTICE 'seeded sysObjectID prefixes on % built-in SNMP templates', n;
 END $$;
 
