@@ -336,11 +336,28 @@ monitoringRoutes.get(
       if (template && Array.isArray(template.oids)) templateOids = template.oids as CollectionTemplateEntry[];
     }
 
-    // Newest row per (base_oid, instance) for this device. DISTINCT ON does the
-    // per-series pick in Postgres so a 48-port switch does not ship 138k rows a
-    // day into this handler; the composite index of §7.5 serves the ORDER BY.
+    const metricBaseExpr = sql`coalesce(${snmpMetrics.baseOid}, ${snmpMetrics.oid})`;
+    const metricInstanceExpr = sql`coalesce(${snmpMetrics.instance}, '')`;
+
+    // Newest row per (base_oid, instance) for this device — a REAL
+    // `DISTINCT ON`, not an ORDER BY + LIMIT.
+    //
+    // This was `ORDER BY (base, instance, timestamp DESC) LIMIT 2000` on the
+    // theory that 2,000 rows covers 64 base OIDs at 31 instances each. That
+    // arithmetic is wrong: LIMIT truncates the GLOBAL result after ordering,
+    // not per group. Rows for the alphabetically-first (base_oid, instance)
+    // sort first, so once that ONE series has 2,000 historical rows — ~7 days
+    // at a 5-minute interval, and this same wave raises retention to 30 days —
+    // it consumes the entire budget and every OTHER OID reaches
+    // deriveCollection with zero rows, which then reports 'stale' or
+    // 'never_polled' for OIDs that are collecting perfectly well. That false
+    // claim is exactly what this wave exists to eliminate.
+    //
+    // Pinned by networkDeviceTruth.integration.test.ts against real Postgres:
+    // a mocked `db` cannot reproduce ORDER BY/LIMIT row-selection semantics.
+    // The composite index of §7.5 serves the ORDER BY.
     const latestMetrics = await db
-      .select({
+      .selectDistinctOn([metricBaseExpr, metricInstanceExpr], {
         id: snmpMetrics.id,
         oid: snmpMetrics.oid,
         baseOid: snmpMetrics.baseOid,
@@ -353,12 +370,7 @@ monitoringRoutes.get(
       })
       .from(snmpMetrics)
       .where(eq(snmpMetrics.deviceId, snmpDevice.id))
-      .orderBy(
-        sql`coalesce(${snmpMetrics.baseOid}, ${snmpMetrics.oid})`,
-        sql`coalesce(${snmpMetrics.instance}, '')`,
-        desc(snmpMetrics.timestamp),
-      )
-      .limit(2000);
+      .orderBy(metricBaseExpr, metricInstanceExpr, desc(snmpMetrics.timestamp));
 
     const collection = deriveCollection({
       templateId: snmpDevice.templateId,
@@ -374,8 +386,14 @@ monitoringRoutes.get(
     });
 
     // Kept for one release — MonitoringAssetsDashboard.tsx still reads it and
-    // W04 deletes that modal. Sliced from latestMetrics, not a second query.
-    const recentMetrics = latestMetrics.slice(0, 20);
+    // W04 deletes that modal. Derived from latestMetrics rather than a second
+    // query, but re-sorted by time first: latestMetrics is ordered by
+    // (base_oid, instance) for the DISTINCT ON above, so a bare slice would
+    // hand the dashboard the alphabetically-first OIDs instead of the device's
+    // actual most recent activity.
+    const recentMetrics = [...latestMetrics]
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      .slice(0, 20);
 
     return c.json({
       enabled: snmpDevice.isActive || Number(networkMonitorActive?.count ?? 0) > 0,

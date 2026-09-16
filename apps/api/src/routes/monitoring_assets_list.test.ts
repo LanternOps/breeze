@@ -7,6 +7,9 @@ vi.mock('../db', () => ({
   withSystemDbAccessContext: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   db: {
     select: vi.fn(),
+    // W01: GET /monitoring/assets/:id fetches the newest metric row per
+    // (base_oid, instance) with a real DISTINCT ON, so the mock must model it.
+    selectDistinctOn: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -155,6 +158,7 @@ describe('monitoring routes', () => {
     vi.clearAllMocks();
     reachabilityByAsset.clear();
     vi.mocked(db.select).mockReset();
+    vi.mocked(db.selectDistinctOn).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
     vi.mocked(db.delete).mockReset();
@@ -301,6 +305,9 @@ describe('monitoring routes', () => {
     });
 
     it('returns monitoring assets with SNMP and network config', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       // SNMP devices query
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -360,6 +367,10 @@ describe('monitoring routes', () => {
       expect(body.data[0].snmp.configured).toBe(true);
       expect(body.data[0].snmp.snmpVersion).toBe('v2c');
       expect(body.data[0].monitoring.configured).toBe(true);
+      // W01 (spec §4.4) — the list route carries the derived reachability.
+      expect(body.data[0].reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
     });
 
     it('returns empty data when no configured assets exist', async () => {
@@ -520,20 +531,21 @@ describe('monitoring routes', () => {
           where: vi.fn().mockResolvedValue([{ count: 1 }]),
         }),
       } as any);
-      // Recent metrics
-      vi.mocked(db.select).mockReturnValueOnce({
+      // Newest row per series (DISTINCT ON)
+      // The DISTINCT ON chain ends at .orderBy() — there is deliberately no
+      // .limit(): the per-series pick happens in Postgres, so a global row cap
+      // would be the very bug this shape replaced.
+      vi.mocked(db.selectDistinctOn).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
-            orderBy: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([{
-                id: 'metric-1',
-                oid: '1.3.6.1.2.1.1.5.0',
-                name: 'sysName',
-                value: 'router-01',
-                valueType: 'string',
-                timestamp: new Date(),
-              }]),
-            }),
+            orderBy: vi.fn().mockResolvedValue([{
+              id: 'metric-1',
+              oid: '1.3.6.1.2.1.1.5.0',
+              name: 'sysName',
+              value: 'router-01',
+              valueType: 'string',
+              timestamp: new Date(),
+            }]),
           }),
         }),
       } as any);

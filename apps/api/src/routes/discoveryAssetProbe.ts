@@ -136,19 +136,45 @@ discoveryAssetProbeRoutes.post(
     if (outcome.status !== 'sent') {
       // The agent went away between the pick and the send. Close the probe out
       // now rather than leaving a pending stamp to time out in two minutes.
-      await applyProbeResult({
+      //
+      // `outcome.message` is the ONLY place the real cause exists: relay seal
+      // and enqueue failures put `relay … failed: <err>` there, and
+      // services/agentCommandRelay.ts logs nothing of its own. Dropping it
+      // would lose the diagnosis entirely — not in the response, not in the
+      // logs, not in Sentry.
+      const dispatchError = 'message' in outcome && outcome.message
+        ? `dispatch ${outcome.status}: ${outcome.message}`
+        : `dispatch ${outcome.status}`;
+      console.warn(`[AssetProbe] Dispatch of ${commandId} to agent ${pick.agentId} did not send: ${dispatchError}`);
+
+      const applied = await applyProbeResult({
         commandId,
         assetId: asset.id,
         expectedIp: String(asset.ipAddress),
         expectedSiteId: siteId,
         status: 'failed',
         responseMs: null,
-        error: `dispatch ${outcome.status}`,
+        error: dispatchError,
       });
+      // `indeterminate` says nothing about execution — the frame may have gone
+      // out anyway, and the genuine result may already have landed on the WS
+      // path and cleared the pending stamp. When the CAS finds no row, our
+      // locally-assumed 'failed' is NOT the truth: report the derived state
+      // instead of a response body that contradicts its own reachability
+      // block.
+      const reachability = await reachabilityFor(asset.id);
+      if (!applied) {
+        console.warn(
+          `[AssetProbe] Dispatch-failure stamp for ${commandId} did not correlate `
+          + '(a real result landed first, or the asset moved); reporting the derived state instead.'
+        );
+      }
       return c.json({
-        probe: { state: 'failed', responseMs: null, observedAt: startedAt.toISOString(), agentId: pick.agentId, error: `dispatch ${outcome.status}` },
-        reachability: await reachabilityFor(asset.id),
-      }, 200);
+        probe: applied
+          ? { state: 'failed', responseMs: null, observedAt: startedAt.toISOString(), agentId: pick.agentId, error: dispatchError }
+          : { state: 'pending', responseMs: null, observedAt: startedAt.toISOString(), agentId: pick.agentId, error: dispatchError },
+        reachability,
+      }, applied ? 200 : 202);
     }
 
     const result = await waiting;

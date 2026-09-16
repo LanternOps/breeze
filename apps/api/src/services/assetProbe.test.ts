@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 
 const captured: { sets: Record<string, unknown>[]; wheres: unknown[] } = { sets: [], wheres: [] };
 let updateReturning: unknown[] = [];
@@ -27,6 +29,8 @@ import {
 } from './assetProbe';
 
 const ASSET = '33333333-3333-4333-8333-333333333333';
+const dialect = new PgDialect();
+const render = (v: unknown) => dialect.sqlToQuery(v as SQL).sql;
 
 beforeEach(() => { captured.sets = []; captured.wheres = []; updateReturning = []; });
 
@@ -64,6 +68,24 @@ describe('applyProbeResult', () => {
     updateReturning = [{ id: ASSET }];
     await expect(applyProbeResult(base)).resolves.toBe(true);
     expect(captured.sets[0]).toMatchObject({ lastProbeStatus: 'ok', lastProbeResponseMs: 4 });
+  });
+
+  // The mock's `where` returns whatever `updateReturning` says regardless of
+  // the condition passed in, so the assertions above pass even if the WHERE
+  // clause is missing predicates entirely. Render the captured condition
+  // through the real Postgres dialect and assert every load-bearing
+  // predicate from the doc comment above `applyProbeResult` is present, so a
+  // deleted predicate fails here instead of only failing silently in prod.
+  it('CAS WHERE clause carries every load-bearing predicate', async () => {
+    updateReturning = [{ id: ASSET }];
+    await applyProbeResult(base);
+
+    const sql = render(captured.wheres[0]);
+    expect(sql).toContain('last_probe_ref');
+    expect(sql).toContain('last_probe_status');
+    expect(sql).toContain('ip_address');
+    expect(sql).toContain('site_id');
+    expect(sql).toContain('"id"');
   });
 
   it('reports false and writes nothing durable when the asset moved', async () => {

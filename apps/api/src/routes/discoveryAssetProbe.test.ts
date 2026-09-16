@@ -96,6 +96,7 @@ import { db } from '../db';
 import { loadAssetSiteId, selectNetworkExecutor } from '../services/networkExecutorSelection';
 import { dispatchCommandToAgent } from '../services/agentCommandRelay';
 import { loadReachabilityInputs } from '../services/assetReachabilityLoader';
+import { applyProbeResult, awaitProbeResult as _awaitProbeResult } from '../services/assetProbe';
 import { awaitProbeResult, parseProbeCommandId } from '../services/assetProbe';
 
 /**
@@ -339,5 +340,47 @@ describe('POST /discovery/assets/:id/probe', () => {
     const body = await res.json();
     expect(body.probe.state).toBe('pending');
     expect(body.probe.agentId).toBe('agent-1');
+  });
+
+  describe('dispatch failure (PR review: the message is the only diagnosis there is)', () => {
+    it('carries the relay error message into the persisted stamp and the response', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectChain([assetRow()]) as any);
+      vi.mocked(loadAssetSiteId).mockResolvedValueOnce(SITE_ALLOWED);
+      vi.mocked(selectNetworkExecutor).mockResolvedValueOnce({ agentId: 'agent-1' } as any);
+      // services/agentCommandRelay.ts logs nothing of its own, so `message` is
+      // the ONLY place `relay enqueue failed: <err>` exists. Dropping it loses
+      // the diagnosis entirely.
+      vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({
+        status: 'infrastructure_error',
+        message: 'relay enqueue failed: ECONNREFUSED',
+      } as any);
+      vi.mocked(applyProbeResult).mockResolvedValueOnce(true);
+
+      const res = await post();
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.probe.state).toBe('failed');
+      expect(body.probe.error).toContain('relay enqueue failed: ECONNREFUSED');
+      expect(vi.mocked(applyProbeResult).mock.calls[0]![0]!.error).toContain('relay enqueue failed: ECONNREFUSED');
+    });
+
+    it('reports pending, not failed, when the dispatch-failure stamp loses the CAS', async () => {
+      vi.mocked(db.select).mockReturnValueOnce(selectChain([assetRow()]) as any);
+      vi.mocked(loadAssetSiteId).mockResolvedValueOnce(SITE_ALLOWED);
+      vi.mocked(selectNetworkExecutor).mockResolvedValueOnce({ agentId: 'agent-1' } as any);
+      // 'indeterminate' says nothing about execution — the frame may have gone
+      // out and the genuine result may already have cleared the pending stamp.
+      vi.mocked(dispatchCommandToAgent).mockResolvedValueOnce({ status: 'indeterminate' } as any);
+      vi.mocked(applyProbeResult).mockResolvedValueOnce(false);
+
+      const res = await post();
+
+      // Claiming 'failed' here would contradict the reachability block in the
+      // same body, which is read fresh after the CAS.
+      expect(res.status).toBe(202);
+      const body = await res.json();
+      expect(body.probe.state).toBe('pending');
+    });
   });
 });

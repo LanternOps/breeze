@@ -338,6 +338,32 @@ describe('GET /monitoring/assets/:id/metrics', () => {
     ]);
   });
 
+  it('caps the response at MAX_SERIES after grouping, even for a single requested base OID', async () => {
+    // The request-side check (`oids.length > MAX_SERIES`, tested above) only
+    // counts the OIDs in the query string — one here. A table walk against
+    // that single base OID can still explode into far more than MAX_SERIES
+    // distinct (oid, instance) series after grouping, so the cap must also
+    // apply post-grouping (routes/monitoringAssetMetrics.ts `.slice(0, MAX_SERIES)`).
+    vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
+    vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow()]) as any);
+    const rows = Array.from({ length: MAX_SERIES + 10 }, (_, i) =>
+      metricRow({
+        oid: `1.3.6.1.2.1.2.2.1.10.${i + 1}`,
+        baseOid: '1.3.6.1.2.1.2.2.1.10',
+        instance: String(i + 1),
+        bucket: '2026-09-15T10:00:00.000Z',
+        avgValue: String(i + 1),
+        maxValue: String(i + 1),
+      }));
+    vi.mocked(db.select).mockReturnValueOnce(metricsChain(rows) as any);
+
+    const res = await get('?oid=1.3.6.1.2.1.2.2.1.10');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.series).toHaveLength(MAX_SERIES);
+  });
+
   it('matches an instance oid as well as a base oid', async () => {
     vi.mocked(db.select).mockReturnValueOnce(limitChain([assetRow()]) as any);
     vi.mocked(db.select).mockReturnValueOnce(snmpDeviceChain([snmpDeviceRow({ templateId: TEMPLATE_ID })]) as any);

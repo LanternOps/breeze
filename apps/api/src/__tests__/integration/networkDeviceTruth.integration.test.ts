@@ -19,7 +19,7 @@ import './setup';
 
 import { randomUUID } from 'crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 
 vi.mock('../../middleware/auth', () => ({
   authMiddleware: vi.fn((c: any, next: any) => {
@@ -41,10 +41,11 @@ vi.mock('../../middleware/auth', () => ({
 }));
 
 import { Hono } from 'hono';
-import { withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
+import { db, withDbAccessContext, withSystemDbAccessContext, type DbAccessContext } from '../../db';
 import { discoveredAssets, snmpDevices, snmpMetrics, snmpTemplates } from '../../db/schema';
 import { monitoringAssetMetricsRoutes } from '../../routes/monitoringAssetMetrics';
 import { applyProbeResult, buildProbeCommandId } from '../../services/assetProbe';
+import { deriveCollection } from '../../services/snmpCollectionState';
 import { createOrganization, createPartner, createSite } from './db-utils';
 import { getTestDb } from './setup';
 
@@ -181,6 +182,152 @@ describe('network device page truth — real-Postgres SQL (#5988)', () => {
       const textSeries = body.series.find((s) => s.oid === TEXT_OID);
       expect(textSeries).toBeUndefined();
       expect(body.series.every((s) => s.points.every(([, v]) => Number.isFinite(v)))).toBe(true);
+    });
+  });
+
+  describe('per-OID collection health (spec §6.2)', () => {
+    it('picks the newest row per series even when one OID owns thousands of historical rows', async () => {
+      // REGRESSION (PR #6002 review). The route used to select
+      // `ORDER BY (base_oid, instance, timestamp DESC) LIMIT 2000` on the
+      // theory that 2,000 rows covers 64 base OIDs. LIMIT truncates the GLOBAL
+      // result after ordering, not per group — so once the alphabetically-first
+      // series alone exceeds the budget (~7 days at a 5-minute interval, and
+      // this wave raises retention to 30 days) every OTHER OID arrives with
+      // zero rows and deriveCollection calls a perfectly healthy OID 'stale'.
+      //
+      // Only real Postgres can catch this: the unit suite mocks `db` wholesale
+      // and hand-feeds deriveCollection already-correct input.
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id, name: 'Collection Org' });
+      const site = await createSite({ orgId: org.id, name: 'Collection Site' });
+      const adminDb = getTestDb() as any;
+
+      const [asset] = await adminDb.insert(discoveredAssets).values({
+        orgId: org.id,
+        siteId: site.id,
+        ipAddress: '198.51.100.41',
+        hostname: 'collection-switch',
+        assetType: 'switch',
+        approvalStatus: 'approved',
+        isOnline: true,
+        discoveryMethods: ['snmp'],
+      }).returning();
+
+      // 'A...' sorts before 'Z...', so the noisy OID is the one that used to
+      // eat the whole LIMIT.
+      const NOISY_OID = '1.3.6.1.2.1.1.1.0';
+      const QUIET_OID = '1.3.6.1.2.1.99.9.9.0';
+
+      const [template] = await adminDb.insert(snmpTemplates).values({
+        orgId: org.id,
+        name: 'Collection Template',
+        vendor: 'generic',
+        deviceType: 'switch',
+        oids: [
+          { oid: NOISY_OID, name: 'noisy', type: 'Gauge32' },
+          { oid: QUIET_OID, name: 'quiet', type: 'Gauge32' },
+        ],
+      }).returning();
+
+      const polledAt = new Date();
+      const [snmpDevice] = await adminDb.insert(snmpDevices).values({
+        orgId: org.id,
+        assetId: asset.id,
+        name: 'collection-switch snmp',
+        ipAddress: '198.51.100.41',
+        snmpVersion: '2c',
+        port: 161,
+        pollingInterval: 300,
+        templateId: template.id,
+        isActive: true,
+        lastPolled: polledAt,
+        lastStatus: 'online',
+      }).returning();
+
+      // 2,100 rows for the noisy OID — more than the old 2,000-row budget.
+      const noisyRows = Array.from({ length: 2100 }, (_, i) => ({
+        orgId: org.id,
+        deviceId: snmpDevice.id,
+        oid: NOISY_OID,
+        baseOid: NOISY_OID,
+        instance: '',
+        name: 'noisy',
+        value: String(i),
+        valueType: 'number',
+        timestamp: new Date(polledAt.getTime() - (2100 - i) * 1000),
+      }));
+      for (let i = 0; i < noisyRows.length; i += 300) {
+        await adminDb.insert(snmpMetrics).values(noisyRows.slice(i, i + 300));
+      }
+
+      // ONE fresh row for the quiet OID. Under the old query this row never
+      // reached deriveCollection at all.
+      await adminDb.insert(snmpMetrics).values({
+        orgId: org.id,
+        deviceId: snmpDevice.id,
+        oid: QUIET_OID,
+        baseOid: QUIET_OID,
+        instance: '',
+        name: 'quiet',
+        value: '42',
+        valueType: 'number',
+        timestamp: polledAt,
+      });
+
+      const baseExpr = sql`coalesce(${snmpMetrics.baseOid}, ${snmpMetrics.oid})`;
+      const instanceExpr = sql`coalesce(${snmpMetrics.instance}, '')`;
+
+      const context: DbAccessContext = {
+        scope: 'organization',
+        orgId: org.id,
+        accessibleOrgIds: [org.id],
+        accessiblePartnerIds: [],
+        userId: null,
+      };
+
+      const latestMetrics: Array<Record<string, any>> = await withDbAccessContext(context, () => (db as any)
+        .selectDistinctOn([baseExpr, instanceExpr], {
+          id: snmpMetrics.id,
+          oid: snmpMetrics.oid,
+          baseOid: snmpMetrics.baseOid,
+          instance: snmpMetrics.instance,
+          name: snmpMetrics.name,
+          value: snmpMetrics.value,
+          valueType: snmpMetrics.valueType,
+          error: snmpMetrics.error,
+          timestamp: snmpMetrics.timestamp,
+        })
+        .from(snmpMetrics)
+        .where(eq(snmpMetrics.deviceId, snmpDevice.id))
+        .orderBy(baseExpr, instanceExpr, desc(snmpMetrics.timestamp)));
+
+      // Exactly one row per series, regardless of how deep the history goes.
+      expect(latestMetrics).toHaveLength(2);
+      const byOid = new Map(latestMetrics.map((r) => [r.oid as string, r]));
+      expect(byOid.get(QUIET_OID)?.value).toBe('42');
+      expect(byOid.get(NOISY_OID)?.value).toBe('2099');
+
+      const collection = deriveCollection({
+        templateId: template.id,
+        templateOids: [
+          { oid: NOISY_OID, name: 'noisy', type: 'Gauge32' },
+          { oid: QUIET_OID, name: 'quiet', type: 'Gauge32' },
+        ],
+        snmpDevice: {
+          isActive: true,
+          lastStatus: 'online',
+          lastPolled: polledAt,
+          pollingInterval: 300,
+          consecutiveFailures: 0,
+        },
+        metrics: latestMetrics as any,
+      });
+
+      // The whole point: the quiet OID must NOT be reported as stale.
+      const quiet = collection.oids.find((o) => o.baseOid === QUIET_OID);
+      expect(quiet?.state).toBe('collecting');
+      const noisy = collection.oids.find((o) => o.baseOid === NOISY_OID);
+      expect(noisy?.state).toBe('collecting');
     });
   });
 

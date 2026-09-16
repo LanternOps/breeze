@@ -220,6 +220,7 @@ describe('discovery routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     app = new Hono();
     app.route('/discovery', discoveryRoutes);
   });
@@ -563,6 +564,9 @@ describe('discovery routes', () => {
     // modal can render it. It was collected + stored but dropped here (#1731).
     it('projects snmpData in the asset list response', async () => {
       const now = new Date();
+      reachabilityByAsset.set('asset-001', {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       const snmp = { sysName: 'core-sw-01', sysDescr: 'Cisco IOS', sysObjectId: '1.3.6.1.4.1.9.1.1' };
       const row = {
         asset: {
@@ -621,6 +625,10 @@ describe('discovery routes', () => {
       expect(body.data).toHaveLength(1);
       expect(body.data[0].snmpData).toEqual(snmp);
       expect(body.data[0].discoveryMethods).toEqual(['ping', 'snmp']);
+      // W01 (spec §4.4) — the list route carries the derived reachability.
+      expect(body.data[0].reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
     });
 
     // Regression guard: the list serializer must forward typeSource and
@@ -896,6 +904,9 @@ describe('discovery routes', () => {
     };
 
     it('returns the single asset detail (topology node click / deep link)', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       mockSingleAsset([buildRow()]);
 
       const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
@@ -907,6 +918,10 @@ describe('discovery routes', () => {
       expect(body.data.id).toBe(ASSET_ID);
       expect(body.data.ipAddress).toBe('10.0.20.10');
       expect(body.data.snmpData).toEqual({ sysName: 'srv-files' });
+      // W01 (spec §4.4) — the detail route carries the derived reachability.
+      expect(body.data.reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
     });
 
     it('returns siteName alongside siteId', async () => {
