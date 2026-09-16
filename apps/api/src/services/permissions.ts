@@ -96,7 +96,8 @@ export const PLATFORM_ADMIN_ROLE_ID = 'platform-admin';
 const PLATFORM_ADMIN_GRANTS: Permission[] = [{ resource: '*', action: '*' }];
 
 /**
- * #5733 — resolve permissions for a `scope: 'system'` token.
+ * #5733 — resolve permissions for the LOGIN-PRODUCED system-scope shape:
+ * `scope: 'system'` with NEITHER partnerId NOR orgId on the token.
  *
  * Login mints system scope ONLY for a user with no partner_users and no
  * organization_users row (routes/auth/helpers.ts resolveCurrentUserTokenContext),
@@ -104,6 +105,13 @@ const PLATFORM_ADMIN_GRANTS: Permission[] = [{ resource: '*', action: '*' }];
  * null and requirePermission answered 403 "No permissions found" on EVERY
  * requirePermission-gated route that also admits requireScope(... 'system').
  * Those system branches were unreachable in production.
+ *
+ * A system-scope token that DOES carry a partnerId or orgId is deliberately
+ * excluded: per the #5071 contract, when such a token has a membership the
+ * membership's grants still govern, so it falls through to the membership
+ * resolver below exactly as before this fix (pinned by
+ * siteAggregateScope.integration.test.ts RMM-QA-221). Widening the bypass to
+ * that shape would let a platform admin's no-read partner role read anyway.
  *
  * The grant is authorised by a LIVE `users.is_platform_admin` read, never by
  * the token's own `scope` claim — authMiddleware's SR2-02 check does the same
@@ -165,10 +173,12 @@ export async function getUserPermissions(
   context: { partnerId?: string; orgId?: string; scope?: 'system' | 'partner' | 'organization' },
   options?: { bypassCache?: boolean },
 ): Promise<UserPermissions | null> {
-  // #5733 — system scope carries no partnerId/orgId to key a membership read on.
-  // Handled entirely by the platform-admin branch, ahead of the cache: the grant
-  // is re-derived from the live users row on every call (see the helper's note).
-  if (context.scope === 'system') {
+  // #5733 — the login-produced system shape carries no partnerId/orgId to key a
+  // membership read on. Handled entirely by the platform-admin branch, ahead of
+  // the cache: the grant is re-derived from the live users row on every call
+  // (see the helper's note). A system token that DOES carry an axis keeps the
+  // membership-resolved answer — see the helper's doc comment (#5071).
+  if (context.scope === 'system' && !context.partnerId && !context.orgId) {
     return resolveSystemScopePermissions(userId);
   }
 

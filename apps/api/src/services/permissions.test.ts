@@ -570,12 +570,15 @@ describe('permissions service', () => {
     });
   });
 
-  // #5733 — a scope='system' access token is minted ONLY for a membership-less
-  // platform admin (routes/auth/helpers.ts resolveCurrentUserTokenContext), so the
-  // membership-only resolver below it returned null → requirePermission answered
-  // 403 "No permissions found" on EVERY requirePermission route. The system branch
-  // grants the wildcard set, but only against a LIVE users.is_platform_admin read —
-  // never the token's own scope claim on its own.
+  // #5733 — a LOGIN-produced scope='system' access token is minted ONLY for a
+  // membership-less platform admin (routes/auth/helpers.ts
+  // resolveCurrentUserTokenContext) — scope 'system' with NEITHER partnerId NOR
+  // orgId — so the membership-only resolver below it returned null →
+  // requirePermission answered 403 "No permissions found" on EVERY
+  // requirePermission route. The system branch grants the wildcard set, but only
+  // for that null/null shape and only against a LIVE users.is_platform_admin read
+  // — never the token's own scope claim on its own. A system token that carries an
+  // axis keeps the #5071 contract: the membership's grants still govern.
   describe('getUserPermissions system scope (#5733)', () => {
     function mockPlatformAdminRead(rows: Array<{ isPlatformAdmin: boolean }>) {
       vi.mocked(db.select).mockReturnValueOnce({
@@ -705,6 +708,78 @@ describe('permissions service', () => {
 
       expect(perms!.scope).toBe('partner');
       expect(perms!.permissions).toEqual([{ resource: 'devices', action: 'read' }]);
+    });
+
+    // The three shapes the bypass is pinned to. (a) is the login shape the fix
+    // exists for; (b) is the #5071 contract the bypass must NOT widen past
+    // (RMM-QA-221 in siteAggregateScope.integration.test.ts asserts the 403 end
+    // to end); (c) is the demoted/never-admin denial.
+    it('(b) a system token carrying a partnerId resolves from the membership, NOT the wildcard', async () => {
+      // #5071: when a system-scope token carries a membership, the membership's
+      // grants still govern. A platform admin whose partner role grants nothing
+      // must still be denied — otherwise the bypass silently escalates every
+      // system-scope token that happens to have a partnerId claim.
+      mockGetCurrentDbAccessContext.mockReturnValue({
+        scope: 'system',
+        accessibleOrgIds: null,
+        accessiblePartnerIds: ['partner-1'],
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-no-read', orgAccess: 'all', orgIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const perms = await getUserPermissions('admin-1', { partnerId: 'partner-1', scope: 'system' });
+
+      expect(perms).not.toBeNull();
+      expect(perms!.scope).toBe('partner');
+      expect(perms!.roleId).toBe('role-no-read');
+      expect(perms!.permissions).toEqual([]);
+      expect(hasPermission(perms!, 'devices', 'read')).toBe(false);
+      // Membership reads, not the users.is_platform_admin read: the wildcard
+      // branch was never entered.
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
+    });
+
+    it('(b) a system token carrying an orgId resolves from the org membership, NOT the wildcard', async () => {
+      mockGetCurrentDbAccessContext.mockReturnValue({
+        scope: 'system',
+        accessibleOrgIds: ['org-123'],
+        accessiblePartnerIds: [],
+      });
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ roleId: 'role-no-read', siteIds: null }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([])
+            })
+          })
+        } as any);
+
+      const perms = await getUserPermissions('admin-1', { orgId: 'org-123', scope: 'system' });
+
+      expect(perms!.scope).toBe('organization');
+      expect(perms!.permissions).toEqual([]);
+      expect(hasPermission(perms!, 'devices', 'read')).toBe(false);
+      expect(vi.mocked(db.select)).toHaveBeenCalledTimes(2);
     });
   });
 
