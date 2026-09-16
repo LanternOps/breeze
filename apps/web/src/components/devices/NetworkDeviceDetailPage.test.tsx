@@ -105,6 +105,31 @@ function openMonitoringTab() {
 }
 
 describe('NetworkDeviceDetailPage', () => {
+  it('shows the persisted SNMP error in the header', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation((url: string) => url === `/monitoring/assets/${ASSET_ID}`
+      ? Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: {
+        lastError: 'SNMP walk timed out', lastErrorAt: '2026-09-16T10:00:00.000Z',
+      } }))
+      : monitoringResponse(url));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-device-last-error')).toHaveTextContent('Last error: SNMP walk timed out');
+  });
+
+  it('omits the last error line when the successful poll cleared the error', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation((url: string) => url === `/monitoring/assets/${ASSET_ID}`
+      ? Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: { lastError: null, lastErrorAt: null } }))
+      : monitoringResponse(url));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-device-name');
+    expect(screen.queryByTestId('network-device-last-error')).not.toBeInTheDocument();
+  });
+
   it('composes the reachability card, the type health card and the monitoring sections from the asset and monitoring endpoints', async () => {
     fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
       makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),

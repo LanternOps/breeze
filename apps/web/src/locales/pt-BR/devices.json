@@ -2624,6 +2624,7 @@
       }
     },
     "header": {
+      "lastError": "Último erro: {{error}}",
       "settings": "Configurações"
     },
     "editInSettings": "Editar nas configurações",

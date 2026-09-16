@@ -560,7 +560,9 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // W01 (spec §7.1): poll_seq is a monotonic per-device dispatch counter —
   // ordinary operational state, a plain integer, `included` (the same treatment
   // as devices.reboot_deferrals_used).
-  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","poll_seq","created_at"],"reviewedIncluded":[],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
+  // Reviewed tenant diagnostics: agent error text may echo an SNMP community name;
+  // include the diagnostic in tenant exports while stored credentials remain excluded.
+  "snmp_devices": tablePolicy("org_id", {"included":["id","org_id","asset_id","name","ip_address","snmp_version","port","auth_protocol","priv_protocol","username","polling_interval","template_id","is_active","last_polled","last_poll_attempted_at","consecutive_failures","last_status","last_error_at","poll_seq","created_at"],"reviewedIncluded":["last_error"],"excludedSensitive":["community","auth_password","priv_password"],"excludedOpen":[]}),
   // W01 (spec §7.3): base_oid and instance are public SNMP OID identifiers —
   // the same class of value as the existing `oid` column, which has always been
   // `included`. `error` is a closed set of five SNMP PDU/bound codes

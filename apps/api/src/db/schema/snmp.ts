@@ -48,6 +48,8 @@ export const snmpDevices = pgTable('snmp_devices', {
   // exponential backoff of the effective polling interval (#3217).
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
   lastStatus: varchar('last_status', { length: 20 }),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
   // W01 (spec §7.1) — monotonic dispatch counter. W02 gates `cadence: 'slow'`
   // OID specs on `poll_seq % SLOW_CADENCE_EVERY === 0`. Unused in W01.
   pollSeq: integer('poll_seq').notNull().default(0),

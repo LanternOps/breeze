@@ -12,6 +12,7 @@ import type { Reachability, DeviceOption } from './types';
 
 export function NetworkDeviceHeader({
   asset,
+  lastError,
   reachability,
   timezone,
   nicVendor,
@@ -31,6 +32,7 @@ export function NetworkDeviceHeader({
   onOpenSettings,
 }: {
   asset: DiscoveredAsset;
+  lastError?: string | null;
   reachability: Reachability | null;
   timezone: string;
   nicVendor: string | null;
@@ -124,6 +126,11 @@ export function NetworkDeviceHeader({
                   </span>
                 ))}
             </div>
+            {lastError && (
+              <p data-testid="network-device-last-error" className="mt-2 break-words text-sm text-destructive">
+                {t('networkDeviceDetailPage.header.lastError', { error: lastError })}
+              </p>
+            )}
           </div>
         </div>
         {/* The device page owns this asset now (spec §10, D7): Settings is the

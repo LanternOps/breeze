@@ -52,7 +52,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     fetchDevices,
   } = useNetworkAsset(assetId);
 
-  const { collection } = useAssetMonitoring(assetId);
+  const { collection, snmpDevice } = useAssetMonitoring(assetId);
   const probeState = useAssetProbe({
     assetId,
     probe: extras.probe,
@@ -238,6 +238,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
       <NetworkDeviceHeader
         asset={asset}
+        lastError={snmpDevice?.lastError ?? null}
         reachability={extras.reachability ?? null}
         timezone={resolveAssetTimezone(extras.siteTimezone)}
         nicVendor={extras.nicVendor ?? null}
