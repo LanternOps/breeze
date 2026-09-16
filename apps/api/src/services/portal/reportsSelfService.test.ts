@@ -118,6 +118,7 @@ describe('provisionPortalReportDefinitions', () => {
       { type: 'executive_summary' },
       { type: 'security_compliance_posture' },
       { type: 'hardware_lifecycle' },
+      { type: 'endpoint_management_review' },
     ]);
     state.insertReturning.mockResolvedValue([]);
     state.updateReturning.mockResolvedValue([]);
@@ -136,7 +137,21 @@ describe('provisionPortalReportDefinitions', () => {
     state.execute.mockResolvedValue([{ prior_ms: 0 }]);
   });
 
-  it('inserts the three fixed customer-safe definitions idempotently', async () => {
+  it('provisions an endpoint management definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const inserted = state.inserted.mock.calls[0]?.[0] as Array<{ type: string }>;
+    expect(inserted.map((r) => r.type)).toContain('endpoint_management_review');
+  });
+
+  it('keeps the provisioned config byte-identical to the managed-evidence registry default', async () => {
+    const { MANAGED_EVIDENCE_REGISTRY } = await import('../managedEvidenceRegistry');
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const inserted = state.inserted.mock.calls[0]?.[0] as Array<{ type: string; config: unknown }>;
+    const row = inserted.find((r) => r.type === 'endpoint_management_review');
+    expect(row?.config).toEqual(MANAGED_EVIDENCE_REGISTRY.endpoint_management_review.defaultConfig);
+  });
+
+  it('inserts the fixed customer-safe definitions idempotently', async () => {
     await provisionPortalReportDefinitions({
       orgId: ORG_ID,
       createdBy: USER_ID,
@@ -171,6 +186,21 @@ describe('provisionPortalReportDefinitions', () => {
         orgId: ORG_ID,
         name: 'Customer portal — Hardware Lifecycle',
         type: 'hardware_lifecycle',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
+      // #5784 W03 — managed evidence: provisioned as a definition so a
+      // delivered run is listable, but absent from PORTAL_REPORT_TYPES so the
+      // portal offers no generate button.
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Endpoint management review',
+        type: 'endpoint_management_review',
         schedule: 'one_time',
         format: 'pdf',
         portalSelfService: true,
@@ -314,6 +344,14 @@ describe('PORTAL_REPORT_TYPES', () => {
       'executive_summary',
       'hardware_lifecycle',
     ]);
+  });
+
+  // OD-10 = A (#5784 W03): a managed evidence type is provisioned as a portal
+  // DEFINITION so delivered runs can be listed and downloaded, but the portal
+  // user may never generate one on demand — the artifact is the MSP's evidence,
+  // produced by the sweep on the occurrence's schedule.
+  it('keeps endpoint_management_review OUT of the portal generate allowlist', () => {
+    expect(PORTAL_REPORT_TYPES).not.toContain('endpoint_management_review');
   });
 });
 

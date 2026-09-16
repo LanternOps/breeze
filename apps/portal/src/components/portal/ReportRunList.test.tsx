@@ -35,6 +35,28 @@ const runAt = (id: string): PortalRunDto => ({ ...run, id });
 describe('ReportRunList', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // #5784 W03 (OD-10 = A). A managed-evidence run reaches the portal list only
+  // after its occurrence is delivered; the customer may never generate one, so
+  // the toolbar must NOT gain a fourth button.
+  it('lists a delivered endpoint management review run with no generate button for it', () => {
+    const evidenceRun: PortalRunDto = {
+      ...run,
+      id: 'run-epm',
+      name: 'Service evidence — Endpoint management review',
+      type: 'endpoint_management_review',
+    };
+
+    render(<ReportRunList initialRuns={[evidenceRun]} timezone="America/Denver" />);
+
+    expect(screen.getByTestId('portal-report-run-row-run-epm')).toBeTruthy();
+    expect(screen.getByText('Service evidence — Endpoint management review')).toBeTruthy();
+    expect(
+      screen.getByTestId('portal-report-run-pdf-run-epm').getAttribute('href'),
+    ).toBe('/api/v1/portal/reports/runs/run-epm/pdf');
+    expect(screen.queryByTestId('portal-reports-generate-endpoint-management')).toBeNull();
+    expect(screen.queryByText(/generate endpoint management/i)).toBeNull();
+  });
+
   it('generates a report and renders PDF/CSV download links', async () => {
     generateMock.mockResolvedValue({ data: run });
     listMock.mockResolvedValue({ data: [run] });

@@ -13,14 +13,26 @@ import {
   PageHeader,
 } from './ui';
 
-type ReportType =
+/**
+ * The types a PORTAL USER may generate on demand — deliberately NARROWER than
+ * `PortalRunDto['type']`, which is the set that can be LISTED.
+ *
+ * #5784 W03: a managed-evidence run (`endpoint_management_review`) appears in
+ * the list once its occurrence is delivered, but the customer may never
+ * generate one — the artifact is the MSP's evidence, produced by the
+ * deliverable sweep (OD-10 = A). Keeping the two unions separate is what stops
+ * a later edit from wiring a generate button for an evidence type; the row
+ * rendering below reads `PortalRunDto` directly, so it needs no entry here.
+ */
+type GeneratableReportType =
   | 'security_compliance_posture'
   | 'executive_summary'
   | 'hardware_lifecycle';
 
 /** What the reader is told is happening, in their own language. The MSP-side
- *  report definition names are technical; these are not. */
-const GENERATING_COPY: Record<ReportType, string> = {
+ *  report definition names are technical; these are not. Total over
+ *  `GeneratableReportType` — a missing entry is a typecheck failure. */
+const GENERATING_COPY: Record<GeneratableReportType, string> = {
   security_compliance_posture: 'Generating your security summary…',
   executive_summary: 'Generating your executive summary…',
   hardware_lifecycle: 'Generating your hardware lifecycle plan…',
@@ -71,7 +83,7 @@ export function ReportRunList({
   error?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
-  const [busyType, setBusyType] = useState<ReportType | null>(null);
+  const [busyType, setBusyType] = useState<GeneratableReportType | null>(null);
   const [message, setMessage] = useState(error ?? null);
   // Announced by the polite live region below the actions: a report that takes
   // a few seconds must say it is coming, and say when it has arrived — a new
@@ -79,7 +91,7 @@ export function ReportRunList({
   // whose eyes are on the buttons.
   const [status, setStatus] = useState('');
 
-  async function generate(type: ReportType) {
+  async function generate(type: GeneratableReportType) {
     setBusyType(type);
     setMessage(null);
     setStatus(GENERATING_COPY[type]);

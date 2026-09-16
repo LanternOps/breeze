@@ -246,10 +246,16 @@ export interface SlaDto {
 export interface PortalRunDto {
   id: string;
   reportId: string;
+  /** NOT the same set as `PORTAL_REPORT_TYPES` (the generate allowlist). A
+   *  managed-evidence run reaches the portal run list once its occurrence is
+   *  delivered, so this union must name every type that can be LISTED, even
+   *  those a portal user may never generate. */
   type:
     | 'security_compliance_posture'
     | 'executive_summary'
-    | 'hardware_lifecycle';
+    | 'hardware_lifecycle'
+    // #5784 W03 — managed evidence; listed after delivery, never generated here.
+    | 'endpoint_management_review';
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: string | null;
