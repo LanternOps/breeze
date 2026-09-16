@@ -366,17 +366,50 @@ func TestClassifyAssetNoSNMP(t *testing.T) {
 	}
 }
 
-func TestClassifyAssetModelFromSNMPObjectID(t *testing.T) {
+func TestClassifyAssetDoesNotUseSysObjectIDAsModel(t *testing.T) {
+	// A Xerox C325 rendered Model ".1.3.6.1.4.1.253.8.62.1.37.1.4.1.1" on the
+	// device page (spec F5). The scanner does not know the model here, and
+	// saying so is the honest answer — the server maps the enterprise number to
+	// a vendor and a model, for old and new agents alike.
+	tests := []struct {
+		name        string
+		sysObjectID string
+	}{
+		{"net-snmp enterprise OID", "1.3.6.1.4.1.8072.3.2.10"},
+		{"Xerox enterprise OID", ".1.3.6.1.4.1.253.8.62.1.37.1.4.1.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host := DiscoveredHost{
+				IP:       "192.168.1.60",
+				SNMPData: &SNMPInfo{SysObjectID: tt.sysObjectID},
+			}
+			if _, _, model := ClassifyAsset(host); model != "" {
+				t.Fatalf("model = %q, want \"\" — a raw OID is a scanner internal, not a model", model)
+			}
+		})
+	}
+}
+
+func TestClassifyAssetStillClassifiesTypeAndManufacturerFromSNMP(t *testing.T) {
+	// Dropping the model assignment must not take the rest of the classifier
+	// with it: sysDescr-driven manufacturer and type are unaffected.
 	host := DiscoveredHost{
-		IP: "10.0.0.51",
+		IP: "192.168.1.61",
 		SNMPData: &SNMPInfo{
-			SysDescr:    "Linux server",
-			SysObjectID: "1.3.6.1.4.1.8072.3.2.10",
+			SysDescr:    "Cisco IOS Software, C3750 Software",
+			SysObjectID: "1.3.6.1.4.1.9.1.516",
 		},
 	}
-	_, _, model := ClassifyAsset(host)
-	if model != "1.3.6.1.4.1.8072.3.2.10" {
-		t.Fatalf("model = %q, want %q", model, "1.3.6.1.4.1.8072.3.2.10")
+	assetType, manufacturer, model := ClassifyAsset(host)
+	if manufacturer != "Cisco" {
+		t.Errorf("manufacturer = %q, want Cisco", manufacturer)
+	}
+	if assetType == "" {
+		t.Error("assetType is empty; classification must still run")
+	}
+	if model != "" {
+		t.Errorf("model = %q, want \"\"", model)
 	}
 }
 
