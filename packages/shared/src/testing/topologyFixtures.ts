@@ -33,3 +33,16 @@ export function diagnosticPlanFixture(): TopologyDiagnosticPlan {
     acceptedAt: '2026-09-15T12:00:00Z', queueDeadline: '2026-09-15T12:00:30Z', deadline: '2026-09-15T12:02:00Z', digest: '0'.repeat(64), reasons: [],
   };
 }
+
+/** Version-pinned empty layers for configuration merge/adoption tests. */
+export function configurationLayersFixture() {
+  return {
+    schemaVersion: 1 as const,
+    resolverVersion: 1,
+    defaultsVersion: 1,
+    defaults: { passive: { enabled: true, intervalSeconds: 300, neighbors: true, routingRules: true }, outboundEnabled: false, targets: {}, policies: {} },
+    partner: { versionId: '10000000-0000-4000-8000-000000000101', payload: { targets: {}, policies: {} } },
+    organization: { versionId: '10000000-0000-4000-8000-000000000102', payload: { targets: {}, policies: {} } },
+    site: { targets: {}, policies: {} },
+  };
+}

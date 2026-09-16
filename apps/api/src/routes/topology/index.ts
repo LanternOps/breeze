@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 
 import { authMiddleware } from '../../middleware/auth';
+import { topologyTemplateRoutes } from './templates';
 import { topologySettingsRoutes } from './settings';
 import { topologyGraphRoutes } from './graphs';
 import { topologyManualRoutes } from './manual';
@@ -15,6 +16,7 @@ export { requireTopologySiteCapability } from './middleware';
 export function createTopologyRoutes(): Hono {
   const routes = new Hono();
   routes.use('*', authMiddleware);
+  routes.route('/', topologyTemplateRoutes);
   routes.route('/', topologySettingsRoutes);
   routes.route('/', topologyGraphRoutes);
   routes.route('/', topologyManualRoutes);
