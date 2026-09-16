@@ -659,6 +659,21 @@ describe('automations routes', () => {
     });
 
     it.each([
+      { before: elevated, after: { type: 'run_script', script_id: elevated.scriptId, runAs: 'elevated' } },
+      { before: { type: 'run_script', script_id: elevated.scriptId, runAs: 'elevated' }, after: elevated },
+    ])('preserves elevation when the same script uses a different ID alias', async ({ before, after }) => {
+      const set = stored([before]);
+      const res = await app.request(`/automations/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actions: [after] }),
+      });
+      expect(res.status).toBe(200);
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ actions: [after] }));
+    });
+
+    it.each([
+      { label: 'swapping the script in an elevated slot', before: [elevated], after: [{ ...elevated, scriptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }] },
+      { label: 'swapping the script through the legacy alias', before: [elevated], after: [{ type: 'run_script', script_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', runAs: 'elevated' }] },
       { label: 'changing system to elevated', before: [ordinary], after: [elevated] },
       { label: 'appending elevated', before: [elevated], after: [elevated, elevated] },
       { label: 'moving elevated to an ordinary position', before: [elevated, ordinary], after: [ordinary, elevated] },

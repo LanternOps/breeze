@@ -597,13 +597,17 @@ const automationActionsSchema = z.array(z.union([
 ])).min(1);
 
 function introducesElevatedAction(actions: z.infer<typeof automationActionsSchema>, stored: unknown = []): boolean {
-  // Runtime normalization does not retain action IDs, so position is the stable
-  // identity available on stored rows. Another elevated slot grants no exception.
+  // Runtime normalization does not retain action IDs. Preserve elevation only
+  // for the same script at the same position, using the runtime's alias precedence.
   const previous = Array.isArray(stored) ? stored : [];
   return actions.some((action, index) => {
     if (action.type !== 'run_script' || action.runAs !== 'elevated') return false;
     const existing = previous[index];
-    return !isPlainRecord(existing) || existing.type !== 'run_script' || existing.runAs !== 'elevated';
+    return !isPlainRecord(existing)
+      || existing.type !== 'run_script'
+      || existing.runAs !== 'elevated'
+      || (asString(existing.scriptId) ?? asString(existing.script_id))
+        !== (asString(action.scriptId) ?? asString(action.script_id));
   });
 }
 
