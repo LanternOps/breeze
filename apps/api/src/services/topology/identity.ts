@@ -25,8 +25,8 @@ export function canonicalIdentityKey(scope: TopologyScope, kind: NodeKind | Rela
   return `v1:${createHash('sha256').update(JSON.stringify([normalized.orgId, normalized.siteId, material])).digest('hex')}`;
 }
 
-type MergeNode = TopologyScope & { id: string; createdAt: Date; labelOverride?: string | null; attributes?: { notes?: string } };
-type MergePosition = { nodeId: string; layoutId: string; x: number; y: number; pinned: boolean };
+export type MergeNode = TopologyScope & { id: string; createdAt: Date; labelOverride?: string | null; attributes?: { notes?: string } };
+export type MergePosition = { nodeId: string; layoutId: string; x: number; y: number; pinned: boolean };
 type VersionedPosition = MergePosition & { revision: bigint; legacySourceRevision: bigint | null; deletedAt: Date | null };
 
 /** Identity collapse preserves live pins rather than replaying either source's
@@ -64,5 +64,46 @@ export function planCanonicalMerge(scope: TopologyScope, first: MergeNode, secon
     if (previous && (previous.x !== position.x || previous.y !== position.y)) throw new Error('Conflicting pins stop canonical merge');
     pins.set(position.layoutId, position);
   }
-  return { canonicalId: canonical.id, aliasId: alias.id, labelOverride: canonical.labelOverride ?? alias.labelOverride ?? null, notes: canonical.attributes?.notes ?? alias.attributes?.notes };
+  // Across distinct identities, an empty value contributes no manual fact;
+  // it cannot erase another member's nonempty label/note. Explicit clears of
+  // one source identity are handled separately by revision-fenced replay.
+  return { canonicalId: canonical.id, aliasId: alias.id, labelOverride: canonical.labelOverride || alias.labelOverride || null,
+    notes: canonical.attributes?.notes || alias.attributes?.notes || undefined };
+}
+
+/** Validate every manual fact/pin before folding a component into its globally
+ * oldest representative. An intermediate pair must not hide later conflicts. */
+export function planCanonicalCluster(scope: TopologyScope, nodes: MergeNode[], positions: MergePosition[]) {
+  if (nodes.length < 2 || new Set(nodes.map(n => n.id)).size !== nodes.length) throw new Error('Canonical alias cannot reference itself');
+  const ordered = [...nodes].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+  let canonical = ordered[0]!;
+  const aliasIds: string[] = [];
+  for (const alias of ordered.slice(1)) {
+    const plan = planCanonicalMerge(scope, canonical, alias, [], 'accepted_link');
+    aliasIds.push(plan.aliasId);
+    canonical = { ...canonical, labelOverride: plan.labelOverride, attributes: { ...canonical.attributes, ...(plan.notes !== undefined ? { notes: plan.notes } : {}) } };
+  }
+  const ids = new Set(nodes.map(n => n.id));
+  const pins = new Map<string, MergePosition>();
+  for (const position of positions.filter(p => p.pinned && ids.has(p.nodeId))) {
+    const previous = pins.get(position.layoutId);
+    if (previous && (previous.x !== position.x || previous.y !== position.y)) throw new Error('Conflicting pins stop canonical merge');
+    pins.set(position.layoutId, position);
+  }
+  return { canonicalId: canonical.id, aliasIds: aliasIds.sort(), labelOverride: canonical.labelOverride ?? null, notes: canonical.attributes?.notes };
+}
+
+/** Fold original slots once per layout. Pairwise writes against the original
+ * snapshot can overwrite an earlier alias pin or discard its source fence. */
+export function planAliasClusterPosition<T extends VersionedPosition>(canonicalId: string, positions: T[]) {
+  if (!positions.length || positions.some(p => p.layoutId !== positions[0]!.layoutId)) throw new Error('Invalid alias layout component');
+  const canonical = positions.find(p => p.nodeId === canonicalId);
+  const ordered = [...positions].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+  const live = ordered.filter(p => !p.deletedAt);
+  const liveCanonical = canonical && !canonical.deletedAt ? canonical : undefined;
+  const chosen = (liveCanonical?.pinned ? liveCanonical : live.find(p => p.pinned)) ?? liveCanonical ?? live[0] ?? canonical ?? ordered[0]!;
+  const fences = positions.map(p => p.legacySourceRevision).filter((v): v is bigint => v != null);
+  const legacySourceRevision = fences.length ? fences.reduce((a, b) => a > b ? a : b) : null;
+  const revision = positions.reduce((max, p) => p.revision > max ? p.revision : max, 0n) + 1n;
+  return { ...chosen, nodeId: canonicalId, revision, legacySourceRevision };
 }
