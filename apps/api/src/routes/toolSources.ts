@@ -343,8 +343,13 @@ toolSourcesRoutes.post(
       return c.json({ error: 'Only Tier 1 (read-only) tools can be test-called from this route' }, 403);
     }
 
+    // `source.orgId` is the validated request org — `getSourceAndToolWithAccess`
+    // above already confirmed `auth` can access this source (org-owned or
+    // partner-wide) — passed as `targetOrgId` so a partner-scoped session
+    // resolving an org-owned source's tool doesn't fall through to only the
+    // partner-wide branch (#6023). `null` (partner-wide source) is a no-op.
     const qualifiedName = qualifiedToolName(source.slug, tool.name);
-    const descriptor = await resolveTenantToolByName(auth, qualifiedName);
+    const descriptor = await resolveTenantToolByName(auth, qualifiedName, source.orgId);
     if (!descriptor) return c.json({ error: 'Tool is not currently available' }, 404);
 
     const start = Date.now();
@@ -353,7 +358,10 @@ toolSourcesRoutes.post(
     // `success: false` as a failure (CLAUDE.md, "Web Mutation Handlers") — a
     // bare 200 with the failure text buried in `result` would surface as
     // "Test call succeeded" in the UI that lands in PR C.
-    const { isError, text } = await executeTenantToolDetailed(descriptor, input, auth, { surface: 'test' });
+    const { isError, text } = await executeTenantToolDetailed(descriptor, input, auth, {
+      surface: 'test',
+      orgId: source.orgId,
+    });
     const durationMs = Date.now() - start;
 
     return c.json({

@@ -555,6 +555,65 @@ describe('tool_sources / tool_source_tools partner RLS (#5216 W01 Task A11)', ()
       const resolvedForOther = await resolveTenantTools(otherOrgAuth);
       expect(resolvedForOther.map((d) => d.qualifiedName)).not.toContain('mine__get_asset');
     });
+
+    // #6023: a partner-scoped session (auth.orgId unset — nothing on the real
+    // request path ever sets it) was unable to reach an ORG-OWNED tool source
+    // even when the request targeted that org explicitly (the web Test drawer's
+    // `?orgId=`, or a chat session's pinned org). The fix threads an explicit
+    // `targetOrgId` argument through the resolver instead of relying on
+    // `auth.orgId`.
+    it('partner scope + targeted org: includes that org\'s own tool, on top of the partner-wide ones', async () => {
+      const partner = await createPartner();
+      const org = await createOrganization({ partnerId: partner.id });
+
+      const orgOwnedSourceId = await seedSource({ orgId: org.id });
+      await seedTool(orgOwnedSourceId, { orgId: org.id }, {
+        enabled: true,
+        name: 'get_asset',
+        qualifiedName: 'orgowned__get_asset',
+      });
+
+      const partnerWideSourceId = await seedSource({ partnerId: partner.id });
+      await seedTool(partnerWideSourceId, { partnerId: partner.id }, {
+        enabled: true,
+        name: 'get_ticket',
+        qualifiedName: 'partnerwide__get_ticket',
+      });
+
+      const partnerAuth = { scope: 'partner', orgId: null, partnerId: partner.id, user: { id: 'test-user' } } as unknown as AuthContext;
+
+      // No target org: the org-owned tool is unreachable — exactly the bug.
+      const withoutTarget = await resolveTenantTools(partnerAuth);
+      expect(withoutTarget.map((d) => d.qualifiedName)).not.toContain('orgowned__get_asset');
+      expect(withoutTarget.map((d) => d.qualifiedName)).toContain('partnerwide__get_ticket');
+
+      // With the validated request org passed as targetOrgId: both are visible.
+      const withTarget = await resolveTenantTools(partnerAuth, org.id);
+      const qualifiedNames = withTarget.map((d) => d.qualifiedName);
+      expect(qualifiedNames).toContain('orgowned__get_asset');
+      expect(qualifiedNames).toContain('partnerwide__get_ticket');
+    });
+
+    it('partner scope + targeted org belonging to ANOTHER partner: excluded — targetOrgId is never trusted without a live partner-match re-derivation', async () => {
+      const partner = await createPartner();
+      const otherPartner = await createPartner();
+      const otherPartnersOrg = await createOrganization({ partnerId: otherPartner.id });
+
+      const sourceId = await seedSource({ orgId: otherPartnersOrg.id });
+      await seedTool(sourceId, { orgId: otherPartnersOrg.id }, {
+        enabled: true,
+        name: 'get_asset',
+        qualifiedName: 'notmine__get_asset',
+      });
+
+      const partnerAuth = { scope: 'partner', orgId: null, partnerId: partner.id, user: { id: 'test-user' } } as unknown as AuthContext;
+
+      // partner forges/passes the OTHER partner's org id as the target — must
+      // not surface that org's tool, even though the org_id equality alone
+      // would match.
+      const resolved = await resolveTenantTools(partnerAuth, otherPartnersOrg.id);
+      expect(resolved.map((d) => d.qualifiedName)).not.toContain('notmine__get_asset');
+    });
   });
 });
 

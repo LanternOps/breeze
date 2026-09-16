@@ -897,7 +897,12 @@ export class StreamingSessionManager {
     let tenantDescriptors: TenantToolDescriptor[] = [];
     if (!mcpServerFactory) {
       try {
-        tenantDescriptors = await resolveTenantTools(toolAuth);
+        // `dbSession.orgId` is this session's pinned, already-access-checked
+        // org (see the device-bound comment above) — passed as `targetOrgId`
+        // so a partner-scoped tech's session can resolve that org's own tool
+        // sources too, not just partner-wide ones (#6023). A no-op for
+        // org-scoped `toolAuth`, which ignores `targetOrgId`.
+        tenantDescriptors = await resolveTenantTools(toolAuth, dbSession.orgId);
       } catch (err) {
         captureException(err);
         console.error('[StreamingSessionManager] Failed to resolve tenant tools, degrading to none:', err);

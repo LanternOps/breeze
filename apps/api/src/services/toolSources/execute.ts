@@ -90,8 +90,12 @@ export async function executeTenantToolDetailed(
     // descriptor may have been captured by a chat session that has since been
     // re-narrowed to a different org (a device moved between orgs, #3087), and
     // a load by id alone would dispatch the previous tenant's tool with the
-    // previous tenant's credential.
-    const loaded = await loadTenantToolForExecution(d.id, auth);
+    // previous tenant's credential. `opts.orgId` is threaded through as the
+    // same `targetOrgId` resolution used to find `d` in the first place — a
+    // partner-scoped caller re-validating an org-owned tool needs the same
+    // org-targeting the resolve step applied, or an otherwise-valid reload
+    // would spuriously fail the owner check (#6023).
+    const loaded = await loadTenantToolForExecution(d.id, auth, opts.orgId);
 
     if (!loaded) {
       isError = true;

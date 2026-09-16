@@ -364,12 +364,45 @@ describe('toolSourcesRoutes', () => {
       const body = await res.json();
       expect(body.data.result).toBe('{"ok":true}');
       expect(typeof body.data.durationMs).toBe('number');
+      expect(vi.mocked(resolveTenantToolByName)).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', ORG_ID);
       expect(vi.mocked(executeTenantToolDetailed)).toHaveBeenCalledWith(
         descriptor,
         { assetId: '1' },
         expect.anything(),
-        { surface: 'test' },
+        { surface: 'test', orgId: ORG_ID },
       );
+    });
+
+    // #6023: an org-owned tool source is reachable from the Test drawer under a
+    // PARTNER-scoped token (the partner admin/tech persona) once `auth` can
+    // access the org (`getSourceAndToolWithAccess`, exercised via the mock
+    // below) — the fix passes the validated source org through to the resolver
+    // as `targetOrgId` instead of relying on `auth.orgId`, which a partner
+    // session never carries.
+    it('resolves and dispatches a tier-1 test call for an ORG-OWNED source under a PARTNER-scoped token', async () => {
+      setAuth(partnerAuth({ partnerOrgAccess: 'all' }));
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow({ orgId: ORG_ID, partnerId: null }),
+        tool: makeToolRow({ tier: 1 }),
+      });
+      const descriptor = { qualifiedName: 'hudu__get_asset' };
+      vi.mocked(resolveTenantToolByName).mockResolvedValue(descriptor as any);
+      vi.mocked(executeTenantToolDetailed).mockResolvedValue({ isError: false, text: '{"ok":true}' });
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test?orgId=${ORG_ID}`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: { assetId: '1' } }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+      expect(body.data.result).toBe('{"ok":true}');
+      // The org id the resolver needs comes from the already-access-checked
+      // SOURCE row, not the raw query string — proving the fix reads the
+      // validated org, not a client-supplied one.
+      expect(vi.mocked(resolveTenantToolByName)).toHaveBeenCalledWith(expect.anything(), 'hudu__get_asset', ORG_ID);
     });
 
     // A failed test call must not read as a success: the web client uses
