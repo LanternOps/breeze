@@ -1,5 +1,5 @@
 ---
-tracking_issue: (registered after plan review; see spec header)
+tracking_issue: LanternOps/breeze#5988
 ---
 # Network Device Page Truth — Plan Index
 
@@ -12,11 +12,11 @@ for status, never this index.
 
 | Wave | Plan | Depends on |
 |---|---|---|
-| W01 | [API truth: reachability service, probe, collection state, metrics history, ingestion, index + reaper](2026-09-16-network-device-page-truth-w01-api-truth.md) | — |
-| W02 | [Agent acquisition: oidSpecs, bounded walks, per-OID errors, classifier change, slow cadence](2026-09-16-network-device-page-truth-w02-agent-acquisition.md) | W01 |
-| W03 | [Templates and identity: sysObjectID prefixes, suggestion, Xerox template, identity resolution](2026-09-16-network-device-page-truth-w03-templates-identity.md) | W01 |
-| W04 | [Web settings surface: NetworkAssetSettingsModal, single writer, launchers, Discovery peek](2026-09-16-network-device-page-truth-w04-web-settings.md) | W01 (W03 optional, feature-detected) |
-| W05 | [Web page IA: header, stat strip, Health + Reachability cards, Identity, Monitoring tab, charts, banner](2026-09-16-network-device-page-truth-w05-web-page-ia.md) | W01, W04 |
+| W01 (#5989) | [API truth: reachability service, probe, collection state, metrics history, ingestion, index + reaper](2026-09-16-network-device-page-truth-w01-api-truth.md) | — |
+| W02 (#5990) | [Agent acquisition: oidSpecs, bounded walks, per-OID errors, classifier change, slow cadence](2026-09-16-network-device-page-truth-w02-agent-acquisition.md) | W01 |
+| W03 (#5991) | [Templates and identity: sysObjectID prefixes, suggestion, Xerox template, identity resolution](2026-09-16-network-device-page-truth-w03-templates-identity.md) | W01 |
+| W04 (#5992) | [Web settings surface: NetworkAssetSettingsModal, single writer, launchers, Discovery peek](2026-09-16-network-device-page-truth-w04-web-settings.md) | W01 (W03 optional, feature-detected) |
+| W05 (#5993) | [Web page IA: header, stat strip, Health + Reachability cards, Identity, Monitoring tab, charts, banner](2026-09-16-network-device-page-truth-w05-web-page-ia.md) | W01, W04 |
 
 W02, W03 and W04 run in parallel after W01 merges. W05 starts once W04 has merged. Stacked branches
 get no `pull_request` CI run: dispatch `gh workflow run CI --ref <branch>` before enqueueing.

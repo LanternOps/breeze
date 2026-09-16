@@ -1,5 +1,5 @@
 ---
-tracking_issue: (registered after plan review; see spec header)
+tracking_issue: LanternOps/breeze#5988
 ---
 # Network Device Page Truth W05: Web Page IA — Implementation Plan
 

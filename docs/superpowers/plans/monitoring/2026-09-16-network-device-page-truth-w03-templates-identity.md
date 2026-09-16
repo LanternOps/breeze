@@ -1,5 +1,5 @@
 ---
-tracking_issue: (registered after plan review; see spec header and the plan index)
+tracking_issue: LanternOps/breeze#5988
 ---
 # Network Device Page Truth W03: Templates and Identity — Implementation Plan
 

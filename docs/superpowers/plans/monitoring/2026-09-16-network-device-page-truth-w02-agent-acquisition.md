@@ -1,5 +1,5 @@
 ---
-tracking_issue: (registered after plan review; see the plan index and the spec header)
+tracking_issue: LanternOps/breeze#5988
 ---
 # Network Device Page Truth W02: Agent Acquisition — Implementation Plan
 

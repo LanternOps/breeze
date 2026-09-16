@@ -1,10 +1,10 @@
 # Network device page truth: sourced reachability, SNMP collection health, one settings surface
 
-Status: **approved in chat by Todd 2026-09-16** (design sections D1–D9); spec review pending.
+Status: **approved in chat by Todd 2026-09-16** (design sections D1–D9; spec, plans and registration approved in the same session).
 Advisor quorum: Fable position formed, codex gpt-6-astra xhigh read-only review received;
 six contract disagreements resolved in codex's favour on the evidence, one split (D5 Xerox alias)
 resolved by the owner's explicit ask. See "Quorum record" (§18).
-Tracking: to be registered (feature-lifecycle) after spec review; waves W01–W05 (§16).
+Tracking: LanternOps/breeze#5988 (waves #5989 W01, #5990 W02, #5991 W03, #5992 W04, #5993 W05).
 Plan: `docs/superpowers/plans/monitoring/2026-09-16-network-device-page-truth.md` (index, one plan per wave).
 Origin: Impeccable critique of `/devices/network/:id`, 17/40, snapshot
 `.impeccable/critique/2026-09-16T00-06-55Z__nents-devices-networkdevicedetailpage-tsx-5ed5d8ce.md` (gitignored, local).
