@@ -8,8 +8,9 @@ import ScriptExecutionModal, { type Site } from './ScriptExecutionModal';
 import ExecutionDetails from './ExecutionDetails';
 import type { ScriptExecution } from './ExecutionHistory';
 import type { ScriptParameter } from './ScriptForm';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { fetchAllScripts } from '@/lib/scriptsFetch';
+import { useJwtClaims } from '@/lib/authScope';
 import { useOrgStore } from '../../stores/orgStore';
 import { showToast } from '../shared/Toast';
 import { cn } from '@/lib/utils';
@@ -65,6 +66,13 @@ export default function ScriptsPage() {
   const [libraryCategoryFilter, setLibraryCategoryFilter] = useState<string>('all');
 
   const { organizations, currentOrgId } = useOrgStore();
+  const claims = useJwtClaims();
+  const isPartner = claims.status === 'resolved' && claims.claims.scope === 'partner';
+  const canManagePartnerWide = useAuthStore(s => s.user?.canManagePartnerWide ?? true);
+  const [importTarget, setImportTarget] = useState('');
+  const [completedImports, setCompletedImports] = useState<Set<string>>(new Set());
+  const targetOrgId = isPartner ? (importTarget === 'partner' ? null : importTarget) : currentOrgId;
+  const targetKey = isPartner ? importTarget : (currentOrgId ?? 'organization');
   const currentOrg = organizations.find(o => o.id === currentOrgId) ?? null;
 
   const fetchScripts = useCallback(async () => {
@@ -239,6 +247,7 @@ export default function ScriptsPage() {
   };
 
   const handleOpenLibrary = async () => {
+    setImportTarget(currentOrgId ?? (isPartner && canManagePartnerWide ? 'partner' : organizations.length === 1 ? organizations[0].id : ''));
     setModalMode('import-library');
     setLibraryQuery('');
     setLibraryCategoryFilter('all');
@@ -257,36 +266,36 @@ export default function ScriptsPage() {
   };
 
   const handleImport = async (systemScript: SystemScript) => {
+    if (isPartner && !importTarget) return;
     setImportingId(systemScript.id);
     try {
-      const currentOrgId = useOrgStore.getState().currentOrgId;
-      const response = await fetchWithAuth(`/scripts/import/${systemScript.id}`, {
-        method: 'POST',
-        body: JSON.stringify(currentOrgId ? { orgId: currentOrgId } : {})
+      await runAction({
+        request: () => fetchWithAuth(`/scripts/import/${systemScript.id}`, {
+          method: 'POST',
+          body: JSON.stringify(isPartner && importTarget === 'partner'
+            ? { ownerScope: 'partner' }
+            : { ownerScope: 'organization', ...(targetOrgId ? { orgId: targetOrgId } : {}) })
+        }),
+        errorFallback: t('scriptsPage.errors.import'),
+        successMessage: t('scriptsPage.library.importSuccess', { name: systemScript.name }),
+        friendly: code => code === 'PARTNER_WIDE_FORBIDDEN'
+          ? t('scriptsPage.library.partnerPermission') : undefined,
       });
-
-      if (!response.ok) {
-        const data = await response.json();
-        if (response.status === 409) {
-          setError(t('scriptsPage.errors.alreadyInLibrary', { name: systemScript.name }));
-        } else {
-          throw new Error(extractApiError(data, t('scriptsPage.errors.import')));
-        }
-        return;
-      }
-
+      setCompletedImports(prev => new Set(prev).add(`${targetKey}:${systemScript.name}`));
       await fetchScripts();
-      // Remove imported script from the list so it's clear it was added
-      setSystemScripts(prev => prev.filter(s => s.id !== systemScript.id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('scriptsPage.errors.import'));
+      handleActionError(err, t('scriptsPage.errors.import'));
     } finally {
       setImportingId(null);
     }
   };
 
-  // Filter system scripts that are already imported (by name match)
-  const importedNames = useMemo(() => new Set(scripts.map(s => s.name)), [scripts]);
+  // A same-name script in another target does not block this import.
+  const importedNames = useMemo(() => new Set(scripts.filter(script =>
+    isPartner && importTarget === 'partner'
+      ? !script.orgId && script.partnerId === (claims.status === 'resolved' ? claims.claims.partnerId : null)
+      : !!targetOrgId && script.orgId === targetOrgId
+  ).map(script => script.name)), [scripts, isPartner, importTarget, targetOrgId, claims]);
 
   const filteredSystemScripts = useMemo(() => {
     const q = libraryQuery.trim().toLowerCase();
@@ -489,6 +498,32 @@ export default function ScriptsPage() {
               </button>
             </div>
 
+            {isPartner && (
+              <div className="space-y-2 border-b px-6 py-3">
+                <label htmlFor="scripts-library-target" className="block text-sm font-medium">
+                  {t('scriptsPage.library.target')}
+                </label>
+                <select
+                  id="scripts-library-target"
+                  data-testid="scripts-library-target"
+                  value={importTarget}
+                  onChange={event => setImportTarget(event.target.value)}
+                  disabled={importingId !== null}
+                  aria-describedby={!canManagePartnerWide ? 'scripts-library-target-help' : undefined}
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring disabled:opacity-60"
+                >
+                  {canManagePartnerWide && <option value="partner">{t('scriptsPage.library.allOrgs')}</option>}
+                  <option value="" disabled>{t('scriptsPage.library.chooseOrg')}</option>
+                  {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+                </select>
+                {!canManagePartnerWide && (
+                  <p id="scripts-library-target-help" data-testid="scripts-library-target-help" className="text-sm text-muted-foreground">
+                    {t('scriptsPage.library.partnerPermission')}
+                  </p>
+                )}
+              </div>
+            )}
+
             <div className="border-b px-6 py-3">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <div className="relative flex-1">
@@ -528,7 +563,7 @@ export default function ScriptsPage() {
               ) : (
                 <div className="space-y-2">
                   {filteredSystemScripts.map(script => {
-                    const alreadyImported = importedNames.has(script.name);
+                    const alreadyImported = importedNames.has(script.name) || completedImports.has(`${targetKey}:${script.name}`);
                     const isImporting = importingId === script.id;
                     return (
                       <div
@@ -566,8 +601,9 @@ export default function ScriptsPage() {
                         ) : (
                           <button
                             type="button"
+                            data-testid={`scripts-library-import-${script.id}`}
                             onClick={() => handleImport(script)}
-                            disabled={isImporting}
+                            disabled={importingId !== null || (isPartner && !importTarget)}
                             className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-3 text-xs font-medium transition hover:bg-muted disabled:opacity-60 shrink-0"
                           >
                             {isImporting ? (

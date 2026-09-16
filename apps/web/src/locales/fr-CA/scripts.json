@@ -1342,6 +1342,11 @@
       "confirmSuffix": "Cette action est irréversible."
     },
     "library": {
+      "target": "Importer dans",
+      "allOrgs": "Toutes les organisations du partenaire",
+      "chooseOrg": "Choisir une organisation",
+      "partnerPermission": "Vous ne pouvez pas importer de scripts pour toutes les organisations. Choisissez une organisation.",
+      "importSuccess": "« {{name}} » a été importé",
       "title": "Bibliothèque de scripts système",
       "description": "Importez des scripts dans votre organisation",
       "searchPlaceholder": "Rechercher des scripts système...",
