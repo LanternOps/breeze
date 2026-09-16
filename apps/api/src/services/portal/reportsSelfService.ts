@@ -670,6 +670,7 @@ export async function generatePortalReport(args: {
 export type HardwareLifecyclePortalLatestDto = {
   run: { id: string; generatedAt: string };
   summary: HardwareLifecycleSummary | null;
+  contact: { name: string | null; email: string } | null;
   // The org's `enable_self_service` flag (#5880): the portal page needs this
   // to decide whether a device row's Computer cell may link to
   // /portal/devices — that route itself redirects home when self-service is
@@ -716,9 +717,14 @@ export async function latestPortalHardwareLifecycleRun(
     timeStyle: 'short',
   }).format(row.completedAt ?? new Date());
 
+  const branding = await getReportBranding(orgId);
+
   return {
     run: { id: row.id, generatedAt },
     summary: (result?.summary as HardwareLifecycleSummary | undefined) ?? null,
+    contact: branding.contactEmail
+      ? { name: branding.contactName ?? null, email: branding.contactEmail }
+      : null,
     enableSelfService: flags.enableSelfService,
   };
 }

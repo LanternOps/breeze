@@ -13,6 +13,11 @@ describe('lifecycle page structure', () => {
     expect(pageSource).toMatch(/<LifecyclePage[^>]*initialSummary={summary}/);
   });
 
+  it('threads the response contact into the hydrated page', () => {
+    expect(pageSource).toContain('response.data?.contact ?? null');
+    expect(pageSource).toMatch(/<LifecyclePage[^>]*initialContact={contact}/);
+  });
+
   // #5880: the Computer-cell link must not be rendered for orgs with
   // self-service off, so the flag has to reach LifecyclePage from the DTO.
   it('threads the DTO\'s enableSelfService flag through to LifecyclePage', () => {

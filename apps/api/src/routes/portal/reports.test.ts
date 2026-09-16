@@ -142,10 +142,12 @@ describe('portal report routes', () => {
     mocks.lifecycleEnabled = false;
   });
 
-  it('returns the latest hardware lifecycle run for the session org', async () => {
+  it.each([{ name: 'Sam Lee', email: 'support@example.test' }, null])(
+    'returns the latest hardware lifecycle run and contact for the session org: %j', async (contact) => {
     const payload = {
       run: { id: RUN_ID, generatedAt: 'Sep 2, 2026, 6:00 PM' },
       summary: { computers: { total: 12 } },
+      contact,
     };
     mocks.latestLifecycleMock.mockResolvedValue(payload);
 
