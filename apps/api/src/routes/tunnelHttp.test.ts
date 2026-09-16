@@ -278,7 +278,8 @@ describe('tunnelHttp auth: ticket + cookie', () => {
     const setCookie = res.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain(`bz_tunnel_${TUNNEL_ID}=`);
     expect(setCookie.toLowerCase()).toContain('httponly');
-    expect(setCookie.toLowerCase()).toContain('samesite=lax');
+    expect(setCookie.toLowerCase()).toContain('samesite=none');
+    expect(setCookie.toLowerCase()).toContain('secure');
     expect(setCookie).toContain(`Path=/api/v1/tunnel-http/${TUNNEL_ID}/`);
     const loc = res.headers.get('location') ?? '';
     expect(loc).not.toContain('__bzt');
@@ -415,7 +416,7 @@ describe('tunnelHttp response rewriting', () => {
     sendCommandMock.mockResolvedValue(
       okAgentResult({
         headers: { 'content-type': ['text/html'] },
-        bodyB64: Buffer.from('<html><head><title>P</title></head><body>x</body></html>').toString('base64'),
+        bodyB64: Buffer.from('<html><head><title>P</title><script src="/app.js"></script></head><body>x</body></html>').toString('base64'),
       }),
     );
     const app = makeApp();
@@ -423,6 +424,8 @@ describe('tunnelHttp response rewriting', () => {
     const res = await app.request(`${BASE}/`, { headers: { cookie } });
     const body = await res.text();
     expect(body).toContain(`<base href="/api/v1/tunnel-http/${TUNNEL_ID}/">`);
+    expect(body).toContain(`src="${BASE}/app.js"`);
+    expect(body.match(/<script data-breeze-tunnel-rewrite>/g)).toHaveLength(1);
   });
 
   it('rewrites an absolute Location header to the proxy base', async () => {
@@ -517,6 +520,8 @@ describe('tunnelHttp session lifetime (#3199 Task 2)', () => {
     expect(setCookieHeader).toContain(`bz_tunnel_${TUNNEL_ID}=`);
     expect(setCookieHeader).toContain(`Max-Age=${HTTP_TUNNEL_COOKIE_TTL_SECONDS}`);
     expect(setCookieHeader.toLowerCase()).toContain('httponly');
+    expect(setCookieHeader.toLowerCase()).toContain('samesite=none');
+    expect(setCookieHeader.toLowerCase()).toContain('secure');
     expect(setCookieHeader).toContain(`Path=/api/v1/tunnel-http/${TUNNEL_ID}/`);
   });
 
@@ -614,4 +619,15 @@ describe('tunnelHttp session lifetime (#3199 Task 2)', () => {
     expect(capturedSessionUpdates).toHaveLength(0);
     expect(res.headers.get('set-cookie')).toBeFalsy();
   });
+});
+
+it('rewrites CSS responses using the session target and proxy base', async () => {
+  sendCommandMock.mockResolvedValue(okAgentResult({
+    headers: { 'content-type': ['text/css; charset=utf-8'] },
+    bodyB64: Buffer.from('@import "/theme.css"; a{background:url(http://192.168.1.50/image.png)}').toString('base64'),
+  }));
+  const app = makeApp();
+  const cookie = await mintCookie(app);
+  const res = await app.request(`${BASE}/style.css`, { headers: { cookie } });
+  expect(await res.text()).toBe(`@import "${BASE}/theme.css"; a{background:url(${BASE}/image.png)}`);
 });

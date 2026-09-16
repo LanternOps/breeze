@@ -14,6 +14,7 @@ import { getTrustedClientIp } from '../services/clientIp';
 import { getSignKey, getVerifyKey, buildHeader } from '../services/jwt';
 import { authorizeRemoteSessionContinuation } from '../services/remoteWsAuthorization';
 import { PERMISSIONS } from '../services/permissions';
+import { rewriteTunnelCss, rewriteTunnelHtml } from './tunnelHttpRewrite';
 
 /**
  * HTTP reverse-proxy route for the Network Proxy feature.
@@ -36,9 +37,8 @@ import { PERMISSIONS } from '../services/permissions';
  *   membership, site scope, role grants, session ownership, device state,
  *   agent connectivity, and policy.
  *
- * Known gaps (documented, not bugs): `<base href>` injection fixes relative
- * URLs in most printer UIs, but absolute-URL or JS-constructed URLs that point
- * straight at the LAN host won't be rewritten and will 404 through the proxy.
+ * HTML/CSS URLs and common browser request APIs are rewritten to the tunnel.
+ * Direct JavaScript location assignments and WebSocket upgrades remain unsupported.
  * Per-user rate limiting is intentionally deferred to the Task 8 security pass.
  */
 export const tunnelHttpRoutes = new Hono();
@@ -250,17 +250,6 @@ function prefixAndScopeDeviceCookie(value: string, basePath: string): string {
   return out;
 }
 
-/** Inject `<base href>` so relative URLs in the framed page resolve via proxy. */
-function injectBaseTag(html: string, basePath: string): string {
-  const tag = `<base href="${basePath}">`;
-  const headMatch = html.match(/<head[^>]*>/i);
-  if (headMatch && headMatch.index !== undefined) {
-    const idx = headMatch.index + headMatch[0].length;
-    return html.slice(0, idx) + tag + html.slice(idx);
-  }
-  return tag + html;
-}
-
 // ---------------------------------------------------------------------------
 // The proxy route.
 // ---------------------------------------------------------------------------
@@ -313,10 +302,11 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
       await db.update(tunnelSessions).set(mintUpdates).where(eq(tunnelSessions.id, tunnelId));
     });
 
+    // Subresources originate in the sandbox's opaque origin: Lax is insufficient.
     setCookie(c, authCookieName, await signTunnelCookie(consumed.userId, tunnelId), {
       httpOnly: true,
       secure: true,
-      sameSite: 'Lax',
+      sameSite: 'None',
       path: basePath,
       maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
     });
@@ -376,7 +366,7 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   const refreshedCookie = generateCookie(authCookieName, await signTunnelCookie(userId, tunnelId), {
     httpOnly: true,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: 'None',
     path: basePath,
     maxAge: HTTP_TUNNEL_COOKIE_TTL_SECONDS,
   });
@@ -514,8 +504,13 @@ tunnelHttpRoutes.all('/:tunnelId/*', async (c) => {
   // Set-Cookie headers already appended above.
   respHeaders.append('set-cookie', refreshedCookie);
 
+  const targetHost = session.targetHost.includes(':') && !session.targetHost.startsWith('[')
+    ? `[${session.targetHost}]` : session.targetHost;
+  const rewriteOptions = { basePath, targetOrigin: `${scheme}://${targetHost}:${session.targetPort}` };
   if (contentType.toLowerCase().includes('text/html')) {
-    body = injectBaseTag(body.toString('utf8'), basePath);
+    body = rewriteTunnelHtml(body.toString('utf8'), rewriteOptions);
+  } else if (contentType.toLowerCase().includes('text/css')) {
+    body = rewriteTunnelCss(body.toString('utf8'), rewriteOptions);
   }
 
   // Buffer isn't a DOM `BodyInit`; hand the runtime a Uint8Array for binary
