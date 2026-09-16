@@ -267,6 +267,7 @@ export const DEVICE_DETACH_DEVICE_ID_TABLES = [
 // ownership remains with the original org; pending alert admission rejects a moved
 // device. The DB discovery function has the same exclusion in migration000800.
 const CORE_DEVICE_ORG_DENORMALIZED_TABLES = [
+  'topology_node_bindings',
   'agent_health_observations', 'agent_logs', 'ai_screenshots', 'ai_sessions', 'alerts', 'asset_checkouts',
   'audit_baseline_results', 'audit_policy_states',
   'automation_action_results', 'automation_run_device_results',
@@ -480,6 +481,7 @@ export const ALERT_CHILD_ORG_REWRITE_TABLES = [
  * schema PR adding site_id to a device-id-scoped table populates this list.
  */
 export const DEVICE_SITE_DENORMALIZED_TABLES = [
+  'topology_node_bindings',
   'elevation_requests',
 ] as const;
 
@@ -494,6 +496,7 @@ export const DEVICE_SITE_DENORMALIZED_TABLES = [
  * The test in cascadeDelete.test.ts will fail CI if you forget.
  */
 const CORE_DEVICE_CASCADE_DELETE_TABLES = [
+  'topology_node_bindings',
   'bare_metal_recoveries',
   'offline_transition_effects',
   // recovery_tokens & backup_chains FK to backup_snapshots (no cascade),
