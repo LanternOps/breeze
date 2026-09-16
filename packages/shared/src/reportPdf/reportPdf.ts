@@ -4,6 +4,12 @@ import type { PostureControls, PostureProduct, PostureSummary } from '../types/p
 import type { ExecutiveSummary } from '../types/executiveSummaryReport';
 import type { HardwareLifecycleSummary } from '../types/hardwareLifecycleReport';
 import { renderHardwareLifecycleReport } from './hardwareLifecyclePdf';
+import type { ThreatDetectionSummary } from '../types/threatDetectionReport';
+// Namespace import, not a named one: the arm below must be observable by a
+// `vi.spyOn(threat, 'renderThreatDetectionReport')` in
+// reportPdf.threatDetection.test.ts. A type with no arm falls silently through
+// to renderGenericReport, and that spy is the only thing that catches it.
+import * as threatDetectionPdf from './threatDetectionPdf';
 import {
   NARRATIVE_BULLET_MAX_CHARS,
   NARRATIVE_HEADLINE_MAX_CHARS,
@@ -140,7 +146,7 @@ export type BuildOpts = {
   generatedAt: string;
   /** IANA timezone for formatting ISO date cells in generic tables. */
   timezone: string;
-  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary;
+  summary?: PostureSummary | ExecutiveSummary | OrgNarrativeReportSummary | FleetDesignReportSummary | HardwareLifecycleSummary | ThreatDetectionSummary;
   /** Slim baseline from the previous completed run, when the caller supplied
    * one (report_runs.result.previous) — drives the scorecard trend chip and
    * its "since <date>" label. */
@@ -168,6 +174,7 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   ai_agent_impact: 'AI Agent Impact',
   ai_fleet_design: 'Fleet Design',
   hardware_lifecycle: 'Hardware Lifecycle',
+  threat_detection_review: 'Threat Detection Review',
 };
 
 const reportTypeLabel = (t: string): string => REPORT_TYPE_LABELS[t] ?? titleCase(t);
@@ -2006,6 +2013,34 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
       doc,
       opts.summary as HardwareLifecycleSummary,
       { generatedAt: opts.generatedAt, partnerName: opts.branding?.name ?? null, contactEmail: opts.branding?.contactEmail ?? null, contactName: opts.branding?.contactName ?? null },
+      {
+        C,
+        PAGE,
+        drawHeaderBand: (d) => drawHeaderBand(d, opts),
+        drawFooter: (d) => drawFooter(d, opts),
+        drawTitleBlock,
+        drawSectionHeading,
+      },
+    );
+  } else if (
+    opts.reportType === 'threat_detection_review'
+    && opts.summary
+    && typeof (opts.summary as ThreatDetectionSummary).coverage === 'object'
+  ) {
+    // Self-contained chrome: the detection table paginates on its own
+    // (didDrawPage) and the sections after it add pages as needed.
+    drawHeaderBand(doc, opts);
+    drawFooter(doc, opts);
+    threatDetectionPdf.renderThreatDetectionReport(
+      doc,
+      opts.summary as ThreatDetectionSummary,
+      {
+        generatedAt: opts.generatedAt,
+        partnerName: opts.branding?.name ?? null,
+        contactEmail: opts.branding?.contactEmail ?? null,
+        contactName: opts.branding?.contactName ?? null,
+        previous: opts.previous,
+      },
       {
         C,
         PAGE,
