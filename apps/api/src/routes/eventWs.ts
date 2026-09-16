@@ -750,6 +750,26 @@ export function createEventWsTicketRoute(): Hono {
     if (orgIds.length === 0) {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }
+    // A system session that targeted one org (Devices / device detail with an
+    // org selected) must still get a *system* ticket: a legacy ticket would be
+    // stamped with the admin's home partner and re-authorised through the
+    // partner-membership branch, which a zero-membership platform admin fails
+    // at handshake (#6029). Derive the partner from the selected org itself.
+    if (auth.scope === 'system' && !systemPartnerId) {
+      const [owner] = await db
+        .select({ partnerId: organizations.partnerId })
+        .from(organizations)
+        .where(and(
+          eq(organizations.id, orgIds[0]!),
+          inArray(organizations.status, ['active', 'trial']),
+          isNull(organizations.deletedAt),
+        ))
+        .limit(1);
+      if (!owner?.partnerId || orgIds.length !== 1) {
+        return c.json({ error: 'Organization context required — select an org first' }, 400);
+      }
+      systemPartnerId = owner.partnerId;
+    }
 
     // Capture the SITE-scope restriction (app-layer-only axis) so it's bound to
     // the ticket. A site-restricted org user must not receive live events for

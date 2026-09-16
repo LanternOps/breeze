@@ -831,6 +831,40 @@ describe('createEventWsTicketRoute', () => {
     return app;
   }
 
+  it('mints a system ticket bound to the selected org\'s partner when a system session targets one org', async () => {
+    const { db } = await import('../db');
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const { getRedis } = await import('../services/redis');
+    const setex = vi.fn().mockResolvedValue('OK');
+    const app = await systemScopeApp();
+    const orgId = selectedOrgIds[0]!;
+    partnerOrganizationRows = [{ id: orgId, partnerId: selectedPartnerId } as any];
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'single', orgId });
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.mocked(getRedis).mockReturnValue({ setex } as any);
+    try {
+      const res = await app.request(`/events/ws-ticket?orgId=${orgId}`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const identity = JSON.parse(setex.mock.calls[0]![2]);
+      expect(identity).toMatchObject({ system: true, partnerId: selectedPartnerId, allowedOrgIds: [orgId], orgId: null });
+      await expect(resolveLiveEventAuthorization(identity)).resolves.toEqual({ ok: true, identity });
+      for (const result of vi.mocked(db.select).mock.results) {
+        expect(result.value.from).not.toHaveBeenCalledWith(schemaTables.partnerUsers);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('returns 400 when a system session targets an org whose partner cannot be resolved', async () => {
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const app = await systemScopeApp();
+    partnerOrganizationRows = [];
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'single', orgId: selectedOrgIds[0]! });
+    const res = await app.request(`/events/ws-ticket?orgId=${selectedOrgIds[0]}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
   it.each([
     ['active platform admin', null],
     ['platform admin revoked after mint', 'membership_removed'],
