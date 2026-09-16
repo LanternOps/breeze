@@ -1,5 +1,5 @@
 import type { SlaDto } from '@breeze/shared';
-import { and, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lt, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../db';
 import { tickets } from '../../db/schema';
 import { portalMonthWindow } from './patchReadModel';
@@ -101,6 +101,7 @@ const OPEN_TICKET_STATUSES = ['new', 'open', 'pending', 'on_hold'] as const;
 export async function supportTile(
   orgId: string,
   args: { timezone: string; now: Date },
+  ticketOwnership: SQL,
 ) {
   const { start, end, month } = portalMonthWindow(
     args.now,
@@ -114,6 +115,7 @@ export async function supportTile(
         eq(tickets.orgId, orgId),
         isNull(tickets.deletedAt),
         inArray(tickets.status, [...OPEN_TICKET_STATUSES]),
+        ticketOwnership,
       )),
     db
       .select({
