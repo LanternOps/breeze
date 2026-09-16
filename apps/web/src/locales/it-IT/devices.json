@@ -2522,6 +2522,32 @@
           "http_check": "controllo HTTP",
           "dns_check": "controllo DNS"
         }
+      },
+      "link": {
+        "description": "Collega questa risorsa rilevata al dispositivo gestito che corrisponde alla stessa macchina.",
+        "unlinkHint": "La rimozione del collegamento impedisce anche al collegamento automatico di ricrearlo alla prossima scansione."
+      },
+      "danger": {
+        "description": "Stato di approvazione ed eliminazione definitiva.",
+        "approvalTitle": "Approvazione",
+        "approvedExplainer": "Questa risorsa è approvata e compare negli elenchi dei dispositivi.",
+        "pendingExplainer": "In attesa di approvazione: il monitoraggio non è ancora attivo.",
+        "dismissedExplainer": "Ignorata: nascosta dagli elenchi dei dispositivi.",
+        "approve": "Approva",
+        "dismiss": "Ignora",
+        "deleteTitle": "Elimina risorsa",
+        "deleteDescription": "Rimuove la risorsa e tutti i dati raccolti per essa. Il rilevamento la ricreerà alla prossima scansione se il dispositivo è ancora sulla rete.",
+        "deleteAsset": "Elimina risorsa",
+        "deleteConfirmTitle": "Eliminare questa risorsa?",
+        "deleteConfirmMessage": "\"{{name}}\" e tutti gli elementi seguenti verranno rimossi. Questa operazione non può essere annullata.",
+        "deleteConfirmPrompt": "Digita {{name}} per confermare",
+        "cascade": {
+          "snmp": "La sua configurazione di polling SNMP",
+          "metrics": "Tutte le metriche raccolte",
+          "thresholds": "Le sue soglie di avviso SNMP",
+          "checks": "Tutti i controlli di rete associati a questa risorsa",
+          "topology": "La sua posizione salvata sulla mappa della topologia"
+        }
       }
     }
   },

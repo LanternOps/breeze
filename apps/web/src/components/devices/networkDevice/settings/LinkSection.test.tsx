@@ -1,0 +1,121 @@
+// apps/web/src/components/devices/networkDevice/settings/LinkSection.test.tsx
+import '@/lib/i18n';
+
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { LinkSection } from './LinkSection';
+import { fetchWithAuth } from '@/stores/auth';
+import type { DiscoveredAsset } from '@/components/discovery/DiscoveredAssetList';
+
+vi.mock('@/stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('@/components/shared/Toast', () => ({ showToast: vi.fn() }));
+
+const fetchMock = vi.mocked(fetchWithAuth);
+const res = (payload: unknown = { success: true }, status = 200): Response =>
+  ({ ok: status < 400, status, json: vi.fn().mockResolvedValue(payload) }) as unknown as Response;
+
+const asset: DiscoveredAsset = {
+  id: 'asset-1', ip: '10.0.0.2', mac: '—', hostname: 'core-sw-01',
+  type: 'switch', approvalStatus: 'approved', isOnline: true, manufacturer: 'Cisco',
+  linkedDeviceId: null,
+};
+
+const props = {
+  asset,
+  assetId: asset.id,
+  extras: { siteId: 'site-1' as string | null },
+  onSaved: vi.fn(),
+  onAnnounce: vi.fn(),
+};
+
+const writes = () => fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method);
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  fetchMock.mockResolvedValue(res());
+  props.onSaved = vi.fn();
+  props.onAnnounce = vi.fn();
+});
+
+describe('LinkSection — linked asset', () => {
+  const linked: DiscoveredAsset = { ...asset, linkedDeviceId: 'dev-9', linkedDeviceName: 'WS-FRONTDESK' };
+
+  it('links to the managed device and labels an auto link "auto-detected"', () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'auto' }} />);
+
+    const link = screen.getByTestId('network-settings-link-device');
+    expect(link).toHaveTextContent('Same device as WS-FRONTDESK');
+    expect(link.getAttribute('href')).toBe('/devices/dev-9');
+    expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('auto-detected');
+  });
+
+  it('labels a manual link "set manually"', () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'manual' }} />);
+    expect(screen.getByTestId('network-settings-link-provenance')).toHaveTextContent('set manually');
+  });
+
+  it('confirms before unlinking, then DELETEs the link and reloads', async () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'manual' }} />);
+
+    fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
+    expect(writes()).toHaveLength(0); // opening the dialog must not write
+
+    fireEvent.click(await screen.findByTestId('network-settings-link-unlink-confirm'));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toBe('/discovery/assets/asset-1/link');
+    expect((writes()[0]![1] as RequestInit).method).toBe('DELETE');
+    expect(props.onSaved).toHaveBeenCalled();
+    expect(props.onAnnounce).toHaveBeenCalledWith('Device unlinked');
+  });
+
+  it('issues no request when the unlink confirmation is cancelled', async () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'manual' }} />);
+
+    fireEvent.click(screen.getByTestId('network-settings-link-unlink'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('offers no manual-link picker while already linked', () => {
+    render(<LinkSection {...props} asset={{ ...linked, linkSource: 'auto' }} />);
+    expect(screen.queryByTestId('network-detail-link-manually')).not.toBeInTheDocument();
+  });
+});
+
+describe('LinkSection — unlinked asset', () => {
+  it('explains the unlinked state and offers the manual picker', () => {
+    render(<LinkSection {...props} />);
+
+    expect(screen.getByText('Not linked to a managed device yet.')).toBeInTheDocument();
+    expect(screen.getByTestId('network-detail-link-manually')).toBeInTheDocument();
+    expect(screen.queryByTestId('network-settings-link-unlink')).not.toBeInTheDocument();
+  });
+
+  it('explains suppressed auto-linking only when the asset carries the stamp', () => {
+    const { rerender } = render(<LinkSection {...props} />);
+    expect(screen.queryByTestId('network-settings-link-suppressed')).not.toBeInTheDocument();
+
+    rerender(<LinkSection {...props} extras={{ siteId: 'site-1', autoLinkSuppressedAt: '2026-09-01T00:00:00.000Z' }} />);
+    expect(screen.getByTestId('network-settings-link-suppressed')).toHaveTextContent(/Auto-linking is off/i);
+  });
+
+  it('links manually through the mutation hook (POST /discovery/assets/:id/link)', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (!init?.method) return Promise.resolve(res({ data: [{ id: 'dev-9', displayName: 'WS-FRONTDESK', status: 'online' }] }));
+      return Promise.resolve(res());
+    });
+    render(<LinkSection {...props} />);
+
+    fireEvent.click(screen.getByTestId('network-detail-link-manually'));
+    fireEvent.change(await screen.findByTestId('network-detail-link-manually-select'), { target: { value: 'dev-9' } });
+    fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toBe('/discovery/assets/asset-1/link');
+    expect((writes()[0]![1] as RequestInit).method).toBe('POST');
+    expect(JSON.parse((writes()[0]![1] as RequestInit).body as string)).toEqual({ deviceId: 'dev-9' });
+  });
+});

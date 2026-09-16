@@ -2522,6 +2522,32 @@
           "http_check": "HTTP kontrolü",
           "dns_check": "DNS kontrolü"
         }
+      },
+      "link": {
+        "description": "Keşfedilen bu varlığı, aynı makineye karşılık gelen yönetilen cihaza bağlayın.",
+        "unlinkHint": "Bağlantıyı kaldırmak, otomatik bağlamanın bir sonraki taramada bu bağlantıyı yeniden oluşturmasını da engeller."
+      },
+      "danger": {
+        "description": "Onay durumu ve kalıcı silme.",
+        "approvalTitle": "Onay",
+        "approvedExplainer": "Bu varlık onaylandı ve cihaz listelerinde görünüyor.",
+        "pendingExplainer": "Onay bekleniyor: henüz hiçbir şey izlenmiyor.",
+        "dismissedExplainer": "Yok sayıldı: cihaz listelerinde gizli.",
+        "approve": "Onayla",
+        "dismiss": "Yok say",
+        "deleteTitle": "Varlığı sil",
+        "deleteDescription": "Varlığı ve onun için toplanan tüm verileri kaldırır. Cihaz hâlâ ağdaysa keşif, bir sonraki taramada varlığı yeniden oluşturur.",
+        "deleteAsset": "Varlığı sil",
+        "deleteConfirmTitle": "Bu varlık silinsin mi?",
+        "deleteConfirmMessage": "\"{{name}}\" ve aşağıdaki her şey kaldırılacak. Bu işlem geri alınamaz.",
+        "deleteConfirmPrompt": "Onaylamak için {{name}} yazın",
+        "cascade": {
+          "snmp": "SNMP sorgulama yapılandırması",
+          "metrics": "Toplanan tüm metrikler",
+          "thresholds": "SNMP uyarı eşikleri",
+          "checks": "Bu varlığa bağlı tüm ağ kontrolleri",
+          "topology": "Topoloji haritasındaki kayıtlı konumu"
+        }
       }
     }
   },

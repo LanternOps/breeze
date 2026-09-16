@@ -2522,6 +2522,32 @@
           "http_check": "comprobación HTTP",
           "dns_check": "comprobación DNS"
         }
+      },
+      "link": {
+        "description": "Vincula este activo detectado con el dispositivo administrado que corresponde al mismo equipo.",
+        "unlinkHint": "Al desvincularlo, también se evita que la vinculación automática vuelva a crear este vínculo en el próximo escaneo."
+      },
+      "danger": {
+        "description": "Estado de aprobación y eliminación permanente.",
+        "approvalTitle": "Aprobación",
+        "approvedExplainer": "Este activo está aprobado y aparece en las listas de dispositivos.",
+        "pendingExplainer": "Pendiente de aprobación: todavía no se monitorea nada.",
+        "dismissedExplainer": "Descartado: oculto en las listas de dispositivos.",
+        "approve": "Aprobar",
+        "dismiss": "Descartar",
+        "deleteTitle": "Eliminar activo",
+        "deleteDescription": "Elimina el activo y todos los datos recopilados para él. La detección lo volverá a crear en el próximo escaneo si el dispositivo sigue en la red.",
+        "deleteAsset": "Eliminar activo",
+        "deleteConfirmTitle": "¿Eliminar este activo?",
+        "deleteConfirmMessage": "Se eliminarán \"{{name}}\" y todos los elementos que se indican a continuación. Esta acción no se puede deshacer.",
+        "deleteConfirmPrompt": "Escribe {{name}} para confirmar",
+        "cascade": {
+          "snmp": "Su configuración de sondeo SNMP",
+          "metrics": "Todas las métricas recopiladas",
+          "thresholds": "Sus umbrales de alertas SNMP",
+          "checks": "Todas las comprobaciones de red vinculadas a este activo",
+          "topology": "Su posición guardada en el mapa de topología"
+        }
       }
     }
   },

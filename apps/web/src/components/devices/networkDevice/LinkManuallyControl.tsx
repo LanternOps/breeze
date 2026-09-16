@@ -8,10 +8,11 @@
 import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchWithAuth } from '../../../stores/auth';
-import { runAction, ActionError } from '../../../lib/runAction';
+import { ActionError } from '../../../lib/runAction';
 import { extractApiError } from '../../../lib/apiError';
 import { asList } from '@/lib/asList';
 import type { DeviceOption } from './types';
+import { useNetworkAssetMutations } from './settings/useNetworkAssetMutations';
 
 export function LinkManuallyControl({
   assetId,
@@ -23,6 +24,7 @@ export function LinkManuallyControl({
   onLinked: () => void | Promise<void>;
 }) {
   const { t } = useTranslation('devices');
+  const { link } = useNetworkAssetMutations();
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState<DeviceOption[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
@@ -67,15 +69,7 @@ export function LinkManuallyControl({
     setError(undefined);
     let linked = false;
     try {
-      await runAction({
-        request: () =>
-          fetchWithAuth(`/discovery/assets/${assetId}/link`, {
-            method: 'POST',
-            body: JSON.stringify({ deviceId }),
-          }),
-        successMessage: t('networkDeviceDetailPage.toasts.linked'),
-        errorFallback: t('networkDeviceDetailPage.toasts.linkFailed'),
-      });
+      await link(assetId, deviceId);
       linked = true;
       setOpen(false);
       setDeviceId('');
@@ -90,7 +84,7 @@ export function LinkManuallyControl({
     // not a link failure, so it stays outside the try above (the picker is
     // already closed and could not show an inline error anyway).
     if (linked) await Promise.resolve(onLinked()).catch(() => undefined);
-  }, [deviceId, assetId, onLinked, t]);
+  }, [deviceId, assetId, link, onLinked, t]);
 
   if (!open) {
     return (

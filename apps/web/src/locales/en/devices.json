@@ -2425,6 +2425,32 @@
           "http_check": "HTTP check",
           "dns_check": "DNS check"
         }
+      },
+      "link": {
+        "description": "Tie this discovered asset to the managed device that is the same machine.",
+        "unlinkHint": "Unlinking also stops auto-linking from re-creating this link on the next scan."
+      },
+      "danger": {
+        "description": "Approval state and permanent removal.",
+        "approvalTitle": "Approval",
+        "approvedExplainer": "This asset is approved and appears in device lists.",
+        "pendingExplainer": "Pending approval: nothing is monitored yet.",
+        "dismissedExplainer": "Dismissed: hidden from device lists.",
+        "approve": "Approve",
+        "dismiss": "Dismiss",
+        "deleteTitle": "Delete asset",
+        "deleteDescription": "Removes the asset and everything collected for it. Discovery will re-create it on the next scan if the device is still on the network.",
+        "deleteAsset": "Delete asset",
+        "deleteConfirmTitle": "Delete this asset?",
+        "deleteConfirmMessage": "\"{{name}}\" and everything below will be removed. This cannot be undone.",
+        "deleteConfirmPrompt": "Type {{name}} to confirm",
+        "cascade": {
+          "snmp": "Its SNMP polling configuration",
+          "metrics": "All collected metrics",
+          "thresholds": "Its SNMP alert thresholds",
+          "checks": "Every network check bound to this asset",
+          "topology": "Its saved position on the topology map"
+        }
       }
     },
     "backToDevices": "Back to devices",

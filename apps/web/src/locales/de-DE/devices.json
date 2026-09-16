@@ -2522,6 +2522,32 @@
           "http_check": "HTTP-Prüfung",
           "dns_check": "DNS-Prüfung"
         }
+      },
+      "link": {
+        "description": "Verknüpfen Sie dieses erkannte Asset mit dem verwalteten Gerät, das derselben Maschine entspricht.",
+        "unlinkHint": "Durch das Aufheben der Verknüpfung wird auch verhindert, dass sie beim nächsten Scan automatisch erneut erstellt wird."
+      },
+      "danger": {
+        "description": "Genehmigungsstatus und endgültige Löschung.",
+        "approvalTitle": "Genehmigung",
+        "approvedExplainer": "Dieses Asset ist genehmigt und wird in Gerätelisten angezeigt.",
+        "pendingExplainer": "Genehmigung ausstehend: Es wird noch nichts überwacht.",
+        "dismissedExplainer": "Verworfen: in Gerätelisten ausgeblendet.",
+        "approve": "Genehmigen",
+        "dismiss": "Verwerfen",
+        "deleteTitle": "Asset löschen",
+        "deleteDescription": "Entfernt das Asset und alle dafür erfassten Daten. Wenn sich das Gerät weiterhin im Netzwerk befindet, wird es bei der nächsten Erkennung erneut erstellt.",
+        "deleteAsset": "Asset löschen",
+        "deleteConfirmTitle": "Dieses Asset löschen?",
+        "deleteConfirmMessage": "„{{name}}“ und alle unten aufgeführten Daten werden entfernt. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmPrompt": "Geben Sie zur Bestätigung {{name}} ein",
+        "cascade": {
+          "snmp": "Seine SNMP-Abfragekonfiguration",
+          "metrics": "Alle erfassten Messwerte",
+          "thresholds": "Seine SNMP-Alarmschwellenwerte",
+          "checks": "Alle diesem Asset zugeordneten Netzwerkprüfungen",
+          "topology": "Seine gespeicherte Position auf der Topologiekarte"
+        }
       }
     }
   },

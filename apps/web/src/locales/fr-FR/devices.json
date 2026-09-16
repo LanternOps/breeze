@@ -2522,6 +2522,32 @@
           "http_check": "contrôle HTTP",
           "dns_check": "contrôle DNS"
         }
+      },
+      "link": {
+        "description": "Associez cet actif découvert à l’appareil géré qui correspond à la même machine.",
+        "unlinkHint": "La dissociation empêche également l’association automatique de recréer ce lien lors de la prochaine analyse."
+      },
+      "danger": {
+        "description": "État d’approbation et suppression définitive.",
+        "approvalTitle": "Approbation",
+        "approvedExplainer": "Cet actif est approuvé et figure dans les listes d’appareils.",
+        "pendingExplainer": "En attente d’approbation : aucune supervision n’est encore effectuée.",
+        "dismissedExplainer": "Ignoré : masqué dans les listes d’appareils.",
+        "approve": "Approuver",
+        "dismiss": "Ignorer",
+        "deleteTitle": "Supprimer l’actif",
+        "deleteDescription": "Supprime l’actif et toutes les données collectées à son sujet. La découverte le recréera lors de la prochaine analyse si l’appareil est toujours sur le réseau.",
+        "deleteAsset": "Supprimer l’actif",
+        "deleteConfirmTitle": "Supprimer cet actif ?",
+        "deleteConfirmMessage": "« {{name}} » et tous les éléments ci-dessous seront supprimés. Cette action est irréversible.",
+        "deleteConfirmPrompt": "Saisissez {{name}} pour confirmer",
+        "cascade": {
+          "snmp": "Sa configuration d’interrogation SNMP",
+          "metrics": "Toutes les métriques collectées",
+          "thresholds": "Ses seuils d’alerte SNMP",
+          "checks": "Tous les contrôles réseau associés à cet actif",
+          "topology": "Sa position enregistrée sur la carte de topologie"
+        }
       }
     }
   },
