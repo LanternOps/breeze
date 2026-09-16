@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FleetDesignApplyPreview, FleetDesignApproval, FleetDesignOutcome, FleetDesignRule } from '@breeze/shared';
 
 const previewMock = vi.hoisted(() => ({ previewFleetDesignApplyWithContext: vi.fn() }));
@@ -71,8 +71,9 @@ function updateSeed(table: unknown, rows: Row[]) {
   q.push(rows);
   dbHolder.updateQueues.set(table, q);
 }
-vi.mock('../../db', () => ({
-  db: {
+const transactionState = vi.hoisted(() => ({ tx: null as unknown, ambientCalls: vi.fn() }));
+vi.mock('../../db', () => {
+  const tx = {
     select: (_proj?: unknown) => ({
       from: (table: unknown) => {
         const q = dbHolder.selectQueues.get(table) ?? [];
@@ -105,9 +106,16 @@ vi.mock('../../db', () => ({
     delete: (table: unknown) => ({
       where: (cond: unknown) => { dbHolder.deletes.push({ table, where: cond }); return Promise.resolve(); },
     }),
-    transaction: (cb: (tx?: unknown) => Promise<unknown>) => cb(),
-  },
-}));
+  };
+  transactionState.tx = tx;
+  return { db: {
+    ...Object.fromEntries(Object.entries(tx).map(([name, method]) => [name, (...args: unknown[]) => {
+      transactionState.ambientCalls(name);
+      return (method as (...args: unknown[]) => unknown)(...args);
+    }])),
+    transaction: (cb: (tx: unknown) => Promise<unknown>) => cb(tx),
+  } };
+});
 
 import {
   applyFleetDesign,
@@ -200,6 +208,19 @@ beforeEach(() => {
   groupMembershipMock.validateManualMembershipDevices.mockResolvedValue({ ok: true });
 });
 
+// Every scenario below uses a distinct savepoint executor. This also covers
+// reused policies, script-rule linking and the failure path's earlier steps.
+afterEach(() => {
+  expect(transactionState.ambientCalls).not.toHaveBeenCalled();
+  for (const helper of [
+    ...Object.values(configPolicyMock), ...Object.values(deviceFunctionMock),
+    ...Object.values(groupMembershipMock), bundleMock.importBundle,
+    ledgerMock.findReusableGroup, ledgerMock.recordApplied, ledgerMock.updateCreatedRefs,
+  ]) {
+    for (const args of helper.mock.calls) expect(args.at(-1)).toBe(transactionState.tx);
+  }
+});
+
 describe('applyFleetDesign — blocked', () => {
   it('refuses a displaced policy that is not in displacementsAccepted: throws FleetDesignApplyError(blocked), nothing written', async () => {
     const previewCtx = makeCtx({
@@ -251,16 +272,16 @@ describe('applyFleetDesign — step 1 (functions)', () => {
     expect(deviceFunctionMock.applyDesignFunctions).toHaveBeenCalledWith({
       orgId: ORG, reportRunId: RUN, runId: 'run-1', userId: USER,
       functions: [{ functionKey: 'file_server', label: 'File Server', deviceIds: ['d1', 'd2'], confidence: 0.9, evidence: ['x'] }],
-    });
+    }, transactionState.tx);
     expect(dbHolder.inserts).toContainEqual({ table: deviceGroups, values: expect.objectContaining({ orgId: ORG, name: 'Fleet Design: File Server', type: 'static' }) });
-    expect(groupMembershipMock.validateManualMembershipDevices).toHaveBeenCalledWith({ deviceIds: ['d1', 'd2'], orgId: ORG, siteId: null });
-    expect(groupMembershipMock.addManualGroupMemberships).toHaveBeenCalledWith({ groupId: 'g-new', orgId: ORG, deviceIds: ['d1', 'd2'] });
+    expect(groupMembershipMock.validateManualMembershipDevices).toHaveBeenCalledWith({ deviceIds: ['d1', 'd2'], orgId: ORG, siteId: null }, transactionState.tx);
+    expect(groupMembershipMock.addManualGroupMemberships).toHaveBeenCalledWith({ groupId: 'g-new', orgId: ORG, deviceIds: ['d1', 'd2'] }, transactionState.tx);
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith({
       orgId: ORG, reportRunId: RUN, itemRef: 'functions:file_server', itemKind: 'function', step: 1,
       createdRefs: { groupId: 'g-new', groupCreated: true, assessmentIds: ['assess-1', 'assess-2'], membershipSnapshot: ['d1', 'd2'] },
       beforeImage: { memberships: [], priorAssessmentIdByDevice: { d1: null, d2: null } },
       userId: USER,
-    });
+    }, transactionState.tx);
     expect(result.applied).toContain('functions:file_server');
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'fleet_design.apply.function' }));
   });
@@ -284,12 +305,13 @@ describe('applyFleetDesign — step 2 (retire)', () => {
       'link-1',
       { inlineSettings: { checkIntervalSeconds: 60, watches: [{ name: 'Spooler', enabled: false }] } },
       'p2',
+      undefined, transactionState.tx,
     );
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
       itemRef: 'retired:0', itemKind: 'retired', step: 2,
       createdRefs: { policyId: 'p2', linkId: 'link-1' },
       beforeImage: { inlineSettings },
-    }));
+    }), transactionState.tx);
     expect(result.applied).toContain('retired:0');
   });
 });
@@ -332,19 +354,20 @@ describe('applyFleetDesign — step 3 (monitoring)', () => {
       { orgId: ORG },
       expect.objectContaining({ name: 'Fleet Design: File Server', status: 'inactive' }),
       USER,
+      transactionState.tx,
     );
     expect(configPolicyMock.addFeatureLink).toHaveBeenNthCalledWith(1, 'p-new', 'monitoring', null, {
       checkIntervalSeconds: 60,
       watches: [{ watchType: 'service', name: 'Spooler', enabled: true, alertOnStop: true, autoRestart: false, rationale: 'because' }],
-    });
+    }, undefined, transactionState.tx);
     expect(configPolicyMock.addFeatureLink).toHaveBeenNthCalledWith(2, 'p-new', 'alert_rule', null, {
       items: [{ name: 'Disk full', severity: 'high', conditions: [], cooldownMinutes: 30, rationale: 'why [Action: none; Paging: always]' }],
-    });
-    expect(configPolicyMock.assignPolicy).toHaveBeenCalledWith('p-new', 'device_group', 'g1', 100, USER, undefined, undefined);
-    expect(configPolicyMock.updateConfigPolicy).toHaveBeenCalledWith('p-new', { status: 'active' }, expect.anything());
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server', itemKind: 'policy', step: 3 }));
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:0', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-new' } }));
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-new' } }));
+    }, undefined, transactionState.tx);
+    expect(configPolicyMock.assignPolicy).toHaveBeenCalledWith('p-new', 'device_group', 'g1', 100, USER, undefined, undefined, transactionState.tx);
+    expect(configPolicyMock.updateConfigPolicy).toHaveBeenCalledWith('p-new', { status: 'active' }, expect.anything(), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server', itemKind: 'policy', step: 3 }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:0', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-new' } }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-new' } }), transactionState.tx);
     expect(result.applied).toEqual(expect.arrayContaining(['policy:file_server', 'monitoring:file_server:watch:0', 'monitoring:file_server:rule:0']));
   });
 });
@@ -405,9 +428,10 @@ describe('applyFleetDesign — step 3 (monitoring) — second apply in the same 
       'link-mon-old',
       { inlineSettings: { checkIntervalSeconds: 60, watches: [existingWatchItem, newWatchItem] } },
       'p-existing',
+      undefined, transactionState.tx,
     );
     // Missing alert_rule link created fresh.
-    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-existing', 'alert_rule', null, { items: [newRuleItem] });
+    expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-existing', 'alert_rule', null, { items: [newRuleItem] }, undefined, transactionState.tx);
 
     // created_refs refreshed with a snapshot of the union, on the SAME ledger row.
     expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith(
@@ -420,12 +444,13 @@ describe('applyFleetDesign — step 3 (monitoring) — second apply in the same 
         alertRuleLinkId: 'link-rule-new',
         linksSnapshot: snapshotLinks(afterLinks),
       }),
+      transactionState.tx,
     );
 
     // New item rows recorded; the policy ref itself is not (it already exists).
-    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server' }));
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-existing' } }));
-    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-existing' } }));
+    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'policy:file_server' }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:watch:1', itemKind: 'watch', step: 3, createdRefs: { policyId: 'p-existing' } }), transactionState.tx);
+    expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'monitoring:file_server:rule:0', itemKind: 'rule', step: 3, createdRefs: { policyId: 'p-existing' } }), transactionState.tx);
     expect(result.applied).toEqual(expect.arrayContaining(['monitoring:file_server:watch:1', 'monitoring:file_server:rule:0']));
     expect(result.applied).not.toContain('policy:file_server');
   });
@@ -447,7 +472,7 @@ describe('applyFleetDesign — step 5 (role corrections)', () => {
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
       itemRef: 'roleCorrections:d1', itemKind: 'role_correction', step: 5,
       beforeImage: { deviceRole: 'workstation', deviceRoleSource: 'discovered' },
-    }));
+    }), transactionState.tx);
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'device.role.ai_correction' }));
     expect(result.applied).toContain('roleCorrections:d1');
   });
@@ -491,10 +516,10 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith({
       orgId: ORG, reportRunId: RUN, itemRef: 'automation:file_server:script:0', itemKind: 'script', step: 4,
       createdRefs: { scriptId: 'script-a', scriptName: `${spooler.name} (2)` }, userId: USER,
-    });
+    }, transactionState.tx);
     expect(ledgerMock.recordApplied).toHaveBeenCalledWith(expect.objectContaining({
       itemRef: 'automation:file_server:script:1', step: 4, createdRefs: { scriptId: 'script-b', scriptName: cleanup.name },
-    }));
+    }), transactionState.tx);
     expect(result.applied).toEqual(['automation:file_server:script:0', 'automation:file_server:script:1']);
     expect(result.partial).toBeNull();
     expect(auditMock.writeAuditEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -528,7 +553,7 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
     const result = await applyFleetDesign(makeAuth(), RUN, approval());
 
     expect(result.partial).toEqual({ failedStep: 4, reason: expect.stringContaining('references secret variable') });
-    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemKind: 'script' }));
+    expect(ledgerMock.recordApplied).not.toHaveBeenCalledWith(expect.objectContaining({ itemKind: 'script' }), transactionState.tx);
     expect(ledgerMock.recordFailed).toHaveBeenCalledWith(expect.objectContaining({ itemRef: 'step:4', itemKind: 'script', step: 4 }));
     expect(dbHolder.updates.find((u) => u.table === devices)).toBeUndefined();
   });
@@ -572,11 +597,11 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
 
     await applyFleetDesign(makeAuth(), RUN, approval());
 
-    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-r', { inlineSettings: { items: patchedItems } }, 'p1');
+    expect(configPolicyMock.updateFeatureLink).toHaveBeenCalledWith('link-r', { inlineSettings: { items: patchedItems } }, 'p1', undefined, transactionState.tx);
     expect(ledgerMock.updateCreatedRefs).toHaveBeenCalledWith('ledger-policy', ORG, expect.objectContaining({
       policyId: 'p1',
       linksSnapshot: snapshotLinks([{ featureType: 'alert_rule', featurePolicyId: null, inlineSettings: { items: patchedItems } }]),
-    }));
+    }), transactionState.tx);
   });
 
   it('a second apply that adds a rule (reused policy) AND its script keeps the refs step 3 just wrote when step 4 refreshes the snapshot', async () => {
@@ -644,7 +669,7 @@ describe('applyFleetDesign — step 4 (scripts, W04)', () => {
 
     expect(configPolicyMock.addFeatureLink).toHaveBeenCalledWith('p-new', 'alert_rule', null, {
       items: [expect.objectContaining({ rationale: 'jobs pile up [Action: script automation:file_server:script:0; Paging: none] [script created: script-old]' })],
-    });
+    }, undefined, transactionState.tx);
   });
 });
 
@@ -733,7 +758,7 @@ describe('applyFleetDesign — idempotent re-apply', () => {
     const result = await applyFleetDesign(makeAuth(), RUN, makeApproval({ functions: ['file_server', 'domain_controller'] }));
 
     expect(deviceFunctionMock.applyDesignFunctions).toHaveBeenCalledTimes(1);
-    expect(deviceFunctionMock.applyDesignFunctions).toHaveBeenCalledWith(expect.objectContaining({ functions: [expect.objectContaining({ functionKey: 'domain_controller' })] }));
+    expect(deviceFunctionMock.applyDesignFunctions).toHaveBeenCalledWith(expect.objectContaining({ functions: [expect.objectContaining({ functionKey: 'domain_controller' })] }), transactionState.tx);
     expect(result.skipped).toEqual(['functions:file_server']);
     expect(result.applied).toEqual(['functions:domain_controller']);
   });
