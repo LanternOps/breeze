@@ -39,4 +39,19 @@ describe('managed evidence registry', () => {
     const { MANAGED_EVIDENCE_REPORT_TYPES } = await import('@breeze/shared');
     expect([...MANAGED_EVIDENCE_REPORT_TYPES].sort()).toEqual(Object.keys(MANAGED_EVIDENCE_REGISTRY).sort());
   });
+
+  // The registry and PORTAL_DEFINITIONS are two hand-maintained lists of the
+  // same fact. A managed type provisioned under a different name or config than
+  // the registry declares produces an artifact the deliverable cannot recognise
+  // — and nothing else in the codebase compares the two. W03/W04/W06 rely on
+  // this assertion as much as W02 does.
+  it('PORTAL_DEFINITIONS carries every managed evidence type with the registry config', async () => {
+    const { PORTAL_DEFINITIONS_FOR_TEST } = await import('./portal/reportsSelfService');
+    for (const [type, entry] of Object.entries(MANAGED_EVIDENCE_REGISTRY) as Array<[string, ManagedEvidenceEntry]>) {
+      const def = PORTAL_DEFINITIONS_FOR_TEST.find((d) => d.type === type);
+      expect(def, `${type} missing from PORTAL_DEFINITIONS`).toBeTruthy();
+      expect(def!.name).toBe(entry.definitionName);
+      expect(def!.config).toEqual(entry.defaultConfig);
+    }
+  });
 });

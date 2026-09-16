@@ -118,6 +118,7 @@ describe('provisionPortalReportDefinitions', () => {
       { type: 'executive_summary' },
       { type: 'security_compliance_posture' },
       { type: 'hardware_lifecycle' },
+      { type: 'threat_detection_review' },
     ]);
     state.insertReturning.mockResolvedValue([]);
     state.updateReturning.mockResolvedValue([]);
@@ -136,7 +137,7 @@ describe('provisionPortalReportDefinitions', () => {
     state.execute.mockResolvedValue([{ prior_ms: 0 }]);
   });
 
-  it('inserts the three fixed customer-safe definitions idempotently', async () => {
+  it('inserts the fixed customer-safe definitions plus the managed-evidence ones idempotently', async () => {
     await provisionPortalReportDefinitions({
       orgId: ORG_ID,
       createdBy: USER_ID,
@@ -179,8 +180,29 @@ describe('provisionPortalReportDefinitions', () => {
         executionScopeUserId: USER_ID,
         executionScopePrincipalKind: 'user',
       }),
+      expect.objectContaining({
+        orgId: ORG_ID,
+        name: 'Service evidence — Threat detection review',
+        type: 'threat_detection_review',
+        schedule: 'one_time',
+        format: 'pdf',
+        portalSelfService: true,
+        createdBy: USER_ID,
+        executionScopeKind: 'unrestricted',
+        executionScopeUserId: USER_ID,
+        executionScopePrincipalKind: 'user',
+      }),
     ]);
     expect(state.conflict).toHaveBeenCalledOnce();
+  });
+
+  it('provisions a threat detection definition for an org enabling portal reports', async () => {
+    await provisionPortalReportDefinitions({ orgId: ORG_ID, createdBy: USER_ID });
+    const values = vi.mocked(state.inserted).mock.calls[0]?.[0] as Array<{ type: string; portalSelfService: boolean; name: string }>;
+    const row = values.find((v) => v.type === 'threat_detection_review');
+    expect(row).toBeTruthy();
+    expect(row?.portalSelfService).toBe(true);
+    expect(row?.name).toBe('Service evidence — Threat detection review');
   });
 
   it('compiles the partial-index conflict arbiter with a literal true predicate', () => {
@@ -304,6 +326,12 @@ describe('portal report SQL scope', () => {
 
     expect(query.sql).not.toContain('<>');
     expect(query.params).not.toContain('hardware_lifecycle');
+  });
+});
+
+describe('threat_detection_review portal provisioning (#5784 W02)', () => {
+  it('keeps threat_detection_review OUT of the portal generate allowlist (OD-10 = A)', () => {
+    expect(PORTAL_REPORT_TYPES as readonly string[]).not.toContain('threat_detection_review');
   });
 });
 

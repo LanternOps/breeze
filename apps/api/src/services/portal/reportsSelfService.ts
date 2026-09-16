@@ -60,7 +60,30 @@ const PORTAL_DEFINITIONS = [
       includeOtherEquipment: true,
     },
   },
+  // #5784 W02 — MANAGED EVIDENCE, not self-service. The customer sees and
+  // downloads this once the occurrence is delivered (deliveredEvidenceOnly),
+  // but never generates it: the type is deliberately absent from
+  // PORTAL_REPORT_TYPES and from both allowlist literals in
+  // reportGenerationService.ts (OD-10 = A).
+  //
+  // Name and config are literals rather than an import of
+  // MANAGED_EVIDENCE_REGISTRY because this array is `as const` and feeds a
+  // Drizzle insert. Divergence from the registry is caught by
+  // managedEvidenceRegistry.test.ts, which compares the two.
+  {
+    type: 'threat_detection_review',
+    name: 'Service evidence — Threat detection review',
+    config: {
+      sites: [],
+      includeCarriedIn: true,
+      topIncidents: 100,
+    },
+  },
 ] as const;
+
+/** Exported for `managedEvidenceRegistry.test.ts`, which pins this array
+ *  against MANAGED_EVIDENCE_REGISTRY. Not part of the module's API. */
+export const PORTAL_DEFINITIONS_FOR_TEST = PORTAL_DEFINITIONS;
 
 type PortalReportInsertExecutor = Pick<typeof db, 'insert'>;
 type PortalReportProvisionArgs = {
@@ -347,7 +370,12 @@ function toDto(row: {
   id: string;
   reportId: string;
   name: string;
-  type: PortalReportType;
+  // The DTO's own union, NOT PortalReportType: portalRunListPredicate has no
+  // type filter, so a managed-evidence run of a type outside the three
+  // self-service ones legitimately flows through here. Typing it as
+  // PortalReportType was a lie the compiler could not see, because the value
+  // comes from the database (#5784 W02).
+  type: PortalRunDto['type'];
   status: 'pending' | 'running' | 'completed' | 'failed';
   startedAt: Date | null;
   completedAt: Date | null;

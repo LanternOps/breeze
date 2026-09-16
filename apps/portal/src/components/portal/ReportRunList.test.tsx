@@ -227,4 +227,24 @@ describe('ReportRunList', () => {
     );
     expect(screen.getByTestId('portal-reports-status').textContent).toBe('');
   });
+
+  // #5784 W02 / OD-10 = A: the customer SEES and downloads what their service
+  // plan produced, but cannot generate it — only the three self-service types
+  // get a button. The type reaches this list through portalRunListPredicate,
+  // which has no type filter, so an unwidened union would be a type lie the
+  // compiler cannot see.
+  it('labels a threat detection run without offering a generate button', () => {
+    const threatRun: PortalRunDto = {
+      ...run,
+      id: 'run-td',
+      name: 'Service evidence — Threat detection review',
+      type: 'threat_detection_review',
+    };
+    render(<ReportRunList initialRuns={[threatRun]} timezone="UTC" />);
+    expect(screen.getByTestId('portal-report-run-row-run-td')).toBeInTheDocument();
+    expect(screen.getByText(/threat detection review/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('portal-reports-generate-threat_detection_review')).toBeNull();
+    // Downloadable, though: delivery already gated visibility server-side.
+    expect(screen.getByTestId('portal-report-run-pdf-run-td')).toBeInTheDocument();
+  });
 });
