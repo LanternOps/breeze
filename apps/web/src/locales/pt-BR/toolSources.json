@@ -50,7 +50,8 @@
       "clientId": "ID do cliente",
       "clientSecret": "Segredo do cliente",
       "scope": "Escopo",
-      "keepExisting": "Deixe em branco para manter a credencial armazenada."
+      "keepExisting": "Deixe em branco para manter a credencial armazenada.",
+      "required": "Informe as credenciais do método de autenticação escolhido."
     }
   },
   "detail": {

@@ -76,6 +76,18 @@ export function ToolSourceForm({
   const setAuthField = (key: string, value: string) => setAuth((prev) => ({ ...prev, [key]: value }));
   const authValue = (key: string) => auth[key] ?? '';
 
+  /**
+   * Whether the credential fields must be filled in.
+   *
+   * Blank means "keep the stored credential" in exactly ONE case: an edit that
+   * leaves the auth KIND untouched. Everywhere else — any create, or an edit
+   * that switches kind — a blank field would make `authPayload()` return
+   * undefined, and the source would be saved as `authKind: 'none'` (create) or
+   * with its old credential (edit) while the form still showed the kind the
+   * user picked. That is a success toast over a change that did not happen.
+   */
+  const credentialRequired = !isEdit || authKind !== source?.authKind;
+
   /** The discriminated auth arm, or undefined when nothing was entered — on
    *  edit that means "keep the stored credential" (the API's update schema
    *  accepts a body with no auth at all). */
@@ -109,6 +121,14 @@ export function ToolSourceForm({
     e.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName) return;
+
+    // Belt-and-braces alongside the `required` attributes below: a kind that
+    // needs a credential must produce one, or we refuse rather than silently
+    // saving a different kind than the form shows.
+    if (credentialRequired && authKind !== 'none' && !authPayload()) {
+      setFormError(t('form.auth.required'));
+      return;
+    }
 
     setSubmitting(true);
     setFormError(null);
@@ -161,7 +181,9 @@ export function ToolSourceForm({
     }
   };
 
-  const authFields: Array<{ key: string; labelKey: string; type?: string }> =
+  // `optional: true` marks a field that is genuinely optional for its kind
+  // (OAuth2 `scope`); everything else is required whenever `credentialRequired`.
+  const authFields: Array<{ key: string; labelKey: string; type?: string; optional?: boolean }> =
     authKind === 'bearer'
       ? [{ key: 'token', labelKey: 'form.auth.token', type: 'password' }]
       : authKind === 'api_key_header'
@@ -179,7 +201,7 @@ export function ToolSourceForm({
           { key: 'tokenUrl', labelKey: 'form.auth.tokenUrl' },
           { key: 'clientId', labelKey: 'form.auth.clientId' },
           { key: 'clientSecret', labelKey: 'form.auth.clientSecret', type: 'password' },
-          { key: 'scope', labelKey: 'form.auth.scope' },
+          { key: 'scope', labelKey: 'form.auth.scope', optional: true },
         ]
       : [];
 
@@ -270,10 +292,11 @@ export function ToolSourceForm({
             className={inputClass}
             type={field.type ?? 'text'}
             autoComplete="off"
+            required={credentialRequired && !field.optional}
             value={authValue(field.key)}
             onChange={(e) => setAuthField(field.key, e.target.value)}
           />
-          {isEdit && field.type === 'password' && (
+          {!credentialRequired && field.type === 'password' && (
             <p className="mt-1 text-xs text-muted-foreground">{t('form.auth.keepExisting')}</p>
           )}
         </div>

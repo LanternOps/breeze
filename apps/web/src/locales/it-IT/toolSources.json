@@ -50,7 +50,8 @@
       "clientId": "ID cliente",
       "clientSecret": "Client Secret",
       "scope": "Ambito",
-      "keepExisting": "Lascia vuoto per mantenere la credenziale memorizzata."
+      "keepExisting": "Lascia vuoto per mantenere la credenziale memorizzata.",
+      "required": "Inserisci le credenziali per il metodo di autenticazione scelto."
     }
   },
   "detail": {

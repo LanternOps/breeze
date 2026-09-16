@@ -25,7 +25,7 @@ Every tool is addressed as `<slug>__<name>`, where the slug is yours (`hudu__get
 
 2. Give it a display name. The slug is derived from the name and stays editable until you save — lowercase letters and digits, up to 24 characters.
 
-3. Enter the endpoint URL. It must be `https`. Breeze sends your credential **only** to that URL's origin; a redirect elsewhere is followed without it.
+3. Enter the endpoint URL. It must be `https`. Breeze sends your credential **only** to that URL's origin, and it never follows redirects — a 3xx response fails the call rather than forwarding anything to the new location.
 
 4. Pick an authentication method — none, bearer token, API key header, username and password, or OAuth2 client credentials. Credentials are encrypted at rest and never returned by the API.
 
@@ -59,7 +59,7 @@ A Tier-3 external call is **pinned to the tool definition the approver saw**. If
 
 On a source's detail page each tool shows its proposed tier, its effective tier, an enable switch, and any flags:
 
-- **Review needed** — the upstream definition changed since you last looked. The tool keeps working at the tier you set; the flag clears when you re-tier or re-enable it.
+- **Review needed** — the upstream definition changed since you last looked. The tool keeps working at the tier you set, and the flag clears when you set its tier again (confirming the new definition is still worth that approval bar). Toggling it off and on does not clear it.
 - **Removed upstream** — the server no longer lists it. It cannot be re-enabled; it reappears on its own if the server offers it again.
 - **Name not usable** — the tool's name cannot be addressed as `<slug>__<name>` (too long, or characters Breeze cannot route). It can never resolve, so it cannot be enabled.
 
@@ -74,6 +74,6 @@ Tier-1 tools have a **Test** action: supply arguments as JSON and Breeze perform
 A source in **Error** state carries the reason on its detail page.
 
 - **Connection refused / timeout** — the endpoint is unreachable from the Breeze API host. Private-network endpoints need `TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true` on a self-hosted deployment; hosted Breeze refuses them outright.
-- **401 / 403 from the server** — the stored credential was rejected. Edit the source and re-enter it; leaving a credential field blank keeps the stored one.
+- **401 / 403 from the server** — the stored credential was rejected. Edit the source and re-enter it. Leaving the field blank keeps the stored credential, which is only allowed while the authentication method itself is unchanged; switching methods requires entering the new credential.
 - **No tools discovered** — the server answered but listed nothing. Confirm it speaks streamable-HTTP MCP and that the credential's grants cover tool listing.
 - **A tool the assistant will not call** — check it is enabled, that its source is Active, and that your role carries the external-tools permission for that tier (reads and writes are separate grants).

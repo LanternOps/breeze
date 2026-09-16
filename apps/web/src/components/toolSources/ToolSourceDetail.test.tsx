@@ -114,6 +114,22 @@ describe('ToolSourceDetail', () => {
     expect(api.getToolSource.mock.calls.length).toBe(callsAfterMove);
   });
 
+  it('stops polling when the page is unmounted mid-loop', async () => {
+    api.getToolSource.mockResolvedValue(source()); // never moves
+    const { unmount } = render(<ToolSourceDetail sourceId="s-1" />);
+    await screen.findByTestId('tool-source-detail');
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByTestId('tool-source-rediscover'));
+    await vi.advanceTimersByTimeAsync(3100);
+    const callsBeforeUnmount = api.getToolSource.mock.calls.length;
+
+    unmount();
+    await vi.advanceTimersByTimeAsync(12000);
+
+    expect(api.getToolSource.mock.calls.length).toBe(callsBeforeUnmount);
+  });
+
   it('delete asks for confirmation first, and only then calls the API', async () => {
     const user = userEvent.setup();
     render(<ToolSourceDetail sourceId="s-1" />);

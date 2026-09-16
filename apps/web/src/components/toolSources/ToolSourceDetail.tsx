@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
@@ -37,6 +37,11 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [testing, setTesting] = useState<ToolSourceToolDto | null>(null);
   const [discovering, setDiscovering] = useState(false);
+  // The re-discover poll below runs for up to a minute. Without this the loop
+  // keeps setting state (and issuing requests) after the user has navigated
+  // away — a leak whose only symptom in production is a React warning.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const load = useCallback(async (): Promise<ToolSourceDto | null> => {
     try {
@@ -44,12 +49,13 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
         getToolSource(fetchWithAuth, sourceId),
         listSourceTools(fetchWithAuth, sourceId),
       ]);
+      if (!mounted.current) return loadedSource;
       setSource(loadedSource);
       setTools(loadedTools);
       setLoadError(null);
       return loadedSource;
     } catch {
-      setLoadError(t('detail.loadFailed'));
+      if (mounted.current) setLoadError(t('detail.loadFailed'));
       return null;
     }
   }, [sourceId, t]);
@@ -75,10 +81,11 @@ export default function ToolSourceDetail({ sourceId }: { sourceId: string }) {
     setDiscovering(true);
     for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (!mounted.current) return;
       const refreshed = await load();
       if (refreshed && refreshed.lastDiscoveredAt !== before) break;
     }
-    setDiscovering(false);
+    if (mounted.current) setDiscovering(false);
   };
 
   const remove = async () => {

@@ -31,6 +31,7 @@ vi.mock('../../stores/auth', () => ({
 }));
 
 import { ToolSourceForm } from './ToolSourceForm';
+import { ActionError } from '../../lib/runAction';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,6 +109,70 @@ describe('ToolSourceForm', () => {
       orgId: 'org-1',
       authKind: 'none',
     });
+  });
+
+  it('shows a partner-wide 403 INLINE, not only as a toast that scrolls away', async () => {
+    const user = userEvent.setup();
+    createToolSource.mockRejectedValueOnce(
+      new ActionError('Partner-wide changes require the manage-partner-wide permission', 403),
+    );
+    renderCreate();
+    await fillRequired(user);
+    await user.click(screen.getByTestId('tool-source-submit'));
+
+    expect((await screen.findByTestId('tool-source-form-error')).textContent).toContain('manage-partner-wide');
+  });
+
+  it('leaves a 401 to the auth redirect rather than painting it in the form', async () => {
+    const user = userEvent.setup();
+    createToolSource.mockRejectedValueOnce(new ActionError('Unauthorized', 401));
+    renderCreate();
+    await fillRequired(user);
+    await user.click(screen.getByTestId('tool-source-submit'));
+
+    await waitFor(() => expect(createToolSource).toHaveBeenCalled());
+    expect(screen.queryByTestId('tool-source-form-error')).toBeNull();
+  });
+
+  it('refuses to save a credential-bearing kind with the credential left blank', async () => {
+    // The trap this closes: picking "Bearer token" and leaving the token empty
+    // used to fall through to `authKind: 'none'` — a source created with NO
+    // credential while the form showed one, reported as a success.
+    const user = userEvent.setup();
+    renderCreate();
+    await fillRequired(user);
+    await user.selectOptions(screen.getByTestId('tool-source-auth-kind'), 'bearer');
+    await user.click(screen.getByTestId('tool-source-submit'));
+
+    expect(createToolSource).not.toHaveBeenCalled();
+    expect((screen.getByTestId('tool-source-auth-token') as HTMLInputElement).required).toBe(true);
+  });
+
+  it('edit: blank credentials keep the stored one only while the KIND is unchanged', async () => {
+    const user = userEvent.setup();
+    const existing = {
+      id: 's-1', orgId: null, partnerId: 'p-1', slug: 'hudu', name: 'Hudu', kind: 'mcp' as const,
+      endpointUrl: 'https://hudu.example.test/mcp', credentialOrigin: 'https://hudu.example.test',
+      authKind: 'bearer' as const, hasCredential: true, status: 'active' as const,
+      lastDiscoveredAt: null, lastError: null, rateLimitPerMinute: 120, toolCount: 0, enabledToolCount: 0,
+      createdAt: '2026-10-16T00:00:00.000Z', updatedAt: '2026-10-16T00:00:00.000Z',
+    };
+    const { unmount } = render(<ToolSourceForm source={existing} onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    // Same kind, blank field → optional, and the PATCH carries no authConfig.
+    expect((screen.getByTestId('tool-source-auth-token') as HTMLInputElement).required).toBe(false);
+    await user.click(screen.getByTestId('tool-source-submit'));
+    await waitFor(() => expect(updateToolSource).toHaveBeenCalled());
+    expect(updateToolSource.mock.calls[0]![2]).not.toHaveProperty('authConfig');
+    unmount();
+
+    // Switching the kind makes the new credential mandatory — otherwise the
+    // save would silently keep the OLD credential under a new label.
+    render(<ToolSourceForm source={existing} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await user.selectOptions(screen.getByTestId('tool-source-auth-kind'), 'basic');
+    expect((screen.getByTestId('tool-source-auth-username') as HTMLInputElement).required).toBe(true);
+    await user.click(screen.getByTestId('tool-source-submit'));
+    expect(updateToolSource).toHaveBeenCalledTimes(1); // still just the first save
   });
 
   it('offers openapi as a DISABLED option rather than hiding it (W2 ships it)', () => {

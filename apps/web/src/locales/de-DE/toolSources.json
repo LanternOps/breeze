@@ -50,7 +50,8 @@
       "clientId": "Kunden-ID",
       "clientSecret": "Client-Geheimnis",
       "scope": "Bereich",
-      "keepExisting": "Leer lassen, um die gespeicherten Anmeldedaten zu behalten."
+      "keepExisting": "Leer lassen, um die gespeicherten Anmeldedaten zu behalten.",
+      "required": "Geben Sie die Zugangsdaten für die gewählte Authentifizierungsmethode ein."
     }
   },
   "detail": {

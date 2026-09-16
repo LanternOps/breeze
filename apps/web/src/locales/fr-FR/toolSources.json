@@ -50,7 +50,8 @@
       "clientId": "ID client",
       "clientSecret": "Secret client",
       "scope": "Portée",
-      "keepExisting": "Laissez vide pour conserver les identifiants enregistrés."
+      "keepExisting": "Laissez vide pour conserver les identifiants enregistrés.",
+      "required": "Saisissez les identifiants du mode d'authentification choisi."
     }
   },
   "detail": {

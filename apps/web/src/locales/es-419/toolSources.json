@@ -50,7 +50,8 @@
       "clientId": "Cliente ID",
       "clientSecret": "Secreto del cliente",
       "scope": "Ámbito",
-      "keepExisting": "Déjelo en blanco para conservar la credencial almacenada."
+      "keepExisting": "Déjelo en blanco para conservar la credencial almacenada.",
+      "required": "Ingresa las credenciales del método de autenticación seleccionado."
     }
   },
   "detail": {

@@ -146,6 +146,43 @@ describe('tool sources API client', () => {
     expect(JSON.parse(fetcher.mock.calls[0]![1].body as string)).toEqual({ input: { id: 'a' } });
   });
 
+  it('rejects a test call on EITHER failure signal alone, not only when both agree', async () => {
+    // `success:false` with `isError:false` (an envelope-level refusal) and
+    // `success:true` with `isError:true` (the executor's own verdict) are both
+    // failures; asserting only the both-true case would not discriminate `||`
+    // from `&&`.
+    fetcher.mockResolvedValueOnce(
+      ok({ success: false, data: { result: 'refused', isError: false, durationMs: 1 } }),
+    );
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toMatchObject({ code: 'tool_test_failed' });
+
+    fetcher.mockResolvedValueOnce(
+      ok({ success: true, data: { result: 'MCP call failed', isError: true, durationMs: 1 } }),
+    );
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toMatchObject({ code: 'tool_test_failed' });
+  });
+
+  it('a test call that 500s rejects with the server reason, not a parsed result', async () => {
+    fetcher.mockResolvedValueOnce(ok({ error: 'Tool not found', code: 'not_found' }, 404));
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toMatchObject({
+      status: 404,
+      code: 'not_found',
+      message: 'Tool not found',
+    });
+  });
+
+  it('a malformed or envelope-less test response is a failure, never a silent success', async () => {
+    fetcher.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => { throw new Error('not json'); },
+    } as unknown as Response);
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toBeInstanceOf(ActionError);
+
+    fetcher.mockResolvedValueOnce(ok({ success: true }));
+    await expect(testSourceTool(fetcher, 's-1', 't-1', {})).rejects.toBeInstanceOf(ActionError);
+  });
+
   it('surfaces an API error body as an ActionError carrying its code', async () => {
     fetcher.mockResolvedValueOnce(
       ok({ error: 'This slug is already used by a partner-wide tool source', code: 'slug_shadows_partner_source' }, 409),

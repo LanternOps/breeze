@@ -50,7 +50,8 @@
       "clientId": "Müşteri Kimliği",
       "clientSecret": "Müşteri Sırrı",
       "scope": "Kapsam",
-      "keepExisting": "Kayıtlı kimlik bilgisini korumak için boş bırakın."
+      "keepExisting": "Kayıtlı kimlik bilgisini korumak için boş bırakın.",
+      "required": "Seçilen kimlik doğrulama yöntemi için kimlik bilgilerini girin."
     }
   },
   "detail": {

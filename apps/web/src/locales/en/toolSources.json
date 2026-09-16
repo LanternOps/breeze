@@ -50,7 +50,8 @@
       "clientId": "Client ID",
       "clientSecret": "Client secret",
       "scope": "Scope",
-      "keepExisting": "Leave blank to keep the stored credential."
+      "keepExisting": "Leave blank to keep the stored credential.",
+      "required": "Enter the credential for the selected authentication method."
     }
   },
   "detail": {

@@ -18,6 +18,7 @@ vi.mock('./api', () => ({ patchSourceTool, bulkTools }));
 vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
 import { DiscoveredToolsTable } from './DiscoveredToolsTable';
+import { ActionError } from '../../lib/runAction';
 import type { ToolSourceToolDto } from './api';
 
 function tool(overrides: Partial<ToolSourceToolDto> = {}): ToolSourceToolDto {
@@ -112,6 +113,42 @@ describe('DiscoveredToolsTable', () => {
     await user.click(screen.getByTestId('tools-disable-all'));
     await waitFor(() => expect(bulkTools).toHaveBeenCalledTimes(2));
     expect(bulkTools.mock.calls[1]!.slice(1)).toEqual(['s-1', 'disable_all']);
+  });
+
+  it('clicking Test hands the tool to the drawer instead of calling the API itself', async () => {
+    const user = userEvent.setup();
+    const onTest = vi.fn();
+    render(<DiscoveredToolsTable sourceId="s-1" tools={[tool()]} onChanged={vi.fn()} onTest={onTest} />);
+    await user.click(screen.getByTestId('tool-row-t-1-test'));
+    expect(onTest).toHaveBeenCalledWith(expect.objectContaining({ id: 't-1' }));
+    expect(patchSourceTool).not.toHaveBeenCalled();
+  });
+
+  it('a FAILED patch does not report a change, and leaves the row usable again', async () => {
+    const user = userEvent.setup();
+    patchSourceTool.mockRejectedValueOnce(new ActionError('Forbidden', 403));
+    const onChanged = renderTable([tool()]);
+
+    await user.click(screen.getByTestId('tool-row-t-1-enabled'));
+
+    await waitFor(() => expect(patchSourceTool).toHaveBeenCalled());
+    // The caller must not refetch as if it worked…
+    expect(onChanged).not.toHaveBeenCalled();
+    // …and the control must not be left permanently disabled by the busy flag.
+    await waitFor(() =>
+      expect((screen.getByTestId('tool-row-t-1-enabled') as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
+
+  it('a FAILED bulk action does not report a change either', async () => {
+    const user = userEvent.setup();
+    bulkTools.mockRejectedValueOnce(new ActionError('Forbidden', 403));
+    const onChanged = renderTable([tool()]);
+
+    await user.click(screen.getByTestId('tools-enable-reads'));
+
+    await waitFor(() => expect(bulkTools).toHaveBeenCalled());
+    expect(onChanged).not.toHaveBeenCalled();
   });
 
   it('renders the empty state rather than a headerless table', () => {
