@@ -10,6 +10,16 @@ import { enqueueDiscoveryScan } from '../jobs/discoveryWorker';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { networkTopology, topologyLayout, discoveredAssets, sites } from '../db/schema';
 
+// W01 (spec §4.4): the route now derives `reachability` through the batched
+// loader. The derivation is pinned by services/assetReachability.test.ts; this
+// suite owns the WIRING, so the loader is mocked and driven per-test rather
+// than teaching this file's db chain rig three more query shapes.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../services', () => ({}));
 
 vi.mock('../services/auditEvents', () => ({

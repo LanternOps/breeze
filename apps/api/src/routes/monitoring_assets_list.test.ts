@@ -13,6 +13,16 @@ vi.mock('../db', () => ({
   },
 }));
 
+// W01 (spec §4.4): the route now derives `reachability` through the batched
+// loader. The derivation is pinned by services/assetReachability.test.ts; this
+// suite owns the WIRING, so the loader is mocked and driven per-test rather
+// than teaching this file's db chain rig three more query shapes.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../db/schema', () => ({
   devices: {
     id: 'devices.id',
@@ -143,6 +153,7 @@ describe('monitoring routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     vi.mocked(db.select).mockReset();
     vi.mocked(db.insert).mockReset();
     vi.mocked(db.update).mockReset();
@@ -465,6 +476,9 @@ describe('monitoring routes', () => {
     });
 
     it('returns asset detail with SNMP config and metrics', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
       // Asset lookup
       vi.mocked(db.select).mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -535,6 +549,49 @@ describe('monitoring routes', () => {
       expect(body.snmpDevice.snmpVersion).toBe('v2c');
       expect(body.recentMetrics).toHaveLength(1);
       expect(body.networkMonitors.totalCount).toBe(2);
+      // W01 (spec §4.4) — the detail route carries the derived reachability.
+      expect(body.reachability).toEqual({
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
+    });
+
+    it('carries reachability on the no-SNMP early return too (W01, spec §4.4)', async () => {
+      reachabilityByAsset.set(ASSET_ID, {
+        state: 'responding', source: 'snmp', observedAt: '2026-09-16T11:58:00.000Z', lastKnown: null, detail: {},
+      });
+      // Asset lookup
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: ASSET_ID, orgId: ORG_ID }]),
+          }),
+        }),
+      } as any);
+      // SNMP devices — none
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+          }),
+        }),
+      } as any);
+      // Network monitor total / active
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+      } as any);
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue([{ count: 1 }]) }),
+      } as any);
+
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}`, {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.snmpDevice).toBeNull();
+      expect(body.reachability.state).toBe('responding');
     });
 
     it('returns 404 for nonexistent asset', async () => {

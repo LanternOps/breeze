@@ -27,6 +27,8 @@ import { isCronDue } from '../services/automationRuntime';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { createDiscoveryJobIfIdle } from '../services/discoveryJobCreation';
 import { maskOidShapedModel, nicVendorFromMac } from '../services/assetIdentity';
+import { reachabilityToListStatus } from '../services/assetReachability';
+import { loadReachability } from '../services/assetReachabilityLoader';
 import {
   encryptSnmpCommunities,
   encryptSnmpCredentials,
@@ -1124,6 +1126,8 @@ discoveryRoutes.get(
       .where(where)
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
+    const reachabilityByAsset = await loadReachability(results.map((row) => row.asset.id));
+
     return c.json({
       data: results.map((row) => {
         const a = row.asset;
@@ -1133,6 +1137,9 @@ discoveryRoutes.get(
           assetType: a.assetType,
           approvalStatus: a.approvalStatus,
           isOnline: a.isOnline,
+          // W01 (spec §4.4). `isOnline` above is retained for one release and
+          // means "last scan/controller verdict"; everything new reads this.
+          reachability: reachabilityByAsset.get(a.id) ?? null,
           hostname: a.hostname,
           label: a.label,
           ipAddress: a.ipAddress,
@@ -1248,6 +1255,7 @@ discoveryRoutes.get(
     }
 
     const a = row.asset;
+    const reachability = (await loadReachability([a.id])).get(a.id) ?? null;
     return c.json({
       data: {
         id: a.id,
@@ -1257,6 +1265,9 @@ discoveryRoutes.get(
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,
+        // W01 (spec §4.4). `isOnline` is retained for one release and means
+        // "last scan/controller verdict"; everything new reads this.
+        reachability,
         hostname: a.hostname,
         label: a.label,
         ipAddress: a.ipAddress,
@@ -1824,12 +1835,19 @@ discoveryRoutes.get(
       : await db.select().from(topologyManualNodes))
       .filter((node) => canAccessRecordSite(permissions, node.siteId));
 
+    // W01 (spec §4.4) — the topology map is an asset-status export like any
+    // other, so it takes the same derivation. 'unknown' is a real third state
+    // here: the client renders it muted rather than as a red node.
+    const topologyReachability = await loadReachability(assets.map((a) => a.id));
+
     const nodes = [
       ...assets.map((a) => ({
         id: a.id,
         type: a.assetType,
         label: a.label ?? a.hostname ?? a.ipAddress ?? a.id,
-        status: a.isOnline ? 'online' : 'offline',
+        status: reachabilityToListStatus(
+          topologyReachability.get(a.id) ?? { state: 'unverified', source: null, observedAt: null, lastKnown: null, detail: {} },
+        ),
         approvalStatus: a.approvalStatus,
         ipAddress: a.ipAddress,
         macAddress: a.macAddress,

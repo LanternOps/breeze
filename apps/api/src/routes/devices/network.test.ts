@@ -19,6 +19,18 @@ vi.mock('../../db', () => ({
   },
 }));
 
+// W01 (spec §4.4): the list route now derives `status` from the reachability
+// service. The DERIVATION itself is pinned by services/assetReachability.test.ts;
+// what this suite owns is the WIRING — that `status` comes from the derived
+// object and not from `is_online`. So the batched loader is mocked and driven
+// per-test, which also keeps the route's three extra queries out of the db
+// chain rig below.
+const reachabilityByAsset = new Map<string, unknown>();
+vi.mock('../../services/assetReachabilityLoader', () => ({
+  loadReachability: vi.fn(async () => reachabilityByAsset),
+  loadReachabilityInputs: vi.fn(async () => new Map()),
+}));
+
 vi.mock('../../db/schema', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../db/schema')>();
   return { ...actual };
@@ -130,6 +142,7 @@ describe('GET /devices/network — unified-list network arm (#1322)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reachabilityByAsset.clear();
     accessibleOrgIds = ['org-1'];
     allowedSiteIds = undefined;
     app = new Hono();
@@ -833,5 +846,78 @@ describe('POST /devices/network — manual network asset create (#5213)', () => 
       const getBlock = src.slice(src.indexOf('networkRoutes.get('), src.indexOf('networkRoutes.post('));
       expect(getBlock).not.toMatch(/requireMfa/);
     });
+  });
+});
+
+describe('GET /devices/network — reachability is the status axis (W01, spec §4.4)', () => {
+  let app: Hono;
+  const ASSET_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const NINETEEN_HOURS_AGO = '2026-06-12T15:00:00.000Z';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reachabilityByAsset.clear();
+    accessibleOrgIds = ['org-1'];
+    allowedSiteIds = undefined;
+    app = new Hono();
+    app.route('/devices', networkRoutes);
+    rigNetworkRows([
+      {
+        id: ASSET_ID,
+        orgId: 'org-1',
+        siteId: 'site-1',
+        assetType: 'printer',
+        hostname: 'hp.local',
+        label: null,
+        ipAddress: '10.0.0.42',
+        macAddress: '00:11:22:33:44:55',
+        manufacturer: 'HP',
+        model: 'LaserJet 400',
+        // The 19-hour-old scan verdict the old code called "online".
+        isOnline: true,
+        responseTimeMs: 4.2,
+        openPorts: [],
+        lastSeenAt: new Date(NINETEEN_HOURS_AGO),
+        firstSeenAt: new Date('2026-06-01T10:00:00.000Z'),
+        tags: [],
+        source: 'scan',
+        url: null,
+        snmpMonitoringEnabled: false,
+        networkMonitoringEnabled: false,
+      },
+    ]);
+    reachabilityByAsset.set(ASSET_ID, {
+      state: 'unverified',
+      source: null,
+      observedAt: null,
+      lastKnown: { state: 'responding', source: 'scan', observedAt: NINETEEN_HOURS_AGO },
+      detail: { scan: { state: 'seen', observedAt: NINETEEN_HOURS_AGO, source: 'scan' } },
+    });
+  });
+
+  it('derives list status from reachability, not is_online (spec §4.4)', async () => {
+    const res = await app.request('/devices/network?limit=50');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data[0].status).toBe('unknown');
+    expect(body.data[0].reachability.state).toBe('unverified');
+    expect(body.data[0].reachability.lastKnown).toEqual({
+      state: 'responding', source: 'scan', observedAt: NINETEEN_HOURS_AGO,
+    });
+  });
+
+  it('still exposes is_online alongside it for one release', async () => {
+    const res = await app.request('/devices/network?limit=50');
+    const body = await res.json();
+    expect(body.data[0].isOnline).toBe(true);
+  });
+
+  it('maps a responding derivation to online', async () => {
+    reachabilityByAsset.set(ASSET_ID, {
+      state: 'responding', source: 'snmp', observedAt: '2026-06-13T09:58:00.000Z', lastKnown: null, detail: {},
+    });
+    const res = await app.request('/devices/network?limit=50');
+    const body = await res.json();
+    expect(body.data[0].status).toBe('online');
   });
 });

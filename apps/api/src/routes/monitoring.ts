@@ -7,6 +7,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
+import { loadReachability } from '../services/assetReachabilityLoader';
 import { isRedisAvailable } from '../services/redis';
 import { PERMISSIONS, canAccessSite, type UserPermissions } from '../services/permissions';
 import { encryptSnmpSecret, isMaskedSnmpSecret, maskSnmpSecret } from '../services/snmpSecrets';
@@ -276,6 +277,8 @@ monitoringRoutes.get(
       .where(and(...assetConditions))
       .orderBy(desc(discoveredAssets.lastSeenAt));
 
+    const reachabilityByAsset = await loadReachability(assets.map((a) => a.id));
+
     return c.json({
       data: assets.map((a) => {
         const snmp = snmpByAssetId.get(a.id);
@@ -294,6 +297,9 @@ monitoringRoutes.get(
           assetType: a.assetType,
           approvalStatus: a.approvalStatus,
           isOnline: a.isOnline,
+          // W01 (spec §4.4) — `isOnline` is the last scan/controller verdict,
+          // retained for one release; everything new reads `reachability`.
+          reachability: reachabilityByAsset.get(a.id) ?? null,
           lastSeenAt: a.lastSeenAt?.toISOString() ?? null,
           createdAt: a.createdAt.toISOString(),
           updatedAt: a.updatedAt.toISOString(),
@@ -357,6 +363,11 @@ monitoringRoutes.get(
       return c.json({ error: 'Access to this site denied' }, 403);
     }
 
+    // W01 (spec §4.4) — derived once and returned on BOTH exits below. The
+    // `!snmpDevice` early return is the easy one to miss: an asset with network
+    // checks but no SNMP row takes that branch.
+    const reachability = (await loadReachability([assetId])).get(assetId) ?? null;
+
     const snmpRows = await db.select()
       .from(snmpDevices)
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
@@ -391,6 +402,7 @@ monitoringRoutes.get(
           totalCount: Number(networkMonitorTotal?.count ?? 0),
           activeCount: Number(networkMonitorActive?.count ?? 0)
         },
+        reachability,
         recentMetrics: []
       });
     }
@@ -408,6 +420,7 @@ monitoringRoutes.get(
         totalCount: Number(networkMonitorTotal?.count ?? 0),
         activeCount: Number(networkMonitorActive?.count ?? 0)
       },
+      reachability,
       recentMetrics: recentMetrics.map((m) => ({
         id: m.id,
         oid: m.oid,

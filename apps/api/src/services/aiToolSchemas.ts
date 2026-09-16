@@ -165,6 +165,10 @@ export const toolInputSchemas: Record<string, z.ZodType> = {
     limit: z.number().int().min(1).optional(),
   }),
 
+  get_network_asset_reachability: z.object({
+    asset_id: uuid,
+  }),
+
   get_ip_history: z.object({
     device_id: uuid.optional(),
     ip_address: ipAddress.optional(),
