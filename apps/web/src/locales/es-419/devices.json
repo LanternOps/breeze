@@ -2391,7 +2391,23 @@
       "snmpData": "Datos SNMP"
     },
     "stats": {
-      "asOf": "a partir de {{time}}"
+      "asOf": "a partir de {{time}}",
+      "lowestSupply": "Suministro más bajo",
+      "portsUp": "Puertos activos",
+      "portsUpValue": "{{up}} de {{total}}",
+      "reachability": "Accesibilidad",
+      "lastPoll": "Última consulta"
+    },
+    "probe": {
+      "checkNow": "Comprobar ahora",
+      "checking": "Comprobando…",
+      "errors": {
+        "noAgentInSite": "Ningún agente en línea de este sitio puede acceder al dispositivo. Conecta un agente en este sitio y vuelve a intentarlo.",
+        "inFlight": "Ya hay una comprobación en curso para este dispositivo.",
+        "noIp": "Este activo no tiene una dirección IP para comprobar.",
+        "timedOut": "El agente no respondió en un minuto. Puede estar desconectado u ocupado.",
+        "unknown": "No se pudo comprobar este dispositivo en este momento."
+      }
     },
     "tabs": {
       "overview": "Descripción general",

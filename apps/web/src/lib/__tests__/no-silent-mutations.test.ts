@@ -33,6 +33,9 @@ const FIXTURE_ROOT = resolve(__dirname, 'fixtures/no-silent-mutations/src');
 // WS-A "targeted set": files that have ADOPTED runAction and must not regress
 // to silent mutations. Grows as more handlers migrate (see the backlog).
 const TARGET_GLOBS = [
+  // Network device "Check now" (#5988 W05): the probe reads liveness outside
+  // W04's settings writer and must surface every mutation outcome.
+  'src/components/devices/networkDevice/useAssetProbe.ts',
   'src/components/alerts/NotificationChannelsPage.tsx',
   'src/components/alerts/AlertsPage.tsx',
   'src/components/alerts/AlertDetailPage.tsx',
@@ -657,7 +660,8 @@ describe('no silent mutations in targeted set', () => {
     // Tool catalog W01 PR C (#5216) took the count to 138; sweep G1-4 added
     // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
     // truth W04 (#5992) adds the network asset single writer: 140 → 141.
-    expect(absoluteFiles.length).toBe(141);
+    // Network device page truth W05 adds the probe hook: 141 → 142.
+    expect(absoluteFiles.length).toBe(142);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

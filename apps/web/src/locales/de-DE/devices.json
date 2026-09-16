@@ -2391,7 +2391,23 @@
       "snmpData": "SNMP-Daten"
     },
     "stats": {
-      "asOf": "Stand: {{time}}"
+      "asOf": "Stand: {{time}}",
+      "lowestSupply": "Niedrigster Füllstand",
+      "portsUp": "Aktive Ports",
+      "portsUpValue": "{{up}} von {{total}}",
+      "reachability": "Erreichbarkeit",
+      "lastPoll": "Letzte Abfrage"
+    },
+    "probe": {
+      "checkNow": "Jetzt prüfen",
+      "checking": "Wird geprüft…",
+      "errors": {
+        "noAgentInSite": "Kein Agent an diesem Standort ist online und kann das Gerät erreichen. Bringen Sie hier einen Agenten online und versuchen Sie es erneut.",
+        "inFlight": "Für dieses Gerät läuft bereits eine Prüfung.",
+        "noIp": "Dieses Gerät hat keine IP-Adresse, die geprüft werden kann.",
+        "timedOut": "Der Agent hat nicht innerhalb einer Minute geantwortet. Möglicherweise ist er offline oder beschäftigt.",
+        "unknown": "Dieses Gerät konnte gerade nicht geprüft werden."
+      }
     },
     "tabs": {
       "overview": "Übersicht",

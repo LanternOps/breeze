@@ -2391,7 +2391,23 @@
       "snmpData": "SNMP verisi"
     },
     "stats": {
-      "asOf": "{{time}} itibarıyla"
+      "asOf": "{{time}} itibarıyla",
+      "lowestSupply": "En düşük sarf malzemesi seviyesi",
+      "portsUp": "Etkin bağlantı noktaları",
+      "portsUpValue": "{{total}} bağlantı noktasından {{up}} etkin",
+      "reachability": "Erişilebilirlik",
+      "lastPoll": "Son sorgulama"
+    },
+    "probe": {
+      "checkNow": "Şimdi kontrol et",
+      "checking": "Kontrol ediliyor…",
+      "errors": {
+        "noAgentInSite": "Bu konumdaki hiçbir çevrimiçi ajan cihaza erişemiyor. Bu konumda bir ajanı çevrimiçi yapıp tekrar deneyin.",
+        "inFlight": "Bu cihaz için zaten bir kontrol yürütülüyor.",
+        "noIp": "Bu varlığın kontrol edilecek bir IP adresi yok.",
+        "timedOut": "Ajan bir dakika içinde yanıt vermedi. Çevrimdışı veya meşgul olabilir.",
+        "unknown": "Bu cihaz şu anda kontrol edilemedi."
+      }
     },
     "tabs": {
       "overview": "Genel Bakış",

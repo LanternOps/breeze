@@ -2571,7 +2571,23 @@
       "snmpData": "SNMP data"
     },
     "stats": {
-      "asOf": "as of {{time}}"
+      "asOf": "as of {{time}}",
+      "lowestSupply": "Lowest supply",
+      "portsUp": "Ports up",
+      "portsUpValue": "{{up}} / {{total}}",
+      "reachability": "Reachability",
+      "lastPoll": "Last poll"
+    },
+    "probe": {
+      "checkNow": "Check now",
+      "checking": "Checking…",
+      "errors": {
+        "noAgentInSite": "No online agent at this site can reach the device. Bring an agent online here, then try again.",
+        "inFlight": "A check is already running for this device.",
+        "noIp": "This asset has no IP address to check.",
+        "timedOut": "The agent didn't answer within a minute. It may be offline or busy.",
+        "unknown": "Couldn't check this device right now."
+      }
     },
     "tabs": {
       "overview": "Overview",

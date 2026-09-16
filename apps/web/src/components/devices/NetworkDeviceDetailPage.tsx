@@ -24,6 +24,7 @@ import { formatTimestamp } from './networkDevice/format';
 import { Section, Field } from './networkDevice/primitives';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
+import { useAssetProbe } from './networkDevice/useAssetProbe';
 import { NetworkDeviceStats } from './networkDevice/NetworkDeviceStats';
 import { NetworkDeviceSkeleton } from './networkDevice/NetworkDeviceSkeleton';
 import { OpenPortsSection } from './networkDevice/OpenPortsSection';
@@ -48,6 +49,12 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     devicesError,
     fetchDevices,
   } = useNetworkAsset(assetId);
+
+  const probeState = useAssetProbe({
+    assetId,
+    probe: extras.probe,
+    onRefresh: async () => { await fetchAsset({ background: true }); },
+  });
 
   // --- hash state -----------------------------------------------------------
   // Both halves of `#<tab>[/settings/<section>]` are hash-derived and adopted
@@ -225,7 +232,16 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
         onOpenSettings={() => openSettings('identity')}
       />
 
-      <NetworkDeviceStats asset={asset} onViewPorts={handleViewPorts} />
+      <NetworkDeviceStats
+        asset={asset}
+        reachability={extras.reachability ?? null}
+        collection={null}
+        probe={extras.probe ?? null}
+        timezone={resolveAssetTimezone(extras.siteTimezone)}
+        probeState={probeState}
+        onViewPorts={handleViewPorts}
+        onViewMonitoring={() => switchTab('monitoring')}
+      />
 
       <OverflowTabs
         tabs={tabDefs}

@@ -1286,7 +1286,7 @@ describe('NetworkDeviceDetailPage', () => {
   });
 
   describe('stat strip', () => {
-    it('renders status, ping, open ports and linked device stats', async () => {
+    it('renders sourced reachability, last poll, ping and open ports stats', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({
           data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host' },
@@ -1297,18 +1297,13 @@ describe('NetworkDeviceDetailPage', () => {
       await screen.findByTestId('network-device-detail');
 
       const stats = screen.getByTestId('network-detail-stats');
-      expect(stats.textContent).toContain('Online');
+      expect(stats.textContent).toContain('Responding · SNMP');
       expect(stats.textContent).toContain('2.4 ms');
-      // baseAsset.lastSeenAt is well over a week in the past relative to any
-      // real test run, so formatLastSeen falls back to an absolute date —
-      // stable to assert on without mocking the clock.
-      expect(stats.textContent).toMatch(/as of/i);
+      expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Not configured');
       // baseAsset.openPorts has 2 entries.
       expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
 
-      const linked = screen.getByTestId('network-detail-stat-linked');
-      expect(linked.getAttribute('href')).toBe('/devices/dev-9');
-      expect(linked.textContent).toContain('agent-host');
+      expect(screen.queryByTestId('network-detail-stat-linked')).toBeNull();
     });
 
     it('renders 0 (not a dash) for the open-ports stat when the asset has no open ports', async () => {
@@ -1345,7 +1340,7 @@ describe('NetworkDeviceDetailPage', () => {
       }
     });
 
-    it('shows a dash for the linked-device stat when the asset is unlinked', async () => {
+    it('omits the linked-device stat when the asset is unlinked', async () => {
       fetchWithAuthMock.mockResolvedValueOnce(
         makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null } }),
       );
@@ -1355,7 +1350,7 @@ describe('NetworkDeviceDetailPage', () => {
 
       expect(screen.queryByTestId('network-detail-stat-linked')).toBeNull();
       const stats = screen.getByTestId('network-detail-stats');
-      expect(stats.textContent).toContain('—');
+      expect(stats.textContent).not.toContain('Linked device');
     });
 
     it('colors the ping value using the same thresholds as the discovery list', async () => {
