@@ -12,7 +12,6 @@ import { useNetworkAssetMutations } from './networkDevice/settings/useNetworkAss
 import { useHashState } from '@/lib/useHashState';
 import { Activity, LayoutGrid } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { isManualLink } from '../discovery/networkTypes';
 import { navigateTo } from '@/lib/navigation';
 import Breadcrumbs from '../layout/Breadcrumbs';
 import { OverflowTabs, overflowPanelId, overflowTabId, type OverflowTab } from '../shared/OverflowTabs';
@@ -20,10 +19,13 @@ import { assetTypeIcons } from '../discovery/assetTypeIcon';
 import { isWebPort, sortPorts } from '../discovery/portCatalog';
 import { typeConfig, approvalStatusConfig } from '../discovery/DiscoveredAssetList';
 import type { NetworkDeviceDetailPageProps, Tab } from './networkDevice/types';
-import { Section, Field, UnknownValue } from './networkDevice/primitives';
 import { useNetworkAsset } from './networkDevice/useNetworkAsset';
 import { IdentityCard } from './networkDevice/IdentityCard';
 import { NetworkDeviceHeader } from './networkDevice/NetworkDeviceHeader';
+import { ReachabilityCard } from './networkDevice/ReachabilityCard';
+import { resolveHealthCard } from './networkDevice/health';
+import { MonitoringTab } from './networkDevice/MonitoringTab';
+import { useAssetMonitoring } from './networkDevice/useAssetMonitoring';
 import { useAssetProbe } from './networkDevice/useAssetProbe';
 import { NetworkDeviceStats } from './networkDevice/NetworkDeviceStats';
 import { NetworkDeviceSkeleton } from './networkDevice/NetworkDeviceSkeleton';
@@ -50,10 +52,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
     fetchDevices,
   } = useNetworkAsset(assetId);
 
+  const { collection } = useAssetMonitoring(assetId);
   const probeState = useAssetProbe({
     assetId,
     probe: extras.probe,
-    onRefresh: async () => { await fetchAsset({ background: true }); },
+    onRefresh: () => fetchAsset({ background: true }),
   });
 
   // --- hash state -----------------------------------------------------------
@@ -160,7 +163,10 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
   // else 443 — so the action exists even when the scan recorded no ports.
   const defaultWebPort = openPorts.find((p) => isWebPort(p.port, p.service));
   const snmpData = asset.snmpData ?? {};
-  const discoveryMethods = asset.discoveryMethods ?? [];
+  const timezone = resolveAssetTimezone(extras.siteTimezone);
+  const HealthCard = resolveHealthCard({ assetType: asset.type, collection, snmpEnabled: !!extras.snmpMonitoringEnabled });
+  const bridgeDeviceId = extras.suggestedBridgeDeviceId ?? null;
+  const bridgeDeviceName = devices.find((device) => device.id === bridgeDeviceId)?.name ?? null;
   // `mapAsset` normalizes `type` to a valid key, but `approvalStatus` is passed
   // through raw — guard both lookups so an out-of-enum value from the API can't
   // throw during render (which, with no error boundary, would blank the page).
@@ -198,7 +204,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           setApprovalBusy(true);
           try {
             await mutations.approve(asset.id);
-            await fetchAsset({ background: true });
+            if (!await fetchAsset({ background: true })) {
+              showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+            }
             announce(t('networkDeviceDetailPage.approval.approvedAnnouncement'));
           } catch (err) {
             if (err instanceof ActionError && err.status === 401) return;
@@ -213,7 +221,9 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           setApprovalBusy(true);
           try {
             await mutations.dismiss(asset.id);
-            await fetchAsset({ background: true });
+            if (!await fetchAsset({ background: true })) {
+              showToast({ type: 'error', message: t('networkDeviceDetailPage.settings.refreshFailed') });
+            }
             announce(t('networkDeviceDetailPage.approval.dismissedAnnouncement'));
           } catch (err) {
             if (err instanceof ActionError && err.status === 401) return;
@@ -250,8 +260,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
       <NetworkDeviceStats
         asset={asset}
         reachability={extras.reachability ?? null}
-        collection={null}
-        probe={extras.probe ?? null}
+        collection={collection}
         timezone={resolveAssetTimezone(extras.siteTimezone)}
         probeState={probeState}
         onViewPorts={handleViewPorts}
@@ -267,7 +276,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
       {activeTab === 'overview' && (
         <div
-          className="grid gap-5 lg:grid-cols-2"
+          className="space-y-5"
           data-testid="network-detail-overview"
           role="tabpanel"
           id={overflowPanelId('overview', TAB_ID_PREFIX)}
@@ -275,6 +284,30 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           tabIndex={-1}
           ref={overviewPanelRef}
         >
+          <div className="grid gap-5 lg:grid-cols-3">
+            <div className="min-w-0 lg:col-span-2">
+              <HealthCard
+                assetId={asset.id}
+                assetType={asset.type}
+                collection={collection}
+                snmpEnabled={!!extras.snmpMonitoringEnabled}
+                timezone={timezone}
+                onSetUpMonitoring={() => openSettings('monitoring')}
+                onViewMonitoring={handleViewMonitoring}
+              />
+            </div>
+            <div className="min-w-0">
+              <ReachabilityCard
+                reachability={extras.reachability ?? null}
+                collection={collection}
+                timezone={timezone}
+                bridgeDeviceId={bridgeDeviceId}
+                bridgeDeviceName={bridgeDeviceName}
+                probeState={probeState}
+                onViewMonitoring={handleViewMonitoring}
+              />
+            </div>
+          </div>
           <div className="space-y-5">
             <IdentityCard
               asset={asset}
@@ -284,6 +317,19 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
               onEditIdentity={() => openSettings('identity')}
             />
 
+            {!asset.linkedDeviceId && extras.autoLinkSuppressedAt && (
+              <p className="text-xs text-muted-foreground" data-testid="network-detail-suppressed">
+                {t('networkDeviceDetailPage.autoLinkSuppressed')}
+              </p>
+            )}
+            <button
+              type="button"
+              data-testid="network-detail-edit-link"
+              onClick={() => openSettings('link')}
+              className="text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t('networkDeviceDetailPage.settings.openLinkSettings')}
+            </button>
             <SnmpSection snmpData={snmpData} />
           </div>
 
@@ -307,7 +353,7 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
 
       {activeTab === 'monitoring' && (
         <div
-          className="grid gap-5 lg:grid-cols-2"
+          className="space-y-5"
           data-testid="network-detail-monitoring"
           role="tabpanel"
           id={overflowPanelId('monitoring', TAB_ID_PREFIX)}
@@ -315,78 +361,11 @@ export default function NetworkDeviceDetailPage({ assetId }: NetworkDeviceDetail
           tabIndex={-1}
           ref={monitoringPanelRef}
         >
-          <Section title={t('networkDeviceDetailPage.sections.monitoringStatus')}>
-            <dl className="space-y-3 text-sm">
-              <div className="flex items-center justify-between gap-4">
-                <dt className="text-muted-foreground">{t('networkDeviceDetailPage.fields.snmpMonitoring')}</dt>
-                <dd className="font-medium">{extras.snmpMonitoringEnabled ? t('common:states.enabled') : t('networkDeviceDetailPage.notConfigured')}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-4">
-                <dt className="text-muted-foreground">{t('networkDeviceDetailPage.fields.networkMonitoring')}</dt>
-                <dd className="font-medium">{extras.networkMonitoringEnabled ? t('common:states.enabled') : t('networkDeviceDetailPage.notConfigured')}</dd>
-              </div>
-            </dl>
-            <button
-              type="button"
-              data-testid="network-detail-edit-monitoring"
-              onClick={() => openSettings('monitoring')}
-              className="mt-3 border-t pt-3 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {t('networkDeviceDetailPage.settings.openMonitoringSettings')}
-            </button>
-          </Section>
-
-          <Section title={t('networkDeviceDetailPage.sections.discovery')}>
-            <dl className="grid grid-cols-1 gap-y-3 text-sm">
-              <Field
-                label={t('networkDeviceDetailPage.fields.linkedDevice')}
-                value={
-                  <div className="space-y-1.5">
-                    {asset.linkedDeviceId ? (
-                      <span className="flex flex-wrap items-center gap-3">
-                        <a
-                          href={`/devices/${asset.linkedDeviceId}`}
-                          data-testid="network-detail-linked-device"
-                          className="text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {t('networkDeviceDetailPage.sameDeviceAs', {
-                            name: asset.linkedDeviceName || t('common:states.unknown'),
-                          })}
-                        </a>
-                        <span className="text-xs text-muted-foreground" data-testid="network-detail-link-provenance">
-                          {isManualLink(asset.linkSource)
-                            ? t('networkDeviceDetailPage.provenance.manual')
-                            : t('networkDeviceDetailPage.provenance.auto')}
-                        </span>
-                      </span>
-                    ) : (
-                      <>
-                        <p>{t('networkDeviceDetailPage.notLinked')}</p>
-                        {extras.autoLinkSuppressedAt && (
-                          <p className="text-xs text-muted-foreground" data-testid="network-detail-suppressed">
-                            {t('networkDeviceDetailPage.autoLinkSuppressed')}
-                          </p>
-                        )}
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      data-testid="network-detail-edit-link"
-                      onClick={() => openSettings('link')}
-                      className="text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {t('networkDeviceDetailPage.settings.openLinkSettings')}
-                    </button>
-                  </div>
-                }
-              />
-              <Field
-                label={t('networkDeviceDetailPage.fields.discoveryMethods')}
-                value={discoveryMethods.length > 0 ? discoveryMethods.join(', ') : <UnknownValue />}
-              />
-              <Field label={t('networkDeviceDetailPage.fields.discoveryProfile')} value={asset.profileName || <UnknownValue />} />
-            </dl>
-          </Section>
+          <MonitoringTab
+            assetId={asset.id}
+            timezone={timezone}
+            onOpenMonitoringSettings={() => openSettings('monitoring')}
+          />
         </div>
       )}
 

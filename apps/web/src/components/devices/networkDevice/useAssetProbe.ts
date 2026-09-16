@@ -16,6 +16,8 @@ export type ProbeErrorCode =
   | 'NO_AGENT_IN_SITE'
   | 'PROBE_IN_FLIGHT'
   | 'ASSET_NO_IP'
+  | 'ASSET_NO_SITE'
+  | 'REFRESH_FAILED'
   | 'PROBE_TIMED_OUT'
   | 'UNKNOWN';
 
@@ -23,7 +25,7 @@ export const PROBE_POLL_INTERVAL_MS = 3_000;
 export const PROBE_POLL_MAX_MS = 60_000;
 const MAX_POLLS = PROBE_POLL_MAX_MS / PROBE_POLL_INTERVAL_MS;
 
-const KNOWN_CODES: ProbeErrorCode[] = ['NO_AGENT_IN_SITE', 'PROBE_IN_FLIGHT', 'ASSET_NO_IP'];
+const KNOWN_CODES: ProbeErrorCode[] = ['NO_AGENT_IN_SITE', 'PROBE_IN_FLIGHT', 'ASSET_NO_IP', 'ASSET_NO_SITE'];
 
 function toProbeErrorCode(err: unknown): ProbeErrorCode {
   if (err instanceof ActionError) {
@@ -42,12 +44,14 @@ export function useAssetProbe({
 }: {
   assetId: string;
   probe: AssetProbe | null | undefined;
-  onRefresh: () => Promise<void> | void;
+  onRefresh: () => Promise<boolean>;
 }) {
   const { t } = useTranslation('devices');
   const [checking, setChecking] = useState(false);
   const [errorCode, setErrorCode] = useState<ProbeErrorCode | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [budgetExpired, setBudgetExpired] = useState(false);
 
   const serverPending = probe?.state === 'pending';
   const pending = serverPending && !gaveUp;
@@ -59,13 +63,20 @@ export function useAssetProbe({
 
   const checkNow = useCallback(async () => {
     setErrorCode(null);
-    setGaveUp(false);
     setChecking(true);
     try {
       await runAction({
         request: () => fetchWithAuth(`/discovery/assets/${assetId}/probe`, { method: 'POST' }),
         errorFallback: t('networkDeviceDetailPage.probe.errors.unknown'),
       });
+      setBudgetExpired(false);
+      setGaveUp(false);
+      setAttempt((value) => value + 1);
+      if (!await refreshRef.current()) {
+        setGaveUp(true);
+        setErrorCode('REFRESH_FAILED');
+      }
+
     } catch (err) {
       // 401 means the session expired — runAction has already handed control
       // to the auth redirect; adding an inline error line on a page that is
@@ -74,32 +85,56 @@ export function useAssetProbe({
       if (!(err instanceof ActionError)) {
         showToast({ type: 'error', message: t('networkDeviceDetailPage.errors.unexpected') });
       }
-      setErrorCode(toProbeErrorCode(err));
+      const code = toProbeErrorCode(err);
+      setErrorCode(code);
+      if (code === 'PROBE_IN_FLIGHT') await refreshRef.current();
       return;
     } finally {
       setChecking(false);
     }
-    await refreshRef.current();
   }, [assetId, t]);
 
-  // Poll while the server says pending. Keyed on `probe.observedAt` so a NEW
-  // probe restarts the budget instead of inheriting the previous one's ticks.
+  // A successful POST starts a fresh budget even if the pending stamp is
+  // unchanged (e.g. no result has ever been observed). A rejected retry must
+  // preserve gaveUp so an in-flight conflict cannot wedge the button.
   const pollKey = serverPending ? (probe?.observedAt ?? 'pending') : null;
   useEffect(() => {
-    if (pollKey === null) return;
-    setGaveUp(false);
+    if (pollKey === null || gaveUp) return;
     let ticks = 0;
-    const timer = setInterval(() => {
+    let failures = 0;
+    let refreshing = false;
+    let cancelled = false;
+    const timer = setInterval(async () => {
       ticks += 1;
-      void refreshRef.current();
+      if (!refreshing) {
+        refreshing = true;
+        const refreshed = await refreshRef.current();
+        refreshing = false;
+        if (cancelled) return;
+        failures = refreshed ? 0 : failures + 1;
+        if (failures >= 3) {
+          clearInterval(timer);
+          setGaveUp(true);
+          setErrorCode('REFRESH_FAILED');
+          return;
+        }
+      }
       if (ticks >= MAX_POLLS) {
         clearInterval(timer);
-        setGaveUp(true);
-        setErrorCode('PROBE_TIMED_OUT');
+        setBudgetExpired(true);
       }
     }, PROBE_POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [pollKey]);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [pollKey, attempt, gaveUp]);
+
+  // Decide after React applies the final refreshed asset too: the last poll
+  // can resolve the probe at the deadline, in which case there is no timeout.
+  useEffect(() => {
+    if (budgetExpired && serverPending) {
+      setGaveUp(true);
+      setErrorCode('PROBE_TIMED_OUT');
+    }
+  }, [budgetExpired, serverPending]);
 
   return { checking, pending, errorCode, checkNow };
 }
@@ -109,6 +144,8 @@ export const PROBE_ERROR_KEYS: Record<ProbeErrorCode, string> = {
   NO_AGENT_IN_SITE: 'noAgentInSite',
   PROBE_IN_FLIGHT: 'inFlight',
   ASSET_NO_IP: 'noIp',
+  ASSET_NO_SITE: 'noSite',
+  REFRESH_FAILED: 'refreshFailed',
   PROBE_TIMED_OUT: 'timedOut',
   UNKNOWN: 'unknown',
 };

@@ -23,6 +23,8 @@ export function PollConfigSummary({
   templateName,
   timezone,
   onEdit,
+  templateError = false,
+  onRetry,
 }: {
   collection: Collection | null;
   snmpDevice: SnmpDeviceSummary | null;
@@ -30,6 +32,8 @@ export function PollConfigSummary({
   timezone: string;
   /** W04's `openSettings('monitoring')` when the page exposes it. */
   onEdit?: () => void;
+  templateError?: boolean;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation('devices');
   const tf = t as unknown as TFn;
@@ -56,7 +60,23 @@ export function PollConfigSummary({
         </div>
         <div data-testid="network-detail-poll-template">
           <dt className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.fields.template')}</dt>
-          <dd className="font-medium break-words">{templateName ?? unknown}</dd>
+          <dd className="font-medium break-words">
+            {templateError ? (
+              <>
+                <p className="text-sm text-destructive" data-testid="network-detail-template-error">
+                  {t('networkDeviceDetailPage.errors.templateLoad')}
+                </p>
+                <button
+                  type="button"
+                  data-testid="network-detail-template-retry"
+                  onClick={onRetry}
+                  className="mt-2 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {t('networkDeviceDetailPage.tryAgain')}
+                </button>
+              </>
+            ) : templateName ?? unknown}
+          </dd>
         </div>
         <div data-testid="network-detail-poll-interval">
           <dt className="text-xs text-muted-foreground">{t('networkDeviceDetailPage.fields.pollingInterval')}</dt>

@@ -105,7 +105,7 @@ describe('useAssetMetrics', () => {
 
     const { result, rerender } = renderHook(
       ({ range }: { range: '24h' | '7d' }) => useAssetMetrics({ assetId: 'a1', oid: 'x', range }),
-      { initialProps: { range: '24h' as const } },
+      { initialProps: { range: '24h' as '24h' | '7d' } },
     );
 
     const laterSeries = [{ oid: 'x', instance: '', name: 'later', points: [['2026-09-16T11:00:00.000Z', 7]] }];
@@ -136,3 +136,16 @@ describe('useAssetMetrics', () => {
     expect(secondUrl.split('&from=')[0]).toBe(firstUrl.split('&from=')[0]);
   });
 });
+
+  it('returns truncatedSeries and clears it when a new request starts', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(json({ series, truncatedSeries: true }));
+    const { result, rerender } = renderHook(
+      ({ oid }) => useAssetMetrics({ assetId: 'a1', oid, range: '24h' }),
+      { initialProps: { oid: 'x' } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.truncatedSeries).toBe(true);
+    fetchWithAuthMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+    rerender({ oid: 'y' });
+    expect(result.current.truncatedSeries).toBe(false);
+  });

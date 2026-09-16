@@ -2332,7 +2332,10 @@
       "load": "No se pudo cargar este dispositivo de red. Comprueba tu conexión e inténtalo de nuevo.",
       "malformed": "El servidor devolvió una respuesta inesperada para este dispositivo de red. Inténtalo de nuevo y, si el problema persiste, comunícate con soporte.",
       "notFound": "Dispositivo de red no encontrado",
-      "monitoringLoad": "No se pudieron cargar los datos de monitoreo de este dispositivo. Inténtalo de nuevo."
+      "monitoringLoad": "No se pudieron cargar los datos de monitoreo de este dispositivo. Inténtalo de nuevo.",
+      "checksLoad": "No se pudieron cargar las comprobaciones de red.",
+      "thresholdsLoad": "No se pudieron cargar las alertas de umbral.",
+      "templateLoad": "No se pudo cargar la plantilla SNMP."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2411,7 +2414,8 @@
       "oids": "OID",
       "networkChecks": "Comprobaciones de red",
       "thresholds": "Alertas de umbral SNMP",
-      "history": "Historial"
+      "history": "Historial",
+      "deviceHealth": "Estado del dispositivo"
     },
     "stats": {
       "asOf": "a partir de {{time}}",
@@ -2429,7 +2433,9 @@
         "inFlight": "Ya hay una comprobación en curso para este dispositivo.",
         "noIp": "Este activo no tiene una dirección IP para comprobar.",
         "timedOut": "El agente no respondió en un minuto. Puede estar desconectado u ocupado.",
-        "unknown": "No se pudo comprobar este dispositivo en este momento."
+        "unknown": "No se pudo comprobar este dispositivo en este momento.",
+        "noSite": "Este activo no tiene un sitio asignado. Asígnalo a un sitio y vuelve a intentarlo.",
+        "refreshFailed": "Se guardó, pero la página no pudo leer el resultado. Vuelve a cargarla."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "día"
       },
       "emptyTitle": "Todavía no se recopilan valores de ningún OID",
-      "emptyDescription": "El historial aparece cuando un sondeo devuelve un valor para al menos un OID."
+      "emptyDescription": "El historial aparece cuando un sondeo devuelve un valor para al menos un OID.",
+      "truncated": "Solo se muestran las primeras 64 series de instancias."
     },
     "poll": {
       "everySeconds": "cada {{count}} s",

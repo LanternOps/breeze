@@ -94,7 +94,7 @@ describe('decodeErrorState', () => {
 
 describe('readStatusWords', () => {
   it('decodes both status enums and the error bits', () => {
-    expect(readStatusWords(xerox)).toEqual({
+    expect(readStatusWords(xerox)).toMatchObject({
       printerStatus: 'idle',
       deviceStatus: 'warning',
       errors: ['markerSupplyMissing'],
@@ -102,7 +102,7 @@ describe('readStatusWords', () => {
   });
 
   it('returns nulls, not guesses, when the status OIDs were not collected', () => {
-    expect(readStatusWords({ ...xerox, oids: [] })).toEqual({
+    expect(readStatusWords({ ...xerox, oids: [] })).toMatchObject({
       printerStatus: null,
       deviceStatus: null,
       errors: [],
@@ -124,3 +124,52 @@ describe('summariseDeltas', () => {
     expect(summariseDeltas([['2026-09-15', 30]])).toEqual({ yesterday: 30, lastWeek: null });
   });
 });
+
+  it('treats a negative level as unknown even when the capacity is known', () => {
+    const supply = groupSupplies({ ...xerox, oids: [
+      walkOid(PRINTER_OIDS.suppliesLevel, 'Level', [['1.1', '-2']]),
+      walkOid(PRINTER_OIDS.suppliesMaxCapacity, 'Capacity', [['1.1', '100']]),
+    ] })[0];
+    expect(supply).toMatchObject({ unknown: true, percent: null });
+  });
+
+  it('joins out-of-order and sparse walks by instance', () => {
+    const supplies = groupSupplies({ ...xerox, oids: [
+      walkOid(PRINTER_OIDS.suppliesLevel, 'Level', [['1.2', '80'], ['1.1', '20'], ['1.3', '60']]),
+      walkOid(PRINTER_OIDS.suppliesMaxCapacity, 'Capacity', [['1.1', '200'], ['1.2', '100']]),
+      walkOid(PRINTER_OIDS.suppliesDescription, 'Description', [['1.1', 'Cyan'], ['1.3', 'Yellow']]),
+      walkOid(PRINTER_OIDS.colorantValue, 'Colorant', [['1.3', 'yellow'], ['1.2', 'magenta']]),
+    ] });
+    expect(supplies).toMatchObject([
+      { instance: '1.2', description: null, colorant: 'magenta', percent: 80 },
+      { instance: '1.1', description: 'Cyan', colorant: null, percent: 10 },
+      { instance: '1.3', description: 'Yellow', colorant: 'yellow', percent: null, unknown: true },
+    ]);
+  });
+
+  it('finds the lowest supply when it is last', () => {
+    expect(lowestSupply({ ...xerox, oids: [
+      walkOid(PRINTER_OIDS.suppliesLevel, 'Level', [['1.1', '80'], ['1.2', '20']]),
+      walkOid(PRINTER_OIDS.suppliesMaxCapacity, 'Capacity', [['1.1', '100'], ['1.2', '100']]),
+    ] })).toMatchObject({ instance: '1.2', percent: 20 });
+  });
+
+  it('requires seven daily buckets before reporting lastWeek', () => {
+    const points: Array<[string, number]> = Array.from({ length: 7 }, (_, i) => [`2026-09-${i + 1}`, i + 1]);
+    expect(summariseDeltas(points.slice(0, 6))).toEqual({ yesterday: 6, lastWeek: null });
+    expect(summariseDeltas(points)).toEqual({ yesterday: 7, lastWeek: 28 });
+  });
+
+  it('preserves stale supply and status observation metadata', () => {
+    const stale: Collection = { ...xerox, oids: xerox.oids.map((entry) => ({
+      ...entry, state: 'stale', observedAt: '2026-09-15T10:00:00.000Z',
+    })) };
+    expect(groupSupplies(stale)[0]).toMatchObject({ state: 'stale', observedAt: '2026-09-15T10:00:00.000Z' });
+    expect(readStatusWords(stale)).toMatchObject({
+      freshness: {
+        printerStatus: { state: 'stale', observedAt: '2026-09-15T10:00:00.000Z' },
+        deviceStatus: { state: 'stale', observedAt: '2026-09-15T10:00:00.000Z' },
+        errors: { state: 'stale', observedAt: '2026-09-15T10:00:00.000Z' },
+      },
+    });
+  });

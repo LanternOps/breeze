@@ -28,15 +28,33 @@ export function oidDisplayName(oid: string, collection: Collection | null): stri
 export function ThresholdAlertsSection({
   thresholds,
   collection,
+  thresholdsError = false,
+  onRetry,
 }: {
   thresholds: ThresholdSummary[];
   collection: Collection | null;
+  thresholdsError?: boolean;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation('devices');
 
   return (
     <Section title={t('networkDeviceDetailPage.sections.thresholds')} testId="network-detail-thresholds">
-      {thresholds.length === 0 ? (
+      {thresholdsError ? (
+        <div>
+          <p className="text-sm text-destructive" data-testid="network-detail-thresholds-error">
+            {t('networkDeviceDetailPage.errors.thresholdsLoad')}
+          </p>
+          <button
+            type="button"
+            data-testid="network-detail-thresholds-retry"
+            onClick={onRetry}
+            className="mt-2 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {t('networkDeviceDetailPage.tryAgain')}
+          </button>
+        </div>
+      ) : thresholds.length === 0 ? (
         <EmptyState
           variant="plain"
           size="sm"
@@ -60,7 +78,7 @@ export function ThresholdAlertsSection({
                     {threshold.operator ?? '?'} {threshold.threshold ?? '?'}
                   </span>
                   <span className={`rounded-full border px-1.5 py-0.5 text-xs ${SEVERITY_CLASSES[threshold.severity] ?? SEVERITY_CLASSES.info}`}>
-                    {t(/* i18n-dynamic */ `alerts:severity.${threshold.severity}`)}
+                    {t(/* i18n-dynamic */ `alerts:alertDetailPage.severity.${threshold.severity}`)}
                   </span>
                   {!threshold.isActive && (
                     <span className="text-xs text-muted-foreground">{t('common:states.disabled')}</span>

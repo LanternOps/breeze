@@ -8,6 +8,7 @@ import { PRINTER_OIDS } from './printerMib';
 import { xeroxCollection } from './printerMib.fixtures';
 import { fetchWithAuth } from '../../../../stores/auth';
 import type { Collection } from '../types';
+import { formatLastSeen } from '@/lib/formatTime';
 
 vi.mock('../../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 
@@ -200,3 +201,30 @@ describe('PrinterHealth partial data and request changes', () => {
     expect(screen.queryByTestId('network-detail-page-deltas')).toBeNull();
   });
 });
+
+  it('shows Unknown and no meter for a negative level with known capacity', () => {
+    renderCard({ ...xeroxCollection, oids: xeroxCollection.oids.map((entry) =>
+      entry.baseOid === PRINTER_OIDS.suppliesLevel
+        ? { ...entry, instances: entry.instances.map((row) => ({ ...row, value: '-2' })) }
+        : entry,
+    ) });
+    const supply = screen.getByTestId('network-detail-supply-1.1');
+    expect(supply).toHaveTextContent('Unknown');
+    expect(supply.querySelector('[role="meter"]')).toBeNull();
+  });
+
+  it('mutes stale supplies and shows their age without a confident percentage', () => {
+    const observedAt = '2026-09-15T10:00:00.000Z';
+    renderCard({ ...xeroxCollection, oids: xeroxCollection.oids.map((entry) => ({
+      ...entry, state: 'stale', observedAt,
+    })) });
+    const supply = screen.getByTestId('network-detail-supply-1.1');
+    expect(supply).toHaveTextContent('Stale');
+    expect(supply).toHaveTextContent(formatLastSeen(observedAt, 'UTC'));
+    expect(supply).not.toHaveTextContent('37%');
+    expect(supply.querySelector('[role="meter"] > div')).toHaveClass('bg-muted-foreground/30');
+    const status = screen.getByTestId('network-detail-printer-status');
+    expect(status).toHaveTextContent('Stale');
+    expect(status).toHaveTextContent(formatLastSeen(observedAt, 'UTC'));
+    expect(screen.getByTestId('network-detail-printer-errors')).toHaveTextContent('Stale');
+  });

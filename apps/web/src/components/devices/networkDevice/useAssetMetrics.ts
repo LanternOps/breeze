@@ -43,6 +43,7 @@ export function useAssetMetrics({
 }: UseAssetMetricsArgs) {
   const { t } = useTranslation('devices');
   const [series, setSeries] = useState<MetricSeries[]>([]);
+  const [truncatedSeries, setTruncatedSeries] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -52,6 +53,7 @@ export function useAssetMetrics({
   const seqRef = useRef(0);
 
   useEffect(() => {
+    setTruncatedSeries(false);
     if (!oid) {
       setSeries([]);
       setError(null);
@@ -77,7 +79,7 @@ export function useAssetMetrics({
     void (async () => {
       try {
         const response = await fetchWithAuth(`/monitoring/assets/${assetId}/metrics?${params.toString()}`);
-        const body = (await response.json().catch(() => null)) as { series?: MetricSeries[]; error?: string } | null;
+        const body = (await response.json().catch(() => null)) as { series?: MetricSeries[]; truncatedSeries?: boolean; error?: string } | null;
         if (seq !== seqRef.current) return;
         if (!response.ok) {
           // The 400 carries the cap in its message (§14) — showing it is the
@@ -87,6 +89,7 @@ export function useAssetMetrics({
           return;
         }
         setSeries(Array.isArray(body?.series) ? body.series : []);
+        setTruncatedSeries(body?.truncatedSeries === true);
       } catch {
         if (seq !== seqRef.current) return;
         setError(t('networkDeviceDetailPage.charts.loadFailed'));
@@ -100,5 +103,5 @@ export function useAssetMetrics({
     return () => { ++seqRef.current; };
   }, [assetId, oid, range, delta, windowMs, bucket, nonce, t]);
 
-  return { series, loading, error, reload: () => setNonce((n) => n + 1) };
+  return { series, truncatedSeries, loading, error, reload: () => setNonce((n) => n + 1) };
 }

@@ -2551,7 +2551,10 @@
       "load": "Couldn't load this network device. Check your connection and try again.",
       "malformed": "The server returned an unexpected response for this network device. Try again, and contact support if it keeps happening.",
       "notFound": "Network device not found",
-      "monitoringLoad": "Couldn't load this device's monitoring data. Try again."
+      "monitoringLoad": "Couldn't load this device's monitoring data. Try again.",
+      "checksLoad": "Failed to load network checks.",
+      "thresholdsLoad": "Failed to load threshold alerts.",
+      "templateLoad": "Failed to load the SNMP template."
     },
     "fields": {
       "assetType": "Type",
@@ -2630,7 +2633,8 @@
       "oids": "OIDs",
       "networkChecks": "Network checks",
       "thresholds": "SNMP threshold alerts",
-      "history": "History"
+      "history": "History",
+      "deviceHealth": "Device health"
     },
     "stats": {
       "asOf": "as of {{time}}",
@@ -2648,7 +2652,9 @@
         "inFlight": "A check is already running for this device.",
         "noIp": "This asset has no IP address to check.",
         "timedOut": "The agent didn't answer within a minute. It may be offline or busy.",
-        "unknown": "Couldn't check this device right now."
+        "unknown": "Couldn't check this device right now.",
+        "noSite": "This asset has no site. Assign it to a site, then try again.",
+        "refreshFailed": "Saved, but the page could not read the result. Reload."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "day"
       },
       "emptyTitle": "No OID is collecting yet",
-      "emptyDescription": "History appears once a poll returns a value for at least one OID."
+      "emptyDescription": "History appears once a poll returns a value for at least one OID.",
+      "truncated": "Only the first 64 instance series are shown."
     },
     "poll": {
       "everySeconds": "every {{count}} sec",

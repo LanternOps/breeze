@@ -140,4 +140,10 @@ describe('IdentityCard', () => {
     await userEvent.click(screen.getByTestId('network-detail-edit-identity'));
     expect(onEditIdentity).toHaveBeenCalledTimes(1);
   });
+  it('renders the shifted First seen hour in Asia/Tokyo', () => {
+    renderIdentity({}, { siteTimezone: 'Asia/Tokyo' });
+    expect(screen.getByTestId('network-detail-first-seen')).toHaveTextContent('07:07 PM');
+    expect(screen.getByTestId('network-detail-first-seen').querySelector('dd')).toHaveAttribute('title', expect.stringContaining('07:07 PM'));
+  });
+
 });

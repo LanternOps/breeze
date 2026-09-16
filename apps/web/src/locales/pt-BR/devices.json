@@ -2332,7 +2332,10 @@
       "load": "Não foi possível carregar este dispositivo de rede. Verifique sua conexão e tente novamente.",
       "malformed": "O servidor retornou uma resposta inesperada para este dispositivo de rede. Tente novamente e, se o problema persistir, entre em contato com o suporte.",
       "notFound": "Dispositivo de rede não encontrado",
-      "monitoringLoad": "Não foi possível carregar os dados de monitoramento deste dispositivo. Tente novamente."
+      "monitoringLoad": "Não foi possível carregar os dados de monitoramento deste dispositivo. Tente novamente.",
+      "checksLoad": "Não foi possível carregar as verificações de rede.",
+      "thresholdsLoad": "Não foi possível carregar os alertas de limite.",
+      "templateLoad": "Não foi possível carregar o modelo SNMP."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2411,7 +2414,8 @@
       "oids": "OID",
       "networkChecks": "Verificações de rede",
       "thresholds": "Alertas de limite SNMP",
-      "history": "Histórico"
+      "history": "Histórico",
+      "deviceHealth": "Integridade do dispositivo"
     },
     "stats": {
       "asOf": "em {{time}}",
@@ -2429,7 +2433,9 @@
         "inFlight": "Já existe uma verificação em andamento para este dispositivo.",
         "noIp": "Este ativo não tem um endereço IP para verificar.",
         "timedOut": "O agente não respondeu em um minuto. Ele pode estar offline ou ocupado.",
-        "unknown": "Não foi possível verificar este dispositivo no momento."
+        "unknown": "Não foi possível verificar este dispositivo no momento.",
+        "noSite": "Este ativo não tem um site atribuído. Atribua-o a um site e tente novamente.",
+        "refreshFailed": "Salvo, mas a página não conseguiu ler o resultado. Recarregue a página."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "dia"
       },
       "emptyTitle": "Nenhum OID está coletando valores ainda",
-      "emptyDescription": "O histórico aparece quando uma consulta retorna um valor para pelo menos um OID."
+      "emptyDescription": "O histórico aparece quando uma consulta retorna um valor para pelo menos um OID.",
+      "truncated": "Somente as primeiras 64 séries de instâncias são exibidas."
     },
     "poll": {
       "everySeconds": "a cada {{count}} s",

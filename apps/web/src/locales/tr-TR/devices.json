@@ -2332,7 +2332,10 @@
       "load": "Bu ağ cihazı yüklenemedi. Bağlantınızı kontrol edip tekrar deneyin.",
       "malformed": "Sunucu bu ağ cihazı için beklenmeyen bir yanıt döndürdü. Tekrar deneyin, sorun devam ederse destek ekibiyle iletişime geçin.",
       "notFound": "Ağ cihazı bulunamadı",
-      "monitoringLoad": "Bu cihazın izleme verileri yüklenemedi. Tekrar deneyin."
+      "monitoringLoad": "Bu cihazın izleme verileri yüklenemedi. Tekrar deneyin.",
+      "checksLoad": "Ağ kontrolleri yüklenemedi.",
+      "thresholdsLoad": "Eşik uyarıları yüklenemedi.",
+      "templateLoad": "SNMP şablonu yüklenemedi."
     },
     "fields": {
       "assetType": "Tür",
@@ -2411,7 +2414,8 @@
       "oids": "OID’ler",
       "networkChecks": "Ağ kontrolleri",
       "thresholds": "SNMP eşik uyarıları",
-      "history": "Geçmiş"
+      "history": "Geçmiş",
+      "deviceHealth": "Cihaz sağlığı"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",
@@ -2429,7 +2433,9 @@
         "inFlight": "Bu cihaz için zaten bir kontrol yürütülüyor.",
         "noIp": "Bu varlığın kontrol edilecek bir IP adresi yok.",
         "timedOut": "Ajan bir dakika içinde yanıt vermedi. Çevrimdışı veya meşgul olabilir.",
-        "unknown": "Bu cihaz şu anda kontrol edilemedi."
+        "unknown": "Bu cihaz şu anda kontrol edilemedi.",
+        "noSite": "Bu varlık bir sahaya atanmamış. Bir sahaya atayıp tekrar deneyin.",
+        "refreshFailed": "Kaydedildi, ancak sayfa sonucu okuyamadı. Sayfayı yeniden yükleyin."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "gün"
       },
       "emptyTitle": "Henüz hiçbir OID için değer toplanmıyor",
-      "emptyDescription": "En az bir OID için sorgu bir değer döndürdüğünde geçmiş görünür."
+      "emptyDescription": "En az bir OID için sorgu bir değer döndürdüğünde geçmiş görünür.",
+      "truncated": "Yalnızca ilk 64 örnek serisi gösterilir."
     },
     "poll": {
       "everySeconds": "her {{count}} sn.",

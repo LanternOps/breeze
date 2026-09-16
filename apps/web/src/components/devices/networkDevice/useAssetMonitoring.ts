@@ -58,11 +58,17 @@ export function useAssetMonitoring(assetId: string) {
   const [checks, setChecks] = useState<NetworkCheckSummary[]>([]);
   const [thresholds, setThresholds] = useState<ThresholdSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [checksError, setChecksError] = useState(false);
+  const [thresholdsError, setThresholdsError] = useState(false);
+  const [templateError, setTemplateError] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setChecksError(false);
+    setThresholdsError(false);
+    setTemplateError(false);
 
     const [assetResult, monitorsResult, thresholdsResult, templatesResult] = await Promise.allSettled([
       fetchWithAuth(`/monitoring/assets/${assetId}`),
@@ -96,8 +102,13 @@ export function useAssetMonitoring(assetId: string) {
     setCollection(nextCollection);
     setSnmpDevice(nextDevice);
 
+    setChecksError(monitorsResult.status !== 'fulfilled' || !monitorsResult.value.ok);
+    setThresholdsError(thresholdsResult.status !== 'fulfilled' || !thresholdsResult.value.ok);
+    setTemplateError(templatesResult.status !== 'fulfilled' || !templatesResult.value.ok);
+
     if (monitorsResult.status === 'fulfilled' && monitorsResult.value.ok) {
       const body = await readJson(monitorsResult.value);
+      setChecksError(body === null);
       setChecks(asList(body, 'monitors') as NetworkCheckSummary[]);
     } else {
       setChecks([]);
@@ -105,14 +116,16 @@ export function useAssetMonitoring(assetId: string) {
 
     if (thresholdsResult.status === 'fulfilled' && thresholdsResult.value.ok) {
       const body = await readJson(thresholdsResult.value);
+      setThresholdsError(body === null);
       setThresholds(asList(body, 'thresholds') as ThresholdSummary[]);
     } else {
       setThresholds([]);
     }
 
     const templateId = nextCollection?.templateId ?? nextDevice?.templateId ?? null;
-    if (templateId && templatesResult.status === 'fulfilled' && templatesResult.value.ok) {
+    if (templatesResult.status === 'fulfilled' && templatesResult.value.ok) {
       const body = await readJson(templatesResult.value);
+      setTemplateError(body === null);
       const templates = asList(body, 'templates') as Array<{ id: string; name: string }>;
       setTemplateName(templates.find((entry) => entry.id === templateId)?.name ?? null);
     } else {
@@ -126,5 +139,5 @@ export function useAssetMonitoring(assetId: string) {
     void load();
   }, [load]);
 
-  return { collection, snmpDevice, templateName, checks, thresholds, loading, error, reload: load };
+  return { collection, snmpDevice, templateName, checks, thresholds, checksError, thresholdsError, templateError, loading, error, reload: load };
 }

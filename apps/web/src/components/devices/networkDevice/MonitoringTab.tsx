@@ -20,7 +20,7 @@ export function MonitoringTab({
   onOpenMonitoringSettings: () => void;
 }) {
   const { t } = useTranslation('devices');
-  const { collection, snmpDevice, templateName, checks, thresholds, loading, error, reload } =
+  const { collection, snmpDevice, templateName, checks, thresholds, checksError, thresholdsError, templateError, loading, error, reload } =
     useAssetMonitoring(assetId);
 
   if (loading) {
@@ -62,11 +62,13 @@ export function MonitoringTab({
         templateName={templateName}
         timezone={timezone}
         onEdit={onOpenMonitoringSettings}
+        templateError={templateError}
+        onRetry={() => void reload()}
       />
       <OidTable collection={collection} timezone={timezone} />
       <MetricHistoryCharts assetId={assetId} collection={collection} timezone={timezone} />
-      <NetworkChecksSection checks={checks} timezone={timezone} onAddCheck={onOpenMonitoringSettings} />
-      <ThresholdAlertsSection thresholds={thresholds} collection={collection} />
+      <NetworkChecksSection checks={checks} timezone={timezone} onAddCheck={onOpenMonitoringSettings} checksError={checksError} onRetry={() => void reload()} />
+      <ThresholdAlertsSection thresholds={thresholds} collection={collection} thresholdsError={thresholdsError} onRetry={() => void reload()} />
     </div>
   );
 }

@@ -14,8 +14,8 @@ vi.mock('../../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
 // never renders. Stubbing ChartWidget keeps these assertions on OUR logic
 // (which OID, which type, which subtitle) instead of on recharts' internals.
 vi.mock('../../analytics/ChartWidget', () => ({
-  default: ({ title, subtitle, type, data }: { title: string; subtitle?: string; type: string; data: unknown[] }) => (
-    <div data-testid={`chart-widget-${title}`} data-type={type} data-points={data.length}>
+  default: ({ title, subtitle, type, data, series }: { title: string; subtitle?: string; type: string; data: unknown[]; series: unknown[] }) => (
+    <div data-testid={`chart-widget-${title}`} data-type={type} data-points={data.length} data-rows={JSON.stringify(data)} data-series={JSON.stringify(series)}>
       {title}
       {subtitle ? <span>{subtitle}</span> : null}
     </div>
@@ -151,3 +151,31 @@ describe('MetricHistoryCharts', () => {
     expect(fetchWithAuthMock).not.toHaveBeenCalled();
   });
 });
+
+  it('keeps walked instances as separate series and merges sparse points by timestamp', async () => {
+    const later = '2026-09-16T11:00:00.000Z';
+    fetchWithAuthMock.mockResolvedValue(json({ series: [
+      { oid: 'x.1', instance: '1', name: 'Port', points: [[later, 12], [AT, 10]] },
+      { oid: 'x.2', instance: '2', name: 'Port', points: [[AT, 20]] },
+    ] }));
+    render(<MetricHistoryCharts assetId="a1" collection={collection} timezone="UTC" />);
+    await waitFor(() => expect(screen.getByTestId('chart-widget-sysUpTime')).toHaveAttribute('data-points', '2'));
+    const widget = screen.getByTestId('chart-widget-sysUpTime');
+    expect(JSON.parse(widget.getAttribute('data-rows')!)).toEqual([
+      { timestamp: AT, '1': 10, '2': 20 }, { timestamp: later, '1': 12 },
+    ]);
+    expect(JSON.parse(widget.getAttribute('data-series')!)).toMatchObject([
+      { key: '1', label: 'Port / 1' }, { key: '2', label: 'Port / 2' },
+    ]);
+  });
+
+  it('uses value as the scalar key and shows the instance truncation note', async () => {
+    fetchWithAuthMock.mockResolvedValue(json({ truncatedSeries: true, series: [
+      { oid: 'x', instance: '', name: 'Temperature', points: [[AT, 10]] },
+    ] }));
+    render(<MetricHistoryCharts assetId="a1" collection={collection} timezone="UTC" />);
+    expect(await screen.findByTestId('network-detail-chart-truncated-1.3.6.1.2.1.1.3.0')).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId('chart-widget-sysUpTime').getAttribute('data-series')!)).toMatchObject([
+      { key: 'value', label: 'Temperature' },
+    ]);
+  });

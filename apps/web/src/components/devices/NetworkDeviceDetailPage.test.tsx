@@ -1,15 +1,20 @@
 import '@/lib/i18n';
 
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import NetworkDeviceDetailPage from './NetworkDeviceDetailPage';
-import { fetchWithAuth } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
 import { showToast } from '../shared/Toast';
 
+// Keep legacy discovery/action queues separate from the new parallel reads.
+const { fetchWithAuthMock, monitoringFetchMock } = vi.hoisted(() => ({
+  fetchWithAuthMock: vi.fn(), monitoringFetchMock: vi.fn(),
+}));
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn(),
+  fetchWithAuth: (url: string, init?: RequestInit) =>
+    url.startsWith('/monitoring/assets/') || url.startsWith('/monitors?assetId=') || url === '/snmp/templates'
+      ? monitoringFetchMock(url, init) : init === undefined ? fetchWithAuthMock(url) : fetchWithAuthMock(url, init),
 }));
 
 vi.mock('@/lib/navigation', () => ({
@@ -22,7 +27,6 @@ vi.mock('../shared/Toast', () => ({
   showToast: vi.fn(),
 }));
 
-const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const showToastMock = vi.mocked(showToast);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -80,6 +84,17 @@ const baseAsset = {
   lastSeenAt: '2026-06-26T10:00:00.000Z',
 };
 
+const baseCollection = {
+  status: 'ok', templateId: 'template-1', pollingInterval: 300,
+  lastPolledAt: new Date(Date.now() - 120_000).toISOString(), nextPollAt: null,
+  consecutiveFailures: 0, oids: [],
+};
+function monitoringResponse(url: string): Promise<Response> {
+  if (url === `/monitoring/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ collection: baseCollection, snmpDevice: null }));
+  if (url === '/snmp/templates') return Promise.resolve(makeJsonResponse({ data: [{ id: 'template-1', name: 'Switch template' }] }));
+  return Promise.resolve(makeJsonResponse({ data: [] }));
+}
+
 // OverflowTabs measures button widths via `offsetWidth`, which jsdom always
 // reports as 0 against a `clientWidth` of 0 — that collapses to "fits 1 tab"
 // (see computeVisible in OverflowTabs.tsx), so with two tabs "Overview" stays
@@ -90,6 +105,103 @@ function openMonitoringTab() {
 }
 
 describe('NetworkDeviceDetailPage', () => {
+  it('composes the reachability card, the type health card and the monitoring sections from the asset and monitoring endpoints', async () => {
+    fetchWithAuthMock.mockImplementation((url: string) => Promise.resolve(
+      makeJsonResponse(url === `/discovery/assets/${ASSET_ID}` ? { data: baseAsset } : { data: [] }),
+    ));
+    monitoringFetchMock.mockImplementation(monitoringResponse);
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-detail-reachability-card')).toBeInTheDocument();
+    expect(screen.getByTestId('network-detail-health')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
+    expect(screen.getByTestId('network-detail-health')).toHaveTextContent('Device health');
+    openMonitoringTab();
+    for (const id of ['poll-config', 'oid-table', 'charts', 'checks', 'thresholds']) {
+      expect(await screen.findByTestId(`network-detail-${id}`)).toBeInTheDocument();
+    }
+    expect(monitoringFetchMock).toHaveBeenCalledWith(`/monitors?assetId=${ASSET_ID}`, undefined);
+    expect(monitoringFetchMock).toHaveBeenCalledWith(`/monitoring/assets/${ASSET_ID}/thresholds`, undefined);
+    expect(monitoringFetchMock).toHaveBeenCalledWith('/snmp/templates', undefined);
+  });
+
+  it.each(['approve', 'dismiss'] as const)('reports a failed read after a saved %s', async (action) => {
+    let saved = false;
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      if (url === `/discovery/assets/${ASSET_ID}/${action}`) {
+        saved = true;
+        return Promise.resolve(makeJsonResponse({ success: true }));
+      }
+      if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(saved
+        ? makeJsonResponse({}, false) : makeJsonResponse({ data: { ...baseAsset, approvalStatus: 'pending' } }));
+      return Promise.resolve(devicesResponse([]));
+    });
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId(`network-detail-${action}`));
+    await waitFor(() => expect(showToastMock).toHaveBeenCalledWith({
+      type: 'error', message: 'Saved, but the page could not refresh. Reload to see the change.',
+    }));
+    expect(screen.getByTestId(`network-detail-${action}`)).toBeEnabled();
+  });
+
+  it('uses the site Chicago timezone for the badge title and First seen', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: {
+      ...baseAsset, siteTimezone: 'America/Chicago', firstSeenAt: '2026-09-16T10:07:00.000Z',
+      reachability: { ...baseReachability, observedAt: '2026-09-16T10:07:00.000Z' },
+    } }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    expect(await screen.findByTestId('network-device-status')).toHaveAttribute('title', expect.stringContaining('05:07'));
+    expect(screen.getByTestId('network-detail-first-seen')).toHaveTextContent('05:07');
+  });
+
+  it('polls a pending 202 probe after 3 s and displays timeout after 63 s', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let pending = false;
+      fetchWithAuthMock.mockImplementation((url: string) => {
+        if (url.endsWith('/probe')) {
+          pending = true;
+          return Promise.resolve(makeJsonResponse({ probe: { state: 'pending' } }, true, 202));
+        }
+        // Exercise the compatibility fallback when only reachability.detail.probe is present.
+        if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ data: {
+          ...baseAsset, reachability: { ...baseReachability, detail: {
+            ...baseReachability.detail, ...(pending ? { probe: { state: 'pending', observedAt: null, responseMs: null } } : {}),
+          } },
+        } }));
+        return Promise.resolve(devicesResponse([]));
+      });
+      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+      fireEvent.click(await screen.findByTestId('network-detail-check-now'));
+      await waitFor(() => expect(screen.getByTestId('network-detail-probe-status')).toBeInTheDocument());
+      const gets = () => fetchWithAuthMock.mock.calls.filter(([url]) => url === `/discovery/assets/${ASSET_ID}`).length;
+      await act(async () => {});
+      const before = gets();
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(gets()).toBe(before + 1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(screen.getByTestId('network-detail-probe-error')).toHaveTextContent("The agent didn't answer within a minute");
+      expect(screen.getByTestId('network-detail-check-now')).toBeEnabled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('names the probe source in the header after a successful check', async () => {
+    let checked = false;
+    fetchWithAuthMock.mockImplementation((url: string) => {
+      const probe = { state: 'ok', observedAt: new Date().toISOString(), responseMs: 4 };
+      if (url.endsWith('/probe')) { checked = true; return Promise.resolve(makeJsonResponse({ probe })); }
+      if (url === `/discovery/assets/${ASSET_ID}`) return Promise.resolve(makeJsonResponse({ data: {
+        ...baseAsset, ...(checked ? { probe, reachability: {
+          ...baseReachability, source: 'probe', observedAt: probe.observedAt, detail: { probe },
+        } } : {}),
+      } }));
+      return Promise.resolve(devicesResponse([]));
+    });
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    fireEvent.click(await screen.findByTestId('network-detail-check-now'));
+    await waitFor(() => expect(screen.getByTestId('network-device-status')).toHaveTextContent(/Responding · probe/i));
+    expect(fetchWithAuthMock.mock.calls.filter(([url]) => url.endsWith('/probe'))).toHaveLength(1);
+  });
+
   it.each(['approve', 'dismiss'] as const)('uses the single writer to %s and refreshes the banner', async (action) => {
     const approvalStatus = action === 'approve' ? 'approved' : 'dismissed';
     fetchWithAuthMock
@@ -154,6 +266,7 @@ describe('NetworkDeviceDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchWithAuthMock.mockReset();
+    monitoringFetchMock.mockReset().mockImplementation(monitoringResponse);
     window.location.hash = '';
   });
 
@@ -286,9 +399,9 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-detail-monitoring');
     expect(window.location.hash).toBe('#monitoring');
     const monitoring = screen.getByTestId('network-detail-monitoring');
-    expect(monitoring.textContent).toContain('SNMP monitoring');
-    expect(monitoring.textContent).toContain('Enabled');
-    expect(monitoring.textContent).toContain('Not linked');
+    await screen.findByTestId('network-detail-poll-config');
+    expect(monitoring.textContent).not.toContain('Enabled');
+    expect(monitoring.textContent).toContain('Polling');
   });
 
   // #reviewFix10b: each tab must point at its panel via aria-controls, and
@@ -335,7 +448,6 @@ describe('NetworkDeviceDetailPage', () => {
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    openMonitoringTab();
     const link = await screen.findByTestId('network-detail-linked-device');
     expect(link.getAttribute('href')).toBe('/devices/dev-9');
     expect(link.textContent).toContain('agent-host');
@@ -351,7 +463,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
     expect(await screen.findByTestId('network-detail-edit-link')).toBeTruthy();
     expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('set manually');
@@ -367,7 +478,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
     await screen.findByTestId('network-detail-linked-device');
     expect(screen.getByTestId('network-detail-edit-link')).toBeTruthy();
@@ -382,9 +492,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
-    await screen.findByTestId('network-detail-monitoring');
     expect(screen.getByTestId('network-detail-suppressed').textContent).toContain(
       'Auto-linking is off for this asset because someone unlinked it',
     );
@@ -397,9 +505,7 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
 
-    await screen.findByTestId('network-detail-monitoring');
     expect(screen.queryByTestId('network-detail-suppressed')).toBeNull();
   });
 
@@ -421,7 +527,6 @@ describe('NetworkDeviceDetailPage', () => {
 
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
     const nameBefore = screen.getByTestId('network-device-name');
 
     fireEvent.click(screen.getByTestId('network-detail-edit-link'));
@@ -1301,7 +1406,8 @@ describe('NetworkDeviceDetailPage', () => {
       const stats = screen.getByTestId('network-detail-stats');
       expect(stats.textContent).toContain('Responding · SNMP');
       expect(stats.textContent).toContain('2.4 ms');
-      expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Not configured');
+      await waitFor(() => expect(screen.getByTestId('network-detail-stat-last-poll')).toHaveTextContent('Polling'));
+      expect(screen.getByTestId('network-detail-stat-last-poll')).not.toHaveTextContent('Not configured');
       // baseAsset.openPorts has 2 entries.
       expect(screen.getByTestId('network-detail-stat-ports').textContent).toContain('2');
 

@@ -2332,7 +2332,10 @@
       "load": "Impossible de charger cet appareil réseau. Vérifiez votre connexion et réessayez.",
       "malformed": "Le serveur a renvoyé une réponse inattendue pour cet appareil réseau. Réessayez et, si le problème persiste, contactez l'assistance.",
       "notFound": "Périphérique réseau non trouvé",
-      "monitoringLoad": "Impossible de charger les données de supervision de cet appareil. Réessayez."
+      "monitoringLoad": "Impossible de charger les données de supervision de cet appareil. Réessayez.",
+      "checksLoad": "Impossible de charger les contrôles réseau.",
+      "thresholdsLoad": "Impossible de charger les alertes de seuil.",
+      "templateLoad": "Impossible de charger le modèle SNMP."
     },
     "fields": {
       "assetType": "Type",
@@ -2411,7 +2414,8 @@
       "oids": "OID",
       "networkChecks": "Contrôles réseau",
       "thresholds": "Alertes de seuil SNMP",
-      "history": "Historique"
+      "history": "Historique",
+      "deviceHealth": "État de l’appareil"
     },
     "stats": {
       "asOf": "à la date du {{time}}",
@@ -2429,7 +2433,9 @@
         "inFlight": "Une vérification est déjà en cours pour cet appareil.",
         "noIp": "Cet actif ne possède aucune adresse IP à vérifier.",
         "timedOut": "L’agent n’a pas répondu dans un délai d’une minute. Il est peut-être hors ligne ou occupé.",
-        "unknown": "Impossible de vérifier cet appareil pour le moment."
+        "unknown": "Impossible de vérifier cet appareil pour le moment.",
+        "noSite": "Cet actif n’est associé à aucun site. Associez-le à un site, puis réessayez.",
+        "refreshFailed": "Enregistré, mais la page n’a pas pu lire le résultat. Rechargez la page."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "jour"
       },
       "emptyTitle": "Aucun OID ne collecte encore de valeurs",
-      "emptyDescription": "L’historique apparaît dès qu’une interrogation renvoie une valeur pour au moins un OID."
+      "emptyDescription": "L’historique apparaît dès qu’une interrogation renvoie une valeur pour au moins un OID.",
+      "truncated": "Seules les 64 premières séries d’instances sont affichées."
     },
     "poll": {
       "everySeconds": "toutes les {{count}} s",

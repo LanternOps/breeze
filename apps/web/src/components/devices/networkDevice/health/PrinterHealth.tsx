@@ -6,6 +6,8 @@
 
 import { useTranslation } from 'react-i18next';
 import { formatNumber, formatPercent } from '@/lib/i18n/format';
+import { formatLastSeen } from '@/lib/formatTime';
+import { formatAbsolute } from '../reachabilityCopy';
 import { Section } from '../primitives';
 import { useAssetMetrics } from '../useAssetMetrics';
 import {
@@ -14,6 +16,7 @@ import {
   readStatusWords,
   summariseDeltas,
   type SupplyReading,
+  type ReadingFreshness,
 } from './printerMib';
 import type { HealthCardProps } from './types';
 
@@ -22,20 +25,34 @@ const LOW_SUPPLY_PERCENT = 20;
 /** One request covers both deltas: yesterday is the last bucket, the week is the last seven. */
 const PAGE_COUNT_WINDOW_MS = 8 * 86_400_000;
 
-function SupplyMeter({ supply }: { supply: SupplyReading }) {
+function StaleReading({ reading, timezone }: { reading: ReadingFreshness | null; timezone: string }) {
+  const { t } = useTranslation('devices');
+  if (reading?.state !== 'stale') return null;
+  return (
+    <span className="ml-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+      <span className="rounded-full border border-warning/30 bg-warning/15 px-1.5 py-0.5 text-warning">
+        {t('networkDeviceDetailPage.collection.oidState.stale')}
+      </span>
+      {reading.observedAt && <span title={formatAbsolute(reading.observedAt, timezone)}>{formatLastSeen(reading.observedAt, timezone)}</span>}
+    </span>
+  );
+}
+
+function SupplyMeter({ supply, timezone }: { supply: SupplyReading; timezone: string }) {
   const { t } = useTranslation('devices');
   const label =
     supply.description
     ?? supply.colorant
     ?? t('networkDeviceDetailPage.printer.supplyFallback', { instance: supply.instance });
-  const low = supply.percent !== null && supply.percent <= LOW_SUPPLY_PERCENT;
+  const stale = supply.state === 'stale';
+  const low = !stale && supply.percent !== null && supply.percent <= LOW_SUPPLY_PERCENT;
 
   return (
     <div data-testid={`network-detail-supply-${supply.instance}`}>
       <div className="flex items-baseline justify-between gap-2 text-sm">
         <span className="min-w-0 truncate">{label}</span>
         <span className="shrink-0 tabular-nums">
-          {supply.percent === null ? (
+          {stale ? <StaleReading reading={supply} timezone={timezone} /> : supply.percent === null ? (
             <span aria-label={t('common:states.unknown')}>{t('common:states.unknown')}</span>
           ) : (
             <>
@@ -52,11 +69,11 @@ function SupplyMeter({ supply }: { supply: SupplyReading }) {
           aria-valuenow={supply.percent}
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-label={label}
+          aria-label={stale ? `${label} · ${t('networkDeviceDetailPage.collection.oidState.stale')}` : label}
           className="mt-1 h-2 w-full overflow-hidden rounded-full bg-muted"
         >
           <div
-            className={`h-full rounded-full ${low ? 'bg-warning' : 'bg-primary'}`}
+            className={`h-full rounded-full ${stale ? 'bg-muted-foreground/30' : low ? 'bg-warning' : 'bg-primary'}`}
             style={{ width: `${supply.percent}%` }}
           />
         </div>
@@ -68,12 +85,13 @@ function SupplyMeter({ supply }: { supply: SupplyReading }) {
 export function PrinterHealth({
   assetId,
   collection,
+  timezone,
   onSetUpMonitoring,
 }: HealthCardProps) {
   const { t } = useTranslation('devices');
   const supplies = groupSupplies(collection);
   const pageCount = readPageCount(collection);
-  const { printerStatus, deviceStatus, errors } = readStatusWords(collection);
+  const { printerStatus, deviceStatus, errors, freshness } = readStatusWords(collection);
 
   // `oid: null` suspends the hook, so a printer with no page-count OID makes no
   // request at all rather than firing one that can only 400.
@@ -124,9 +142,9 @@ export function PrinterHealth({
     <Section title={t('networkDeviceDetailPage.sections.printerHealth')} testId="network-detail-health">
       {(printerStatus || deviceStatus) && (
         <p className="text-sm" data-testid="network-detail-printer-status">
-          {printerStatus && t(/* i18n-dynamic */ `networkDeviceDetailPage.printer.status.${printerStatus}`)}
+          {printerStatus && <span className={freshness.printerStatus?.state === 'stale' ? 'text-muted-foreground' : undefined}>{t(/* i18n-dynamic */ `networkDeviceDetailPage.printer.status.${printerStatus}`)}<StaleReading reading={freshness.printerStatus} timezone={timezone} /></span>}
           {printerStatus && deviceStatus && ' · '}
-          {deviceStatus && t(/* i18n-dynamic */ `networkDeviceDetailPage.printer.deviceStatus.${deviceStatus}`)}
+          {deviceStatus && <span className={freshness.deviceStatus?.state === 'stale' ? 'text-muted-foreground' : undefined}>{t(/* i18n-dynamic */ `networkDeviceDetailPage.printer.deviceStatus.${deviceStatus}`)}<StaleReading reading={freshness.deviceStatus} timezone={timezone} /></span>}
         </p>
       )}
 
@@ -140,13 +158,14 @@ export function PrinterHealth({
               {t(/* i18n-dynamic */ `networkDeviceDetailPage.printer.errors.${bit}`)}
             </li>
           ))}
+          {freshness.errors?.state === 'stale' && <li><StaleReading reading={freshness.errors} timezone={timezone} /></li>}
         </ul>
       )}
 
       {supplies.length > 0 && (
         <div className="mt-3 space-y-2 border-t pt-3">
           {supplies.map((supply) => (
-            <SupplyMeter key={supply.instance} supply={supply} />
+            <SupplyMeter key={supply.instance} supply={supply} timezone={timezone} />
           ))}
         </div>
       )}

@@ -76,7 +76,7 @@ export function useNetworkAsset(assetId: string) {
         siteName: raw.siteName ?? null,
         siteTimezone: raw.siteTimezone ?? null,
         reachability: (raw as NetworkAssetExtras).reachability ?? null,
-        probe: (raw as NetworkAssetExtras).probe ?? null,
+        probe: raw.probe ?? raw.reachability?.detail?.probe ?? null,
         nicVendor: (raw as NetworkAssetExtras).nicVendor ?? null,
         firstSeenAt: raw.firstSeenAt ?? null,
         snmpMonitoringEnabled: raw.snmpMonitoringEnabled ?? false,

@@ -20,16 +20,34 @@ export function NetworkChecksSection({
   checks,
   timezone,
   onAddCheck,
+  checksError = false,
+  onRetry,
 }: {
   checks: NetworkCheckSummary[];
   timezone: string;
   onAddCheck: () => void;
+  checksError?: boolean;
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation('devices');
 
   return (
     <Section title={t('networkDeviceDetailPage.sections.networkChecks')} testId="network-detail-checks">
-      {checks.length === 0 ? (
+      {checksError ? (
+        <div>
+          <p className="text-sm text-destructive" data-testid="network-detail-checks-error">
+            {t('networkDeviceDetailPage.errors.checksLoad')}
+          </p>
+          <button
+            type="button"
+            data-testid="network-detail-checks-retry"
+            onClick={onRetry}
+            className="mt-2 text-xs text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {t('networkDeviceDetailPage.tryAgain')}
+          </button>
+        </div>
+      ) : checks.length === 0 ? (
         <EmptyState
           variant="plain"
           size="sm"

@@ -5,7 +5,7 @@
 // The OIDs and names match the shipped built-in "Generic Printer (RFC 3805)"
 // template seed (apps/api/migrations/2026-05-22-snmp-multi-vendor-templates.sql).
 
-import type { Collection, CollectionOid, CollectionOidInstance } from '../types';
+import type { Collection, CollectionOid, CollectionOidInstance, CollectionOidState } from '../types';
 
 export const PRINTER_OIDS = {
   deviceStatus: '1.3.6.1.2.1.25.3.2.1.5',
@@ -53,7 +53,14 @@ function toInt(value: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export type SupplyReading = {
+export type ReadingFreshness = { state: CollectionOidState; observedAt: string | null };
+
+function readingFreshness(collection: Collection | null, baseOid: string): ReadingFreshness | null {
+  const entry = collection?.oids.find((oid) => oid.baseOid === baseOid);
+  return entry ? { state: entry.state, observedAt: entry.observedAt } : null;
+}
+
+export type SupplyReading = ReadingFreshness & {
   instance: string;
   description: string | null;
   colorant: string | null;
@@ -83,7 +90,18 @@ export function groupSupplies(collection: Collection | null): SupplyReading[] {
     // level and -1/-2 on the capacity. All of them mean "there is no number to
     // draw" — a negative meter or a bar past 100% is worse than saying unknown.
     const unknown = level === null || level < 0 || maxCapacity === null || maxCapacity <= 0;
+    // A percentage depends on both the level and capacity; a stale input
+    // makes the combined reading stale even if the other walk is current.
+    const sources = [PRINTER_OIDS.suppliesLevel, PRINTER_OIDS.suppliesMaxCapacity,
+      PRINTER_OIDS.suppliesDescription, PRINTER_OIDS.colorantValue]
+      .map((oid) => collection?.oids.find((entry) => entry.baseOid === oid && entry.instances.some((instance) => instance.instance === row.instance)))
+      .filter((entry): entry is CollectionOid => Boolean(entry));
+    const staleSources = sources.filter((entry) => entry.state === 'stale');
+    const source = (staleSources.length ? staleSources : sources)
+      .reduce((oldest, entry) => !oldest || (entry.observedAt && (!oldest.observedAt || entry.observedAt < oldest.observedAt)) ? entry : oldest, undefined as CollectionOid | undefined);
     return {
+      state: source?.state ?? 'unknown',
+      observedAt: source?.observedAt ?? null,
       instance: row.instance,
       description: descriptions.get(row.instance) ?? null,
       colorant: colorants.get(row.instance) ?? null,
@@ -141,6 +159,11 @@ export function readStatusWords(collection: Collection | null): {
   printerStatus: string | null;
   deviceStatus: string | null;
   errors: string[];
+  freshness: {
+    printerStatus: ReadingFreshness | null;
+    deviceStatus: ReadingFreshness | null;
+    errors: ReadingFreshness | null;
+  };
 } {
   const printerRow = oidRows(collection, PRINTER_OIDS.printerStatus)[0];
   const deviceRow = oidRows(collection, PRINTER_OIDS.deviceStatus)[0];
@@ -151,6 +174,11 @@ export function readStatusWords(collection: Collection | null): {
     printerStatus: printerValue === null ? null : (HR_PRINTER_STATUS[printerValue] ?? null),
     deviceStatus: deviceValue === null ? null : (HR_DEVICE_STATUS[deviceValue] ?? null),
     errors: decodeErrorState(errorRow?.value ?? null),
+    freshness: {
+      printerStatus: readingFreshness(collection, PRINTER_OIDS.printerStatus),
+      deviceStatus: readingFreshness(collection, PRINTER_OIDS.deviceStatus),
+      errors: readingFreshness(collection, PRINTER_OIDS.detectedErrorState),
+    },
   };
 }
 

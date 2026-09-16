@@ -55,17 +55,28 @@ function OidChart({
   // The instance OID when the walk produced exactly one row, else the base OID
   // (the server fans a base OID out to its instances, capped at 64 series).
   const oid = entry.instances.length === 1 ? entry.instances[0].oid : entry.baseOid;
-  const { series, loading, error, reload } = useAssetMetrics({
+  const { series, truncatedSeries, loading, error, reload } = useAssetMetrics({
     assetId,
     oid,
     range,
     delta: counter,
   });
 
-  const data = useMemo(
-    () => series.flatMap((s) => s.points.map(([timestamp, value]) => ({ timestamp, value }))),
-    [series],
-  );
+  const data = useMemo(() => {
+    const rows = new Map<string, Record<string, string | number>>();
+    for (const metric of series) {
+      for (const [timestamp, value] of metric.points) {
+        const row = rows.get(timestamp) ?? { timestamp };
+        row[metric.instance || 'value'] = value;
+        rows.set(timestamp, row);
+      }
+    }
+    return [...rows.values()].sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  }, [series]);
+  const chartSeries = useMemo(() => series.map((metric) => ({
+    key: metric.instance || 'value',
+    label: metric.instance ? `${metric.name || entry.name} / ${metric.instance}` : metric.name || entry.name,
+  })), [series, entry.name]);
 
   if (error) {
     return (
@@ -100,11 +111,14 @@ function OidChart({
         type={counter ? 'bar' : 'line'}
         data={data}
         xKey="timestamp"
-        // One series per chart: no legend box is needed, the title names it.
-        // The color is a theme token so both modes resolve their own value.
-        series={[{ key: 'value', label: entry.name, color: 'hsl(var(--primary))' }]}
+        series={chartSeries}
         height={220}
       />
+      {truncatedSeries && (
+        <p className="mt-1 text-xs text-muted-foreground" data-testid={`network-detail-chart-truncated-${entry.baseOid}`}>
+          {t('networkDeviceDetailPage.charts.truncated')}
+        </p>
+      )}
     </div>
   );
 }

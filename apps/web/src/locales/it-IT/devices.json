@@ -2332,7 +2332,10 @@
       "load": "Impossibile caricare questo dispositivo di rete. Controlla la connessione e riprova.",
       "malformed": "Il server ha restituito una risposta imprevista per questo dispositivo di rete. Riprova e, se il problema persiste, contatta l'assistenza.",
       "notFound": "Dispositivo di rete non trovato",
-      "monitoringLoad": "Impossibile caricare i dati di monitoraggio di questo dispositivo. Riprova."
+      "monitoringLoad": "Impossibile caricare i dati di monitoraggio di questo dispositivo. Riprova.",
+      "checksLoad": "Impossibile caricare i controlli di rete.",
+      "thresholdsLoad": "Impossibile caricare gli avvisi di soglia.",
+      "templateLoad": "Impossibile caricare il modello SNMP."
     },
     "fields": {
       "assetType": "Tipo",
@@ -2411,7 +2414,8 @@
       "oids": "OID",
       "networkChecks": "Controlli di rete",
       "thresholds": "Avvisi di soglia SNMP",
-      "history": "Cronologia"
+      "history": "Cronologia",
+      "deviceHealth": "Stato del dispositivo"
     },
     "stats": {
       "asOf": "aggiornato al {{time}}",
@@ -2429,7 +2433,9 @@
         "inFlight": "È già in corso una verifica per questo dispositivo.",
         "noIp": "Questa risorsa non ha un indirizzo IP da verificare.",
         "timedOut": "L’agente non ha risposto entro un minuto. Potrebbe essere offline o occupato.",
-        "unknown": "Impossibile verificare questo dispositivo al momento."
+        "unknown": "Impossibile verificare questo dispositivo al momento.",
+        "noSite": "Questa risorsa non è assegnata a un sito. Assegnala a un sito e riprova.",
+        "refreshFailed": "Salvato, ma la pagina non ha potuto leggere il risultato. Ricarica la pagina."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "giorno"
       },
       "emptyTitle": "Nessun OID sta ancora raccogliendo valori",
-      "emptyDescription": "La cronologia appare quando un polling restituisce un valore per almeno un OID."
+      "emptyDescription": "La cronologia appare quando un polling restituisce un valore per almeno un OID.",
+      "truncated": "Vengono mostrate solo le prime 64 serie di istanze."
     },
     "poll": {
       "everySeconds": "ogni {{count}} s",

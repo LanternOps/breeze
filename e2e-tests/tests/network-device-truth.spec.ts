@@ -13,7 +13,7 @@ import { NetworkDevicePage } from '../pages/NetworkDevicePage';
  *
  * Assets are created through the Devices page's own "Add network asset" flow
  * (the same one manual-network-asset.spec.ts drives) so the specs share no
- * fixture state and can run in any order.
+ * fixture state. They run serially to limit load on the shared test environment.
  */
 test.describe.configure({ mode: 'serial' });
 test.beforeEach(clearRefreshState);

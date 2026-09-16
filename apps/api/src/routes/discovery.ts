@@ -1273,6 +1273,11 @@ discoveryRoutes.get(
         // W01 (spec §4.4). `isOnline` is retained for one release and means
         // "last scan/controller verdict"; everything new reads this.
         reachability,
+        probe: a.lastProbeStatus ? {
+          state: a.lastProbeStatus,
+          observedAt: a.lastProbeAt?.toISOString() ?? null,
+          responseMs: a.lastProbeResponseMs ?? null,
+        } : null,
         hostname: a.hostname,
         label: a.label,
         ipAddress: a.ipAddress,

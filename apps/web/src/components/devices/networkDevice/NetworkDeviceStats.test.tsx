@@ -72,7 +72,6 @@ function renderStrip(overrides: Partial<Parameters<typeof NetworkDeviceStats>[0]
       asset={asset}
       reachability={reachability}
       collection={supplyCollection}
-      probe={null}
       timezone="UTC"
       probeState={probeState}
       onViewPorts={vi.fn()}

@@ -6,14 +6,13 @@ import { formatPercent } from '@/lib/i18n/format';
 import { formatLastPoll, formatReachability, type TFn } from './reachabilityCopy';
 import { lowestSupply } from './health/printerMib';
 import { portsUp } from './health/ifTable';
-import type { AssetProbe, Collection, Reachability } from './types';
+import type { Collection, Reachability } from './types';
 import { PROBE_ERROR_KEYS, type useAssetProbe } from './useAssetProbe';
 
 export type NetworkDeviceStatsProps = {
   asset: DiscoveredAsset;
   reachability: Reachability | null;
   collection: Collection | null;
-  probe: AssetProbe | null;
   timezone: string;
   probeState: ReturnType<typeof useAssetProbe>;
   onViewPorts: () => void;

@@ -2332,7 +2332,10 @@
       "load": "Das Netzwerkgerät konnte nicht geladen werden. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
       "malformed": "Der Server hat eine unerwartete Antwort für dieses Netzwerkgerät zurückgegeben. Versuchen Sie es erneut, und wenden Sie sich an den Support, falls das Problem weiterhin auftritt.",
       "notFound": "Netzwerkgerät nicht gefunden",
-      "monitoringLoad": "Die Überwachungsdaten dieses Geräts konnten nicht geladen werden. Versuchen Sie es erneut."
+      "monitoringLoad": "Die Überwachungsdaten dieses Geräts konnten nicht geladen werden. Versuchen Sie es erneut.",
+      "checksLoad": "Netzwerkprüfungen konnten nicht geladen werden.",
+      "thresholdsLoad": "Schwellenwertalarme konnten nicht geladen werden.",
+      "templateLoad": "Die SNMP-Vorlage konnte nicht geladen werden."
     },
     "fields": {
       "assetType": "Typ",
@@ -2411,7 +2414,8 @@
       "oids": "Objektkennungen (OIDs)",
       "networkChecks": "Netzwerkprüfungen",
       "thresholds": "SNMP-Schwellenwertalarme",
-      "history": "Verlauf"
+      "history": "Verlauf",
+      "deviceHealth": "Gerätezustand"
     },
     "stats": {
       "asOf": "Stand: {{time}}",
@@ -2429,7 +2433,9 @@
         "inFlight": "Für dieses Gerät läuft bereits eine Prüfung.",
         "noIp": "Dieses Gerät hat keine IP-Adresse, die geprüft werden kann.",
         "timedOut": "Der Agent hat nicht innerhalb einer Minute geantwortet. Möglicherweise ist er offline oder beschäftigt.",
-        "unknown": "Dieses Gerät konnte gerade nicht geprüft werden."
+        "unknown": "Dieses Gerät konnte gerade nicht geprüft werden.",
+        "noSite": "Dieses Asset ist keinem Standort zugewiesen. Weisen Sie es einem Standort zu und versuchen Sie es erneut.",
+        "refreshFailed": "Gespeichert, aber die Seite konnte das Ergebnis nicht lesen. Laden Sie die Seite neu."
       }
     },
     "tabs": {
@@ -2760,7 +2766,8 @@
         "day": "Tag"
       },
       "emptyTitle": "Noch keine Messwerte für OIDs",
-      "emptyDescription": "Der Verlauf erscheint, sobald eine Abfrage einen Wert für mindestens eine OID liefert."
+      "emptyDescription": "Der Verlauf erscheint, sobald eine Abfrage einen Wert für mindestens eine OID liefert.",
+      "truncated": "Es werden nur die ersten 64 Instanzreihen angezeigt."
     },
     "poll": {
       "everySeconds": "alle {{count}} Sek.",

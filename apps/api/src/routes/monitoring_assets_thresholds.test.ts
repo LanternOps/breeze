@@ -70,20 +70,22 @@ const THRESHOLD_ID = '44444444-4444-4444-4444-444444444444';
 
 /** `db.select().from().where().limit()` — the asset lookup. */
 function mockAssetLookup(rows: unknown[]) {
+  const where = vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) });
   vi.mocked(db.select).mockReturnValueOnce({
-    from: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue(rows) }),
-    }),
+    from: vi.fn().mockReturnValue({ where }),
   } as any);
+  return where;
 }
 
 /** `db.select().from().innerJoin().where()` — the thresholds join. */
 function mockThresholdQuery(rows: unknown[]) {
+  const where = vi.fn().mockResolvedValue(rows);
   vi.mocked(db.select).mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
-      innerJoin: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      innerJoin: vi.fn().mockReturnValue({ where }),
     }),
   } as any);
+  return where;
 }
 
 const request = (headers: Record<string, string> = {}) =>
@@ -132,6 +134,21 @@ describe('GET /monitoring/assets/:id/thresholds', () => {
       message: 'Toner low',
       isActive: true,
     });
+  });
+
+  it('scopes both the asset lookup and joined SNMP thresholds to the caller’s org', async () => {
+    const assetWhere = mockAssetLookup([{ id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED }]);
+    const thresholdsWhere = mockThresholdQuery([]);
+
+    const res = await request();
+
+    expect(res.status).toBe(200);
+    const assetPredicate = JSON.stringify(assetWhere.mock.calls[0]?.[0]);
+    expect(assetPredicate).toContain('discoveredAssets.orgId');
+    expect(assetPredicate).toContain(ORG_ID);
+    const thresholdsPredicate = JSON.stringify(thresholdsWhere.mock.calls[0]?.[0]);
+    expect(thresholdsPredicate).toContain('snmpDevices.orgId');
+    expect(thresholdsPredicate).toContain(ORG_ID);
   });
 
   it('returns an empty list when the asset has no SNMP device', async () => {

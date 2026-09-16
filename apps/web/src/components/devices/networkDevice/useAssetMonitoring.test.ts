@@ -79,6 +79,9 @@ describe('useAssetMonitoring', () => {
     expect(result.current.checks[0].name).toBe('Ping');
     expect(result.current.thresholds[0].severity).toBe('high');
     expect(result.current.error).toBeNull();
+    expect(result.current.checksError).toBe(false);
+    expect(result.current.thresholdsError).toBe(false);
+    expect(result.current.templateError).toBe(false);
 
     const urls = fetchWithAuthMock.mock.calls.map((call) => call[0] as string);
     expect(urls).toContain(`/monitoring/assets/${ASSET_ID}`);
@@ -95,8 +98,36 @@ describe('useAssetMonitoring', () => {
     expect(result.current.collection?.oids).toHaveLength(1);
     expect(result.current.checks).toHaveLength(1);
     expect(result.current.thresholds).toEqual([]);
+    expect(result.current.thresholdsError).toBe(true);
     // A degraded panel is not a failed tab.
     expect(result.current.error).toBeNull();
+  });
+
+  it.each(['monitors', 'thresholds', 'templates'] as const)('exposes %s failures and clears them after retry', async (panel) => {
+    routeFetch({ [panel]: json({ error: 'boom' }, 500) });
+    const { result } = renderHook(() => useAssetMonitoring(ASSET_ID));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const flag = { monitors: 'checksError', thresholds: 'thresholdsError', templates: 'templateError' }[panel] as 'checksError' | 'thresholdsError' | 'templateError';
+    expect(result.current[flag]).toBe(true);
+    expect(result.current.error).toBeNull();
+    routeFetch();
+    await act(async () => { await result.current.reload(); });
+    expect(result.current[flag]).toBe(false);
+  });
+
+  it.each(['monitors', 'thresholds', 'templates'] as const)('exposes unreadable JSON from %s and clears the failure after retry', async (panel) => {
+    const unreadable = json(null);
+    vi.mocked(unreadable.json).mockRejectedValue(new SyntaxError('Unexpected end of JSON input'));
+    routeFetch({ [panel]: unreadable });
+    const { result } = renderHook(() => useAssetMonitoring(ASSET_ID));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const flag = { monitors: 'checksError', thresholds: 'thresholdsError', templates: 'templateError' }[panel] as 'checksError' | 'thresholdsError' | 'templateError';
+    expect(result.current[flag]).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(result.current.collection?.oids).toHaveLength(1);
+    routeFetch();
+    await act(async () => { await result.current.reload(); });
+    expect(result.current[flag]).toBe(false);
   });
 
   it('reports an error only when the asset call itself fails', async () => {
