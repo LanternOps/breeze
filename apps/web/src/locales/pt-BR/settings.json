@@ -551,6 +551,10 @@
         "description": "Status, SLAs, categorias, formulários",
         "linkCta": "Gerenciar configurações de tickets →"
       },
+      "emailTemplates": {
+        "label": "Modelos de e-mail",
+        "description": "E-mails de chamados para clientes"
+      },
       "aiBudgets": {
         "label": "Orçamentos de IA",
         "description": "Limites de gastos com IA"
@@ -739,6 +743,37 @@
     "deleteExpiredTitle": "Excluir chaves de registro expiradas",
     "deleteExpiredConfirm": "Excluir todas as chaves de registro expiradas? As chaves que ainda sustentam um link de download do instalador ativo são mantidas. Esta ação não pode ser desfeita."
   },
+  "emailTemplates": {
+    "title": "Modelos de e-mail",
+    "description": "Personalize os e-mails que os clientes recebem sobre chamados. O aviso de resposta nunca inclui o texto da resposta.",
+    "usingDefault": "Padrão",
+    "custom": "Personalizado",
+    "subject": "Assunto",
+    "heading": "Título",
+    "buttonLabel": "Rótulo do botão",
+    "html": "Corpo HTML",
+    "htmlAria": "Corpo HTML do e-mail",
+    "insert": "Inserir:",
+    "preview": "Prévia",
+    "save": "Salvar modelo",
+    "reset": "Restaurar padrão",
+    "saved": "Modelo de e-mail salvo",
+    "saveFailed": "Falha ao salvar o modelo de e-mail",
+    "loadFailed": "Falha ao carregar os modelos de e-mail.",
+    "back": "Voltar à lista",
+    "markupRemoved": "Parte da marcação foi removida: {{tags}}",
+    "variables": {
+      "ticket_number": "Número do chamado",
+      "ticket_subject": "Assunto do chamado",
+      "requester_name": "Nome do solicitante",
+      "requester_email": "E-mail do solicitante",
+      "org_name": "Nome da organização",
+      "partner_name": "Nome da empresa",
+      "portal_url": "URL do portal",
+      "email_only_hint": "Aviso só por e-mail",
+      "resolution_note": "Nota de resolução"
+    }
+  },
   "inboundEmail": {
     "saveError": "Não foi possível salvar as configurações de e-mail de entrada — talvez sua sessão precise de nova verificação MFA. Tente novamente.",
     "orgNotAccessible": "Essa organização não está disponível no seu parceiro.",
@@ -769,6 +804,8 @@
     "dropUnverified": "Descartar mensagens que falham na autenticação do remetente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Quando desativado, mensagens não verificadas ficam em quarentena para revisão. Quando ativado, são descartadas silenciosamente. Isso se aplica a <all>todos</all> os remetentes não verificados — inclusive clientes mapeados cuja mensagem falhe na verificação.",
     "enableAutoresponse": "Enviar resposta automática confirmando novos chamados por e-mail",
+    "editEmailTemplates": "O e-mail de confirmação é editado em Modelos de e-mail.",
+    "editEmailTemplatesLink": "Editar modelos de e-mail",
     "autoresponseMessage": "Mensagem de resposta automática",
     "subject": "Assunto",
     "subjectPlaceholder": "Recebemos sua solicitação: {{ticket_subject}}",

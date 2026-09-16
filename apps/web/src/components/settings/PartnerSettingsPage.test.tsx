@@ -29,6 +29,10 @@ vi.mock('@/lib/navigation', () => ({
   navigateTo: vi.fn(),
 }));
 
+vi.mock('./EmailTemplatesTab', () => ({
+  default: () => <div data-testid="stub-email-templates-tab">EmailTemplatesStub</div>,
+}));
+
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 const showToastMock = vi.mocked(showToast);
@@ -529,6 +533,69 @@ describe('PartnerSettingsPage Ticketing tab', () => {
     render(<PartnerSettingsPage />);
 
     expect(await screen.findByTestId('partner-settings-ticketing-link')).not.toBeNull();
+  });
+});
+
+describe('PartnerSettingsPage Email templates tab', () => {
+  const partnerResponse = {
+    id: 'partner-1',
+    name: 'Acme MSP',
+    slug: 'acme',
+    type: 'partner',
+    plan: 'pro',
+    createdAt: '2026-02-09T00:00:00.000Z',
+    settings: {
+      timezone: 'UTC',
+      dateFormat: 'MM/DD/YYYY',
+      timeFormat: '12h',
+      language: 'en',
+      businessHours: { preset: 'business' },
+      contact: {},
+      address: {},
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.location.hash = '';
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
+  });
+
+  it('exposes an Email templates tab immediately after Ticketing', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    expect(screen.getByRole('link', { name: /^email templates$/i })).not.toBeNull();
+    expect(screen.queryByTestId('stub-email-templates-tab')).toBeNull();
+  });
+
+  it('mounts the email templates tab as self-saving with hash #email-templates', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('link', { name: /^email templates$/i }));
+
+    expect(screen.getByTestId('stub-email-templates-tab')).not.toBeNull();
+    expect(window.location.hash).toBe('#email-templates');
+    expect(screen.queryByRole('button', { name: /save settings/i })).toBeNull();
+    expect(screen.getByText('This section saves its own changes.')).not.toBeNull();
+  });
+
+  it('deep-links #email-templates straight to the Email templates tab on mount', async () => {
+    window.location.hash = '#email-templates';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: [] }));
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse(partnerResponse));
+
+    render(<PartnerSettingsPage />);
+
+    expect(await screen.findByTestId('stub-email-templates-tab')).not.toBeNull();
   });
 });
 
