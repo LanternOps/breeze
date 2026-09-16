@@ -7,6 +7,7 @@ import { authMiddleware, requireMfa, requirePermission, requireScope } from '../
 import { db } from '../db';
 import { devices, deviceSoftware, deviceChangeLog, discoveredAssets, networkMonitors, snmpDevices, snmpMetrics, snmpTemplates, serviceProcessCheckResults } from '../db/schema';
 import { writeRouteAudit } from '../services/auditEvents';
+import { suggestTemplate, type TemplateSuggestion } from '../services/snmpTemplateSuggest';
 import { loadReachability } from '../services/assetReachabilityLoader';
 import { deriveCollection, type CollectionTemplateEntry } from '../services/snmpCollectionState';
 import { isRedisAvailable } from '../services/redis';
@@ -40,6 +41,16 @@ function serializeSnmpDevice(device: typeof snmpDevices.$inferSelect) {
     lastPolled: device.lastPolled?.toISOString?.() ?? (device.lastPolled ? new Date(device.lastPolled as any).toISOString() : null),
     lastStatus: device.lastStatus
   };
+}
+
+/**
+ * The scan stores `{ sysDescr, sysObjectId, sysName }` in discovered_assets.snmpData
+ * (jsonb, agent-authored) — treat every field as untrusted shape.
+ */
+function readSysObjectId(snmpData: unknown): string | null {
+  if (!snmpData || typeof snmpData !== 'object') return null;
+  const raw = (snmpData as Record<string, unknown>).sysObjectId;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
 }
 
 async function validateSnmpTemplateAccess(templateId: string, orgId: string): Promise<boolean> {
@@ -416,6 +427,51 @@ monitoringRoutes.get(
   }
 );
 
+const suggestTemplateQuerySchema = z.object({ assetId: z.string().guid() });
+
+monitoringRoutes.get(
+  '/templates/suggest',
+  requireScope('organization', 'partner', 'system'),
+  requireMonitoringRead,
+  zValidator('query', suggestTemplateQuerySchema),
+  async (c) => {
+    const auth = c.get('auth') as AuthContext;
+    const { assetId } = c.req.valid('query');
+
+    const orgResult = await resolveOrgIdForAsset(auth, assetId);
+    if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
+    const orgId = orgResult.orgId;
+    if (!orgId) return c.json({ error: 'Could not determine organization context' }, 400);
+
+    const [asset] = await db
+      .select({
+        id: discoveredAssets.id,
+        orgId: discoveredAssets.orgId,
+        siteId: discoveredAssets.siteId,
+        assetType: discoveredAssets.assetType,
+        snmpData: discoveredAssets.snmpData,
+      })
+      .from(discoveredAssets)
+      .where(and(eq(discoveredAssets.id, assetId), eq(discoveredAssets.orgId, orgId)))
+      .limit(1);
+    if (!asset) return c.json({ error: 'Asset not found' }, 404);
+
+    const perms = c.get('permissions') as UserPermissions | undefined;
+    if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
+      return c.json({ error: 'Access to this site denied' }, 403);
+    }
+
+    const sysObjectId = readSysObjectId(asset.snmpData);
+    const suggestion = await suggestTemplate({
+      sysObjectId,
+      assetType: asset.assetType ?? null,
+      orgId: asset.orgId,
+    });
+
+    return c.json({ sysObjectId, assetType: asset.assetType ?? null, suggestion });
+  }
+);
+
 const upsertSnmpSchema = z.object({
   snmpVersion: z.enum(['v1', 'v2c', 'v3']),
   community: z.string().optional(),
@@ -462,6 +518,12 @@ monitoringRoutes.put(
       return c.json({ error: 'SNMP template not found' }, 404);
     }
 
+    // `templateId` ABSENT and `templateId: null` are different requests
+    // (spec §8): absent means "choose for me", explicit null means "no
+    // template". zod drops absent optional keys, so the key's presence is the
+    // signal — do not use `?? null`, which conflates the two.
+    const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
+
     const existingRows = await db.select()
       .from(snmpDevices)
       .where(and(eq(snmpDevices.assetId, assetId), eq(snmpDevices.orgId, asset.orgId)))
@@ -474,13 +536,31 @@ monitoringRoutes.put(
       return active ?? existingRows[0];
     })();
 
+    // Apply the suggestion only when the resulting row would otherwise have no
+    // template: on create, or on a row whose template_id is already null (spec
+    // D5 "only on create when no template is given", §8 "templateId omitted
+    // applies it"). Omitting templateId on a row that HAS one now preserves it
+    // rather than silently wiping it.
+    let templateSuggestion: TemplateSuggestion | null = null;
+    let resolvedTemplateId: string | null = templateIdProvided
+      ? (body.templateId ?? null)
+      : (existing?.templateId ?? null);
+    if (!templateIdProvided && !resolvedTemplateId) {
+      templateSuggestion = await suggestTemplate({
+        sysObjectId: readSysObjectId(asset.snmpData),
+        assetType: asset.assetType ?? null,
+        orgId: asset.orgId,
+      });
+      if (templateSuggestion) resolvedTemplateId = templateSuggestion.templateId;
+    }
+
     const setValues: Record<string, unknown> = {
       name: asset.hostname ?? (asset.ipAddress as any),
       ipAddress: asset.ipAddress as any,
       snmpVersion: body.snmpVersion,
       pollingInterval: body.pollingInterval ?? 300,
       port: body.port ?? 161,
-      templateId: body.templateId ?? null,
+      templateId: resolvedTemplateId,
       isActive: true
     };
     // Only overwrite credential fields when explicitly provided to avoid
@@ -557,7 +637,10 @@ monitoringRoutes.put(
 
     return c.json({
       success: true,
-      snmpDevice: serializeSnmpDevice(upserted)
+      snmpDevice: serializeSnmpDevice(upserted),
+      templateSuggestion: templateSuggestion
+        ? { ...templateSuggestion, applied: upserted.templateId === templateSuggestion.templateId }
+        : null
     });
   }
 );

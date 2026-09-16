@@ -39,6 +39,8 @@ const REPORT_TYPES: readonly ReportType[] = [
   'executive_summary',
   'security_compliance_posture',
   'hardware_lifecycle',
+  'threat_detection_review',
+  'endpoint_management_review',
   'vulnerability_management',
 ];
 /** Every `ReportType` that is NOT generated on demand. P2-3 added the first
@@ -236,6 +238,33 @@ describe('generateReport mandatory execution authority', () => {
       expect(params).not.toContain(SITE_B);
     },
   );
+
+  // #5784 W03. The generic `emptyRowsReport()` shape carries NO summary, and
+  // buildReportPdf's endpoint-management arm is guarded on the summary being
+  // present — so that shape degrades the artifact to renderGenericReport's
+  // one-line "No data available for the selected filters". A technician with no
+  // permitted sites must be told that, not shown a blank all-clear.
+  it('endpoint_management_review returns a SHAPED zero-safe summary, not a bare empty result', async () => {
+    const result = await generateReport(
+      'endpoint_management_review',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as Record<string, unknown> | undefined;
+    expect(summary).toBeTruthy();
+    expect(summary).toMatchObject({
+      enrolment: {
+        intuneDevices: null, breezeDevices: null, breezeWithoutIntune: null, intuneWithoutBreezeLink: null,
+      },
+      compliance: { byState: null },
+    });
+    expect(Array.isArray(summary?.rows)).toBe(true);
+    expect(summary?.historyCaveat).toBeTruthy();
+    expect(summary?.dataGaps).toEqual([expect.stringMatching(/No sites are in scope/)]);
+  });
 
   it.each(REPORT_TYPES)(
     '%s preserves unrestricted generation without a site predicate',

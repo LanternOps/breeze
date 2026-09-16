@@ -255,6 +255,12 @@ export interface PortalRunDto {
     | 'security_compliance_posture'
     | 'executive_summary'
     | 'hardware_lifecycle'
+    // #5784 W02 — managed evidence. Visible (after delivery) but never
+    // generatable by a portal user, so it belongs in this union without
+    // belonging in PORTAL_REPORT_TYPES.
+    | 'threat_detection_review'
+    // #5784 W03 — managed evidence; listed after delivery, never generated here.
+    | 'endpoint_management_review'
     // #5784 W04 — managed evidence, visible only once delivered.
     | 'vulnerability_management';
   name: string;

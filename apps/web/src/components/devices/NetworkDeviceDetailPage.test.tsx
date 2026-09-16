@@ -83,6 +83,7 @@ function openMonitoringTab() {
 describe('NetworkDeviceDetailPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchWithAuthMock.mockReset();
     window.location.hash = '';
   });
 
@@ -266,7 +267,7 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('auto-detected');
   });
 
-  it('shows Unlink for a manually linked asset, labeled "set manually"', async () => {
+  it('offers Link settings for a manually linked asset, labeled "set manually"', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
         data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
@@ -277,14 +278,12 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-device-detail');
     openMonitoringTab();
 
-    expect(await screen.findByTestId('network-detail-unlink')).toBeTruthy();
+    expect(await screen.findByTestId('network-detail-edit-link')).toBeTruthy();
     expect(screen.getByTestId('network-detail-link-provenance').textContent).toContain('set manually');
   });
 
-  // #3261 regression: unlink used to be hidden for auto-links (the 2026-06-27
-  // manual-only rule). Suppression makes unlink meaningful for both
-  // provenances, so the server accepts it and the button must render.
-  it('shows Unlink for an auto-linked asset too (#3261)', async () => {
+  // Both link provenances retain the same settings entry point.
+  it('offers Link settings for an auto-linked asset too (#3261)', async () => {
     fetchWithAuthMock.mockResolvedValueOnce(
       makeJsonResponse({
         data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'auto' },
@@ -296,7 +295,7 @@ describe('NetworkDeviceDetailPage', () => {
     openMonitoringTab();
 
     await screen.findByTestId('network-detail-linked-device');
-    expect(screen.getByTestId('network-detail-unlink')).toBeTruthy();
+    expect(screen.getByTestId('network-detail-edit-link')).toBeTruthy();
   });
 
   it('shows the "Auto-linking disabled" line when unlinked and suppressed', async () => {
@@ -329,129 +328,6 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.queryByTestId('network-detail-suppressed')).toBeNull();
   });
 
-  describe('"Link manually…" picker (#3261)', () => {
-    it('fetches devices scoped to the asset\'s site and links the chosen device via runAction', async () => {
-      fetchWithAuthMock
-        .mockResolvedValueOnce(
-          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, siteId: 'site-1' } }),
-        )
-        .mockResolvedValueOnce(devicesResponse([])) // mount's unscoped proxy-popover device fetch
-        .mockResolvedValueOnce(
-          devicesResponse([{ id: 'dev-5', displayName: 'WS-5', status: 'online' }]),
-        ) // site-scoped picker fetch
-        .mockResolvedValueOnce(makeJsonResponse({ success: true }))
-        .mockResolvedValueOnce(
-          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: 'dev-5', linkedDeviceName: 'WS-5', linkSource: 'manual' } }),
-        );
-
-      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-      await screen.findByTestId('network-device-detail');
-      openMonitoringTab();
-
-      fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
-
-      await waitFor(() =>
-        expect(fetchWithAuthMock).toHaveBeenCalledWith('/devices?siteId=site-1'),
-      );
-
-      const select = (await screen.findByTestId(
-        'network-detail-link-manually-select',
-      )) as HTMLSelectElement;
-      fireEvent.change(select, { target: { value: 'dev-5' } });
-
-      fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
-
-      await waitFor(() =>
-        expect(fetchWithAuthMock).toHaveBeenCalledWith(
-          `/discovery/assets/${ASSET_ID}/link`,
-          expect.objectContaining({ method: 'POST', body: JSON.stringify({ deviceId: 'dev-5' }) }),
-        ),
-      );
-    });
-
-    it('surfaces a server error inline without closing the picker', async () => {
-      fetchWithAuthMock
-        .mockResolvedValueOnce(
-          makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, siteId: 'site-1' } }),
-        )
-        .mockResolvedValueOnce(devicesResponse([]))
-        .mockResolvedValueOnce(
-          devicesResponse([{ id: 'dev-5', displayName: 'WS-5', status: 'online' }]),
-        )
-        .mockResolvedValueOnce(
-          makeJsonResponse({ error: 'Device belongs to a different site' }, false, 400),
-        );
-
-      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-      await screen.findByTestId('network-device-detail');
-      openMonitoringTab();
-
-      fireEvent.click(await screen.findByTestId('network-detail-link-manually'));
-      const select = (await screen.findByTestId(
-        'network-detail-link-manually-select',
-      )) as HTMLSelectElement;
-      fireEvent.change(select, { target: { value: 'dev-5' } });
-      fireEvent.click(screen.getByTestId('network-detail-link-manually-submit'));
-
-      expect(
-        await screen.findByTestId('network-detail-link-manually-error'),
-      ).toHaveTextContent('Device belongs to a different site');
-      // The picker stays open on failure so the user can retry.
-      expect(screen.getByTestId('network-detail-link-manually-picker')).toBeTruthy();
-    });
-  });
-
-  it('hides Unlink for an unlinked asset', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
-
-    await screen.findByTestId('network-detail-monitoring');
-    expect(screen.queryByTestId('network-detail-unlink')).toBeNull();
-  });
-
-  it('opens a confirm dialog before unlinking, calls DELETE once confirmed, and announces it', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
-        }),
-      )
-      .mockResolvedValueOnce(devicesResponse([]))
-      .mockResolvedValueOnce(makeJsonResponse({ success: true }))
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, linkSource: null } }));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
-
-    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
-
-    // The DELETE must not fire until the dialog is confirmed.
-    const dialog = await screen.findByTestId('network-detail-unlink-confirm');
-    expect(
-      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
-    ).toBe(false);
-    expect(screen.getByText('The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.')).toBeTruthy();
-
-    fireEvent.click(dialog);
-
-    await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        `/discovery/assets/${ASSET_ID}/link`,
-        { method: 'DELETE' },
-      ),
-    );
-
-    await waitFor(() =>
-      expect(screen.getByTestId('network-detail-live').textContent).toBe('Device unlinked'),
-    );
-  });
-
-  // #reviewFix1: handleUnlink used to call the plain (non-background)
-  // fetchAsset, flashing NetworkDeviceSkeleton over the page mid-unlink.
   it('does not flash the loading skeleton or unmount the page while Unlink reloads the asset', async () => {
     let resolveReload!: (value: Response) => void;
     const reloadPromise = new Promise<Response>((resolve) => {
@@ -473,8 +349,9 @@ describe('NetworkDeviceDetailPage', () => {
     openMonitoringTab();
     const nameBefore = screen.getByTestId('network-device-name');
 
-    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
-    fireEvent.click(await screen.findByTestId('network-detail-unlink-confirm'));
+    fireEvent.click(screen.getByTestId('network-detail-edit-link'));
+    fireEvent.click(await screen.findByTestId('network-settings-link-unlink'));
+    fireEvent.click(await screen.findByTestId('network-settings-link-unlink-confirm'));
 
     await waitFor(() =>
       expect(fetchWithAuthMock).toHaveBeenCalledWith(`/discovery/assets/${ASSET_ID}/link`, { method: 'DELETE' }),
@@ -486,30 +363,8 @@ describe('NetworkDeviceDetailPage', () => {
     expect(screen.getByTestId('network-device-name')).toBe(nameBefore);
 
     resolveReload(makeJsonResponse({ data: { ...baseAsset, linkedDeviceId: null, linkSource: null } }));
-    await waitFor(() => expect(screen.queryByTestId('network-detail-unlink')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('network-settings-link-unlink')).toBeNull());
     expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
-  });
-
-  it('does not call DELETE when the unlink confirmation is cancelled', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({
-        data: { ...baseAsset, linkedDeviceId: 'dev-9', linkedDeviceName: 'agent-host', linkSource: 'manual' },
-      }),
-    );
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-    openMonitoringTab();
-
-    fireEvent.click(await screen.findByTestId('network-detail-unlink'));
-    await screen.findByTestId('network-detail-unlink-confirm');
-
-    fireEvent.click(screen.getByText('Cancel'));
-
-    await waitFor(() => expect(screen.queryByTestId('network-detail-unlink-confirm')).toBeNull());
-    expect(
-      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE'),
-    ).toBe(false);
   });
 
   it('shows a not-found error for a 404 response', async () => {
@@ -531,201 +386,6 @@ describe('NetworkDeviceDetailPage', () => {
     expect(vi.mocked(navigateTo)).toHaveBeenCalledWith('/devices');
   });
 
-  it('arrowing/changing the type Select does not PATCH; clicking Save commits the chosen assetType', async () => {
-    fetchWithAuthMock
-      // initial load (type=workstation)
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
-      // mount's device-list fetch (proxy bridge picker) — fires alongside the
-      // asset load and would otherwise consume a later mock's slot below.
-      .mockResolvedValueOnce(devicesResponse([]))
-      // PATCH response
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }))
-      // reload after the change
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-
-    const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
-    expect(select.value).toBe('workstation');
-
-    fireEvent.change(select, { target: { value: 'router' } });
-    expect(select.value).toBe('router');
-
-    // A keyboard user arrowing through options (which fires a change event
-    // per option landed on) must not PATCH once per option — only Save does.
-    expect(
-      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
-    ).toBe(false);
-
-    fireEvent.click(screen.getByTestId('network-detail-type-save'));
-
-    await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        `/discovery/assets/${ASSET_ID}`,
-        expect.objectContaining({ method: 'PATCH' }),
-      ),
-    );
-
-    const patchCall = fetchWithAuthMock.mock.calls.find(
-      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
-    );
-    expect(patchCall).toBeTruthy();
-    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
-    expect(body).toEqual({ assetType: 'router' });
-
-    // The Save/Cancel row disappears once the change has committed.
-    await waitFor(() => expect(screen.queryByTestId('network-detail-type-save')).toBeNull());
-  });
-
-  it('Cancel and Escape both discard a pending type selection without PATCHing', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
-      .mockResolvedValueOnce(devicesResponse([]));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-
-    const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
-
-    fireEvent.change(select, { target: { value: 'router' } });
-    expect(select.value).toBe('router');
-    expect(screen.getByTestId('network-detail-type-save')).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId('network-detail-type-cancel'));
-    expect(select.value).toBe('workstation');
-    expect(screen.queryByTestId('network-detail-type-save')).toBeNull();
-
-    fireEvent.change(select, { target: { value: 'router' } });
-    fireEvent.keyDown(select, { key: 'Escape' });
-    expect(select.value).toBe('workstation');
-    expect(screen.queryByTestId('network-detail-type-save')).toBeNull();
-
-    expect(
-      fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
-    ).toBe(false);
-  });
-
-  // #reviewFix3: pendingType used to survive a fetchAsset completion even
-  // when the server's type had moved on underneath the pending edit (e.g. a
-  // background return-to-tab refresh landing mid-edit) — the Save button
-  // would then commit a choice made against a value that no longer exists.
-  it('discards a pending type edit if a background refresh returns a different type', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    try {
-      fetchWithAuthMock
-        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
-        .mockResolvedValueOnce(devicesResponse([]))
-        .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'switch' } }));
-
-      render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-      await screen.findByTestId('network-device-detail');
-
-      const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
-      fireEvent.change(select, { target: { value: 'router' } });
-      expect(select.value).toBe('router');
-      expect(screen.getByTestId('network-detail-type-save')).toBeTruthy();
-
-      Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
-      document.dispatchEvent(new Event('visibilitychange'));
-      vi.setSystemTime(Date.now() + 65_000);
-      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-      document.dispatchEvent(new Event('visibilitychange'));
-
-      await waitFor(() => expect(select.value).toBe('switch'));
-      expect(screen.queryByTestId('network-detail-type-save')).toBeNull();
-      expect(
-        fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH'),
-      ).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('shows a reset-to-auto control only when typeSource is manual', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ data: { ...baseAsset, typeSource: 'manual', detectedAssetType: 'workstation' } }),
-    );
-
-    const { unmount } = render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-    expect(screen.getByTestId('network-asset-type-reset')).toBeTruthy();
-
-    unmount();
-    vi.clearAllMocks();
-
-    fetchWithAuthMock.mockResolvedValueOnce(
-      makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }),
-    );
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-    expect(screen.queryByTestId('network-asset-type-reset')).toBeNull();
-  });
-
-  it('resets the type to auto-detected via PATCH when the reset control is clicked', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(
-        makeJsonResponse({ data: { ...baseAsset, typeSource: 'manual', detectedAssetType: 'workstation' } }),
-      )
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }))
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, typeSource: 'auto' } }));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-
-    fireEvent.click(screen.getByTestId('network-asset-type-reset'));
-
-    await waitFor(() =>
-      expect(fetchWithAuthMock).toHaveBeenCalledWith(
-        `/discovery/assets/${ASSET_ID}`,
-        expect.objectContaining({ method: 'PATCH' }),
-      ),
-    );
-
-    const patchCall = fetchWithAuthMock.mock.calls.find(
-      ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
-    );
-    const body = JSON.parse((patchCall![1] as RequestInit).body as string);
-    expect(body).toEqual({ resetTypeToAuto: true });
-  });
-
-  it('disables the type select while a Save is in flight, then re-enables it', async () => {
-    let resolvePatch!: (value: Response) => void;
-    const patchPromise = new Promise<Response>((resolve) => {
-      resolvePatch = resolve;
-    });
-
-    fetchWithAuthMock
-      // initial load
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
-      // mount's device-list fetch (proxy bridge picker) — fires alongside the
-      // asset load and would otherwise consume the PATCH mock's slot below.
-      .mockResolvedValueOnce(devicesResponse([]))
-      // PATCH — stays pending until we resolve it
-      .mockReturnValueOnce(patchPromise as unknown as Promise<Response>)
-      // reload after the change
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
-
-    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
-    await screen.findByTestId('network-device-detail');
-
-    const select = screen.getByTestId('network-asset-type-select') as HTMLSelectElement;
-    expect(select.disabled).toBe(false);
-
-    fireEvent.change(select, { target: { value: 'router' } });
-    fireEvent.click(screen.getByTestId('network-detail-type-save'));
-
-    await waitFor(() => expect(select.disabled).toBe(true));
-
-    resolvePatch(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
-
-    await waitFor(() => expect(select.disabled).toBe(false));
-  });
-
-  // #reviewFix1: changeType used to call the plain (non-background) fetchAsset,
-  // which flips `loading` and swaps the whole page for NetworkDeviceSkeleton —
-  // a visible flash mid-Save even though the operator is already looking at a
-  // fully loaded page.
   it('does not flash the loading skeleton or unmount the page while Save reloads the asset', async () => {
     let resolveReload!: (value: Response) => void;
     const reloadPromise = new Promise<Response>((resolve) => {
@@ -742,8 +402,9 @@ describe('NetworkDeviceDetailPage', () => {
     await screen.findByTestId('network-device-detail');
     const nameBefore = screen.getByTestId('network-device-name');
 
-    fireEvent.change(screen.getByTestId('network-asset-type-select'), { target: { value: 'router' } });
-    fireEvent.click(screen.getByTestId('network-detail-type-save'));
+    fireEvent.click(screen.getByTestId('network-detail-edit-identity'));
+    fireEvent.change(screen.getByTestId('network-settings-identity-type'), { target: { value: 'router' } });
+    fireEvent.click(screen.getByTestId('network-settings-identity-save'));
 
     await waitFor(() =>
       expect(fetchWithAuthMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PATCH')).toBe(true),
@@ -756,38 +417,78 @@ describe('NetworkDeviceDetailPage', () => {
 
     resolveReload(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
 
-    await waitFor(() => expect(screen.queryByTestId('network-detail-type-save')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('network-settings-identity-save')).toBeDisabled());
     expect(screen.queryByTestId('network-device-detail-loading')).toBeNull();
   });
 
-  it('announces the update to the live region once a type Save succeeds', async () => {
-    fetchWithAuthMock
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'workstation' } }))
-      .mockResolvedValueOnce(devicesResponse([]))
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }))
-      .mockResolvedValueOnce(makeJsonResponse({ data: { ...baseAsset, assetType: 'router', typeSource: 'manual' } }));
 
+  it('opens the settings modal from the header button and writes the hash', async () => {
+    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    expect(screen.getByTestId('network-detail-live').textContent).toBe('');
+    fireEvent.click(screen.getByTestId('network-detail-settings'));
 
-    fireEvent.change(screen.getByTestId('network-asset-type-select'), { target: { value: 'router' } });
-    fireEvent.click(screen.getByTestId('network-detail-type-save'));
-
-    await waitFor(() =>
-      expect(screen.getByTestId('network-detail-live').textContent).toBe('Device type updated'),
-    );
+    expect(await screen.findByTestId('network-asset-settings-modal')).toBeInTheDocument();
+    expect(window.location.hash).toBe('#overview/settings/identity');
   });
 
-  it('points the "Manage in Discovery" link at the discovery asset deep-link', async () => {
-    fetchWithAuthMock.mockResolvedValueOnce(makeJsonResponse({ data: baseAsset }));
+  it.each([
+    ['#overview/settings/identity', 'danger', '#overview/settings/danger', 'overview'],
+    ['#monitoring/settings/link', 'identity', '#monitoring/settings/identity', 'monitoring'],
+  ])('clicking a rail section rewrites the hash and keeps the tab (%s)', async (initialHash, section, expectedHash, tab) => {
+    window.location.hash = initialHash;
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-asset-settings-modal');
 
+    fireEvent.click(screen.getByTestId(`network-settings-nav-${section}`));
+
+    await waitFor(() => expect(window.location.hash).toBe(expectedHash));
+    expect(screen.getByTestId(`network-settings-panel-${section}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`network-detail-${tab}`)).toBeInTheDocument();
+  });
+
+  it('opens straight to a section from a deep link', async () => {
+    window.location.hash = '#overview/settings/monitoring';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+
+    expect(await screen.findByTestId('network-settings-panel-monitoring')).toBeInTheDocument();
+  });
+
+  it('closing the modal rewrites the hash back to the bare tab', async () => {
+    window.location.hash = '#monitoring/settings/link';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-asset-settings-modal');
+
+    fireEvent.keyDown(screen.getByTestId('network-asset-settings-modal'), { key: 'Escape' });
+
+    await waitFor(() => expect(window.location.hash).toBe('#monitoring'));
+    expect(screen.queryByTestId('network-asset-settings-modal')).not.toBeInTheDocument();
+  });
+
+  it('a browser back to a tab-only hash closes the modal', async () => {
+    window.location.hash = '#overview/settings/danger';
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
+    render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
+    await screen.findByTestId('network-asset-settings-modal');
+
+    window.location.hash = '#overview';
+    fireEvent(window, new HashChangeEvent('hashchange'));
+
+    await waitFor(() => expect(screen.queryByTestId('network-asset-settings-modal')).not.toBeInTheDocument());
+  });
+
+  it('no longer edits the type inline and no longer links out to Discovery', async () => {
+    fetchWithAuthMock.mockResolvedValue(makeJsonResponse({ data: baseAsset }));
     render(<NetworkDeviceDetailPage assetId={ASSET_ID} />);
     await screen.findByTestId('network-device-detail');
 
-    const link = screen.getByTestId('network-detail-manage-discovery');
-    expect(link.getAttribute('href')).toBe(`/discovery?asset=${ASSET_ID}#assets`);
+    expect(screen.queryByTestId('network-asset-type-select')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('network-detail-manage-discovery')).not.toBeInTheDocument();
+    expect(screen.getByTestId('network-detail-edit-identity')).toBeInTheDocument();
   });
 
   describe('site name in the header', () => {

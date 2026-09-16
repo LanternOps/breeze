@@ -319,7 +319,19 @@
         "vulnerability_management": "Schwachstellenmanagement",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
-        "software_inventory": "Software-Inventar"
+        "software_inventory": "Software-Inventar",
+        "threat_detection_review": "Überprüfung der Bedrohungserkennung",
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
+      },
+      "threatDetection": {
+        "agents": "Endgeräte mit Erkennungsagent",
+        "breezeDevices": "Von Breeze verwaltete Geräte",
+        "carriedIn": "Übernommen, noch offen",
+        "coverage": "Grenzen dieses Berichts",
+        "devicesWithoutAgent": "Verwaltete Geräte ohne Agent",
+        "notMeasured": "k. A.",
+        "opened": "Erkennungen gemeldet",
+        "resolved": "Erkennungen behoben"
       },
       "tryAgain": "Versuchen Sie es erneut",
       "values": {
@@ -329,6 +341,15 @@
       "viewModes": {
         "chart": "Diagramm",
         "table": "Tisch"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Breeze-Geräte ohne Registrierung",
+        "dataGaps": "Was wir nicht messen konnten",
+        "intuneDevices": "In Intune registriert",
+        "intuneWithoutBreezeLink": "Intune-Einträge ohne Zuordnung",
+        "noncompliant": "Nicht konform",
+        "notMeasured": "k. A.",
+        "staleEnrolments": "Veraltete Registrierungen"
       }
     },
     "reportsList": {
@@ -380,7 +401,9 @@
         "vulnerability_management": "Schwachstellenmanagement",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
-        "software_inventory": "Software-Inventar"
+        "software_inventory": "Software-Inventar",
+        "threat_detection_review": "Überprüfung der Bedrohungserkennung",
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
       },
       "runsTable": {
         "actions": "Aktionen",
@@ -892,7 +915,9 @@
         "patches": "Patches",
         "performance": "Leistungsbericht",
         "security_compliance_posture": "Sicherheits- und Compliance-Status",
-        "software_inventory": "Software-Inventar"
+        "software_inventory": "Software-Inventar",
+        "threat_detection_review": "Überprüfung der Bedrohungserkennung",
+        "endpoint_management_review": "Endpunktverwaltungs-Bericht"
       },
       "schedules": {
         "daily": "Täglich",
@@ -934,11 +959,38 @@
         "security_compliance_posture": {
           "description": "Versicherungs-/prüfbereite Beweise: EDR-Abdeckung, Verschlüsselung, Firewall, Patching, Schwachstellen, privilegierter Zugriff und Sicherheitsintegrationen mit prozentual implementierten Rollups.",
           "name": "Sicherheits- und Compliance-Status (Versicherung)"
+        },
+        "threat_detection_review": {
+          "description": "Die für einen Zeitraum vorliegenden Bedrohungserkennungen, mit dem tatsächlich abgedeckten Zeitfenster direkt auf dem Bericht — nie eine Null für eine Quelle, die nicht angebunden war.",
+          "name": "Überprüfung der Bedrohungserkennung"
+        },
+        "endpoint_management_review": {
+          "description": "Nachweis aus Microsoft Intune: Registrierungsabdeckung, Compliance-Aufschlüsselung mit 30-Tage-Verlauf, veraltete Registrierungen und Lizenzplätze — jeweils mit Angabe der Aktualität der Synchronisierung.",
+          "name": "Intune-Endpunktverwaltungs-Bericht"
         }
       },
       "title": "Berichtsvorlagen",
       "useTemplate": "Vorlage verwenden",
       "useTemplateTitle": "Vorlage {{name}} verwenden"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Abbrechen",
+      "coverageNote": "Der Bericht nennt das tatsächlich abgedeckte Zeitfenster. War die Erkennungsquelle einen Teil des Zeitraums nicht angebunden, wird das ausgewiesen statt eine Null zu melden.",
+      "createReport": "Bericht erstellen",
+      "includeCarriedIn": "Übernommene Erkennungen einbeziehen",
+      "includeCarriedInHelp": "Erkennungen, die vor diesem Zeitraum geöffnet wurden und noch offen sind, werden zusammen mit denen des Zeitraums aufgeführt.",
+      "topIncidents": "Höchstens auflisten (Erkennungen)",
+      "topIncidentsHelp": "Begrenzt die Erkennungstabelle, damit ein ereignisreicher Monat kein hundertseitiges PDF erzeugt. Der Bericht nennt die Anzahl der zurückgehaltenen Einträge, statt stillschweigend abzuschneiden."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Abbrechen",
+      "createReport": "Bericht erstellen",
+      "includeLicences": "Lizenzplätze einbeziehen",
+      "includeLicencesHelp": "Zeigt belegte Plätze im Verhältnis zu gekauften Plätzen je Microsoft 365-Produkt.",
+      "staleEnrolmentDays": "Registrierungen melden ab (Tage) ohne Kontakt",
+      "staleEnrolmentDaysHelp": "Ein Gerät, das sich so viele Tage nicht bei Intune gemeldet hat, gilt als veraltete Registrierung. Maßstab ist der Intune-Synchronisierungstakt, nicht der Berichtszeitraum.",
+      "trendDays": "Zeitraum des Compliance-Verlaufs (Tage)",
+      "trendDaysHelp": "Wie weit der tägliche Compliance-Verlauf in die Statusaufstellungen von Microsoft 365 zurückreicht."
     }
   }
 }

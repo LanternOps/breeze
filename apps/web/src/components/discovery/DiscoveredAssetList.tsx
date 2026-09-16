@@ -1,7 +1,10 @@
+import { navigateTo } from '@/lib/navigation';
+import { ActionError } from '@/lib/runAction';
+import { useNetworkAssetMutations } from '../devices/networkDevice/settings/useNetworkAssetMutations';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Filter, Info, Signal, CheckCircle2, XCircle } from 'lucide-react';
+import { Filter, Info, Settings, Signal, CheckCircle2, XCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import AssetDetailModal, { type AssetDetail } from './AssetDetailModal';
+import AssetDetailModal, { type AssetDetail, type AssetReachability } from './AssetDetailModal';
 import { fetchWithAuth } from '../../stores/auth';
 import { formatDateTime } from '@/lib/dateTimeFormat';
 import { ResponsiveTable, DataCard, CardField, CardActions } from '../shared/ResponsiveTable';
@@ -49,6 +52,7 @@ export type DiscoveredAsset = {
   isOnline: boolean;
   manufacturer: string;
   lastSeen?: string;
+  reachability?: AssetReachability | null;
   openPorts?: OpenPortEntry[];
   osFingerprint?: string;
   snmpData?: Record<string, string>;
@@ -94,6 +98,7 @@ export type ApiDiscoveryAsset = {
   notes?: string | null;
   tags?: string[] | null;
   lastSeenAt?: string | null;
+  reachability?: AssetReachability | null;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -168,6 +173,7 @@ export function mapAsset(asset: ApiDiscoveryAsset): DiscoveredAsset {
     approvalStatus: asset.approvalStatus ?? 'pending',
     isOnline: asset.isOnline ?? false,
     manufacturer: asset.manufacturer ?? '—',
+    reachability: asset.reachability,
     lastSeen: asset.lastSeenAt ?? asset.updatedAt ?? asset.createdAt,
     openPorts: normalizeOpenPorts(asset.openPorts),
     osFingerprint: asset.osFingerprint ?? undefined,
@@ -251,6 +257,7 @@ interface DiscoveredAssetListProps {
 
 export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListProps) {
   const { t } = useTranslation('discovery');
+  const { approve, dismiss } = useNetworkAssetMutations();
   const [assets, setAssets] = useState<DiscoveredAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -334,32 +341,24 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
   }, [fetchAssets]);
 
   const handleApprove = async (asset: DiscoveredAsset) => {
+    setError(undefined);
     try {
-      setError(undefined);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/approve`, {
-        method: 'PATCH'
-      });
-      if (!response.ok) {
-        throw new Error(t('discoveredAssetList.errors.approve'));
-      }
+      await approve(asset.id);
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
+      if (err instanceof ActionError) return; // 401 redirects; anything else was toasted
+      setError(t('discoveredAssetList.errors.generic'));
     }
   };
 
   const handleDismiss = async (asset: DiscoveredAsset) => {
+    setError(undefined);
     try {
-      setError(undefined);
-      const response = await fetchWithAuth(`/discovery/assets/${asset.id}/dismiss`, {
-        method: 'PATCH'
-      });
-      if (!response.ok) {
-        throw new Error(t('discoveredAssetList.errors.dismiss'));
-      }
+      await dismiss(asset.id);
       await fetchAssets();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('discoveredAssetList.errors.generic'));
+      if (err instanceof ActionError) return;
+      setError(t('discoveredAssetList.errors.generic'));
     }
   };
 
@@ -526,13 +525,26 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       >
         <Info className="h-4 w-4" />
       </button>
+      {/* Configuration lives on the device page (spec §10, D7). The row opens the
+          Monitoring section because that is what the row's "Monitored" badge is
+          about; the peek's own Settings… opens Identity. */}
+      <button
+        type="button"
+        data-testid={`discovered-asset-settings-${asset.id}`}
+        onClick={event => {
+          event.stopPropagation();
+          void navigateTo(`/devices/network/${asset.id}#overview/settings/monitoring`);
+        }}
+        className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
+        title={t('discoveredAssetList.actions.settings')}
+      >
+        <Settings className="h-4 w-4" />
+      </button>
       {asset.approvalStatus !== 'approved' && (
         <button
           type="button"
-          onClick={event => {
-            event.stopPropagation();
-            void handleApprove(asset);
-          }}
+          data-testid={`discovered-asset-approve-${asset.id}`}
+          onClick={event => { event.stopPropagation(); void handleApprove(asset); }}
           className="flex h-8 w-8 items-center justify-center rounded-md border border-green-500/40 text-green-700 hover:bg-green-500/10"
           title={t('discoveredAssetList.actions.approve')}
         >
@@ -542,10 +554,8 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
       {asset.approvalStatus !== 'dismissed' && (
         <button
           type="button"
-          onClick={event => {
-            event.stopPropagation();
-            void handleDismiss(asset);
-          }}
+          data-testid={`discovered-asset-dismiss-${asset.id}`}
+          onClick={event => { event.stopPropagation(); void handleDismiss(asset); }}
           className="flex h-8 w-8 items-center justify-center rounded-md border hover:bg-muted"
           title={t('discoveredAssetList.actions.dismiss')}
         >
@@ -789,13 +799,6 @@ export default function DiscoveredAssetList({ timezone }: DiscoveredAssetListPro
         open={selectedAsset !== null}
         asset={selectedAsset}
         onClose={() => setSelectedAsset(null)}
-        onDeleted={async () => {
-          setSelectedAsset(null);
-          await fetchAssets();
-        }}
-        onUpdated={async () => {
-          await fetchAssets();
-        }}
       />
     </div>
   );

@@ -319,7 +319,19 @@
         "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
+      },
+      "threatDetection": {
+        "agents": "Tespit aracısı olan uç noktalar",
+        "breezeDevices": "Breeze'in yönettiği cihazlar",
+        "carriedIn": "Devreden, hâlâ açık",
+        "coverage": "Bu raporun sınırları",
+        "devicesWithoutAgent": "Aracısı olmayan yönetilen cihazlar",
+        "notMeasured": "Yok",
+        "opened": "Bildirilen tespitler",
+        "resolved": "Çözülen tespitler"
       },
       "tryAgain": "Tekrar deneyin",
       "values": {
@@ -329,6 +341,15 @@
       "viewModes": {
         "chart": "Grafik",
         "table": "Masa"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Kaydı olmayan Breeze cihazları",
+        "dataGaps": "Ölçemediklerimiz",
+        "intuneDevices": "Intune'a kayıtlı",
+        "intuneWithoutBreezeLink": "Eşleşmemiş Intune kayıtları",
+        "noncompliant": "Uyumlu değil",
+        "notMeasured": "Yok",
+        "staleEnrolments": "Eskimiş kayıtlar"
       }
     },
     "reportsList": {
@@ -380,7 +401,9 @@
         "vulnerability_management": "Güvenlik Açığı Yönetimi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "runsTable": {
         "actions": "Eylemler",
@@ -892,7 +915,9 @@
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
-        "software_inventory": "Yazılım Envanteri"
+        "software_inventory": "Yazılım Envanteri",
+        "threat_detection_review": "Tehdit Tespiti İncelemesi",
+        "endpoint_management_review": "Uç Nokta Yönetimi İncelemesi"
       },
       "schedules": {
         "daily": "Günlük",
@@ -934,11 +959,38 @@
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
           "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
+        },
+        "threat_detection_review": {
+          "description": "Bir dönem için elde tutulan tehdit tespitleri; gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir — bağlı olmayan bir kaynak için asla sıfır yazılmaz.",
+          "name": "Tehdit Tespiti İncelemesi"
+        },
+        "endpoint_management_review": {
+          "description": "Microsoft Intune kanıtı: kayıt kapsamı, 30 günlük eğilimle uyumluluk dağılımı, eskimiş kayıtlar ve lisans koltukları; her eşitlemenin güncelliği belirtilir.",
+          "name": "Intune Uç Nokta Yönetimi İncelemesi"
         }
       },
       "title": "Rapor Şablonları",
       "useTemplate": "Şablonu kullan",
       "useTemplateTitle": "{{name}} kullanın"
+    },
+    "threatDetectionOptions": {
+      "cancel": "İptal",
+      "coverageNote": "Rapor, gerçekte kapsadığı zaman aralığını yazar. Tespit kaynağı dönemin bir bölümünde bağlı değilse, sıfır bildirmek yerine bunu açıkça belirtir.",
+      "createReport": "Rapor oluştur",
+      "includeCarriedIn": "Devreden tespitleri dahil et",
+      "includeCarriedInHelp": "Bu dönemden önce açılmış ve hâlâ çözülmemiş tespitler, dönemin kendi tespitleriyle birlikte listelenir.",
+      "topIncidents": "En fazla listele (tespit)",
+      "topIncidentsHelp": "Yoğun bir ayın yüz sayfalık PDF üretmemesi için tespit tablosunu sınırlar. Rapor, sessizce kesmek yerine kaç tanesinin dışarıda bırakıldığını belirtir."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Vazgeç",
+      "createReport": "Rapor oluştur",
+      "includeLicences": "Lisans koltuklarını dahil et",
+      "includeLicencesHelp": "Her Microsoft 365 ürünü için kullanılan koltukları satın alınan koltuklarla karşılaştırarak gösterir.",
+      "staleEnrolmentDays": "Şu kadar gündür sessiz kayıtları işaretle (gün)",
+      "staleEnrolmentDaysHelp": "Bu kadar gündür Intune ile iletişim kurmayan bir cihaz eskimiş kayıt sayılır. Ölçüt, rapor dönemi değil Intune eşitleme sıklığıdır.",
+      "trendDays": "Uyumluluk eğilimi penceresi (gün)",
+      "trendDaysHelp": "Günlük uyumluluk eğiliminin Microsoft 365 durum özetlerinde ne kadar geriye gittiği."
     }
   }
 }

@@ -3,6 +3,8 @@ package snmppoll
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +56,8 @@ func NewClient(config SNMPClientConfig) (*SNMPClient, error) {
 		Retries:        config.Retries,
 		MaxRepetitions: config.MaxRepetitions,
 	}
+
+	gs.Logger = gosnmp.NewLogger(snmpDebugLogger{})
 
 	switch config.Version {
 	case gosnmp.Version3:
@@ -231,4 +235,97 @@ func ParsePrivProtocol(s string) gosnmp.SnmpV3PrivProtocol {
 	default:
 		return gosnmp.NoPriv
 	}
+}
+
+// WalkBounded streams a GETBULK walk of rootOID, calling fn for each PDU, and
+// stops the moment fn returns an error.
+//
+// Deliberately NOT BulkWalkAll (which Walk and BulkWalk above use): BulkWalkAll
+// buffers the entire subtree before returning, so a caller that wants to cap
+// rows, bytes or wall clock has already paid all three by the time it can look.
+// A bound that only applies after the fact bounds nothing, and this walks
+// customer hardware — an FDB table on a busy switch is unbounded in practice.
+func (c *SNMPClient) WalkBounded(rootOID string, fn gosnmp.WalkFunc) error {
+	if rootOID == "" {
+		return errors.New("oid is required")
+	}
+	if c == nil || c.client == nil {
+		return errors.New("SNMP client is not connected")
+	}
+	if fn == nil {
+		return errors.New("walk callback is required")
+	}
+	return walkBulkPages(rootOID, fn, c.client.GetBulk, c.client.MaxRepetitions)
+}
+
+// SnmpStatusError preserves an agent's protocol-level refusal to complete a walk.
+type SnmpStatusError struct {
+	Status gosnmp.SNMPError
+	Index  uint8
+}
+
+func (e *SnmpStatusError) Error() string {
+	return fmt.Sprintf("SNMP status %s at index %d", e.Status, e.Index)
+}
+
+type snmpDebugLogger struct{}
+
+func (snmpDebugLogger) Print(v ...any)                 { slog.Debug(fmt.Sprint(v...)) }
+func (snmpDebugLogger) Printf(format string, v ...any) { slog.Debug(fmt.Sprintf(format, v...)) }
+
+// walkBulkPages keeps the page transport injectable for tests without a socket.
+// gosnmp's BulkWalk treats SNMP error statuses as successful completion.
+func walkBulkPages(rootOID string, fn gosnmp.WalkFunc, getBulk func([]string, uint8, uint32) (*gosnmp.SnmpPacket, error), maxRepetitions uint32) error {
+	root := normalizeOID(rootOID)
+	cursor := root
+	if maxRepetitions == 0 {
+		maxRepetitions = 10
+	}
+	for {
+		packet, err := getBulk([]string{cursor}, 0, maxRepetitions)
+		if err != nil {
+			return err
+		}
+		if packet == nil {
+			return errors.New("SNMP response was empty")
+		}
+		if packet.Error != gosnmp.NoError {
+			return &SnmpStatusError{Status: packet.Error, Index: packet.ErrorIndex}
+		}
+		if len(packet.Variables) == 0 {
+			return nil
+		}
+		for _, pdu := range packet.Variables {
+			if pdu.Type == gosnmp.EndOfMibView || pdu.Type == gosnmp.NoSuchObject || pdu.Type == gosnmp.NoSuchInstance {
+				return nil
+			}
+			oid := normalizeOID(pdu.Name)
+			if !strings.HasPrefix(oid, root+".") {
+				return nil
+			}
+			if !oidIncreases(cursor, oid) {
+				return fmt.Errorf("OID not increasing: %s >= %s", cursor, oid)
+			}
+			if err := fn(pdu); err != nil {
+				return err
+			}
+			cursor = oid
+		}
+	}
+}
+
+// Compare arcs numerically: instance 10 follows instance 9.
+func oidIncreases(previous, next string) bool {
+	a, b := strings.Split(previous, "."), strings.Split(next, ".")
+	for i := 0; i < len(a) && i < len(b); i++ {
+		av, ae := strconv.ParseUint(a[i], 10, 32)
+		bv, be := strconv.ParseUint(b[i], 10, 32)
+		if ae != nil || be != nil {
+			return false
+		}
+		if av != bv {
+			return av < bv
+		}
+	}
+	return len(a) < len(b)
 }

@@ -29,13 +29,16 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { triggerPatchPlanRunSchema } from '@breeze/shared';
 import { zValidator } from '../lib/validation';
-import { requireMfa, requirePermission, requireScope } from '../middleware/auth';
+import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { resolveEffectiveAgent } from '../services/aiAgents/effectivePolicy';
 import { createAndEnqueueAgentRun } from '../services/aiAgents/runService';
 import { writeRouteAudit } from '../services/auditEvents';
 
 export const patchPlanRoutes = new Hono();
+// Mounted bare by index.ts (no upstream auth) — the router owns its own gate,
+// exactly as `routes/fleetDesign.ts` does (#5866 / #5871).
+patchPlanRoutes.use('*', authMiddleware);
 
 const scopes = requireScope('organization', 'partner', 'system');
 const requireAiWrite = requirePermission(PERMISSIONS.AI_AGENTS_WRITE.resource, PERMISSIONS.AI_AGENTS_WRITE.action);

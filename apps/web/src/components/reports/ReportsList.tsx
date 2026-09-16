@@ -26,6 +26,7 @@ import {
   type ExecutiveSummary,
   type OrgNarrativeReportSummary,
   type FleetDesignReportSummary,
+  type EndpointManagementSummary,
   type VulnerabilityManagementSummary
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
@@ -41,6 +42,12 @@ export type ReportType =
   | 'ai_org_narrative'
   | 'ai_fleet_design'
   | 'hardware_lifecycle'
+  // #5784 W02. Curated service-plan evidence; its label comes from the dynamic
+  // i18n lookup in getReportTypeLabel, so there is no map to extend here.
+  | 'threat_detection_review'
+  // #5784 W03. No hardcoded label: getReportTypeLabel does a dynamic i18n
+  // lookup on reports.reportsList.reportTypes.<type>.
+  | 'endpoint_management_review'
   // #5784 W04: the vulnerability detail artifact. Curated (its own options
   // form), never representable by the freeform builder. The list label comes
   // from `reports.reportsList.reportTypes.vulnerability_management`, resolved
@@ -268,6 +275,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             | ExecutiveSummary
             | OrgNarrativeReportSummary
             | FleetDesignReportSummary
+            // #5784 W03 — the endpoint-management cover consumes this snapshot
+            // too. The cast does not filter at runtime, but leaving the type
+            // out would let a later refactor drop the summary here and silently
+            // degrade the staff PDF to the generic row table.
+            | EndpointManagementSummary
             // #5784 W04: without this member the staff/browser path passes the
             // designed vulnerability summary as an unrelated type and the
             // compiler stops guarding buildReportPdf's arm for it.

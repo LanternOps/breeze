@@ -285,6 +285,8 @@ x-api-env: &api-env
   AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED: ${AI_OPERATOR_RECIPE_SERVICE_RECOVERY_ENABLED:-false}
   # Wave 5 Part B (#3827) sub-flag — see .env.example for what it gates.
   BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: ${BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED:-false}
+  # AI sweeps act mode (#5755 W04) — sub-flag on top of POLICY_DECIDE; default OFF.
+  BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED: ${BREEZE_AI_AGENTS_SWEEP_ACT_ENABLED:-false}
   # AI script authoring (#5612) — ON by default since W03; must agree with
   # aiScriptAuthoringEnabled()'s code default (config/env.ts).
   BREEZE_AI_SCRIPT_AUTHORING_ENABLED: ${BREEZE_AI_SCRIPT_AUTHORING_ENABLED:-true}

@@ -49,8 +49,12 @@
   "deciding": "Wird gesendet…",
   "expiresIn": "Läuft in {{minutes}} Min. ab",
   "expiresSoon": "Läuft in weniger als einer Minute ab",
+  "expiresInHours": "Läuft in {{hours}} Std. ab",
+  "expiresInDays": "Läuft in {{days}} Tagen ab",
   "expired": "Abgelaufen",
   "unknownOrganization": "Unbekannte Organisation",
+  "intentNoLongerPending": "Diese Genehmigung ist nicht mehr ausstehend.",
+  "dismiss": "Ausblenden",
   "charCount": "{{count}}/{{max}}",
   "approveToast": "{{action}} für {{org}} genehmigt",
   "pagination": {

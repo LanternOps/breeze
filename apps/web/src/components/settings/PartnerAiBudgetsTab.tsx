@@ -139,6 +139,11 @@ export default function PartnerAiBudgetsTab({ data, onChange, onValidityChange }
           <p className="text-xs text-muted-foreground">
             {t('partnerAiBudgets.description')}
           </p>
+          {/* #6004: the org-side editor is now a tab of its own, so say plainly
+              what setting a field here does to it. */}
+          <p className="text-xs text-muted-foreground" data-testid="partner-ai-budgets-override-note">
+            {t('partnerAiBudgets.overridesOrgTab')}
+          </p>
         </>
       )}
     </div>

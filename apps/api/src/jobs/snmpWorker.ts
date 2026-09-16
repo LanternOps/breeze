@@ -16,6 +16,7 @@ import { attachWorkerObservability } from './workerObservability';
 import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/agentCommandRelay';
 import type { AgentCommand } from '../routes/agentWs';
 import { decryptSnmpSecret } from '../services/snmpSecrets';
+import { buildOidSpecs, selectOidSpecsForSeq, POLL_LIMITS, type OidSpec } from '../services/snmpOidSpecs';
 
 const { db } = dbModule;
 const runWithSystemDbAccess = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -190,7 +191,7 @@ export interface SnmpMetricResult {
  * classified `included` in the tenant export, so it must never become a channel
  * for arbitrary agent-supplied text.
  */
-export const SNMP_ERROR_CODES = ['noSuchObject', 'noSuchInstance', 'endOfMib', 'timeout', 'truncated'] as const;
+export const SNMP_ERROR_CODES = ['noSuchObject', 'noSuchInstance', 'endOfMib', 'timeout', 'truncated', 'snmpError', 'walkFailed'] as const;
 const SNMP_ERROR_CODE_SET: ReadonlySet<string> = new Set(SNMP_ERROR_CODES);
 
 function normalizeSnmpError(error: unknown): string | null {
@@ -202,6 +203,7 @@ interface ProcessPollResultsJobData {
   type: 'process-poll-results';
   deviceId: string;
   pollId?: string;
+  protocol?: number;
   metrics: SnmpMetricResult[];
 }
 
@@ -297,6 +299,9 @@ async function markPollDispatched(deviceId: string): Promise<void> {
     .update(snmpDevices)
     .set({
       consecutiveFailures: nextFailures,
+      // Advance cadence with the dispatch counter so early returns do not
+      // rotate a device past its slow specs without sending a poll.
+      pollSeq: sql`${snmpDevices.pollSeq} + 1`,
       // Only surface 'offline' once the device has failed repeatedly; leave the
       // existing status alone before that so one slow poll doesn't flap the UI.
       lastStatus: sql`CASE WHEN ${nextFailures} >= ${FAILURE_STATUS_THRESHOLD} THEN 'offline' ELSE ${snmpDevices.lastStatus} END`
@@ -327,6 +332,7 @@ type PollDispatchInputs =
       status: 'ok';
       device: typeof snmpDevices.$inferSelect;
       oids: string[];
+      oidSpecs: OidSpec[];
       agentId: string;
     };
 
@@ -375,6 +381,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
   // Load template OIDs if device has a template
   let oids: string[] = [];
+  let oidSpecs: OidSpec[] = [];
   if (device.templateId) {
     const [template] = await db
       .select({ oids: snmpTemplates.oids })
@@ -387,6 +394,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
 
     if (template && Array.isArray(template.oids)) {
       oids = (template.oids as Array<{ oid: string }>).map((o) => o.oid);
+      oidSpecs = buildOidSpecs(template.oids);
     }
   }
 
@@ -449,7 +457,7 @@ async function loadPollDispatchInputs(data: PollDeviceJobData): Promise<PollDisp
     return { status: 'no-agent', orgId: device.orgId, siteId: executionSiteId };
   }
 
-  return { status: 'ok', device, oids, agentId };
+  return { status: 'ok', device, oids, oidSpecs, agentId };
 }
 
 /**
@@ -540,7 +548,7 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
       return { dispatched: false, agentId: null };
   }
 
-  const { device, oids, agentId } = inputs;
+  const { device, oids, oidSpecs, agentId } = inputs;
 
   if (!(await isAgentConnectedAnywhere(agentId))) {
     console.warn(`[SnmpWorker] No online agent for org ${device.orgId}`);
@@ -557,8 +565,12 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   // UPDATE per genuinely-dispatched poll is the cost of keeping both.
   await runWithSystemDbAccess(() => markPollDispatched(data.deviceId));
 
-  // Build and send the command payload
-  const command = buildSnmpPollCommand(data.deviceId, device, oids);
+  // Gate on the PRE-increment value loaded in phase 1, independent of the
+  // stored counter that markPollDispatched has already advanced above.
+  const command = buildSnmpPollCommand(data.deviceId, device, oids, 'snmp', {
+    oidSpecs,
+    pollSeq: device.pollSeq ?? 0,
+  });
   const outcome = await dispatchCommandToAgent(agentId, command, { priority: 'probe' });
   if (outcome.status !== 'sent') {
     console.error(`[SnmpWorker] Poll dispatch ${outcome.status} for agent ${agentId}`);
@@ -568,6 +580,9 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   console.log(`[SnmpWorker] Poll dispatched to agent ${agentId} for device ${data.deviceId} (${outcome.via})`);
   return { dispatched: true, agentId };
 }
+
+const legacyWalkWarningAt = new Map<string, number>();
+const LEGACY_WALK_WARNING_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Process SNMP poll results — write metrics to DB
@@ -581,7 +596,7 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
   // for RLS. Its own short context, which then closes.
   const [snmpDevice] = await runWithSystemDbAccess(() =>
     db
-      .select({ orgId: snmpDevices.orgId })
+      .select({ orgId: snmpDevices.orgId, templateId: snmpDevices.templateId })
       .from(snmpDevices)
       .where(eq(snmpDevices.id, data.deviceId))
       .limit(1)
@@ -590,6 +605,29 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
   if (!snmpDevice) {
     console.error(`[SnmpWorker] SNMP device ${data.deviceId} not found; cannot write metrics`);
     return { metricsWritten: 0 };
+  }
+
+  const lastWarning = legacyWalkWarningAt.get(data.deviceId);
+  if ((data.protocol === undefined || data.protocol < 2) && snmpDevice.templateId &&
+      (lastWarning === undefined || now.getTime() - lastWarning >= LEGACY_WALK_WARNING_INTERVAL_MS)) {
+    const [template] = await runWithSystemDbAccess(() => db
+      .select({ oids: snmpTemplates.oids })
+      .from(snmpTemplates)
+      .where(and(
+        eq(snmpTemplates.id, snmpDevice.templateId!),
+        or(eq(snmpTemplates.isBuiltIn, true), eq(snmpTemplates.orgId, snmpDevice.orgId))!
+      ))
+      .limit(1));
+    if (buildOidSpecs(template?.oids).some((spec) => spec.mode === 'walk')) {
+      // Recheck after the DB await so simultaneous results do not both warn.
+      const latestWarning = legacyWalkWarningAt.get(data.deviceId);
+      if (latestWarning === undefined || now.getTime() - latestWarning >= LEGACY_WALK_WARNING_INTERVAL_MS) {
+        legacyWalkWarningAt.set(data.deviceId, now.getTime());
+        console.warn('[SnmpWorker] legacy agent result for a walk template', {
+          deviceId: data.deviceId, orgId: snmpDevice.orgId,
+        });
+      }
+    }
   }
 
   // Phase 2 — parse/shape the agent-supplied metrics with NO DB context open.
@@ -657,9 +695,18 @@ function resolveValueType(value: unknown): string {
 }
 
 /**
- * Build an SNMP poll command payload from device config and OIDs.
- * Shared between the worker poll flow and the test endpoint in routes.
+ * Extra, purely additive poll-command inputs (spec §7.1).
+ *
+ * Separate from the positional parameters so the existing call sites — and
+ * `snmpQueue.test.ts`, which passes `idPrefix` positionally — keep compiling.
  */
+export interface SnmpPollCommandExtras {
+  /** Acquisition specs from the device's template; empty means "legacy only". */
+  oidSpecs?: OidSpec[];
+  /** Pre-increment `snmp_devices.poll_seq`, gating the `slow` specs. */
+  pollSeq?: number;
+}
+
 export function buildSnmpPollCommand(
   deviceId: string,
   device: {
@@ -672,10 +719,21 @@ export function buildSnmpPollCommand(
     authPassword: string | null;
     privProtocol: string | null;
     privPassword: string | null;
+    consecutiveFailures?: number | null;
   },
   oids: string[],
-  idPrefix = 'snmp'
+  idPrefix = 'snmp',
+  extras: SnmpPollCommandExtras = {}
 ): AgentCommand {
+  const specs = extras.oidSpecs ?? [];
+  // Only devices with template entries get the new fields. Without them the
+  // payload is byte-for-byte what it has always been, which is what the poll
+  // `/test` route and every agent released before this wave expect.
+  // Retry slow specs after a failure, even if dispatch advanced past their slot.
+  const dispatchSpecs = (device.consecutiveFailures ?? 0) > 0
+    ? specs
+    : selectOidSpecsForSeq(specs, extras.pollSeq ?? 0);
+
   return {
     id: `${idPrefix}-${deviceId}-${Date.now()}`,
     type: 'snmp_poll',
@@ -690,7 +748,10 @@ export function buildSnmpPollCommand(
       authPassword: decryptSnmpSecret(device.authPassword, { table: 'snmp_devices', column: 'auth_password' }) ?? '',
       privProtocol: device.privProtocol ?? '',
       privPassword: decryptSnmpSecret(device.privPassword, { table: 'snmp_devices', column: 'priv_password' }) ?? '',
-      oids
+      // NEVER cadence-gated and never reordered: this is the only field an
+      // agent released before W02 reads (`tools.GetPayloadStringSlice`).
+      oids,
+      ...(dispatchSpecs.length > 0 ? { oidSpecs: dispatchSpecs, limits: { ...POLL_LIMITS } } : {})
     }
   };
 }
@@ -786,6 +847,7 @@ export async function enqueueSnmpPollResults(
   deviceId: string,
   metrics: SnmpMetricResult[],
   pollId?: string,
+  protocol?: number,
 ): Promise<string> {
   const queue = getSnmpQueue();
   // '-' separator, not ':', so BullMQ does not reject the custom jobId (see enqueueSnmpPoll).
@@ -808,7 +870,8 @@ export async function enqueueSnmpPollResults(
       type: 'process-poll-results',
       deviceId,
       pollId,
-      metrics
+      metrics,
+      ...(protocol !== undefined ? { protocol } : {}),
     },
     {
       ...(stableJobId ? { jobId: stableJobId } : {}),

@@ -58,7 +58,7 @@
     "partner": "Partenaire",
     "billing": "Facturation",
     "organizations": "Organisations",
-    "aiUsageBudget": "Utilisation et budget de l’IA",
+    "aiUsage": "Utilisation de l’IA",
     "scriptAuthoring": "Rédaction de scripts",
     "toolSources": "Sources d’outils",
     "aiAgents": "Agents IA",
@@ -1834,7 +1834,9 @@
         "assetsDescription": "Vue unifiée des sondages et vérifications réseau de SNMP par actif découvert.",
         "table": {
           "asset": "Actif",
-          "overall": "Globalisation"
+          "overall": "Globalisation",
+          "reachability": "Joignabilité",
+          "collection": "Collecte"
         },
         "ip": "IP",
         "snmp": "SNMP",
@@ -1886,7 +1888,29 @@
         "disabling": "Désactivant...",
         "yesDisable": "Oui, désactiver",
         "monitoringNotActive": "La surveillance n’est pas active pour cet actif.",
-        "saving": "Enregistrement..."
+        "saving": "Enregistrement...",
+        "openSettings": "Paramètres…",
+        "reachability": {
+          "responding": "Répond",
+          "notResponding": "Ne répond pas",
+          "unverified": "Non vérifié",
+          "sources": {
+            "networkCheck": "vérification réseau",
+            "probe": "vérifier maintenant",
+            "scan": "analyse",
+            "unifi": "contrôleur UniFi",
+            "snmp": "interrogation SNMP"
+          }
+        },
+        "collectionState": {
+          "collecting": "Collecte en cours",
+          "partial": "Partielle",
+          "no_template": "Aucun modèle",
+          "failing": "En échec",
+          "paused": "En pause",
+          "never_polled": "Jamais interrogé",
+          "not_configured": "Non configuré"
+        }
       },
       "MonitoringPage": {
         "tabs": {

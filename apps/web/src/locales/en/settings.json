@@ -211,7 +211,8 @@
       "actionPlan": "Action Plan",
       "autoApprove": "Auto Approve",
       "hybridPlan": "Hybrid Plan"
-    }
+    },
+    "overridesOrgTab": "Fields you set here override and lock the same field on every organization's AI tab."
   },
   "aiBudgetThresholds": {
     "invalid": "Enter up to five whole numbers between 1 and 99, separated by commas."
@@ -1444,7 +1445,7 @@
     "completeReview": "Complete Review"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "AI Usage & Budget",
+    "aIUsageBudget": "AI Usage",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Monitor AI assistant usage and configure budget limits",
     "budgetConfiguration": "Budget Configuration",
     "aIEnabled": "AI Enabled",
@@ -1494,7 +1495,19 @@
     "untitled": "Untitled",
     "billedToPartnerKey": "Billed to your key — AI usage goes to your own Anthropic account, not Breeze AI credits",
     "billedToPartnerKeyViaEndpoint": "Billed to your key via {{name}}: AI usage goes to your own Anthropic account, not Breeze AI credits",
-    "creditsRemaining": "Breeze AI credits remaining"
+    "creditsRemaining": "Breeze AI credits remaining",
+    "defaultValue": "Default ({{value}})",
+    "viewPartnerWideBudgets": "Partner AI budgets",
+    "monitorAIAssistantUsage": "Monitor AI assistant usage",
+    "effectiveBudget": "Effective budget",
+    "effectiveBudgetHelp": "The limits in force for this organization right now, and where each one was set.",
+    "sourcePartner": "Set by partner",
+    "sourceOrganization": "Set by organization",
+    "sourceDefault": "Default",
+    "selectOrgForEffectiveBudget": "Select an organization to see its effective budget, or edit partner-wide defaults.",
+    "editPartnerWideDefaults": "Edit partner-wide defaults",
+    "thresholdsOff": "Off",
+    "effectiveBudgetUnavailable": "The effective budget could not be loaded. Reload the page to try again."
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2224,6 +2237,7 @@
       "emptyState": {
         "title": "No AI outcomes in this window yet",
         "description": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Widen the reporting window above, or set up an agent to get started.",
+        "descriptionWidestWindow": "Outcomes will appear here once your AI agents judge an alert, triage a ticket, or execute a fix in shadow or act mode. Not enough data yet, even at the widest reporting window — set up an agent to get started.",
         "action": "Set up an agent"
       },
       "tileGroups": {
@@ -4388,7 +4402,9 @@
       "notifications": "Notifications",
       "notificationsDescription": "Email, Slack, webhooks",
       "ticketing": "Ticketing",
-      "ticketingDescription": "SLA and billing overrides"
+      "ticketingDescription": "SLA and billing overrides",
+      "ai": "AI",
+      "aiDescription": "AI assistant budget, rate limits and approval mode"
     },
     "overview": {
       "title": "Organization overview",
@@ -5558,5 +5574,10 @@
     "saveFailed": "Those settings could not be saved.",
     "loading": "Loading…",
     "loadFailed": "Script authoring settings could not be loaded."
+  },
+  "orgAiBudgetSettings": {
+    "title": "AI budget",
+    "description": "Spending caps, rate limits and approval mode for the AI assistant in this organization. Fields your partner has set are shown here but can only be changed on the partner tab.",
+    "selectOrganization": "Select an organization to configure its AI budget."
   }
 }

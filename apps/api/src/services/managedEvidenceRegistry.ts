@@ -9,9 +9,9 @@ import type { ReportType } from './reportGenerationService';
  * body, config value or database row can. Adding one is a code change plus the
  * report type's own enum migration, reviewed together.
  *
- * Deliberately EMPTY in W01: the machinery ships first so that W02, W03, W04 and
- * W06 each add exactly one entry alongside the enum label they introduce, and a
- * wave that slips leaves no half-enabled type behind.
+ * W01 shipped the machinery empty so that W02, W03, W04 and W06 each add exactly
+ * one entry alongside the enum label they introduce, and a wave that slips
+ * leaves no half-enabled type behind.
  *
  * HAND-PARALLEL LIST: `MANAGED_EVIDENCE_REPORT_TYPES` in
  * `packages/shared/src/validators/deliverableTemplates.ts` must name exactly the
@@ -32,12 +32,32 @@ export interface ManagedEvidenceEntry {
  * run list and `routes/reports/helpers.ts` can tell one apart at a glance. The
  * prefix is cosmetic — the authoritative test is `isManagedEvidenceType(type)`
  * AND `reports.portal_self_service = true`.
+ *
+ * DECLARED ABOVE THE REGISTRY ON PURPOSE: entries interpolate it into their
+ * `definitionName` inside a top-level `const` initializer, so moving this back
+ * below `MANAGED_EVIDENCE_REGISTRY` is a TDZ ReferenceError at module load,
+ * not a style nit.
  */
 export const MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX = 'Service evidence — ';
 
 export const MANAGED_EVIDENCE_REGISTRY = Object.freeze({
-  // W02 adds 'threat_detection_review'.
-  // W03 adds 'endpoint_management_review'.
+  // #5784 W02. Huntress incidents for the occurrence's period. `sites: []` means
+  // "every site the org has"; `includeCarriedIn` adds the incidents that opened
+  // before the period and are still unresolved. `topIncidents` is left at the
+  // config schema's default so one place owns the cap.
+  threat_detection_review: {
+    type: 'threat_detection_review',
+    definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}Threat detection review`,
+    defaultConfig: { sites: [], includeCarriedIn: true, topIncidents: 100 },
+  },
+  // #5784 W03. `includeLicences` is part of the default config on purpose: the
+  // matching `PORTAL_DEFINITIONS` row in services/portal/reportsSelfService.ts
+  // carries the identical object and a parity assertion compares the two.
+  endpoint_management_review: {
+    type: 'endpoint_management_review',
+    definitionName: `${MANAGED_EVIDENCE_DEFINITION_NAME_PREFIX}Endpoint management review`,
+    defaultConfig: { sites: [], staleEnrolmentDays: 14, trendDays: 30, includeLicences: true },
+  },
   // #5784 W04. The vulnerability DETAIL artifact. Config keys are the spec's
   // (§3.4) and are spelled identically in `vulnerabilityManagementConfigSchema`
   // and the portal `PORTAL_DEFINITIONS` entry.

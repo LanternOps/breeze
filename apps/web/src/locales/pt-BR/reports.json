@@ -319,7 +319,19 @@
         "vulnerability_management": "Gestão de vulnerabilidades",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
+      },
+      "threatDetection": {
+        "agents": "Endpoints com agente de detecção",
+        "breezeDevices": "Dispositivos gerenciados pelo Breeze",
+        "carriedIn": "Herdadas, ainda abertas",
+        "coverage": "Limites deste relatório",
+        "devicesWithoutAgent": "Dispositivos gerenciados sem agente",
+        "notMeasured": "N/D",
+        "opened": "Detecções registradas",
+        "resolved": "Detecções resolvidas"
       },
       "tryAgain": "Tentar novamente",
       "values": {
@@ -329,6 +341,15 @@
       "viewModes": {
         "chart": "Grafico",
         "table": "Tabela"
+      },
+      "endpointManagement": {
+        "breezeWithoutIntune": "Dispositivos Breeze não inscritos",
+        "dataGaps": "O que não foi possível medir",
+        "intuneDevices": "Inscritos no Intune",
+        "intuneWithoutBreezeLink": "Registros do Intune sem vínculo",
+        "noncompliant": "Fora de conformidade",
+        "notMeasured": "N/D",
+        "staleEnrolments": "Inscrições desatualizadas"
       }
     },
     "reportsList": {
@@ -380,7 +401,9 @@
         "vulnerability_management": "Gestão de vulnerabilidades",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
       },
       "runsTable": {
         "actions": "Acoes",
@@ -892,7 +915,9 @@
         "patches": "Patches",
         "performance": "Relatório de Desempenho",
         "security_compliance_posture": "Postura de Seguranca e Conformidade",
-        "software_inventory": "Inventario de Software"
+        "software_inventory": "Inventario de Software",
+        "threat_detection_review": "Revisão de detecção de ameaças",
+        "endpoint_management_review": "Revisão de gerenciamento de endpoints"
       },
       "schedules": {
         "daily": "Diario",
@@ -934,11 +959,38 @@
         "security_compliance_posture": {
           "description": "Evidências prontas para seguro/vetting: cobertura de EDR, criptografia, firewall, patches, vulnerabilidades, acesso privilegiado e integrações de segurança com consolidações percentuais de implementação.",
           "name": "Postura de Seguranca e Conformidade (Seguro)"
+        },
+        "threat_detection_review": {
+          "description": "As detecções de ameaças mantidas em um período, com a janela realmente coberta declarada no próprio relatório — nunca um zero para uma fonte que não estava conectada.",
+          "name": "Revisão de detecção de ameaças"
+        },
+        "endpoint_management_review": {
+          "description": "Evidência do Microsoft Intune: cobertura de inscrição, detalhamento de conformidade com tendência de 30 dias, inscrições desatualizadas e licenças, informando a atualidade de cada sincronização.",
+          "name": "Revisão de gerenciamento de endpoints do Intune"
         }
       },
       "title": "Modelos de Relatório",
       "useTemplate": "Usar modelo",
       "useTemplateTitle": "Usar {{name}}"
+    },
+    "threatDetectionOptions": {
+      "cancel": "Cancelar",
+      "coverageNote": "O relatório imprime a janela que realmente cobre. Se a fonte de detecção não estava conectada durante parte do período, ele diz isso em vez de informar zero.",
+      "createReport": "Criar relatório",
+      "includeCarriedIn": "Incluir detecções herdadas",
+      "includeCarriedInHelp": "Detecções abertas antes deste período e ainda não resolvidas são listadas junto com as do próprio período.",
+      "topIncidents": "Listar no máximo (detecções)",
+      "topIncidentsHelp": "Limita a tabela de detecções para que um mês agitado não gere um PDF de cem páginas. O relatório informa quantas ficaram de fora em vez de truncar silenciosamente."
+    },
+    "endpointManagementOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Criar relatório",
+      "includeLicences": "Incluir licenças",
+      "includeLicencesHelp": "Mostra as licenças em uso em relação às licenças compradas de cada produto Microsoft 365.",
+      "staleEnrolmentDays": "Sinalizar inscrições sem contato há (dias)",
+      "staleEnrolmentDaysHelp": "Um dispositivo que não se comunica com o Intune por esta quantidade de dias conta como inscrição desatualizada. A medida é feita pela cadência de sincronização do Intune, e não pelo período do relatório.",
+      "trendDays": "Janela da tendência de conformidade (dias)",
+      "trendDaysHelp": "Até onde a tendência diária de conformidade recua nos resumos de postura do Microsoft 365."
     }
   }
 }

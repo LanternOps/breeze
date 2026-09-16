@@ -13,6 +13,18 @@ import {
   type HardwareLifecycleOptions,
 } from './HardwareLifecycleOptionsForm';
 import {
+  DEFAULT_THREAT_DETECTION_OPTIONS,
+  ThreatDetectionOptionsFields,
+  threatDetectionOptionsFromConfig,
+  type ThreatDetectionOptions,
+} from './ThreatDetectionOptionsForm';
+import {
+  DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS,
+  EndpointManagementOptionsFields,
+  endpointManagementOptionsFromConfig,
+  type EndpointManagementOptions,
+} from './EndpointManagementOptionsForm';
+import {
   DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS,
   VulnerabilityManagementOptionsFields,
   vulnerabilityManagementOptionsFromConfig,
@@ -35,6 +47,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const [error, setError] = useState<string>();
   const [backupRequired, setBackupRequired] = useState(true);
   const [lifecycleOptions, setLifecycleOptions] = useState<HardwareLifecycleOptions>(DEFAULT_HARDWARE_LIFECYCLE_OPTIONS);
+  const [threatOptions, setThreatOptions] = useState<ThreatDetectionOptions>(DEFAULT_THREAT_DETECTION_OPTIONS);
+  const [endpointManagementOptions, setEndpointManagementOptions] = useState<EndpointManagementOptions>(DEFAULT_ENDPOINT_MANAGEMENT_OPTIONS);
   const [vulnerabilityOptions, setVulnerabilityOptions] = useState<VulnerabilityManagementOptions>(DEFAULT_VULNERABILITY_MANAGEMENT_OPTIONS);
 
   const fetchReport = useCallback(async () => {
@@ -50,6 +64,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
       const config = data.config as Record<string, unknown>;
       setBackupRequired(config.backupRequired !== false);
       setLifecycleOptions(hardwareLifecycleOptionsFromConfig(config));
+      setThreatOptions(threatDetectionOptionsFromConfig(config));
+      setEndpointManagementOptions(endpointManagementOptionsFromConfig(config));
       setVulnerabilityOptions(vulnerabilityManagementOptionsFromConfig(config));
     } catch (err) {
       setError(err instanceof Error ? err.message : t('reports.reportEditPage.errors.generic'));
@@ -112,6 +128,8 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
   const config = report.config as Record<string, unknown>;
   const isPosture = report.type === 'security_compliance_posture';
   const isLifecycle = report.type === 'hardware_lifecycle';
+  const isThreatDetection = report.type === 'threat_detection_review';
+  const isEndpointManagement = report.type === 'endpoint_management_review';
   const isVulnerability = report.type === 'vulnerability_management';
   const defaultValues: Partial<ReportBuilderFormValues> = {
     name: report.name,
@@ -160,6 +178,21 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
         </div>
       )}
 
+      {isThreatDetection && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <ThreatDetectionOptionsFields value={threatOptions} onChange={setThreatOptions} />
+        </div>
+      )}
+
+      {isEndpointManagement && (
+        <div className="rounded-lg border bg-card p-6 shadow-xs">
+          <EndpointManagementOptionsFields
+            value={endpointManagementOptions}
+            onChange={setEndpointManagementOptions}
+          />
+        </div>
+      )}
+
       {isVulnerability && (
         <div className="rounded-lg border bg-card p-6 shadow-xs">
           <VulnerabilityManagementOptionsFields value={vulnerabilityOptions} onChange={setVulnerabilityOptions} />
@@ -175,9 +208,13 @@ export default function ReportEditPage({ reportId }: ReportEditPageProps) {
             ? { ...config, backupRequired }
             : isLifecycle
               ? { ...config, ...lifecycleOptions }
-              : isVulnerability
-                ? { ...config, ...vulnerabilityOptions }
-                : config
+              : isThreatDetection
+                ? { ...config, ...threatOptions }
+                : isEndpointManagement
+                  ? { ...config, ...endpointManagementOptions }
+                  : isVulnerability
+                    ? { ...config, ...vulnerabilityOptions }
+                    : config
         }
         onSubmit={handleSubmit}
         onCancel={handleCancel}

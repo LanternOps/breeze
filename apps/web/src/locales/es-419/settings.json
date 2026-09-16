@@ -211,7 +211,8 @@
       "actionPlan": "Plan de acción",
       "autoApprove": "Aprobación automática",
       "hybridPlan": "Plan híbrido"
-    }
+    },
+    "overridesOrgTab": "Los campos que establece aquí sobrescriben y bloquean el mismo campo en la pestaña de IA de cada organización."
   },
   "aiBudgetThresholds": {
     "invalid": "Ingresa hasta cinco números enteros entre 1 y 99, separados por comas."
@@ -1444,7 +1445,7 @@
     "completeReview": "Revisión completa"
   },
   "aiUsagePage": {
-    "aIUsageBudget": "AI Uso y presupuesto",
+    "aIUsageBudget": "Uso de IA",
     "monitorAIAssistantUsageAndConfigureBudgetLimits": "Supervise el uso del asistente AI y configure límites de presupuesto",
     "budgetConfiguration": "Configuración del presupuesto",
     "aIEnabled": "AI Habilitado",
@@ -1494,7 +1495,19 @@
     "untitled": "Sin título",
     "billedToPartnerKey": "Facturado a tu clave: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
     "billedToPartnerKeyViaEndpoint": "Facturado a tu clave a través de {{name}}: el uso de IA se cobra a tu propia cuenta de Anthropic, no a los créditos de IA de Breeze",
-    "creditsRemaining": "Créditos de IA de Breeze restantes"
+    "creditsRemaining": "Créditos de IA de Breeze restantes",
+    "defaultValue": "Predeterminado ({{value}})",
+    "viewPartnerWideBudgets": "Presupuestos de IA del socio",
+    "monitorAIAssistantUsage": "Supervisar el uso del asistente de IA",
+    "effectiveBudget": "Presupuesto vigente",
+    "effectiveBudgetHelp": "Los límites vigentes para esta organización en este momento, y dónde se estableció cada uno.",
+    "effectiveBudgetUnavailable": "No se pudo cargar el presupuesto efectivo. Vuelva a cargar la página para intentarlo de nuevo.",
+    "sourcePartner": "Establecido por el socio",
+    "sourceOrganization": "Establecido por la organización",
+    "sourceDefault": "Predeterminado",
+    "selectOrgForEffectiveBudget": "Seleccione una organización para ver su presupuesto vigente, o edite los valores predeterminados de todo el socio.",
+    "editPartnerWideDefaults": "Editar valores predeterminados de todo el socio",
+    "thresholdsOff": "Desactivado"
   },
   "aiAgentsPage": {
     "schedules": {
@@ -2224,6 +2237,7 @@
       "emptyState": {
         "title": "Aún no hay resultados de IA en este período",
         "description": "Los resultados aparecerán aquí en cuanto sus agentes de IA evalúen una alerta, clasifiquen un ticket o ejecuten una corrección en modo de observación o de acción. Amplíe el período de informe arriba, o configure un agente para comenzar.",
+        "descriptionWidestWindow": "Los resultados aparecerán aquí en cuanto sus agentes de IA evalúen una alerta, clasifiquen un ticket o ejecuten una corrección en modo de observación o de acción. Aún no hay datos suficientes, ni siquiera en el período de informe más amplio; configure un agente para comenzar.",
         "action": "Configurar un agente"
       },
       "tileGroups": {
@@ -4282,6 +4296,11 @@
       }
     }
   },
+  "orgAiBudgetSettings": {
+    "title": "Presupuesto de IA",
+    "description": "Límites de gasto, límites de frecuencia y modo de aprobación del asistente de IA en esta organización. Los campos que su socio ha establecido se muestran aquí, pero solo se pueden cambiar en la pestaña del socio.",
+    "selectOrganization": "Seleccione una organización para configurar su presupuesto de IA."
+  },
   "orgSettingsPage": {
     "loading": "Cargando configuración de la organización...",
     "confirmDiscard": "Tiene cambios no guardados en esta sección. El cambio los descartará. ¿Continuar?",
@@ -4335,7 +4354,9 @@
       "notifications": "Notificaciones",
       "notificationsDescription": "Correo electrónico, Slack, webhooks",
       "ticketing": "Gestión de tickets",
-      "ticketingDescription": "SLA y anulaciones de facturación"
+      "ticketingDescription": "SLA y anulaciones de facturación",
+      "ai": "IA",
+      "aiDescription": "Presupuesto del asistente de IA, límites de frecuencia y modo de aprobación"
     },
     "overview": {
       "title": "Descripción general de la organización",

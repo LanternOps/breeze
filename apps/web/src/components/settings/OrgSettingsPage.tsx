@@ -20,7 +20,8 @@ import {
   ScrollText,
   Shield,
   Ticket,
-  Archive
+  Archive,
+  Wallet
 } from 'lucide-react';
 import OrgBillingSettings from '../billing/OrgBillingSettings';
 import SettingsSectionNav, { type SettingsNavGroup } from './SettingsSectionNav';
@@ -35,6 +36,7 @@ import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgAiProcessingToggle from './OrgAiProcessingToggle';
 import { OrgApprovalSecurityTab } from './OrgApprovalSecurityTab';
 import OrgEventLogSettings from './OrgEventLogSettings';
+import OrgAiBudgetSettings from './OrgAiBudgetSettings';
 import OrgAuditRetentionSettings from './OrgAuditRetentionSettings';
 import OrgRemoteAccessSettings from './OrgRemoteAccessSettings';
 import { useOrgStore } from '../../stores/orgStore';
@@ -48,7 +50,7 @@ import ExtensionSlotHost from '../extensions/ExtensionSlotHost';
 
 type TabKey =
   | 'general' | 'contacts' | 'branding' | 'portal' | 'notifications' | 'security'
-  | 'approval-security' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
+  | 'approval-security' | 'ai' | 'event-logs' | 'audit-retention' | 'remote-access' | 'ticketing' | 'contracts' | 'billing' | 'pax8'
   | 'extensions';
 
 // Grouped sidebar definition — same anatomy as PartnerSettingsPage (shared
@@ -81,6 +83,10 @@ const TAB_GROUPS: (Omit<SettingsNavGroup, 'items'> & { items: (SettingsNavGroup[
     items: [
       { key: 'security', hash: 'security', label: 'orgSettingsPage.nav.security', description: 'orgSettingsPage.nav.securityDescription', icon: Shield },
       { key: 'approval-security', hash: 'approval-security', label: 'orgSettingsPage.nav.approvalSecurity', description: 'orgSettingsPage.nav.approvalSecurityDescription', icon: Fingerprint },
+      // #6004: the AI budget editor moved off /settings/ai-usage to here, so it
+      // sits with the other partner-enforced org settings instead of on a usage
+      // report that has no org context under "All organizations".
+      { key: 'ai', hash: 'ai', label: 'orgSettingsPage.nav.ai', description: 'orgSettingsPage.nav.aiDescription', icon: Wallet },
       { key: 'remote-access', hash: 'remote-access', label: 'orgSettingsPage.nav.remoteAccess', description: 'orgSettingsPage.nav.remoteAccessDescription', icon: Monitor },
       { key: 'event-logs', hash: 'event-logs', label: 'orgSettingsPage.nav.eventLogs', description: 'orgSettingsPage.nav.eventLogsDescription', icon: ScrollText },
       { key: 'audit-retention', hash: 'audit-retention', label: 'orgSettingsPage.nav.auditRetention', description: 'orgSettingsPage.nav.auditRetentionDescription', icon: Archive },
@@ -640,6 +646,11 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         );
       case 'approval-security':
         return <OrgApprovalSecurityTab />;
+      case 'ai':
+        // No onDirty: the tab owns its own draft AND its own save, so wiring
+        // the page's dirty channel would strand it as permanently unsaved
+        // (#3432).
+        return <OrgAiBudgetSettings orgId={effectiveOrgId} />;
       case 'event-logs':
         return (
           <OrgEventLogSettings

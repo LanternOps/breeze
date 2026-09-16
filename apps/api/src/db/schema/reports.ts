@@ -37,9 +37,17 @@ export const reportTypeEnum = pgEnum('report_type', [
   // Hardware Lifecycle report: device replacement plan from purchase +
   // warranty dates (ported from the LanternOps portal PDF).
   'hardware_lifecycle',
-  // Service-plan evidence W04 (#5784): the vulnerability DETAIL artifact —
-  // findings, exceptions and remediation ranking. `security_compliance_posture`
-  // keeps its single vulnerability control line; neither replaces the other.
+  // Service-plan evidence #5784: W02 threat_detection_review (Huntress
+  // incidents for an occurrence's period, with an explicit coverage window;
+  // see services/threatDetectionReport.ts), W03 endpoint_management_review
+  // (over the #5327 M365 Intune sync tables — enrolment coverage, compliance
+  // breakdown, stale enrolments and licence seats; generated on demand, zero
+  // new tables), and W04 vulnerability_management (the vulnerability DETAIL
+  // artifact — findings, exceptions and remediation ranking;
+  // `security_compliance_posture` keeps its single vulnerability control
+  // line; neither replaces the other).
+  'threat_detection_review',
+  'endpoint_management_review',
   'vulnerability_management'
 ]);
 

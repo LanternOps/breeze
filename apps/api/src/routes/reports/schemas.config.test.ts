@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   createReportSchema,
+  endpointManagementConfigFields,
+  endpointManagementConfigSchema,
   hardwareLifecycleConfigFields,
   hardwareLifecycleConfigSchema,
   securityCompliancePostureConfigFields,
   securityCompliancePostureConfigSchema,
+  threatDetectionConfigFields,
+  threatDetectionConfigSchema,
   updateReportSchema,
   vulnerabilityManagementConfigFields,
   vulnerabilityManagementConfigSchema,
@@ -102,6 +106,32 @@ describe('report config schema', () => {
     );
   });
 
+  it('keeps the endpoint management persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(endpointManagementConfigFields).sort()).toEqual(
+      Object.keys(endpointManagementConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults an endpoint management config', () => {
+    expect(endpointManagementConfigSchema.parse({})).toEqual({
+      sites: [], staleEnrolmentDays: 14, trendDays: 30, includeLicences: true,
+    });
+  });
+
+  it('rejects an out-of-range trendDays', () => {
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 0 })).toThrow();
+    expect(() => endpointManagementConfigSchema.parse({ trendDays: 400 })).toThrow();
+  });
+
+  it('preserves endpoint management staleEnrolmentDays on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Endpoints', type: 'endpoint_management_review',
+      config: { staleEnrolmentDays: 30, includeLicences: false },
+    });
+    expect(parsed.config.staleEnrolmentDays).toBe(30);
+    expect(parsed.config.includeLicences).toBe(false);
+  });
+
   it('keeps the vulnerability management persistence fields in sync with the generation schema', () => {
     expect(Object.keys(vulnerabilityManagementConfigFields).sort()).toEqual(
       Object.keys(vulnerabilityManagementConfigSchema.shape).sort(),
@@ -181,5 +211,31 @@ describe('report config schema', () => {
       config: { backupRequired: true },
     });
     expect(updated.config?.backupRequired).toBe(true);
+  });
+
+  it('keeps the threat detection persistence fields in sync with the generation schema', () => {
+    expect(Object.keys(threatDetectionConfigFields).sort()).toEqual(
+      Object.keys(threatDetectionConfigSchema.shape).sort(),
+    );
+  });
+
+  it('defaults a threat detection config', () => {
+    expect(threatDetectionConfigSchema.parse({})).toEqual({
+      sites: [], includeCarriedIn: true, topIncidents: 100,
+    });
+  });
+
+  it('rejects an out-of-range topIncidents', () => {
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 0 })).toThrow();
+    expect(() => threatDetectionConfigSchema.parse({ topIncidents: 1001 })).toThrow();
+  });
+
+  it('preserves threat detection topIncidents on create', () => {
+    const parsed = createReportSchema.parse({
+      name: 'Threat detection', type: 'threat_detection_review',
+      config: { topIncidents: 25, includeCarriedIn: false },
+    });
+    expect(parsed.config?.topIncidents).toBe(25);
+    expect(parsed.config?.includeCarriedIn).toBe(false);
   });
 });

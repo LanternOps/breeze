@@ -40,6 +40,7 @@ import { showToast } from '../shared/Toast';
 import DeliverableTemplatesPage from './DeliverableTemplatesPage';
 import type { TemplateSet } from '../../lib/api/deliverableTemplates';
 import type { ChecklistTemplate } from '../../lib/api/ticketChecklistTemplates';
+import { MANAGED_EVIDENCE_REPORT_TYPES } from '@breeze/shared';
 
 const fetchMock = vi.mocked(fetchWithAuth);
 
@@ -262,22 +263,25 @@ describe('DeliverableTemplatesPage', () => {
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
 
-  // W01 shipped this picker with an empty registry and asserted the empty
-  // hint. #5784 W04 registered the first managed evidence type, so the hint is
-  // gone and the type is selectable — the assertion W01 left for the first
-  // wave to flip.
-  it('renders the auto-evidence report type picker on the item form, offering the registered types', async () => {
+  // #5784 W02 shipped the first managed-evidence type, so the picker now has
+  // options and the empty state is gone. The picker still defaults to None —
+  // auto-evidence is opt-in, never inherited by an existing template item.
+  // W03 and W04 registered further types (endpoint_management_review,
+  // vulnerability_management); the assertion below reads the registry
+  // directly so later waves need no edit here.
+  it('renders the auto-evidence report type picker with one option per shipped managed-evidence type', async () => {
     render(<DeliverableTemplatesPage />);
     const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
 
     fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
 
     const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
-    // Defaults to "None": auto-evidence stays opt-in per item.
+    // None stays the default — auto-evidence is opt-in per item.
     expect(select.value).toBe('');
     expect(screen.queryByTestId('deliverable-template-item-auto-evidence-empty')).not.toBeInTheDocument();
-    expect([...select.options].map((option) => option.value))
-      .toContain('vulnerability_management');
+    expect([...select.options].map((o) => o.value)).toEqual(
+      ['', ...MANAGED_EVIDENCE_REPORT_TYPES],
+    );
   });
 
   it('sends autoEvidenceReportType: null on item create when None is selected', async () => {

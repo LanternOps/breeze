@@ -9,7 +9,7 @@
  * uses, copied so the two suites cannot drift into disagreeing about the same
  * worker's dependencies.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { addMock, getJobMock, closeMock, sendCommandToAgentMock, isAgentConnectedMock } = vi.hoisted(() => ({
   addMock: vi.fn(),
@@ -109,7 +109,7 @@ vi.mock('../db', () => {
   };
 });
 
-import { __testables } from './snmpWorker';
+import { __testables, enqueueSnmpPollResults } from './snmpWorker';
 
 const { processPollResults } = __testables;
 
@@ -126,6 +126,12 @@ beforeEach(() => {
   updateError = null;
   insertError = null;
   vi.clearAllMocks();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('processPollResults — protocol 2 ingestion (spec §7.3)', () => {
@@ -242,4 +248,54 @@ describe('processPollResults — protocol 2 ingestion (spec §7.3)', () => {
     expect(captured.insertValues).toHaveLength(0);
     expect(captured.updateSets[0]).toMatchObject({ lastStatus: 'warning' });
   });
+});
+
+
+describe('walk errors and legacy envelope warnings', () => {
+  const walkTemplate = [{ oid: '1.3.6.1.2.1.2.2.1.10', name: 'ifInOctets', type: 'counter' }];
+  function wireResult(templateOids = walkTemplate) {
+    selectResults = [[{ orgId: 'org-1', templateId: 'tpl-1' }], [{ oids: templateOids }]];
+  }
+
+  it.each(['snmpError', 'walkFailed'])('persists %s verbatim', async (error) => {
+    selectResults = deviceRow();
+    await processPollResults({
+      type: 'process-poll-results', deviceId: DEVICE,
+      metrics: [{ oid: '1.2.3', name: 'x', value: null, error, timestamp: '2026-09-16T12:00:00.000Z' }],
+    });
+    expect((captured.insertValues[0] as Record<string, unknown>[])[0]).toMatchObject({ error, value: null, valueType: 'error' });
+  });
+
+  it.each([undefined, 1])('warns for legacy protocol %s at most once per device per hour', async (protocol) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-16T12:00:00Z'));
+    const deviceId = `legacy-${protocol}`;
+    const job = { type: 'process-poll-results' as const, deviceId, protocol, metrics: [] };
+    wireResult();
+    await processPollResults(job);
+    expect(console.warn).toHaveBeenCalledWith('[SnmpWorker] legacy agent result for a walk template', { deviceId, orgId: 'org-1' });
+    wireResult();
+    await processPollResults(job);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60 * 60 * 1000);
+    wireResult();
+    await processPollResults(job);
+    expect(console.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not warn for protocol 2 or scalar-only templates', async () => {
+    wireResult();
+    await processPollResults({ type: 'process-poll-results', deviceId: 'modern', protocol: 2, metrics: [] });
+    wireResult([{ oid: '1.3.6.1.2.1.1.3.0', name: 'uptime', type: 'timeticks' }]);
+    await processPollResults({ type: 'process-poll-results', deviceId: 'scalar', metrics: [] });
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+});
+
+
+it('preserves the protocol envelope through the results queue', async () => {
+  addMock.mockResolvedValue({ id: 'job-1' });
+  getJobMock.mockResolvedValue(null);
+  await enqueueSnmpPollResults(DEVICE, [], undefined, 2);
+  expect(addMock).toHaveBeenCalledWith('process-poll-results', expect.objectContaining({ protocol: 2 }), expect.anything());
 });

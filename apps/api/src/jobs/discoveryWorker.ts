@@ -29,6 +29,7 @@ import { dispatchCommandToAgent, isAgentConnectedAnywhere } from '../services/ag
 import type { AgentCommand } from '../routes/agentWs';
 import { isCronDue } from '../services/cronDue';
 import { lookupMacVendor, inferAssetTypeFromVendor } from '../services/macVendorLookup';
+import { resolveAssetIdentity, type ResolvedAssetIdentity } from '../services/assetIdentity';
 import {
   buildClassificationWrite,
   type DiscoveredAssetDetectionSource,
@@ -691,6 +692,27 @@ export const __testables = {
 };
 
 /**
+ * Identity for one scanned host (spec §9, D6).
+ *
+ * Exported so it can be unit-tested without a database; `processResults` is the
+ * only caller, and it is the single point BOTH the INSERT and the UPDATE branch
+ * read manufacturer/model from. Manual precedence is enforced afterwards, in
+ * SQL, by buildScanUpdateSet — not here.
+ */
+export function resolveScanIdentity(
+  host: DiscoveredHostResult,
+  nicVendor: string | null,
+): ResolvedAssetIdentity {
+  return resolveAssetIdentity({
+    sysObjectId: host.snmpData?.sysObjectId ?? null,
+    sysDescr: host.snmpData?.sysDescr ?? null,
+    snmpData: (host.snmpData ?? null) as Record<string, unknown> | null,
+    macVendor: nicVendor,
+    current: { manufacturer: host.manufacturer ?? null, model: host.model ?? null },
+  });
+}
+
+/**
  * The scan's UPDATE set for an already-known asset (#5213).
  *
  * A scan re-finding a manual row updates it IN PLACE — one identity, no
@@ -952,11 +974,13 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       )
       .limit(1);
 
-    // Use agent-provided manufacturer (SNMP); fall back to OUI lookup
-    let resolvedManufacturer = host.manufacturer ?? null;
-    if (!resolvedManufacturer && host.mac) {
-      resolvedManufacturer = lookupMacVendor(host.mac);
-    }
+    // Identity is resolved SERVER-side now (spec §9): the IANA enterprise arc
+    // of the sysObjectID outranks the NIC OUI, and the raw sysObjectID can no
+    // longer reach `model`. The OUI vendor is still computed — it remains the
+    // last manufacturer fallback and W01 exposes it separately as `nicVendor`.
+    const nicVendor = host.mac ? lookupMacVendor(host.mac) : null;
+    const identity = resolveScanIdentity(host, nicVendor);
+    const resolvedManufacturer = identity.manufacturer;
 
     // What did this scan actually manage to classify, and how strong is that
     // evidence? The agent's own classification is real observation (ports, SNMP,
@@ -988,7 +1012,7 @@ export async function processResults(data: ProcessResultsJobData): Promise<{
       hostname: host.hostname ?? null,
       netbiosName: host.netbiosName ?? null,
       manufacturer: resolvedManufacturer,
-      model: host.model ?? null,
+      model: identity.model,
       openPorts: host.openPorts ?? null,
       osFingerprint: host.osFingerprint ? { os: host.osFingerprint } : null,
       snmpData: host.snmpData ?? null,

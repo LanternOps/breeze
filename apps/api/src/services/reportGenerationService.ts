@@ -16,11 +16,19 @@ import {
 import type { ExecutiveSummary } from '@breeze/shared';
 import { emptyVulnerabilityManagementSummary } from '@breeze/shared';
 import {
+  ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+  emptyEndpointManagementSummary,
+} from '@breeze/shared';
+import {
   systemReportAuthorityFor,
   type ReportExecutionAuthority,
   type ReportGenerationAuthority,
 } from './siteScope';
 import { isManagedEvidenceType, type ManagedEvidenceType } from './managedEvidenceRegistry';
+
+/** Mirrors `endpointManagementConfigSchema`'s default. Duplicated rather than
+ *  imported because routes/reports/schemas.ts imports back from this module. */
+const ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS = 14;
 
 export type ReportType =
   | 'device_inventory'
@@ -49,6 +57,15 @@ export type ReportType =
   // Hardware Lifecycle: generated on demand from devices/manual assets +
   // warranty; see services/hardwareLifecycleReport.ts.
   | 'hardware_lifecycle'
+  // #5784 W02. Service-plan evidence: Huntress incidents for the occurrence's
+  // period, with an explicit coverage window. Generated on demand and by the
+  // managed-evidence system path; see services/threatDetectionReport.ts.
+  | 'threat_detection_review'
+  // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
+  // posture from the #5327 sync tables, with the freshness of each domain
+  // printed. Current inventory plus rollup trend only — entity-level history is
+  // not reconstructible (see services/endpointManagementReport.ts).
+  | 'endpoint_management_review'
   // #5784 W04. Service-plan evidence: the vulnerability DETAIL artifact.
   // security_compliance_posture keeps its single control line; this is the
   // findings, exceptions and remediation ranking a vulnerability-management
@@ -895,6 +912,20 @@ async function dispatchReportGeneration(
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, requestAuthority());
     }
+    // #5784 W02. Accepts `authority` as-is: it is a managed evidence type, so a
+    // system authority legitimately reaches this arm. The dynamic import keeps
+    // the generator off the hot path and avoids the module cycle back to
+    // `assertReportExecutionPreflight`.
+    case 'threat_detection_review': {
+      const { generateThreatDetectionReport } = await import('./threatDetectionReport');
+      return generateThreatDetectionReport(orgId, config, authority, evidence);
+    }
+    case 'endpoint_management_review': {
+      // `await import` keeps a heavy generator off the hot path and avoids the
+      // module cycle back to `assertReportExecutionPreflight`.
+      const { generateEndpointManagementReport } = await import('./endpointManagementReport');
+      return generateEndpointManagementReport(orgId, config, authority, evidence);
+    }
     // #5784 W04. The dynamic import keeps a heavy generator out of the hot path
     // and avoids the module cycle back to `assertReportExecutionPreflight`.
     case 'vulnerability_management': {
@@ -968,7 +999,30 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    // #5784 W02 — NOT stored-artifact-only: a restricted authority with zero
+    // sites gets an empty-but-shaped result rather than a throw.
+    case 'threat_detection_review':
       return emptyRowsReport();
+    // #5784 W03 — generated on demand, so a restricted-empty authority gets a
+    // zero-safe shape rather than a stored-artifact refusal. It needs its OWN
+    // case, not `emptyRowsReport()`: that returns no `summary` at all, and
+    // `buildReportPdf`'s endpoint-management arm is guarded on the summary
+    // being present, so the artifact would fall through to renderGenericReport
+    // and print one line — "No data available for the selected filters" — which
+    // reads as "nothing to report" to a technician whose real situation is
+    // "your access scope contains no sites". This short-circuit runs BEFORE the
+    // dispatch switch, so the generator's own empty branch never sees it.
+    case 'endpoint_management_review':
+      return {
+        rows: [],
+        rowCount: 0,
+        summary: emptyEndpointManagementSummary({
+          orgId,
+          generatedAt: new Date().toISOString(),
+          thresholdDays: ENDPOINT_MANAGEMENT_DEFAULT_STALE_DAYS,
+          dataGap: ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+        }) as unknown as Record<string, unknown>,
+      };
     // #5784 W04. NOT `emptyRowsReport()`: that returns no `summary`, and
     // `buildReportPdf`'s vulnerability_management arm requires one — a
     // summary-less result falls through to `renderGenericReport`, which prints
