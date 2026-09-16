@@ -4094,6 +4094,7 @@
     "languageLoadFailed": "Tercih kaydedildi, ancak dil yüklenemedi; İngilizce gösteriliyor. Bağlantınızı kontrol edip tekrar deneyin."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Varsayılan süre kaydı (dakika)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA dakika ve saatlik ücret rakam olmalıdır.",
     "categoryUpdated": "Kategori güncellendi",
     "ticketing": "Biletleme",

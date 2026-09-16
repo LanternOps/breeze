@@ -4089,6 +4089,7 @@
     "languageLoadFailed": "Preferenza salvata, ma il caricamento della lingua non è riuscito — viene mostrato l'inglese. Controlla la connessione e riprova."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registrazione del tempo predefinita (minuti)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "I minuti SLA e la tariffa oraria devono essere numeri.",
     "categoryUpdated": "Categoria aggiornata",
     "ticketing": "Ticketing",

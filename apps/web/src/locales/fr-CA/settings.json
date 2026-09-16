@@ -4089,6 +4089,7 @@
     "languageLoadFailed": "Préférence enregistrée, mais la langue ne se chargeait pas — l’anglais montré. Vérifiez votre connexion et réessayez."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Saisie de temps par défaut (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes et tarif horaire doivent être des chiffres.",
     "categoryUpdated": "Catégorie mise à jour",
     "ticketing": "Billetterie",

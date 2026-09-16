@@ -4041,6 +4041,7 @@
     "languageLoadFailed": "La preferencia se guardó, pero el idioma no se pudo cargar: se muestra inglés. Compruebe su conexión y vuelva a intentarlo."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tiempo predeterminado (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA los minutos y la tarifa por hora deben ser números.",
     "categoryUpdated": "Categoría actualizada",
     "ticketing": "Gestión de tickets",

@@ -4094,6 +4094,7 @@
     "languageLoadFailed": "Preferência salva, mas o idioma não foi carregado — exibindo em inglês. Verifique sua conexão e tente novamente."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Registro de tempo padrão (minutos)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "Os minutos de SLA e a taxa horária devem ser números.",
     "categoryUpdated": "Categoria atualizada",
     "ticketing": "Chamados",

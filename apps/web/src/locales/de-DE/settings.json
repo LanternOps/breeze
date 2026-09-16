@@ -4041,6 +4041,7 @@
     "languageLoadFailed": "Präferenz gespeichert, aber die Sprache konnte nicht geladen werden – Englisch wird angezeigt. Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Standard-Zeiteintrag (Minuten)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA Minuten und Stundensatz müssen Zahlen sein.",
     "categoryUpdated": "Kategorie aktualisiert",
     "ticketing": "Ticketverkauf",

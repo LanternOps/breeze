@@ -4094,6 +4094,7 @@
     "languageLoadFailed": "Preference saved, but the language failed to load — showing English. Check your connection and try again."
   },
   "ticketCategoriesPage": {
+    "defaultTimeEntryMinutes": "Default time entry (minutes)",
     "sLAMinutesAndHourlyRateMustBeNumbers": "SLA minutes and hourly rate must be numbers.",
     "categoryUpdated": "Category updated",
     "ticketing": "Ticketing",
