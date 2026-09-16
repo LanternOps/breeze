@@ -55,24 +55,11 @@ export interface SenderResolver {
 }
 
 /**
- * Bind a SUBJECT-TOKEN (ticket-number) match to the sender (#3643). Ticket numbers
- * are sequential and enumerable. Partner/org scoping alone is insufficient:
- * portal ticket reads are requester-scoped, so another authenticated sender in
- * the same customer organization must not append a public comment or reopen the
- * requester's ticket.
- *
- * SCOPE — this covers the subject-token branch ONLY (the two `senderIsBoundToTicket`
- * call sites below, in `findTicketInPartner` and `findClosedTicketInPartner`). The
- * HEADER path — thread key, `tickets.emailMessageId`, and `ticket_email_links` — is
- * partner-scoped but NOT requester-bound: any DMARC-verified sender who obtains a
- * `Message-ID`/`In-Reply-To`/`References` value for a partner's ticket can still
- * append to it. That path's mitigation is (a) those identifiers are high-entropy and
- * unguessable, so possession normally implies the sender was on the thread, and
- * (b) the provider sender-authentication gate in
- * `inboundEmailService.processInboundEmail` (the `n.senderAuth?.verified` check),
- * which quarantines unverified mail before any match is attempted. Extending the
- * requester binding to the header path is deliberately out of scope here — it would
- * break legitimate CC/forward participants who are not the requester.
+ * Bind inbound header and subject-token matches to the current requester.
+ * Partner/org scoping and possession of a thread identifier are insufficient:
+ * portal ticket reads are requester-scoped, so another sender in the same
+ * organization must not append a public comment or reopen the requester's ticket.
+ * Authenticated technician callers omit the resolver and retain partner matching.
  */
 export async function senderIsBoundToTicket(
   from: string,
@@ -143,7 +130,7 @@ export async function findTicketInPartner(
     // replacement for the status/deleted_at guards below, so a link row can never
     // re-enable appending to a closed or soft-deleted ticket.
     const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -155,9 +142,16 @@ export async function findTicketInPartner(
           inArray(tickets.emailMessageId, candidateKeys),
           ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
         )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+      ));
+    // Hold the same requester-reassignment lock as the subject-token path.
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      return row;
+    }
   }
 
   // 2) subject token [T-YYYY-NNNN] (scoped to partner, live tickets only)
@@ -207,7 +201,7 @@ export async function findClosedTicketInPartner(
     // gated on status = 'closed' here — a link row only ever surfaces a ticket
     // that is ALREADY closed via this path, never re-opens/re-matches a live one.
     const linkTicketIds = await findTicketIdsByMessageIds(partnerId, candidateKeys);
-    const rows = await db
+    const query = db
       .select(MATCH_COLS)
       .from(tickets)
       .where(and(
@@ -225,9 +219,16 @@ export async function findClosedTicketInPartner(
           inArray(tickets.emailThreadKey, candidateKeys),
           ...(linkTicketIds.length > 0 ? [inArray(tickets.id, linkTicketIds)] : [])
         )
-      ))
-      .limit(1);
-    if (rows[0]) return rows[0] as MatchedTicket;
+      ));
+    // Hold the same requester-reassignment lock as the subject-token path.
+    const rows = sender
+      ? await query.for('update').limit(1)
+      : await query.limit(1);
+    const row = rows[0] as MatchedTicket | undefined;
+    if (row) {
+      if (sender && !(await senderIsBoundToTicket(input.from ?? '', row, sender))) return null;
+      return row;
+    }
   }
 
   const m = (input.subject ?? '').match(TICKET_TOKEN_RE);

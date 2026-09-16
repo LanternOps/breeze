@@ -1294,7 +1294,7 @@ describe('POST /devices/:id/move-org', () => {
       // ordering asserted below — assert it explicitly rather than folding it
       // into the positional slice.
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.slice(1, 5)).toEqual([
         'SELECT organizations FOR share (after 0 updates)',
@@ -1355,7 +1355,7 @@ describe('POST /devices/:id/move-org', () => {
 
       expect(response.status).toBe(200);
       expect(statements[0]).toBe(
-        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk DEFERRED',
+        'SET CONSTRAINTS time_entries_ticket_org_fk, ticket_parts_ticket_org_fk, ticket_checklist_items_ticket_org_fk, tickets_org_partner_fk DEFERRED',
       );
       expect(statements.some((s) => /SET CONSTRAINTS ALL/i.test(s))).toBe(false);
     });
@@ -1709,6 +1709,34 @@ describe('POST /devices/:id/move-org', () => {
         body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
       });
       expect(res.status).toBe(200);
+    });
+
+    it('restamps moved tickets from the live target partner and defers the composite FK', async () => {
+      setAuth({ scope: 'system', canAccessOrg: () => true });
+      vi.mocked(getDeviceWithOrgAndSiteCheck).mockResolvedValue(SAMPLE_DEVICE as never);
+      rigOrgAndSiteSelects({
+        orgRows: [
+          { id: SOURCE_ORG, partnerId: 'partner-1' },
+          { id: OTHER_PARTNER_TARGET_ORG, partnerId: 'partner-OTHER' },
+        ],
+        siteRow: { id: TARGET_SITE },
+      });
+      const { statements } = rigTransactionSuccess({
+        ...SAMPLE_DEVICE, orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE,
+      });
+
+      const res = await app.request(`/devices/${DEVICE_ID}/move-org`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer t', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgId: OTHER_PARTNER_TARGET_ORG, siteId: TARGET_SITE }),
+      });
+      expect(res.status).toBe(200);
+      expect(statements.map(collapseStmt)).toContain(
+        `UPDATE tickets SET org_id = ${OTHER_PARTNER_TARGET_ORG}::uuid, partner_id = (SELECT partner_id FROM organizations WHERE id = ${OTHER_PARTNER_TARGET_ORG}::uuid) WHERE device_id = ${DEVICE_ID}::uuid`,
+      );
+      const deferIndex = statements.findIndex((s) => /SET CONSTRAINTS .*tickets_org_partner_fk.*DEFERRED/.test(s));
+      expect(deferIndex).toBeGreaterThanOrEqual(0);
+      expect(deferIndex).toBeLessThan(statements.indexOf('UPDATE devices'));
     });
 
     it('returns 400 when the target site does not belong to the target org', async () => {

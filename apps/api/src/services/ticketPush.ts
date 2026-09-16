@@ -153,9 +153,12 @@ export async function isAuthorisedForTicket(
   userId: string,
   partnerId: string,
   orgId: string,
-  deviceId?: string | null
+  deviceId?: string | null,
+  options?: { bypassCache?: boolean }
 ): Promise<boolean> {
-  const perms = await getUserPermissions(userId, { partnerId, orgId });
+  const perms = options
+    ? await getUserPermissions(userId, { partnerId, orgId }, options)
+    : await getUserPermissions(userId, { partnerId, orgId });
   if (!perms) return false;
   if (!hasPermission(perms, PERMISSIONS.TICKETS_READ.resource, PERMISSIONS.TICKETS_READ.action)) return false;
   if (!canAccessOrg(perms, orgId)) return false;
@@ -179,11 +182,12 @@ export async function isEligibleTicketRecipient(
   candidate: RecipientCandidate,
   partnerId: string,
   orgId: string,
-  deviceId?: string | null
+  deviceId?: string | null,
+  options?: { bypassCache?: boolean }
 ): Promise<boolean> {
   return candidate.status === 'active' &&
     candidate.partnerId === partnerId &&
-    isAuthorisedForTicket(candidate.userId, partnerId, orgId, deviceId);
+    isAuthorisedForTicket(candidate.userId, partnerId, orgId, deviceId, options);
 }
 
 /**

@@ -493,9 +493,10 @@ describe('processInboundEmail', () => {
   it('GUARD: refuses to touch a matched ticket from another partner (-> failed, no write)', async () => {
     resolveMock.mockResolvedValue('p-1');
     state.selectRows['ticket_email_inbound'] = [];
+    state.selectRows['portal_users'] = [{ id: 'pu-2', orgId: 'o-2' }];
     // matched ticket belongs to partner B, not the resolved partner A
     state.selectRows['tickets'] = [{
-      id: 't-B', partnerId: 'p-2', orgId: 'o-2', status: 'open',
+      id: 't-B', partnerId: 'p-2', orgId: 'o-2', status: 'open', submittedBy: 'pu-2',
       emailThreadKey: '<msg-1@tickets.example.com>', internalNumber: 'T-2026-0001'
     }];
 
@@ -553,9 +554,11 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [{
       id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
+      submitterEmail: 'jane@customer.com',
       emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
     }];
     state.selectRows['organizations'] = [{ id: 'o-1' }];
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-1', autoCreateContact: false });
     createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
 
     await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
@@ -705,9 +708,11 @@ describe('processInboundEmail', () => {
     state.selectRows['ticket_email_inbound'] = [];
     state.selectRows['tickets'] = [{
       id: 't-closed', partnerId: 'p-1', orgId: 'o-1', status: 'closed',
+      submitterEmail: 'jane@customer.com',
       emailThreadKey: '<thread-key-old>', internalNumber: 'T-2026-0001'
     }];
     state.selectRows['organizations'] = [{ id: 'o-1' }]; // org guard passes
+    resolveOrgMock.mockResolvedValue({ orgId: 'o-1', autoCreateContact: false });
     createTicketMock.mockResolvedValue({ id: 't-linked', internalNumber: 'T-2026-0011' });
 
     await processInboundEmail(email({ subject: 'Re: [T-2026-0001] printer down', inReplyTo: '<thread-key-old>' }));
@@ -1569,16 +1574,17 @@ describe('subject-token matches are bound to the sender (§1.3)', () => {
     expect(inboundOf()[0]!.parseStatus).toBe('matched');
   });
 
-  it('UNCHANGED: the unguessable thread-key path still matches without any sender binding', async () => {
+  it('rejects an unbound sender even when they possess the thread key', async () => {
     await processInboundEmail(email({
       from: 'stranger@somewhere.example',
       subject: 'no token here at all',
       inReplyTo: '<anchor-b@tickets.example.com>',
     }));
 
-    expect(comments()).toHaveLength(1);
-    expect(inboundOf()[0]!.parseStatus).toBe('matched');
-    expect(inboundOf()[0]!.ticketId).toBe('t-victim');
+    expect(comments()).toHaveLength(0);
+    expect(reopened()).toHaveLength(0);
+    expect(inboundOf()[0]!.parseStatus).toBe('quarantined');
+    expect(inboundOf()[0]!.ticketId).toBeNull();
   });
 });
 

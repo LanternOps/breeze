@@ -35,6 +35,7 @@ const { serviceMocks, dbState } = vi.hoisted(() => ({
     editTicketComment: vi.fn(),
     deleteTicketComment: vi.fn(),
     moveTicketOrg: vi.fn(),
+    revalidateTicketAssignee: vi.fn(),
   },
   dbState: {
     selectQueues: new Map<unknown, unknown[][]>(),
@@ -231,6 +232,15 @@ beforeEach(() => {
 });
 
 describe('link_device (P2-4, #4191)', () => {
+  it('revalidates the assignee after a successful device link without attributing a synthetic user', async () => {
+    queueSelect(tickets, [accessibleTicket()]);
+    queueSelect(devices, [{ id: DEVICE_ID }]);
+    dbState.updateReturningQueue.push([{ id: TICKET_ID }]);
+    await getTool().handler({ action: 'link_device', ticketId: TICKET_ID, hostname: 'WKS-042' }, makeAgentAuth());
+    expect(serviceMocks.revalidateTicketAssignee).toHaveBeenCalledWith(TICKET_ID, expect.objectContaining({ principalKind: 'ai_agent' }));
+    expect(serviceMocks.revalidateTicketAssignee.mock.invocationCallOrder[0]).toBeGreaterThan(topUpdateWhereMock.mock.invocationCallOrder[0]!);
+  });
+
   it('links when exactly one device matches by hostname and the ticket is currently unlinked', async () => {
     queueSelect(tickets, [accessibleTicket()]);
     queueSelect(devices, [{ id: DEVICE_ID }]);
@@ -309,6 +319,7 @@ describe('link_device (P2-4, #4191)', () => {
     );
 
     expect(JSON.parse(out)).toEqual({ linked: false, reason: 'already_linked' });
+    expect(serviceMocks.revalidateTicketAssignee).not.toHaveBeenCalled();
   });
 
   it('requires hostname or serial', async () => {
