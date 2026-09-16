@@ -1,7 +1,22 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import type { AuditResult, RemediationTrigger } from '@breeze/shared';
 import { auditLogs } from '../db/schema';
 import { captureException } from './sentry';
+
+const requestAudit = new AsyncLocalStorage<{ written: boolean }>();
+
+/** Track semantic audit submissions, including service calls without a Hono context. */
+export async function runWithAuditRequestTracking(next: () => Promise<void>): Promise<boolean> {
+  const state = { written: false };
+  await requestAudit.run(state, next);
+  return state.written;
+}
+
+function markRequestAuditWritten(): void {
+  const state = requestAudit.getStore();
+  if (state) state.written = true;
+}
 
 export type InitiatedByType = 'manual' | 'ai' | 'automation' | 'policy' | 'schedule' | 'agent' | 'integration';
 
@@ -94,7 +109,8 @@ async function persistAuditLog(params: CreateAuditLogParams): Promise<void> {
  * wants to surface).
  */
 export async function createAuditLog(params: CreateAuditLogParams): Promise<void> {
-  return persistAuditLog(params);
+  await persistAuditLog(params);
+  markRequestAuditWritten();
 }
 
 /**
@@ -109,6 +125,9 @@ export async function createAuditLog(params: CreateAuditLogParams): Promise<void
  * rejection: this function never throws back to its caller.
  */
 export async function createAuditLogAsync(params: CreateAuditLogParams): Promise<void> {
+  // Claim the request synchronously: fire-and-forget writes may still be
+  // pending when the route returns. Failed writes are owned by the retry queue.
+  markRequestAuditWritten();
   try {
     await persistAuditLog(params);
   } catch (err) {
