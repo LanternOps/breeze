@@ -165,6 +165,9 @@ vi.mock('../db/schema', () => ({
   discoveryProfiles: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
   discoveryJobs: { id: 'id', status: 'status', completedAt: 'completedAt', errors: 'errors', updatedAt: 'updatedAt' },
   discoveredAssets: { id: 'id', orgId: 'orgId' },
+  topologyManualNodes: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
+  topologyLayout: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
+  networkTopology: { id: 'id', orgId: 'orgId', siteId: 'siteId' },
   sites: { id: 'id', orgId: 'orgId', createdAt: 'createdAt' },
   // GET /orgs/sites excludes the hidden per-partner 'quick_support' org's site
   // with a NOT EXISTS against `organizations`, so the mock must export it.
