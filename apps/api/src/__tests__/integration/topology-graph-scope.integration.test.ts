@@ -69,6 +69,7 @@ describe('passive topology graph — real request RLS and scope', () => {
     const initial = await graph(env, env.site.id, '?limit=1');
     expect(initial.nodes.map(node => node.id)).toEqual(memberIds);
     const boundary = initial.presentation.edges[0]!;
+    if (boundary.meaning !== 'aggregate') throw new Error('Expected an expandable boundary edge');
     const res = await request(env, env.site.id, `expansions/${boundary.frontierToken}`);
     expect(res.status).toBe(200);
     const expanded = graphResponseSchema.parse(await res.json());

@@ -37,7 +37,7 @@ describe('alias position migration', () => {
     expect(planAliasPosition(a.id, alias, { ...position, revision: 12n, legacySourceRevision: 20n, deletedAt: new Date() })).toMatchObject({ x: 11, pinned: true, revision: 13n, legacySourceRevision: 20n, deletedAt: null });
   });
   it('retains the removed alias tombstone fence while preserving a canonical pin', () => {
-    const alias = { ...position, nodeId: b.id, legacySourceRevision: 30n, deletedAt: new Date() };
+    const alias: typeof position = { ...position, nodeId: b.id, legacySourceRevision: 30n, deletedAt: new Date() };
     expect(planAliasPosition(a.id, alias, { ...position, pinned: true })).toMatchObject({ x: 1, pinned: true, revision: 3n, legacySourceRevision: 30n, deletedAt: null });
   });
   it('keeps a tombstone and null source fence when neither slot is live or captured', () => {

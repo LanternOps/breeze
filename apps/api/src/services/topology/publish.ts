@@ -5,6 +5,7 @@ import { nodeKindSchema, relationshipKindSchema, lifecycleSchema, confidenceSche
 import { db, assertInTransaction } from '../../db';
 import { topologyNodes, topologyRelationships, topologyNodeBindings, topologyNodePositions, topologyLayouts, topologySiteState, auditLogs, discoveredAssets } from '../../db/schema';
 import { canonicalIdentityKey, normalizedTopologyScope, planCanonicalMerge, planAliasPosition } from './identity';
+import { lockTopologyInventoryReferences } from './inventoryLocks';
 
 type Owned = 'createdAt' | 'updatedAt' | 'revision';
 export type NodePublication = Omit<typeof topologyNodes.$inferInsert, Owned> & { id: string };
@@ -214,6 +215,7 @@ export async function publishTopologyBuild(scope: TopologyScope, input: Publicat
     for (const row of relationshipWrites) {
       for (const id of [row.sourceNodeId, row.targetNodeId]) if (!nodeMap.has(id) || nodeMap.get(id)!.aliasTargetId) throw new Error('Relationship endpoint is outside canonical scope');
     }
+    await lockTopologyInventoryReferences(normalized, bindingWrites, tx);
     const structuralChanged = merges.length > 0
       || nodeWrites.some(n => structuralFingerprint('node', n) !== structuralFingerprint('node', oldNodesById.get(n.id!) ?? {}))
       || relationshipWrites.some(r => structuralFingerprint('relationship', r) !== structuralFingerprint('relationship', oldRelationshipsById.get(r.id!) ?? {}))
