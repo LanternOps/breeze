@@ -34,7 +34,7 @@ export async function createTopologyGraph() {
       VALUES (${assetId}::uuid, ${scope.orgId}::uuid, ${scope.siteId}::uuid, '192.0.2.1')`);
     await db.execute(sql`INSERT INTO topology_manual_nodes (id, org_id, site_id, label, role)
       VALUES (${manualId}::uuid, ${scope.orgId}::uuid, ${scope.siteId}::uuid, 'fixture', 'switch')`);
-    await db.execute(sql`INSERT INTO topology_site_state (org_id, site_id) VALUES (${scope.orgId}::uuid, ${scope.siteId}::uuid)`);
+    await db.execute(sql`INSERT INTO topology_site_state (org_id, site_id) VALUES (${scope.orgId}::uuid, ${scope.siteId}::uuid) ON CONFLICT DO NOTHING`);
     for (const id of [nodeId, targetNodeId]) {
       await db.execute(sql`INSERT INTO topology_nodes (id, org_id, site_id, identity_key, identity_material, kind)
         VALUES (${id}::uuid, ${scope.orgId}::uuid, ${scope.siteId}::uuid, ${id},
