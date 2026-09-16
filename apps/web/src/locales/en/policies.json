@@ -1425,7 +1425,9 @@
       "noDeploymentsYet": "No deployments have been created yet.",
       "failedToCancelDeployment": "Failed to cancel deployment",
       "deploymentCancelled": "Deployment cancelled",
-      "pageOf": "Page {{page}} of {{pages}}"
+      "pageOf": "Page {{page}} of {{pages}}",
+      "policyOwned": "Policy-owned",
+      "policyOwnedTooltip": "Created automatically by a software policy's auto-install remediation"
     },
     "deploymentProgress": {
       "queued": "Queued",
