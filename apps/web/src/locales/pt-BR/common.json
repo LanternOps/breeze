@@ -1898,8 +1898,8 @@
             "networkCheck": "verificação de rede",
             "probe": "verificar agora",
             "scan": "varredura",
-            "unifi": "UniFi",
-            "snmp": "SNMP"
+            "unifi": "controladora UniFi",
+            "snmp": "consulta SNMP"
           }
         },
         "collectionState": {

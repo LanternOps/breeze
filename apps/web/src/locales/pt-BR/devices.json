@@ -2314,11 +2314,9 @@
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Voltar para dispositivos",
-    "configurePrefix": "Configure a consulta SNMP e os monitores de rede em",
     "confirmUnlink": "Desvincular este dispositivo?",
     "confirmUnlinkMessage": "O ativo descoberto e o dispositivo gerenciado serão exibidos como itens separados. A vinculação automática permanecerá desativada para este ativo até que você o vincule novamente.",
     "connecting": "Conectando",
-    "discoveryAssetView": "visualização do ativo de descoberta",
     "emptyPorts": "Nenhuma porta aberta encontrada na última verificação.",
     "emptySnmp": "Nenhum dado SNMP foi coletado — o dispositivo pode não ter respondido ou o SNMP pode não ter sido sondado. Verifique se o método SNMP está ativado e se a string de comunidade está definida no perfil de descoberta.",
     "errors": {
@@ -2351,7 +2349,6 @@
       "refreshed": "Detalhes do dispositivo atualizados"
     },
     "loading": "Carregando dispositivo de rede...",
-    "manageInDiscovery": "Gerenciar na Descoberta",
     "manuallySet": "Definido manualmente",
     "manuallySetWithDetected": "Definido manualmente · a verificação detectou {{type}}",
     "networkDevice": "Dispositivo de rede",
@@ -2377,8 +2374,6 @@
       "agentListFailed": "Não foi possível carregar a lista de agentes. Tentar novamente."
     },
     "resetToAutoDetected": "Redefinir para detecção automática",
-    "savingType": "Salvando…",
-    "resettingType": "Redefinindo…",
     "sections": {
       "discovery": "Descoberta",
       "identity": "Identidade",
@@ -2550,7 +2545,27 @@
         }
       },
       "openMonitoringSettings": "Editar configurações de monitoramento",
-      "openLinkSettings": "Gerenciar este vínculo"
+      "openLinkSettings": "Gerenciar este vínculo",
+      "toasts": {
+        "identitySaved": "Identidade salva",
+        "identitySaveFailed": "Não foi possível salvar as alterações de identidade",
+        "approved": "Ativo aprovado",
+        "approveFailed": "Não foi possível aprovar o ativo",
+        "dismissed": "Ativo dispensado",
+        "dismissFailed": "Não foi possível dispensar o ativo",
+        "assetDeleted": "Ativo excluído",
+        "assetDeleteFailed": "Não foi possível excluir o ativo",
+        "snmpSaved": "Configurações SNMP salvas",
+        "snmpSaveFailed": "Não foi possível salvar as configurações SNMP",
+        "pollingPaused": "Consultas SNMP pausadas",
+        "pollingResumed": "Consultas SNMP retomadas",
+        "monitoringDisabled": "Monitoramento desabilitado para este ativo",
+        "monitoringDisableFailed": "Não foi possível desabilitar o monitoramento",
+        "checkCreated": "Verificação de rede adicionada",
+        "checkCreateFailed": "Não foi possível adicionar a verificação de rede",
+        "checkRemoved": "Verificação de rede removida",
+        "checkRemoveFailed": "Não foi possível remover a verificação de rede"
+      }
     },
     "header": {
       "settings": "Configurações"

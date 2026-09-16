@@ -2314,11 +2314,9 @@
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Torna ai dispositivi",
-    "configurePrefix": "Configura il polling SNMP e i monitor di rete da",
     "confirmUnlink": "Scollegare questo dispositivo?",
     "confirmUnlinkMessage": "L'asset rilevato e il dispositivo gestito verranno mostrati come elementi separati. Il collegamento automatico resterà disattivato per questo asset finché non lo colleghi di nuovo.",
     "connecting": "Connessione in corso",
-    "discoveryAssetView": "vista asset di rilevamento",
     "emptyPorts": "Nessuna porta aperta trovata nell'ultima scansione.",
     "emptySnmp": "Non è stato raccolto alcun dato SNMP — il dispositivo potrebbe non aver risposto oppure il controllo SNMP potrebbe non essere stato eseguito. Verifica che il metodo SNMP sia abilitato e che la community string sia impostata nel profilo di rilevamento.",
     "errors": {
@@ -2351,7 +2349,6 @@
       "refreshed": "Dettagli del dispositivo aggiornati"
     },
     "loading": "Caricamento del dispositivo di rete...",
-    "manageInDiscovery": "Gestisci nel rilevamento",
     "manuallySet": "Impostato manualmente",
     "manuallySetWithDetected": "Impostato manualmente · scansione: {{type}}",
     "networkDevice": "Dispositivo di rete",
@@ -2377,8 +2374,6 @@
       "agentListFailed": "Impossibile caricare l'elenco degli agenti. Riprova."
     },
     "resetToAutoDetected": "Ripristina rilevamento automatico",
-    "savingType": "Salvataggio in corso…",
-    "resettingType": "Ripristino in corso…",
     "sections": {
       "discovery": "Rilevamento",
       "identity": "Identità",
@@ -2550,7 +2545,27 @@
         }
       },
       "openMonitoringSettings": "Modifica le impostazioni di monitoraggio",
-      "openLinkSettings": "Gestisci questo collegamento"
+      "openLinkSettings": "Gestisci questo collegamento",
+      "toasts": {
+        "identitySaved": "Identità salvata",
+        "identitySaveFailed": "Impossibile salvare le modifiche all’identità",
+        "approved": "Risorsa approvata",
+        "approveFailed": "Impossibile approvare la risorsa",
+        "dismissed": "Risorsa ignorata",
+        "dismissFailed": "Impossibile ignorare la risorsa",
+        "assetDeleted": "Risorsa eliminata",
+        "assetDeleteFailed": "Impossibile eliminare la risorsa",
+        "snmpSaved": "Impostazioni SNMP salvate",
+        "snmpSaveFailed": "Impossibile salvare le impostazioni SNMP",
+        "pollingPaused": "Polling SNMP sospeso",
+        "pollingResumed": "Polling SNMP ripreso",
+        "monitoringDisabled": "Monitoraggio disabilitato per questa risorsa",
+        "monitoringDisableFailed": "Impossibile disabilitare il monitoraggio",
+        "checkCreated": "Controllo di rete aggiunto",
+        "checkCreateFailed": "Impossibile aggiungere il controllo di rete",
+        "checkRemoved": "Controllo di rete rimosso",
+        "checkRemoveFailed": "Impossibile rimuovere il controllo di rete"
+      }
     },
     "header": {
       "settings": "Impostazioni"

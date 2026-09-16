@@ -2456,11 +2456,9 @@
       "openLinkSettings": "Manage this link"
     },
     "backToDevices": "Back to devices",
-    "configurePrefix": "Configure SNMP polling and network monitors from the",
     "confirmUnlink": "Unlink this device?",
     "confirmUnlinkMessage": "The discovery asset and the managed device will be shown as separate items. Auto-linking stays off for this asset until you link it again.",
     "connecting": "Connecting",
-    "discoveryAssetView": "discovery asset view",
     "emptyPorts": "No open ports were found on the most recent scan.",
     "emptySnmp": "No SNMP data was collected — the device may not have responded, or SNMP was not probed. Check that the SNMP method is enabled and the community string is set on the discovery profile.",
     "errors": {
@@ -2493,7 +2491,6 @@
       "refreshed": "Device details refreshed"
     },
     "loading": "Loading network device...",
-    "manageInDiscovery": "Manage in Discovery",
     "manuallySet": "Manually set",
     "manuallySetWithDetected": "Manually set · scan detected {{type}}",
     "networkDevice": "Network Device",
@@ -2519,8 +2516,6 @@
       "agentListFailed": "Couldn't load the agent list. Retry."
     },
     "resetToAutoDetected": "Reset to auto-detected",
-    "savingType": "Saving…",
-    "resettingType": "Resetting…",
     "sections": {
       "discovery": "Discovery",
       "identity": "Identity",

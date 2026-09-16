@@ -2314,11 +2314,9 @@
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Cihazlara geri dön",
-    "configurePrefix": "SNMP yoklama ve ağ monitörlerini yapılandırma",
     "confirmUnlink": "Bu cihazın bağlantısı kaldırılsın mı?",
     "confirmUnlinkMessage": "Keşfedilen varlık ile yönetilen cihaz ayrı öğeler olarak gösterilecek. Bu varlığı tekrar bağlayana kadar otomatik bağlama devre dışı kalacak.",
     "connecting": "Bağlanılıyor",
-    "discoveryAssetView": "keşif varlık görünümü",
     "emptyPorts": "Son taramada açık bağlantı noktası bulunamadı.",
     "emptySnmp": "SNMP verisi toplanmadı — cihaz yanıt vermemiş olabilir veya SNMP incelenmemiş olabilir. SNMP yönteminin etkinleştirildiğini ve topluluk dizesinin keşif profilinde ayarlandığını kontrol edin.",
     "errors": {
@@ -2351,7 +2349,6 @@
       "refreshed": "Cihaz ayrıntıları yenilendi"
     },
     "loading": "Ağ cihazı yükleniyor...",
-    "manageInDiscovery": "Discovery'de yönetin",
     "manuallySet": "Manüel olarak ayarlandı",
     "manuallySetWithDetected": "Manuel olarak ayarlandı · tarama algılandı {{type}}",
     "networkDevice": "Ağ Cihazı",
@@ -2377,8 +2374,6 @@
       "agentListFailed": "Temsilci listesi yüklenemedi. Yeniden deneyin."
     },
     "resetToAutoDetected": "Otomatik algılamaya sıfırla",
-    "savingType": "Kaydediliyor…",
-    "resettingType": "Sıfırlanıyor…",
     "sections": {
       "discovery": "Keşif",
       "identity": "Kimlik",
@@ -2550,7 +2545,27 @@
         }
       },
       "openMonitoringSettings": "İzleme ayarlarını düzenle",
-      "openLinkSettings": "Bu bağlantıyı yönet"
+      "openLinkSettings": "Bu bağlantıyı yönet",
+      "toasts": {
+        "identitySaved": "Kimlik bilgileri kaydedildi",
+        "identitySaveFailed": "Kimlik değişiklikleri kaydedilemedi",
+        "approved": "Varlık onaylandı",
+        "approveFailed": "Varlık onaylanamadı",
+        "dismissed": "Varlık yok sayıldı",
+        "dismissFailed": "Varlık yok sayılamadı",
+        "assetDeleted": "Varlık silindi",
+        "assetDeleteFailed": "Varlık silinemedi",
+        "snmpSaved": "SNMP ayarları kaydedildi",
+        "snmpSaveFailed": "SNMP ayarları kaydedilemedi",
+        "pollingPaused": "SNMP yoklaması duraklatıldı",
+        "pollingResumed": "SNMP yoklaması sürdürüldü",
+        "monitoringDisabled": "Bu varlık için izleme devre dışı bırakıldı",
+        "monitoringDisableFailed": "İzleme devre dışı bırakılamadı",
+        "checkCreated": "Ağ kontrolü eklendi",
+        "checkCreateFailed": "Ağ kontrolü eklenemedi",
+        "checkRemoved": "Ağ kontrolü kaldırıldı",
+        "checkRemoveFailed": "Ağ kontrolü kaldırılamadı"
+      }
     },
     "header": {
       "settings": "Ayarlar"

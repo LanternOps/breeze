@@ -2314,11 +2314,9 @@
   },
   "networkDeviceDetailPage": {
     "backToDevices": "Retour aux appareils",
-    "configurePrefix": "Configurer l’interrogation SNMP et les moniteurs réseau depuis le",
     "confirmUnlink": "Déconnecter cet appareil ?",
     "confirmUnlinkMessage": "L'actif découvert et l'appareil géré s'afficheront comme des éléments distincts. La liaison automatique restera désactivée pour cet actif jusqu'à ce que vous le liiez à nouveau.",
     "connecting": "Connexion en cours",
-    "discoveryAssetView": "vue de l'actif de découverte",
     "emptyPorts": "Aucun port ouvert trouvé lors de la dernière analyse.",
     "emptySnmp": "Aucune donnée SNMP n’a été collectée — l’appareil n’a peut-être pas répondu ou n’a pas été interrogé via SNMP. Vérifiez que la méthode SNMP est activée et que la chaîne de communauté est définie dans le profil de découverte.",
     "errors": {
@@ -2351,7 +2349,6 @@
       "refreshed": "Détails de l'appareil actualisés"
     },
     "loading": "Chargement du dispositif réseau...",
-    "manageInDiscovery": "Gérer dans Découverte",
     "manuallySet": "Réglé manuellement",
     "manuallySetWithDetected": "Réglé manuellement · balayage détecté {{type}}",
     "networkDevice": "Appareil réseau",
@@ -2377,8 +2374,6 @@
       "agentListFailed": "Impossible de charger la liste des agents. Réessayer."
     },
     "resetToAutoDetected": "Réinitialiser en détection automatique",
-    "savingType": "Enregistrement en cours…",
-    "resettingType": "Réinitialisation en cours…",
     "sections": {
       "discovery": "Découverte",
       "identity": "Identité",
@@ -2550,7 +2545,27 @@
         }
       },
       "openMonitoringSettings": "Modifier les paramètres de supervision",
-      "openLinkSettings": "Gérer ce lien"
+      "openLinkSettings": "Gérer ce lien",
+      "toasts": {
+        "identitySaved": "Identité enregistrée",
+        "identitySaveFailed": "Impossible d’enregistrer les modifications de l’identité",
+        "approved": "Actif approuvé",
+        "approveFailed": "Impossible d’approuver l’actif",
+        "dismissed": "Actif ignoré",
+        "dismissFailed": "Impossible d’ignorer l’actif",
+        "assetDeleted": "Actif supprimé",
+        "assetDeleteFailed": "Impossible de supprimer l’actif",
+        "snmpSaved": "Paramètres SNMP enregistrés",
+        "snmpSaveFailed": "Impossible d’enregistrer les paramètres SNMP",
+        "pollingPaused": "Interrogation SNMP suspendue",
+        "pollingResumed": "Interrogation SNMP reprise",
+        "monitoringDisabled": "Surveillance désactivée pour cet actif",
+        "monitoringDisableFailed": "Impossible de désactiver la surveillance",
+        "checkCreated": "Contrôle réseau ajoutée",
+        "checkCreateFailed": "Impossible d’ajouter la contrôle réseau",
+        "checkRemoved": "Contrôle réseau supprimée",
+        "checkRemoveFailed": "Impossible de supprimer la contrôle réseau"
+      }
     },
     "header": {
       "settings": "Paramètres"
