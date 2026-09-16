@@ -2313,6 +2313,42 @@
     "genericError": "Failed to start maintenance mode."
   },
   "networkDeviceDetailPage": {
+    "reachability": {
+      "state": {
+        "responding": "Responding",
+        "notResponding": "Not responding",
+        "unverified": "Unverified"
+      },
+      "source": {
+        "networkCheck": "Network check",
+        "probe": "Probe",
+        "scan": "Scan",
+        "unifi": "UniFi",
+        "snmp": "SNMP"
+      },
+      "lastSeenBy": "last seen by {{source}} {{relative}}",
+      "neverObserved": "never observed"
+    },
+    "collection": {
+      "status": {
+        "ok": "Polling",
+        "failing": "Failing",
+        "noTemplate": "No template",
+        "noAgent": "No agent in site",
+        "assetMoved": "Asset moved",
+        "neverPolled": "Never polled",
+        "paused": "Paused",
+        "notConfigured": "Not configured"
+      },
+      "count": {
+        "collecting": "{{count}} collecting",
+        "unsupported": "{{count}} unsupported",
+        "stale": "{{count}} stale",
+        "unknown": "{{count}} unknown",
+        "neverPolled": "{{count}} never polled",
+        "noOids": "No OIDs in this template"
+      }
+    },
     "settings": {
       "toasts": {
         "identitySaved": "Identity saved",
