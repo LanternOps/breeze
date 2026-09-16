@@ -292,6 +292,7 @@
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "identity_access_review": "Identity & Access Review",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
@@ -315,6 +316,17 @@
       "viewModes": {
         "chart": "Chart",
         "table": "Table"
+      },
+      "identityAccess": {
+        "notMeasured": "N/A",
+        "coverage": "Limits of this report",
+        "signins": "Interactive sign-ins",
+        "distinctUsers": "Accounts signing in",
+        "failures": "Sign-ins that failed",
+        "admins": "Accounts with an admin role",
+        "adminsWithoutMfa": "Administrators without MFA",
+        "mfaUnknown": "MFA state unknown",
+        "dormant": "Dormant accounts"
       }
     },
     "reportsList": {
@@ -363,6 +375,7 @@
         "device_inventory": "Device Inventory",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "identity_access_review": "Identity & Access Review",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
         "software_inventory": "Software Inventory",
@@ -874,6 +887,7 @@
         "devices": "Devices",
         "executive_summary": "Executive Summary",
         "hardware_lifecycle": "Hardware Lifecycle",
+        "identity_access_review": "Identity & Access Review",
         "patches": "Patches",
         "performance": "Performance Report",
         "security_compliance_posture": "Security & Compliance Posture",
@@ -913,6 +927,10 @@
           "description": "Customer-ready device replacement plan: age, warranty, replace-by dates and OS support status, with a staged recommendation.",
           "name": "Hardware Lifecycle Report"
         },
+        "identity_access_review": {
+          "name": "Identity & Access Review",
+          "description": "Interactive Microsoft 365 sign-ins for a period, with the identity inventory, dormant accounts, conditional access posture and remote-access client presence — and the window actually covered stated on the face of it."
+        },
         "security_compliance_posture": {
           "description": "Insurance/vetting-ready evidence: EDR coverage, encryption, firewall, patching, vulnerabilities, privileged access, and security integrations with percent-implemented rollups.",
           "name": "Security & Compliance Posture (Insurance)"
@@ -934,6 +952,18 @@
       "includeCarriedInHelp": "Detections that opened before this period and are still unresolved are listed alongside the period’s own.",
       "topIncidents": "List at most (detections)",
       "topIncidentsHelp": "Caps the detection table so a noisy month cannot produce a hundred-page PDF. The report states how many were withheld rather than truncating silently."
+    },
+    "identityAccessOptions": {
+      "cancel": "Cancel",
+      "createReport": "Create report",
+      "orgWideNote": "This report covers the whole organization. Microsoft 365 identity data has no site dimension, so it cannot be narrowed to particular sites — and an account limited to certain sites cannot run it at all.",
+      "dormantDays": "Treat an account as dormant after (days)",
+      "dormantDaysHelp": "Enabled accounts with no recorded successful sign-in in this many days are listed. An account never seen signing in is listed as “never observed”, which is not the same as a long gap.",
+      "homeCountries": "Expected sign-in countries (ISO codes)",
+      "homeCountriesHelp": "Two-letter country codes, separated by commas — for example US, CA. Sign-ins from outside the list are counted. Leave it empty and the section reads “not configured”, never “no foreign sign-ins”.",
+      "adminDetail": "Include administrator sign-in detail",
+      "adminDetailHelp": "Lists each interactive sign-in by an account holding an admin role, including the address it came from. This is the section an auditor reads first.",
+      "coverageNote": "The report covers interactive sign-ins only and prints the window it actually covers. Microsoft keeps sign-in logs for about 30 days and requires an Entra ID P1 or P2 licence to release them, so the first report after enabling collection is partial and says so."
     }
   }
 }

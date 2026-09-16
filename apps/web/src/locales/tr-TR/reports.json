@@ -292,6 +292,7 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
@@ -315,6 +316,17 @@
       "viewModes": {
         "chart": "Grafik",
         "table": "Masa"
+      },
+      "identityAccess": {
+        "notMeasured": "Yok",
+        "coverage": "Bu raporun sınırları",
+        "signins": "Etkileşimli oturum açmalar",
+        "distinctUsers": "Oturum açan hesaplar",
+        "failures": "Başarısız oturum açmalar",
+        "admins": "Yönetici rolü olan hesaplar",
+        "adminsWithoutMfa": "MFA’sı olmayan yöneticiler",
+        "mfaUnknown": "MFA durumu bilinmiyor",
+        "dormant": "Atıl hesaplar"
       }
     },
     "reportsList": {
@@ -363,6 +375,7 @@
         "device_inventory": "Cihaz Envanteri",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
         "software_inventory": "Yazılım Envanteri",
@@ -874,6 +887,7 @@
         "devices": "Cihazlar",
         "executive_summary": "Yönetici Özeti",
         "hardware_lifecycle": "Donanım Yaşam Döngüsü",
+        "identity_access_review": "Kimlik ve Erişim İncelemesi",
         "patches": "Yamalar",
         "performance": "Performans Raporu",
         "security_compliance_posture": "Güvenlik ve Uyumluluk Duruşu",
@@ -913,6 +927,10 @@
           "description": "Müşteriye hazır cihaz değiştirme planı: yaş, garanti, değiştirme tarihleri ve işletim sistemi destek durumu, aşamalı bir öneriyle.",
           "name": "Donanım Yaşam Döngüsü Raporu"
         },
+        "identity_access_review": {
+          "name": "Kimlik ve Erişim İncelemesi",
+          "description": "Bir döneme ait etkileşimli Microsoft 365 oturum açmaları; kimlik envanteri, atıl hesaplar, koşullu erişim durumu ve uzaktan erişim istemcilerinin varlığıyla birlikte — gerçekte kapsanan zaman aralığı raporun kendisinde belirtilir."
+        },
         "security_compliance_posture": {
           "description": "Sigortaya/incelemeye hazır kanıtlar: EDR kapsamı, şifreleme, güvenlik duvarı, yama uygulama, güvenlik açıkları, ayrıcalıklı erişim ve yüzde uygulanan toplamalarla güvenlik entegrasyonları.",
           "name": "Güvenlik ve Uyumluluk Duruşu (Sigorta)"
@@ -934,6 +952,18 @@
       "includeCarriedInHelp": "Bu dönemden önce açılmış ve hâlâ çözülmemiş tespitler, dönemin kendi tespitleriyle birlikte listelenir.",
       "topIncidents": "En fazla listele (tespit)",
       "topIncidentsHelp": "Yoğun bir ayın yüz sayfalık PDF üretmemesi için tespit tablosunu sınırlar. Rapor, sessizce kesmek yerine kaç tanesinin dışarıda bırakıldığını belirtir."
+    },
+    "identityAccessOptions": {
+      "cancel": "İptal",
+      "createReport": "Rapor oluştur",
+      "orgWideNote": "Bu rapor kuruluşun tamamını kapsar. Microsoft 365 kimlik verisinde lokasyon boyutu yoktur; bu nedenle belirli lokasyonlara daraltılamaz ve yalnızca belirli lokasyonlara yetkili bir hesap bu raporu hiç üretemez.",
+      "dormantDays": "Hesabı atıl say (gün)",
+      "dormantDaysHelp": "Bu kadar gün içinde kayıtlı başarılı oturum açması bulunmayan etkin hesaplar listelenir. Hiç oturum açarken görülmemiş bir hesap “hiç gözlenmedi” olarak geçer; bu, uzun bir aradan farklıdır.",
+      "homeCountries": "Beklenen oturum açma ülkeleri (ISO kodları)",
+      "homeCountriesHelp": "Virgülle ayrılmış iki harfli ülke kodları; örneğin US, CA. Listenin dışından yapılan oturum açmalar sayılır. Alan boş bırakılırsa bölüm “yapılandırılmadı” der, asla “yurt dışından oturum açma yok” demez.",
+      "adminDetail": "Yönetici oturum açma ayrıntısını dahil et",
+      "adminDetailHelp": "Yönetici rolü taşıyan bir hesabın her etkileşimli oturum açmasını, geldiği adres dahil listeler. Denetçinin ilk okuduğu bölüm budur.",
+      "coverageNote": "Rapor yalnızca etkileşimli oturum açmaları kapsar ve gerçekte kapsadığı aralığı yazar. Microsoft oturum açma günlüklerini yaklaşık 30 gün saklar ve bunları vermek için Entra ID P1 veya P2 lisansı ister; bu nedenle toplama açıldıktan sonraki ilk rapor eksiktir ve bunu açıkça belirtir."
     }
   }
 }

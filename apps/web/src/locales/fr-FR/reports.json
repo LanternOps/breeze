@@ -292,6 +292,7 @@
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
         "hardware_lifecycle": "Cycle de vie du matériel",
+        "identity_access_review": "Revue des identités et des accès",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
@@ -315,6 +316,17 @@
       "viewModes": {
         "chart": "Classement",
         "table": "Tableau"
+      },
+      "identityAccess": {
+        "notMeasured": "N. D.",
+        "coverage": "Limites de ce rapport",
+        "signins": "Connexions interactives",
+        "distinctUsers": "Comptes connectés",
+        "failures": "Connexions en échec",
+        "admins": "Comptes avec rôle d’administrateur",
+        "adminsWithoutMfa": "Administrateurs sans MFA",
+        "mfaUnknown": "État MFA inconnu",
+        "dormant": "Comptes dormants"
       }
     },
     "reportsList": {
@@ -363,6 +375,7 @@
         "device_inventory": "Inventaire des appareils",
         "executive_summary": "Résumé exécutif",
         "hardware_lifecycle": "Cycle de vie du matériel",
+        "identity_access_review": "Revue des identités et des accès",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
         "software_inventory": "Inventaire logiciel",
@@ -874,6 +887,7 @@
         "devices": "Dispositifs",
         "executive_summary": "Résumé exécutif",
         "hardware_lifecycle": "Cycle de vie du matériel",
+        "identity_access_review": "Revue des identités et des accès",
         "patches": "Correctifs",
         "performance": "Rapport de performance",
         "security_compliance_posture": "Posture de sécurité et de conformité",
@@ -913,6 +927,10 @@
           "description": "Plan de remplacement des appareils prêt pour le client : âge, garantie, dates de remplacement et statut de support du système, avec une recommandation par étapes.",
           "name": "Rapport de cycle de vie du matériel"
         },
+        "identity_access_review": {
+          "name": "Revue des identités et des accès",
+          "description": "Les connexions interactives Microsoft 365 sur une période, avec l’inventaire des identités, les comptes dormants, l’état de l’accès conditionnel et la présence des clients d’accès distant — la fenêtre réellement couverte étant annoncée sur le rapport lui-même."
+        },
         "security_compliance_posture": {
           "description": "Preuves prêtes à l’assurance ou à la vérification : couverture EDR, chiffrement, pare-feu, correctifs, vulnérabilités, accès privilégié et intégrations de sécurité avec des rollups en pourcentage.",
           "name": "Posture de sécurité et conformité (Assurance)"
@@ -934,6 +952,18 @@
       "includeCarriedInHelp": "Les détections ouvertes avant cette période et encore non résolues figurent aux côtés de celles de la période.",
       "topIncidents": "Afficher au maximum (détections)",
       "topIncidentsHelp": "Plafonne le tableau des détections afin qu’un mois chargé ne génère pas un PDF de cent pages. Le rapport précise le nombre écarté au lieu de tronquer silencieusement."
+    },
+    "identityAccessOptions": {
+      "cancel": "Annuler",
+      "createReport": "Créer le rapport",
+      "orgWideNote": "Ce rapport porte sur l’ensemble de l’organisation. Les données d’identité Microsoft 365 n’ont pas de dimension de site : elles ne peuvent pas être restreintes à certains sites, et un compte limité à des sites donnés ne peut pas le générer.",
+      "dormantDays": "Considérer un compte comme dormant après (jours)",
+      "dormantDaysHelp": "Les comptes actifs sans connexion réussie enregistrée depuis ce nombre de jours sont listés. Un compte jamais vu se connecter apparaît comme « jamais observé », ce qui n’est pas la même chose qu’une longue absence.",
+      "homeCountries": "Pays de connexion attendus (codes ISO)",
+      "homeCountriesHelp": "Codes pays à deux lettres séparés par des virgules, par exemple US, CA. Les connexions hors de cette liste sont comptées. Laissez le champ vide et la section indique « non configuré », jamais « aucune connexion depuis l’étranger ».",
+      "adminDetail": "Inclure le détail des connexions administrateur",
+      "adminDetailHelp": "Liste chaque connexion interactive d’un compte disposant d’un rôle d’administrateur, adresse d’origine comprise. C’est la section qu’un auditeur lit en premier.",
+      "coverageNote": "Le rapport ne couvre que les connexions interactives et indique la fenêtre qu’il couvre réellement. Microsoft conserve les journaux de connexion environ 30 jours et exige une licence Entra ID P1 ou P2 pour les fournir : le premier rapport après activation de la collecte est donc partiel et le signale."
     }
   }
 }

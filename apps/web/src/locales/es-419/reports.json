@@ -292,6 +292,7 @@
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "identity_access_review": "Revisión de identidad y acceso",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software",
@@ -315,6 +316,17 @@
       "viewModes": {
         "chart": "Cuadro",
         "table": "Tabla"
+      },
+      "identityAccess": {
+        "notMeasured": "N/D",
+        "coverage": "Límites de este informe",
+        "signins": "Inicios de sesión interactivos",
+        "distinctUsers": "Cuentas que iniciaron sesión",
+        "failures": "Inicios de sesión fallidos",
+        "admins": "Cuentas con rol de administrador",
+        "adminsWithoutMfa": "Administradores sin MFA",
+        "mfaUnknown": "Estado de MFA desconocido",
+        "dormant": "Cuentas inactivas"
       }
     },
     "reportsList": {
@@ -363,6 +375,7 @@
         "device_inventory": "Inventario de dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "identity_access_review": "Revisión de identidad y acceso",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
         "software_inventory": "Inventario de software",
@@ -874,6 +887,7 @@
         "devices": "Dispositivos",
         "executive_summary": "Resumen ejecutivo",
         "hardware_lifecycle": "Ciclo de vida del hardware",
+        "identity_access_review": "Revisión de identidad y acceso",
         "patches": "Parches",
         "performance": "Informe de desempeño",
         "security_compliance_posture": "Postura de seguridad y cumplimiento",
@@ -913,6 +927,10 @@
           "description": "Plan de reemplazo de equipos listo para el cliente: antigüedad, garantía, fechas de reemplazo y estado de soporte del sistema operativo, con una recomendación por etapas.",
           "name": "Informe de ciclo de vida del hardware"
         },
+        "identity_access_review": {
+          "name": "Revisión de identidad y acceso",
+          "description": "Los inicios de sesión interactivos de Microsoft 365 en un período, con el inventario de identidades, las cuentas inactivas, el estado del acceso condicional y la presencia de clientes de acceso remoto, y con la ventana realmente cubierta declarada en el propio informe."
+        },
         "security_compliance_posture": {
           "description": "Evidencia lista para seguro/investigación: cobertura EDR, cifrado, firewall, parches, vulnerabilidades, acceso privilegiado e integraciones de seguridad con paquetes acumulativos de porcentaje implementado.",
           "name": "Postura de seguridad y cumplimiento (seguros)"
@@ -934,6 +952,18 @@
       "includeCarriedInHelp": "Las detecciones abiertas antes de este período y aún sin resolver se listan junto con las del propio período.",
       "topIncidents": "Listar como máximo (detecciones)",
       "topIncidentsHelp": "Limita la tabla de detecciones para que un mes ruidoso no genere un PDF de cien páginas. El informe indica cuántas se omitieron en lugar de truncar en silencio."
+    },
+    "identityAccessOptions": {
+      "cancel": "Cancelar",
+      "createReport": "Crear informe",
+      "orgWideNote": "Este informe abarca toda la organización. Los datos de identidad de Microsoft 365 no tienen dimensión de sitio, así que no pueden acotarse a sitios concretos, y una cuenta limitada a ciertos sitios no puede ejecutarlo.",
+      "dormantDays": "Considerar una cuenta inactiva tras (días)",
+      "dormantDaysHelp": "Se listan las cuentas habilitadas sin ningún inicio de sesión exitoso registrado en esa cantidad de días. Una cuenta que nunca se vio iniciar sesión aparece como «nunca observada», que no es lo mismo que un intervalo largo.",
+      "homeCountries": "Países de inicio de sesión esperados (códigos ISO)",
+      "homeCountriesHelp": "Códigos de país de dos letras separados por comas, por ejemplo US, CA. Se cuentan los inicios de sesión fuera de la lista. Si se deja vacío, la sección dice «sin configurar» y nunca «sin inicios de sesión desde el exterior».",
+      "adminDetail": "Incluir el detalle de inicios de sesión de administradores",
+      "adminDetailHelp": "Lista cada inicio de sesión interactivo de una cuenta con rol de administrador, incluida la dirección de origen. Es la sección que un auditor lee primero.",
+      "coverageNote": "El informe cubre únicamente inicios de sesión interactivos e imprime la ventana que realmente cubre. Microsoft conserva los registros de inicio de sesión unos 30 días y exige una licencia Entra ID P1 o P2 para entregarlos, por lo que el primer informe tras activar la recolección es parcial y lo declara."
     }
   }
 }

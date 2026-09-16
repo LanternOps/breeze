@@ -292,6 +292,7 @@
         "device_inventory": "Inventario dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "identity_access_review": "Revisione di identità e accessi",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software",
@@ -315,6 +316,17 @@
       "viewModes": {
         "chart": "Grafico",
         "table": "Tabella"
+      },
+      "identityAccess": {
+        "notMeasured": "N/D",
+        "coverage": "Limiti di questo rapporto",
+        "signins": "Accessi interattivi",
+        "distinctUsers": "Account che hanno effettuato l’accesso",
+        "failures": "Accessi non riusciti",
+        "admins": "Account con ruolo di amministratore",
+        "adminsWithoutMfa": "Amministratori senza MFA",
+        "mfaUnknown": "Stato MFA sconosciuto",
+        "dormant": "Account dormienti"
       }
     },
     "reportsList": {
@@ -363,6 +375,7 @@
         "device_inventory": "Inventario dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "identity_access_review": "Revisione di identità e accessi",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
         "software_inventory": "Inventario software",
@@ -874,6 +887,7 @@
         "devices": "Dispositivi",
         "executive_summary": "Riepilogo direzionale",
         "hardware_lifecycle": "Ciclo di vita dell’hardware",
+        "identity_access_review": "Revisione di identità e accessi",
         "patches": "Patch",
         "performance": "Report prestazioni",
         "security_compliance_posture": "Stato sicurezza e conformità",
@@ -913,6 +927,10 @@
           "description": "Piano di sostituzione dei dispositivi pronto per il cliente: età, garanzia, date di sostituzione e stato del supporto del sistema operativo, con una raccomandazione a fasi.",
           "name": "Report ciclo di vita dell’hardware"
         },
+        "identity_access_review": {
+          "name": "Revisione di identità e accessi",
+          "description": "Gli accessi interattivi a Microsoft 365 in un periodo, con l’inventario delle identità, gli account dormienti, lo stato dell’accesso condizionale e la presenza dei client di accesso remoto — e con la finestra effettivamente coperta dichiarata sul rapporto stesso."
+        },
         "security_compliance_posture": {
           "description": "Evidenze pronte per assicurazione/verifica: copertura EDR, crittografia, firewall, patching, vulnerabilità, accesso privilegiato e integrazioni di sicurezza con riepiloghi percentuali di implementazione.",
           "name": "Stato di sicurezza e conformità (assicurazione)"
@@ -934,6 +952,18 @@
       "includeCarriedInHelp": "I rilevamenti aperti prima di questo periodo e ancora irrisolti vengono elencati insieme a quelli del periodo.",
       "topIncidents": "Elenca al massimo (rilevamenti)",
       "topIncidentsHelp": "Limita la tabella dei rilevamenti perché un mese affollato non produca un PDF di cento pagine. Il rapporto dichiara quanti ne sono stati esclusi invece di troncare in silenzio."
+    },
+    "identityAccessOptions": {
+      "cancel": "Annulla",
+      "createReport": "Crea rapporto",
+      "orgWideNote": "Questo rapporto riguarda l’intera organizzazione. I dati di identità di Microsoft 365 non hanno una dimensione di sede, quindi non possono essere ristretti a sedi specifiche, e un account limitato ad alcune sedi non può generarlo.",
+      "dormantDays": "Considera dormiente un account dopo (giorni)",
+      "dormantDaysHelp": "Vengono elencati gli account attivi senza alcun accesso riuscito registrato in questo numero di giorni. Un account mai visto accedere compare come «mai osservato», che non equivale a un lungo intervallo.",
+      "homeCountries": "Paesi di accesso attesi (codici ISO)",
+      "homeCountriesHelp": "Codici paese di due lettere separati da virgole, ad esempio US, CA. Gli accessi fuori dall’elenco vengono conteggiati. Se il campo resta vuoto la sezione riporta «non configurato», mai «nessun accesso dall’estero».",
+      "adminDetail": "Includi il dettaglio degli accessi amministrativi",
+      "adminDetailHelp": "Elenca ogni accesso interattivo effettuato da un account con ruolo di amministratore, indirizzo di provenienza compreso. È la sezione che un revisore legge per prima.",
+      "coverageNote": "Il rapporto copre solo gli accessi interattivi e stampa la finestra che copre davvero. Microsoft conserva i registri di accesso per circa 30 giorni e li rilascia solo con una licenza Entra ID P1 o P2: il primo rapporto dopo l’attivazione della raccolta è quindi parziale e lo dichiara."
     }
   }
 }
