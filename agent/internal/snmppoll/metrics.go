@@ -128,8 +128,9 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 
 	metrics := make([]SNMPMetric, 0, len(getSpecs)+len(walkSpecs))
 
-	// All scalars in ONE GET, exactly as before.
-	if len(getSpecs) > 0 {
+	// Start with all scalars in one GET. Each indexed status failure removes
+	// one OID, so retries are bounded by the original number of scalar specs.
+	for len(getSpecs) > 0 {
 		oids := make([]string, 0, len(getSpecs))
 		for _, spec := range getSpecs {
 			oids = append(oids, spec.OID)
@@ -142,16 +143,18 @@ func collectWithSource(src pduSource, specs []OIDSpec, limits PollLimits, stamp 
 				return nil, err
 			}
 			slog.Warn("SNMP GET failed", "oids", oids, "status", statusErr.Status.String(), "error", err)
-			affected := getSpecs
 			if index := int(statusErr.Index); index > 0 && index <= len(getSpecs) {
-				affected = getSpecs[index-1 : index]
+				metrics = append(metrics, errorMetric(getSpecs[index-1], "", ErrCodeSNMPError, stamp))
+				getSpecs = append(getSpecs[:index-1], getSpecs[index:]...)
+				continue
 			}
-			for _, spec := range affected {
+			for _, spec := range getSpecs {
 				metrics = append(metrics, errorMetric(spec, "", ErrCodeSNMPError, stamp))
 			}
 		} else {
 			metrics = append(metrics, buildGetMetrics(getSpecs, pdus, stamp)...)
 		}
+		break
 	}
 
 	budget := &walkBudget{
