@@ -130,5 +130,21 @@
       "scope": "İşlev / ilke",
       "detail": "Ayrıntı"
     }
+  },
+  "evidence": {
+    "notMeasured": "Ölçülmedi",
+    "org": "Kuruluş",
+    "devices": "Cihazlar",
+    "software": "Yazılım envanteri",
+    "services": "Sistem hizmetleri",
+    "network": "Ağ verileri",
+    "posture": "Güvenlik durumu",
+    "health": "Filo sağlığı",
+    "configuration": "Yapılandırma",
+    "automation": "Otomasyon verileri",
+    "logs": "Olay günlükleri",
+    "counts": "Etkinlik sayıları",
+    "precursors": "Erken uyarı göstergeleri",
+    "drift": "Onaylanan tasarımdan sapmalar"
   }
 }

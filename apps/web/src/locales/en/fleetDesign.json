@@ -130,5 +130,21 @@
       "scope": "Function / policy",
       "detail": "Detail"
     }
+  },
+  "evidence": {
+    "notMeasured": "Not measured",
+    "org": "Organization",
+    "devices": "Devices",
+    "software": "Software inventory",
+    "services": "System services",
+    "network": "Network evidence",
+    "posture": "Security posture",
+    "health": "Fleet health",
+    "configuration": "Configuration",
+    "automation": "Automation evidence",
+    "logs": "Event logs",
+    "counts": "Activity counts",
+    "precursors": "Early warning indicators",
+    "drift": "Drift since the approved design"
   }
 }

@@ -130,5 +130,21 @@
       "scope": "Funktion / Richtlinie",
       "detail": "Einzelheit"
     }
+  },
+  "evidence": {
+    "notMeasured": "Nicht gemessen",
+    "org": "Organisationsdaten",
+    "devices": "Geräte",
+    "software": "Softwareinventar",
+    "services": "Systemdienste",
+    "network": "Netzwerkdaten",
+    "posture": "Sicherheitslage",
+    "health": "Flottenzustand",
+    "configuration": "Konfiguration",
+    "automation": "Automatisierungsdaten",
+    "logs": "Ereignisprotokolle",
+    "counts": "Aktivitätszahlen",
+    "precursors": "Frühwarnindikatoren",
+    "drift": "Abweichungen vom genehmigten Entwurf"
   }
 }

@@ -156,6 +156,8 @@ describe('FleetDesignPage', () => {
     expect(banner.textContent).toContain('1 changed');
     expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('Hand-made');
     expect(screen.getByTestId('fleet-design-drift-table').textContent).toContain('High CPU');
+    expect(screen.queryByTestId('fleet-design-section-approvedDesign-not-measured')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('fleet-design-section-drift-not-measured')).not.toBeInTheDocument();
   });
 
   it('files the design as an org document through runAction (W05)', async () => {
@@ -171,6 +173,18 @@ describe('FleetDesignPage', () => {
     fireEvent.click(screen.getByTestId('fleet-design-file-document'));
 
     await waitFor(() => expect(fileAsDocumentMock).toHaveBeenCalledWith('run-1'));
+  });
+
+  it('surfaces failed drift evidence from the stored summary', async () => {
+    getDesignMock.mockResolvedValue({
+      ...DETAIL,
+      summary: { fleetDesign: { outcome: OUTCOME, unavailable: ['approvedDesign', 'counts'] } },
+    });
+    render(<FleetDesignPage />);
+    fireEvent.click(await screen.findByTestId('fleet-design-list-row-run-1'));
+    expect(await screen.findByTestId('fleet-design-section-approvedDesign-not-measured')).toHaveTextContent('Not measured');
+    expect(screen.getByTestId('fleet-design-section-counts-not-measured')).toHaveTextContent('Not measured');
+    expect(screen.queryByTestId('fleet-design-drift')).not.toBeInTheDocument();
   });
 
   it('renders no drift block when the design has none', async () => {

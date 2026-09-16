@@ -253,6 +253,7 @@ export default function FleetDesignPage() {
 
   const outcome: FleetDesignOutcome | undefined = detail?.summary.fleetDesign?.outcome;
   const drift = detail?.summary.fleetDesign?.drift ?? null;
+  const unavailable = detail?.summary.fleetDesign?.unavailable;
   const hasAppliedRows = ledger.some((i) => i.status === "applied");
 
   return (
@@ -432,7 +433,11 @@ export default function FleetDesignPage() {
 
           {drift && <DriftPanel drift={drift} />}
 
-          <FleetDesignViewer outcome={outcome} selection={selection} />
+          <FleetDesignViewer
+            outcome={outcome}
+            selection={selection}
+            unavailable={Array.isArray(unavailable) ? unavailable.filter((key): key is string => typeof key === "string") : []}
+          />
 
           <ApplyDrawer
             open={drawerOpen}

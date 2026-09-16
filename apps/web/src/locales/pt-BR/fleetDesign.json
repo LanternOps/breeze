@@ -130,5 +130,21 @@
       "scope": "Função / política",
       "detail": "Detalhe"
     }
+  },
+  "evidence": {
+    "notMeasured": "Não medido",
+    "org": "Organização",
+    "devices": "Dispositivos",
+    "software": "Inventário de software",
+    "services": "Serviços do sistema",
+    "network": "Evidências de rede",
+    "posture": "Postura de segurança",
+    "health": "Integridade do parque",
+    "configuration": "Configuração",
+    "automation": "Evidências de automação",
+    "logs": "Logs de eventos",
+    "counts": "Contagens de atividades",
+    "precursors": "Indicadores de alerta antecipado",
+    "drift": "Desvios em relação ao projeto aprovado"
   }
 }

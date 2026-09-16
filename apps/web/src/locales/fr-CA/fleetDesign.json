@@ -130,5 +130,21 @@
       "scope": "Fonction / politique",
       "detail": "Détail"
     }
+  },
+  "evidence": {
+    "notMeasured": "Non mesuré",
+    "org": "Organisation",
+    "devices": "Appareils",
+    "software": "Inventaire logiciel",
+    "services": "Services système",
+    "network": "Données réseau",
+    "posture": "Posture de sécurité",
+    "health": "État du parc",
+    "configuration": "Configuration du parc",
+    "automation": "Données d’automatisation",
+    "logs": "Journaux d’événements",
+    "counts": "Décomptes d’activité",
+    "precursors": "Indicateurs d’alerte précoce",
+    "drift": "Écarts par rapport à la conception approuvée"
   }
 }

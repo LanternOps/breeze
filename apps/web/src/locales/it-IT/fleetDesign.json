@@ -130,5 +130,21 @@
       "scope": "Funzione / criterio",
       "detail": "Dettaglio"
     }
+  },
+  "evidence": {
+    "notMeasured": "Non misurato",
+    "org": "Organizzazione",
+    "devices": "Dispositivi",
+    "software": "Inventario software",
+    "services": "Servizi di sistema",
+    "network": "Dati di rete",
+    "posture": "Stato della sicurezza",
+    "health": "Stato del parco dispositivi",
+    "configuration": "Configurazione",
+    "automation": "Dati di automazione",
+    "logs": "Registri eventi",
+    "counts": "Conteggi delle attività",
+    "precursors": "Indicatori di allerta precoce",
+    "drift": "Scostamenti dal progetto approvato"
   }
 }
