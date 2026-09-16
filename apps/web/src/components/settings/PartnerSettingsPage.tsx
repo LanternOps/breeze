@@ -7,6 +7,7 @@ import {
   KeyRound,
   Loader2,
   LogIn,
+  Mail,
   MonitorSmartphone,
   Palette,
   Save,
@@ -17,6 +18,7 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
+import EmailTemplatesTab from './EmailTemplatesTab';
 import SettingsSectionNav from './SettingsSectionNav';
 import { fetchWithAuth } from '../../stores/auth';
 import { getJwtClaims } from '../../lib/authScope';
@@ -58,7 +60,7 @@ import { useTranslation } from 'react-i18next';
 import { i18n } from '@/lib/i18n';
 import { normalizeLocale } from '@/lib/appearance';
 
-type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'modules';
+type TabKey = 'company' | 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'loginBranding' | 'aiBudgets' | 'aiProvider' | 'remoteAccess' | 'ticketing' | 'modules' | 'emailTemplates';
 
 type Partner = {
   id: string;
@@ -115,6 +117,7 @@ const TAB_GROUPS: { label: string; tabs: TabDef[] }[] = [
     tabs: [
       { key: 'notifications', hash: 'notifications', label: 'partnerSettingsPage.tabs.notifications.label', description: 'partnerSettingsPage.tabs.notifications.description', icon: Bell, enforced: true },
       { key: 'ticketing', hash: 'ticketing', label: 'partnerSettingsPage.tabs.ticketing.label', description: 'partnerSettingsPage.tabs.ticketing.description', icon: Ticket, selfSaving: true },
+      { key: 'emailTemplates', hash: 'email-templates', label: 'partnerSettingsPage.tabs.emailTemplates.label', description: 'partnerSettingsPage.tabs.emailTemplates.description', icon: Mail, selfSaving: true },
       { key: 'aiBudgets', hash: 'ai-budgets', label: 'partnerSettingsPage.tabs.aiBudgets.label', description: 'partnerSettingsPage.tabs.aiBudgets.description', icon: Wallet, enforced: true },
       { key: 'aiProvider', hash: 'ai-provider', label: 'partnerSettingsPage.tabs.aiProvider.label', description: 'partnerSettingsPage.tabs.aiProvider.description', icon: KeyRound, selfSaving: true },
     ],
@@ -154,9 +157,9 @@ function getTabFromHash(): TabKey | null {
 }
 
 // The per-tab keys whose form state participates in dirty tracking. Self-saving
-// tabs (Ticketing, Login Branding) persist independently and are never "dirty"
-// from this page's perspective.
-type SnapshotKey = Exclude<TabKey, 'ticketing' | 'loginBranding' | 'aiProvider' | 'modules'>;
+// tabs (Ticketing, Email templates, Login Branding, AI Provider, Modules)
+// persist independently and are never "dirty" from this page's perspective.
+type SnapshotKey = Exclude<TabKey, 'ticketing' | 'emailTemplates' | 'loginBranding' | 'aiProvider' | 'modules'>;
 type Snapshot = Record<SnapshotKey, string>;
 
 // Exported for unit-testing without mounting the full component.
@@ -701,6 +704,12 @@ export default function PartnerSettingsPage() {
                 {t('partnerSettingsPage.tabs.ticketing.linkCta')}
               </a>
             </div>
+          )}
+
+          {activeTab === 'emailTemplates' && (
+            <section className="space-y-2" data-testid="partner-email-templates-tab">
+              <EmailTemplatesTab />
+            </section>
           )}
         </div>
       </div>

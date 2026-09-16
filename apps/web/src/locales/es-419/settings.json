@@ -551,6 +551,10 @@
         "description": "Estados, SLA, categorías, formularios",
         "linkCta": "Administrar configuración de tickets →"
       },
+      "emailTemplates": {
+        "label": "Plantillas de correo",
+        "description": "Correos de tickets al cliente"
+      },
       "aiBudgets": {
         "label": "AI Presupuestos",
         "description": "límites de gasto AI"
@@ -739,6 +743,37 @@
     "deleteExpiredTitle": "Eliminar claves de inscripción caducadas",
     "deleteExpiredConfirm": "¿Eliminar todas las claves de inscripción caducadas? Se conservan las claves que aún respaldan un enlace de descarga del instalador activo. Esto no se puede deshacer."
   },
+  "emailTemplates": {
+    "title": "Plantillas de correo",
+    "description": "Personalice los correos que reciben los clientes sobre tickets. El aviso de respuesta nunca incluye el texto de la respuesta.",
+    "usingDefault": "Predeterminado",
+    "custom": "Personalizado",
+    "subject": "Asunto",
+    "heading": "Encabezado",
+    "buttonLabel": "Etiqueta del botón",
+    "html": "Cuerpo HTML",
+    "htmlAria": "Cuerpo HTML del correo",
+    "insert": "Insertar:",
+    "preview": "Vista previa",
+    "save": "Guardar plantilla",
+    "reset": "Restablecer predeterminado",
+    "saved": "Plantilla de correo guardada",
+    "saveFailed": "No se pudo guardar la plantilla de correo",
+    "loadFailed": "No se pudieron cargar las plantillas de correo.",
+    "back": "Volver a la lista",
+    "markupRemoved": "Se quitó algo de marcado: {{tags}}",
+    "variables": {
+      "ticket_number": "Número de ticket",
+      "ticket_subject": "Asunto del ticket",
+      "requester_name": "Nombre del solicitante",
+      "requester_email": "Correo del solicitante",
+      "org_name": "Nombre de la organización",
+      "partner_name": "Nombre de la empresa",
+      "portal_url": "URL del portal",
+      "email_only_hint": "Aviso solo por correo",
+      "resolution_note": "Nota de resolución"
+    }
+  },
   "inboundEmail": {
     "saveError": "No se pudo guardar la configuración del correo electrónico entrante; es posible que su sesión necesite una nueva verificación MFA. Reintentar.",
     "orgNotAccessible": "Esa organización no está disponible bajo su socio.",
@@ -769,6 +804,8 @@
     "dropUnverified": "Descartar correo que falla en la autenticación del remitente (SPF/DKIM/DMARC)",
     "dropUnverifiedDescription": "Cuando está desactivado, el correo no verificado se pone en cuarentena para su revisión. Cuando está encendido, cae silenciosamente. Esto se aplica a <all>all</all> remitentes no verificados, incluidos los clientes asignados cuyo mensaje individual no pasa la verificación.",
     "enableAutoresponse": "Enviar una respuesta automática reconociendo nuevos tickets por correo electrónico",
+    "editEmailTemplates": "El correo de acuse se edita en Plantillas de correo.",
+    "editEmailTemplatesLink": "Editar plantillas de correo",
     "autoresponseMessage": "Mensaje de respuesta automática",
     "subject": "Asunto",
     "subjectPlaceholder": "Recibimos su solicitud: {{ticket_subject}}",

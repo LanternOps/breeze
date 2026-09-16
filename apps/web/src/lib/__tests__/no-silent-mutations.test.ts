@@ -124,6 +124,8 @@ const TARGET_GLOBS = [
   'src/components/settings/TicketStatusesTab.tsx',
   'src/components/settings/TicketPrioritiesTab.tsx',
   'src/components/settings/InboundEmailCard.tsx',
+  'src/components/settings/EmailTemplatesTab.tsx',
+  'src/components/settings/EmailTemplateEditor.tsx',
   'src/components/settings/M365MailboxCard.tsx',
   'src/components/settings/OrgPortalSettingsEditor.tsx',
   'src/components/settings/OrgTicketSettingsEditor.tsx',
@@ -676,7 +678,9 @@ describe('no silent mutations in targeted set', () => {
     // W01 settings consolidation (#6224): PartnerBillingSettings.tsx ->
     // PartnerBillingSettingsPage.tsx (net 0) then + CatalogDefaultsCard.tsx:
     // 143 → 144.
-    expect(absoluteFiles.length).toBe(144);
+    // Outbound email templates (PR1 settings UI) add EmailTemplatesTab.tsx
+    // and EmailTemplateEditor.tsx: 144 → 146.
+    expect(absoluteFiles.length).toBe(146);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
