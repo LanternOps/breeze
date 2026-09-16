@@ -883,6 +883,7 @@ describe('discovery routes', () => {
         profileSubnets: null,
         suggestedBridgeDeviceId: null as string | null,
         siteName: 'Main Office' as string | null,
+        siteTimezone: 'America/Chicago' as string | null,
       };
     };
     const mockSingleAsset = (rows: unknown[]) => {
@@ -902,6 +903,36 @@ describe('discovery routes', () => {
         }),
       });
     };
+
+    it('returns the site timezone alongside the site name', async () => {
+      mockSingleAsset([buildRow()]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.siteTimezone).toBe('America/Chicago');
+    });
+
+    it('returns a null site timezone when the asset has no site', async () => {
+      const row = buildRow();
+      row.asset.siteId = null as unknown as string;
+      row.siteName = null;
+      row.siteTimezone = null;
+      mockSingleAsset([row]);
+
+      const res = await app.request(`/discovery/assets/${ASSET_ID}`, {
+        headers: { Authorization: 'Bearer token' },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Null, not the string 'UTC': a site-less asset has no site zone, and
+      // the page falls back to the browser's rather than guessing UTC.
+      expect(body.data.siteTimezone).toBeNull();
+    });
 
     it('returns the single asset detail (topology node click / deep link)', async () => {
       reachabilityByAsset.set(ASSET_ID, {

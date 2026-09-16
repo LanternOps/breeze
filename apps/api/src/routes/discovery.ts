@@ -1230,6 +1230,10 @@ discoveryRoutes.get(
         // through the device IT WAS LINKED TO is a loopback).
         suggestedBridgeDeviceId: bridgeDevices.id,
         siteName: sites.name,
+        // The site's IANA zone. The page formats every absolute timestamp in
+        // it (spec §11 Formatting); `sites` is already left-joined for the
+        // name, so this costs one more column and no extra query.
+        siteTimezone: sites.timezone,
       })
       .from(discoveredAssets)
       .leftJoin(devices, and(
@@ -1262,6 +1266,7 @@ discoveryRoutes.get(
         orgId: a.orgId,
         siteId: a.siteId,
         siteName: row.siteName ?? null,
+        siteTimezone: row.siteTimezone ?? null,
         assetType: a.assetType,
         approvalStatus: a.approvalStatus,
         isOnline: a.isOnline,
