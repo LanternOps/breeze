@@ -24,6 +24,7 @@ const SETTINGS = {
   enableAssetCheckout: true,
   enableSelfService: false,
   enablePasswordReset: true,
+  enableDevices: false,
   enableDashboard: false,
   enableSecurity: false,
   enableBackups: false,
@@ -116,6 +117,7 @@ describe('OrgPortalSettingsEditor', () => {
     ));
 
     for (const key of [
+      'enableDevices',
       'enableDashboard',
       'enableSecurity',
       'enableBackups',
@@ -154,6 +156,8 @@ describe('OrgPortalSettingsEditor', () => {
     );
     expect(patchCall).toBeDefined();
     expect(JSON.parse(String(patchCall![1]!.body))).toMatchObject({
+      enableDevices: true,
+      enableSelfService: false,
       enableDashboard: true,
       enableSecurity: true,
       enableBackups: true,

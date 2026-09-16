@@ -1134,6 +1134,10 @@
       "description": "Scegli quali informazioni sul servizio questo cliente può vedere nel portale.",
       "enableAll": "Abilita tutta la visibilità",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivi",
+          "description": "Mostra la pagina Dispositivi. Anche il self-service consente di accedere a questa pagina."
+        },
         "enableDashboard": {
           "label": "Pannello di controllo",
           "description": "Mostra un riepilogo dello stato del servizio all'accesso."

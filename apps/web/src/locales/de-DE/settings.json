@@ -1134,6 +1134,10 @@
       "description": "Wählen Sie aus, welche Servicedaten dieser Kunde im Portal sehen kann.",
       "enableAll": "Alle Sichtbarkeiten aktivieren",
       "toggles": {
+        "enableDevices": {
+          "label": "Geräte",
+          "description": "Die Geräteseite anzeigen. Self-Service gewährt ebenfalls Zugriff auf diese Seite."
+        },
         "enableDashboard": {
           "label": "Übersicht",
           "description": "Zeigt beim Anmelden eine Übersicht des Servicestatus an."

@@ -9,6 +9,14 @@ import {
 } from './portal';
 
 describe('updatePortalSettingsSchema', () => {
+  it.each([true, false])('accepts enableDevices=%s independently of self-service', (enableDevices) => {
+    expect(updatePortalSettingsSchema.parse({ enableDevices, enableSelfService: false }))
+      .toEqual({ enableDevices, enableSelfService: false });
+  });
+  it.each([null, 'true', 1])('rejects invalid enableDevices=%s', (enableDevices) => {
+    expect(updatePortalSettingsSchema.safeParse({ enableDevices }).success).toBe(false);
+  });
+
   it('accepts a full valid payload', () => {
     const result = updatePortalSettingsSchema.safeParse({
       enableTickets: false,

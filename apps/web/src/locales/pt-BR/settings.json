@@ -1134,6 +1134,10 @@
       "description": "Escolha quais informações de serviço este cliente pode ver no portal.",
       "enableAll": "Ativar toda a visibilidade",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar a página Dispositivos. O autoatendimento também permite acessar esta página."
+        },
         "enableDashboard": {
           "label": "Painel",
           "description": "Mostra um resumo da saúde do serviço ao entrar."

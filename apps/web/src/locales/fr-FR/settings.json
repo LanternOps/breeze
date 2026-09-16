@@ -1134,6 +1134,10 @@
       "description": "Choisissez les informations de service que ce client peut voir dans le portail.",
       "enableAll": "Activer toute la visibilité",
       "toggles": {
+        "enableDevices": {
+          "label": "Appareils",
+          "description": "Afficher la page Appareils. Le libre-service donne également accès à cette page."
+        },
         "enableDashboard": {
           "label": "Tableau de bord",
           "description": "Affiche un résumé de l'état du service à la connexion."

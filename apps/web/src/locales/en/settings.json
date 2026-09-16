@@ -1134,6 +1134,10 @@
       "description": "Choose which service insights this customer can see in the portal.",
       "enableAll": "Enable all visibility",
       "toggles": {
+        "enableDevices": {
+          "label": "Devices",
+          "description": "Show the Devices page. Self-service also grants access to this page."
+        },
         "enableDashboard": {
           "label": "Dashboard",
           "description": "Show a service-health summary when customers sign in."

@@ -27,6 +27,7 @@ import {
 const PORTAL_SETTINGS_DEFAULTS = {
   enableTickets: true,
   enableAssetCheckout: false, // parked — see schema/portal.ts
+  enableDevices: false,
   enableSelfService: true,
   enablePasswordReset: true,
   enableDashboard: false,
@@ -47,6 +48,7 @@ const PORTAL_SETTINGS_DEFAULTS = {
 type PortalSettingsRow = {
   enableTickets: boolean;
   enableAssetCheckout: boolean;
+  enableDevices: boolean;
   enableSelfService: boolean;
   enablePasswordReset: boolean;
   enableDashboard: boolean;
@@ -75,6 +77,7 @@ type PortalSettingsRow = {
 const portalSettingsColumns = () => ({
   enableTickets: portalBranding.enableTickets,
   enableAssetCheckout: portalBranding.enableAssetCheckout,
+  enableDevices: portalBranding.enableDevices,
   enableSelfService: portalBranding.enableSelfService,
   enablePasswordReset: portalBranding.enablePasswordReset,
   enableDashboard: portalBranding.enableDashboard,
@@ -98,6 +101,7 @@ function toResponse(orgId: string, row?: PortalSettingsRow) {
     orgId,
     enableTickets: row.enableTickets,
     enableAssetCheckout: row.enableAssetCheckout,
+    enableDevices: row.enableDevices,
     enableSelfService: row.enableSelfService,
     enablePasswordReset: row.enablePasswordReset,
     enableDashboard: row.enableDashboard,

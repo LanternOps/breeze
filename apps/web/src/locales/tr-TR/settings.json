@@ -1134,6 +1134,10 @@
       "description": "Bu müşterinin portalda hangi hizmet bilgilerini görebileceğini seçin.",
       "enableAll": "Tüm görünürlüğü etkinleştir",
       "toggles": {
+        "enableDevices": {
+          "label": "Cihazlar",
+          "description": "Cihazlar sayfasını göster. Self servis de bu sayfaya erişim sağlar."
+        },
         "enableDashboard": {
           "label": "Pano",
           "description": "Müşteriler oturum açtığında bir hizmet durumu özetini gösterir."

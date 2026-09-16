@@ -93,6 +93,7 @@ const portalCustomCssSchema = z
 export const updatePortalSettingsSchema = z.object({
   enableTickets: z.boolean().optional(),
   enableAssetCheckout: z.boolean().optional(),
+  enableDevices: z.boolean().optional(),
   enableSelfService: z.boolean().optional(),
   enablePasswordReset: z.boolean().optional(),
   enableDashboard: z.boolean().optional(),

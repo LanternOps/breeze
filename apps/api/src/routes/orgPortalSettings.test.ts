@@ -73,6 +73,7 @@ vi.mock('../db/schema', () => ({
     orgId: 'orgId',
     enableTickets: 'enableTickets',
     enableAssetCheckout: 'enableAssetCheckout',
+    enableDevices: 'enableDevices',
     enableSelfService: 'enableSelfService',
     enablePasswordReset: 'enablePasswordReset',
     enableDashboard: 'enableDashboard',
@@ -104,6 +105,7 @@ const FULL_ROW = {
   orgId: ORG_ID,
   enableTickets: false,
   enableAssetCheckout: true,
+  enableDevices: false,
   enableSelfService: true,
   enablePasswordReset: true,
   enableDashboard: false,
@@ -159,6 +161,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       orgId: ORG_ID,
       enableTickets: false,
       enableAssetCheckout: true,
+      enableDevices: false,
       enableSelfService: true,
       enablePasswordReset: true,
       enableDashboard: false,
@@ -190,6 +193,7 @@ describe('GET /organizations/:id/portal-settings', () => {
       orgId: ORG_ID,
       enableTickets: true,
       enableAssetCheckout: false, // parked — the portal has no checkout UI yet
+      enableDevices: false,
       enableSelfService: true,
       enablePasswordReset: true,
       enableDashboard: false,
@@ -256,6 +260,20 @@ describe('PATCH /organizations/:id/portal-settings', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+
+  it('persists the independent Devices visibility flag', async () => {
+    dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+    dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, enableDevices: true, enableSelfService: false }]);
+    const res = await patch({ enableDevices: true, enableSelfService: false });
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ enableDevices: true, enableSelfService: false });
+    const { db } = await import('../db');
+    const values = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+    expect(values).toMatchObject({ orgId: ORG_ID, enableDevices: true, enableSelfService: false });
+    const returning = vi.mocked(db.insert).mock.results[0]?.value.values.mock.results[0]?.value
+      .onConflictDoUpdate.mock.results[0]?.value.returning;
+    expect(returning.mock.calls[0]?.[0]).toHaveProperty('enableDevices', 'enableDevices');
+  });
 
   it('upserts and returns the managed subset', async () => {
     dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);

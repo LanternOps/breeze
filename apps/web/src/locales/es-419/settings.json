@@ -1134,6 +1134,10 @@
       "description": "Elija qué información de servicio puede ver este cliente en el portal.",
       "enableAll": "Habilitar toda la visibilidad",
       "toggles": {
+        "enableDevices": {
+          "label": "Dispositivos",
+          "description": "Mostrar la página de dispositivos. El autoservicio también permite acceder a esta página."
+        },
         "enableDashboard": {
           "label": "Panel",
           "description": "Muestra un resumen del estado del servicio al iniciar sesión."
