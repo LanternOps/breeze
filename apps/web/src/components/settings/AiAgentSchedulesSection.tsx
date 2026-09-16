@@ -382,9 +382,9 @@ export default function AiAgentSchedulesSection({
   const loadFeatures = useFeaturesStore((s) => s.load);
   useEffect(() => { void loadFeatures(); }, [loadFeatures]);
   const canArmActMode = canManageBaselines && canManagePartnerWide && sweepActEnabled;
-  const actModeDisabledHint = t(sweepActEnabled
-    ? 'aiAgentsPage.schedules.actMode.disabledHint'
-    : 'aiAgentsPage.schedules.actMode.deploymentDisabledHint');
+  const actModeDisabledHint = sweepActEnabled
+    ? t('aiAgentsPage.schedules.actMode.disabledHint')
+    : t('aiAgentsPage.schedules.actMode.deploymentDisabledHint');
   // See `SCHEDULE_KINDS_FOR_AGENT_KIND`'s docstring — a real lookup keyed by
   // the agent kind, defaulting to the sweep/narrative pair.
   const availableScheduleKinds = scheduleKindsFor(agentKind);
