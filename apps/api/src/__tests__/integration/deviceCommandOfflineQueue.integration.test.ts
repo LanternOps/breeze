@@ -111,10 +111,6 @@ describe('device command offline queue — real PostgreSQL (#5128 W1)', () => {
 
   beforeEach(async () => {
     env = await setupTestEnvironment({ scope: 'organization' });
-    // The generic device-command routes queue regardless of this flag, but the
-    // seam's `previouslyRejected` callers are gated on it; turn it on so the
-    // queue arm is exercised end to end.
-    process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED = 'true';
   });
 
   it('queues against an offline device with a deliver_by and submitted_org_id', async () => {
@@ -877,7 +873,6 @@ describe('patch installs for offline devices — real PostgreSQL (#5128 W3)', ()
 
   beforeEach(async () => {
     env = await setupTestEnvironment({ scope: 'organization' });
-    process.env.DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED = 'true';
   });
 
   async function makePatch(requiresReboot: boolean) {

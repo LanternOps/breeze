@@ -4,17 +4,6 @@ import { deploymentResults } from '../db/schema';
 import { redactSecretsFromOutput } from './secretRedaction';
 import { applyAutomationActionTerminal } from './automationActionResults';
 
-/**
- * Command-id shape used for WS-dispatched software installs:
- * `sw-install-<deploymentUuid>-<deviceUuid>-<attemptNumber>`. The attempt
- * suffix is optional for backward compatibility with command ids already
- * queued/in-flight before it was introduced — those parse to attempt 0.
- * Shared by the HTTP result route (routes/agents/commands.ts) and the WS
- * orphan-result branch (routes/agentWs.ts) so both transports parse
- * identically.
- */
-export const SW_INSTALL_COMMAND_ID_REGEX = /^sw-install-([0-9a-f-]{36})-([0-9a-f-]{36})(?:-(\d+))?$/i;
-
 export interface SoftwareInstallResultInput {
   deploymentId: string;
   /** MUST come from the authenticated agent context, never from agent-supplied data. */
@@ -29,10 +18,8 @@ export interface SoftwareInstallResultInput {
   startedAt?: string | Date | null;
   durationMs?: number | null;
   /**
-   * Which retry attempt this result belongs to — parsed from the WS command
-   * id's `-<attemptNumber>` suffix, or from the queued device_commands
-   * payload's `retryCount` field for the offline fallback transport. Defaults
-   * to 0 (first attempt, and legacy command ids with no suffix). Compared
+   * Which retry attempt this result belongs to, from the device_commands
+   * payload's `retryCount` field. Defaults to 0 (first attempt). Compared
    * against the row's CURRENT retryCount so a late result from a
    * superseded attempt (retry already bumped retryCount and re-dispatched
    * under a new command id) is dropped instead of being misattributed to the
@@ -166,11 +153,8 @@ export async function applySoftwareInstallResult(input: SoftwareInstallResultInp
  * (`routes/agentWs.ts`). It lives HERE, beside `applySoftwareInstallResult`,
  * rather than in `softwareDeployment.ts`: that module statically pulls in the
  * whole dispatch graph (agentWs, the discovery worker, …), which neither result
- * route should have to import just to reconcile one row. Before this, only the
- * HTTP route reconciled by
- * payload, and the WS path relied on the legacy
- * `sw-install-<deployment>-<device>-<attempt>` command id — which new dispatches
- * no longer use, because they push with the persisted row's UUID.
+ * route should have to import just to reconcile one row. Both transports use
+ * the persisted command's payload to identify the deployment and attempt.
  *
  * The helper's own `status='pending'` + `retryCount === attempt` guard makes
  * double delivery (HTTP and WS) and a result from a retry-superseded attempt a

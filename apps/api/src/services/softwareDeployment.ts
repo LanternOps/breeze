@@ -146,8 +146,6 @@ export async function dispatchSoftwareInstallToDevice(
     type: 'software_install',
     payload: (payload ?? {}) as Record<string, unknown>,
     ...(createdBy ? { userId: createdBy } : {}),
-    // Software installs already queued for offline devices before #5128, so
-    // they are NOT gated on DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED.
     offlinePolicy: { kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') },
   });
 

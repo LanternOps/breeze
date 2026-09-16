@@ -920,156 +920,8 @@ describe('agent commands routes', () => {
     expect(stored.result.stderr).toBe('stderr-pre [PRIVATE_KEY_REDACTED] stderr-post');
   });
 
-  it('redacts private-key blocks from the software-install deployment result path', async () => {
-    // sw-install commandId embeds deployment + device UUIDs; the device UUID
-    // must equal the authenticated agent's deviceId for the update to fire.
-    const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-    const deviceUuid = '33333333-3333-4333-8333-333333333333';
-    const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-
-    const swApp = new Hono();
-    swApp.use('*', async (c, next) => {
-      c.set('agent', {
-        deviceId: deviceUuid,
-        agentId: 'agent-1',
-        orgId: 'org-1',
-        partnerId: 'partner-1',
-        siteId: 'site-1',
-        role: 'agent',
-      });
-      await next();
-    });
-    swApp.route('/agents', commandsRoutes);
-
-    const updateChain = chainMock([]);
-    updateMock.mockReturnValueOnce(updateChain);
-
-    const res = await swApp.request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        commandId: swCommandId,
-        status: 'completed',
-        exitCode: 0,
-        stdout: `install-log ${PRIVATE_KEY_BLOCK} done`,
-        error: `install-error ${PRIVATE_KEY_BLOCK} boom`,
-      }),
-    });
-
-    expect(res.status).toBe(200);
-
-    // deployment_results is never queried via selectMock on this path.
-    expect(selectMock).not.toHaveBeenCalled();
-    const stored = updateChain.set.mock.calls[0][0];
-    expect(stored.output).toBe('install-log [PRIVATE_KEY_REDACTED] done');
-    expect(stored.errorMessage).toBe('install-error [PRIVATE_KEY_REDACTED] boom');
-
-    const serialized = JSON.stringify(stored);
-    expect(serialized).not.toContain('BEGIN PRIVATE KEY');
-    expect(serialized).not.toContain('MIIEvQ');
-    expect(serialized).not.toContain('BODYb64lineTwo');
-  });
-
-  // Retry race guard (this fix): a sw-install commandId's optional
-  // `-<attempt>` suffix must gate the deployment_results UPDATE on
-  // retryCount, so a late result from an attempt a retry already superseded
-  // is dropped instead of landing on the new attempt's fresh 'pending' row.
-  describe('sw-install attempt-suffix retry guard', () => {
-    const deploymentUuid = '11111111-1111-4111-8111-111111111111';
-    const deviceUuid = '33333333-3333-4333-8333-333333333333';
-
-    function makeSwApp() {
-      const swApp = new Hono();
-      swApp.use('*', async (c, next) => {
-        c.set('agent', {
-          deviceId: deviceUuid,
-          agentId: 'agent-1',
-          orgId: 'org-1',
-          partnerId: 'partner-1',
-          siteId: 'site-1',
-          role: 'agent',
-        });
-        await next();
-      });
-      swApp.route('/agents', commandsRoutes);
-      return swApp;
-    }
-
-    it('parses the attempt suffix and guards the UPDATE on retryCount', async () => {
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-2`;
-      const updateChain = chainMock([{ id: 'dr-1' }]);
-      updateMock.mockReturnValueOnce(updateChain);
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 2),
-        ),
-      );
-    });
-
-    it('drops (and logs) a late result whose attempt suffix no longer matches the row current retryCount', async () => {
-      // Attempt 1's command id delivers late after a retry bumped retryCount
-      // to 2 — the UPDATE's retryCount=1 condition matches zero real rows.
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}-1`;
-      const updateChain = chainMock([]);
-      updateMock.mockReturnValueOnce(updateChain);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 1),
-        ),
-      );
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('attempt=1'));
-      warnSpy.mockRestore();
-    });
-
-    it('defaults to attempt 0 for a legacy commandId with no attempt suffix', async () => {
-      const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
-      const updateChain = chainMock([{ id: 'dr-1' }]);
-      updateMock.mockReturnValueOnce(updateChain);
-
-      const res = await makeSwApp().request(`/agents/${agentId}/commands/${swCommandId}/result`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: swCommandId, status: 'completed', exitCode: 0 }),
-      });
-
-      expect(res.status).toBe(200);
-      expect(updateChain.where).toHaveBeenCalledWith(
-        and(
-          eq(deploymentResults.deploymentId, deploymentUuid),
-          eq(deploymentResults.deviceId, deviceUuid),
-          eq(deploymentResults.status, 'pending'),
-          eq(deploymentResults.retryCount, 0),
-        ),
-      );
-    });
-  });
-
-  // Offline-fallback path: the install command was queued as a device_commands
-  // row (UUID id), so the result flows through the UUID branch and must ALSO
-  // reconcile the matching deployment_results row via the payload deploymentId.
+  // Software-install results use the persisted command UUID and reconcile
+  // the matching deployment_results row via the payload deploymentId.
   describe('queued software_install result reconciliation', () => {
     const deploymentUuid = '44444444-4444-4444-8444-444444444444';
 
@@ -1085,10 +937,8 @@ describe('agent commands routes', () => {
       };
     }
 
-    // Queued (offline-fallback) commands don't use the sw-install-<dep>-<device>-<attempt>
-    // id shape — the device_commands row carries a plain UUID — so the attempt
-    // number for the retry guard travels in the payload instead (written by
-    // buildAndDispatchSoftwareInstalls). This proves it threads through here too.
+    // The retry guard uses the attempt number written into the command payload
+    // by buildAndDispatchSoftwareInstalls.
     it('guards the deployment_results UPDATE on the payload retryCount for a queued result', async () => {
       selectMock.mockReturnValueOnce(chainMock([swInstallCommandRow({
         payload: { deploymentId: deploymentUuid, downloadUrl: 'https://dl/pkg.exe', retryCount: 1 },
@@ -1366,14 +1216,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
    *   'tenant' — #2774 offboarding drain. The device itself is healthy, but the
    *              middleware derives the SAME `claimTypeAllowlist`.
    *
-   * The tenant case exists because this route's gates are deliberately driven
-   * by `claimTypeAllowlist` — the ONE derived value — and not by
-   * `deviceUninstallDraining`. That is a real behaviour change to the shipped
-   * #2774 path (see the LOW-2 section of the task-9 report): a `sw-install-…`
-   * result and a non-self_uninstall ack from an offboarding tenant's still-live
-   * machine are now refused too. It is intentional — a second, divergent notion
-   * of "draining" at this layer is exactly the drift the single derived value
-   * exists to prevent — so it is pinned by tests rather than left as prose.
+   * Both drain contexts must use the same claimTypeAllowlist gates.
    */
   function buildApp(opts: { drain: 'none' | 'device' | 'tenant'; deviceId?: string }): Hono {
     const drainContext =
@@ -1423,11 +1266,8 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
   }
 
   it('rejects a non-UUID command result while draining', async () => {
-    // `sw-install-<deployment>-<device>` has NO device_commands row: the
-    // handler writes deployment_results gated only on the embedded device UUID
-    // matching the authenticated device, so a command-TYPE allowlist cannot
-    // see it at all. A removed machine must not keep stamping deployment
-    // history for the org.
+    // Retired software-install IDs have no device_commands row and cannot
+    // satisfy the draining agent's command-type allowlist.
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);
@@ -1440,7 +1280,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it('the SAME sw-install result still lands when NOT draining (proves the refusal is the drain gate)', async () => {
+  it('ignores retired software-install command IDs when not draining', async () => {
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);
@@ -1448,7 +1288,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
     const res = await postResult(buildApp({ drain: 'none', deviceId: deviceUuid }), swCommandId);
 
     expect(res.status).toBe(200);
-    expect(updateMock).toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
   it('rejects a result for a non-self_uninstall command while draining', async () => {
@@ -1525,10 +1365,7 @@ describe('POST /agents/:id/commands/:commandId/result — drain narrowing (#3986
   // away (`agent.deviceUninstallDraining && …`) with zero test failures.
 
   it('rejects a non-UUID (sw-install) command result during a TENANT drain too', async () => {
-    // #2774's machines are still live, but the `sw-install-…` branch is the same
-    // hole on the same route: it writes deployment_results with no
-    // device_commands row to consult, gated only on the embedded device UUID.
-    // An offboarding customer's fleet must stop feeding that too.
+    // Tenant drains reject non-persistent command IDs too.
     const swCommandId = `sw-install-${deploymentUuid}-${deviceUuid}`;
     const updateChain = chainMock([]);
     updateMock.mockReturnValue(updateChain);

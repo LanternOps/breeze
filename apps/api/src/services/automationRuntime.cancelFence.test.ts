@@ -352,7 +352,6 @@ describe('executeAutomationActionsInOrder — mid-flight cancellation', () => {
    * nightly automation over a fleet with sleeping laptops would go red at once.
    */
   it('a queued (offline) dispatch does NOT fail the run and does not skip trailing actions', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
     dispatchMock.mockResolvedValue({
       ok: true, commandId: 'cmd-1', executionId: null, delivered: false,
       deliveryOutcome: 'no_agent', deliverBy: new Date('2026-09-14T00:00:00.000Z'),

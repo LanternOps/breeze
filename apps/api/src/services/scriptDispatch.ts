@@ -743,7 +743,7 @@ export async function dispatchScriptToDevice(input: DispatchScriptInput): Promis
     if (claimed) {
       // #3409 PR4c-2: the immediate-send path claims the command itself and
       // hands it straight to the WS, bypassing
-      // `decryptClaimedCommandsForDelivery` — so the claim-time gate has to
+      // `prepareClaimedCommandsForDelivery` — so the claim-time gate has to
       // run HERE too, or a device whose agent lost the capability between the
       // preflight above and this claim would receive the script with the
       // credential unset. Only the secret-bearing path pays for it.

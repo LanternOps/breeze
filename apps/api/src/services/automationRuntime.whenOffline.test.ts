@@ -1,15 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
  * #5128 W4 — the `whenOffline` automation-action option and the `queued` step
  * state it produces.
  *
- * Four axes are asserted here because each is independently load-bearing: the
- * ACTION's choice ('queue'/'skip'), the FLAG
- * (`DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED`), the OUTCOME written to
- * `automation_action_results`, and the fact that a queued step does NOT fail
- * the run — which is what would silently break every existing automation the
- * moment the flag default flipped on.
+ * Asserts the action's queue/skip choice, the persisted outcome, and that a
+ * queued step keeps the run open rather than failing it.
  */
 
 const { updateMock, dispatchMock, recordDispatchMock } = vi.hoisted(() => ({
@@ -134,10 +130,6 @@ beforeEach(() => {
   recordDispatchMock.mockReset().mockResolvedValue(undefined);
 });
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
-
 function policyOf(callIndex = 0) {
   return (dispatchMock.mock.calls[callIndex]![0] as Record<string, unknown>).offlinePolicy;
 }
@@ -170,9 +162,7 @@ describe('whenOffline normalisation', () => {
 });
 
 describe('executeRunScriptAction — offline policy', () => {
-  it('passes a standard-TTL queue policy when the flag is on and whenOffline is queue', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
+  it('passes a standard-TTL queue policy when whenOffline is queue', async () => {
     await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1', whenOffline: 'queue' },
       0,
@@ -182,9 +172,7 @@ describe('executeRunScriptAction — offline policy', () => {
     expect(policyOf()).toEqual({ kind: 'queue', deliverWithinMs: deliveryTtlMs('standard') });
   });
 
-  it('passes a reject policy when whenOffline is skip, even with the flag on', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
+  it('passes a reject policy when whenOffline is skip', async () => {
     await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1', whenOffline: 'skip' },
       0,
@@ -194,21 +182,7 @@ describe('executeRunScriptAction — offline policy', () => {
     expect(policyOf()).toEqual({ kind: 'reject' });
   });
 
-  it('passes a reject policy when the flag is OFF, even though the action says queue', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'false');
-
-    await executeRunScriptAction(
-      { type: 'run_script', scriptId: 'script-1', whenOffline: 'queue' },
-      0,
-      buildContext(),
-    );
-
-    expect(policyOf()).toEqual({ kind: 'reject' });
-  });
-
   it('reports the queued step as queued (not failed) with the offline message', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
     const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,
@@ -229,7 +203,6 @@ describe('executeRunScriptAction — offline policy', () => {
   it.each(['claim_lost', 'decrypt_failed', 'send_failed'] as const)(
     'does not claim "device offline" when delivery failed with %s on a reachable agent',
     async (deliveryOutcome) => {
-      vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
       dispatchMock.mockResolvedValue({ ...queuedDispatch(), deliveryOutcome });
 
       const result = await executeRunScriptAction(
@@ -246,7 +219,6 @@ describe('executeRunScriptAction — offline policy', () => {
   );
 
   it("skip reproduces today's failure message byte-for-byte", async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
     dispatchMock.mockResolvedValue({
       ok: false,
       code: 'device_offline',
@@ -267,9 +239,7 @@ describe('executeRunScriptAction — offline policy', () => {
 });
 
 describe('executeCommandAction — offline policy', () => {
-  it('queues with a standard TTL when the flag is on', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
+  it('queues with a standard TTL by default', async () => {
     const result = await executeCommandAction(
       { type: 'execute_command', command: 'whoami' },
       0,
@@ -285,8 +255,6 @@ describe('executeCommandAction — offline policy', () => {
   });
 
   it('rejects when whenOffline is skip', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
     await executeCommandAction(
       { type: 'execute_command', command: 'whoami', whenOffline: 'skip' },
       0,
@@ -299,8 +267,6 @@ describe('executeCommandAction — offline policy', () => {
 
 describe('persistActionExecutionOutcome — queued row', () => {
   it('writes the automation_action_results row as queued with the offline message', async () => {
-    vi.stubEnv('DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED', 'true');
-
     const result = await executeRunScriptAction(
       { type: 'run_script', scriptId: 'script-1' },
       0,

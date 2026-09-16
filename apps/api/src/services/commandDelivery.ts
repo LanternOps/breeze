@@ -174,13 +174,6 @@ export async function prepareClaimedCommandsForDelivery(
 }
 
 /**
- * Backwards-compatible alias. The batch claim path was named for the one thing
- * it used to do (decrypt); it now also re-mints time-limited payload fields.
- * Removed in W5 once every call site uses the new name.
- */
-export const decryptClaimedCommandsForDelivery = prepareClaimedCommandsForDelivery;
-
-/**
  * Runs each claimed row's registered refresher (#5128 §D). A row whose
  * refresher throws is RELEASED back to `pending` and dropped from the batch:
  * delivering a payload we know to be stale (an expired installer URL, say) is

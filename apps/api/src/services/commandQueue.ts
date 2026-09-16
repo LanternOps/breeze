@@ -835,12 +835,7 @@ export async function waitForCommandResult(
  * Queue a command and attempt immediate dispatch to the agent websocket.
  *
  * #5128: this is now a thin adapter over `dispatchDeviceCommand`, the single
- * enqueue seam. Every caller of this function hard-rejected offline devices
- * before #5128, so it passes `previouslyRejected: true` — the
- * DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED flag (default ON since W4; set it to
- * `false` to opt out) is what decides whether their offline devices reject as
- * they used to or queue with a deadline. The error strings are unchanged, so
- * callers that surface `error` verbatim behave identically with the flag off.
+ * enqueue seam. Offline delivery follows the command type registry.
  */
 export async function queueCommandForExecution(
   deviceId: string,
@@ -865,7 +860,6 @@ export async function queueCommandForExecution(
     ...(options.preferHeartbeat !== undefined ? { preferHeartbeat: options.preferHeartbeat } : {}),
     ...(options.expectedOrgId !== undefined ? { expectedOrgId: options.expectedOrgId } : {}),
     ...(options.offlinePolicy !== undefined ? { offlinePolicy: options.offlinePolicy } : {}),
-    previouslyRejected: true,
   });
 
   if (!res.ok) {

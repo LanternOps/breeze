@@ -215,9 +215,6 @@ describe('manage_browser_policy — site write scope (mutations)', () => {
         payload: expect.objectContaining({ policyId: 'p1' }),
         userId: 'u1',
         expectedOrgId: 'org-1',
-        // The insert this replaced queued for OFFLINE devices too; `false`
-        // keeps that under every DEVICE_COMMAND_OFFLINE_QUEUE_ENABLED setting.
-        previouslyRejected: false,
       }),
     );
   });
