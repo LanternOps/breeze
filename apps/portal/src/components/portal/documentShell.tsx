@@ -41,9 +41,60 @@ export function DocumentPaper({
 
 /** Header band: logo/wordmark + seller "From" on the left; eyebrow + title +
  *  status + dates on the right; optional "Prepared for / Bill to" line below. */
+/**
+ * The proposal's cover, on screen. The spec calls it a page frame rendered as
+ * the proposal's first page; the PDF has always drawn it, but the customer's
+ * on-screen document skipped straight to the number-and-dates header, so a
+ * titled, branded cover the MSP authored was invisible until download. It
+ * carries the cover title as the page's H1 (the header's number steps down to
+ * an h2), the cover image when one is set, and prepared for / prepared by.
+ */
+export function DocumentCover({
+  title, imageUrl, preparedForName, preparedByName, showPreparedBy, eyebrow = 'Proposal',
+}: {
+  title: string;
+  imageUrl?: string | null;
+  preparedForName?: string | null;
+  preparedByName?: string | null;
+  showPreparedBy: boolean;
+  eyebrow?: string;
+}) {
+  return (
+    <section data-testid="doc-cover" className="-mx-4 -mt-7 border-b sm:-mx-10 sm:-mt-9">
+      {imageUrl && (
+        <img src={imageUrl} alt="" className="h-48 w-full object-cover sm:h-64" data-testid="doc-cover-image" />
+      )}
+      <div className="space-y-6 px-4 py-8 sm:px-10 sm:py-12">
+        <div className="space-y-3">
+          <p className="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">{eyebrow}</p>
+          <h1 className="max-w-[24ch] font-display text-3xl font-semibold leading-tight tracking-tight text-foreground sm:text-4xl">
+            {title}
+          </h1>
+        </div>
+        {(preparedForName || (showPreparedBy && preparedByName)) && (
+          <dl className="grid gap-4 text-sm sm:grid-cols-2">
+            {preparedForName && (
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prepared for</dt>
+                <dd className="mt-1 font-medium text-foreground">{preparedForName}</dd>
+              </div>
+            )}
+            {showPreparedBy && preparedByName && (
+              <div>
+                <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Prepared by</dt>
+                <dd className="mt-1 font-medium text-foreground">{preparedByName}</dd>
+              </div>
+            )}
+          </dl>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function DocumentHeader({
   logoUrl, partnerName, seller, eyebrow, title, subtitle, statusLabel, statusTone, dates,
-  preparedForLabel = 'Prepared for', preparedForName,
+  preparedForLabel = 'Prepared for', preparedForName, titleAs: TitleTag = 'h1',
 }: {
   logoUrl?: string | null;
   partnerName?: string | null;
@@ -57,6 +108,8 @@ export function DocumentHeader({
   dates: { label: string; value: string }[];
   preparedForLabel?: string;
   preparedForName?: string | null;
+  /** h2 when a DocumentCover above already carries the page's H1. */
+  titleAs?: 'h1' | 'h2';
 }) {
   const showSeller = seller && (seller.name || seller.email || seller.phone || seller.website || sellerLines(seller.address).length > 0);
   return (
@@ -83,7 +136,7 @@ export function DocumentHeader({
           <p className="doc-accent-text text-xs font-semibold uppercase tracking-[0.18em]">{eyebrow}</p>
           {/* The document number is the page's primary heading. It was a <p>,
               which left every proposal and invoice with no <h1> of its own. */}
-          <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+          <TitleTag className="font-display text-2xl font-semibold tracking-tight text-foreground">{title}</TitleTag>
           {subtitle && <p className="text-sm font-medium text-foreground/80">{subtitle}</p>}
           {statusLabel && (
             <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${markChipClass(statusTone ?? 'neutral')}`}>

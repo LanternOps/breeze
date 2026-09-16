@@ -132,7 +132,7 @@ export function ReportRunList({
         <a
           href={lifecycleHref}
           data-testid="reports-lifecycle-card"
-          className="group -mt-2 mb-7 flex items-center justify-between gap-4 border-y border-border/70 py-4 text-sm transition-colors hover:bg-accent/40"
+          className="group -mx-4 -mt-2 mb-7 flex items-center justify-between gap-4 border-y border-border/70 px-4 py-4 text-sm transition-colors hover:bg-accent/40"
         >
           <span>
             <span className="block font-semibold text-foreground">Hardware lifecycle</span>

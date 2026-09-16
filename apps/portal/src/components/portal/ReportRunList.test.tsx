@@ -242,3 +242,12 @@ describe('ReportRunList — hardware lifecycle link', () => {
     expect(screen.queryByTestId('reports-lifecycle-card')).toBeNull();
   });
 });
+
+describe('ReportRunList — lifecycle row padding', () => {
+  it('gives the hover wash side padding while keeping the text on the column edge', () => {
+    render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const cls = screen.getByTestId('reports-lifecycle-card').className;
+    expect(cls).toMatch(/\bpx-4\b/);
+    expect(cls).toMatch(/-mx-4\b/);
+  });
+});

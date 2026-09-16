@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { portalApi, publicApiPath, type PublicQuoteDetail } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { QuoteBlocks, money } from './quoteBlocks';
-import { DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
+import { DocumentCover, DocumentPaper, DocumentHeader, DocumentTerms, type DocSeller } from './documentShell';
 import { SignaturePanel } from './SignaturePanel';
 
 interface PublicQuoteViewProps {
@@ -87,6 +87,7 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
             ? 'Replaced'
             : undefined;
 
+  const cover = quote.coverPage?.enabled ? quote.coverPage : null;
   const headerDates = [
     ...(quote.issueDate ? [{ label: 'Issued', value: shortDate(quote.issueDate) }] : []),
     ...(quote.expiryDate ? [{ label: 'Valid until', value: shortDate(quote.expiryDate) }] : []),
@@ -147,6 +148,15 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
   return (
     <div className="mx-auto w-full max-w-3xl space-y-5 p-2 sm:p-4">
       <DocumentPaper primaryColor={branding.primaryColor} testId="public-quote" docTheme={presentation?.theme}>
+        {cover && (
+          <DocumentCover
+            title={cover.title || quote.title || quote.quoteNumber || 'Proposal'}
+            imageUrl={cover.coverImageId ? publicApiPath(`/quotes/public/${encodeURIComponent(token)}/images/${cover.coverImageId}`) : null}
+            preparedForName={cover.preparedForName || quote.billToName}
+            preparedByName={branding.partnerName}
+            showPreparedBy={cover.showPreparedBy}
+          />
+        )}
         <DocumentHeader
           logoUrl={branding.logoUrl}
           partnerName={branding.partnerName}
@@ -156,7 +166,8 @@ export function PublicQuoteView({ token, initial, error, superseded }: PublicQuo
           statusLabel={statusLabel}
           statusTone={statusLabel ? quoteStatusTone(status) : undefined}
           dates={headerDates}
-          preparedForName={quote.billToName ?? undefined}
+          preparedForName={cover ? undefined : quote.billToName ?? undefined}
+          titleAs={cover ? 'h2' : 'h1'}
         />
 
         {quote.introNotes && (

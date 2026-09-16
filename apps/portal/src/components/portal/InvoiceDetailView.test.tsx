@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { fireEvent, render, screen, cleanup } from '@testing-library/react';
 import type { InvoiceDetail, InvoiceLine } from '@/lib/api';
 
 // Same stub the other portal component suites use: the real module reaches
@@ -97,5 +97,17 @@ describe('InvoiceDetailView line labels (#3319)', () => {
       'Ticket #T-100',
     );
     expect(screen.queryByTestId('invoice-line-ticket-1')).toBeNull();
+  });
+});
+
+describe('InvoiceDetailView — payment unavailable', () => {
+  it('tells the customer what to do next when online payment is switched off (409)', async () => {
+    const { portalApi } = await import('@/lib/api');
+    vi.spyOn(portalApi, 'payInvoice').mockResolvedValue({ data: null, error: 'Online payment is not available', statusCode: 409 } as never);
+    render(<InvoiceDetailView detail={detail([line()])} />);
+    fireEvent.click(screen.getByTestId('invoice-pay-button'));
+    const alert = await screen.findByTestId('invoice-pay-error');
+    expect(alert).toHaveTextContent('Online payment is not available');
+    expect(screen.getByTestId('invoice-pay-next-step')).toHaveTextContent(/how to pay this invoice/);
   });
 });
