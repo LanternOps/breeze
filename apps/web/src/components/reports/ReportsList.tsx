@@ -25,7 +25,8 @@ import {
   type ScheduleConfig,
   type ExecutiveSummary,
   type OrgNarrativeReportSummary,
-  type FleetDesignReportSummary
+  type FleetDesignReportSummary,
+  type EndpointManagementSummary
 } from '@breeze/shared';
 import { useTranslation } from 'react-i18next';
 
@@ -265,6 +266,11 @@ export default function ReportsList({ onEdit, onGenerate, onDelete, timezone }: 
             | ExecutiveSummary
             | OrgNarrativeReportSummary
             | FleetDesignReportSummary
+            // #5784 W03 — the endpoint-management cover consumes this snapshot
+            // too. The cast does not filter at runtime, but leaving the type
+            // out would let a later refactor drop the summary here and silently
+            // degrade the staff PDF to the generic row table.
+            | EndpointManagementSummary
             | undefined,
           // Drives the scorecard trend chip ("79, up from 74 last month")
           // when the stored run snapshot captured a prior baseline.
