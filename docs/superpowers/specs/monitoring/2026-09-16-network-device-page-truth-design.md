@@ -62,7 +62,7 @@ pages launch it.
 | D2 | Check now | `POST /discovery/assets/:id/probe`: site-strict executor, 8 s wait then `pending`, result persisted on the asset (`last_probe_at`, `last_probe_status`), correlated to the dispatch. |
 | D3 | Poll health | `snmp_devices.last_status = 'no_template'` (no backoff increment); per-OID `collection` state on the monitoring asset route, derived from data with explicit `unknown`. |
 | D4 | Agent acquisition | Additive wire field `oidSpecs` with explicit `get`/`walk` and cadence; `oids: string[]` unchanged for old agents. Bounded walks, instance rows with `baseOid`, per-OID errors. Server ingestion ships first. Composite metrics index + retention reaper. |
-| D5 | Template selection | `snmp_templates.sys_object_id_prefixes text[]`; longest boundary-aware prefix, tie by device type; applied only on create when no template is given; suggestions scoped to built-ins + the org's own. New built-in "Xerox Printer" (RFC 3805 set, vendor Xerox, prefix 1.3.6.1.4.1.253). |
+| D5 | Template selection | `snmp_templates.sys_object_id_prefixes text[]`; boundary-aware prefix match, ties broken by device type then the longer prefix, equal-rank ties return null (never a guess); applied only on create when `templateId` is absent and the row would otherwise have none; suggestions scoped to built-ins + the org's own. New built-in "Xerox Printer" (RFC 3805 set, vendor Xerox, prefix 1.3.6.1.4.1.253). |
 | D6 | Identity | Server-side at scan ingest: enterprise number → manufacturer; model from tested vendor-family extractors, else unknown, never the raw OID; `nicVendor` derived at read; manual identity precedence preserved. |
 | D7 | Ownership | The device page owns the asset through one `NetworkAssetSettingsModal` (Identity · Monitoring · Link · Danger). Discovery and `/monitoring/network` become launchers. One web mutation module, contract-tested. |
 | D8 | Page IA | Overview row 1: type-specific Health card + Reachability & collection card; row 2: condensed Identity with "All scan details"; row 3: open ports. Stat strip: Reachability · Last poll · type slot · Open ports. Monitoring tab: poll config, OID table with state, history charts, checks. No per-type tabs. |
@@ -244,7 +244,9 @@ cannot decide acquisition, `ifHCInOctets` is `counter64` and a column). `cadence
 optional `cadence`; default `fast`; the seed marks static columns (`ifDescr`, `ifName`, `ifSpeed`,
 `prtInputName`, `prtMarkerSuppliesDescription`, `prtMarkerSuppliesType`, `prtMarkerColorantValue`)
 `slow`. `slow` specs are included only on every 12th dispatch for the device (`snmp_devices.poll_seq`
-counter, W01 column), so a 5-minute device refreshes names hourly. Old agents ignore both new fields
+counter, W01 column; the gate reads the pre-increment value so a new device gets its static columns on
+its first poll, and an all-`slow` template still dispatches its specs on every poll rather than an empty
+list), so a 5-minute device refreshes names hourly. Old agents ignore both new fields
 (`tools.GetPayloadStringSlice` reads `oids` only) and keep their current behaviour.
 
 ### 7.2 Result payload (agent → server)
@@ -259,8 +261,11 @@ New agents set `"protocol": 2` on the result and emit:
 ```
 
 Errors: `noSuchObject`, `noSuchInstance`, `endOfMib`, `timeout`, `truncated` (a walk hit a bound; the
-rows before the bound are still emitted). A transport-level failure still returns one top-level error
-as today. Absence of `protocol` means legacy shape; the server treats every legacy row as
+rows before the bound are still emitted). A walk that yields no PDU emits one `noSuchObject` row for
+the base OID: gosnmp ends a walk on NoSuchObject / NoSuchInstance / EndOfMibView without invoking the
+callback, so an unimplemented table would otherwise be indistinguishable from an empty one and the OID
+could never leave `never_polled`. A walk transport error becomes a per-OID `timeout` row and the poll
+continues. A failed GET batch still returns one top-level error as today. Absence of `protocol` means legacy shape; the server treats every legacy row as
 `baseOid = oid`, `instance = ''`.
 
 ### 7.3 Ingestion (W01, before any agent ships)
@@ -276,8 +281,10 @@ arrived; a poll where every row is an error sets `last_status = 'warning'` and d
 ### 7.4 Agent implementation (W02)
 
 `agent/internal/snmppoll/metrics.go`: `CollectMetrics` reads `oidSpecs` when present (else the legacy
-`oids` as `get`). `get` specs go in one `GetMulti`; each `walk` spec uses `client.BulkWalk(base)` with
-the limits enforced per OID and per poll (rows, bytes, wall clock); PDU types `NoSuchObject`,
+`oids` as `get`). `get` specs go in one `GetMulti`; each `walk` spec uses a new bounded streaming walk
+(`WalkBounded(root, fn)` over gosnmp's callback `BulkWalk`; the existing `BulkWalk` helper wraps
+`BulkWalkAll`, which buffers the whole subtree and cannot honour a bound) with the limits enforced per
+OID and per poll (rows, bytes, wall clock); PDU types `NoSuchObject`,
 `NoSuchInstance`, `EndOfMibView` become error rows instead of nil values. `SNMPMetric` gains
 `BaseOID`, `Instance`, `Error`. `handleSnmpPoll` sets `protocol: 2`. Tests use a gosnmp fake with
 scalar, column, and unsupported OIDs and assert bounds and error rows. Volume note: a 48-port switch
@@ -303,9 +310,13 @@ batches of 10 000 (`ctid`-bounded loop, system DB context), logging the count. A
   normalises both sides (strip leading `.`, split on `.`), requires component-boundary matches, searches
   built-ins plus the org's own templates, returns `{ templateId, reason }` or null.
 - `GET /monitoring/templates/suggest?assetId=` returns the suggestion; `PUT /monitoring/assets/:id/snmp`
-  with `templateId` omitted applies it and echoes `templateSuggestion` in the response; `templateId:
-  null` on PUT or PATCH still means "no template" (existing null-as-unset semantics at
-  `monitoring.ts:612` preserved). The settings modal pre-selects the suggestion with the reason line
+  with `templateId` absent from the body applies it when the row would otherwise have no template and
+  echoes `templateSuggestion: { templateId, templateName, reason, applied }`; an absent `templateId` on a
+  row that already has one preserves it (today `body.templateId ?? null` silently clears it; the W03 PR
+  calls out the change); `templateId: null` on PUT or PATCH still means "no template" (existing
+  null-as-unset semantics at `monitoring.ts:612` preserved). Equal-rank ties (the three Cisco built-ins
+  all claim `1.3.6.1.4.1.9`) return null rather than an alphabetical winner. `routes/snmp.ts` `oidSchema`
+  accepts the optional `mode` and `cadence` keys so custom templates keep them. The settings modal pre-selects the suggestion with the reason line
   ("Detected Xerox printer, using Xerox Printer (RFC 3805)").
 - New built-in **"Xerox Printer"**: the "Generic Printer (RFC 3805)" OID set, `vendor = 'Xerox'`,
   `device_type = 'printer'`, prefix `1.3.6.1.4.1.253`. "Lexmark Printer" gets `1.3.6.1.4.1.641`,
@@ -314,13 +325,15 @@ batches of 10 000 (`ctid`-bounded loop, system DB context), logging the count. A
 
 ## 9. Identity resolution (D6)
 
-`services/discoveredAssetClassification.ts` gains `resolveAssetIdentity({ sysObjectId, sysDescr,
-snmpData, macVendor, current })`:
+`services/assetIdentity.ts` (created in W01 with the mask and NIC-vendor helpers) gains
+`resolveAssetIdentity({ sysObjectId, sysDescr, snmpData, macVendor, current })`:
 
 - Manufacturer: IANA enterprise number → vendor name (a code table `services/ianaEnterprise.ts`,
   seeded with the vendors in §8 plus Canon, Epson, Kyocera, Ricoh, Konica Minolta, Sharp, Zebra,
   Ubiquiti, Netgear, TP-Link, Juniper, Dell, Lenovo, Supermicro; each verified against IANA in the plan).
-  Falls back to the existing sysDescr keyword rules, then to the OUI vendor. The OUI vendor is always
+  Generic-agent numbers (net-snmp 8072) are skipped for manufacturer. Falls back to the existing sysDescr
+  keyword rules (with `hp` matched on a word boundary so "Sharp" no longer reads as HP), then to the OUI
+  vendor. The OUI vendor is always
   exposed separately as `nicVendor` on the asset responses (derived at read from `mac_address`).
 - Model: per vendor family, tested extractors only: Xerox and Lexmark (text before the first `;` in
   sysDescr, e.g. `Xerox(R) C325 Color MFP`), Brother (`Brother NC-… , Firmware …` → the `MFC-…`/`HL-…`
@@ -337,12 +350,13 @@ snmpData, macVendor, current })`:
 ## 10. Web: one settings surface (D7)
 
 `apps/web/src/components/devices/networkDevice/settings/NetworkAssetSettingsModal.tsx` (Dialog,
-`maxWidth="lg"`, left section rail on desktop, stacked on mobile), sections saved independently with
-their own Save/Cancel and `runAction`:
+`maxWidth="4xl"`, the rail plus the SNMP credential grid needs it; left section rail on desktop, stacked
+on mobile; the modal takes no device list, the Link section's picker fetches its own site-scoped list),
+sections saved independently with their own Save/Cancel and `runAction`:
 
 | Section | Fields | Writes |
 |---|---|---|
-| Identity | display name; type (grouped select: Endpoints / Network gear / Peripherals / Other, detected type shown as anchor, "Reset to detected" when manual, consequence line "Changes the suggested SNMP template"); tags; notes | `PATCH /discovery/assets/:id` |
+| Identity | display name; type (grouped select over the 12 types `updateAssetSchema` accepts at `discovery.ts:434`; `website` and `service` exist in the enum and in `typeConfig` but the PATCH route rejects them, a pre-existing latent 400 in today's editors, so an asset already typed that way shows it selected-but-disabled with a note; groups Endpoints / Network gear / Peripherals / Other, detected type shown as anchor, "Reset to detected" when manual, consequence line "Changes the suggested SNMP template"); tags; notes | `PATCH /discovery/assets/:id` |
 | Monitoring | SNMP: enable toggle, version, community / v3 credentials (masked, blank keeps current), port, polling interval, template (suggestion pre-selected with reason), pause/resume; Network checks: list with state, add (existing `CreateMonitorForm`), remove | `PUT`/`PATCH /monitoring/assets/:id/snmp`, `DELETE /monitoring/assets/:id`, `/monitors` |
 | Link | "Same device as X (auto-detected / set manually)", Unlink (confirm), Link manually (existing `LinkManuallyControl`), suppressed-state line | `/discovery/assets/:id/link` |
 | Danger | Approve (when pending or dismissed), Dismiss (with the pending/dismissed explanation), Delete asset (typed confirmation, lists what cascades) | `PATCH …/approve`, `PATCH …/dismiss`, `DELETE /discovery/assets/:id` |
@@ -373,8 +387,8 @@ their own Save/Cancel and `runAction`:
   [Dismiss]" / "Dismissed: hidden from device lists. [Approve]".
 - **Stat strip** (`NetworkDeviceStats`): Reachability (state + source + age, "Check now" link) ·
   Last poll (age + status word, links to the Monitoring tab) · type slot (printer: lowest supply "Cyan
-  toner 12 %"; switch: "41 / 48 ports up"; UPS: "Battery 100 % · 42 min"; else: ping from the freshest
-  host observation with its age) · Open ports (existing shortcut). "Linked device" leaves the strip.
+  toner 12 %"; switch: "41 / 48 ports up"; else: ping from the freshest host observation with its age;
+  a UPS slot waits for a `ups` asset type, which the enum lacks, and is a listed follow-up) · Open ports (existing shortcut). "Linked device" leaves the strip.
 - **Overview row 1**: `HealthCard` (2/3) renders by type through a registry
   (`networkDevice/health/index.ts`): `PrinterHealth` (supplies as labelled meters from
   `prtMarkerSuppliesLevel` / `MaxCapacity` / `Description` / `ColorantValue`, negative levels shown as
@@ -391,9 +405,14 @@ their own Save/Cancel and `runAction`:
 - **Monitoring tab**: poll configuration summary with "Edit" (opens the modal's Monitoring section),
   OID table (name, base OID, mode, state, latest value, age; instance rows expandable), history charts
   (`ChartWidget`, 24 h / 7 d / 30 d, one chart per selected OID; counters as deltas), network checks
-  with their latest results, SNMP threshold alerts list.
-- **Formatting**: timestamps use the site's timezone when the asset has a site with one, else the
-  browser's; "First seen" drops seconds; every relative time has an absolute `title`.
+  with their latest results, SNMP threshold alerts list (read through a new
+  `GET /monitoring/assets/:id/thresholds`, since `/snmp/thresholds/:deviceId` is a 410 stub; the tenant
+  comes from the joined `snmp_devices` row because `snmp_alert_thresholds` has no `org_id`). `EmptyHealth`
+  renders only when no SNMP device exists or it is disabled; a device with SNMP but `no_template` keeps
+  its type card, which explains that failure.
+- **Formatting**: timestamps use the site's timezone when the asset has a site with one (`siteTimezone`
+  added to `GET /discovery/assets/:id` from the `sites` join it already makes), else the browser's; the
+  page's `formatTimestamp` drops seconds everywhere; every relative time has an absolute `title`.
 - **Accessibility**: the type select gets a real `<label>`; Save/Cancel pending state is announced
   through the existing live region; the stat-strip buttons move focus to their target; tabpanels use
   `aria-labelledby`; empty values render `—` with `aria-label="unknown"`.
@@ -402,12 +421,13 @@ their own Save/Cancel and `runAction`:
 
 | Route | Change |
 |---|---|
-| `GET /discovery/assets/:id` | + `reachability`, `nicVendor`, `probe`; `model` masked when OID-shaped |
+| `GET /discovery/assets/:id` | + `reachability`, `nicVendor`, `probe`, `siteTimezone`; `model` masked when OID-shaped |
 | `GET /discovery/assets` and `GET /devices/network` | + `reachability`; `status` derived from it |
 | `POST /discovery/assets/:id/probe` | new (§5) |
 | `GET /monitoring/assets`, `/assets/:id` | + `reachability`, `collection` (§6.2) |
 | `GET /monitoring/assets/:id/metrics` | new (§6.3) |
 | `GET /monitoring/templates/suggest` | new (§8) |
+| `GET /monitoring/assets/:id/thresholds` | new, read-only (§11, W05) |
 | `PUT /monitoring/assets/:id/snmp` | applies suggestion when `templateId` omitted; echoes `templateSuggestion` |
 | AI tools that read asset online state (`services/aiToolsNetwork.ts`, `services/aiToolsMonitoring.ts`; the plan enumerates the exact tools) | report `reachability` with source and age, never a bare online flag |
 
