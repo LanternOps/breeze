@@ -3,6 +3,7 @@
 package networkcontext
 
 import (
+	"context"
 	"encoding/binary"
 	"syscall"
 	"testing"
@@ -53,5 +54,29 @@ func TestResolvedPerLinkDomains(t *testing.T) {
 	rows, e := parseResolvedDNS([]any{[]any{float64(2), float64(2), []any{float64(192), float64(0), float64(2), float64(53)}}}, []any{[]any{float64(2), "vpn.example.test", true}})
 	if e != nil || len(rows) != 1 || !rows[0].Domains[0].RouteOnly || *rows[0].InterfaceKey != "linux-ifindex:2" {
 		t.Fatal(rows, e)
+	}
+}
+
+func TestLinuxRuleHeaderSelectorsArePartial(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		tos   byte
+		flags uint32
+	}{{"tos", 8, 0}, {"invert", 0, 2}} {
+		t.Run(test.name, func(t *testing.T) {
+			h := make([]byte, 12)
+			h[0] = syscall.AF_INET
+			h[3] = test.tos
+			h[4] = 254
+			h[7] = 1
+			binary.NativeEndian.PutUint32(h[8:], test.flags)
+			r := LinuxReader{Dump: func(context.Context, uint16) ([]syscall.NetlinkMessage, error) {
+				return []syscall.NetlinkMessage{{Header: syscall.NlMsghdr{Type: syscall.RTM_NEWRULE}, Data: h}}, nil
+			}}
+			got, err := r.Rules(context.Background(), Context{})
+			if err != nil || len(got.Rows) != 1 || got.Rows[0].SelectorCoverage != "partial" || len(got.Rows[0].UnsupportedSelectorKinds) == 0 {
+				t.Fatal(got, err)
+			}
+		})
 	}
 }

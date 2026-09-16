@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,5 +58,24 @@ func TestNetworkContextFreshlyIssuedEpochStartsWithoutReset(t *testing.T) {
 	r, reset := m.attach(time.Now(), nil)
 	if r != nil || reset != nil {
 		t.Fatal("disabled collector transmitted")
+	}
+}
+
+func TestNetworkContextInvalidIdentityRecovers(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"producerEpoch":"old"}`} {
+		t.Run(raw, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state")
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			m, err := newNetworkContextManager(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.configure(networkContextConfig{AcceptedVersions: []int{1}, ProducerEpoch: "fresh", SourceIdentity: "source", ExpectedIntervalSeconds: 300, EpochFreshlyIssued: true})
+			if err != nil || !m.enabled {
+				t.Fatal(err)
+			}
+		})
 	}
 }

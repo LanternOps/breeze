@@ -360,6 +360,15 @@ func (r *LinuxReader) Rules(ctx context.Context, scope Context) (Section[RuleRow
 			action = "other"
 		}
 		row := RuleRow{Priority: priority, TableKey: ptr(strconv.FormatUint(uint64(table), 10)), Action: action, Selectors: []RuleSelector{}, SelectorCoverage: "complete"}
+		// Header selectors change rule semantics even without attributes.
+		if h[3] != 0 {
+			row.SelectorCoverage = "partial"
+			row.UnsupportedSelectorKinds = append(row.UnsupportedSelectorKinds, "tos")
+		}
+		if flags := binary.NativeEndian.Uint32(h[8:12]); flags != 0 {
+			row.SelectorCoverage = "partial"
+			row.UnsupportedSelectorKinds = append(row.UnsupportedSelectorKinds, fmt.Sprintf("rule_flags_%d", flags))
+		}
 		for kind, value := range attrs {
 			switch kind {
 			case 1, 2:

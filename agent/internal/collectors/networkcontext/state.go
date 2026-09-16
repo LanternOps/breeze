@@ -62,7 +62,8 @@ func OpenState(path string) (*State, error) {
 		return s, fmt.Errorf("producer state: %w", ErrMalformed)
 	}
 	if !validKey(s.data.ProducerEpoch) || !validKey(s.data.SourceIdentity) {
-		return nil, ErrEpochRequired
+		s.data = ProducerState{}
+		return s, ErrEpochRequired
 	}
 	return s, nil
 }
