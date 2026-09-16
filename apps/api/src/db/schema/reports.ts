@@ -36,7 +36,11 @@ export const reportTypeEnum = pgEnum('report_type', [
   'ai_fleet_design',
   // Hardware Lifecycle report: device replacement plan from purchase +
   // warranty dates (ported from the LanternOps portal PDF).
-  'hardware_lifecycle'
+  'hardware_lifecycle',
+  // Endpoint Management Review (#5784 W03): service-plan evidence over the
+  // #5327 M365 Intune sync tables — enrolment coverage, compliance breakdown,
+  // stale enrolments and licence seats. Generated on demand; zero new tables.
+  'endpoint_management_review'
 ]);
 
 export const reportScheduleEnum = pgEnum('report_schedule', [

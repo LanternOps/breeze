@@ -47,7 +47,12 @@ export type ReportType =
   | 'ai_fleet_design'
   // Hardware Lifecycle: generated on demand from devices/manual assets +
   // warranty; see services/hardwareLifecycleReport.ts.
-  | 'hardware_lifecycle';
+  | 'hardware_lifecycle'
+  // #5784 W03. Service-plan evidence: Intune enrolment, compliance and licence
+  // posture from the #5327 sync tables, with the freshness of each domain
+  // printed. Current inventory plus rollup trend only — entity-level history is
+  // not reconstructible (see services/endpointManagementReport.ts).
+  | 'endpoint_management_review';
 
 /**
  * Thrown by every generation entry point for a `ReportType` whose artifact is
@@ -826,7 +831,7 @@ async function dispatchReportGeneration(
   orgId: string,
   config: Record<string, unknown>,
   authority: ReportGenerationAuthority,
-  _evidence?: EvidenceRunContext,
+  evidence?: EvidenceRunContext,
 ): Promise<ReportResult> {
   if (authority?.principalKind === 'system' && !isManagedEvidenceType(type)) {
     throw new UnexecutableReportScopeError(
@@ -888,6 +893,12 @@ async function dispatchReportGeneration(
     case 'hardware_lifecycle': {
       const { generateHardwareLifecycleReport } = await import('./hardwareLifecycleReport');
       return generateHardwareLifecycleReport(orgId, config, requestAuthority());
+    }
+    case 'endpoint_management_review': {
+      // `await import` keeps a heavy generator off the hot path and avoids the
+      // module cycle back to `assertReportExecutionPreflight`.
+      const { generateEndpointManagementReport } = await import('./endpointManagementReport');
+      return generateEndpointManagementReport(orgId, config, authority, evidence);
     }
     default: {
       const exhaustive: never = type;
@@ -956,6 +967,9 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
+    // #5784 W03 — generated on demand, so a restricted-empty authority gets the
+    // zero-safe empty shape, NOT a stored-artifact refusal.
+    case 'endpoint_management_review':
       return emptyRowsReport();
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before

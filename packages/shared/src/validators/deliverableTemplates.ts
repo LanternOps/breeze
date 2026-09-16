@@ -20,7 +20,10 @@ export const templateOwnerScopeSchema = z.enum(['organization', 'partner']);
  * W03 'endpoint_management_review', W04 'vulnerability_management' and W06
  * 'identity_access_review', each alongside its own enum migration.
  */
-export const MANAGED_EVIDENCE_REPORT_TYPES = [] as const satisfies readonly string[];
+export const MANAGED_EVIDENCE_REPORT_TYPES = [
+  // #5784 W03 — Intune endpoint management review over the #5327 sync tables.
+  'endpoint_management_review',
+] as const satisfies readonly string[];
 export type ManagedEvidenceReportType = (typeof MANAGED_EVIDENCE_REPORT_TYPES)[number];
 
 // Not `z.enum`: an empty tuple is not a valid enum, and this shape is correct
