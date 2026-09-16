@@ -956,7 +956,8 @@
         "fallbackTitle": "Monitör",
         "fields": {
           "interval": "Aralık (lar)",
-          "timeout": "Zaman Aşımı (s)"
+          "timeout": "Zaman Aşımı (s)",
+          "target": "Hedef URL"
         },
         "labels": {
           "lastChecked": "Son kontrol: {{time}}",
@@ -984,6 +985,20 @@
           "httpCheck": "HTTP Kontrolü",
           "icmpPing": "ICMP Ping'i",
           "tcpPort": "TCP Bağlantı Noktası"
+        },
+        "targetResetNote": "URL değiştirildiğinde TLS gözlemi sıfırlanır.",
+        "saved": "İzleyici güncellendi",
+        "certificate": {
+          "title": "Sertifika",
+          "issuer": "Veren kuruluş",
+          "expires": "Bitiş tarihi",
+          "observedHost": "Gözlemlenen ana makine",
+          "state": "Durum",
+          "states": {
+            "observed": "Gözlemlendi",
+            "handshakeFailed": "TLS el sıkışması başarısız",
+            "notTls": "TLS yok"
+          }
         }
       },
       "NetworkMonitorList": {

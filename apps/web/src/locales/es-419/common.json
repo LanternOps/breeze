@@ -956,7 +956,8 @@
         "fallbackTitle": "Monitor",
         "fields": {
           "interval": "Intervalo(s)",
-          "timeout": "Tiempos de espera"
+          "timeout": "Tiempos de espera",
+          "target": "URL de destino"
         },
         "labels": {
           "lastChecked": "Última comprobación: {{time}}",
@@ -984,6 +985,20 @@
           "httpCheck": "HTTP Comprobar",
           "icmpPing": "ICMP Ping",
           "tcpPort": "Puerto TCP"
+        },
+        "targetResetNote": "Cambiar la URL restablece la observación TLS.",
+        "saved": "Monitor actualizado",
+        "certificate": {
+          "title": "Certificado",
+          "issuer": "Emisor",
+          "expires": "Vence",
+          "observedHost": "Host observado",
+          "state": "Estado",
+          "states": {
+            "observed": "Observado",
+            "handshakeFailed": "Falló la negociación TLS",
+            "notTls": "Sin TLS"
+          }
         }
       },
       "NetworkMonitorList": {

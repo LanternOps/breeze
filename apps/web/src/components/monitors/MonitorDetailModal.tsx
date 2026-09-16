@@ -10,6 +10,8 @@ import {
   Trash2
 } from 'lucide-react';
 import { Dialog } from '../shared/Dialog';
+import { ActionError, runAction } from '../../lib/runAction';
+import { formatDate } from '../../lib/dateTimeFormat';
 import { fetchWithAuth } from '../../stores/auth';
 import { useTranslation } from 'react-i18next';
 
@@ -19,6 +21,10 @@ type MonitorDetail = {
   monitorType: string;
   target: string;
   config: Record<string, unknown>;
+  tlsState: string | null;
+  tlsIssuer: string | null;
+  tlsNotAfter: string | null;
+  tlsObservedHost: string | null;
   pollingInterval: number;
   timeout: number;
   isActive: boolean;
@@ -53,6 +59,12 @@ const statusConfig: Record<string, { icon: typeof CheckCircle; color: string; la
   offline: { icon: XCircle, color: 'text-destructive bg-destructive/15 border-destructive/30', labelKey: 'common:states.offline' },
   degraded: { icon: AlertTriangle, color: 'text-warning bg-warning/15 border-warning/30', labelKey: 'longTail.monitors.MonitorDetailModal.status.degraded' },
   unknown: { icon: HelpCircle, color: 'text-muted-foreground bg-muted border-muted', labelKey: 'common:states.unknown' }
+};
+
+const tlsStateLabelKeys: Record<string, string> = {
+  observed: 'longTail.monitors.MonitorDetailModal.certificate.states.observed',
+  handshake_failed: 'longTail.monitors.MonitorDetailModal.certificate.states.handshakeFailed',
+  not_tls: 'longTail.monitors.MonitorDetailModal.certificate.states.notTls'
 };
 
 const typeLabelKeys: Record<string, string> = {
@@ -92,6 +104,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
   const [actionLoading, setActionLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
+  const [editTarget, setEditTarget] = useState('');
   const [editInterval, setEditInterval] = useState(60);
   const [editTimeout, setEditTimeout] = useState(5);
   const [editActive, setEditActive] = useState(true);
@@ -107,6 +120,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
       const m = data.data;
       setMonitor(m);
       setEditName(m.name);
+      setEditTarget(m.target);
       setEditInterval(m.pollingInterval);
       setEditTimeout(m.timeout);
       setEditActive(m.isActive);
@@ -138,20 +152,27 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
     setSaving(true);
     setError(undefined);
     try {
-      const res = await fetchWithAuth(`/monitors/${monitorId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          name: editName,
-          pollingInterval: editInterval,
-          timeout: editTimeout,
-          isActive: editActive
-        })
+      await runAction({
+        request: () => fetchWithAuth(`/monitors/${monitorId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: editName,
+            pollingInterval: editInterval,
+            timeout: editTimeout,
+            isActive: editActive,
+            ...(monitor?.monitorType === 'http_check' && editTarget !== monitor.target
+              ? { target: editTarget }
+              : {})
+          })
+        }),
+        errorFallback: t('longTail.monitors.MonitorDetailModal.errors.updateMonitor'),
+        successMessage: t('longTail.monitors.MonitorDetailModal.saved')
       });
-      if (!res.ok) throw new Error(t('longTail.monitors.MonitorDetailModal.errors.updateMonitor'));
       setEditing(false);
       await fetchDetail();
       onUpdated();
     } catch (err) {
+      if (err instanceof ActionError && err.status === 401) return;
       setError(err instanceof Error ? err.message : t('longTail.monitors.MonitorDetailModal.errors.generic'));
     } finally {
       setSaving(false);
@@ -228,6 +249,30 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
           )}
         </div>
 
+        {monitor.tlsState != null && (
+          <section data-testid="monitor-check-certificate" aria-labelledby="monitor-certificate-title" className="mt-4 rounded-md border p-4">
+            <h3 id="monitor-certificate-title" className="text-sm font-semibold mb-2">{t('longTail.monitors.MonitorDetailModal.certificate.title')}</h3>
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.certificate.issuer')}</dt>
+                <dd className="break-words">{monitor.tlsIssuer ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.certificate.expires')}</dt>
+                <dd>{formatDate(monitor.tlsNotAfter, { year: 'numeric', month: 'short', day: 'numeric', fallback: '—' })}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.certificate.observedHost')}</dt>
+                <dd className="break-words">{monitor.tlsObservedHost ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.certificate.state')}</dt>
+                <dd>{tlsStateLabelKeys[monitor.tlsState] ? t(/* i18n-dynamic */ tlsStateLabelKeys[monitor.tlsState]) : monitor.tlsState}</dd>
+              </div>
+            </dl>
+          </section>
+        )}
+
         {/* Actions */}
         <div className="mt-4 flex items-center gap-2">
           <button
@@ -241,6 +286,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
           </button>
           <button
             type="button"
+            data-testid="monitor-check-edit"
             onClick={() => setEditing(!editing)}
             className="flex h-8 items-center rounded-md border px-3 text-sm hover:bg-muted"
           >
@@ -250,7 +296,24 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
 
         {/* Edit Form */}
         {editing && (
-          <div className="mt-4 rounded-md border bg-muted/20 p-4 space-y-3">
+          <form onSubmit={(event) => { event.preventDefault(); void handleSave(); }} className="mt-4 rounded-md border bg-muted/20 p-4 space-y-3">
+            {monitor.monitorType === 'http_check' && (
+              <div>
+                <label htmlFor="monitor-check-target" className="block text-xs font-medium text-muted-foreground mb-1">{t('longTail.monitors.MonitorDetailModal.fields.target')}</label>
+                <input
+                  id="monitor-check-target"
+                  data-testid="monitor-check-target"
+                  type="url"
+                  required
+                  maxLength={500}
+                  value={editTarget}
+                  onChange={(event) => setEditTarget(event.target.value)}
+                  aria-describedby="monitor-check-target-note"
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm focus:outline-hidden focus:ring-2 focus:ring-ring"
+                />
+                <p id="monitor-check-target-note" data-testid="monitor-check-target-note" className="mt-1 text-xs text-muted-foreground">{t('longTail.monitors.MonitorDetailModal.targetResetNote')}</p>
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">{t('common:labels.name')}</label>
@@ -295,8 +358,8 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
             </label>
             <div className="flex gap-2">
               <button
-                type="button"
-                onClick={handleSave}
+                type="submit"
+                data-testid="monitor-check-save"
                 disabled={saving}
                 className="h-8 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-70 flex items-center gap-1"
               >
@@ -304,7 +367,7 @@ export default function MonitorDetailModal({ monitorId, onClose, onDeleted, onUp
                 {t('common:actions.save')}
               </button>
             </div>
-          </div>
+          </form>
         )}
 
         {/* Recent Results */}
