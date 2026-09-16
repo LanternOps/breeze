@@ -203,6 +203,7 @@ export function OverflowTabs({ tabs, activeTab, onTabChange, testIdPrefix }: {
               // The closed menu unmounts its items. Its trigger displays the
               // active tab's label, so it owns that label id until reopened.
               id={!moreOpen && activeOverflowTab ? overflowTabId(activeOverflowTab.id, testIdPrefix) : undefined}
+              data-testid={testIdPrefix ? `${testIdPrefix}more` : undefined}
               aria-haspopup="menu"
               aria-expanded={moreOpen}
               onClick={() => setMoreOpen(!moreOpen)}
