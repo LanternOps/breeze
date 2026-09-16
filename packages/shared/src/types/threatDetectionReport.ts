@@ -39,6 +39,15 @@ export type ThreatCoverage = {
   withheld?: number;
   /** One human sentence naming every gap above. Rendered verbatim. */
   note?: string;
+  /**
+   * Whether the run was configured to look for detections carried in from
+   * earlier periods. `false` means the section was deliberately switched off,
+   * which is NOT the same as `incidents.carriedIn: null` meaning "we could not
+   * measure it" — without this the two are indistinguishable and a renderer
+   * shows a config choice as a data gap. Absent on a legacy snapshot, which
+   * renderers must treat as "included" (the default).
+   */
+  carriedInIncluded?: boolean;
 };
 
 export type ThreatIncidentRow = {

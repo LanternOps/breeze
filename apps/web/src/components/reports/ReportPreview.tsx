@@ -272,7 +272,7 @@ export default function ReportPreview({
         ];
         return (
           <div className="space-y-4" data-testid="lifecycle-summary">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
               {tiles.map((tile) => (
                 <div key={tile.key} className="rounded-lg border bg-card p-4">
                   <p className="text-sm text-muted-foreground">{t(/* i18n-dynamic */ `reports.reportPreview.lifecycle.${tile.key}`)}</p>
@@ -300,12 +300,12 @@ export default function ReportPreview({
           below in the same way the lifecycle branch suppresses them. */}
       {data.type === 'threat_detection_review' && data.data.summary && previewMode === 'table' && (() => {
         const s = data.data.summary as {
-          coverage?: { note?: string; coveredFrom?: string | null; coveredTo?: string | null; sourceStatus?: string };
+          coverage?: { note?: string; coveredFrom?: string | null; coveredTo?: string | null; sourceStatus?: string; carriedInIncluded?: boolean };
           incidents?: {
             opened?: number | null; resolved?: number | null;
             meanResolveHours?: number | null; carriedIn?: number | null;
           };
-          agentCoverage?: { huntressAgents?: number | null; devicesWithoutAgent?: number | null };
+          agentCoverage?: { huntressAgents?: number | null; breezeDevices?: number | null; devicesWithoutAgent?: number | null };
           dataGaps?: string[];
         };
         const na = t('reports.reportPreview.threatDetection.notMeasured');
@@ -313,8 +313,18 @@ export default function ReportPreview({
         const tiles: { key: string; value: string; unmeasured: boolean }[] = [
           { key: 'opened', value: show(s.incidents?.opened), unmeasured: s.incidents?.opened == null },
           { key: 'resolved', value: show(s.incidents?.resolved), unmeasured: s.incidents?.resolved == null },
-          { key: 'carriedIn', value: show(s.incidents?.carriedIn), unmeasured: s.incidents?.carriedIn == null },
+          // A carried-in section the report was set NOT to look at is a config
+          // choice, not a measurement gap — showing it as N/A beside genuinely
+          // unmeasured values would make the two indistinguishable. Drop the
+          // tile instead. (Absent flag = legacy snapshot = included.)
+          ...(s.coverage?.carriedInIncluded === false
+            ? []
+            : [{ key: 'carriedIn', value: show(s.incidents?.carriedIn), unmeasured: s.incidents?.carriedIn == null }]),
           { key: 'agents', value: show(s.agentCoverage?.huntressAgents), unmeasured: s.agentCoverage?.huntressAgents == null },
+          // Breeze's OWN fleet count, which is measured even when the detection
+          // source was never connected — the same tile the PDF prints, so the
+          // preview and the delivered artifact cannot disagree.
+          { key: 'breezeDevices', value: show(s.agentCoverage?.breezeDevices), unmeasured: s.agentCoverage?.breezeDevices == null },
           { key: 'devicesWithoutAgent', value: show(s.agentCoverage?.devicesWithoutAgent), unmeasured: s.agentCoverage?.devicesWithoutAgent == null },
         ];
         const gaps = Array.isArray(s.dataGaps) ? s.dataGaps.filter(Boolean) : [];

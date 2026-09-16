@@ -2025,6 +2025,12 @@ function buildReportPdfWithPalette(rows: unknown[], opts: BuildOpts): jsPDF {
   } else if (
     opts.reportType === 'threat_detection_review'
     && opts.summary
+    // `!= null` FIRST: `typeof null === 'object'`, so a summary carrying an
+    // explicit `coverage: null` would otherwise enter the arm and render the
+    // reassuring "covers the whole of this period" default — worse than
+    // falling through to the generic renderer, which at least does not claim
+    // coverage it cannot vouch for.
+    && (opts.summary as ThreatDetectionSummary).coverage != null
     && typeof (opts.summary as ThreatDetectionSummary).coverage === 'object'
   ) {
     // Self-contained chrome: the detection table paginates on its own

@@ -299,6 +299,7 @@
       },
       "threatDetection": {
         "agents": "Postes avec agent de détection",
+        "breezeDevices": "Appareils gérés par Breeze",
         "carriedIn": "Reportées, toujours ouvertes",
         "coverage": "Limites de ce rapport",
         "devicesWithoutAgent": "Appareils gérés sans agent",

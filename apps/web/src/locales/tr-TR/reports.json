@@ -299,6 +299,7 @@
       },
       "threatDetection": {
         "agents": "Tespit aracısı olan uç noktalar",
+        "breezeDevices": "Breeze'in yönettiği cihazlar",
         "carriedIn": "Devreden, hâlâ açık",
         "coverage": "Bu raporun sınırları",
         "devicesWithoutAgent": "Aracısı olmayan yönetilen cihazlar",

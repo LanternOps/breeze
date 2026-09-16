@@ -116,6 +116,46 @@ describe('buildReportPdf: threat_detection_review', () => {
     expect(text).not.toContain('do-not-render');
   });
 
+  // `typeof null === 'object'`, so an explicit `coverage: null` would sail past
+  // a bare typeof guard and land in the renderer, where the missing note prints
+  // the reassuring "covers the whole of this period" default — worse than the
+  // generic renderer, which at least claims no coverage it cannot vouch for.
+  it('does NOT enter the arm when coverage is explicitly null', () => {
+    const spy = vi.spyOn(threat, 'renderThreatDetectionReport');
+    const doc = buildReportPdf([{ a: 1 }], {
+      ...opts,
+      summary: { ...SUMMARY, coverage: null } as never,
+    });
+    expect(spy).not.toHaveBeenCalled();
+    expect(pdfText(doc)).not.toContain('covers the whole of this period');
+    spy.mockRestore();
+  });
+
+  it('says a switched-off carried-in section is a setting, not a finding', () => {
+    const text = pdfText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...SUMMARY,
+        coverage: { ...SUMMARY.coverage, carriedInIncluded: false },
+        incidents: { ...SUMMARY.incidents!, carriedIn: null },
+      },
+    }));
+    expect(text).toContain('setting, not a finding');
+  });
+
+  it('says an unmeasurable carried-in section could not be measured', () => {
+    const text = pdfText(buildReportPdf([], {
+      ...opts,
+      summary: {
+        ...SUMMARY,
+        coverage: { ...SUMMARY.coverage, carriedInIncluded: true },
+        incidents: { ...SUMMARY.incidents!, carriedIn: null },
+      },
+    }));
+    expect(text).toContain('could not be measured');
+    expect(text).not.toContain('setting, not a finding');
+  });
+
   it('falls through to the generic renderer when the summary is absent', () => {
     const spy = vi.spyOn(threat, 'renderThreatDetectionReport');
     buildReportPdf([{ a: 1 }], { ...opts });

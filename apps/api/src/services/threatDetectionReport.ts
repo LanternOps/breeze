@@ -38,7 +38,7 @@
  * `excludedOpen` in the tenant export policy for exactly this reason. Section 3
  * shows Huntress's normalized `recommendation` text instead.
  */
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, min } from 'drizzle-orm';
 import { db } from '../db';
 import {
   devices,
@@ -227,17 +227,29 @@ export async function generateThreatDetectionReport(
 
   // A restricted authority with no sites can see nothing. Empty-but-shaped
   // rather than a throw: the reader has a legitimate, empty scope.
+  //
+  // `dispatchReportGeneration` short-circuits this case into `zeroSafeReport`
+  // before the generator is reached, so this is defensive today — but it must
+  // not lie if a later path calls the generator directly. The reason the result
+  // is empty is the READER'S SCOPE, not source availability, so the note says
+  // that rather than reusing `coverageGapLine`'s "Huntress is not connected"
+  // sentence, which would blame the wrong thing.
   if (restrictedScope && restrictedScope.siteIds.length === 0) {
+    const scopeNote = 'This report covers no sites, because the account viewing it has access to none. It is not a statement about threat detection.';
+    const scoped = emptySummary(orgId, null, generatedAt, {
+      ...baseCoverage,
+      unattributableExcluded: 0,
+      withheld: 0,
+    }, 0);
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgId, null, generatedAt, {
-        ...baseCoverage,
-        sourceStatus: 'not_connected',
-        unattributableExcluded: 0,
-        withheld: 0,
-      }, 0) as unknown as Record<string, unknown>,
+      summary: {
+        ...scoped,
+        coverage: { ...scoped.coverage, note: scopeNote },
+        dataGaps: [scopeNote],
+      } as unknown as Record<string, unknown>,
     };
   }
 
@@ -251,6 +263,19 @@ export async function generateThreatDetectionReport(
     .from(organizations)
     .where(eq(organizations.id, orgId))
     .limit(1);
+  // A missing org is a DATA-INTEGRITY failure, not a configuration state. Left
+  // alone it would fall through to the partner lookup below with an undefined
+  // partnerId, short-circuit to `not_connected`, and tell the reader "Huntress
+  // is not connected for this partner" — a sentence that blames the customer's
+  // setup for a deleted tenant and is indistinguishable from the routine case.
+  // It is surfaced to operators here and labelled honestly in the artifact
+  // below rather than thrown, because the generator must still return the
+  // empty-but-shaped result its callers (and the per-type site-scope contract
+  // test) expect.
+  const orgMissing = !orgRow;
+  if (orgMissing) {
+    console.error('[threatDetectionReport] organization not found; reporting a data-integrity gap', { orgId });
+  }
   const orgName = orgRow?.name ?? null;
 
   // --- 1. Breeze's own fleet, site-scoped -------------------------------------
@@ -274,6 +299,9 @@ export async function generateThreatDetectionReport(
         id: huntressIntegrations.id,
         lastSyncAt: huntressIntegrations.lastSyncAt,
         lastSyncStatus: huntressIntegrations.lastSyncStatus,
+        // The floor on what could POSSIBLY be held. Load-bearing for an org
+        // with zero incidents — see the coveredFrom derivation below.
+        createdAt: huntressIntegrations.createdAt,
       })
       .from(huntressIntegrations)
       .where(and(
@@ -284,18 +312,28 @@ export async function generateThreatDetectionReport(
     : [];
 
   if (!integration) {
+    const gap = emptySummary(orgId, orgName, generatedAt, {
+      ...baseCoverage,
+      sourceStatus: 'not_connected',
+      lastSyncAt: null,
+      lastSyncStatus: null,
+      unattributableExcluded: 0,
+      withheld: 0,
+    }, deviceRows.length);
+    // Say which absence this is. "Huntress is not connected" is true of a
+    // customer who has not set it up; it is a lie about a tenant that no
+    // longer exists.
+    const summary = orgMissing
+      ? (() => {
+        const note = 'This organization could not be read, so nothing about its threat detection could be established. This is a fault on our side, not a finding about the period.';
+        return { ...gap, coverage: { ...gap.coverage, note }, dataGaps: [note] };
+      })()
+      : gap;
     return {
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgId, orgName, generatedAt, {
-        ...baseCoverage,
-        sourceStatus: 'not_connected',
-        lastSyncAt: null,
-        lastSyncStatus: null,
-        unattributableExcluded: 0,
-        withheld: 0,
-      }, deviceRows.length) as unknown as Record<string, unknown>,
+      summary: summary as unknown as Record<string, unknown>,
     };
   }
 
@@ -353,6 +391,9 @@ export async function generateThreatDetectionReport(
     lte(huntressIncidents.reportedAt, window.end),
     ...sitePredicates(filter),
   ];
+  // Redundant with the LEFT JOIN + site predicate below (which already drops
+  // NULL-device rows), but stated explicitly so the intent survives someone
+  // later changing the join or removing the site filter.
   if (restrictedScope) windowConditions.push(isNotNull(huntressIncidents.deviceId));
   const windowRows = (await db
     .select({
@@ -367,15 +408,37 @@ export async function generateThreatDetectionReport(
     .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
     .where(and(...windowConditions))) as WindowIncident[];
 
-  // Under a restricted authority the query above already excluded NULL-device
-  // incidents; count them separately so the exclusion is DISCLOSED rather than
-  // silent. Under an unrestricted authority nothing is excluded.
-  const attributable = restrictedScope
-    ? windowRows.filter((r) => r.deviceId !== null)
-    : windowRows;
-  const unattributableExcluded = restrictedScope
-    ? windowRows.filter((r) => r.deviceId === null).length
-    : 0;
+  // Every row that survived the query above is attributable by construction:
+  // the site predicate is evaluated against a LEFT JOIN, so an incident with
+  // `device_id IS NULL` yields `devices.site_id = NULL`, `NULL IN (...)` is
+  // UNKNOWN, and Postgres drops it in the WHERE.
+  const attributable = windowRows;
+
+  // Which is exactly why the excluded count CANNOT be recovered from
+  // `windowRows`: the rows it is meant to count were removed by the database
+  // before any of this ran, so filtering the result set would report 0 forever
+  // and the disclosure sentence would never print — the silent drop this field
+  // exists to prevent. Count them with their own query that does not join
+  // devices at all.
+  //
+  // It applies whenever site predicates are in play, not only under a
+  // restricted authority: an unrestricted run that narrowed by `cfg.sites`
+  // drops unattributable incidents the same way and owes the reader the same
+  // disclosure.
+  const siteScoped = sitePredicates(filter).length > 0;
+  let unattributableExcluded = 0;
+  if (siteScoped) {
+    const [unattributableRow] = await db
+      .select({ total: count() })
+      .from(huntressIncidents)
+      .where(and(
+        eq(huntressIncidents.orgId, orgId),
+        gte(huntressIncidents.reportedAt, window.start),
+        lte(huntressIncidents.reportedAt, window.end),
+        isNull(huntressIncidents.deviceId),
+      ));
+    unattributableExcluded = Number(unattributableRow?.total ?? 0);
+  }
 
   const resolvedStatuses = new Set<string>(HUNTRESS_RESOLVED_STATUSES);
   const resolvedCount = attributable.filter(
@@ -462,15 +525,29 @@ export async function generateThreatDetectionReport(
     .leftJoin(devices, eq(huntressIncidents.deviceId, devices.id))
     .where(and(...earliestConditions));
 
+  // `MIN(reported_at)` is the earliest thing we HOLD — but an org with no
+  // incidents at all has no minimum, and a null there would skip the
+  // shortfall check entirely and print "0 detections" over a period that
+  // mostly predates the integration. That is the precise lie this report type
+  // exists to prevent, and it is the most likely org to hit it: the quiet one.
+  //
+  // So when nothing is held, fall back to when collection could have started
+  // at the earliest — the integration row's own `created_at`. A held incident
+  // older than that is still honoured (the first sync reaches back a day), so
+  // the held value wins whenever there is one.
+  const earliestHeld = isoOrNull(earliestRow?.earliest as Date | string | null | undefined);
+  const collectionFloor = isoOrNull(integration.createdAt) ?? lastSyncAt;
+
   const coverage: ThreatCoverage = {
     ...baseCoverage,
-    coveredFrom: isoOrNull(earliestRow?.earliest as Date | string | null | undefined),
+    coveredFrom: earliestHeld ?? collectionFloor,
     coveredTo: lastSyncAt,
     sourceStatus,
     lastSyncAt,
     lastSyncStatus: integration.lastSyncStatus ?? null,
     unattributableExcluded,
     withheld,
+    carriedInIncluded: cfg.includeCarriedIn,
   };
   coverage.note = coverageGapLine(coverage);
 

@@ -299,6 +299,7 @@
       },
       "threatDetection": {
         "agents": "Endpoints com agente de detecção",
+        "breezeDevices": "Dispositivos gerenciados pelo Breeze",
         "carriedIn": "Herdadas, ainda abertas",
         "coverage": "Limites deste relatório",
         "devicesWithoutAgent": "Dispositivos gerenciados sem agente",

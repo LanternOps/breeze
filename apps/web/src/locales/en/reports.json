@@ -299,6 +299,7 @@
       },
       "threatDetection": {
         "agents": "Endpoints with a detection agent",
+        "breezeDevices": "Devices Breeze manages",
         "carriedIn": "Carried in, still open",
         "coverage": "Limits of this report",
         "devicesWithoutAgent": "Managed devices with no agent",

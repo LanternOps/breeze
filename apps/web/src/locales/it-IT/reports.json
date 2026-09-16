@@ -299,6 +299,7 @@
       },
       "threatDetection": {
         "agents": "Endpoint con agente di rilevamento",
+        "breezeDevices": "Dispositivi gestiti da Breeze",
         "carriedIn": "Riportati, ancora aperti",
         "coverage": "Limiti di questo rapporto",
         "devicesWithoutAgent": "Dispositivi gestiti senza agente",

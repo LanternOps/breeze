@@ -268,6 +268,11 @@ export function renderThreatDetectionReport(
   }
 
   // --- Still open from earlier periods -----------------------------------------
+  // Three distinct states, and the reader is told which: a measured count, a
+  // section the report was configured not to look at, and a genuine inability
+  // to measure. Printing nothing for the last two would let "we did not look"
+  // and "there are none" read identically.
+  const carriedInIncluded = coverage?.carriedInIncluded !== false;
   if (incidents?.carriedIn !== null && incidents?.carriedIn !== undefined) {
     y = drawProse(
       doc,
@@ -276,6 +281,24 @@ export function renderThreatDetectionReport(
       y,
       8.4,
       C.muted,
+    );
+  } else if (!carriedInIncluded) {
+    y = drawProse(
+      doc,
+      chrome,
+      'This report was set not to look for detections that opened before the period, so none are listed above. That is a setting, not a finding.',
+      y,
+      8.4,
+      C.muted,
+    );
+  } else {
+    y = drawProse(
+      doc,
+      chrome,
+      'Detections carried in from earlier periods could not be measured, so none are listed above.',
+      y,
+      8.4,
+      C.danger,
     );
   }
 

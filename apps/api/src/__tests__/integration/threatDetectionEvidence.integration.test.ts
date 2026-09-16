@@ -39,6 +39,8 @@ import { runDeliverableSweep } from '../../jobs/deliverableWorker';
 import { applyTemplateSet, createTemplateSet, type TemplateActor } from '../../services/deliverableTemplateService';
 import { deliverOccurrence } from '../../services/serviceDeliverableService';
 import { listPortalRuns, renderRunPdf } from '../../services/portal/reportsSelfService';
+import { generateThreatDetectionReport } from '../../services/threatDetectionReport';
+import { siteScopeFingerprint } from '../../services/siteScope';
 import type { ThreatDetectionSummary } from '@breeze/shared';
 
 // publishEvent writes to a Redis stream — spy on it (deliverableSweep precedent).
@@ -251,6 +253,56 @@ describe('threat detection review evidence on real Postgres (#5784 W02)', () => 
     expect(summary.coverage?.note).toBe('');
     expect(summary.dataGaps).toEqual([]);
     expect(summary.coverage?.sourceStatus).toBe('ok');
+  });
+
+  // The bug this case exists for: the site predicate is evaluated against a
+  // LEFT JOIN, so an incident with `device_id IS NULL` yields
+  // `devices.site_id = NULL`, `NULL IN (...)` is UNKNOWN, and POSTGRES drops
+  // the row before Node ever sees it. Counting the excluded rows by filtering
+  // the query's own result set therefore reports 0 forever and the disclosure
+  // never prints — a silent drop, which is the one thing this report type may
+  // not do. Only a real database shows this; the chainable db mock cannot.
+  runDb('5. an unattributable incident is excluded under a site scope AND the count is disclosed', async () => {
+    const t = await seedTenant();
+    const integrationId = await seedIntegration(t.partnerId, new Date('2026-10-31T05:00:00Z'));
+    const deviceId = await seedDevice(t.orgId, 'host-5');
+    const [device] = await getTestDb().select({ siteId: devices.siteId })
+      .from(devices).where(eq(devices.id, deviceId));
+    const siteId = device!.siteId as string;
+
+    await seedIncident(t.orgId, integrationId, deviceId);
+    // Two incidents Huntress could not attribute to a device.
+    await seedIncident(t.orgId, integrationId, null);
+    await seedIncident(t.orgId, integrationId, null);
+
+    const scope = { version: 1 as const, kind: 'restricted' as const, orgId: t.orgId, siteIds: [siteId] };
+    const authority = {
+      principalKind: 'user' as const,
+      principalUserId: t.techId,
+      scope,
+      capturedAt: new Date('2026-10-31T05:18:00Z'),
+      fingerprint: siteScopeFingerprint(scope),
+    };
+
+    const res = await system(() => generateThreatDetectionReport(
+      t.orgId, {}, authority,
+      {
+        periodStart: '2026-10-01',
+        periodEnd: '2026-10-31',
+        generatedAt: '2026-10-31T05:18:00.000Z',
+        deliverableId: randomUUID(),
+      },
+    ));
+    const summary = res.summary as unknown as ThreatDetectionSummary;
+
+    // Only the attributable incident is counted and listed...
+    expect(summary.incidents?.opened).toBe(1);
+    expect(res.rowCount).toBe(1);
+    // ...and the two the database silently dropped are DISCLOSED, in the
+    // artifact's own words, not merely absent.
+    expect(summary.coverage?.unattributableExcluded).toBe(2);
+    expect(summary.dataGaps?.join(' ')).toMatch(/could not be attributed/i);
+    expect(summary.dataGaps?.join(' ')).toMatch(/2/);
   });
 
   runDb('4. OD-12: invisible until delivered, then rendered through the threat detection PDF arm', async () => {

@@ -87,6 +87,26 @@ describe('coverageGapLine', () => {
     expect(line).not.toMatch(/\bno incidents\b/i);
   });
 
+  it('names the last sync when the source is stale, without nulling the period', () => {
+    const line = coverageGapLine({
+      periodStart: '2026-09-01', periodEnd: '2026-09-30',
+      coveredFrom: '2026-09-01', coveredTo: '2026-09-20',
+      sourceStatus: 'stale', lastSyncAt: '2026-09-20T05:00:00.000Z',
+    });
+    expect(line).toMatch(/2026-09-20/);
+    expect(line).toMatch(/last synced/i);
+    // A stale source still reports what it holds — the shortfall at the END of
+    // the window is named too, which the not_connected branch never reaches.
+    expect(line).toMatch(/does not cover/i);
+    expect(line).not.toMatch(/\bno incidents\b/i);
+  });
+
+  it('still names an unknown last sync rather than printing an empty gap', () => {
+    const line = coverageGapLine({ sourceStatus: 'stale' });
+    expect(line).toMatch(/last synced/i);
+    expect(line).toMatch(/unknown/i);
+  });
+
   it('discloses withheld and unattributable counts', () => {
     const line = coverageGapLine({
       periodStart: '2026-09-01', periodEnd: '2026-09-30',

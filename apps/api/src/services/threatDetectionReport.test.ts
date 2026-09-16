@@ -66,6 +66,7 @@ const ACTIVE_INTEGRATION = [{
   id: '44444444-4444-4444-8444-444444444444',
   lastSyncAt: new Date('2026-09-30T05:00:00.000Z'),
   lastSyncStatus: 'ok',
+  createdAt: new Date('2026-08-01T00:00:00.000Z'),
 }];
 
 const PERIOD_SEP: EvidenceRunContext = {
@@ -154,16 +155,82 @@ describe('generateThreatDetectionReport', () => {
     expect(s.dataGaps?.join(' ')).toMatch(/does not cover/i);
   });
 
-  it('excludes unattributable incidents under a restricted authority and discloses the count', async () => {
+  // Postgres drops a NULL-device incident before Node sees it: the site
+  // predicate is evaluated against a LEFT JOIN, so `devices.site_id` is NULL
+  // and `NULL IN (...)` is UNKNOWN. The window query therefore returns ONLY
+  // the attributable row — which is exactly why the excluded count must come
+  // from its own query, and why filtering the result set would report 0
+  // forever. This test models that SQL behaviour rather than assuming the
+  // dropped row arrives in JS.
+  // The likeliest org to be told a comfortable lie: a quiet one, connected
+  // mid-period, with zero incidents ever. MIN(reported_at) is NULL for it, so
+  // deriving the covered window from held rows alone would skip the shortfall
+  // check and print "0 detections" over a period that mostly predates
+  // collection. The integration's created_at is the floor that prevents it.
+  it('falls back to when collection started when the org holds no incidents at all', async () => {
+    queueSelects(
+      ORG_ROW,
+      [],
+      [{ ...ACTIVE_INTEGRATION[0]!, createdAt: new Date('2026-09-20T00:00:00.000Z') }],
+      [], [], [], [],
+      [{ earliest: null }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.incidents?.opened).toBe(0);
+    expect(s.coverage?.coveredFrom).toBe('2026-09-20T00:00:00.000Z');
+    // The load-bearing part: a zero is printed ONLY alongside the disclosure
+    // that most of the period was never observed.
+    expect(s.coverage?.note).toMatch(/does not cover/i);
+    expect(s.dataGaps?.length).toBeGreaterThan(0);
+  });
+
+  it('prefers a held incident older than the integration row over the collection floor', async () => {
+    queueSelects(
+      ORG_ROW,
+      [],
+      [{ ...ACTIVE_INTEGRATION[0]!, createdAt: new Date('2026-09-20T00:00:00.000Z') }],
+      [], [], [], [],
+      // The first sync reaches back a day, so a held row CAN predate created_at.
+      [{ earliest: new Date('2026-09-19T00:00:00.000Z') }],
+    );
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.coverage?.coveredFrom).toBe('2026-09-19T00:00:00.000Z');
+  });
+
+  it('names a missing org row as our fault rather than blaming the setup', async () => {
+    queueSelects([], [], []);
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority()));
+    expect(s.dataGaps?.join(' ')).toMatch(/could not be read/i);
+    expect(s.dataGaps?.join(' ')).toMatch(/fault on our side/i);
+    // The sentence that would blame the customer's Huntress setup for a tenant
+    // that no longer exists.
+    expect(s.dataGaps?.join(' ')).not.toMatch(/not connected for this partner/i);
+    expect(s.incidents?.opened).toBeNull();
+  });
+
+  it('records whether the carried-in section was switched off, so N/A is not ambiguous', async () => {
+    queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], []);
+    const off = summaryOf(
+      await generateThreatDetectionReport(ORG_ID, { includeCarriedIn: false }, authority(), PERIOD_SEP),
+    );
+    expect(off.coverage?.carriedInIncluded).toBe(false);
+    expect(off.incidents?.carriedIn).toBeNull();
+
+    queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], []);
+    const on = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(on.coverage?.carriedInIncluded).toBe(true);
+  });
+
+  it('discloses the unattributable count from its own query under a restricted authority', async () => {
     queueSelects(
       ORG_ROW,
       [],
       ACTIVE_INTEGRATION,
       [],
-      [
-        incidentRow({ id: 'i1', deviceId: null }),
-        incidentRow({ id: 'i2', deviceId: 'd0000000-0000-4000-8000-000000000001' }),
-      ],
+      // window metrics — the DB already excluded i1 (device_id IS NULL)
+      [incidentRow({ id: 'i2', deviceId: 'd0000000-0000-4000-8000-000000000001' })],
+      // the independent unattributable count
+      [{ total: 1 }],
       [incidentRow({ id: 'i2' })],
       [],
       [],
@@ -172,9 +239,30 @@ describe('generateThreatDetectionReport', () => {
     expect((res.rows as ThreatIncidentRow[]).map((r) => r.id)).toEqual(['i2']);
     expect(summaryOf(res).coverage?.unattributableExcluded).toBe(1);
     expect(summaryOf(res).incidents?.opened).toBe(1);
+    // The whole point of the count: the reader is TOLD something was dropped.
+    expect(summaryOf(res).dataGaps?.join(' ')).toMatch(/could not be attributed/i);
   });
 
-  it('includes unattributable incidents under an unrestricted authority', async () => {
+  it('discloses unattributable incidents for an unrestricted run narrowed by cfg.sites', async () => {
+    queueSelects(
+      ORG_ROW,
+      [],
+      ACTIVE_INTEGRATION,
+      [],
+      [incidentRow({ id: 'i2' })],
+      [{ total: 2 }],
+      [incidentRow({ id: 'i2' })],
+      [],
+      [],
+    );
+    const res = await generateThreatDetectionReport(ORG_ID, { sites: [SITE_A] }, authority());
+    expect(summaryOf(res).coverage?.unattributableExcluded).toBe(2);
+    expect(summaryOf(res).dataGaps?.join(' ')).toMatch(/could not be attributed/i);
+  });
+
+  // No site predicate at all, so nothing is dropped and no count query runs:
+  // an unattributable incident is genuinely INCLUDED, not silently excluded.
+  it('includes unattributable incidents under an unrestricted, unnarrowed authority', async () => {
     queueSelects(
       ORG_ROW,
       [],
@@ -188,20 +276,26 @@ describe('generateThreatDetectionReport', () => {
     const res = await generateThreatDetectionReport(ORG_ID, {}, authority());
     expect((res.rows as ThreatIncidentRow[]).map((r) => r.id)).toEqual(['i1', 'i2']);
     expect(summaryOf(res).coverage?.unattributableExcluded).toBe(0);
+    expect(summaryOf(res).incidents?.opened).toBe(2);
   });
 
   it('pushes a site predicate in every query branch under a restricted authority', async () => {
     queueSelects(ORG_ROW, [], ACTIVE_INTEGRATION, [], [], [], [], [], []);
     await generateThreatDetectionReport(ORG_ID, {}, authority('restricted', [SITE_A]), PERIOD_SEP);
-    // org, devices, integration, agents, window metrics, rows, carried-in, earliest
-    expect(whereCalls).toHaveLength(8);
-    // Every branch except the org and integration lookups filters by site
-    // itself — including the device count that runs before the source check.
-    const siteScopedBranches = whereCalls.filter((_, i) => i !== 0 && i !== 2);
+    // org, devices, integration, agents, window metrics, unattributable count,
+    // rows, carried-in, earliest
+    expect(whereCalls).toHaveLength(9);
+    // Every branch except the org lookup, the integration lookup and the
+    // unattributable COUNT filters by site itself — including the device count
+    // that runs before the source check. The count query is deliberately not
+    // site-scoped: it exists to count the rows the site predicate drops, so
+    // applying that predicate to it would make it report 0 forever.
+    const siteScopedBranches = whereCalls.filter((_, i) => i !== 0 && i !== 2 && i !== 5);
     expect(siteScopedBranches).toHaveLength(6);
     siteScopedBranches.forEach((call, index) => {
       expect(containsValue(call, SITE_A), `site-scoped branch ${index + 1} lost its filter`).toBe(true);
     });
+    expect(containsValue(whereCalls[5], SITE_A), 'the unattributable count must NOT be site-scoped').toBe(false);
   });
 
   it('returns an empty-but-shaped result for a restricted authority with zero sites', async () => {
@@ -274,6 +368,37 @@ describe('generateThreatDetectionReport', () => {
     );
     expect(s.incidents?.carriedIn).toBeNull();
     expect(whereCalls).toHaveLength(7);
+  });
+
+  // STALE_SYNC_MS is 48h, deliberately not 24h, so one missed nightly run does
+  // not cry wolf. These two pin both sides of that threshold, and — the part
+  // that matters — prove a stale source still reports REAL counts rather than
+  // being nulled out like not_connected/never_synced.
+  it('stays ok when the last sync is inside the 48h staleness window', async () => {
+    queueSelects(
+      ORG_ROW,
+      [],
+      [{ ...ACTIVE_INTEGRATION[0]!, lastSyncAt: new Date('2026-09-28T06:00:00.000Z') }],
+      [], [incidentRow()], [incidentRow()], [], [],
+    );
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.coverage?.sourceStatus).toBe('ok');
+  });
+
+  it('marks the source stale past 48h but still reports measured counts', async () => {
+    queueSelects(
+      ORG_ROW,
+      [],
+      [{ ...ACTIVE_INTEGRATION[0]!, lastSyncAt: new Date('2026-09-27T00:00:00.000Z') }],
+      [], [incidentRow()], [incidentRow()], [], [],
+    );
+    const s = summaryOf(await generateThreatDetectionReport(ORG_ID, {}, authority(), PERIOD_SEP));
+    expect(s.coverage?.sourceStatus).toBe('stale');
+    // NOT nulled: the data held is real, it just stops at the last sync.
+    expect(s.incidents?.opened).toBe(1);
+    expect(s.coverage?.lastSyncAt).toBe('2026-09-27T00:00:00.000Z');
+    expect(s.dataGaps?.join(' ')).toMatch(/last synced/i);
+    expect(s.dataGaps?.join(' ')).not.toMatch(/\bno incidents\b/i);
   });
 
   it('counts Huntress agent coverage against Breeze devices', async () => {
