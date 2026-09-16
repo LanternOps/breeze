@@ -2410,7 +2410,8 @@
       "pollConfiguration": "Configurazione delle interrogazioni",
       "oids": "OID",
       "networkChecks": "Controlli di rete",
-      "thresholds": "Avvisi di soglia SNMP"
+      "thresholds": "Avvisi di soglia SNMP",
+      "history": "Cronologia"
     },
     "stats": {
       "asOf": "aggiornato al {{time}}",
@@ -2717,7 +2718,17 @@
       }
     },
     "charts": {
-      "loadFailed": "Impossibile caricare la cronologia di questa metrica."
+      "loadFailed": "Impossibile caricare la cronologia di questa metrica.",
+      "pickOids": "Grafico",
+      "cap": "È visualizzato il massimo di {{count}} grafici. Deselezionane uno per aggiungerne un altro.",
+      "perBucket": "Variazione per {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 minuti",
+        "hour": "ora",
+        "day": "giorno"
+      },
+      "emptyTitle": "Nessun OID sta ancora raccogliendo valori",
+      "emptyDescription": "La cronologia appare quando un polling restituisce un valore per almeno un OID."
     },
     "poll": {
       "everySeconds": "ogni {{count}} s",

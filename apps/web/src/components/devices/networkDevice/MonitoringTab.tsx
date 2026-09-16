@@ -4,6 +4,7 @@
 
 import { useTranslation } from 'react-i18next';
 import { NetworkChecksSection } from './NetworkChecksSection';
+import { MetricHistoryCharts } from './MetricHistoryCharts';
 import { OidTable } from './OidTable';
 import { PollConfigSummary } from './PollConfigSummary';
 import { ThresholdAlertsSection } from './ThresholdAlertsSection';
@@ -63,6 +64,7 @@ export function MonitoringTab({
         onEdit={onOpenMonitoringSettings}
       />
       <OidTable collection={collection} timezone={timezone} />
+      <MetricHistoryCharts assetId={assetId} collection={collection} timezone={timezone} />
       <NetworkChecksSection checks={checks} timezone={timezone} onAddCheck={onOpenMonitoringSettings} />
       <ThresholdAlertsSection thresholds={thresholds} collection={collection} />
     </div>

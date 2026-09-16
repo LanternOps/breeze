@@ -2410,7 +2410,8 @@
       "pollConfiguration": "Sorgulama yapılandırması",
       "oids": "OID’ler",
       "networkChecks": "Ağ kontrolleri",
-      "thresholds": "SNMP eşik uyarıları"
+      "thresholds": "SNMP eşik uyarıları",
+      "history": "Geçmiş"
     },
     "stats": {
       "asOf": "{{time}} itibarıyla",
@@ -2717,7 +2718,17 @@
       }
     },
     "charts": {
-      "loadFailed": "Bu metriğin geçmişi yüklenemedi."
+      "loadFailed": "Bu metriğin geçmişi yüklenemedi.",
+      "pickOids": "Grafik",
+      "cap": "En fazla {{count}} grafik gösteriliyor. Başka bir grafik eklemek için birinin seçimini kaldırın.",
+      "perBucket": "{{bucket}} başına değişim",
+      "bucket": {
+        "fiveMinutes": "5 dakika",
+        "hour": "saat",
+        "day": "gün"
+      },
+      "emptyTitle": "Henüz hiçbir OID için değer toplanmıyor",
+      "emptyDescription": "En az bir OID için sorgu bir değer döndürdüğünde geçmiş görünür."
     },
     "poll": {
       "everySeconds": "her {{count}} sn.",

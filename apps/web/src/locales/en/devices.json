@@ -2629,7 +2629,8 @@
       "pollConfiguration": "Poll configuration",
       "oids": "OIDs",
       "networkChecks": "Network checks",
-      "thresholds": "SNMP threshold alerts"
+      "thresholds": "SNMP threshold alerts",
+      "history": "History"
     },
     "stats": {
       "asOf": "as of {{time}}",
@@ -2749,7 +2750,17 @@
       }
     },
     "charts": {
-      "loadFailed": "Couldn’t load this metric’s history."
+      "loadFailed": "Couldn’t load this metric’s history.",
+      "pickOids": "Chart",
+      "cap": "Showing the maximum of {{count}} charts — clear one to add another.",
+      "perBucket": "Change per {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 min",
+        "hour": "hour",
+        "day": "day"
+      },
+      "emptyTitle": "No OID is collecting yet",
+      "emptyDescription": "History appears once a poll returns a value for at least one OID."
     },
     "poll": {
       "everySeconds": "every {{count}} sec",

@@ -2410,7 +2410,8 @@
       "pollConfiguration": "Configuração de consultas",
       "oids": "OID",
       "networkChecks": "Verificações de rede",
-      "thresholds": "Alertas de limite SNMP"
+      "thresholds": "Alertas de limite SNMP",
+      "history": "Histórico"
     },
     "stats": {
       "asOf": "em {{time}}",
@@ -2717,7 +2718,17 @@
       }
     },
     "charts": {
-      "loadFailed": "Não foi possível carregar o histórico desta métrica."
+      "loadFailed": "Não foi possível carregar o histórico desta métrica.",
+      "pickOids": "Gráfico",
+      "cap": "O máximo de {{count}} gráficos está sendo exibido. Desmarque um para adicionar outro.",
+      "perBucket": "Variação por {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 minutos",
+        "hour": "hora",
+        "day": "dia"
+      },
+      "emptyTitle": "Nenhum OID está coletando valores ainda",
+      "emptyDescription": "O histórico aparece quando uma consulta retorna um valor para pelo menos um OID."
     },
     "poll": {
       "everySeconds": "a cada {{count}} s",

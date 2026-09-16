@@ -2410,7 +2410,8 @@
       "pollConfiguration": "Abfragekonfiguration",
       "oids": "Objektkennungen (OIDs)",
       "networkChecks": "Netzwerkprüfungen",
-      "thresholds": "SNMP-Schwellenwertalarme"
+      "thresholds": "SNMP-Schwellenwertalarme",
+      "history": "Verlauf"
     },
     "stats": {
       "asOf": "Stand: {{time}}",
@@ -2717,7 +2718,17 @@
       }
     },
     "charts": {
-      "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden."
+      "loadFailed": "Der Verlauf dieses Messwerts konnte nicht geladen werden.",
+      "pickOids": "Diagramm",
+      "cap": "Die maximale Anzahl von {{count}} Diagrammen wird angezeigt. Entfernen Sie eines, um ein weiteres hinzuzufügen.",
+      "perBucket": "Änderung pro {{bucket}}",
+      "bucket": {
+        "fiveMinutes": "5 Min.",
+        "hour": "Stunde",
+        "day": "Tag"
+      },
+      "emptyTitle": "Noch keine Messwerte für OIDs",
+      "emptyDescription": "Der Verlauf erscheint, sobald eine Abfrage einen Wert für mindestens eine OID liefert."
     },
     "poll": {
       "everySeconds": "alle {{count}} Sek.",
