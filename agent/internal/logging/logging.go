@@ -177,11 +177,15 @@ func InitShipper(cfg ShipperConfig) {
 // StopShipper gracefully stops the log shipper.
 func StopShipper() {
 	shipperMu.Lock()
-	defer shipperMu.Unlock()
+	shipper := globalShipper
+	globalShipper = nil
+	shipperMu.Unlock()
 
-	if globalShipper != nil {
-		globalShipper.Stop()
-		globalShipper = nil
+	// A flush can outlive the agent's shutdown deadline. Keep logging usable
+	// while it drains: the timeout warning also passes through shippingHandler
+	// and must not wait on the same lock as the stalled flush.
+	if shipper != nil {
+		shipper.Stop()
 	}
 }
 
