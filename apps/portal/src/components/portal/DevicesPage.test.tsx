@@ -118,3 +118,21 @@ describe('DevicesPage tab-row action', () => {
     expect(screen.queryByTestId('portal-devices-export')).toBeNull();
   });
 });
+
+describe('DevicesPage tab focus and history', () => {
+  it('styles tab focus with the portal ring instead of the browser default box', () => {
+    render(<DevicesPage devices={[laptop]} error={null} lifecycle={lifecycle} />);
+    const cls = screen.getByRole('tab', { name: 'Devices' }).className;
+    expect(cls).toContain('focus-visible:outline-none');
+    expect(cls).toContain('focus-visible:ring-2');
+  });
+
+  it('records the tab in history without a fragment navigation (which would flash a focus box)', () => {
+    const push = vi.spyOn(window.history, 'pushState');
+    render(<DevicesPage devices={[laptop]} error={null} lifecycle={lifecycle} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Hardware lifecycle' }));
+    expect(push).toHaveBeenCalledWith(null, '', '#lifecycle');
+    expect(screen.getByRole('tab', { name: 'Hardware lifecycle' })).toHaveAttribute('aria-selected', 'true');
+    push.mockRestore();
+  });
+});

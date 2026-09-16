@@ -43,8 +43,9 @@ describe('portal layout column alignment', () => {
   const src = readFileSync(new URL('./PortalLayout.astro', import.meta.url), 'utf8');
 
   it('caps the header to the same column as main so the actions sit above the content, not the viewport edge', () => {
-    const header = src.match(/<header class="([^"]+)"/)?.[1] ?? '';
-    expect(header).toContain('max-w-6xl');
+    // The rule spans the whole content area; the row inside is capped to the column.
+    const inner = src.match(/<header class="[^"]+">\s*<div class="([^"]+)"/)?.[1] ?? '';
+    expect(inner).toContain('max-w-6xl');
   });
 
   it('left-aligns the content column against the sidebar instead of centering it in the leftover space', () => {
@@ -63,5 +64,28 @@ describe('portal layout header account context', () => {
     expect(src).toContain('loadPortalProfile(Astro.request)');
     expect(src).toContain('data-testid="portal-account-context"');
     expect(src).toMatch(/profile\.organizationName/);
+  });
+});
+
+describe('portal layout figure and ground', () => {
+  const src = readFileSync(new URL('./PortalLayout.astro', import.meta.url), 'utf8');
+
+  it('rules the header off from the page', () => {
+    const header = src.match(/<header class="([^"]+)"/)?.[1] ?? '';
+    expect(header).toMatch(/\bborder-b\b/);
+  });
+
+  it('lays the page on a linen sheet unless the page opts out (paper documents)', () => {
+    expect(src).toContain('data-testid="portal-sheet"');
+    expect(src).toMatch(/sheet\s*=\s*true/);
+    const sheet = src.match(/data-testid="portal-sheet"[^>]*class:list=\{\[([^\]]+)\]/s)?.[1] ?? '';
+    expect(sheet).toContain('bg-card');
+    expect(sheet).toContain('border-border/70');
+    expect(sheet).toContain('rounded-lg');
+  });
+
+  it('closes the page with a quiet foot: partner footer text, else the firm\'s name', () => {
+    expect(src).toContain('data-testid="portal-foot"');
+    expect(src).toMatch(/branding\.footerText/);
   });
 });

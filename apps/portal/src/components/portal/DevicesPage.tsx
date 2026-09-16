@@ -84,13 +84,15 @@ export function DevicesPage({
               aria-selected={selected}
               data-testid={`devices-tab-${t.key}`}
               onClick={() => {
-                // Setting the hash fires `hashchange`, which the effect above
-                // turns into state — one code path for clicks and back/forward.
-                window.location.hash = t.key;
+                // pushState rather than assigning location.hash: a fragment
+                // navigation makes Chrome treat the click as keyboard-like
+                // and paint the default focus box on the tab. Back/forward
+                // still fire `hashchange`, which the effect above handles.
+                window.history.pushState(null, '', `#${t.key}`);
                 setTab(t.key);
               }}
               className={cn(
-                '-mb-px border-b-2 pb-2.5 pt-1 text-sm font-semibold transition-colors',
+                '-mb-px whitespace-nowrap rounded-sm border-b-2 pb-2.5 pt-1 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card',
                 selected
                   ? 'border-foreground text-foreground'
                   : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -105,10 +107,12 @@ export function DevicesPage({
           <a
             href={publicApiPath('/portal/devices/export.csv')}
             data-testid="portal-devices-export"
-            className={cn(BTN_SECONDARY, 'mb-2')}
+            aria-label="Export CSV"
+            className={cn(BTN_SECONDARY, 'mb-2 whitespace-nowrap')}
           >
             <Download className="h-4 w-4" aria-hidden="true" />
-            Export CSV
+            {/* Icon-only on phones so the two tabs keep their room. */}
+            <span className="hidden sm:inline">Export CSV</span>
           </a>
         )}
       </div>
