@@ -2,6 +2,7 @@ import { pgTable, uuid, varchar, text, integer, boolean, timestamp, index, uniqu
 import { organizations, partners } from './orgs';
 import { users } from './users';
 import { deliverableCadenceEnum, deliverableCompletionModeEnum } from './serviceDeliverables';
+import { reportTypeEnum } from './reports';
 
 /**
  * Spec #5573 §4.6 / D9. Dual ownership: org_id XOR partner_id (CLAUDE.md
@@ -50,6 +51,13 @@ export const deliverableTemplateItems = pgTable('deliverable_template_items', {
    *  single-column on purpose (see migration 2026-10-16-192300). */
   checklistTemplateId: uuid('checklist_template_id'),
   sortOrder: integer('sort_order').notNull().default(0),
+  /**
+   * #5784 W01. A managed evidence report TYPE, resolved to that org's managed
+   * definition at applyTemplateSet time. Never an id: a partner-wide item has
+   * org_id IS NULL and reports.org_id is NOT NULL, so no composite FK could
+   * hold it. NULL means the item produces no auto-evidence.
+   */
+  autoEvidenceReportType: reportTypeEnum('auto_evidence_report_type'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

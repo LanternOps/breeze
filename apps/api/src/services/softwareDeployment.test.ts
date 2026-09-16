@@ -77,7 +77,7 @@ vi.mock('../db/schema', () => ({
     integrationProvider: 'sc.integrationProvider',
   },
   softwareVersions: { id: 'sv.id', catalogId: 'sv.catalogId' },
-  softwareDeployments: { id: 'sd.id', orgId: 'sd.orgId' },
+  softwareDeployments: { id: 'sd.id', orgId: 'sd.orgId', softwarePolicyId: 'sd.softwarePolicyId' },
   deploymentResults: {
     deploymentId: 'dr.deploymentId',
     deviceId: 'dr.deviceId',
@@ -2256,5 +2256,67 @@ describe('buildAndDispatchSoftwareInstalls — targets missing at dispatch (#360
 
     expect(result.status).toBe('failed');
     expect(result.message).toMatch(/No install method for this device OS/);
+  });
+});
+
+/** Minimal thenable drizzle chain, same shape the remediation worker suite uses. */
+function policyOriginChain(result: unknown): any {
+  const p: any = Promise.resolve(result);
+  for (const m of ['from', 'innerJoin', 'where', 'limit', 'orderBy', 'returning', 'values', 'for']) {
+    p[m] = () => p;
+  }
+  return p;
+}
+
+describe('createSoftwareDeployment — policy origin (#5505 W03)', () => {
+  it('stamps softwarePolicyId on the INSERT, and writes null when not supplied', async () => {
+    const insertedValues: Array<Record<string, unknown>> = [];
+
+    const primeCreate = () => {
+      // db.select() call order inside createSoftwareDeployment: the install
+      // method row, then its catalog item.
+      const selectResults = [
+        [{ id: 'im-1', catalogId: 'cat-1', platform: 'windows', kind: 'winget', packageId: 'Vendor.App', enabled: true }],
+        [{ id: 'cat-1', orgId: 'org-1', name: 'App', integrationProvider: null }],
+      ];
+      let call = 0;
+      selectMock.mockImplementation(() =>
+        policyOriginChain(selectResults[Math.min(call++, selectResults.length - 1)]),
+      );
+      insertMock.mockImplementation(() => ({
+        values: (v: Record<string, unknown> | Array<Record<string, unknown>>) => {
+          if (!Array.isArray(v)) insertedValues.push(v);
+          return policyOriginChain(Array.isArray(v) ? [] : [{ id: 'dep-1', ...v }]);
+        },
+      }));
+      updateMock.mockImplementation(() => ({ set: () => policyOriginChain([]) }));
+    };
+
+    primeCreate();
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'im-1',
+      deploymentType: 'install',
+      deviceIds: [], // no devices => no dispatch branch, INSERT only
+      scheduleType: 'scheduled',
+      createdBy: null,
+      softwarePolicyId: 'pol-1',
+    });
+
+    primeCreate();
+    await createSoftwareDeployment({
+      orgId: 'org-1',
+      installMethodId: 'im-1',
+      deploymentType: 'install',
+      deviceIds: [],
+      scheduleType: 'scheduled',
+      createdBy: null,
+    });
+
+    expect(insertedValues).toHaveLength(2);
+    expect(insertedValues[0]!.softwarePolicyId).toBe('pol-1');
+    // Explicit null, not undefined: an undefined would let the column default,
+    // which is the same value here but a different contract.
+    expect(insertedValues[1]!.softwarePolicyId).toBeNull();
   });
 });

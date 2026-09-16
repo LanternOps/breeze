@@ -172,6 +172,14 @@ import { closeAgentRunSession, reconcileHungExecutions } from './executionLedger
  *  - patchMaxTurns         — run loop (patchLimits(), patchProfile.ts):
  *                            substitutes for maxTurnsPerRun on a
  *                            patch-profile run; not enforced here.
+ *  - maxUnattendedDevicesPerSweep — persistSweepFindings' readiness-cohort
+ *                            walk (sweepActCohort.ts, #4442 W05): bounds how
+ *                            many DISTINCT devices one sweep occurrence may
+ *                            mint act-eligible. Merged with min.
+ *  - sweepPromoteThreshold — graduationService.evaluateEligibility (#4442
+ *                            W05): an extra bar, on top of promoteThreshold,
+ *                            over verified evidence from SWEEP-minted
+ *                            intents only. Merged with max.
  */
 
 export interface CreateAgentRunInput {

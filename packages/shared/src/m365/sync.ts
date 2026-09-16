@@ -13,6 +13,7 @@ export const M365_SYNC_DOMAINS = [
   'ca_policies',
   'skus',
   'secure_score',
+  'signin_events',
 ] as const;
 
 export type M365SyncDomain = typeof M365_SYNC_DOMAINS[number];
@@ -27,6 +28,7 @@ export const M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS: Record<M365SyncDomain, n
   ca_policies: 24 * HOUR,
   skus: 24 * HOUR,
   secure_score: 24 * HOUR,
+  signin_events: 24 * HOUR,
 };
 
 /**
@@ -42,6 +44,11 @@ export const M365_SYNC_DOMAIN_INTERVAL_BOUNDS: Record<M365SyncDomain, { min: num
   ca_policies: { min: HOUR, max: 48 * HOUR },
   skus: { min: HOUR, max: 48 * HOUR },
   secure_score: { min: HOUR, max: 48 * HOUR },
+  // #5784 W05. /auditLogs/signIns is a DIFFERENT Graph surface from
+  // signin_activity's /users?$select=signInActivity and has its own token
+  // bucket in the executor, but it is the other expensive identity surface, so
+  // it carries the same full-day floor.
+  signin_events: { min: 24 * HOUR, max: 7 * 24 * HOUR },
 };
 
 const DOMAIN_SET: ReadonlySet<string> = new Set(M365_SYNC_DOMAINS);

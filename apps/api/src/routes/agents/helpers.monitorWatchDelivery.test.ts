@@ -162,11 +162,11 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   beforeEach(() => {
     vi.clearAllMocks();
     redisMock.get.mockResolvedValue(null);
-    resolveMonitorsMock.mockResolvedValue([]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [] });
   });
 
   it('emits exactly the frozen monitoring_settings key set', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([...policyQueue({ resolved: false }), [monitorDefRow()]]);
 
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -186,7 +186,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('delivers a monitor-only watch when no monitoring policy resolved', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([...policyQueue({ resolved: false }), [monitorDefRow()]]);
 
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -229,7 +229,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('keeps both watches when the monitor and the policy name DIFFERENT services', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
       ...policyQueue({ watches: [policyWatchRow({ name: 'W32Time' })] }),
       [monitorDefRow({ condition: { serviceName: 'Spooler' } })],
@@ -241,7 +241,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('lets the MONITOR win on a name collision (consecutiveFailures 5 beats the policy tab 2)', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
       ...policyQueue({ watches: [policyWatchRow({ alertAfterConsecutiveFailures: 2 })] }),
       [monitorDefRow({ condition: { serviceName: 'Spooler', consecutiveFailures: 5 } })],
@@ -257,7 +257,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
     // THE auto-restart regression test. `auto_restart` drives the agent's own
     // offline-capable restart; a union that let the monitor row's `false`
     // overwrite the policy's `true` would be a silent downgrade vector.
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
       ...policyQueue({ watches: [policyWatchRow({ autoRestart: true })] }),
       [monitorDefRow({ responses: [] })],
@@ -270,7 +270,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('compiles a restart_service response to auto_restart on the delivered watch', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
       ...policyQueue({ resolved: false }),
       [monitorDefRow({ responses: [{ type: 'execute_command', kind: 'restart_service', command: 'Restart-Service Spooler' }] })],
@@ -282,7 +282,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('falls back to the policy row for process thresholds the monitor cannot author', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor()]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor()] });
     dbMock._resetQueue([
       ...policyQueue({
         watches: [
@@ -307,7 +307,7 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
   });
 
   it('contributes nothing for a monitor whose effective attachment is disabled', async () => {
-    resolveMonitorsMock.mockResolvedValue([effectiveMonitor({ enabled: false })]);
+    resolveMonitorsMock.mockResolvedValue({ kind: 'resolved', monitors: [effectiveMonitor({ enabled: false })] });
     dbMock._resetQueue([...policyQueue({ resolved: false })]);
 
     const out = await buildMonitoringConfigUpdate(DEVICE_ID);
@@ -330,5 +330,27 @@ describe('buildMonitoringConfigUpdate — monitor-derived watches (#5291 W04)', 
       check_interval_seconds: 45,
       watches: [],
     });
+  });
+
+  it('never sends the #2949 clear-all signal when the device raced a delete (#5677): device_missing must not be folded into "zero monitor-derived watches"', async () => {
+    // A policy resolved with zero configured watches — on its own this is the
+    // legitimate #2949 "stop watching" signal (previous test). But if the
+    // monitor-derived side ALSO raced a device delete and came back as a
+    // fabricated `[]` instead of `device_missing`, the union below would
+    // still be `{ watches: [] }` — sent to the agent as an explicit clear,
+    // even though nothing was actually resolved to zero. Must return null
+    // instead: omit the update this heartbeat, exactly like a missing policy
+    // device lookup already does.
+    resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
+    dbMock._resetQueue([...policyQueue({ watches: [] })]);
+
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
+  });
+
+  it('device_missing omits the whole monitoring update even when the policy side resolved real watches — the monitor answer is unreliable this cycle, so nothing is asserted either way', async () => {
+    resolveMonitorsMock.mockResolvedValue({ kind: 'device_missing' });
+    dbMock._resetQueue([...policyQueue({ watches: [policyWatchRow()] })]);
+
+    expect(await buildMonitoringConfigUpdate(DEVICE_ID)).toBeNull();
   });
 });

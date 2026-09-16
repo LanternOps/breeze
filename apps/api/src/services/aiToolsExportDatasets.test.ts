@@ -136,32 +136,65 @@ describe('dataset adapters', () => {
     expect(searchFleetLogs).not.toHaveBeenCalled();
   });
 
-  it('device_inventory restricts rows to the requested devices even though the generator ignores deviceIds', async () => {
+  it('device_inventory passes the requested deviceIds straight into the generator filter (#5776)', async () => {
+    // #5776: the generator now honours filters.deviceIds directly, so the
+    // adapter no longer post-filters by hostname (which is not unique within
+    // an org — see the "shares a hostname" test below).
     generateDeviceInventoryReport.mockResolvedValue({
-      rows: [
-        { hostname: 'host-d1', osType: 'windows' },
-        { hostname: 'host-d2', osType: 'windows' },
-        { hostname: 'host-d3', osType: 'windows' },
-      ],
-      rowCount: 3,
+      rows: [{ deviceId: 'd1', hostname: 'host-d1', osType: 'windows' }],
+      rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
       auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 500,
     });
     const page = await pager(null);
+    expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
+      filters: { deviceIds: ['d1'] },
+    });
     expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
   });
 
   it('device_inventory falls back to the run target set when no deviceIds were supplied', async () => {
     generateDeviceInventoryReport.mockResolvedValue({
-      rows: [{ hostname: 'host-d1' }, { hostname: 'host-d9' }],
-      rowCount: 2,
+      rows: [{ deviceId: 'd1', hostname: 'host-d1' }],
+      rowCount: 1,
     });
     const pager = await DATASET_ADAPTERS.device_inventory.createPager({
       auth, orgId: 'org-1', filters: {}, deviceIds: null, runTargets: ['d1'], siteId: null, pageSize: 500,
     });
     const page = await pager(null);
+    expect(generateDeviceInventoryReport.mock.calls[0]![1]).toMatchObject({
+      filters: { deviceIds: ['d1'] },
+    });
     expect(page.rows.map((r) => r.hostname)).toEqual(['host-d1']);
+  });
+
+  it('device_inventory: two devices sharing a hostname — only the admitted device is exported', async () => {
+    // Simulates what the real `inArray(devices.id, ...)` query does: it
+    // returns only the row for the admitted device, even though DEVICE_B
+    // shares its hostname with the admitted DEVICE_A. Before #5776 the
+    // adapter resolved the restriction to a Set<hostname> and post-filtered
+    // `row.hostname` — since both devices share 'shared-host', that filter
+    // could not tell them apart and both/either could ride along. Asserting
+    // the generator call args here proves the restriction is now keyed on
+    // device id, not hostname.
+    generateDeviceInventoryReport.mockImplementation(async (_orgId, config) => {
+      const allowed = new Set((config.filters?.deviceIds ?? []) as string[]);
+      const all = [
+        { deviceId: 'device-a', hostname: 'shared-host' },
+        { deviceId: 'device-b', hostname: 'shared-host' },
+      ];
+      const rows = all.filter((r) => allowed.size === 0 || allowed.has(r.deviceId));
+      return { rows, rowCount: rows.length };
+    });
+
+    const pager = await DATASET_ADAPTERS.device_inventory.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['device-a'], runTargets: null, siteId: null, pageSize: 500,
+    });
+    const page = await pager(null);
+
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]).toMatchObject({ deviceId: 'device-a', hostname: 'shared-host' });
   });
 
   it('custom_fields includes partner-wide definitions via the shared reader', async () => {
@@ -252,6 +285,15 @@ describe('dataset adapters', () => {
   // concurrent FIRST resolutions of the same dynamic import race Vite's SSR
   // module runner and can silently load the real (unmocked) module instead —
   // every other adapter test in this file has the same one-device constraint.
+  // (Confirmed by direct reproduction during #5775's review: priming the
+  // import ahead of time does NOT avoid the race.) A consequence for THIS
+  // adapter specifically: how a >1-device EXPORT_DEVICE_CONCURRENCY batch
+  // interacts with per-device intra-batch pagination (one device exhausting
+  // early while a sibling in the same batch still pages, and the batch not
+  // advancing until every entry is `done`) is exercised by hand-tracing the
+  // closure logic below, not by a unit test — that needs either a real-DB
+  // integration test or a from-scratch mock of aiTools.ts's whole import
+  // graph, both out of scope for this file's existing single-device pattern.
 
   it('metrics reads a device\'s samples, gated by verifyDeviceAccess', async () => {
     mockMetricsSelect([
@@ -266,6 +308,100 @@ describe('dataset adapters', () => {
       expect.objectContaining({ deviceId: 'd1', cpuPercent: 50, hostname: 'host-d1' }),
     ]);
     expect(page.nextCursor).toBeNull(); // the one device fits in the first EXPORT_DEVICE_CONCURRENCY batch
+  });
+
+  // NOTE: `mockMetricsSelect` above returns the SAME page from every
+  // `db.select()` call — fine for the single-page tests, but a per-device
+  // pagination test needs a DIFFERENT page per call, so it builds its own
+  // sequenced select mock rather than reusing that helper.
+  function mockMetricsPagedSelect(pages: Array<Array<Record<string, unknown>>>) {
+    let call = 0;
+    const limit = vi.fn().mockImplementation(async () => {
+      const page = pages[Math.min(call, pages.length - 1)];
+      call += 1;
+      return page;
+    });
+    const orderBy = vi.fn().mockReturnValue({ limit });
+    const where = vi.fn().mockReturnValue({ orderBy });
+    dbSelect.mockReturnValue({ from: vi.fn().mockReturnValue({ where }) });
+    return { where };
+  }
+
+  it('metrics paginates WITHIN a device via a timestamp cursor instead of hard-capping at pageSize (#5775)', async () => {
+    const { where } = mockMetricsPagedSelect([
+      [
+        { timestamp: new Date('2026-02-15T10:02:00.000Z'), cpuPercent: 3, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+        { timestamp: new Date('2026-02-15T10:01:00.000Z'), cpuPercent: 2, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+      [
+        { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+    ]);
+    const pager = await DATASET_ADAPTERS.metrics.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
+    });
+
+    // First call comes back FULL (2 of 2) — more samples may exist for this
+    // device, so the pager must NOT report done via a null nextCursor.
+    const first = await pager(null);
+    expect(first.rows.map((r) => r.cpuPercent)).toEqual([3, 2]);
+    expect(first.nextCursor).not.toBeNull();
+
+    // Second call re-queries the SAME device (not the next one — there is no
+    // next device) using a timestamp cursor older than the last row seen.
+    const second = await pager(first.nextCursor);
+    expect(second.rows.map((r) => r.cpuPercent)).toEqual([1]);
+    expect(second.nextCursor).toBeNull(); // short page: device exhausted, no more devices queued
+
+    // The device gate runs once per device, not once per page.
+    expect(verifyDeviceAccess).toHaveBeenCalledTimes(1);
+
+    expect(where).toHaveBeenCalledTimes(2);
+    const dialect = new PgDialect();
+    // The cursored page must keep BOTH bounds: the `since` (hoursBack) floor
+    // AND the new `before` ceiling — a refactor that swapped rather than
+    // appended the cursor condition would silently widen the export past its
+    // requested time window without any test catching it.
+    const secondWhereSql = dialect.sqlToQuery(where.mock.calls[1]![0] as SQL).sql;
+    expect(secondWhereSql).toContain('"timestamp" >');
+    expect(secondWhereSql).toContain('"timestamp" <');
+  });
+
+  it('metrics marks a device done only after a SHORT page, even when its sample count is an exact multiple of pageSize', async () => {
+    // A device with exactly 2×pageSize samples: the first two pages both come
+    // back FULL and must NOT be treated as the exhaustion signal — only a page
+    // shorter than pageSize may set `done`. This is the boundary the "full
+    // page" vs. "short page" distinction hinges on; a `<=` instead of `<`
+    // comparison would stop one page early and silently drop the last page.
+    const { where } = mockMetricsPagedSelect([
+      [
+        { timestamp: new Date('2026-02-15T10:03:00.000Z'), cpuPercent: 4, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+        { timestamp: new Date('2026-02-15T10:02:00.000Z'), cpuPercent: 3, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+      [
+        { timestamp: new Date('2026-02-15T10:01:00.000Z'), cpuPercent: 2, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+        { timestamp: new Date('2026-02-15T10:00:00.000Z'), cpuPercent: 1, ramPercent: 1, ramUsedMb: 1, diskPercent: 1, diskUsedGb: 1 },
+      ],
+      [], // exhaustion signal: a page shorter than pageSize (here, empty)
+    ]);
+    const pager = await DATASET_ADAPTERS.metrics.createPager({
+      auth, orgId: 'org-1', filters: {}, deviceIds: ['d1'], runTargets: null, siteId: null, pageSize: 2,
+    });
+
+    const first = await pager(null);
+    expect(first.rows.map((r) => r.cpuPercent)).toEqual([4, 3]);
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await pager(first.nextCursor);
+    expect(second.rows.map((r) => r.cpuPercent)).toEqual([2, 1]);
+    expect(second.nextCursor).not.toBeNull(); // still full — not yet exhausted
+
+    const third = await pager(second.nextCursor);
+    expect(third.rows).toEqual([]);
+    expect(third.nextCursor).toBeNull(); // short (empty) page: NOW exhausted
+
+    expect(where).toHaveBeenCalledTimes(3);
+    expect(verifyDeviceAccess).toHaveBeenCalledTimes(1);
   });
 
   it('metrics excludes a device verifyDeviceAccess denies, without failing the whole export', async () => {

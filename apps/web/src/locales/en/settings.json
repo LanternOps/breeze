@@ -896,7 +896,10 @@
     },
     "customCss": {
       "title": "Custom CSS (advanced)",
-      "description": "Use custom styles to fine tune spacing, typography, or layout."
+      "description": "Use custom styles to fine tune spacing, typography, or layout.",
+      "saveError": "Failed to save custom CSS.",
+      "loadError": "Could not load your currently saved custom CSS. Editing is disabled until this loads.",
+      "saveBlockedByLoadError": "Custom CSS was not saved: the current value could not be verified. Reload the page and try again."
     },
     "preview": {
       "action": "Preview",
@@ -1876,6 +1879,20 @@
         "empty": "No findings reported.",
         "evidenceTruncated": "Evidence was truncated — not every matching row was shown to the agent.",
         "proposalCreated": "Approval requested",
+        "actSummary": "Acted unattended on {{acted}} of {{proposed}} devices — the rest are waiting for approval.",
+        "outcomes": {
+          "auto_executing": "Running unattended",
+          "executed": "Completed",
+          "failed": "Failed",
+          "declined": "Declined",
+          "expired": "Expired",
+          "unknown": "Outcome unknown"
+        },
+        "stoppedBy": {
+          "fleet_cap": "daily fleet limit reached",
+          "day_cap": "daily action limit reached",
+          "occurrence_cap": "per-sweep device cap reached"
+        },
         "columns": {
           "kind": "Check",
           "severity": "Severity",
@@ -2395,7 +2412,8 @@
         "below_threshold": "Not enough verified executions yet.",
         "too_recent": "The first verified execution is still too recent.",
         "has_failures": "A failure or a recurrence was recorded in this window.",
-        "not_policy_decidable": "This operation can never be pre-authorized."
+        "not_policy_decidable": "This operation can never be pre-authorized.",
+        "below_sweep_threshold": "Needs more verified fixes where a scheduled sweep chose the target."
       },
       "confirm": {
         "title": "Request pre-authorization",
@@ -5237,6 +5255,16 @@
     "empty": {
       "title": "No variables yet",
       "description": "Create one to stop pasting the same token into every customer's scripts."
+    },
+    "filters": {
+      "searchLabel": "Search variables",
+      "searchPlaceholder": "Search by key or description",
+      "scopeGroupLabel": "Filter by scope",
+      "scopeAll": "All scopes"
+    },
+    "noMatches": {
+      "title": "No variables match your filters",
+      "description": "Try a different search term or clear the scope filter."
     },
     "errors": {
       "load": "Could not load variables."

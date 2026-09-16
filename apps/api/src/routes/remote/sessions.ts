@@ -52,7 +52,7 @@ import { createRemoteSession, RemoteSessionDeniedError } from '../../services/re
 import {
   AGENT_UPGRADE_REQUIRED_CODE,
   AGENT_UPGRADE_REQUIRED_MESSAGE,
-  isRevocationLeaseCapable,
+  isDesktopStartCapable,
   prepareRevocationLeaseForStart,
   renewRevocationLease,
 } from '../../services/remoteRevocationLease';
@@ -245,20 +245,22 @@ sessionRoutes.post(
       }
     }
 
-    // Fail fast on an agent that cannot hold a revocation lease. The three
-    // desktop-start dispatch sites gate on this too (that is the authoritative
-    // fail-closed check); doing it here as well means the operator gets the
-    // "agent update required" answer on the click that started it, instead of
-    // a stranded session row and a confusing failure inside the viewer.
+    // Fail fast on an agent that cannot hold a revocation lease or (behind
+    // REMOTE_DESKTOP_FENCE_REQUIRED, SEC-038 W06) does not keep the durable
+    // start fence. The three desktop-start dispatch sites gate on this too
+    // (that is the authoritative fail-closed check); doing it here as well
+    // means the operator gets the "agent update required" answer on the click
+    // that started it, instead of a stranded session row and a confusing
+    // failure inside the viewer.
     if (data.type === 'desktop') {
-      let leaseCapable: boolean;
+      let startCapable: boolean;
       try {
-        leaseCapable = await isRevocationLeaseCapable(data.deviceId);
+        startCapable = await isDesktopStartCapable(data.deviceId);
       } catch (err) {
-        console.error('[remote] Failed to read revocation-lease capability for device', data.deviceId, err);
-        leaseCapable = false;
+        console.error('[remote] Failed to read desktop-start capability for device', data.deviceId, err);
+        startCapable = false;
       }
-      if (!leaseCapable) {
+      if (!startCapable) {
         return c.json({
           error: AGENT_UPGRADE_REQUIRED_MESSAGE,
           code: AGENT_UPGRADE_REQUIRED_CODE,
@@ -469,6 +471,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -494,6 +497,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -623,6 +627,7 @@ sessionRoutes.get(
         userId: remoteSessions.userId,
         type: remoteSessions.type,
         status: remoteSessions.status,
+        terminationPhase: remoteSessions.terminationPhase,
         startedAt: remoteSessions.startedAt,
         endedAt: remoteSessions.endedAt,
         durationSeconds: remoteSessions.durationSeconds,
@@ -649,6 +654,7 @@ sessionRoutes.get(
         userId: s.userId,
         type: s.type,
         status: s.status,
+        terminationPhase: s.terminationPhase ?? 'none',
         startedAt: s.startedAt,
         endedAt: s.endedAt,
         durationSeconds: s.durationSeconds,
@@ -723,6 +729,10 @@ sessionRoutes.get(
       userId: session.userId,
       type: session.type,
       status: session.status,
+      // SEC-038 W06: 'pending' = a terminal decision committed server-side but
+      // the agent has not yet acknowledged the stop. The web UI must not
+      // render such a session as connected.
+      terminationPhase: session.terminationPhase ?? 'none',
       webrtcOffer: session.webrtcOffer,
       webrtcAnswer: session.webrtcAnswer,
       iceCandidates: session.iceCandidates,

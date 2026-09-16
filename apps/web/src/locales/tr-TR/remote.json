@@ -30,8 +30,12 @@
     "desktopUnavailable": "Masaüstü Kullanılamıyor",
     "dismiss": "Kapat",
     "downloadFor": "{{platform}} için indirin",
+    "ending": {
+      "description": "Önceki oturum cihazda hâlâ kapatılıyor. Biraz bekleyip yeniden deneyin.",
+      "title": "Oturum hâlâ sonlandırılıyor"
+    },
     "errors": {
-      "agentUpgradeRequired": "Uzak masaüstü için bu cihazda aracı güncellemesi gerekiyor (oturum iptal kirası desteği). Aracı kendini otomatik olarak günceller; bu genellikle bir dakika içinde çözülür. Terminal ve dosya aktarımı etkilenmez.",
+      "agentUpgradeRequired": "Uzak masaüstü için bu cihazda aracı güncellemesi gerekiyor (oturum iptal kirası ve başlatma çiti desteği). Aracı kendini otomatik olarak günceller; bu genellikle bir dakika içinde çözülür. Terminal ve dosya aktarımı etkilenmez.",
       "connectionFailed": "Bağlantı başarısız oldu",
       "createDesktopCode": "Masaüstü bağlantı kodu oluşturulamadı",
       "createDesktopSession": "Masaüstü oturumu oluşturulamadı",
@@ -664,7 +668,8 @@
       "connecting": "Bağlanılıyor...",
       "disconnected": "Bağlantı Kesildi",
       "failed": "Başarısız",
-      "pending": "Beklemede"
+      "pending": "Beklemede",
+      "teardownPending": "Sonlandırılıyor (cihaz bekleniyor)"
     },
     "subtitle": "Uzaktan erişim denetim günlüğü",
     "title": "Oturum Geçmişi",
@@ -700,6 +705,7 @@
       "timeline": "Zaman Çizelgesi"
     },
     "subtitle": "Uzaktan erişim oturumlarını görüntüleyin ve denetleyin",
+    "teardownPending": "Cihaz onayı bekleniyor",
     "title": "Oturum Geçmişi",
     "viewDevice": "Cihazı Görüntüle",
     "viewRecording": "Kaydı Görüntüle"

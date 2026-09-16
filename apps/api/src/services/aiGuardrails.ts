@@ -249,7 +249,15 @@ export const TIER3_ACTIONS: Record<string, string[]> = {
   // action on real endpoints with no human in the loop:
   //   - software policies: `enforceMode` + `remediationOptions.autoUninstall`
   //     turn a detect-only allowlist into fleet-wide auto-uninstall (the #3381
-  //     mass-uninstall failure mode).
+  //     mass-uninstall failure mode). `remediationOptions.autoInstall` (#5505
+  //     desired-state install) is NOT gated the same way as the fields above —
+  //     it is never accepted from the AI at all. The four handler write sites
+  //     in aiToolsCompliance.ts/aiToolsPolicyPrereqs.ts refuse an
+  //     autoInstall:true outright, regardless of tier or approval, because
+  //     only a human operator holding devices.execute + MFA may arm software
+  //     installation (contract-A D4). Tier-3 approval on this tool remains
+  //     for enforceMode/autoUninstall; it is not the mechanism that protects
+  //     autoInstall.
   //   - update rings: `autoApprove` + `deadlineDays` + `gracePeriodHours` arm
   //     unattended patch installs with FORCED reboots — the standing-rule form
   //     of manage_patches:install, which already requires approval.

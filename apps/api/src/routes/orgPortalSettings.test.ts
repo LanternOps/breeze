@@ -84,6 +84,7 @@ vi.mock('../db/schema', () => ({
     supportPhone: 'supportPhone',
     welcomeMessage: 'welcomeMessage',
     footerText: 'footerText',
+    customCss: 'customCss',
     updatedAt: 'updatedAt'
   },
   organizations: { id: 'id', deletedAt: 'deletedAt' }
@@ -117,9 +118,9 @@ const FULL_ROW = {
   supportPhone: null,
   welcomeMessage: 'Welcome',
   footerText: null,
+  customCss: 'body{}',
   // Read-only columns that must never leak into the response payload:
   customDomain: 'portal.customer.example',
-  customCss: 'body{}',
   logoUrl: 'https://x/logo.png'
 };
 
@@ -147,7 +148,7 @@ function resetAuth(overrides: Partial<typeof DEFAULT_AUTH> = {}) {
 describe('GET /organizations/:id/portal-settings', () => {
   beforeEach(() => { vi.clearAllMocks(); resetAuth(); });
 
-  it('returns the managed subset when a row exists (never visual branding columns)', async () => {
+  it('returns the managed subset when a row exists (including customCss, never visual branding columns)', async () => {
     dbSelectResult
       .mockResolvedValueOnce([{ id: ORG_ID }]) // org existence check
       .mockResolvedValueOnce([FULL_ROW]);      // portal_branding row
@@ -171,10 +172,11 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportEmail: 'help@msp.example',
       supportPhone: null,
       welcomeMessage: 'Welcome',
-      footerText: null
+      footerText: null,
+      customCss: 'body{}'
     });
     expect(JSON.stringify(body)).not.toContain('customDomain');
-    expect(JSON.stringify(body)).not.toContain('customCss');
+    expect(JSON.stringify(body)).not.toContain('logo.png');
   });
 
   it('returns schema defaults when no row exists', async () => {
@@ -201,7 +203,8 @@ describe('GET /organizations/:id/portal-settings', () => {
       supportEmail: null,
       supportPhone: null,
       welcomeMessage: null,
-      footerText: null
+      footerText: null,
+      customCss: null
     });
   });
 
@@ -369,5 +372,79 @@ describe('PATCH /organizations/:id/portal-settings', () => {
     await patch({ supportEmail: 'support@example.test' });
 
     expect(onPortalFlagsChanged).not.toHaveBeenCalled();
+  });
+
+  describe('customCss (#5952)', () => {
+    it('accepts and persists safe custom CSS', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, customCss: '.portal-header { color: red; }' }]);
+
+      const res = await patch({ customCss: '.portal-header { color: red; }' });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data.customCss).toBe('.portal-header { color: red; }');
+
+      const { db } = await import('../db');
+      const valuesArg = vi.mocked(db.insert).mock.results[0]?.value.values.mock.calls[0]?.[0];
+      expect(valuesArg.customCss).toBe('.portal-header { color: red; }');
+    });
+
+    it('accepts null to clear custom CSS', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([{ ...FULL_ROW, customCss: null }]);
+
+      const res = await patch({ customCss: null });
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects @import', async () => {
+      const res = await patch({ customCss: '@import url("evil.css");' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects expression()', async () => {
+      const res = await patch({ customCss: 'body { width: expression(alert(1)); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects behavior:', async () => {
+      const res = await patch({ customCss: 'body { behavior: url(evil.htc); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects -moz-binding', async () => {
+      const res = await patch({ customCss: 'body { -moz-binding: url("evil.xml#x"); }' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects url() with a non-https/data scheme', async () => {
+      expect((await patch({ customCss: 'body { background: url(http://evil.example/x.png); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(javascript:alert(1)); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(//evil.example/x.png); }' })).status).toBe(400);
+      expect((await patch({ customCss: 'body { background: url(/local/x.png); }' })).status).toBe(400);
+    });
+
+    it('accepts url() with https: and data: schemes', async () => {
+      dbSelectResult.mockResolvedValue([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+
+      expect((await patch({ customCss: 'body { background: url(https://cdn.example/x.png); }' })).status).toBe(200);
+      expect((await patch({ customCss: "body { background: url(data:image/png;base64,AAAA); }" })).status).toBe(200);
+    });
+
+    it('rejects custom CSS over the 65536-char cap', async () => {
+      const res = await patch({ customCss: 'a'.repeat(65_537) });
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts custom CSS at exactly the cap', async () => {
+      dbSelectResult.mockResolvedValueOnce([{ id: ORG_ID }]);
+      dbUpsertReturning.mockResolvedValue([FULL_ROW]);
+      const css = '.a{}'.repeat(16_384); // 65536 chars exactly
+      expect(css).toHaveLength(65_536);
+      const res = await patch({ customCss: css });
+      expect(res.status).toBe(200);
+    });
   });
 });

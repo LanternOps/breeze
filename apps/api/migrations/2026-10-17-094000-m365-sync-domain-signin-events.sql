@@ -1,0 +1,11 @@
+-- m365 sync: the signin_events domain (#5784 W05). Enum add ONLY, in its own
+-- file and sorting BEFORE the table migration that uses it: a label added by
+-- ALTER TYPE cannot be used until the transaction that added it commits, and
+-- autoMigrate wraps each file in one transaction.
+--
+-- NOT the same as the existing 'signin_activity' domain, which updates one
+-- column on m365_users (services/m365Sync/domains/signinActivity.ts:88-91) and
+-- persists no events. This one is an append-only interactive sign-in log.
+--
+-- No rows are written, so no breeze.scope election is required. Idempotent.
+ALTER TYPE m365_sync_domain ADD VALUE IF NOT EXISTS 'signin_events';

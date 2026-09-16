@@ -896,7 +896,10 @@
     },
     "customCss": {
       "title": "CSS personalizado (avançado)",
-      "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout."
+      "description": "Use estilos personalizados para ajustar espaçamento, tipografia ou layout.",
+      "saveError": "Falha ao salvar o CSS personalizado.",
+      "loadError": "Não foi possível carregar o CSS personalizado salvo atualmente. A edição está desativada até que isso seja carregado.",
+      "saveBlockedByLoadError": "O CSS personalizado não foi salvo: não foi possível verificar o valor atual. Recarregue a página e tente novamente."
     },
     "preview": {
       "action": "Visualizar",
@@ -1876,6 +1879,20 @@
         "empty": "Nenhuma constatação relatada.",
         "evidenceTruncated": "As evidências foram truncadas: nem todas as linhas correspondentes foram mostradas ao agente.",
         "proposalCreated": "Aprovação solicitada",
+        "actSummary": "Ação sem supervisão em {{acted}} de {{proposed}} dispositivos — os demais aguardam aprovação.",
+        "outcomes": {
+          "auto_executing": "Em execução sem supervisão",
+          "executed": "Concluído",
+          "failed": "Falhou",
+          "declined": "Recusado",
+          "expired": "Expirado",
+          "unknown": "Resultado desconhecido"
+        },
+        "stoppedBy": {
+          "fleet_cap": "limite diário da frota atingido",
+          "day_cap": "limite diário de ações atingido",
+          "occurrence_cap": "teto de dispositivos por varredura atingido"
+        },
         "columns": {
           "kind": "Verificação",
           "severity": "Gravidade",
@@ -2395,7 +2412,8 @@
         "below_threshold": "Ainda não há execuções verificadas suficientes.",
         "too_recent": "A primeira execução verificada ainda é recente demais.",
         "has_failures": "Uma falha ou uma reincidência foi registrada neste período.",
-        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada."
+        "not_policy_decidable": "Esta operação nunca pode ser pré-autorizada.",
+        "below_sweep_threshold": "São necessárias mais correções verificadas em que uma varredura agendada escolheu o alvo."
       },
       "confirm": {
         "title": "Solicitar pré-autorização",
@@ -5237,6 +5255,16 @@
     "empty": {
       "title": "Nenhuma variável ainda",
       "description": "Crie uma para parar de colar o mesmo token nos scripts de cada cliente."
+    },
+    "filters": {
+      "searchLabel": "Pesquisar variáveis",
+      "searchPlaceholder": "Pesquisar por chave ou descrição",
+      "scopeGroupLabel": "Filtrar por escopo",
+      "scopeAll": "Todos os escopos"
+    },
+    "noMatches": {
+      "title": "Nenhuma variável corresponde aos seus filtros",
+      "description": "Tente um termo de pesquisa diferente ou limpe o filtro de escopo."
     },
     "errors": {
       "load": "Não foi possível carregar as variáveis."

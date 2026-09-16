@@ -13,14 +13,14 @@ The system operates on three interconnected pillars: **baselines** that define w
 
 ## In the console
 
-Two of the three pillars have a console UI today:
+All three pillars have a console UI today:
 
+- **Baselines** -- open the **Network Discovery** page and select the **Baselines** tab (`/discovery#baselines`). Create a baseline for a site and subnet, edit its schedule and alert settings, trigger **Scan Now**, or delete it.
+- **Change Events** -- from the same **Network Discovery** page, the **Changes** tab (`/discovery#changes`) lists change events, with filters by site, profile, event type, and acknowledgement status, plus per-event and bulk acknowledge and device-linking actions. The Baselines tab links out to it to review the events a baseline's scans have recorded.
 - **Known Guests** -- Settings > Partner > Regional (`/settings/partner#regional`). Lists guest MAC addresses, with a form to add one (MAC, label, optional notes) and a remove action per row. This is partner-level and applies across every managed organization.
 - **IP History** -- open a device's detail page and select the **IP History** tab. Shows every IP address ever assigned to that device (interface, IP, assignment type, MAC, first/last seen, active status), with search and paging.
 
-<Aside type="caution">
-  Baselines and change events (create/scan a baseline, view or acknowledge change events) have no console UI yet -- everything under "Network Baselines" and "Change Detection" below is done through the API.
-</Aside>
+Everything the console does maps directly to the API calls documented under "Network Baselines" and "Change Detection" below, so scripting the same workflow is fully supported.
 
 ---
 

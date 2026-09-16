@@ -886,7 +886,10 @@ describe('ApprovalsInbox — "Approve and always allow"', () => {
     opKey,
     namespace: 'policy_key',
     state,
-    window: { executed: 12, verified: 9, failed: 0, recurred: 0, firstVerifiedAt: '2026-08-01T00:00:00.000Z' },
+    window: {
+      executed: 12, verified: 9, sweepVerified: 9, sweepExecuted: 9, failed: 0, recurred: 0,
+      firstVerifiedAt: '2026-08-01T00:00:00.000Z',
+    },
     blockedReason: state === 'eligible' ? null : 'below_threshold',
     promotedAt: null,
     demotedAt: null,

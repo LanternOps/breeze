@@ -105,6 +105,12 @@ const limitsFields = z.object({
   analysisMaxConcurrentRuns: z.number().int().min(1).max(5),
   analysisMaxStepTimeoutSeconds: z.number().int().min(10).max(600),
   analysisMaxStepsPerRun: z.number().int().min(1).max(100),
+  // Sweep act-mode caps (#4442 W05) — see
+  // AiAgentLimits.maxUnattendedDevicesPerSweep's docstring. The device cap
+  // has no 0-disables value: "unattended on zero devices" is act mode off,
+  // which is the `act_mode` flag's job, not a limit's.
+  maxUnattendedDevicesPerSweep: z.number().int().min(1).max(50),
+  sweepPromoteThreshold: z.number().int().min(1).max(200),
 });
 export const aiAgentLimitsPatchSchema = limitsFields.partial();
 export const aiAgentLimitsSchema = aiAgentLimitsPatchSchema.transform((v) => ({

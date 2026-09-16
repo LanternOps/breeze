@@ -11,6 +11,26 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 
 export const templateOwnerScopeSchema = z.enum(['organization', 'partner']);
 
+/**
+ * #5784. The report types Breeze may generate on its own behalf as service-plan
+ * evidence. HAND-PARALLEL to `MANAGED_EVIDENCE_REGISTRY` in
+ * `apps/api/src/services/managedEvidenceRegistry.ts` (the shared validator
+ * cannot import from apps/api); `managedEvidenceRegistry.test.ts` pins the two
+ * together. Deliberately EMPTY in W01 — W02 adds 'threat_detection_review',
+ * W03 'endpoint_management_review', W04 'vulnerability_management' and W06
+ * 'identity_access_review', each alongside its own enum migration.
+ */
+export const MANAGED_EVIDENCE_REPORT_TYPES = [] as const satisfies readonly string[];
+export type ManagedEvidenceReportType = (typeof MANAGED_EVIDENCE_REPORT_TYPES)[number];
+
+// Not `z.enum`: an empty tuple is not a valid enum, and this shape is correct
+// whether the list is empty (W01) or filled (W02+), so no later wave has to
+// swap the schema — it only appends to the tuple.
+const managedEvidenceReportTypeSchema = z.custom<ManagedEvidenceReportType>(
+  (value) => typeof value === 'string' && (MANAGED_EVIDENCE_REPORT_TYPES as readonly string[]).includes(value),
+  { message: 'Not a managed evidence report type' },
+);
+
 // Defaults live only on the CREATE shape. `.partial()` does not strip a
 // `.default()` — an absent key still resolves to the default — so deriving the
 // update schema from the defaulted fields would make `PATCH { graceDays }`
@@ -37,6 +57,13 @@ const templateItemFieldTypes = {
   instructions: z.string().max(10000).nullable().optional(),
   checklistTemplateId: z.string().guid().nullable().optional(),
   sortOrder: z.number().int().min(0),
+  /**
+   * #5784. A managed evidence report TYPE, resolved to the target org's managed
+   * definition at applyTemplateSet time. Deliberately NOT the full report_type
+   * enum: only the managed evidence types can be provisioned on demand, and an
+   * id could never be carried by a partner-wide item at all.
+   */
+  autoEvidenceReportType: managedEvidenceReportTypeSchema.nullable().optional(),
 };
 
 export const createTemplateItemSchema = z.object({

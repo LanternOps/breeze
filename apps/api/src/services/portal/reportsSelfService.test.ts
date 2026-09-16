@@ -257,6 +257,19 @@ describe('portal report SQL scope', () => {
     expect(query.params).toEqual(expect.arrayContaining([ORG_ID, true]));
   });
 
+  it('gates run listing on delivery (#5784 OD-12): unreferenced runs stay visible, referenced runs need a delivered occurrence', () => {
+    const query = new PgDialect().sqlToQuery(portalRunListPredicate(ORG_ID, true));
+    expect(query.sql).toMatch(/not exists \(\s*select 1 from service_deliverable_evidence/i);
+    expect(query.sql).toMatch(/join service_deliverable_occurrences/i);
+    expect(query.sql).toMatch(/status = 'delivered'/i);
+  });
+
+  it('gates run rendering on the same delivery rule (#5784 OD-12)', () => {
+    const query = new PgDialect().sqlToQuery(portalRunPredicate(RUN_ID, ORG_ID, true));
+    expect(query.sql).toMatch(/not exists \(\s*select 1 from service_deliverable_evidence/i);
+    expect(query.sql).toMatch(/status = 'delivered'/i);
+  });
+
   it('excludes hardware_lifecycle from run listing when the flag is off', () => {
     const query = new PgDialect().sqlToQuery(
       portalRunListPredicate(ORG_ID, false),
@@ -815,6 +828,10 @@ describe('latestPortalHardwareLifecycleRun', () => {
       true,
       'completed',
     ]));
+    // OD-12 (#5784): the dedicated reader carries the same delivery gate as
+    // portalRunPredicate, or an auto-evidence run leaks through "latest".
+    expect(query.sql).toMatch(/not exists \(\s*select 1 from service_deliverable_evidence/i);
+    expect(query.sql).toMatch(/status = 'delivered'/i);
   });
 
   it('formats generatedAt from the run completion time, not the stored summary', async () => {

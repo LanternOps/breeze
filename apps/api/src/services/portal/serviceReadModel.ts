@@ -94,6 +94,8 @@ interface EvidenceJoinRow {
   reportRunId: string | null;
   reportName: string | null;
   reportPortalSelfService: boolean | null;
+  /** OD-12 (#5784): report_run evidence publishes only once the occurrence is delivered. */
+  occurrenceStatus: string;
   createdAt: Date;
 }
 
@@ -110,6 +112,10 @@ function publishableEvidence(row: EvidenceJoinRow, enableReports: boolean): Port
     };
   }
   if (!enableReports || row.reportPortalSelfService !== true) return null;
+  // OD-12 (#5784): the scorecard link is a download path too. Gate it on the
+  // same delivery rule the portal run predicates use, or the customer reaches
+  // the artifact through the scorecard instead of the report list.
+  if (row.occurrenceStatus !== 'delivered') return null;
   return {
     kind: 'report_run',
     documentId: null,
@@ -140,9 +146,14 @@ function evidenceQuery(orgId: string, occurrenceIds: string[]) {
       reportRunId: serviceDeliverableEvidence.reportRunId,
       reportName: reports.name,
       reportPortalSelfService: reports.portalSelfService,
+      occurrenceStatus: serviceDeliverableOccurrences.status,
       createdAt: serviceDeliverableEvidence.createdAt,
     })
     .from(serviceDeliverableEvidence)
+    .innerJoin(serviceDeliverableOccurrences, and(
+      eq(serviceDeliverableOccurrences.id, serviceDeliverableEvidence.occurrenceId),
+      eq(serviceDeliverableOccurrences.orgId, serviceDeliverableEvidence.orgId),
+    ))
     .leftJoin(orgDocuments, and(
       eq(orgDocuments.id, serviceDeliverableEvidence.documentId),
       eq(orgDocuments.orgId, serviceDeliverableEvidence.orgId),

@@ -122,6 +122,19 @@ describe('DeliverableForm contract picker', () => {
   });
 });
 
+describe('DeliverableForm auto-evidence report picker', () => {
+  it('renders the evidence report picker bound to empty when None', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    const picker = screen.getByTestId('deliverable-auto-evidence-report') as HTMLSelectElement;
+    expect(picker.value).toBe('');
+  });
+
+  it('shows the empty state while no managed evidence type has shipped', () => {
+    render(<DeliverableForm fetcher={makeFetcher()} orgId="org-1" contractOptions={[]} onSaved={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByTestId('deliverable-auto-evidence-empty')).toBeInTheDocument();
+  });
+});
+
 describe('DeliverableForm checklist fields (#5808 W03)', () => {
   const templates: ChecklistTemplate[] = [
     {

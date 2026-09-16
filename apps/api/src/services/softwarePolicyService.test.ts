@@ -212,12 +212,15 @@ describe('SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS', () => {
     'inventory_clear',
   ];
 
-  it('exposes exactly the four install actions the contract names', () => {
+  it('exposes exactly the five install actions the contract names', () => {
     expect(SOFTWARE_POLICY_INSTALL_AUDIT_ACTIONS).toEqual({
       queued: 'install_queued',
       succeeded: 'install_succeeded',
       failed: 'install_failed',
       gaveUp: 'install_gave_up',
+      // #5505 W03: a pass that created nothing and errored on nothing. Before
+      // this member the emit site reported such a pass as install_queued.
+      skipped: 'install_skipped',
     });
   });
 

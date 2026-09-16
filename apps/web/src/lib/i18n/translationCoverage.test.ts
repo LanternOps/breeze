@@ -147,6 +147,9 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
+    // per-locale note where it is not obvious.
+    'toolSources.json': 1,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -273,6 +276,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    'toolSources.json': 1,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -423,6 +427,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 23,
+    'toolSources.json': 1,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -569,6 +574,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 22,
+    'toolSources.json': 1,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -645,7 +651,9 @@ const namespaceDuplicateBaselines = {
     'deliverables.json': 5,
     'devices.json': 164,
     // +1 (#5213 W03): assetTypes.website — "Website" is the German word.
-    'discovery.json': 27,
+    // +1 (#5433): tabs.baselines — "Baselines" is the identical loanword in
+    // German, matching networkBaselinesPanel.title's existing "Netzwerk-Baselines".
+    'discovery.json': 28,
     // errors namespace (Task 3 of #3859): seeded as English copies pending
     // native review, so all 9 codes are exact-English cognates for now.
     'errors.json': 9,
@@ -709,6 +717,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
+    'toolSources.json': 1,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -810,6 +819,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketWorkbench.invoice.missingRateEntry "{{description}} — {{hours}} h" is two
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
+    'toolSources.json': 1,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
@@ -895,6 +905,7 @@ const namespaceDuplicateBaselines = {
     // +1: ticketTimeBilling.noAmount — the em-dash placeholder for a row with
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
+    'toolSources.json': 1,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;

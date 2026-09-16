@@ -180,6 +180,13 @@ export const PERMISSION_GRANTS = {
   AI_AGENTS_READ: { resource: 'ai_agents', action: 'read' },
   AI_AGENTS_WRITE: { resource: 'ai_agents', action: 'write' },
 
+  // Tool sources (BYO MCP/OpenAPI, spec 2026-09-07 §5): manage registrations…
+  TOOL_SOURCES_READ: { resource: 'tool_sources', action: 'read' },
+  TOOL_SOURCES_WRITE: { resource: 'tool_sources', action: 'write' },
+  // …and call the tools they expose. `use` gates Tier 1, `write` gates Tier 2/3.
+  EXTERNAL_TOOLS_USE: { resource: 'external_tools', action: 'use' },
+  EXTERNAL_TOOLS_WRITE: { resource: 'external_tools', action: 'write' },
+
   // Action intents / durable approvals — gates who may decide (approve/deny) a
   // pending action-intent approval, distinct from creating/reading intents.
   APPROVALS_DECIDE: { resource: 'approvals', action: 'decide' },

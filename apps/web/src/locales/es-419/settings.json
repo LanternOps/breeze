@@ -896,7 +896,10 @@
     },
     "customCss": {
       "title": "Personalizado CSS (avanzado)",
-      "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño."
+      "description": "Utilice estilos personalizados para ajustar el espaciado, la tipografía o el diseño.",
+      "saveError": "No se pudo guardar el CSS personalizado.",
+      "loadError": "No se pudo cargar el CSS personalizado guardado actualmente. La edición está deshabilitada hasta que esto se cargue.",
+      "saveBlockedByLoadError": "El CSS personalizado no se guardó: no se pudo verificar el valor actual. Vuelva a cargar la página e inténtelo de nuevo."
     },
     "preview": {
       "action": "Vista previa",
@@ -1876,6 +1879,20 @@
         "empty": "No se reportaron hallazgos.",
         "evidenceTruncated": "La evidencia se truncó: no se le mostraron al agente todas las filas coincidentes.",
         "proposalCreated": "Aprobación solicitada",
+        "actSummary": "Se actuó sin supervisión en {{acted}} de {{proposed}} dispositivos; el resto espera aprobación.",
+        "outcomes": {
+          "auto_executing": "Ejecutándose sin supervisión",
+          "executed": "Completado",
+          "failed": "Falló",
+          "declined": "Rechazado",
+          "expired": "Vencido",
+          "unknown": "Resultado desconocido"
+        },
+        "stoppedBy": {
+          "fleet_cap": "se alcanzó el límite diario de la flota",
+          "day_cap": "se alcanzó el límite diario de acciones",
+          "occurrence_cap": "se alcanzó el tope de dispositivos por barrido"
+        },
         "columns": {
           "kind": "Comprobación",
           "severity": "Gravedad",
@@ -2395,7 +2412,8 @@
         "below_threshold": "Aún no hay suficientes ejecuciones verificadas.",
         "too_recent": "La primera ejecución verificada es demasiado reciente.",
         "has_failures": "En esta ventana se registró una falla o una reincidencia.",
-        "not_policy_decidable": "Esta operación nunca puede preautorizarse."
+        "not_policy_decidable": "Esta operación nunca puede preautorizarse.",
+        "below_sweep_threshold": "Faltan más correcciones verificadas en las que un barrido programado eligió el objetivo."
       },
       "confirm": {
         "title": "Solicitar preautorización",
@@ -5237,6 +5255,16 @@
     "empty": {
       "title": "Aún no hay variables",
       "description": "Crea una para dejar de pegar el mismo token en los scripts de cada cliente."
+    },
+    "filters": {
+      "searchLabel": "Buscar variables",
+      "searchPlaceholder": "Buscar por clave o descripción",
+      "scopeGroupLabel": "Filtrar por alcance",
+      "scopeAll": "Todos los alcances"
+    },
+    "noMatches": {
+      "title": "Ninguna variable coincide con tus filtros",
+      "description": "Prueba con otro término de búsqueda o borra el filtro de alcance."
     },
     "errors": {
       "load": "No se pudieron cargar las variables."

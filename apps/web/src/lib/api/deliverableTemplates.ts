@@ -16,6 +16,7 @@ import type {
   ApplyTemplateSetInput,
   CreateTemplateItemInput,
   CreateTemplateSetInput,
+  ManagedEvidenceReportType,
   UpdateTemplateItemInput,
   UpdateTemplateSetInput,
 } from '@breeze/shared';
@@ -41,6 +42,7 @@ export interface TemplateItem {
    *  same partner) is enforced server-side, not expressible here. */
   checklistTemplateId: string | null;
   sortOrder: number;
+  autoEvidenceReportType: ManagedEvidenceReportType | null;
 }
 
 export interface TemplateSet {

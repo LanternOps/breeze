@@ -56,6 +56,8 @@ import {
   initializeM365SyncRetention,
   pruneM365SyncRetention,
   shutdownM365SyncRetention,
+  SIGNIN_EVENTS_RETENTION_DAYS,
+  STALE_ENTITY_TABLES,
 } from './m365SyncRetentionWorker';
 import { jobSchedule } from './scheduleRegistry';
 
@@ -75,8 +77,9 @@ describe('m365 sync retention sweep', () => {
     expect(state.withSystemDbAccessContext).toHaveBeenCalledTimes(1);
 
     const queries = compiled();
-    // One statement per entity table (each returns a short batch) + one score prune.
-    expect(queries).toHaveLength(5);
+    // One statement per entity table (each returns a short batch) + one score
+    // prune + (#5784 W05) one sign-in-event sweep.
+    expect(queries).toHaveLength(6);
     for (const [i, table] of ['m365_users', 'm365_intune_devices', 'm365_ca_policies', 'm365_license_skus'].entries()) {
       expect(queries[i]!.sql).toMatch(new RegExp(`DELETE FROM "${table}"`));
       expect(queries[i]!.sql).toMatch(/WHERE is_stale\s+AND stale_since < now\(\) - make_interval\(days => \$1::int\)/);
@@ -95,7 +98,7 @@ describe('m365 sync retention sweep', () => {
     state.rowCounts.push(10000, 7);
     const result = await pruneM365SyncRetention();
     expect(result.deletedEntities).toBe(10007);
-    expect(compiled()).toHaveLength(6);
+    expect(compiled()).toHaveLength(7);
   });
 
   it('initialize replaces stale repeatables with ONE daily job at the registry slot, and shutdown closes both', async () => {
@@ -119,6 +122,52 @@ describe('m365 sync retention sweep', () => {
     await shutdownM365SyncRetention();
     expect(bull.workerClose).toHaveBeenCalledTimes(1);
     expect(bull.queueClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('#5784 W05: deletes sign-in events older than 120 days in ctid batches', async () => {
+    await pruneM365SyncRetention();
+    const stmt = compiled().find((q) => q.sql.includes('m365_signin_events'));
+    expect(stmt, 'no m365_signin_events sweep ran').toBeDefined();
+    expect(stmt!.sql).toMatch(/DELETE FROM "m365_signin_events"/);
+    expect(stmt!.sql).toMatch(/signed_in_at < now\(\) - make_interval\(days => \$1::int\)/);
+    expect(stmt!.sql).toMatch(/ctid IN \(/);
+    expect(stmt!.params).toEqual([SIGNIN_EVENTS_RETENTION_DAYS, 10000]);
+  });
+
+  it('#5784 W05: 120 days — a shorter window would silently clip a quarterly comparison', () => {
+    expect(SIGNIN_EVENTS_RETENTION_DAYS).toBe(120);
+  });
+
+  it('#5784 W05: the cutoff is strict — an event AT the boundary is kept', async () => {
+    await pruneM365SyncRetention();
+    const stmt = compiled().find((q) => q.sql.includes('m365_signin_events'))!;
+    // `<` not `<=`: a row at exactly 120 days survives. The nearest cases below
+    // are two days either side, so only this pins the comparison operator.
+    expect(stmt.sql).toMatch(/signed_in_at < now\(\)/);
+    expect(stmt.sql).not.toMatch(/signed_in_at <= now\(\)/);
+  });
+
+  it('#5784 W05: the sign-in-event sweep keeps batching past a full batch', async () => {
+    // Its own for(;;) loop, separate from deleteStaleEntities's — a dropped
+    // guard here would stop after 10k rows and leave the rest to accumulate.
+    state.rowCounts.push(0, 0, 0, 0, 0, 10000, 3);
+    const result = await pruneM365SyncRetention();
+    expect(result.deletedSigninEvents).toBe(10003);
+    const eventSweeps = compiled().filter((q) => q.sql.includes('m365_signin_events'));
+    expect(eventSweeps).toHaveLength(2);
+  });
+
+  it('#5784 W05: m365_signin_events is NOT in the stale-entity sweep', () => {
+    // It has no is_stale / stale_since columns; the stale sweep would error.
+    expect(STALE_ENTITY_TABLES).not.toContain('m365_signin_events');
+  });
+
+  it('#5784 W05: purged sign-in events count toward rowsDeleted', async () => {
+    state.rowCounts.push(0, 0, 0, 0, 0, 4);   // four entity tables, score prune, then events
+    const result = await pruneM365SyncRetention();
+    expect(result.deletedSigninEvents).toBe(4);
+    expect(state.recordRetentionRun)
+      .toHaveBeenCalledWith('m365_sync_retention', { rowsDeleted: 4 });
   });
 
   it('publishes a retention metric under the registered job name', async () => {

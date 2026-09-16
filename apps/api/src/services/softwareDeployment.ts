@@ -68,6 +68,15 @@ export interface CreateSoftwareDeploymentInput {
    * resolved `deviceIds` list.
    */
   targetIds?: string[] | null;
+  /**
+   * #5505 W03: the software policy whose autoInstall remediation produced this
+   * deployment. Set ONLY by services/softwarePolicyInstallRemediation.ts —
+   * HTTP callers never pass it, because an operator-created deployment is not
+   * policy-owned. Stamped by this function's INSERT so the origin is durable
+   * from the first moment the row exists (the remediation worker's dedup reads
+   * it on the very next pass, 15 minutes later).
+   */
+  softwarePolicyId?: string;
 }
 
 export interface CreateSoftwareDeploymentResult {
@@ -990,6 +999,7 @@ export async function createSoftwareDeployment(
     maintenanceWindowId,
     targetType,
     targetIds,
+    softwarePolicyId,
   } = input;
 
   // Mirrors the DB CHECK (software_deployments_one_target_chk): a deployment
@@ -1076,6 +1086,7 @@ export async function createSoftwareDeployment(
       createdBy,
       options: storedOptions,
       dependencyFingerprint,
+      softwarePolicyId: softwarePolicyId ?? null,
     })
     .returning();
 

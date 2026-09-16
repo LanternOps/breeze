@@ -1,7 +1,7 @@
 /**
  * M365 tenant sync retention (spec §3.7).
  *
- * Two sweeps, both bounded and both index-driven:
+ * Three sweeps, all bounded and all index-driven:
  *
  *  1. Entity rows the tenant no longer has: DELETE where `is_stale` and
  *     `stale_since` is more than 30 days old, in 10k `ctid` batches via each
@@ -12,6 +12,10 @@
  *     the predicate stops matching once a row is pruned, so the sweep never
  *     rescans history it has already handled. The row itself is KEPT: the
  *     score numbers are the trend line and are retained indefinitely.
+ *  3. Interactive sign-in events past 120 days (#5784 W05): a hard DELETE in
+ *     10k `ctid` batches via `m365_signin_events_org_signed_in_idx`. This one
+ *     keys on EVENT age, not staleness — the table is an append-only log and
+ *     has no `is_stale` / `stale_since` columns at all.
  *
  * Runs under a system DB access context: it is a cross-org sweep with no
  * request to inherit tenancy from. Deliberately NOT gated on
@@ -35,8 +39,20 @@ const BATCH_SIZE = 10000;
 const STALE_RETENTION_DAYS = 30;
 const SCORE_DETAIL_RETENTION_DAYS = 90;
 
-/** Entity tables whose stale rows expire. Fixed list, not schema-derived. */
-const STALE_ENTITY_TABLES = [
+/**
+ * #5784 W05. Interactive sign-in events are kept for 120 days: a monthly AND a
+ * quarterly deliverable each get a full prior period for comparison, and
+ * longer-horizon trend does not need raw rows because `previous.summary`
+ * carries the aggregates forward. It is also why a daily-aggregate tier was
+ * deferred rather than rejected — adding one later over retained raw rows is
+ * easy, recovering raw rows from aggregates is impossible.
+ */
+export const SIGNIN_EVENTS_RETENTION_DAYS = 120;
+
+/** Entity tables whose stale rows expire. Fixed list, not schema-derived.
+ *  m365_signin_events is deliberately NOT here: it has no is_stale /
+ *  stale_since column, and it expires on event age instead (below). */
+export const STALE_ENTITY_TABLES = [
   'm365_users',
   'm365_intune_devices',
   'm365_ca_policies',
@@ -46,6 +62,8 @@ const STALE_ENTITY_TABLES = [
 export interface M365SyncRetentionResult {
   deletedEntities: number;
   prunedScoreControls: number;
+  /** #5784 W05. Sign-in events older than SIGNIN_EVENTS_RETENTION_DAYS. */
+  deletedSigninEvents: number;
   durationMs: number;
 }
 
@@ -88,6 +106,30 @@ async function pruneScoreControlDetail(): Promise<number> {
   return pruned;
 }
 
+/**
+ * #5784 W05. Sign-in events expire on EVENT age, not staleness: this is an
+ * append-only log with no is_stale column, so `deleteStaleEntities` would error
+ * on it. Batched by ctid exactly like the stale sweep, riding
+ * m365_signin_events_org_signed_in_idx.
+ */
+async function deleteAgedSigninEvents(): Promise<number> {
+  let deleted = 0;
+  for (;;) {
+    const result = await db.execute(sql`
+      DELETE FROM ${sql.identifier('m365_signin_events')}
+      WHERE ctid IN (
+        SELECT ctid FROM ${sql.identifier('m365_signin_events')}
+        WHERE signed_in_at < now() - make_interval(days => ${SIGNIN_EVENTS_RETENTION_DAYS}::int)
+        LIMIT ${BATCH_SIZE}
+      )
+    `);
+    const n = extractRowCount(result);
+    deleted += n;
+    if (n < BATCH_SIZE) break;
+  }
+  return deleted;
+}
+
 export async function pruneM365SyncRetention(): Promise<M365SyncRetentionResult> {
   return withSystemDbAccessContext(async () => {
     const startedAt = Date.now();
@@ -96,19 +138,24 @@ export async function pruneM365SyncRetention(): Promise<M365SyncRetentionResult>
       deletedEntities += await deleteStaleEntities(table);
     }
     const prunedScoreControls = await pruneScoreControlDetail();
+    const deletedSigninEvents = await deleteAgedSigninEvents();
     const durationMs = Date.now() - startedAt;
 
     console.log(
-      `[M365SyncRetention] Deleted ${deletedEntities} stale entity row(s) and pruned `
-      + `${prunedScoreControls} score control_scores blob(s) in ${durationMs}ms`,
+      `[M365SyncRetention] Deleted ${deletedEntities} stale entity row(s), pruned `
+      + `${prunedScoreControls} score control_scores blob(s) and deleted `
+      + `${deletedSigninEvents} aged sign-in event(s) in ${durationMs}ms`,
     );
     // rowsDeleted is the counter's contract (breeze_retention_rows_deleted_total):
-    // only the entity DELETEs count. The score-detail prune is an UPDATE that
+    // the entity DELETEs plus (#5784 W05) the aged sign-in-event DELETEs — both
+    // are real row removals. The score-detail prune is an UPDATE that
     // keeps every row, so it is not folded in — it surfaces in the log line
     // above and in the returned job result (prunedScoreControls), and the
     // run itself still stamps the job's last-run gauge.
-    recordRetentionRun('m365_sync_retention', { rowsDeleted: deletedEntities });
-    return { deletedEntities, prunedScoreControls, durationMs };
+    recordRetentionRun('m365_sync_retention', {
+      rowsDeleted: deletedEntities + deletedSigninEvents,
+    });
+    return { deletedEntities, prunedScoreControls, deletedSigninEvents, durationMs };
   });
 }
 

@@ -113,7 +113,7 @@ describe('navSections structure (#1321, #1324)', () => {
 
   it('keeps every AI surface together and every platform-admin surface in Administration', () => {
     expect(hrefsOf('ai')).toEqual([
-      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/ai-for-office',
+      '/fleet', '/workspace', '/settings/ai-agents', '/ai-agents/runs', '/ai-agents/impact', '/ai-agents/fleet-design', '/settings/ai-usage', '/settings/ai-script-authoring', '/settings/tool-sources', '/ai-for-office',
     ]);
     const admin = section('administration');
     expect(admin.items.length).toBeGreaterThan(0);

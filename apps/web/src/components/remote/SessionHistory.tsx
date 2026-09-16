@@ -28,6 +28,13 @@ const FALLBACK_LABEL = '-';
 export type SessionType = 'terminal' | 'desktop' | 'file_transfer';
 export type SessionStatus = 'pending' | 'connecting' | 'active' | 'disconnected' | 'failed';
 
+/**
+ * SEC-038 teardown phase. 'pending' = the server ended the session but the
+ * device has not yet acknowledged the stop; 'confirmed' = the device has.
+ * Absent/'none' on live rows and on rows written before the fence shipped.
+ */
+export type SessionTerminationPhase = 'none' | 'pending' | 'confirmed';
+
 export type RemoteSession = {
   id: string;
   deviceId: string;
@@ -38,6 +45,7 @@ export type RemoteSession = {
   userEmail: string;
   type: SessionType;
   status: SessionStatus;
+  terminationPhase?: SessionTerminationPhase;
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;
@@ -55,6 +63,7 @@ export type RemoteSessionApi = Omit<
   userName?: string;
   userEmail?: string;
   bytesTransferred?: number | null;
+  terminationPhase?: SessionTerminationPhase | null;
   device?: { hostname?: string; osType?: string };
   user?: { name?: string; email?: string };
 };
@@ -82,6 +91,18 @@ const sessionStatusConfig: Record<SessionStatus, { labelKey: string; color: stri
   disconnected: { labelKey: 'sessionHistory.status.disconnected', color: 'bg-muted text-muted-foreground border-border' },
   failed: { labelKey: 'sessionHistory.status.failed', color: 'bg-destructive/15 text-destructive border-destructive/30' }
 };
+
+// SEC-038 W06: a terminal row the device has not yet acknowledged is labelled
+// distinctly from a confirmed end — the stream may still be tearing down.
+const teardownPendingStatusConfig = {
+  labelKey: 'sessionHistory.status.teardownPending',
+  color: 'bg-warning/15 text-warning border-warning/30'
+} as const;
+
+export function sessionStatusBadge(session: Pick<RemoteSession, 'status' | 'terminationPhase'>): { labelKey: string; color: string } {
+  if (session.terminationPhase === 'pending') return teardownPendingStatusConfig;
+  return sessionStatusConfig[session.status];
+}
 
 // Format duration
 function formatDuration(seconds?: number): string {
@@ -162,6 +183,7 @@ export function normalizeRemoteSession(session: RemoteSessionApi): RemoteSession
     userEmail: session.userEmail ?? session.user?.email ?? FALLBACK_LABEL,
     type: session.type,
     status: session.status,
+    terminationPhase: session.terminationPhase ?? undefined,
     startedAt: session.startedAt ?? undefined,
     endedAt: session.endedAt ?? undefined,
     durationSeconds: session.durationSeconds ?? undefined,
@@ -493,9 +515,9 @@ export default function SessionHistory({
                     <td className="px-4 py-3">
                       <span className={cn(
                         'inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium',
-                        sessionStatusConfig[session.status].color
+                        sessionStatusBadge(session).color
                       )}>
-                        {t(/* i18n-dynamic */ sessionStatusConfig[session.status].labelKey)}
+                        {t(/* i18n-dynamic */ sessionStatusBadge(session).labelKey)}
                       </span>
                     </td>
                     <td className="px-4 py-3">

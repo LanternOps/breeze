@@ -81,6 +81,14 @@ export const serviceDeliverableOccurrences = pgTable('service_deliverable_occurr
   waivedAt: timestamp('waived_at', { withTimezone: true }),
   waivedByUserId: uuid('waived_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   waivedReason: text('waived_reason'),
+  /** #5784 W01. Last auto-evidence sweep attempt for this occurrence. */
+  autoEvidenceAttemptedAt: timestamp('auto_evidence_attempted_at', { withTimezone: true }),
+  /**
+   * #5784 W01. Last refusal reason (`AutoEvidenceRefusal`), NULL when the last
+   * attempt succeeded or none has run. Also de-duplicates the internal ticket
+   * comment: the sweep comments only when this value CHANGES.
+   */
+  autoEvidenceRefusal: text('auto_evidence_refusal'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [

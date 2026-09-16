@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, timestamp, jsonb, pgEnum, integer, boolean, numeric, char, uniqueIndex, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import type { ImpactWeightOverrides } from '@breeze/shared';
 
@@ -245,6 +245,7 @@ export const sites = pgTable('sites', {
   partnerExportUpdatedAt: timestamp('partner_export_updated_at', { precision: 3 }).defaultNow().notNull()
 }, (table) => ({
   idOrgUnique: uniqueIndex('sites_id_org_id_uniq').on(table.id, table.orgId),
+  orgIdIdx: index('sites_org_id_idx').on(table.orgId),
 }));
 
 export const enrollmentKeys = pgTable('enrollment_keys', {

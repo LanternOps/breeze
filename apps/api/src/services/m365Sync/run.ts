@@ -21,6 +21,7 @@ import { persistIntuneDevices } from './domains/intuneDevices';
 import { M365SyncRunFencedError } from './domains/persist';
 import { persistSecureScore } from './domains/secureScore';
 import { persistSigninActivity } from './domains/signinActivity';
+import { persistSigninEvents, signinEventsWindow } from './domains/signinEvents';
 import { persistSkus } from './domains/skus';
 import { persistUsers } from './domains/users';
 import { afterDomainPersisted } from './hooks';
@@ -72,6 +73,13 @@ export interface SyncRunContext {
      * the one short transaction that already holds the row.
      */
     lastSuccessAt: Date | null;
+    /**
+     * #5784 W05. The `signin_events` delta window, or null for every other
+     * domain. Computed HERE because Phase A is the only phase that holds a DB
+     * context — Phase B deliberately holds none, and the window needs
+     * MAX(signed_in_at) for the org.
+     */
+    signinEventsWindow?: { since: string; until: string } | null;
   };
   existing: Map<string, { coreHash: string; isStale: boolean }>;
 }
@@ -149,6 +157,8 @@ function selectStateAndConnection(data: M365SyncJobData, forUpdate: boolean) {
  */
 export async function loadSyncRunContext(
   data: M365SyncJobData,
+  /** #5784 W05: the run's clock, so the sign-in window is anchored to it. */
+  now: Date = new Date(),
 ): Promise<SyncRunContext | { fenced: FenceReason }> {
   return withSystemDbAccessContext(async () => {
     const rows = await selectStateAndConnection(data, false);
@@ -174,6 +184,13 @@ export async function loadSyncRunContext(
       }
     }
 
+    // #5784 W05. The sign-in event window rides Phase A's own system context:
+    // it is one indexed MAX(signed_in_at) on the org, and Phase B holds no DB
+    // context at all, so there is nowhere later it could be read.
+    const signinWindow = data.domain === 'signin_events'
+      ? await signinEventsWindow(data.orgId, now)
+      : null;
+
     return {
       snapshot,
       state: {
@@ -181,6 +198,7 @@ export async function loadSyncRunContext(
         continuation: row!.continuation,
         lastCompleteSnapshotAt: row!.lastCompleteSnapshotAt,
         lastSuccessAt: row!.lastSuccessAt,
+        signinEventsWindow: signinWindow,
       },
       existing,
     };
@@ -230,6 +248,7 @@ export const DOMAIN_PERSISTERS: Record<M365SyncDomain, M365DomainPersister | und
   ca_policies: persistCaPolicies,
   skus: persistSkus,
   secure_score: persistSecureScore,
+  signin_events: persistSigninEvents,
 };
 
 /**
@@ -517,7 +536,7 @@ export async function runSyncDomain(
     }
 
     // ---- Phase A ----------------------------------------------------------
-    const loaded = await loadContext(data);
+    const loaded = await loadContext(data, now);
     if ('fenced' in loaded) {
       recordM365SyncFenced();
       await release(data);
@@ -542,6 +561,7 @@ export async function runSyncDomain(
       m365SyncActionFor(data.domain, {
         continuation: loaded.state.continuation,
         backfill: loaded.state.lastSuccessAt === null,
+        window: loaded.state.signinEventsWindow ?? null,
       }),
       { route: 'sync', correlationId, domain: data.domain },
     ) as M365SyncCallResult;

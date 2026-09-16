@@ -27,6 +27,7 @@ import {
   type SoftwarePolicyRemediationStatus,
 } from '../services/softwarePolicyService';
 import { resolveDeviceIdsForSoftwarePolicy } from '../services/featureConfigResolver';
+import { readLatestPolicyOwnedInstallByDevice } from '../services/softwarePolicyInstallRemediation';
 import {
   scheduleSoftwareInstallRemediation,
   scheduleSoftwareRemediation,
@@ -370,6 +371,89 @@ export function decideInstallRemediation(input: {
 }
 
 /**
+ * Unstick an install-remediation row whose enqueue produced no deployment
+ * (#5505 W03, follow-up to W02's review).
+ *
+ * THE PROBLEM. W02 (#5917) shipped the producer ahead of the processor. Every
+ * install job it enqueued hit the parking branch in the remediation worker,
+ * completed as a no-op, and left its row at `install_remediation_status =
+ * 'pending'` with an attempt stamped and the attempt counter incremented.
+ * Installing a processor does NOT drain those rows: shouldQueueAutoRemediation's
+ * first branch reads 'pending' as 'in_progress' with no staleness escape, and
+ * installStatusForSkip writes nothing for a timing deferral — so the row is
+ * stuck forever and the parked job is already gone from Redis.
+ *
+ * THE RULE. A row qualifies when its status is LIVE ('pending' | 'in_progress')
+ * and no policy-owned deployment exists for it at or after the attempt that put
+ * it there. It is reset to 'none' so the next gate evaluates it normally.
+ *
+ * WHY THE TIMESTAMP, NOT MEMBERSHIP. A device whose PREVIOUS cycle installed
+ * successfully still has policy-owned deployments; reading mere membership as
+ * proof of live work would leave exactly the crash-abandoned rows stuck.
+ *
+ * WHY DECREMENT BY ONE, NOT RESET TO ZERO. The counter is a loop terminator for
+ * real install attempts, and an enqueue that produced no deployment made none —
+ * so exactly one increment is unearned, and exactly one is given back. Resetting
+ * to zero would also undo genuine attempts and could mask a true install loop;
+ * decrementing is self-limiting, because each future enqueue adds one back.
+ * A device that had already burned its whole budget while parked therefore gets
+ * one honest attempt before 'gave_up', rather than being written off having
+ * never installed anything.
+ *
+ * WHY THE TIMESTAMP IS CLEARED TOO. last_install_remediation_attempt records an
+ * attempt that never happened, and shouldQueueAutoRemediation measures the
+ * cooldown (2h by default) against it — so leaving it would unstick the row and
+ * then immediately defer it again for up to two hours. Nulling it is both the
+ * honest value and what makes the drain happen on the pass that reconciles.
+ *
+ * IDEMPOTENT. The result is a non-live status, so a second pass over the same
+ * row returns undefined. Running the sweep every pass is a no-op once drained.
+ *
+ * SAFE AGAINST A DOUBLE INSTALL. A row reset in error (the job was enqueued but
+ * has not run yet, so no deployment exists) costs at most one redundant job:
+ * scheduleSoftwareInstallRemediation dedupes on its own jobId, and
+ * processRemediateDeviceInstall re-checks hasUnfinishedPolicyOwnedInstall before
+ * creating anything. No second deployment can result.
+ *
+ * Pure and total: no I/O, no clock read. Exported for tests.
+ */
+export function reconcileOrphanedInstallRemediation(input: {
+  installRemediationStatus: SoftwarePolicyInstallRemediationStatus | null;
+  lastInstallRemediationAttempt: Date | null;
+  installRemediationAttempts: number;
+  latestPolicyOwnedDeploymentAt: Date | null;
+}):
+  | {
+      installRemediationStatus: 'none';
+      installRemediationAttempts: number;
+      lastInstallRemediationAttempt: null;
+    }
+  | undefined {
+  const isLive =
+    input.installRemediationStatus === 'pending' || input.installRemediationStatus === 'in_progress';
+  if (!isLive) return undefined;
+
+  const deployedAt = input.latestPolicyOwnedDeploymentAt;
+  if (deployedAt) {
+    const attemptedAt = input.lastInstallRemediationAttempt;
+    // No attempt timestamp at all means nothing can vouch for this live status,
+    // so any deployment is necessarily from an earlier cycle.
+    if (attemptedAt && deployedAt.getTime() >= attemptedAt.getTime()) {
+      return undefined;
+    }
+  }
+
+  const attempts = Number.isFinite(input.installRemediationAttempts)
+    ? Math.max(0, Math.floor(input.installRemediationAttempts))
+    : 0;
+  return {
+    installRemediationStatus: 'none',
+    installRemediationAttempts: Math.max(0, attempts - 1),
+    lastInstallRemediationAttempt: null,
+  };
+}
+
+/**
  * What (if anything) a skip should write to install_remediation_status.
  *
  * Timing deferrals write NOTHING, mirroring the uninstall path: a device inside
@@ -545,6 +629,24 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
   const uninstallArming = evaluateSoftwarePolicyArming(policy, 'uninstall');
   const installArming = evaluateSoftwarePolicyArming(policy, 'install');
   const existingByDevice = await readComplianceStateByDevice(policy.id, deviceIds);
+
+  // ---- #5505 W03: orphaned-install reconcile sweep, part 1 of 2 ------------
+  // Prefetch only. The DECISION happens per device inside the loop below, in
+  // the branch where a stuck status actually blocks progress — a device with
+  // nothing missing any more is converging normally and W02's own
+  // 'pending' -> 'completed' transition must be left to handle it.
+  // See reconcileOrphanedInstallRemediation for why these rows exist at all.
+  const reconcileCandidateIds = Array.from(existingByDevice.values())
+    .filter(
+      (state) =>
+        state.installRemediationStatus === 'pending'
+        || state.installRemediationStatus === 'in_progress'
+    )
+    .map((state) => state.deviceId);
+  const latestPolicyOwnedInstallByDevice = reconcileCandidateIds.length > 0
+    ? await readLatestPolicyOwnedInstallByDevice(policy.id, reconcileCandidateIds)
+    : new Map<string, Date>();
+  // ---- end reconcile sweep, part 1 ----------------------------------------
   const inventoryByDevice = await getSoftwareInventoryByDeviceIds(deviceIds);
 
   let violations = 0;
@@ -615,11 +717,34 @@ export async function processCheckPolicy(data: CheckPolicyJobData): Promise<{
       }
 
       if (hasMissingViolation && installArming.armed) {
+        // #5505 W03 reconcile sweep, part 2 of 2. This device still wants
+        // software AND the policy is armed, so a live-but-orphaned status here
+        // is exactly the stuck state: shouldQueueAutoRemediation would read it
+        // as in_progress forever. Reconciling in place feeds the corrected
+        // values straight into the gate, so the SAME pass that unsticks the row
+        // also queues it — and the corrected values ride out on the upsert
+        // below rather than needing their own UPDATE statement.
+        const reconciled = reconcileOrphanedInstallRemediation({
+          installRemediationStatus: existing?.installRemediationStatus ?? null,
+          lastInstallRemediationAttempt: existing?.lastInstallRemediationAttempt ?? null,
+          installRemediationAttempts: existing?.installRemediationAttempts ?? 0,
+          latestPolicyOwnedDeploymentAt: latestPolicyOwnedInstallByDevice.get(deviceId) ?? null,
+        });
+        if (reconciled) {
+          console.warn(
+            `[SoftwareComplianceWorker] Reconciled orphaned install-remediation row for policy ${policy.id} device ${deviceId} (#5505 W03)`
+          );
+          installRemediationStatus = reconciled.installRemediationStatus;
+          installRemediationAttempts = reconciled.installRemediationAttempts;
+        }
+
         const installDecision = decideInstallRemediation({
           violations: violationsWithStableTimestamps,
-          previousInstallStatus: existing?.installRemediationStatus ?? null,
-          lastInstallAttempt: existing?.lastInstallRemediationAttempt ?? null,
-          attempts: existing?.installRemediationAttempts ?? 0,
+          previousInstallStatus:
+            reconciled?.installRemediationStatus ?? existing?.installRemediationStatus ?? null,
+          lastInstallAttempt:
+            reconciled ? reconciled.lastInstallRemediationAttempt : (existing?.lastInstallRemediationAttempt ?? null),
+          attempts: reconciled?.installRemediationAttempts ?? existing?.installRemediationAttempts ?? 0,
           now,
           gracePeriodHours: remediationOptions.gracePeriodHours,
           cooldownMinutes: remediationOptions.cooldownMinutes,

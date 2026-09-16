@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../lib/validation';
 import { z } from 'zod';
-import { and, eq, like, desc, sql, gte, lte, or, inArray } from 'drizzle-orm';
+import { and, eq, like, desc, sql, gte, lte, or, inArray, isNull } from 'drizzle-orm';
 import { authMiddleware, requireMfa, requirePermission, requireScope } from '../middleware/auth';
 import { db } from '../db';
 import { networkMonitors, networkMonitorResults, networkMonitorAlertRules, devices, discoveredAssets } from '../db/schema';
@@ -46,6 +46,7 @@ function resolveOrgId(
 type AuthContext = {
   scope: string;
   orgId: string | null;
+  partnerId: string | null;
   accessibleOrgIds: string[] | null;
   canAccessOrg: (orgId: string) => boolean;
 };
@@ -122,6 +123,63 @@ async function requireMonitorAccess(auth: AuthContext, monitorId: string, permis
     return { error: 'Access to this site denied', status: 403 } as const;
   }
   return { monitor } as const;
+}
+
+/**
+ * #5866 — the SELECT-only partner-wide read branch (CLAUDE.md "Partner-Wide
+ * First", step 3). A `network_check` monitor definition saved with owner scope
+ * "All orgs" compiles to a `network_monitors` row with `org_id NULL,
+ * partner_id = P`; without this branch that row is write-only from the
+ * operator's point of view — it runs, writes results, and no list, detail or
+ * status surface ever shows it.
+ *
+ * Gated on `auth.scope === 'partner'` on purpose: an org token carries a
+ * partnerId but never passes `breeze_has_partner_access`, so widening on it
+ * would claim a visibility the RLS policy does not grant. Read-only by
+ * construction — every caller below is a GET; the mutation paths keep going
+ * through `requireMonitorAccess`, which still narrows to `orgId: string`.
+ */
+function partnerWideMonitorCondition(auth: AuthContext) {
+  if (auth.scope !== 'partner' || !auth.partnerId) return undefined;
+  return and(isNull(networkMonitors.orgId), eq(networkMonitors.partnerId, auth.partnerId));
+}
+
+/** Org filter for a read surface, widened with the partner-wide branch when it applies. */
+function monitorReadOwnerCondition(auth: AuthContext, orgId: string | null | undefined) {
+  const partnerWide = partnerWideMonitorCondition(auth);
+  if (!orgId) return partnerWide;
+  if (!partnerWide) return eq(networkMonitors.orgId, orgId);
+  return or(eq(networkMonitors.orgId, orgId), partnerWide);
+}
+
+/**
+ * #5866 — read-path monitor lookup. Tries the org axis first (unchanged
+ * semantics, including the site gate), then falls back to the caller's own
+ * partner-wide rows. Returns the raw row, which may carry `orgId: null` — a
+ * partner-wide monitor is never editable through this surface, so callers must
+ * be GETs only.
+ */
+async function requireMonitorReadAccess(auth: AuthContext, monitorId: string, permissions?: UserPermissions) {
+  const orgResult = await requireMonitorAccess(auth, monitorId, permissions);
+  if (!('error' in orgResult)) {
+    return { monitor: orgResult.monitor as typeof networkMonitors.$inferSelect } as const;
+  }
+
+  const partnerWide = partnerWideMonitorCondition(auth);
+  if (!partnerWide) return orgResult;
+
+  const [row] = await db
+    .select()
+    .from(networkMonitors)
+    .where(and(eq(networkMonitors.id, monitorId), partnerWide))
+    .limit(1);
+  if (!row) return orgResult;
+  // A partner-wide row owns no org and therefore no site, so a site-restricted
+  // user gets the same vacuous "no site" answer the list path gives it.
+  if (!(await hasMonitorSiteAccess(row, permissions))) {
+    return { error: 'Access to this site denied', status: 403 } as const;
+  }
+  return { monitor: row } as const;
 }
 
 async function requireAlertRuleAccess(auth: AuthContext, ruleId: string, permissions?: UserPermissions) {
@@ -358,7 +416,8 @@ monitorRoutes.get(
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
     const conditions: ReturnType<typeof eq>[] = [];
-    if (orgResult.orgId) conditions.push(eq(networkMonitors.orgId, orgResult.orgId));
+    const ownerCondition = monitorReadOwnerCondition(auth as AuthContext, orgResult.orgId);
+    if (ownerCondition) conditions.push(ownerCondition);
     if (query.assetId) conditions.push(eq(networkMonitors.assetId, query.assetId));
     if (query.monitorType) conditions.push(eq(networkMonitors.monitorType, query.monitorType));
     if (query.status) conditions.push(eq(networkMonitors.lastStatus, query.status));
@@ -396,6 +455,8 @@ monitorRoutes.get(
       data: visibleResults.map((m) => ({
         id: m.id,
         orgId: m.orgId,
+        // #5866 — `orgId: null` + a partnerId is the "All orgs" badge signal.
+        partnerId: m.partnerId,
         assetId: m.assetId,
         name: m.name,
         monitorType: m.monitorType,
@@ -489,7 +550,7 @@ monitorRoutes.get(
     const orgResult = resolveOrgId(auth);
     if ('error' in orgResult) return c.json({ error: orgResult.error }, orgResult.status);
 
-    const orgFilter = orgResult.orgId ? eq(networkMonitors.orgId, orgResult.orgId) : undefined;
+    const orgFilter = monitorReadOwnerCondition(auth as AuthContext, orgResult.orgId);
     const permissions = c.get('permissions') as UserPermissions | undefined;
 
     if (permissions?.allowedSiteIds) {
@@ -567,7 +628,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
     const monitor = monitorResult.monitor;
 
@@ -792,7 +853,7 @@ monitorRoutes.get(
     const auth = c.get('auth') as AuthContext;
     const { id: monitorId } = c.req.valid('param');
     const query = c.req.valid('query');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const resultConditions: ReturnType<typeof eq>[] = [eq(networkMonitorResults.monitorId, monitorId)];
@@ -860,7 +921,7 @@ monitorRoutes.get(
   async (c) => {
     const auth = c.get('auth') as AuthContext;
     const { monitorId } = c.req.valid('param');
-    const monitorResult = await requireMonitorAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
+    const monitorResult = await requireMonitorReadAccess(auth, monitorId, c.get('permissions') as UserPermissions | undefined);
     if ('error' in monitorResult) return c.json({ error: monitorResult.error }, monitorResult.status);
 
     const rules = await db.select().from(networkMonitorAlertRules)

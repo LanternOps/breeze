@@ -1,5 +1,5 @@
 import { db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext } from '../db';
-import { roles, permissions, rolePermissions, partnerUsers, organizationUsers } from '../db/schema';
+import { roles, permissions, rolePermissions, partnerUsers, organizationUsers, users } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { PERMISSION_GRANTS } from '@breeze/shared';
@@ -85,11 +85,103 @@ async function bumpSharedPermissionCacheVersion(userId?: string): Promise<void> 
   }
 }
 
+/**
+ * The synthetic role id reported for a platform admin on a system-scope token.
+ * Deliberately not a UUID: there is no `roles` row behind it — the grant is the
+ * platform-admin flag itself, not a role assignment.
+ */
+export const PLATFORM_ADMIN_ROLE_ID = 'platform-admin';
+
+/** Wildcard grant. Matched by permissionGrantMatches on both axes. */
+const PLATFORM_ADMIN_GRANTS: Permission[] = [{ resource: '*', action: '*' }];
+
+/**
+ * #5733 — resolve permissions for the LOGIN-PRODUCED system-scope shape:
+ * `scope: 'system'` with NEITHER partnerId NOR orgId on the token.
+ *
+ * Login mints system scope ONLY for a user with no partner_users and no
+ * organization_users row (routes/auth/helpers.ts resolveCurrentUserTokenContext),
+ * so the membership-keyed resolver below had nothing to look up: it returned
+ * null and requirePermission answered 403 "No permissions found" on EVERY
+ * requirePermission-gated route that also admits requireScope(... 'system').
+ * Those system branches were unreachable in production.
+ *
+ * A system-scope token that DOES carry a partnerId or orgId is deliberately
+ * excluded: per the #5071 contract, when such a token has a membership the
+ * membership's grants still govern, so it falls through to the membership
+ * resolver below exactly as before this fix (pinned by
+ * siteAggregateScope.integration.test.ts RMM-QA-221). Widening the bypass to
+ * that shape would let a platform admin's no-read partner role read anyway.
+ *
+ * The grant is authorised by a LIVE `users.is_platform_admin` read, never by
+ * the token's own `scope` claim — authMiddleware's SR2-02 check does the same
+ * thing one layer up, and this must hold for any caller that reaches
+ * getUserPermissions without it. A non-platform-admin system token still
+ * resolves to null → 403, unchanged.
+ *
+ * Deliberately NOT cached: a demotion must take effect on the next request
+ * rather than after the 5-minute permission-cache TTL. It is one PK-keyed read.
+ *
+ * `users` is FORCE-RLS and dual-axis, so a context that cannot see the row
+ * would filter it to 0 rows and fail a live platform admin closed. Resolving
+ * an identity flag is not a tenant-data question — escalate to a fresh system
+ * transaction when the ambient context is not already system-scoped, and
+ * runOutsideDbContext FIRST (withDbAccessContext no-ops while a context is
+ * active, so the reverse order silently keeps the narrower context). The read
+ * is equality-keyed on the caller's own userId, so the escalation can only
+ * surface that one pinned row.
+ */
+async function resolveSystemScopePermissions(userId: string): Promise<UserPermissions | null> {
+  const readIsPlatformAdmin = async (): Promise<boolean> => {
+    const [row] = await db
+      .select({ isPlatformAdmin: users.isPlatformAdmin })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row?.isPlatformAdmin === true;
+  };
+
+  const ambient = getCurrentDbAccessContext();
+  const isPlatformAdmin = ambient?.scope === 'system'
+    ? await readIsPlatformAdmin()
+    : await runOutsideDbContext(() => withSystemDbAccessContext(readIsPlatformAdmin));
+
+  if (!isPlatformAdmin) {
+    // Mirrors authMiddleware's SR2-02 rejection log (`system_scope_demoted`),
+    // which covers the same condition one layer up. Reaching THIS branch means
+    // the demotion landed inside the request — between authMiddleware's live
+    // read and this one — so it is a narrow TOCTOU race that deserves the same
+    // diagnostic trail rather than a silent 403.
+    console.warn('[permissions] denied system-scope token', {
+      reason: 'system_scope_not_platform_admin',
+      userId,
+    });
+    return null;
+  }
+
+  return {
+    permissions: PLATFORM_ADMIN_GRANTS.map((grant) => ({ ...grant })),
+    partnerId: null,
+    orgId: null,
+    roleId: PLATFORM_ADMIN_ROLE_ID,
+    scope: 'system',
+  };
+}
+
 export async function getUserPermissions(
   userId: string,
-  context: { partnerId?: string; orgId?: string },
+  context: { partnerId?: string; orgId?: string; scope?: 'system' | 'partner' | 'organization' },
   options?: { bypassCache?: boolean },
 ): Promise<UserPermissions | null> {
+  // #5733 — the login-produced system shape carries no partnerId/orgId to key a
+  // membership read on. Handled entirely by the platform-admin branch, ahead of
+  // the cache: the grant is re-derived from the live users row on every call
+  // (see the helper's note). A system token that DOES carry an axis keeps the
+  // membership-resolved answer — see the helper's doc comment (#5071).
+  if (context.scope === 'system' && !context.partnerId && !context.orgId) {
+    return resolveSystemScopePermissions(userId);
+  }
+
   const cacheKey = userId + ':' + (context.partnerId || '') + ':' + (context.orgId || '');
   const versions = await getPermissionCacheVersions(userId);
   const cached = permissionCache.get(cacheKey);

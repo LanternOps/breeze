@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, timestamp, boolean, jsonb, pgEnum, index } from 'drizzle-orm/pg-core';
 import { organizations, partners } from './orgs';
 import { devices } from './devices';
 import { users } from './users';
@@ -102,7 +102,9 @@ export const portalUsers = pgTable('portal_users', {
   invitedAt: timestamp('invited_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
-});
+}, (table) => ({
+  orgIdIdx: index('portal_users_org_id_idx').on(table.orgId),
+}));
 
 // P2-4 (#4191): tickets also gains a composite-FK target unique index,
 // `tickets_id_org_uq` on (id, org_id) — a plain `CREATE UNIQUE INDEX` in

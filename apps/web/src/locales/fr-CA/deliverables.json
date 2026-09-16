@@ -67,6 +67,9 @@
       "on_ticket_resolve": "Livré lorsque le billet lié est résolu"
     },
     "autoEvidenceReport": "Joindre les exécutions de rapport comme preuve",
+    "autoEvidenceNone": "Aucun",
+    "autoEvidenceHelp": "La preuve est générée le jour d'échéance et devient visible pour le client lorsque l'occurrence est livrée.",
+    "autoEvidenceEmpty": "Aucun type de rapport de preuve géré n'est encore disponible.",
     "owner": "Responsable",
     "ticketCategory": "Catégorie de billet",
     "portalVisible": "Afficher dans le portail client",
@@ -186,7 +189,8 @@
       "leadDays": "Ouvrir ce nombre de jours avant l'échéance",
       "graceDays": "Marquer comme manqué ce nombre de jours après l'échéance",
       "artifactRequired": "Preuve requise",
-      "completionMode": "Achèvement"
+      "completionMode": "Achèvement",
+      "autoEvidenceReportType": "Type de rapport de preuve"
     },
     "ownerScope": {
       "legend": "Pour qui est cet ensemble?",

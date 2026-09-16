@@ -140,7 +140,9 @@ type OrgDetails = {
       primaryColor?: string;
       secondaryColor?: string;
       theme?: 'light' | 'dark' | 'system';
-      customCss?: string;
+      // customCss deliberately absent (#5952) — it now lives in
+      // portal_branding, loaded/saved by OrgBrandingEditor via
+      // /orgs/organizations/:id/portal-settings, not here.
       portalSubdomain?: string;
     };
     defaults?: {
@@ -584,6 +586,7 @@ export default function OrgSettingsPage({ orgId: propOrgId }: OrgSettingsPagePro
         return (
           <OrgBrandingEditor
             organizationName={displayOrg.name}
+            orgId={effectiveOrgId}
             branding={orgDetails?.settings?.branding}
             onDirty={handleDirty}
             onSave={(data) => handleSave('branding', data)}

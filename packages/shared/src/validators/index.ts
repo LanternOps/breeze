@@ -1133,6 +1133,8 @@ export {
   updateTemplateSetSchema,
   listTemplateSetsQuerySchema,
   applyTemplateSetSchema,
+  MANAGED_EVIDENCE_REPORT_TYPES,
+  type ManagedEvidenceReportType,
   type CreateTemplateItemInput,
   type UpdateTemplateItemInput,
   type CreateTemplateSetInput,
@@ -1164,3 +1166,6 @@ export {
 // the ./automationActions leaf (never from this barrel), so this re-export
 // carries no initialisation-order hazard.
 export * from './monitors';
+
+// Tool sources (BYO MCP/OpenAPI, spec 2026-09-07)
+export * from './toolSources';

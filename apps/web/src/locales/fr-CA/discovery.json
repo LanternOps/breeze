@@ -241,6 +241,7 @@
     },
     "tabs": {
       "assets": "Actifs",
+      "baselines": "Lignes de base",
       "changes": "Changements",
       "jobs": "Tâches",
       "profiles": "Profils",

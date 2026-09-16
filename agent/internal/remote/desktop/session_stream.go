@@ -11,6 +11,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
+	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/observability"
 )
 
@@ -228,21 +229,35 @@ func (s *Session) metricsLogger() {
 		case <-s.done:
 			return
 		case <-ticker.C:
-			snap := s.metrics.Snapshot()
-			slog.Info("Desktop WebRTC metrics",
-				"session", s.id,
-				"captured", snap.FramesCaptured,
-				"encoded", snap.FramesEncoded,
-				"sent", snap.FramesSent,
-				"skipped", snap.FramesSkipped,
-				"dropped", snap.FramesDropped,
-				"encodeMs", fmt.Sprintf("%.1f", snap.EncodeMs),
-				"frameBytes", snap.LastFrameSize,
-				"bandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
-				"uptime", snap.Uptime.Round(time.Second),
-			)
+			s.logMetricsSnapshot()
 		}
 	}
+}
+
+// logMetricsSnapshot emits the periodic "Desktop WebRTC metrics" line.
+//
+// ShipAlways: this line and "Viewer WebRTC stats" are the only WebRTC
+// diagnostics we have, and the desktop-helper ships at
+// log_shipping_level=warn by default — without the override they never reach
+// Agent Logs (#5929). captureMs/convertMs sit next to encodeMs so a slow
+// capturer isn't blamed on the encoder.
+func (s *Session) logMetricsSnapshot() {
+	snap := s.metrics.Snapshot()
+	slog.Info("Desktop WebRTC metrics",
+		"session", s.id,
+		"captured", snap.FramesCaptured,
+		"encoded", snap.FramesEncoded,
+		"sent", snap.FramesSent,
+		"skipped", snap.FramesSkipped,
+		"dropped", snap.FramesDropped,
+		"captureMs", fmt.Sprintf("%.1f", snap.CaptureMs),
+		"convertMs", fmt.Sprintf("%.1f", snap.ConvertMs),
+		"encodeMs", fmt.Sprintf("%.1f", snap.EncodeMs),
+		"frameBytes", snap.LastFrameSize,
+		"bandwidthKBps", fmt.Sprintf("%.1f", snap.BandwidthKBps),
+		"uptime", snap.Uptime.Round(time.Second),
+		logging.ShipAlways(),
+	)
 }
 
 func (s *Session) adaptiveLoop() {

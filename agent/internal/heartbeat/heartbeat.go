@@ -221,8 +221,15 @@ type SecurityCapabilities struct {
 	// RevocationLeaseProtocolVersion declares that this build keeps a desktop
 	// session's revocation lease alive and stops streaming when it lapses. The
 	// API refuses to start a desktop session against an agent reporting 0.
-	RevocationLeaseProtocolVersion int                      `json:"revocationLeaseProtocolVersion,omitempty"`
-	PamReconciliation              *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
+	RevocationLeaseProtocolVersion int `json:"revocationLeaseProtocolVersion,omitempty"`
+	// DesktopFenceProtocolVersion (SEC-038 W06) declares that this build keeps
+	// the durable per-session start/terminal generation fence (W04/W05): it
+	// refuses any desktop start not strictly newer than everything it has
+	// already seen, and refuses all starts after a terminal. Behind
+	// REMOTE_DESKTOP_FENCE_REQUIRED the API refuses to start a desktop session
+	// against an agent reporting 0, same shape as the revocation-lease gate.
+	DesktopFenceProtocolVersion int                      `json:"desktopFenceProtocolVersion,omitempty"`
+	PamReconciliation           *PamReconciliationStatus `json:"pamReconciliation,omitempty"`
 }
 
 type PamReconciliationStatus struct {
@@ -7502,5 +7509,6 @@ func compiledSecurityCapabilities() SecurityCapabilities {
 		PeripheralPolicyProtocolVersion: 2,
 		RollbackProtocolVersion:         1,
 		RevocationLeaseProtocolVersion:  1,
+		DesktopFenceProtocolVersion:     1,
 	}
 }

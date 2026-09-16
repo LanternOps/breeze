@@ -987,6 +987,8 @@ interface SweepTestIds {
   evidence: (index: number) => string;
   proposal: (index: number) => string;
   proposalLink: (index: number) => string;
+  /** #4442 W05 — the act-mode outcome cell (no link: nothing to approve). */
+  proposalOutcome: (index: number) => string;
   permissionsLink: (index: number) => string;
 }
 
@@ -997,6 +999,7 @@ const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
     evidence: (i) => `ai-agent-run-sweep-finding-${i}-evidence`,
     proposal: (i) => `ai-agent-run-sweep-finding-${i}-proposal`,
     proposalLink: (i) => `ai-agent-run-sweep-proposal-link-${i}`,
+    proposalOutcome: (i) => `ai-agent-run-sweep-proposal-outcome-${i}`,
     permissionsLink: (i) => `ai-agent-run-sweep-permissions-link-${i}`,
   },
   card: {
@@ -1005,6 +1008,7 @@ const SWEEP_TEST_IDS: Record<SweepVariant, SweepTestIds> = {
     evidence: (i) => `ai-agent-run-sweep-finding-card-${i}-evidence`,
     proposal: (i) => `ai-agent-run-sweep-finding-card-${i}-proposal`,
     proposalLink: (i) => `ai-agent-run-sweep-card-proposal-link-${i}`,
+    proposalOutcome: (i) => `ai-agent-run-sweep-card-proposal-outcome-${i}`,
     permissionsLink: (i) => `ai-agent-run-sweep-card-permissions-link-${i}`,
   },
 };
@@ -1050,6 +1054,28 @@ function sweepProposalToneClass(proposal: AiAgentRunSweepFindingDto['proposal'])
   return 'text-amber-700 dark:text-amber-400';
 }
 
+/**
+ * #4442 W05 — the act-mode outcomes a minted sweep intent can be in. Only the
+ * terminal / unattended ones get their own label; a proposal still waiting on
+ * a human keeps the existing link to the approvals inbox, because that is
+ * still exactly where the operator needs to go.
+ */
+const SWEEP_OUTCOME_LABEL_KEYS: Record<string, string> = {
+  auto_executing: 'aiAgentsPage.runs.sweep.outcomes.auto_executing',
+  executed: 'aiAgentsPage.runs.sweep.outcomes.executed',
+  failed: 'aiAgentsPage.runs.sweep.outcomes.failed',
+  declined: 'aiAgentsPage.runs.sweep.outcomes.declined',
+  expired: 'aiAgentsPage.runs.sweep.outcomes.expired',
+};
+
+/** Which cap ended the cohort walk. An unknown token renders nothing rather
+ *  than a raw key path (same posture as `sweepReasonLabel`). */
+const SWEEP_STOPPED_BY_KEYS: Record<string, string> = {
+  fleet_cap: 'aiAgentsPage.runs.sweep.stoppedBy.fleet_cap',
+  day_cap: 'aiAgentsPage.runs.sweep.stoppedBy.day_cap',
+  occurrence_cap: 'aiAgentsPage.runs.sweep.stoppedBy.occurrence_cap',
+};
+
 function SweepProposalContent({
   finding,
   index,
@@ -1066,10 +1092,49 @@ function SweepProposalContent({
   const { proposal } = finding;
   if (proposal === null) return <>—</>;
   if (proposal.disposition === 'intent_created') {
+    // #4442 W05 — a proposal that is no longer merely pending reports what
+    // actually happened. `run.intent_ids` could never tell us this: it is
+    // pending-only, and act mode makes the interesting outcomes non-pending.
+    const outcomeKey = proposal.outcome ? SWEEP_OUTCOME_LABEL_KEYS[proposal.outcome] : undefined;
+    if (outcomeKey) {
+      return (
+        <span data-testid={ids.proposalOutcome(index)}>
+          {t(/* i18n-dynamic */ outcomeKey)}
+        </span>
+      );
+    }
+    // An outcome this build does not recognise (API/web deploy skew, or a new
+    // intent status) must NOT fall through to the approvals link: that link is
+    // an instruction, and instructing an operator to approve something that
+    // may already have auto-executed or failed is worse than saying nothing.
+    // Same convention as the narrative-delivery `unknown` bucket above.
+    // `'pending'` is a RECOGNISED outcome that deliberately has no label of its
+    // own — it means exactly "waiting for approval", which the link below
+    // already says. Only a token this build has never heard of is unknown.
+    if (proposal.outcome && proposal.outcome !== 'pending') {
+      return (
+        <span data-testid={ids.proposalOutcome(index)} className="text-muted-foreground">
+          {t('aiAgentsPage.runs.sweep.outcomes.unknown')}
+        </span>
+      );
+    }
+    // Still waiting on a human. When the occurrence computed a cohort and this
+    // proposal fell outside it, name the cap — otherwise "waiting" reads as an
+    // unexplained delay.
+    const stoppedByKey = proposal.cohort === false && proposal.stoppedBy
+      ? SWEEP_STOPPED_BY_KEYS[proposal.stoppedBy]
+      : undefined;
     return (
-      <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
-        {t('aiAgentsPage.runs.sweep.proposalCreated')}
-      </a>
+      <>
+        <a href="/approvals" data-testid={ids.proposalLink(index)} className="text-primary hover:underline">
+          {t('aiAgentsPage.runs.sweep.proposalCreated')}
+        </a>
+        {stoppedByKey && (
+          <span className="ml-1.5 text-xs text-muted-foreground">
+            {t(/* i18n-dynamic */ stoppedByKey)}
+          </span>
+        )}
+      </>
     );
   }
   return (
@@ -1903,6 +1968,20 @@ export default function RunDetailPage({ runId }: RunDetailPageProps) {
           {run.sweep.evidenceTruncated && (
             <p className="mt-2 text-xs text-amber-700 dark:text-amber-400" data-testid="ai-agent-run-sweep-truncated">
               {t('aiAgentsPage.runs.sweep.evidenceTruncated')}
+            </p>
+          )}
+
+          {/* #4442 W05 — the per-DEVICE act roll-up. Absent for a disarmed
+              occurrence and for every pre-act-mode run, where no cohort was
+              computed and there is nothing truthful to say. The copy never
+              implies the cohort executes atomically: a member can still
+              degrade to a human approval on its own. */}
+          {run.sweep.actSummary && (
+            <p className="mt-2 text-sm text-muted-foreground" data-testid="ai-agent-run-sweep-act-summary">
+              {t('aiAgentsPage.runs.sweep.actSummary', {
+                acted: run.sweep.actSummary.devicesActed,
+                proposed: run.sweep.actSummary.devicesProposed,
+              })}
             </p>
           )}
 

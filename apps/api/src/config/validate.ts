@@ -625,6 +625,17 @@ const envObjectSchema = z
     // AGENT_AUTO_PROMOTE above.
     BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED: z.string().optional(),
 
+    // Task A7 (tool-catalog W1). Platform kill switch for tool sources, read
+    // at runtime by toolSourcesEnabled() in env.ts. Validated here for
+    // boolean format only, same class as AGENT_AUTO_PROMOTE above.
+    TOOL_SOURCES_ENABLED: z.string().optional(),
+
+    // Task A7. Sub-flag allowing a tool source to target private/loopback
+    // egress — an SSRF vector on the hosted platform, so it's refused there
+    // outright in the superRefine below. Read at runtime by
+    // toolSourcesAllowPrivateEgress() in env.ts.
+    TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: z.string().optional(),
+
     // AI execution plane (spec §8). Sub-flag of BREEZE_AI_AGENTS_ENABLED, read
     // at runtime by aiWorkspaceEnabled() in env.ts. Validated here for boolean
     // format only — the production coupling rule is in the superRefine below.
@@ -1932,6 +1943,44 @@ const envSchema = envObjectSchema
         path: ['BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED'],
         message:
           'BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (unattended policy-decided authorization is dark).',
+      });
+    }
+
+    // TOOL_SOURCES_ENABLED (Task A7, tool-catalog W1). Same treatment as
+    // BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED above: a typo must be caught at
+    // boot rather than silently reading as off. Mirrors toolSourcesEnabled()
+    // in env.ts.
+    const toolSourcesRaw = (data.TOOL_SOURCES_ENABLED ?? '').trim().toLowerCase();
+    if (toolSourcesRaw && !boolValues.has(toolSourcesRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ENABLED'],
+        message:
+          'TOOL_SOURCES_ENABLED must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false (the tool-catalog / tool-sources feature is dark).',
+      });
+    }
+
+    // TOOL_SOURCES_ALLOW_PRIVATE_EGRESS (Task A7). Same boolean-format check,
+    // plus a hosted refusal: a tool source that can reach a private/
+    // loopback/link-local address from the shared hosted egress path is an
+    // SSRF vector against other partners, so this is self-hosted-only.
+    const toolSourcesPrivateEgressRaw = (data.TOOL_SOURCES_ALLOW_PRIVATE_EGRESS ?? '').trim().toLowerCase();
+    if (toolSourcesPrivateEgressRaw && !boolValues.has(toolSourcesPrivateEgressRaw)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'],
+        message:
+          'TOOL_SOURCES_ALLOW_PRIVATE_EGRESS must be a boolean (true/false, 1/0, yes/no, on/off) when set. Defaults to false.',
+      });
+    } else if (
+      ['true', '1', 'yes', 'on'].includes(toolSourcesPrivateEgressRaw)
+      && ['true', '1', 'yes', 'on'].includes((data.IS_HOSTED ?? '').trim().toLowerCase())
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'],
+        message:
+          'TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true is refused on a hosted deployment (IS_HOSTED=true) — private/loopback egress from a shared hosted tool source is an SSRF vector against other partners. Self-hosted deployments only.',
       });
     }
 

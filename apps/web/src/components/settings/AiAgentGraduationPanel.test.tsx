@@ -57,7 +57,10 @@ function row(overrides: Partial<AiAgentGraduationRowDto> = {}): AiAgentGraduatio
     opKey: 'manage_devices:restart_device',
     namespace: 'policy_key',
     state: 'eligible',
-    window: { executed: 41, verified: 22, failed: 3, recurred: 7, firstVerifiedAt: '2026-07-04T09:15:00.000Z' },
+    window: {
+      executed: 41, verified: 22, sweepVerified: 11, sweepExecuted: 14, failed: 3, recurred: 7,
+      firstVerifiedAt: '2026-07-04T09:15:00.000Z',
+    },
     blockedReason: null,
     promotedAt: null,
     demotedAt: null,

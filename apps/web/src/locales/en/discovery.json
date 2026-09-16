@@ -241,6 +241,7 @@
     },
     "tabs": {
       "assets": "Assets",
+      "baselines": "Baselines",
       "changes": "Changes",
       "jobs": "Jobs",
       "profiles": "Profiles",

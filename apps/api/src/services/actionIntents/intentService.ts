@@ -1,4 +1,4 @@
-import { remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
+import { isTenantToolName, remediationTriggerSchema, type RemediationTrigger } from '@breeze/shared';
 import { buildActionLabel, hasDeviceIdStub } from './actionLabel';
 import { argumentDeviceId, resolveApprovalDeviceName } from './approvalDeviceName';
 import { randomUUID, createHash } from 'crypto';
@@ -226,6 +226,23 @@ export interface CreateActionIntentInput {
    * an `autonomyDenied` breadcrumb on its `result` column.
    */
   autonomy?: { kind: 'ticket_autonomy' };
+  /**
+   * Tool catalog W01 PR B (#5216): the intent releases through an EXTERNAL
+   * (tenant tool-source, BYO MCP) tool rather than a core one. `toolName`
+   * is then the qualified `<slug>__<name>` the chat session resolved, and
+   * the binding pins the exact `tool_source_tools` row + `revision` the
+   * approver is shown — release revalidation reloads that row and fails
+   * closed on drift/disable (revalidateRelease.ts).
+   *
+   * When set, `checkGuardrails` (the CORE classifier) is NOT consulted: it
+   * would answer tier 4 "unknown tool" for a qualified name. The external
+   * tool is always Tier 3 / `supervised` here (Tier 1-2 external calls
+   * auto-execute in-session and never mint an intent; the caller passes
+   * only Tier-3 descriptors). Chat/MCP principals only: an ai_agent
+   * principal is refused (`external_tool_not_allowed_for_agent`) — agents
+   * calling tenant tools is W5 work (flows-as-tools).
+   */
+  externalTool?: { toolSourceToolId: string; revision: string; sourceName: string };
   /**
    * #5205 W04 (#5209): AI Operator task context. TRUSTED, INTERNAL-ONLY —
    * never accepted from an HTTP body (see `actionIntentTaskContextSchema`'s
@@ -1164,16 +1181,56 @@ export async function createActionIntent(
   const scopeDeviceId = input.scope && 'deviceId' in input.scope ? input.scope.deviceId : null;
   const scopeTicketId = input.scope && 'ticketId' in input.scope ? input.scope.ticketId : null;
 
-  const { check: guardrail, context: guardrailContext } = await resolveGuardrailForIntent(
-    input.toolName,
-    input.input,
-    // `input.orgId` is the caller-supplied address; the authoritative
-    // `resolvedOrg` is computed a few lines below, and the guardrail only needs
-    // the org to scope a READ that is re-validated by assertProposalRunnable
-    // and by consumeProposalForIntent inside the transaction.
-    input.orgId ?? auth.orgId ?? null,
-    input.guardrailContext,
-  );
+  // Tool catalog W01 PR B (#5216): an EXTERNAL tool binding replaces the core
+  // classifier with a fixed Tier-3/supervised verdict — see the field's doc
+  // on CreateActionIntentInput. Validated BEFORE any DB access, like `scope`.
+  const externalTool = input.externalTool ?? null;
+  if (externalTool) {
+    if (auth.principal.kind === 'ai_agent') {
+      throw new ActionIntentError(
+        'AI agent principals cannot create intents for external (tool-source) tools',
+        'external_tool_not_allowed_for_agent',
+      );
+    }
+    if (!isTenantToolName(input.toolName)) {
+      throw new ActionIntentError(
+        `externalTool binding requires a qualified <slug>__<name> tool name (got '${input.toolName}')`,
+        'invalid_external_tool',
+      );
+    }
+    // `tool_source_tool_id` is a Postgres uuid column — same 22P02-at-INSERT
+    // reasoning as the `binding` checks below. An empty revision would make
+    // the pairing CHECK pass while pinning nothing; refuse it.
+    if (!CANONICAL_UUID_LOWER.test(externalTool.toolSourceToolId)) {
+      throw new ActionIntentError('externalTool.toolSourceToolId must be a canonical lowercase UUID', 'invalid_external_tool');
+    }
+    if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
+      throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
+    }
+  }
+
+  const { check: guardrail, context: guardrailContext } = externalTool
+    ? {
+        check: {
+          tier: 3,
+          allowed: true,
+          requiresApproval: true,
+          readOnly: false,
+          approvalScope: 'supervised',
+          description: `${input.toolName} — external tool from ${externalTool.sourceName}`,
+        } satisfies GuardrailCheck,
+        context: undefined,
+      }
+    : await resolveGuardrailForIntent(
+        input.toolName,
+        input.input,
+        // `input.orgId` is the caller-supplied address; the authoritative
+        // `resolvedOrg` is computed a few lines below, and the guardrail only needs
+        // the org to scope a READ that is re-validated by assertProposalRunnable
+        // and by consumeProposalForIntent inside the transaction.
+        input.orgId ?? auth.orgId ?? null,
+        input.guardrailContext,
+      );
   if (!guardrail.allowed || guardrail.tier >= 4) {
     throw new ActionIntentTierError(
       `Tool "${input.toolName}" is not permitted on the action-intent path: ${guardrail.reason ?? 'blocked'}`,
@@ -1509,8 +1566,17 @@ export async function createActionIntent(
     // keys for exactly the same reason a device sweep fan-out does.
     scopeId: scopeDeviceId ?? scopeTicketId ?? null,
   });
-  const targetSummary = buildTargetSummary(input.toolName, input.input);
-  const impactSummary = buildImpactSummary(input.toolName, input.input, guardrail);
+  // External tools have no IMPACT_SUMMARY_BUILDERS entry and no aiTools
+  // definition: the approver reads which source the call goes to and which
+  // argument keys it carries (values are on the card's argument JSON).
+  const targetSummary = externalTool
+    ? `${input.toolName} (external tool from ${externalTool.sourceName})`
+    : buildTargetSummary(input.toolName, input.input);
+  const impactSummary = externalTool
+    ? `Calls ${input.toolName} on ${externalTool.sourceName} with arguments: ${
+        Object.keys(input.input).length > 0 ? Object.keys(input.input).sort().join(', ') : '(none)'
+      }`
+    : buildImpactSummary(input.toolName, input.input, guardrail);
   // What the approver READS. `targetSummary` stays the audit signature.
   const labelReason = input.actionLabel ?? guardrail.description ?? null;
   // #5106 turned "on device 6eae0f70..." into "on <name>" using the SCOPED
@@ -1839,6 +1905,10 @@ export async function createActionIntent(
           impactSummary,
           reason: input.reason ?? null,
           riskTier: guardrail.tier,
+          // Tool catalog W01 PR B (#5216): both or neither —
+          // `action_intents_external_tool_chk`. Immutable from here on.
+          toolSourceToolId: externalTool?.toolSourceToolId ?? null,
+          toolRevision: externalTool?.revision ?? null,
           idempotencyKey,
           correlationId: randomUUID(),
           approvalScope,
@@ -1960,10 +2030,19 @@ export async function createActionIntent(
           existing.source !== input.source ||
           (!sameTaskReuse
             && (existing.requestingAgentRunId ?? null) !== (agentRun?.id ?? null)) ||
-          existing.argumentDigest !== argumentDigest
+          existing.argumentDigest !== argumentDigest ||
+          // Tool catalog W01 PR B (#5216): the external binding is part of the
+          // request's identity. A tool row deleted and recreated under the
+          // same qualified name (new uuid, or a new revision after
+          // rediscovery) is a DIFFERENT approval target, so reusing the live
+          // intent would hand the caller a binding release revalidation is
+          // going to refuse as `external_tool_disabled`/`_drift` — a confusing
+          // spurious failure instead of an honest conflict here.
+          (existing.toolSourceToolId ?? null) !== (externalTool?.toolSourceToolId ?? null) ||
+          (existing.toolRevision ?? null) !== (externalTool?.revision ?? null)
         ) {
           throw new ActionIntentError(
-            'Idempotency key already belongs to a different live request (action/source/run/arguments mismatch)',
+            'Idempotency key already belongs to a different live request (action/source/run/arguments/external-tool mismatch)',
             'idempotency_conflict',
           );
         }

@@ -323,6 +323,10 @@ export async function ensureSystemLibraryScripts(): Promise<{
             isSystem: true,
             // cutScriptVersion moves it to 1 below.
             version: 0,
+            // #5671: without this it falls through to the schema default
+            // ('human'), contradicting the origin='system' cutScriptVersion
+            // writes onto the version row in the same transaction below.
+            origin: 'system',
           })
           .returning({ id: scripts.id });
 

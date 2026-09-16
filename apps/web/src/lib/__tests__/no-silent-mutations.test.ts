@@ -43,6 +43,16 @@ const TARGET_GLOBS = [
   'src/components/settings/PartnerSettingsPage.tsx',
   'src/components/settings/PartnerAiProviderTab.tsx',
   'src/components/settings/OrgSettingsPage.tsx',
+  // Tool catalog W01 PR C (#5216): the Tool Sources surface authors the
+  // credentials and risk tiers that decide what the assistant may call on a
+  // customer's systems — a silent failure here is a tech believing a tool is
+  // disabled when it is not. The API client is listed alongside the two
+  // components because it is where the mutating fetches live.
+  'src/components/toolSources/api.ts',
+  'src/components/toolSources/ToolSourceForm.tsx',
+  'src/components/toolSources/DiscoveredToolsTable.tsx',
+  'src/components/toolSources/ToolSourceDetail.tsx',
+  'src/components/toolSources/ToolTestDrawer.tsx',
   // Execution plane W05 (#5716) — the per-org AI external-processing consent
   // switch and the attach-artifact-to-ticket control. Both mutate through
   // runAction; the count assertion below was bumped by exactly these two.
@@ -642,9 +652,11 @@ describe('no silent mutations in targeted set', () => {
     // (contract detail embeds the shared list instead), so the count is 131.
     // Execution plane W05 (#5716) adds two adopters (AiRunCard attach-to-ticket
     // and the per-org external-processing switch), so the count is 133.
+    // Tool catalog W01 PR C (#5216) adds five: the toolSources API client and
+    // its four components, so the count is now 138.
     // Sweep G1-4 moves monitor attach/detach onto runAction, adding
-    // MonitorEditor.tsx and DeployMonitorDialog.tsx, so the count is 135.
-    expect(absoluteFiles.length).toBe(135);
+    // MonitorEditor.tsx and DeployMonitorDialog.tsx (+2 on main's 138).
+    expect(absoluteFiles.length).toBe(140);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }

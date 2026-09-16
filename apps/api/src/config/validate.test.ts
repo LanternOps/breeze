@@ -3264,6 +3264,94 @@ describe('BREEZE_AI_AGENTS_POLICY_DECIDE_ENABLED boolean guard', () => {
   );
 });
 
+describe('TOOL_SOURCES_ENABLED boolean guard', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ENABLED');
+    expect(
+      buildEnvParseInput({ TOOL_SOURCES_ENABLED: 'sentinel' }).TOOL_SOURCES_ENABLED,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j',
+    (value) => {
+      withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['TOOL_SOURCES_ENABLED'], () => {
+        expect(validateConfig().TOOL_SOURCES_ENABLED).toBeUndefined();
+      });
+    });
+  });
+
+  it.each(['', '   '])('treats an empty value (%j) as unset', (value) => {
+    withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+
+  it.each(['maybe', 'ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, TOOL_SOURCES_ENABLED: value }, () => {
+        expect(() => validateConfig()).toThrow(/TOOL_SOURCES_ENABLED/);
+      });
+    },
+  );
+});
+
+describe('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS boolean guard + hosted refusal', () => {
+  it('is declared in the schema, so the superRefine rule actually runs', () => {
+    expect(ENV_SCHEMA_KEYS).toContain('TOOL_SOURCES_ALLOW_PRIVATE_EGRESS');
+    expect(
+      buildEnvParseInput({ TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'sentinel' }).TOOL_SOURCES_ALLOW_PRIVATE_EGRESS,
+    ).toBe('sentinel');
+  });
+
+  it.each(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off', 'FALSE', ' off '])(
+    'accepts the recognized boolean %j on a self-hosted deployment',
+    (value) => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: value }, () => {
+        expect(() => validateConfig()).not.toThrow();
+      });
+    },
+  );
+
+  it('leaves the value unset when unset', () => {
+    withEnv(validEnv, () => {
+      withoutEnv(['TOOL_SOURCES_ALLOW_PRIVATE_EGRESS'], () => {
+        expect(validateConfig().TOOL_SOURCES_ALLOW_PRIVATE_EGRESS).toBeUndefined();
+      });
+    });
+  });
+
+  it.each(['maybe', 'ture', 'enabled', 'disabled', 'TRUE!', 'y'])(
+    'refuses boot on the near-miss value %s',
+    (value) => {
+      withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: value }, () => {
+        expect(() => validateConfig()).toThrow(/TOOL_SOURCES_ALLOW_PRIVATE_EGRESS/);
+      });
+    },
+  );
+
+  it('refuses TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true when IS_HOSTED=true', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'true', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'true' }, () => {
+      expect(() => validateConfig()).toThrow(/hosted/);
+    });
+  });
+
+  it('allows TOOL_SOURCES_ALLOW_PRIVATE_EGRESS=true when IS_HOSTED=false', () => {
+    withEnv({ ...validEnv, IS_HOSTED: 'false', TOOL_SOURCES_ALLOW_PRIVATE_EGRESS: 'true' }, () => {
+      expect(() => validateConfig()).not.toThrow();
+    });
+  });
+});
+
 describe('M365_TENANT_SYNC_ENABLED + sync knobs (wave 04)', () => {
   it('declares every sync key in the schema so buildEnvParseInput sees it', () => {
     expect(ENV_SCHEMA_KEYS).toContain('M365_TENANT_SYNC_ENABLED');

@@ -4,6 +4,7 @@ import {
   CheckCircle,
   Loader2,
   PlayCircle,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { cn, widthPercentClass } from "@/lib/utils";
@@ -41,6 +42,10 @@ type DeploymentRow = {
   createdAt: string;
   status: SoftwareDeploymentAggregateStatus;
   counts: SoftwareDeploymentCounts;
+  /** Set when this deployment was created by policy remediation rather than a
+   *  human operator (software_policy_id on software_deployments, #5505).
+   *  Null/undefined for an ordinary manual deployment. */
+  softwarePolicyId?: string | null;
 };
 
 const statusConfig: Record<
@@ -390,9 +395,25 @@ export default function DeploymentList({
                         )}
                       >
                         <td className="px-4 py-3">
-                          <p className="font-medium text-foreground">
-                            {item.name}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-foreground">
+                              {item.name}
+                            </p>
+                            {item.softwarePolicyId && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary"
+                                title={i18n.t(
+                                  "policies:software.deploymentList.policyOwnedTooltip",
+                                )}
+                                data-testid={`deployment-policy-owned-${item.id}`}
+                              >
+                                <ShieldCheck className="h-3 w-3" />
+                                {i18n.t(
+                                  "policies:software.deploymentList.policyOwned",
+                                )}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-muted-foreground">
                             {item.id}
                           </p>

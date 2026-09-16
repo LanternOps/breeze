@@ -3,6 +3,7 @@ import type { GraphSyncActionContext } from './syncActions';
 import type { OpaqueAccessToken } from './tokenClient';
 import { createSyncContinuationCodec } from '../syncContinuation';
 import { createSigninLimiter } from '../signinLimiter';
+import { createSigninEventsLimiter } from '../signinEventsLimiter';
 
 /**
  * Shared fixtures for the syncActions test suites, extracted so the users and
@@ -45,10 +46,12 @@ export function context(client: MicrosoftGraphClient): GraphSyncActionContext {
     limits: {
       syncMaxInFlight: 4, maxInFlight: 32, signinActivityRpm: 4, signinPagesPerCall: 5,
       maxItemsUsers: 25_000, maxItemsDevices: 25_000, maxItemsCaPolicies: 500,
-      maxItemsSkus: 200, continuationKey: Buffer.alloc(32, 1),
+      maxItemsSkus: 200, maxItemsSigninEvents: 25_000, signinEventsRpm: 6,
+      continuationKey: Buffer.alloc(32, 1),
     },
     continuations: createSyncContinuationCodec({ key: Buffer.alloc(32, 1) }),
     signinLimiter: createSigninLimiter({ requestsPerMinute: 4 }),
+    signinEventsLimiter: createSigninEventsLimiter({ requestsPerMinute: 6 }),
     now: () => new Date('2026-09-08T12:00:00.000Z'),
   };
 }

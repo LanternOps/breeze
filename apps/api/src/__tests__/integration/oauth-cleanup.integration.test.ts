@@ -99,6 +99,106 @@ describe('OAuth cleanup raw-sql Date binding', () => {
     expect(stale).toHaveLength(0);
   });
 
+  // #5610: before this, the age test was `last_used_at IS NULL` only, so a DCR
+  // client that authenticated once and was then abandoned could never be
+  // garbage-collected — it kept its client_id forever with no grants, tokens
+  // or partner binding.
+  it('cleanupStaleOauthClients ages out an abandoned once-used client but keeps a recently-used one', async () => {
+    const veryOld = new Date(Date.now() - DCR_STALE_CLIENT_TTL_MS - 24 * 60 * 60 * 1000);
+    const recently = new Date(Date.now() - 60 * 60 * 1000);
+
+    await getTestDb().insert(oauthClients).values([
+      {
+        id: 'abandoned-once-used',
+        partnerId: null,
+        metadata: { client_name: 'used once, then abandoned' },
+        createdAt: veryOld,
+        lastUsedAt: veryOld,
+      },
+      {
+        id: 'recently-used',
+        partnerId: null,
+        metadata: { client_name: 'old registration, still in use' },
+        createdAt: veryOld,
+        lastUsedAt: recently,
+      },
+    ]);
+
+    await withSystemDbAccessContext(() => cleanupStaleOauthClients());
+
+    const remaining = await getTestDb().select({ id: oauthClients.id }).from(oauthClients);
+    expect(remaining.map((c) => c.id).sort()).toEqual(['recently-used']);
+  });
+
+  // The last_used_at age branch (#5610) widens what the delete CAN match, so
+  // the interaction with the no-live-credential guards needs direct proof:
+  // a client whose stamp went stale between authorizations but which still
+  // holds a live refresh token or unexpired grant must survive. Only real
+  // Postgres can validate the AND/OR grouping here.
+  it('cleanupStaleOauthClients keeps a stale-stamped client that still holds a live credential', async () => {
+    const partner = await createPartner();
+    const org = await createOrganization({ partnerId: partner.id });
+    const user = await createUser({
+      partnerId: partner.id,
+      orgId: org.id,
+      email: `oauth-cleanup-live-cred-${Date.now()}@example.test`,
+    });
+
+    const veryOld = new Date(Date.now() - DCR_STALE_CLIENT_TTL_MS - 24 * 60 * 60 * 1000);
+    const future = new Date(Date.now() + 60 * 60 * 1000);
+
+    await getTestDb().insert(oauthClients).values([
+      {
+        id: 'stale-stamp-live-refresh',
+        partnerId: null,
+        metadata: { client_name: 'stale stamp, live refresh token' },
+        createdAt: veryOld,
+        lastUsedAt: veryOld,
+      },
+      {
+        id: 'stale-stamp-live-grant',
+        partnerId: null,
+        metadata: { client_name: 'stale stamp, unexpired grant' },
+        createdAt: veryOld,
+        lastUsedAt: veryOld,
+      },
+      {
+        id: 'stale-stamp-no-credential',
+        partnerId: null,
+        metadata: { client_name: 'stale stamp, nothing live' },
+        createdAt: veryOld,
+        lastUsedAt: veryOld,
+      },
+    ]);
+
+    await getTestDb().insert(oauthGrants).values({
+      id: 'live-grant-for-stale-stamp',
+      accountId: user.id,
+      clientId: 'stale-stamp-live-grant',
+      partnerId: partner.id,
+      orgId: org.id,
+      payload: { accountId: user.id },
+      expiresAt: future,
+    });
+    await getTestDb().insert(oauthRefreshTokens).values({
+      id: digestId('live-refresh-for-stale-stamp'),
+      userId: user.id,
+      clientId: 'stale-stamp-live-refresh',
+      partnerId: partner.id,
+      orgId: org.id,
+      payload: { sub: user.id, grantId: 'live-grant-for-stale-stamp' },
+      expiresAt: future,
+    });
+
+    await withSystemDbAccessContext(() => cleanupStaleOauthClients());
+
+    const remaining = await getTestDb().select({ id: oauthClients.id }).from(oauthClients);
+    expect(remaining.map((c) => c.id).sort()).toEqual([
+      'stale-stamp-live-grant',
+      'stale-stamp-live-refresh',
+    ]);
+  });
+
   it('cleanupExpiredOauthLifecycleRows runs without ERR_INVALID_ARG_TYPE on real postgres-js', async () => {
     const partner = await createPartner();
     const org = await createOrganization({ partnerId: partner.id });

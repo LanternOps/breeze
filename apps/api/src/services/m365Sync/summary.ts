@@ -3,7 +3,7 @@ import { M365_SYNC_DOMAINS, type M365SyncDomain } from '@breeze/shared/m365';
 import { isM365TenantSyncEnabled } from '../../config/env';
 import { db } from '../../db';
 import { m365PostureRollups, m365SyncState } from '../../db/schema';
-import type { M365SyncOutcome } from './types';
+import { M365_SYNC_PRIMARY_SOURCE_KEY, type M365SyncOutcome } from './types';
 
 const STATUSES: readonly M365SyncOutcome[] = ['success', 'partial', 'needs_consent', 'throttled', 'error'];
 
@@ -14,7 +14,7 @@ export interface M365SyncDomainSummary {
   /** last_complete_snapshot_at — the honest "as of" for this fact (spec §6). */
   asOf: string | null;
   truncated: boolean;
-  /** sources.signInActivity === 'unlicensed': the tenant has no Entra ID P1. */
+ /** The domain's own primary source is 'unlicensed': the tenant has no Entra ID P1. */
   unlicensed: boolean;
 }
 
@@ -45,9 +45,19 @@ function count(value: unknown): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function isUnlicensed(sources: unknown): boolean {
-  return sources !== null && typeof sources === 'object'
-    && (sources as Record<string, unknown>).signInActivity === 'unlicensed';
+/**
+ * Keyed on the DOMAIN's own primary source, not on the literal `signInActivity`.
+ *
+ * #5784 W05: this helper predates the second sign-in domain and hardcoded the
+ * one key it knew about, so `signin_events` — whose primary source is
+ * `signinEvents` — would read `unlicensed: false` for a tenant that genuinely
+ * has no Entra ID P1, and the card would show a domain succeeding forever with
+ * nothing in it and no explanation. `M365_SYNC_PRIMARY_SOURCE_KEY` is the
+ * existing single source of truth for that mapping.
+ */
+function isUnlicensed(domain: M365SyncDomain, sources: unknown): boolean {
+  if (sources === null || typeof sources !== 'object') return false;
+  return (sources as Record<string, unknown>)[M365_SYNC_PRIMARY_SOURCE_KEY[domain]] === 'unlicensed';
 }
 
 /**
@@ -100,7 +110,7 @@ export async function loadSyncSummary(orgId: string, tenantId: string | null): P
       status: status(row?.lastStatus),
       asOf: iso(row?.lastCompleteSnapshotAt ?? null),
       truncated: row?.truncated === true,
-      unlicensed: isUnlicensed(row?.sources ?? null),
+      unlicensed: isUnlicensed(domain, row?.sources ?? null),
     };
   });
 

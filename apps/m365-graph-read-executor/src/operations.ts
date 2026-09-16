@@ -33,6 +33,7 @@ import {
   type OpaqueIdentityToken,
 } from './microsoft/tokenClient';
 import type { SigninLimiter } from './signinLimiter';
+import type { SigninEventsLimiter } from './signinEventsLimiter';
 import type { SyncContinuationCodec } from './syncContinuation';
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -263,6 +264,7 @@ export interface SyncOperationDependencies {
   limits: ExecutorSyncConfig;
   continuations: SyncContinuationCodec;
   signinLimiter: SigninLimiter;
+  signinEventsLimiter: SigninEventsLimiter;
 }
 
 export async function syncActionOperation(
@@ -308,6 +310,7 @@ async function runSyncAction(
       limits: dependencies.sync.limits,
       continuations: dependencies.sync.continuations,
       signinLimiter: dependencies.sync.signinLimiter,
+      signinEventsLimiter: dependencies.sync.signinEventsLimiter,
     }));
   } finally {
     tokenClient = undefined;

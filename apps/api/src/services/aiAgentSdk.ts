@@ -15,8 +15,13 @@ import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, devic
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
-import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
+import { checkGuardrails, checkToolPermission, checkToolRateLimit, checkPermissionRequirements } from './aiGuardrails';
 import { attachProposalToSession, loadProposalGuardrailContext } from './scriptProposals';
+import {
+  guardrailCheckForTenantTool,
+  tenantToolPermissionRequirement,
+  checkTenantToolRateLimit,
+} from './toolSources/guardrails';
 import { ensureLaneCheckpointBeforeRelease } from './actionIntents/laneCheckpoint';
 import { checkBudget, checkAiRateLimit } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
@@ -683,8 +688,17 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
     // reopening the check/use window the digest exists to close.
     let verifiedToolContext: ToolExecutionContext | undefined;
 
+    // Tenant (BYO MCP) tool for this session, if `toolName` names one — Task
+    // A10. Resolved once here and threaded through the guardrail/RBAC/rate-
+    // limit branches below instead of re-checked at each one. Optional
+    // chained even though the field is non-optional on `ActiveSession`:
+    // every REAL session (streamingSessionManager.ts) always sets it, but
+    // pre-existing test fixtures across this file's sibling suites build a
+    // hand-rolled `as any` session and predate this field.
+    const tenant = session.tenantTools?.get(toolName);
+
     // Reject unknown tools (defense-in-depth — SDK whitelist should already filter)
-    if (!TOOL_TIERS[toolName]) {
+    if (!TOOL_TIERS[toolName] && !tenant) {
       return { allowed: false, error: `Unknown tool: ${toolName}` };
     }
 
@@ -721,9 +735,12 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
     // Guardrails (tier check + action-based escalation). A proposal-backed
     // run_script needs the proposal's reviewed risk tier to pick supervised vs
-    // four_eyes; every other tool call passes `undefined` and is unchanged.
-    const guardrailContext = await loadProposalGuardrailContext(input, session.orgId);
-    const guardrailCheck = checkGuardrails(toolName, input, guardrailContext);
+    // four_eyes; every other tool call passes `undefined` and is unchanged. A
+    // tenant (BYO MCP) tool has no proposal/action-escalation shape of its
+    // own — it maps straight to guardrailCheckForTenantTool's tier.
+    const guardrailCheck = tenant
+      ? guardrailCheckForTenantTool(tenant)
+      : checkGuardrails(toolName, input, await loadProposalGuardrailContext(input, session.orgId));
 
     if (!guardrailCheck.allowed) {
       return { allowed: false, error: guardrailCheck.reason ?? 'Blocked by guardrails' };
@@ -731,7 +748,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
     // RBAC permission check
     try {
-      const permError = await checkToolPermission(toolName, input, session.auth);
+      const permError = tenant
+        ? await checkPermissionRequirements(session.auth, [tenantToolPermissionRequirement(tenant.tier)])
+        : await checkToolPermission(toolName, input, session.auth);
       if (permError) {
         return { allowed: false, error: permError };
       }
@@ -742,7 +761,9 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
 
     // Per-tool rate limit
     try {
-      const rateLimitErr = await checkToolRateLimit(toolName, session.auth.user.id);
+      const rateLimitErr = tenant
+        ? await checkTenantToolRateLimit(tenant, session.auth.user.id)
+        : await checkToolRateLimit(toolName, session.auth.user.id);
       if (rateLimitErr) {
         return { allowed: false, error: rateLimitErr };
       }
@@ -1210,6 +1231,21 @@ export function createSessionPreToolUse(session: ActiveSession): PreToolUseCallb
               reason: riskSummary,
               actionLabel: riskSummary,
               orgId: session.orgId,
+              // Tool catalog W01 PR B (#5216): a tenant (BYO MCP) tool binds
+              // the intent to the exact tool row + revision this session
+              // resolved, so release revalidation reloads THAT row and fails
+              // closed on drift/disable. createActionIntent skips the core
+              // classifier for a bound intent — it would answer "unknown
+              // tool" for a qualified name. Absent for every core tool.
+              ...(tenant
+                ? {
+                    externalTool: {
+                      toolSourceToolId: tenant.id,
+                      revision: tenant.revision,
+                      sourceName: tenant.sourceName,
+                    },
+                  }
+                : {}),
             });
           } catch (err) {
             console.error('[AI-SDK] Failed to create action intent:', toolName, err);

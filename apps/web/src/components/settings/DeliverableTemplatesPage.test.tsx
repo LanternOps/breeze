@@ -261,6 +261,54 @@ describe('DeliverableTemplatesPage', () => {
     });
     expect(screen.queryByTestId('deliverable-template-item-item-1')).toBeNull();
   });
+
+  it('renders the auto-evidence report type picker on the item form, with the empty state (W01: no types shipped)', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+
+    const select = screen.getByTestId('deliverable-template-item-auto-evidence') as HTMLSelectElement;
+    expect(select.value).toBe('');
+    expect(screen.getByTestId('deliverable-template-item-auto-evidence-empty')).toBeInTheDocument();
+  });
+
+  it('sends autoEvidenceReportType: null on item create when None is selected', async () => {
+    render(<DeliverableTemplatesPage />);
+    const orgCard = await screen.findByTestId('deliverable-template-set-set-1');
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({
+        data: {
+          id: 'item-2',
+          setId: 'set-1',
+          name: 'Quarterly review',
+          description: null,
+          cadence: 'quarterly',
+          leadDays: 7,
+          graceDays: 14,
+          artifactRequired: true,
+          completionMode: 'on_ticket_resolve',
+          sortOrder: 0,
+          autoEvidenceReportType: null,
+        },
+      }),
+    );
+
+    fireEvent.click(orgCard.querySelector('[data-testid="deliverable-template-item-add"]')!);
+    fireEvent.change(screen.getByTestId('deliverable-template-item-name'), { target: { value: 'Quarterly review' } });
+    fireEvent.click(screen.getByTestId('deliverable-template-item-submit'));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/deliverable-templates/set-1/items' && (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body).toEqual(expect.objectContaining({ autoEvidenceReportType: null }));
+    });
+  });
 });
 
 describe('DeliverableTemplatesPage item checklist fields (#5808 W03)', () => {

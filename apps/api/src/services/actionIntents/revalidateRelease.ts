@@ -1,7 +1,9 @@
 import type { ActionIntent } from '../../db/schema/actionIntents';
 import type { AuthContext } from '../../middleware/auth';
 import { getToolTier } from '../aiTools';
-import { checkToolPermission } from '../aiGuardrails';
+import { checkPermissionRequirements, checkToolPermission } from '../aiGuardrails';
+import { loadTenantToolBindingState, loadTenantToolForExecution, type TenantToolDescriptor } from '../toolSources/resolver';
+import { tenantToolPermissionRequirement } from '../toolSources/guardrails';
 import { getActiveOrgTenant } from '../tenantStatus';
 import { policyDecideEnabled } from '../../config/env';
 import { validateAuthorizationKeys } from './policyDecidable';
@@ -11,6 +13,7 @@ import { IntentScopeLostError } from './intentTargetScope';
 import { canonicalizeArguments, computeArgumentDigest } from './canonicalize';
 import { revalidateScriptReviewerEvidence } from './scriptReviewerAutonomy';
 import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
+import { captureException } from '../sentry';
 
 /**
  * Shared release-time revalidation for an approved action intent (spec
@@ -40,8 +43,83 @@ import { checkSweepScheduleBrake } from '../aiAgents/sweepActMode';
  * `executing -> failed` with, so audit/metrics semantics are unchanged.
  */
 export type IntentReleaseRevalidation =
-  | { ok: true; auth: AuthContext }
+  | {
+      ok: true;
+      auth: AuthContext;
+      /**
+       * Tool catalog W01 PR B (#5216): set iff the intent carries an external
+       * tool binding (`tool_source_tool_id`). The descriptor the releaser
+       * must dispatch through (`executeTenantTool`) — reloaded HERE under
+       * the rebuilt actor's owner predicate, so the release never trusts a
+       * descriptor a chat session captured hours ago. Absent for every core
+       * intent, whose release path is unchanged.
+       */
+      tenantTool?: TenantToolDescriptor;
+    }
   | { ok: false; errorCode: string; details?: Record<string, unknown> };
+
+/**
+ * Tool catalog W01 PR B (#5216) — the external-tool half of check (b) below.
+ * An approved intent bound to a `tool_source_tools` row + revision may run
+ * only if the LIVE row still says what the approver saw:
+ *   - row gone / disabled / removed          → `external_tool_disabled`
+ *   - source no longer `active`              → `external_tool_source_unavailable`
+ *   - revision differs (schema/desc changed) → `external_tool_drift`
+ * Classified from an unfiltered by-id read so the audit `error_code` names
+ * the cause; the actor-scoped owner/kill-switch reload happens later, in
+ * `revalidateExternalToolForActor`, once the rebuilt auth exists.
+ */
+async function revalidateExternalToolBinding(
+  intent: ActionIntent,
+): Promise<{ ok: true } | { ok: false; errorCode: string; details?: Record<string, unknown> }> {
+  const toolId = intent.toolSourceToolId!;
+  // The pairing CHECK makes a half-binding unreachable through the app;
+  // treat one as drift rather than comparing against NULL.
+  if (!intent.toolRevision) {
+    return { ok: false, errorCode: 'external_tool_drift', details: { reason: 'intent carries no tool_revision' } };
+  }
+  // A THROW here (Postgres blip mid-release) must not escape: the intent is
+  // already CAS'd `executing`, the release job carries no BullMQ retry, and an
+  // escaping error strands it until the 20-minute stale-executing reaper
+  // rewrites the cause as the generic `execution_lost`. Fail closed and
+  // CATEGORIZED instead, exactly like the worker's own `digest_check_failed`
+  // treatment of a throwing effect-digest recompute — and like
+  // `executeTenantToolDetailed`'s own defensive wrapper around this same
+  // loader (toolSources/execute.ts).
+  let live: Awaited<ReturnType<typeof loadTenantToolBindingState>>;
+  try {
+    live = await loadTenantToolBindingState(toolId);
+  } catch (err) {
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return {
+      ok: false,
+      errorCode: 'external_tool_check_failed',
+      details: { toolSourceToolId: toolId, reason: err instanceof Error ? err.message : String(err) },
+    };
+  }
+  if (!live || !live.tool.enabled || live.tool.removedAt) {
+    return {
+      ok: false,
+      errorCode: 'external_tool_disabled',
+      details: { toolSourceToolId: toolId, reason: !live ? 'tool row missing' : live.tool.removedAt ? 'tool removed' : 'tool disabled' },
+    };
+  }
+  if (live.source.status !== 'active') {
+    return {
+      ok: false,
+      errorCode: 'external_tool_source_unavailable',
+      details: { toolSourceToolId: toolId, sourceId: live.source.id, sourceStatus: live.source.status },
+    };
+  }
+  if (live.tool.revision !== intent.toolRevision) {
+    return {
+      ok: false,
+      errorCode: 'external_tool_drift',
+      details: { toolSourceToolId: toolId, approvedRevision: intent.toolRevision, currentRevision: live.tool.revision },
+    };
+  }
+  return { ok: true };
+}
 
 /**
  * Wave 5 Part B (#3827) — the policy-evidence checks specific to a
@@ -254,13 +332,26 @@ export async function revalidateApprovedIntentForRelease(
   // (b) The tool must still exist and must not have been reclassified to a
   // HIGHER tier since the intent was created (lower/equal only tightens what
   // the approval covered).
-  const currentTier = getToolTier(intent.actionName);
-  if (currentTier === undefined || currentTier > intent.riskTier) {
-    return {
-      ok: false,
-      errorCode: 'tier_escalated',
-      details: { currentTier: currentTier ?? null, intentRiskTier: intent.riskTier },
-    };
+  //
+  // Tool catalog W01 PR B (#5216): an EXTERNAL tool has no entry in the core
+  // registry (`getToolTier` would answer `undefined` for a `<slug>__<name>`
+  // and fail every such release as `tier_escalated`). Its "still exists and
+  // unchanged" check is the live `tool_source_tools` row instead; the tier
+  // is fixed at 3 by construction (createActionIntent only accepts Tier-3
+  // external bindings).
+  const isExternalTool = !!intent.toolSourceToolId;
+  if (isExternalTool) {
+    const binding = await revalidateExternalToolBinding(intent);
+    if (!binding.ok) return binding;
+  } else {
+    const currentTier = getToolTier(intent.actionName);
+    if (currentTier === undefined || currentTier > intent.riskTier) {
+      return {
+        ok: false,
+        errorCode: 'tier_escalated',
+        details: { currentTier: currentTier ?? null, intentRiskTier: intent.riskTier },
+      };
+    }
   }
 
   // (c) The actor must still be valid: rebuild the AuthContext from scratch,
@@ -324,10 +415,60 @@ export async function revalidateApprovedIntentForRelease(
   // The actor must STILL hold the specific RBAC permission the tool
   // requires, checked against the rebuilt `auth` from (c) — not the caller's
   // original, now possibly stale, permission check.
+  if (isExternalTool) {
+    // Tool catalog W01 PR B (#5216): `checkToolPermission` keys on the core
+    // registry and would deny a qualified name outright. External tools
+    // carry the generic `external_tools:write` grant (Tier 3), the same
+    // requirement the chat PreToolUse gate applied at creation.
+    const permissionDenial = await checkPermissionRequirements(auth, [tenantToolPermissionRequirement(3)]);
+    if (permissionDenial) {
+      return { ok: false, errorCode: 'rbac_denied', details: { reason: permissionDenial } };
+    }
+    return revalidateExternalToolForActor(intent, auth);
+  }
   const permissionDenial = await checkToolPermission(intent.actionName, intent.arguments, auth);
   if (permissionDenial) {
     return { ok: false, errorCode: 'rbac_denied', details: { reason: permissionDenial } };
   }
 
   return { ok: true, auth };
+}
+
+/**
+ * Tool catalog W01 PR B (#5216) — the last external-tool stop: the
+ * dispatch-time reload under the REBUILT actor's owner predicate, which is
+ * also where the `TOOL_SOURCES_ENABLED` kill switch is enforced
+ * (`loadTenantToolForExecution`). A `null` here after the binding
+ * classification above passed means the tool is no longer visible to THIS
+ * actor (owner mismatch after an org move, flag flipped off, or a descriptor
+ * that no longer compiles) — none of which the approver's org-pinned row can
+ * be released against. Reported as `external_tool_disabled`: to the operator
+ * the tool is gone, whichever gate removed it.
+ */
+async function revalidateExternalToolForActor(
+  intent: ActionIntent,
+  auth: AuthContext,
+): Promise<IntentReleaseRevalidation> {
+  let loaded: Awaited<ReturnType<typeof loadTenantToolForExecution>>;
+  try {
+    loaded = await loadTenantToolForExecution(intent.toolSourceToolId!, auth);
+  } catch (err) {
+    // Same reasoning as `revalidateExternalToolBinding`'s wrapper: a thrown
+    // reload is an infrastructure fault, not a revocation, and must not be
+    // reported as one — nor allowed to strand the claimed intent.
+    captureException(err instanceof Error ? err : new Error(String(err)));
+    return {
+      ok: false,
+      errorCode: 'external_tool_check_failed',
+      details: { toolSourceToolId: intent.toolSourceToolId, reason: err instanceof Error ? err.message : String(err) },
+    };
+  }
+  if (!loaded) {
+    return {
+      ok: false,
+      errorCode: 'external_tool_disabled',
+      details: { toolSourceToolId: intent.toolSourceToolId, reason: 'tool not resolvable for the releasing actor' },
+    };
+  }
+  return { ok: true, auth, tenantTool: loaded.descriptor };
 }
