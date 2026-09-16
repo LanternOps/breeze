@@ -1,5 +1,18 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { create } from 'zustand';
+import { useOrgStore } from '../stores/orgStore';
+import { isGlobalScopeRoute } from '../lib/routeScope';
+import { useJwtClaims } from '../lib/authScope';
 import { fetchWithAuth } from '../stores/auth';
+
+// Shared across the board and the layout's separate React event-stream island.
+export const useEventStreamScope = create<{
+  partnerId: string | undefined;
+  setPartnerId: (partnerId: string | undefined) => void;
+}>((set) => ({
+  partnerId: undefined,
+  setPartnerId: (partnerId) => set({ partnerId }),
+}));
 
 const PING_INTERVAL_MS = 60_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -19,6 +32,15 @@ interface EventStreamOptions {
 }
 
 export function useEventStream(options: EventStreamOptions) {
+  const partnerId = useEventStreamScope((state) => state.partnerId);
+  const jwt = useJwtClaims();
+  const currentOrgId = useOrgStore((state) => state.currentOrgId);
+  const hasSelectedOrg = !!currentOrgId
+    && (typeof window === 'undefined' || !isGlobalScopeRoute(window.location.pathname));
+  const enabled = jwt.status === 'resolved'
+    && (jwt.claims.scope !== 'system' || !!partnerId || hasSelectedOrg || !!jwt.claims.orgId);
+  const generationRef = useRef(0);
+  const connectWsRef = useRef<() => void>(() => {});
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const subscribedRef = useRef<Set<string>>(new Set());
@@ -46,17 +68,24 @@ export function useEventStream(options: EventStreamOptions) {
 
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
-      connectWs();
+      connectWsRef.current();
     }, delay);
   }, []);
 
   const ticketFailuresRef = useRef(0);
 
   const connectWs = useCallback(async () => {
-    if (stoppedRef.current) return;
+    if (stoppedRef.current || !enabled) return;
 
+    const generation = generationRef.current;
+    const isCurrent = () => !stoppedRef.current && generationRef.current === generation;
     try {
-      const res = await fetchWithAuth('/events/ws-ticket', { method: 'POST' });
+      const query = partnerId ? `?partnerId=${encodeURIComponent(partnerId)}` : '';
+      const res = await fetchWithAuth(`/events/ws-ticket${query}`, {
+        method: 'POST',
+        ...(partnerId ? { skipOrgIdInjection: true } : {}),
+      });
+      if (!isCurrent()) return;
       if (!res.ok) {
         ticketFailuresRef.current++;
         // Stop retrying after repeated ticket failures to avoid burning refresh tokens
@@ -68,6 +97,7 @@ export function useEventStream(options: EventStreamOptions) {
       }
       ticketFailuresRef.current = 0;
       const { ticket } = await res.json();
+      if (!isCurrent()) return;
 
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const apiHost = import.meta.env.PUBLIC_API_URL || '';
@@ -83,6 +113,7 @@ export function useEventStream(options: EventStreamOptions) {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!isCurrent()) return;
         retriesRef.current = 0;
         setConnected(true);
         optionsRef.current.onConnected?.();
@@ -103,6 +134,7 @@ export function useEventStream(options: EventStreamOptions) {
       };
 
       ws.onmessage = (event) => {
+        if (!isCurrent()) return;
         let msg: { type?: string; data?: unknown };
         try {
           msg = JSON.parse(event.data);
@@ -120,6 +152,7 @@ export function useEventStream(options: EventStreamOptions) {
       };
 
       ws.onclose = () => {
+        if (!isCurrent()) return;
         setConnected(false);
         optionsRef.current.onDisconnected?.();
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
@@ -130,10 +163,12 @@ export function useEventStream(options: EventStreamOptions) {
         console.warn('[useEventStream] WebSocket error:', err);
       };
     } catch (err) {
+      if (!isCurrent()) return;
       console.warn('[useEventStream] Connection failed, scheduling reconnect:', err instanceof Error ? err.message : err);
       scheduleReconnect();
     }
-  }, [send, scheduleReconnect]);
+  }, [send, scheduleReconnect, partnerId, enabled]);
+  connectWsRef.current = connectWs;
 
   const subscribe = useCallback((types: string[]) => {
     for (const t of types) subscribedRef.current.add(t);
@@ -157,13 +192,26 @@ export function useEventStream(options: EventStreamOptions) {
 
   useEffect(() => {
     stoppedRef.current = false;
+    retriesRef.current = 0;
+    ticketFailuresRef.current = 0;
+    setConnected(false);
     connectWs();
 
     return () => {
       stoppedRef.current = true;
+      generationRef.current++;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      wsRef.current?.close();
+      reconnectTimerRef.current = null;
+      pingTimerRef.current = null;
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.close();
+      }
       wsRef.current = null;
     };
   }, [connectWs]);

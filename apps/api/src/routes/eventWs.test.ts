@@ -13,7 +13,7 @@ const schemaTables = vi.hoisted(() => ({
   users: { table: 'users' },
   organizationUsers: { table: 'organizationUsers' },
   partnerUsers: { table: 'partnerUsers' },
-  organizations: { table: 'organizations' },
+  organizations: { table: 'organizations', id: 'id', partnerId: 'partner_id' },
 }));
 
 type LiveUserRow = {
@@ -74,6 +74,8 @@ vi.mock('../db', () => ({
     select: vi.fn(() => ({
       from: vi.fn((table: unknown) => ({
         where: vi.fn(() => ({
+          then: (resolve: (rows: Array<{ id: string }>) => unknown) =>
+            Promise.resolve(partnerOrganizationRows).then(resolve),
           limit: vi.fn(async () => {
             if (throwOnSelect) throw new Error('db down');
             if (table === schemaTables.users) return userStatusRow ? [userStatusRow] : [];
@@ -801,6 +803,103 @@ describe('createEventWsTicketRoute', () => {
 
     const res = await app.request('/events/ws-ticket', { method: 'POST' });
     expect(res.status).toBe(400);
+  });
+
+  const selectedPartnerId = '11111111-1111-4111-8111-111111111111';
+  const selectedOrgIds = [
+    '22222222-2222-4222-8222-222222222222',
+    '33333333-3333-4333-8333-333333333333',
+  ];
+
+  async function systemScopeApp() {
+    const { Hono } = await import('hono');
+    const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    setPartnerMembership(undefined);
+    setOrganizationMembership(undefined);
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc', email: 'a@b.com', name: 'A' },
+        orgId: null,
+        partnerId: null,
+        scope: 'system',
+      } as any);
+      await next();
+    });
+    app.route('/events', createEventWsTicketRoute());
+    return app;
+  }
+
+  it('mints a system-scope ticket bounded to the selected partner organizations', async () => {
+    const { db } = await import('../db');
+    const { eq } = await import('drizzle-orm');
+    const { organizations } = await import('../db/schema');
+    const { getRedis } = await import('../services/redis');
+    const setex = vi.fn().mockResolvedValue('OK');
+    const app = await systemScopeApp();
+    partnerOrganizationRows = selectedOrgIds.map((id) => ({ id }));
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.mocked(getRedis).mockReturnValue({ setex } as any);
+    try {
+      const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.ticket).toBeTruthy();
+      const query = vi.mocked(db.select).mock.results[0]!.value as any;
+      expect(query.from).toHaveBeenCalledWith(schemaTables.organizations);
+      expect(query.from.mock.results[0].value.where).toHaveBeenCalledWith(
+        eq(organizations.partnerId, selectedPartnerId),
+      );
+      expect(JSON.parse(setex.mock.calls[0]![2])).toMatchObject({
+        allowedOrgIds: selectedOrgIds,
+        orgId: null,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.mocked(getRedis).mockReturnValue(null);
+    }
+  });
+
+  it.each([
+    ['', 'partnerId is required for system scope'],
+    ['?partnerId=', 'partnerId is required for system scope'],
+    ['?partnerId=not-a-uuid', 'partnerId must be a UUID'],
+  ])('rejects invalid system partner selection %s before querying', async (query, error) => {
+    const { db } = await import('../db');
+    const app = await systemScopeApp();
+    const res = await app.request(`/events/ws-ticket${query}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error });
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('rejects a system partner selection with no organizations', async () => {
+    const app = await systemScopeApp();
+    partnerOrganizationRows = [];
+    const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Organization context required — select an org first' });
+  });
+
+  it('ignores a foreign partner selection for a partner-scoped token', async () => {
+    const { Hono } = await import('hono');
+    const { db } = await import('../db');
+    const { resolveOrgAccess } = await import('../middleware/auth');
+    const app = new Hono();
+    setUserStatusRow({ orgId: null });
+    app.use('*', async (c, next) => {
+      c.set('auth', {
+        user: { id: 'user-abc' }, scope: 'partner', partnerId: 'partner-1', orgId: null,
+      } as any);
+      await next();
+    });
+    vi.mocked(resolveOrgAccess).mockResolvedValueOnce({ type: 'multiple', orgIds: ['org-1'] });
+    app.route('/events', createEventWsTicketRoute());
+    const res = await app.request(`/events/ws-ticket?partnerId=${selectedPartnerId}`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(db.select).toHaveBeenCalledTimes(1); // Mint's live-user check only.
+    const body = await res.json();
+    expect(await consumeTicket(body.ticket)).toMatchObject({ allowedOrgIds: ['org-1'], partnerId: 'partner-1' });
   });
 
   it('resolves orgId from query param for partner users', async () => {

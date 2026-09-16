@@ -13,6 +13,7 @@ import { getRedis } from '../services/redis';
 import { getEventDispatcher, type ClientEntry } from '../services/eventDispatcher';
 import { authMiddleware, resolveOrgAccess } from '../middleware/auth';
 import { getBoundMobileDeviceBlock } from '../middleware/mobileDeviceBlocked';
+import { PG_UUID_REGEX } from '../utils/uuid';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -693,7 +694,19 @@ export function createEventWsTicketRoute(): Hono {
       orgIds = [orgAccess.orgId];
     } else if (orgAccess.type === 'multiple' && orgAccess.orgIds.length > 0) {
       orgIds = orgAccess.orgIds;
+    } else if (auth.scope === 'system') {
+      const partnerId = c.req.query('partnerId');
+      if (!partnerId) return c.json({ error: 'partnerId is required for system scope' }, 400);
+      if (!PG_UUID_REGEX.test(partnerId)) return c.json({ error: 'partnerId must be a UUID' }, 400);
+      const partnerOrganizations = await db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.partnerId, partnerId));
+      orgIds = partnerOrganizations.map((org) => org.id);
     } else {
+      orgIds = [];
+    }
+    if (orgIds.length === 0) {
       return c.json({ error: 'Organization context required — select an org first' }, 400);
     }
 
