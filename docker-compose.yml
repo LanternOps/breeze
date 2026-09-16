@@ -341,6 +341,14 @@ x-api-env: &api-env
   # default false this release (#4491, opt in with true); mapped so a
   # self-hoster can actually flip it either way.
   MFA_FORCE_FOR_PARTNER_ADMIN: ${MFA_FORCE_FOR_PARTNER_ADMIN:-}
+  # WebAuthn / passkeys (services/passkeys.ts). All optional: RP ID and origin
+  # default to PUBLIC_APP_URL's hostname/origin. Mapped so a deployment that
+  # serves the web app on a different host than PUBLIC_APP_URL (local stacks,
+  # reverse-proxied installs) can pin them — a value in .env alone never
+  # reaches the container.
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-}
+  WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-}
   # Optional per-refresh-token-family budget for POST /auth/refresh (#3696).
   # Mapped so the knob is actually reachable inside the container — a value
   # present only in .env is inert unless it is listed here.
