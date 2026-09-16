@@ -54,6 +54,15 @@ export async function prepareTopologyOrgMerge(loserOrgId: string, survivorOrgId:
     await db.execute(sql`UPDATE topology_site_state SET build_fence = build_fence + 1, updated_at = now()
       WHERE org_id = ${loser}::uuid AND site_id = ${siteId}::uuid`);
   }
+  // Merge revokes execution authority before ownership changes; snapshots remain historical.
+  await db.execute(sql`UPDATE topology_monitoring_policies SET enabled=false, authority_digest=NULL,
+    authority_generation=authority_generation+1, blocked_reason='organization_merged', updated_at=now() WHERE org_id=${loser}::uuid`);
+  await db.execute(sql`UPDATE topology_diagnostic_runs SET state='cancelled',cancel_requested_at=now(),finished_at=now(),
+    failure_reason='organization_merged',updated_at=now() WHERE org_id=${loser}::uuid AND state='queued'`);
+  await db.execute(sql`UPDATE topology_diagnostic_runs SET cancel_requested_at=now(),failure_reason='organization_merged',updated_at=now()
+    WHERE org_id=${loser}::uuid AND state='running'`);
+  await db.execute(sql`UPDATE device_commands SET status='cancelled',completed_at=now() WHERE status='pending'
+    AND id IN (SELECT command_id FROM topology_diagnostic_runs WHERE org_id=${loser}::uuid AND state='cancelled')`);
   return { siteIds };
 }
 

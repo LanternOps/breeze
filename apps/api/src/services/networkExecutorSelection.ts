@@ -72,11 +72,13 @@ export async function selectNetworkExecutor(input: {
 
 /** A bound asset with a missing site is unavailable, never implicitly unbound. */
 export async function selectMonitorExecutor(
-  monitor: { orgId: string; assetId: string | null },
+  monitor: { orgId: string; assetId: string | null; siteId?: string | null },
   options: { allowedSiteIds?: string[] | null; agentId?: string } = {},
 ): Promise<NetworkExecutorPick | { error: 'site_access_denied' }> {
-  const siteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
-  if (monitor.assetId && !siteId) return { error: 'no_agent_in_site' };
+  const assetSiteId = monitor.assetId ? await loadAssetSiteId(monitor.orgId, monitor.assetId) : null;
+  if (monitor.assetId && monitor.siteId && assetSiteId !== monitor.siteId) return { error: 'no_agent_in_site' };
+  const siteId = monitor.siteId ?? assetSiteId;
+  if (monitor.assetId && !assetSiteId) return { error: 'no_agent_in_site' };
   if (options.allowedSiteIds && (!siteId || !options.allowedSiteIds.includes(siteId))) {
     return { error: 'site_access_denied' };
   }

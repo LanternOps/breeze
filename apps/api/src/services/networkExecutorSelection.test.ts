@@ -122,3 +122,16 @@ describe('selectMonitorExecutor shared manual/scheduled policy', () => {
     expect(captured.wheres).toHaveLength(2);
   });
 });
+
+describe('topology virtual-target monitor scope', () => {
+  it('uses the explicit monitor site even without an inventory asset', async () => {
+    selectResults = [[{agentId:'site-origin'}]];
+    await expect(selectMonitorExecutor({orgId:'org-1',assetId:null,siteId:'site-a'})).resolves.toEqual({agentId:'site-origin'});
+    expect(render(captured.wheres[0]).params).toContain('site-a');
+  });
+  it('fails closed when the stored site differs from the live asset site', async () => {
+    selectResults = [[{siteId:'site-b'}]];
+    await expect(selectMonitorExecutor({orgId:'org-1',assetId:'asset-1',siteId:'site-a'})).resolves.toEqual({error:'no_agent_in_site'});
+    expect(captured.wheres).toHaveLength(1);
+  });
+});

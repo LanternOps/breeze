@@ -1,5 +1,6 @@
-import { pgTable, pgEnum, uuid, varchar, text, timestamp, boolean, jsonb, integer, index, real } from 'drizzle-orm/pg-core';
-import { organizations, partners } from './orgs';
+import { pgTable, pgEnum, uuid, varchar, text, timestamp, boolean, jsonb, integer, index, real, uniqueIndex, foreignKey, check } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { organizations, partners, sites } from './orgs';
 import { devices } from './devices';
 import { discoveredAssets } from './discovery';
 import { alertSeverityEnum } from './alerts';
@@ -17,6 +18,7 @@ export const networkMonitors = pgTable('network_monitors', {
   // Set when this row is a compiled artefact of a `network_check` monitor
   // definition; the compiler owns it and managedRowGuard refuses hand edits.
   managedByMonitorId: uuid('managed_by_monitor_id'),
+  siteId: uuid('site_id'),
   assetId: uuid('asset_id').references(() => discoveredAssets.id),
   name: varchar('name', { length: 200 }).notNull(),
   monitorType: monitorTypeEnum('monitor_type').notNull(),
@@ -49,6 +51,10 @@ export const networkMonitors = pgTable('network_monitors', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 }, (table) => ({
+  idOrgSiteUnique: uniqueIndex('network_monitors_id_org_site_uniq').on(table.id,table.orgId,table.siteId),
+  siteScopeFk: foreignKey({name:'network_monitors_site_scope_fk',columns:[table.siteId,table.orgId],foreignColumns:[sites.id,sites.orgId]}),
+  assetSiteScopeFk: foreignKey({name:'network_monitors_asset_site_scope_fk',columns:[table.assetId,table.orgId,table.siteId],foreignColumns:[discoveredAssets.id,discoveredAssets.orgId,discoveredAssets.siteId]}),
+  siteOwnerCheck: check('network_monitors_site_owner_chk',sql`site_id IS NULL OR org_id IS NOT NULL`),
   orgIdIdx: index('network_monitors_org_id_idx').on(table.orgId),
   partnerIdIdx: index('network_monitors_partner_id_idx').on(table.partnerId),
   monitorTypeIdx: index('network_monitors_monitor_type_idx').on(table.monitorType),

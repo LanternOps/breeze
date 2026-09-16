@@ -168,3 +168,4 @@ export * from './toolSources';
 export * from './topology';
 
 export * from "./topologyCollections";
+export * from './topologyOperations';
