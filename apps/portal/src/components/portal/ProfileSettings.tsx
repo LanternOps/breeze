@@ -104,7 +104,7 @@ export function ProfileSettings() {
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-8">
+    <div className="max-w-2xl space-y-8">
       {/* Your details — a ruled section, not a boxed card with an icon chip. */}
       <section className="border-t border-border/70 pt-5">
         <h2 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">

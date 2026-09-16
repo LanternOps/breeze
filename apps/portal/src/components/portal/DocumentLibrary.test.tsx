@@ -39,3 +39,12 @@ describe('DocumentLibrary', () => {
     expect(screen.queryByTestId('portal-documents-groups')).toBeNull();
   });
 });
+
+describe('DocumentLibrary — as-of line', () => {
+  it('does not rule itself off (the ledger foot or empty state already closes on a rule)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/portal/DocumentLibrary.tsx', 'utf8');
+    const asOf = src.match(/<p className="([^"]+)">\s*\{`As of/)?.[1] ?? '';
+    expect(asOf).not.toContain('border-t');
+  });
+});

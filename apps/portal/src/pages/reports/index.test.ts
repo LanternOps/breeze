@@ -35,21 +35,15 @@ describe('reports page hardware lifecycle card (W02)', () => {
     expect(pageSource).toMatch(/branding\.enableLifecycle/);
   });
 
-  it('links to the lifecycle tab on /devices through withBase, with a stable testid', () => {
-    expect(pageSource).toContain('data-testid="reports-lifecycle-card"');
-    // The plan lives under Devices now (a hash tab); /reports/lifecycle stays
-    // as the standalone page for orgs with Self-service off, since /devices
-    // bounces home for them.
-    expect(pageSource).toMatch(/href=\{withBase\([^)]*'\/devices#lifecycle'[^)]*'\/reports\/lifecycle'\)\}/);
+  it('hands ReportRunList the lifecycle link (devices tab, or the standalone page when Self-service is off)', () => {
+    // The link renders INSIDE ReportRunList, under the page title, as a ruled
+    // row — a boxed card above the H1 read as a banner and put the page's
+    // name second. /reports/lifecycle stays for orgs whose /devices bounces
+    // home (#4932, #5880).
+    expect(pageSource).toMatch(/lifecycleHref=\{[\s\S]*withBase\([^)]*'\/devices#lifecycle'[^)]*'\/reports\/lifecycle'\)/);
     expect(pageSource).toMatch(/branding\.enableSelfService !== false/);
-  });
-
-  it('positions the card above ReportRunList', () => {
-    const cardIndex = pageSource.indexOf('data-testid="reports-lifecycle-card"');
-    const listIndex = pageSource.indexOf('<ReportRunList');
-    expect(cardIndex).toBeGreaterThan(-1);
-    expect(listIndex).toBeGreaterThan(-1);
-    expect(cardIndex).toBeLessThan(listIndex);
+    expect(pageSource).toMatch(/branding\.enableLifecycle/);
+    expect(pageSource).not.toContain('data-testid="reports-lifecycle-card"');
   });
 });
 

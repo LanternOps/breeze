@@ -99,3 +99,12 @@ describe('NewTicketForm (portal) — intake form grid', () => {
     expect(screen.queryByTestId('portal-ticket-form-card-blank')).toBeNull();
   });
 });
+
+describe('NewTicketForm — column sits against the sheet edge', () => {
+  it('keeps a reading measure but does not centre itself inside the sheet', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('src/components/portal/NewTicketForm.tsx', 'utf8');
+    expect(src).toMatch(/max-w-2xl/);
+    expect(src).not.toMatch(/mx-auto max-w-2xl|max-w-2xl mx-auto/);
+  });
+});

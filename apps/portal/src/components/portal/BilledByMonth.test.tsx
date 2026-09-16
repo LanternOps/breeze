@@ -65,3 +65,12 @@ describe('BilledByMonth', () => {
     expect(screen.queryByTestId('portal-billed-by-month')).toBeNull();
   });
 });
+
+describe('BilledByMonth — phone width', () => {
+  it('scales the figure to the sheet instead of a fixed pixel width', () => {
+    render(<BilledByMonth invoices={[inv({ total: '1200' })]} />);
+    const svg = screen.getByRole('img', { name: /Billed by month/ });
+    expect(svg.getAttribute('width')).toBeNull();
+    expect(svg.getAttribute('class') ?? '').toMatch(/\bw-full\b/);
+  });
+});

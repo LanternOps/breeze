@@ -61,14 +61,14 @@ export function BilledByMonth({ invoices }: { invoices: InvoiceSummary[] }) {
       data-testid="portal-billed-by-month"
       className="mb-7 flex flex-wrap items-end justify-between gap-x-8 gap-y-3 border-y border-border/70 py-4"
     >
-      <div>
+      <div className="w-full max-w-[22rem]">
+        {/* No width attribute: the figure scales with the sheet on a phone
+            and stops at its drawn size on a desktop. */}
         <svg
           viewBox={`0 0 ${WIDTH} ${H}`}
-          width={WIDTH}
-          height={H}
           role="img"
           aria-label={`Billed by month, ${first.label} to ${last.label}`}
-          className="block text-primary"
+          className="block h-auto w-full text-primary"
         >
           {months.map((m, i) => {
             // Ink-height with a 4px floor so a small month still registers;

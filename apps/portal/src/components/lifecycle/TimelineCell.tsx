@@ -108,7 +108,7 @@ export function TimelineCell({ row }: { row: HardwareLifecycleDeviceRow }) {
       : '';
 
   return (
-    <div data-testid="lifecycle-timeline-cell" className="flex items-center gap-1.5">
+    <div data-testid="lifecycle-timeline-cell" className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
       <div data-testid="lifecycle-timeline-grid" className="flex shrink-0 gap-0.5">
         {Array.from({ length: TIMELINE_QUARTERS }, (_, q) => {
           const isDue = q === dueQ;
@@ -127,9 +127,10 @@ export function TimelineCell({ row }: { row: HardwareLifecycleDeviceRow }) {
                 <span
                   aria-hidden="true"
                   data-testid="lifecycle-timeline-today"
-                  // Overshoots by the ledger row's vertical padding (CELL:
-                  // sm:py-3.5) so consecutive rows' rules touch.
-                  className="absolute -bottom-3.5 -top-3.5 left-1/2 w-0.5 -translate-x-1/2 bg-foreground"
+                  // At sm+ overshoots by the ledger row's vertical padding
+                  // (CELL: sm:py-3.5) so consecutive rows' rules touch; on the
+                  // phone card the cell has a label above it, so only a hair.
+                  className="absolute -bottom-1 -top-1 left-1/2 w-0.5 -translate-x-1/2 bg-foreground sm:-bottom-3.5 sm:-top-3.5"
                 />
               )}
             </div>

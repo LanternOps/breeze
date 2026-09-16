@@ -228,3 +228,17 @@ describe('ReportRunList', () => {
     expect(screen.getByTestId('portal-reports-status').textContent).toBe('');
   });
 });
+
+describe('ReportRunList — hardware lifecycle link', () => {
+  it('renders a ruled link row under the title when given a lifecycleHref, and nothing otherwise', () => {
+    const { unmount } = render(<ReportRunList initialRuns={[]} timezone="UTC" lifecycleHref="/portal/devices#lifecycle" />);
+    const link = screen.getByTestId('reports-lifecycle-card');
+    expect(link).toHaveAttribute('href', '/portal/devices#lifecycle');
+    expect(link.className).not.toContain('bg-card');
+    const h1 = screen.getByRole('heading', { level: 1 });
+    expect(h1.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    unmount();
+    render(<ReportRunList initialRuns={[]} timezone="UTC" />);
+    expect(screen.queryByTestId('reports-lifecycle-card')).toBeNull();
+  });
+});
