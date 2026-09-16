@@ -626,8 +626,7 @@ export default function AiAgentSchedulesSection({
               timezone: draft.timezone,
               ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
               enabled: draft.enabled,
-              // #4442 W04 — always sent, the same PUT-style convention
-              // `enabled` follows: the current arm state, not a diff.
+              // New schedules stay disarmed when deployment gating prevents arming.
               actMode: sweepActEnabled && draft.actMode,
             }
           : {
@@ -635,7 +634,8 @@ export default function AiAgentSchedulesSection({
               timezone: draft.timezone,
               ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
               enabled: draft.enabled,
-              actMode: sweepActEnabled && draft.actMode,
+              // Preserve stored arming while the deployment flag is off.
+              ...(sweepActEnabled ? { actMode: draft.actMode } : {}),
             }
         : draft.id === null
           ? {
@@ -656,7 +656,7 @@ export default function AiAgentSchedulesSection({
             {
               enabled: draft.enabled,
               ...(noSweepKinds ? {} : { sweepKinds: draft.sweepKinds }),
-              actMode: draft.actModeDisabled ? false : null,
+              ...(sweepActEnabled ? { actMode: draft.actModeDisabled ? false : null } : {}),
             };
 
     const path = draft.id === null ? '/ai/agents/schedules' : `/ai/agents/schedules/${draft.id}`;
@@ -947,7 +947,7 @@ export default function AiAgentSchedulesSection({
             <button
               type="button"
               role="switch"
-              aria-checked={sweepActEnabled && drafted.actMode}
+              aria-checked={drafted.actMode}
               aria-labelledby={actModeLabelId}
               aria-describedby={canArmActMode ? undefined : actModeDisabledHintId}
               disabled={!canArmActMode}
@@ -955,13 +955,13 @@ export default function AiAgentSchedulesSection({
               onClick={() => editDraft({ ...drafted, actMode: !drafted.actMode })}
               data-testid="ai-agent-schedule-act-mode"
               className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-50 ${
-                sweepActEnabled && drafted.actMode ? 'bg-amber-500/80' : 'bg-muted'
+                drafted.actMode ? 'bg-amber-500/80' : 'bg-muted'
               }`}
             >
               <span
                 aria-hidden="true"
                 className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${
-                  sweepActEnabled && drafted.actMode ? 'translate-x-6' : 'translate-x-1'
+                  drafted.actMode ? 'translate-x-6' : 'translate-x-1'
                 }`}
               />
             </button>
