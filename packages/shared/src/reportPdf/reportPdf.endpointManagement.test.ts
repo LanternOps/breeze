@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { buildReportPdf } from './reportPdf';
 import type { EndpointManagementSummary } from '../types/endpointManagementReport';
+import {
+  ENDPOINT_MANAGEMENT_NO_SITES_GAP, emptyEndpointManagementSummary,
+} from '../utils/endpointManagement';
 
 const opts = { reportType: 'endpoint_management_review', generatedAt: 'Sep 30, 2026', timezone: 'UTC' };
 
@@ -104,8 +107,47 @@ describe('endpoint management PDF', () => {
     });
     const text = pdfText(doc);
     expect(text).toMatch(/N\/A/);
-    expect(text).not.toMatch(/\b0 devices enrolled\b/);
+    // The real regression guard: an unmeasured population must not render as a
+    // zero tile. A bare "0" appears elsewhere legitimately, so assert the tile
+    // label is present AND that the section says in words it was not measured.
+    expect(text).toMatch(/Devices enrolled in Intune/);
+    expect(text).toMatch(/not measured for this period/);
     expect(text).toMatch(/consent has not been granted/);
+  });
+
+  // The shape `zeroSafeReport` hands back for a restricted authority with no
+  // permitted sites. It MUST still enter this arm: with no summary at all the
+  // artifact degrades to renderGenericReport's single line, "No data available
+  // for the selected filters", which reads as "nothing to report / all clear"
+  // to a technician whose real situation is "your access scope has no sites".
+  it('renders the designed page for the restricted-empty zero-safe summary', () => {
+    const doc = buildReportPdf([], {
+      ...opts,
+      summary: emptyEndpointManagementSummary({
+        orgId: 'o1',
+        generatedAt: '2026-09-30T06:00:00.000Z',
+        thresholdDays: 14,
+        dataGap: ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+      }),
+    });
+    const text = pdfText(doc);
+    expect(text).toMatch(/Enrolment coverage/);
+    expect(text).toMatch(/N\/A/);
+    expect(text).toMatch(/No sites are in scope/);
+    expect(text).toMatch(/About this report/);
+    expect(text).not.toMatch(/No data available for the selected filters/);
+  });
+
+  it('says a measured, empty licence list was measured — not that it was skipped', () => {
+    const doc = buildReportPdf([], { ...opts, summary: { ...SUMMARY, licences: [] } });
+    const text = pdfText(doc);
+    expect(text).toMatch(/This was measured, not skipped/);
+    expect(text).not.toMatch(/Licence seats were not measured/);
+  });
+
+  it('says an UNMEASURED licence domain was not measured', () => {
+    const doc = buildReportPdf([], { ...opts, summary: { ...SUMMARY, licences: null } });
+    expect(pdfText(doc)).toMatch(/Licence seats were not measured/);
   });
 
   it('falls through to the generic renderer when the summary is absent', () => {

@@ -40,7 +40,9 @@ import { runDeliverableSweep } from '../../jobs/deliverableWorker';
 import { applyTemplateSet, createTemplateSet, type TemplateActor } from '../../services/deliverableTemplateService';
 import { resolveManagedEvidenceDefinition } from '../../services/managedEvidenceDefinitions';
 import { deliverOccurrence } from '../../services/serviceDeliverableService';
-import { listPortalRuns, renderRunPdf } from '../../services/portal/reportsSelfService';
+import {
+  PortalReportNotFoundError, listPortalRuns, renderRunPdf,
+} from '../../services/portal/reportsSelfService';
 import { generateEndpointManagementReport } from '../../services/endpointManagementReport';
 import type { EndpointManagementSummary, IntuneDeviceRow } from '@breeze/shared';
 import type { ReportExecutionAuthority } from '../../services/siteScope';
@@ -338,6 +340,11 @@ describe('endpoint management evidence on real Postgres (#5784 W03)', () => {
     const rows = result.rows as IntuneDeviceRow[];
 
     expect(s.enrolment?.intuneWithoutBreezeLink).toBe(1);
+    // The reported total counts only what this authority can account for: the
+    // one in-scope linked device plus the one unlinked record. NOT 3 — the
+    // out-of-site linked device is neither listed nor counted, so the artifact
+    // never discloses the tenant's full enrolment scale to a restricted reader.
+    expect(s.enrolment?.intuneDevices).toBe(2);
     // The load-bearing assertion: only the linked, in-site device is listed.
     expect(rows.map((r) => r.id)).toEqual([linkedInScope]);
     expect(rows.every((r) => r.breezeDeviceId)).toBe(true);
@@ -363,7 +370,11 @@ describe('endpoint management evidence on real Postgres (#5784 W03)', () => {
 
     const before = await system(() => listPortalRuns(t.orgId, 'UTC', { page: 1, limit: 50 }));
     expect(before.data.map((r) => r.id)).not.toContain(run!.id);
-    await expect(system(() => renderRunPdf(run!.id, t.orgId, 'UTC'))).rejects.toThrow();
+    // Specifically the OD-12 gate, not any exception: a bare `.toThrow()` would
+    // also pass on an unrelated failure earlier in the call chain and prove
+    // nothing about visibility.
+    await expect(system(() => renderRunPdf(run!.id, t.orgId, 'UTC')))
+      .rejects.toBeInstanceOf(PortalReportNotFoundError);
 
     await system(() => deliverOccurrence(t.orgId, occ!.id, { note: 'Reviewed' },
       { userId: t.techId, partnerId: t.partnerId, accessibleOrgIds: [t.orgId] }));

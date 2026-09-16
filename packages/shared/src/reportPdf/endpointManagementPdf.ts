@@ -316,7 +316,7 @@ export function renderEndpointManagementReport(
     y = ensureSpace(doc, chrome, y, 26);
     y = chrome.drawSectionHeading(doc, 'Licence seats', y);
     const licences: LicenceSeatRow[] | null = summary.licences;
-    if (licences === null || licences.length === 0) {
+    if (licences === null) {
       y = drawProse(
         doc,
         chrome,
@@ -324,6 +324,18 @@ export function renderEndpointManagementReport(
         y,
         9,
         C.muted,
+      );
+    } else if (licences.length === 0) {
+      // Measured, and genuinely empty. Saying "not measured" here would be the
+      // same class of lie as printing a zero for an unmeasured domain, just in
+      // the other direction.
+      y = drawProse(
+        doc,
+        chrome,
+        'No active Microsoft 365 licence products were found for this tenant. This was measured, not skipped.',
+        y,
+        9,
+        C.ink,
       );
     } else {
       autoTable(doc, {

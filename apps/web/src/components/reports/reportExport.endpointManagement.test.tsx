@@ -121,6 +121,8 @@ describe('exportReport — endpoint_management_review PDF', () => {
     const joined = textCalls.join('\n');
     expect(joined).toContain('N/A');
     expect(joined).toContain('consent has not been granted');
-    expect(joined).not.toContain('0 devices enrolled');
+    // The unmeasured compliance and stale-enrolment sections must say so in
+    // words, not fall back to a zero the reader would take as a measurement.
+    expect(joined).toContain('not measured for this period');
   });
 });

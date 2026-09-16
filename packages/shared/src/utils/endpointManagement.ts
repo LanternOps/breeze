@@ -2,6 +2,7 @@ import type {
   ComplianceState,
   ComplianceTrendPoint,
   EndpointFreshness,
+  EndpointManagementSummary,
 } from '../types/endpointManagementReport';
 
 /**
@@ -32,16 +33,23 @@ const GAP_OUTCOMES: Readonly<Record<string, string>> = {
 /**
  * Bucket an Intune population by compliance state.
  *
- * Returns `null` — NOT an all-zero record — for an empty population, because a
- * caller that has not measured anything must render "N/A", not "0 compliant".
- * Anything Intune reports that is not one of the four modelled states (Intune
- * also emits `configManager`, `conflict`, `error`, `notAssigned`) buckets as
- * `unknown`; it must never fall into `compliant` by default.
+ * `measured` is an EXPLICIT argument, not inferred from `rows.length`, and that
+ * is the whole point. "The domain was never enumerated" and "the domain was
+ * enumerated and no devices are in scope" are different facts that happen to
+ * share an empty array: the first must render "N/A", the second is a truthful
+ * zero. Deriving it from the array conflated them and made the artifact claim
+ * "not measured" about a domain that had synced perfectly.
+ *
+ * Returns `null` when unmeasured — NEVER an all-zero record. Anything Intune
+ * reports that is not one of the four modelled states (it also emits
+ * `configManager`, `conflict`, `error`, `notAssigned`) buckets as `unknown`; it
+ * must never fall into `compliant` by default.
  */
 export function complianceBreakdown(
   rows: ReadonlyArray<{ complianceState?: string | null }>,
+  measured: boolean,
 ): Record<ComplianceState, number> | null {
-  if (rows.length === 0) return null;
+  if (!measured) return null;
   const out: Record<ComplianceState, number> = {
     compliant: 0,
     noncompliant: 0,
@@ -138,3 +146,55 @@ function describeAge(hours: number): string {
 function capitalise(value: string): string {
   return value.length === 0 ? value : `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
+
+/**
+ * Stated on EVERY Endpoint Management Review artifact. Lives here, not in the
+ * API generator, because two producers must emit it: the generator itself and
+ * `zeroSafeReport`'s restricted-empty short-circuit, which returns before the
+ * generator is ever called.
+ */
+export const ENDPOINT_MANAGEMENT_HISTORY_CAVEAT =
+  'This report shows the current Intune inventory plus the daily compliance trend from '
+  + 'Microsoft 365 posture rollups. Device-level change history — which specific devices '
+  + 'fell in or out of compliance during the period — is not available: Intune records are '
+  + 'overwritten in place on each sync and devices absent for 30 days are removed.';
+
+/**
+ * The empty-but-SHAPED summary. Every field is present and every count is
+ * `null`, so the PDF renderer's arm is entered and prints "N/A" plus the stated
+ * reason — rather than the summary being absent, which drops the whole designed
+ * artifact into `renderGenericReport`'s one-line "No data available for the
+ * selected filters". That line reads as "nothing to report / all clear" to a
+ * technician whose real situation is "your access scope contains no sites".
+ */
+export function emptyEndpointManagementSummary(args: {
+  orgId: string;
+  generatedAt: string;
+  period?: { start?: string; end?: string };
+  thresholdDays: number;
+  dataGap: string;
+}): EndpointManagementSummary {
+  return {
+    orgId: args.orgId,
+    orgName: null,
+    generatedAt: args.generatedAt,
+    period: args.period,
+    freshness: {},
+    enrolment: {
+      intuneDevices: null,
+      breezeDevices: null,
+      breezeWithoutIntune: null,
+      intuneWithoutBreezeLink: null,
+    },
+    compliance: { byState: null, trend: [] },
+    staleEnrolments: { count: null, thresholdDays: args.thresholdDays },
+    rows: [],
+    dataGaps: [args.dataGap],
+    historyCaveat: ENDPOINT_MANAGEMENT_HISTORY_CAVEAT,
+  };
+}
+
+/** The one sentence a restricted authority with no permitted sites is owed. */
+export const ENDPOINT_MANAGEMENT_NO_SITES_GAP =
+  'No sites are in scope for this report, so nothing was measured. This is an '
+  + 'access-scope limit, not a finding about the devices.';

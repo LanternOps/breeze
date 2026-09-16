@@ -115,7 +115,12 @@ describe('generateEndpointManagementReport', () => {
     expect(s.dataGaps?.length).toBeGreaterThan(0);
   });
 
-  it('reads freshness from last_complete_snapshot_at, never last_success_at', async () => {
+  // NOTE: `loadDomainFreshness` is mocked here, so this asserts the generator
+  // passes the reader's `asOf` through unchanged and derives staleness from it.
+  // That the reader itself picks `last_complete_snapshot_at` over
+  // `last_success_at` is proven in m365Sync/summary.test.ts and, end to end on
+  // real Postgres, in endpointManagementEvidence.integration.test.ts case 2.
+  it('passes the reader asOf straight through and derives staleness from it', async () => {
     freshness({
       intune_devices: {
         asOf: '2026-09-02T04:00:00.000Z', lastStatus: 'partial', truncated: true, sources: {}, unlicensed: false,
@@ -140,6 +145,39 @@ describe('generateEndpointManagementReport', () => {
     expect(s.dataGaps?.join(' ')).toMatch(/consent/i);
   });
 
+  // Every outcome `isMeasured()` treats as unmeasured gets its own case. A
+  // regression that dropped one from the list would silently start printing
+  // real-looking numbers for a domain that was never enumerated — the exact
+  // failure mode this report is written against — and a single needs_consent
+  // case would not catch it.
+  it.each([
+    ['throttled', { sources: { managedDevices: 'throttled' } }],
+    ['error', { sources: { managedDevices: 'error' } }],
+    ['unlicensed', { sources: { managedDevices: 'ok' }, unlicensed: true }],
+  ] as const)('treats a %s domain as unmeasured, not as an empty tenant', async (_label, over) => {
+    freshness({
+      // A COMPLETE, RECENT snapshot — so `asOf` alone cannot be what makes this
+      // unmeasured. Only the outcome under test can.
+      intune_devices: { ...MEASURED, ...over },
+    });
+    queueSelects(ORG_ROW, []);
+
+    const s = summaryOf(await generateEndpointManagementReport(ORG, {}, AUTH_UNRESTRICTED));
+    expect(s.enrolment?.intuneDevices).toBeNull();
+    expect(s.enrolment?.intuneWithoutBreezeLink).toBeNull();
+    expect(s.compliance?.byState).toBeNull();
+    expect(s.staleEnrolments?.count).toBeNull();
+  });
+
+  it('treats an unlicensed skus domain as unmeasured licences, not an empty SKU list', async () => {
+    freshness({ skus: { ...MEASURED, unlicensed: true } });
+    queueSelects(ORG_ROW, [], [], [], [], []);
+
+    const s = summaryOf(await generateEndpointManagementReport(ORG, {}, AUTH_UNRESTRICTED));
+    // null = unmeasured; [] would read as "measured, this tenant owns no SKUs".
+    expect(s.licences).toBeNull();
+  });
+
   it('discloses the unlinked Intune population as a COUNT under a restricted authority, never enumerating it', async () => {
     queueSelects(
       ORG_ROW,
@@ -153,10 +191,53 @@ describe('generateEndpointManagementReport', () => {
     const res = await generateEndpointManagementReport(ORG, {}, AUTH_RESTRICTED_S1);
     const s = summaryOf(res);
     expect(s.enrolment?.intuneWithoutBreezeLink).toBe(1);
+    // The reported enrolment total is the IN-SCOPE linked population plus that
+    // unlinked count — 1 + 1 — not the org-wide coverage row count. Reporting
+    // the latter told a site-restricted technician the whole tenant's
+    // enrolment scale beside a correctly-scoped Breeze device count.
+    expect(s.enrolment?.intuneDevices).toBe(2);
     // The load-bearing assertion: the unlinked device must not appear in rows —
     // enumerating it leaks a device outside the technician's sites.
     expect((res.rows as IntuneDeviceRow[]).map((r) => r.id)).toEqual(['a']);
     expect((res.rows as IntuneDeviceRow[]).every((r) => r.breezeDeviceId)).toBe(true);
+  });
+
+  it('never reports an enrolment total larger than the authority can account for', async () => {
+    // Three linked Intune rows org-wide, but only ONE joins to a device in the
+    // permitted site; the row query returns just that one.
+    queueSelects(
+      ORG_ROW,
+      [{ id: 'd1' }],
+      [
+        { id: 'a', breezeDeviceId: 'd1' },
+        { id: 'b', breezeDeviceId: 'd2' },
+        { id: 'c', breezeDeviceId: 'd3' },
+      ],
+      [intuneRow({ id: 'a', breezeDeviceId: 'd1' })],
+      [],
+      [],
+    );
+
+    const s = summaryOf(await generateEndpointManagementReport(ORG, {}, AUTH_RESTRICTED_S1));
+    // Not 3. The two rows joined to devices outside the permitted site are
+    // neither listed nor counted.
+    expect(s.enrolment?.intuneDevices).toBe(1);
+    expect(s.enrolment?.intuneWithoutBreezeLink).toBe(0);
+  });
+
+  it('counts the whole org for an unrestricted authority with no site filter', async () => {
+    queueSelects(
+      ORG_ROW,
+      [{ id: 'd1' }, { id: 'd2' }],
+      [{ id: 'a', breezeDeviceId: 'd1' }, { id: 'b', breezeDeviceId: 'd2' }, { id: 'c', breezeDeviceId: null }],
+      [intuneRow({ id: 'a', breezeDeviceId: 'd1' }), intuneRow({ id: 'b', breezeDeviceId: 'd2' })],
+      [],
+      [],
+    );
+
+    const s = summaryOf(await generateEndpointManagementReport(ORG, {}, AUTH_UNRESTRICTED));
+    expect(s.enrolment?.intuneDevices).toBe(3);
+    expect(s.enrolment?.intuneWithoutBreezeLink).toBe(1);
   });
 
   it('takes the trend from m365_posture_rollups, not from entity columns', async () => {

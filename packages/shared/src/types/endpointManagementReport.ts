@@ -80,6 +80,10 @@ export type EndpointManagementSummary = {
   freshness?: Record<string, EndpointFreshness>;
   /** null = unmeasured. */
   enrolment?: {
+    /** Devices the requesting authority can account for: the linked, in-scope
+     *  population plus `intuneWithoutBreezeLink`. NOT the org-wide Intune row
+     *  count — that would disclose the whole tenant's enrolment scale to a
+     *  site-restricted technician. */
     intuneDevices: number | null;
     breezeDevices: number | null;
     breezeWithoutIntune: number | null;

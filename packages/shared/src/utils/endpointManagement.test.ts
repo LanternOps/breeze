@@ -1,20 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { complianceBreakdown, freshnessLine, trendDelta } from './endpointManagement';
+import {
+  complianceBreakdown, freshnessLine, isStaleSnapshot, trendDelta,
+} from './endpointManagement';
 
 function hoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600_000).toISOString();
 }
 
 describe('complianceBreakdown', () => {
-  it('returns null for an empty population — unmeasured, not all-zero', () => {
-    expect(complianceBreakdown([])).toBeNull();
+  it('returns null when the domain was not measured — unmeasured, not all-zero', () => {
+    expect(complianceBreakdown([], false)).toBeNull();
+    // Even with rows in hand: unmeasured wins, because those rows cannot be a
+    // complete population.
+    expect(complianceBreakdown([{ complianceState: 'compliant' }] as never, false)).toBeNull();
+  });
+
+  it('returns a truthful all-zero record for a MEASURED but empty population', () => {
+    // The distinction the explicit flag exists for. Returning null here made
+    // the artifact print "not measured" about a domain that had synced fine and
+    // simply had no devices in the reader's scope.
+    expect(complianceBreakdown([], true)).toEqual({
+      compliant: 0, noncompliant: 0, inGracePeriod: 0, unknown: 0,
+    });
   });
 
   it('buckets an unrecognised compliance_state as unknown, never as compliant', () => {
     const got = complianceBreakdown([
       { complianceState: 'configManager' },
       { complianceState: null },
-    ] as never);
+    ] as never, true);
     expect(got).toEqual({ compliant: 0, noncompliant: 0, inGracePeriod: 0, unknown: 2 });
   });
 
@@ -24,8 +38,30 @@ describe('complianceBreakdown', () => {
       { complianceState: 'compliant' },
       { complianceState: 'noncompliant' },
       { complianceState: 'inGracePeriod' },
-    ] as never);
+    ] as never, true);
     expect(got).toEqual({ compliant: 2, noncompliant: 1, inGracePeriod: 1, unknown: 0 });
+  });
+});
+
+describe('isStaleSnapshot', () => {
+  it('treats an absent snapshot as stale — never-measured is not fresh', () => {
+    expect(isStaleSnapshot(null, 6)).toBe(true);
+    expect(isStaleSnapshot(undefined, 6)).toBe(true);
+  });
+
+  it('treats an unparseable timestamp as stale rather than silently fresh', () => {
+    expect(isStaleSnapshot('not-a-date', 6)).toBe(true);
+  });
+
+  it('is fresh inside the cadence grace and stale beyond it', () => {
+    expect(isStaleSnapshot(hoursAgo(6), 6)).toBe(false);
+    expect(isStaleSnapshot(hoursAgo(17), 6)).toBe(false);
+    expect(isStaleSnapshot(hoursAgo(19), 6)).toBe(true);
+  });
+
+  it('agrees with freshnessLine on the same input', () => {
+    expect(isStaleSnapshot(hoursAgo(24 * 29), 6)).toBe(true);
+    expect(freshnessLine({ asOf: hoursAgo(24 * 29), lastStatus: 'success' }, 6)).toMatch(/stale/i);
   });
 });
 

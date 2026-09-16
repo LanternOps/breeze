@@ -48,11 +48,19 @@
  * permitted sites and discloses the unlinked population as a COUNT ONLY —
  * those rows have no site, so listing them would serve devices outside the
  * technician's sites.
+ *
+ * Every REPORTED number is scoped the same way. `enrolment.intuneDevices` is
+ * the in-scope linked population plus that unlinked count — never the org-wide
+ * row count, which would disclose the whole tenant's enrolment scale to a
+ * site-restricted technician beside a correctly-scoped Breeze device count.
  */
 import { and, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 import {
+  ENDPOINT_MANAGEMENT_HISTORY_CAVEAT,
+  ENDPOINT_MANAGEMENT_NO_SITES_GAP,
   M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS,
   complianceBreakdown,
+  emptyEndpointManagementSummary,
   freshnessLine,
   isStaleSnapshot,
   type ComplianceState,
@@ -80,13 +88,6 @@ import {
 } from './reportGenerationService';
 import type { ReportGenerationAuthority } from './siteScope';
 
-/** Stated on every artifact. See the module doc for why it is not optional. */
-const HISTORY_CAVEAT =
-  'This report shows the current Intune inventory plus the daily compliance trend from '
-  + 'Microsoft 365 posture rollups. Device-level change history — which specific devices '
-  + 'fell in or out of compliance during the period — is not available: Intune records are '
-  + 'overwritten in place on each sync and devices absent for 30 days are removed.';
-
 const INTUNE_CADENCE_HOURS = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.intune_devices / 3600;
 const SKUS_CADENCE_HOURS = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.skus / 3600;
 
@@ -95,6 +96,12 @@ const SKUS_CADENCE_HOURS = M365_SYNC_DOMAIN_DEFAULT_INTERVAL_SECONDS.skus / 3600
  *  is a data gap: its section renders "N/A" with a reason, and its table is
  *  never queried — printing zeros for an unenumerated tenant is the failure
  *  mode this whole report is written against. */
+// `unlicensed` is computed from the domain's PRIMARY source key only
+// (m365Sync/summary.ts). Both domains this report reads emit exactly one,
+// primary-keyed source today, so that is complete. If either later grows a
+// secondary source the way `secure_score` has, add it here — otherwise a
+// non-primary `unlicensed` would print a gap note while the numbers beside it
+// were still reported as measured.
 function isMeasured(freshness: { asOf: string | null; sources: Record<string, string> | null; unlicensed: boolean }): boolean {
   if (!freshness.asOf) return false;
   if (freshness.unlicensed) return false;
@@ -127,29 +134,6 @@ function isoDate(value: unknown): string {
   return '';
 }
 
-function emptySummary(
-  orgId: string,
-  generatedAt: string,
-  period: { start?: string; end?: string } | undefined,
-  thresholdDays: number,
-): EndpointManagementSummary {
-  return {
-    orgId,
-    orgName: null,
-    generatedAt,
-    period,
-    freshness: {},
-    enrolment: {
-      intuneDevices: null, breezeDevices: null, breezeWithoutIntune: null, intuneWithoutBreezeLink: null,
-    },
-    compliance: { byState: null, trend: [] },
-    staleEnrolments: { count: null, thresholdDays },
-    rows: [],
-    dataGaps: ['No sites are in scope for this report, so nothing was measured.'],
-    historyCaveat: HISTORY_CAVEAT,
-  };
-}
-
 export async function generateEndpointManagementReport(
   orgId: string,
   rawConfig: Record<string, unknown>,
@@ -172,7 +156,11 @@ export async function generateEndpointManagementReport(
       rows: [],
       rowCount: 0,
       generatedAt,
-      summary: emptySummary(orgId, generatedAt, period, cfg.staleEnrolmentDays),
+      summary: emptyEndpointManagementSummary({
+        orgId, generatedAt, period,
+        thresholdDays: cfg.staleEnrolmentDays,
+        dataGap: ENDPOINT_MANAGEMENT_NO_SITES_GAP,
+      }),
     };
   }
 
@@ -233,9 +221,18 @@ export async function generateEndpointManagementReport(
   const breezeIds = new Set((breezeRows ?? []).map((r) => r.id));
 
   // --- Intune enrolment coverage --------------------------------------------
-  // Counts are org-wide on purpose: the unlinked population has no site, so it
-  // is DISCLOSED AS A COUNT and never enumerated (see the module doc).
-  let intuneTotal: number | null = null;
+  // This read is org-wide, and ONLY these two derivations may be: the unlinked
+  // count, because those rows carry no site at all and are disclosed as a count
+  // (see the module doc), and `linkedIds`, which is never reported — it is only
+  // subtracted from the already-in-scope `breezeIds`, so nothing out of scope
+  // survives into the output.
+  //
+  // `enrolment.intuneDevices` is deliberately NOT this read's row count.
+  // Deriving it here reported the whole tenant's enrolment scale to a
+  // site-restricted technician — linked rows joined to devices outside their
+  // permitted sites were counted in, beside a correctly-scoped "Devices managed
+  // by Breeze" figure, with nothing saying the two had different scopes. It is
+  // computed from the enumerable population below instead.
   let unlinkedCount: number | null = null;
   let linkedIds = new Set<string>();
   if (intuneMeasured) {
@@ -243,7 +240,6 @@ export async function generateEndpointManagementReport(
       .select({ id: m365IntuneDevices.id, breezeDeviceId: m365IntuneDevices.breezeDeviceId })
       .from(m365IntuneDevices)
       .where(eq(m365IntuneDevices.orgId, orgId));
-    intuneTotal = (coverageRows ?? []).length;
     unlinkedCount = (coverageRows ?? []).filter((r) => !r.breezeDeviceId).length;
     linkedIds = new Set(
       (coverageRows ?? [])
@@ -295,6 +291,12 @@ export async function generateEndpointManagementReport(
     }));
     rows.sort((a, b) => (a.deviceName ?? '').localeCompare(b.deviceName ?? ''));
   }
+
+  // Enrolled devices this authority may actually account for: the linked,
+  // in-scope population it can enumerate, plus the unlinked population it may
+  // only count. Under an unrestricted authority with no site filter this is
+  // every Intune row in the org, exactly as before.
+  const intuneTotal = intuneMeasured ? rows.length + (unlinkedCount ?? 0) : null;
 
   // --- compliance trend, from the rollups and ONLY from the rollups ----------
   let trend: ComplianceTrendPoint[] = [];
@@ -377,14 +379,16 @@ export async function generateEndpointManagementReport(
       intuneWithoutBreezeLink: unlinkedCount,
     },
     compliance: {
-      byState: intuneMeasured ? complianceBreakdown(rows) : null,
+      // `intuneMeasured`, not `rows.length`: a measured domain whose in-scope
+      // population happens to be empty is a truthful zero, not "not measured".
+      byState: complianceBreakdown(rows, intuneMeasured),
       trend,
     },
     staleEnrolments: { count: staleCount, thresholdDays: cfg.staleEnrolmentDays },
     ...(cfg.includeLicences ? { licences } : {}),
     rows,
     dataGaps,
-    historyCaveat: HISTORY_CAVEAT,
+    historyCaveat: ENDPOINT_MANAGEMENT_HISTORY_CAVEAT,
   } satisfies EndpointManagementSummary;
 
   return { rows, rowCount: rows.length, generatedAt, summary };
