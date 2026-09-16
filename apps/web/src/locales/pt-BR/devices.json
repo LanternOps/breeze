@@ -2429,6 +2429,18 @@
       "sysName": "Nome do sistema",
       "sysDescr": "Descrição",
       "sysObjectId": "ID do objeto (OID)"
+    },
+    "settings": {
+      "title": "Configurações de {{name}}",
+      "subtitle": "Gerencie cada seção separadamente.",
+      "navLabel": "Seções de configurações do ativo",
+      "unsavedChanges": "Alterações não salvas",
+      "sections": {
+        "identity": "Identidade",
+        "monitoring": "Monitoramento",
+        "link": "Vínculo",
+        "danger": "Zona de perigo"
+      }
     }
   },
   "osIcons": {

@@ -2429,6 +2429,18 @@
       "sysName": "Sistem adı",
       "sysDescr": "Açıklama",
       "sysObjectId": "Nesne kimliği (OID)"
+    },
+    "settings": {
+      "title": "{{name}} ayarları",
+      "subtitle": "Her bölümü ayrı ayrı yönetin.",
+      "navLabel": "Varlık ayarları bölümleri",
+      "unsavedChanges": "Kaydedilmemiş değişiklikler",
+      "sections": {
+        "identity": "Kimlik",
+        "monitoring": "İzleme",
+        "link": "Bağlantı",
+        "danger": "Tehlikeli işlemler"
+      }
     }
   },
   "osIcons": {

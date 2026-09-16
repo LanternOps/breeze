@@ -2429,6 +2429,18 @@
       "sysName": "Nome sistema",
       "sysDescr": "Descrizione",
       "sysObjectId": "ID oggetto (OID)"
+    },
+    "settings": {
+      "title": "Impostazioni di {{name}}",
+      "subtitle": "Gestisci ogni sezione separatamente.",
+      "navLabel": "Sezioni delle impostazioni della risorsa",
+      "unsavedChanges": "Modifiche non salvate",
+      "sections": {
+        "identity": "Identità",
+        "monitoring": "Monitoraggio",
+        "link": "Collegamento",
+        "danger": "Zona di pericolo"
+      }
     }
   },
   "osIcons": {

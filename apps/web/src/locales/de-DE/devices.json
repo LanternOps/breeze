@@ -2429,6 +2429,18 @@
       "sysName": "Systemname",
       "sysDescr": "Beschreibung",
       "sysObjectId": "Objekt-ID (OID)"
+    },
+    "settings": {
+      "title": "Einstellungen für {{name}}",
+      "subtitle": "Verwalten Sie jeden Bereich unabhängig.",
+      "navLabel": "Bereiche der Asset-Einstellungen",
+      "unsavedChanges": "Ungespeicherte Änderungen",
+      "sections": {
+        "identity": "Identität",
+        "monitoring": "Überwachung",
+        "link": "Verknüpfung",
+        "danger": "Gefahrenbereich"
+      }
     }
   },
   "osIcons": {

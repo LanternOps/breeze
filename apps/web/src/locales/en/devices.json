@@ -2333,6 +2333,16 @@
         "checkCreateFailed": "Couldn't add the network check",
         "checkRemoved": "Network check removed",
         "checkRemoveFailed": "Couldn't remove the network check"
+      },
+      "title": "{{name}} settings",
+      "subtitle": "Manage each section independently.",
+      "navLabel": "Asset settings sections",
+      "unsavedChanges": "Unsaved changes",
+      "sections": {
+        "identity": "Identity",
+        "monitoring": "Monitoring",
+        "link": "Link",
+        "danger": "Danger"
       }
     },
     "backToDevices": "Back to devices",
