@@ -342,8 +342,12 @@ struct HelperStatus {
     pid: u32,
 }
 
+fn status_path_from_config_path(config_path: &std::path::Path) -> PathBuf {
+    config_path.with_file_name("helper_status.yaml")
+}
+
 fn helper_status_path() -> PathBuf {
-    agent_config_path().with_file_name("helper_status.yaml")
+    status_path_from_config_path(&resolve_helper_config_path())
 }
 
 fn write_status_file(chat_active: bool) {
@@ -1358,6 +1362,21 @@ mod tests {
         assert_eq!(
             config_path_from_args(args.into_iter()),
             Some(PathBuf::from("/first.yaml"))
+        );
+    }
+
+    #[test]
+    fn status_path_from_config_path_derives_correct_filename() {
+        let session_config = PathBuf::from("/var/lib/breeze/sessions/s-1/helper_config.yaml");
+        assert_eq!(
+            status_path_from_config_path(&session_config),
+            PathBuf::from("/var/lib/breeze/sessions/s-1/helper_status.yaml")
+        );
+
+        let legacy_config = PathBuf::from("C:\\ProgramData\\Breeze\\helper_config.yaml");
+        assert_eq!(
+            status_path_from_config_path(&legacy_config),
+            PathBuf::from("C:\\ProgramData\\Breeze\\helper_status.yaml")
         );
     }
 

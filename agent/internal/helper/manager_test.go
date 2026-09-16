@@ -488,3 +488,53 @@ func TestConfigUnchangedDetectsTrayIconFlip(t *testing.T) {
 		t.Fatal("tray-icon flip reported as unchanged — helper would never restart")
 	}
 }
+
+func TestInstalledVersionSessionStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	sessionDir := filepath.Join(tmpDir, "sessions", "100")
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sessionStatus := filepath.Join(sessionDir, "helper_status.yaml")
+	if err := os.WriteFile(sessionStatus, []byte("version: 0.113.0\npid: 1234\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.sessions["100"] = newSessionState("100", tmpDir)
+
+	if got := mgr.InstalledVersion(); got != "0.113.0" {
+		t.Fatalf("InstalledVersion() = %q, want %q", got, "0.113.0")
+	}
+}
+
+func TestInstalledVersionLegacyFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Legacy status written at the root of baseDir next to agent.yaml
+	legacyStatus := filepath.Join(tmpDir, "helper_status.yaml")
+	if err := os.WriteFile(legacyStatus, []byte("version: 0.111.1\npid: 5678\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	// Active session exists but its status file hasn't been written yet
+	mgr.sessions["100"] = newSessionState("100", tmpDir)
+
+	if got := mgr.InstalledVersion(); got != "0.111.1" {
+		t.Fatalf("InstalledVersion() fallback = %q, want %q", got, "0.111.1")
+	}
+}
+
+func TestInstalledVersionEmptyWhenNoStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+	mgr.sessions["100"] = newSessionState("100", tmpDir)
+
+	if got := mgr.InstalledVersion(); got != "" {
+		t.Fatalf("InstalledVersion() = %q, want empty string", got)
+	}
+}
+

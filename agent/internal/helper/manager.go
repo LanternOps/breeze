@@ -743,6 +743,14 @@ func (m *Manager) installedVersionLocked() string {
 			return status.Version
 		}
 	}
+	// Fallback to legacy root helper_status.yaml in baseDir if session status is absent.
+	// This covers single-session/legacy helper versions that write status directly next to agent.yaml.
+	if m.baseDir != "" {
+		legacyConfig := filepath.Join(m.baseDir, "helper_config.yaml")
+		if status, err := ReadStatus(legacyConfig); err == nil && status.Version != "" {
+			return status.Version
+		}
+	}
 	return ""
 }
 
