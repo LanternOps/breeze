@@ -1,0 +1,52 @@
+import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
+import { z } from 'zod';
+import { topologyScopeSchema, nodeKindSchema, relationshipKindSchema, type TopologyScope, type NodeKind, type RelationshipKind } from '@breeze/shared';
+
+export function normalizedTopologyScope(scope: TopologyScope): TopologyScope {
+  const parsed = topologyScopeSchema.parse(scope);
+  return { orgId: parsed.orgId.toLowerCase(), siteId: parsed.siteId.toLowerCase() };
+}
+
+/** Source material is server-owned and immutable. Names, addresses and display
+ * labels belong in attributes. Namespaced keys carry collector/routing/owner
+ * context; an inventory UUID is already a stable source identity. */
+export function canonicalIdentityKey(scope: TopologyScope, kind: NodeKind | RelationshipKind, sourceKey: string): string {
+  const normalized = normalizedTopologyScope(scope);
+  z.union([nodeKindSchema, relationshipKindSchema]).parse(kind);
+  z.string().min(1).max(8192).parse(sourceKey);
+  if (sourceKey !== sourceKey.trim() || /\s|\p{Cc}/u.test(sourceKey) || isIP(sourceKey)
+    || /^(?:name|label|ip|address|hostname):/i.test(sourceKey)
+    || (!z.string().uuid().safeParse(sourceKey).success && !/^[a-z][a-z0-9_-]*:.+/.test(sourceKey))) {
+    throw new Error('Topology identity requires immutable, context-qualified source material');
+  }
+  const material = { version: 1, kind, sourceKey };
+  if (Buffer.byteLength(JSON.stringify(material)) > 16384) throw new Error('Topology identity material exceeds bound');
+  return `v1:${createHash('sha256').update(JSON.stringify([normalized.orgId, normalized.siteId, material])).digest('hex')}`;
+}
+
+type MergeNode = TopologyScope & { id: string; createdAt: Date; labelOverride?: string | null; attributes?: { notes?: string } };
+type MergePosition = { nodeId: string; layoutId: string; x: number; y: number; pinned: boolean };
+
+/** Pure decision only: the caller must verify the accepted inventory relation
+ * and apply references, positions, manual facts and audit atomically. */
+export function planCanonicalMerge(scope: TopologyScope, first: MergeNode, second: MergeNode, positions: MergePosition[], evidence: 'accepted_link') {
+  const normalized = normalizedTopologyScope(scope);
+  if (evidence !== 'accepted_link') throw new Error('Weak identity cannot merge canonical nodes');
+  for (const node of [first, second]) {
+    if (node.orgId !== normalized.orgId || node.siteId !== normalized.siteId) throw new Error('Canonical alias scope conflict');
+    z.string().uuid().parse(node.id);
+    if (!Number.isFinite(node.createdAt.getTime())) throw new Error('Invalid canonical creation time');
+  }
+  if (first.id === second.id) throw new Error('Canonical alias cannot reference itself');
+  const [canonical, alias] = [first, second].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id)) as [MergeNode, MergeNode];
+  if (canonical.labelOverride && alias.labelOverride && canonical.labelOverride !== alias.labelOverride) throw new Error('Conflicting manual labels stop canonical merge');
+  if (canonical.attributes?.notes && alias.attributes?.notes && canonical.attributes.notes !== alias.attributes.notes) throw new Error('Conflicting manual notes stop canonical merge');
+  const pins = new Map<string, MergePosition>();
+  for (const position of positions.filter(p => p.pinned && [first.id, second.id].includes(p.nodeId))) {
+    const previous = pins.get(position.layoutId);
+    if (previous && (previous.x !== position.x || previous.y !== position.y)) throw new Error('Conflicting pins stop canonical merge');
+    pins.set(position.layoutId, position);
+  }
+  return { canonicalId: canonical.id, aliasId: alias.id, labelOverride: canonical.labelOverride ?? alias.labelOverride ?? null, notes: canonical.attributes?.notes ?? alias.attributes?.notes };
+}
