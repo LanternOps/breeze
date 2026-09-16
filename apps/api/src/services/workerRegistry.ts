@@ -75,6 +75,14 @@ export interface StartWorkersHooks {
  */
 export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
   {
+    name: 'topologyOutboxWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyOutboxWorker');
+      return { init: m.initializeTopologyOutboxWorker, shutdown: m.shutdownTopologyOutboxWorker };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {
