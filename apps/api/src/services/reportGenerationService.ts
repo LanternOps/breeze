@@ -14,6 +14,7 @@ import {
   reportRuns
 } from '../db/schema';
 import type { ExecutiveSummary } from '@breeze/shared';
+import { emptyVulnerabilityManagementSummary } from '@breeze/shared';
 import {
   systemReportAuthorityFor,
   type ReportExecutionAuthority,
@@ -967,10 +968,27 @@ function zeroSafeReport(type: ReportType, orgId: string): ReportResult {
     case 'performance':
     case 'security_compliance_posture':
     case 'hardware_lifecycle':
-    // #5784 W04 — generated on demand, so an empty scope is an empty (but
-    // shaped) artifact, never a stored-artifact refusal.
-    case 'vulnerability_management':
       return emptyRowsReport();
+    // #5784 W04. NOT `emptyRowsReport()`: that returns no `summary`, and
+    // `buildReportPdf`'s vulnerability_management arm requires one — a
+    // summary-less result falls through to `renderGenericReport`, which prints
+    // "No data available for the selected filters.", phrasing indistinguishable
+    // from "we checked every device and found none". A site-restricted
+    // authority with zero sites queried nothing, so the counts are NOT
+    // MEASURED and the artifact says which of the two happened.
+    case 'vulnerability_management': {
+      const generatedAt = new Date().toISOString();
+      return {
+        rows: [],
+        rowCount: 0,
+        generatedAt,
+        summary: emptyVulnerabilityManagementSummary(
+          orgId,
+          generatedAt,
+          'This report ran under a site-restricted authority with no sites in scope, so no device was queried. The counts below are not measured — they are not zero.',
+        ) as unknown as Record<string, unknown>,
+      };
+    }
     // P2-3 (#4190) — refused HERE too, not only in the dispatch switch above.
     // A restricted-empty authority short-circuits into this function before
     // dispatch ever runs, and an empty zero-safe shape would read as "the

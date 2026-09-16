@@ -154,6 +154,33 @@ describe('generateReport mandatory execution authority', () => {
     },
   );
 
+  // #5784 W04. This arm must NOT be the bare `emptyRowsReport()` the other
+  // row-shaped types get: a summary-less result falls through buildReportPdf's
+  // arm to renderGenericReport, whose "No data available for the selected
+  // filters." is indistinguishable from "we checked every device and found
+  // none". Nothing was queried, so the counts are UNMEASURED, and the artifact
+  // has to say which of the two happened.
+  it('vulnerability_management returns a shaped, unmeasured summary for restricted-empty, not a bare empty result', async () => {
+    const result = await generateReport(
+      'vulnerability_management',
+      ORG_ID,
+      {},
+      authority('restricted', []),
+    );
+
+    expect(db.select).not.toHaveBeenCalled();
+    const summary = result.summary as {
+      open?: { critical: number | null; knownExploited: number | null };
+      dataGaps?: string[];
+      closedThisPeriod?: { count: number | null };
+    };
+    expect(summary).toBeTruthy();
+    expect(summary.open?.critical).toBeNull();
+    expect(summary.open?.knownExploited).toBeNull();
+    expect(summary.closedThisPeriod?.count).toBeNull();
+    expect(summary.dataGaps?.join(' ')).toMatch(/no sites in scope/i);
+  });
+
   it.each(['executive_summary', 'security_compliance_posture', 'hardware_lifecycle'] as const)(
     'allows portal-user authority for %s',
     async (type) => {

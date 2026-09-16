@@ -118,6 +118,13 @@ describe('report config schema', () => {
     expect(() => vulnerabilityManagementConfigSchema.parse({ severityFloor: 'catastrophic' })).toThrow();
   });
 
+  it('rejects a topN outside the schema range, for the API caller that bypasses the form', () => {
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 0 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 501 })).toThrow();
+    expect(() => vulnerabilityManagementConfigSchema.parse({ topN: 25.5 })).toThrow();
+    expect(vulnerabilityManagementConfigSchema.parse({ topN: 500 }).topN).toBe(500);
+  });
+
   it('preserves vulnerability management options on create', () => {
     const parsed = createReportSchema.parse({
       name: 'Vulns', type: 'vulnerability_management',
