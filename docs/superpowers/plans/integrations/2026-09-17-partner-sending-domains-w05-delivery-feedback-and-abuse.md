@@ -181,8 +181,8 @@ cannot double-count, then one atomic
 `INSERT … SELECT FROM partners … ON CONFLICT DO UPDATE SET <col> = <col> + 1`
 inside a short `withSystemDbAccessContext`. The route never calls the provider:
 `domain.updated` only enqueues `sync-domain`, and a bounce or complaint only
-enqueues `evaluate-auto-suspend { partnerId }` with `jobId = partnerId` so a
-burst collapses into one evaluation. The evaluator runs in the existing
+enqueues `evaluate-auto-suspend { partnerId }` with `jobId` =
+`autosuspend:<partnerId>` so a burst collapses into one evaluation. The evaluator runs in the existing
 `sending-domains` worker, reuses `suspendSendingDomain` for the kill-switch
 semantics, and is a no-op for a partner whose domains are already suspended.
 Unsuspend stays manual.

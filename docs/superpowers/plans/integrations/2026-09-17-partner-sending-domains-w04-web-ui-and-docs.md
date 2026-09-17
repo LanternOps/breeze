@@ -8,33 +8,35 @@ tracking_issue: LanternOps/breeze#__PARENT__
 ## Plan amendments
 
 Deviations from the spec or from what the upstream plans left behind. Every one
-was verified by reading the file cited. Items 1–3 need an upstream change or an
-explicit UI decision; the rest are UI decisions recorded so nobody re-litigates
-them mid-task.
+was verified by reading the file cited. Items 1 and 2 were upstream gaps and are
+now **RESOLVED** upstream — they are kept, struck through in substance, so the
+contract they fixed is visible to the reviewer; the rest are UI decisions
+recorded so nobody re-litigates them mid-task.
 
-1. **`SenderIdentityDto.domain` and `.fromAddress` are declared but never
-   populated.** W02a Task 3 declares them required
-   (`packages/shared/src/types/sendingDomains.ts`, plan lines 1180–1191), but
-   W02b's `toIdentityDto` (plan lines 3056–3062) maps only
-   `id, stream, sendingDomainId, localPart, displayName, replyTo, updatedAt`
-   and casts with `as SenderIdentityDto`, and its query
-   (`db.select().from(partnerSenderIdentities)`, plan lines 3125–3128) never
-   joins the domain, so neither field can be produced. **Upstream fix wanted:**
-   W02b joins `partnerSendingDomains` and fills both. **This wave does not wait
-   for it:** `fromAddress()` in `domainView.ts` derives the address from
-   `identity.localPart` + the domain looked up in the same response's
-   `domains[]` by `sendingDomainId`, and the UI never reads
-   `identity.domain` / `identity.fromAddress`. The UI is therefore correct
-   whether or not the upstream fix lands.
-2. **`SendingDomainDto` has no `statusChangedAt`, so the client cannot compute
-   "inside the retry window".** Spec §10's `failed` row says "Retry (inside the
-   window)". W02a's DTO (plan lines 1156–1177) carries `createdAt`,
-   `verifiedAt`, `lastCheckedAt` but not `statusChangedAt` — though W02b's
-   mapper already emits one (plan line 3049). **Upstream fix wanted:** add
-   `statusChangedAt: string` to `SendingDomainDto`. **This wave does not wait
-   for it:** "Try again" is rendered on every `failed` row, and the 72 h window
-   is enforced server-side by `requestDomainCheck`; an out-of-window retry
-   surfaces the server's error through `runAction` like any other failure.
+1. **RESOLVED upstream — `SenderIdentityDto.domain` and `.fromAddress` are now
+   populated.** The gap was that W02b's `toIdentityDto` mapped only
+   `id, stream, sendingDomainId, localPart, displayName, replyTo, updatedAt` and
+   cast with `as SenderIdentityDto`, over a query that never joined the domain,
+   so neither declared field could be produced. W02b Task 6 now takes
+   `toIdentityDto(row, domain)` against a joined `partner_sending_domains` and
+   fills both. **What this wave still does, deliberately:** the rendered address
+   comes from `fromAddressFor()` in `domainView.ts`, which composes
+   `identity.localPart` with the domain row in the SAME response. That is not a
+   workaround — the preview has to track the local part and domain the partner is
+   editing right now, which no server field can know before the save. The wire
+   value is the authority once saved; the form's preview is the authority while
+   editing.
+2. **RESOLVED upstream — `SendingDomainDto` now carries `statusChangedAt`.**
+   The gap was that spec §10's `failed` row says "Retry (inside the window)"
+   while the DTO exposed only `createdAt`, `verifiedAt` and `lastCheckedAt`, so
+   the client had nothing to measure the 72 h against. W02a Task 3 now declares
+   `statusChangedAt: string` (ISO, from a `NOT NULL` column) and W02b Task 6's
+   `toDomainDto` fills it. **This wave therefore honours the window:**
+   `isInsideRetryWindow(domain, nowMs)` in `domainView.ts` gates the "Try again"
+   button, and an expired row shows the failure reason and Remove only. The
+   server stays the authority — the 72 h is enforced in `requestDomainCheck`, so
+   a click that races the boundary still surfaces the server's error through
+   `runAction` like any other failure.
 3. **Spec §10 "unsupported → tab hidden" and spec §5.1 "the settings tab
    explains `provider_key_send_only`" contradict each other**, because W02b
    returns `supported: false` for both cases (plan lines 3078–3090). They are
@@ -1609,6 +1611,7 @@ spec §10 are unit-tested without rendering anything.
   export const SENDING_DOMAIN_STREAMS: readonly PartnerMailStreamValue[];
   export const SUGGESTED_LOCAL_PARTS: Record<PartnerMailStreamValue, string>;
   export const PROVISIONING_SLOW_AFTER_MS = 120_000;
+  export const RETRY_WINDOW_MS = 259_200_000;
   export const POLL_PROVISIONING_MS = 2_000;
   export const POLL_PENDING_MS = 15_000;
   export function isTabVisible(capability: SendingDomainsCapabilityDto | null): boolean;
@@ -1620,6 +1623,7 @@ spec §10 are unit-tested without rendering anything.
   export function fromAddressFor(identity: { localPart: string; sendingDomainId: string }, domains: SendingDomainDto[]): string | null;
   export function pollIntervalMs(domains: SendingDomainDto[]): number | null;
   export function isProvisioningSlow(domain: SendingDomainDto, nowMs: number): boolean;
+  export function isInsideRetryWindow(domain: SendingDomainDto, nowMs: number): boolean;
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -1633,10 +1637,12 @@ import {
   POLL_PENDING_MS,
   POLL_PROVISIONING_MS,
   PROVISIONING_SLOW_AFTER_MS,
+  RETRY_WINDOW_MS,
   SUGGESTED_LOCAL_PARTS,
   failureCopySuffix,
   firstUnhealthyRecord,
   fromAddressFor,
+  isInsideRetryWindow,
   isProvisioningSlow,
   isTabVisible,
   isTrustLock,
@@ -1654,7 +1660,7 @@ function domain(over: Partial<SendingDomainDto> = {}): SendingDomainDto {
     id: 'd-1', domain: 'mail.acme.test', provider: 'fake', status: 'verified', statusReason: null,
     dnsRecords: [], verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
     lastTestError: null, lastSendError: null, lastSendErrorAt: null, providerManaged: true,
-    createdAt: '2026-09-17T12:00:00.000Z',
+    createdAt: '2026-09-17T12:00:00.000Z', statusChangedAt: '2026-09-17T12:00:00.000Z',
     ...over,
   };
 }
@@ -1775,7 +1781,8 @@ describe('fromAddressFor', () => {
   });
 
   it('returns null when the identity points at a domain the response did not carry', () => {
-    // Never trust SenderIdentityDto.fromAddress: W02b's mapper does not fill it.
+    // The saved identity carries its own `fromAddress` from the API, but the
+    // form previews the values being EDITED, which no server field can know.
     expect(fromAddressFor({ localPart: 'support', sendingDomainId: 'gone' }, [domain()])).toBeNull();
   });
 });
@@ -1823,6 +1830,29 @@ describe('isProvisioningSlow', () => {
   });
 });
 
+describe('isInsideRetryWindow', () => {
+  const failedAt = Date.parse('2026-09-17T12:00:00.000Z');
+  const failed = domain({ status: 'failed', statusReason: 'dns_not_detected', statusChangedAt: '2026-09-17T12:00:00.000Z' });
+
+  it('offers a retry while the failed row still holds its DNS records', () => {
+    expect(isInsideRetryWindow(failed, failedAt + RETRY_WINDOW_MS - 60_000)).toBe(true);
+  });
+
+  it('stops offering a retry once the 72-hour window has passed', () => {
+    // The worker auto-removes a failed row 72 h after it failed, so a retry
+    // past that point can only race the removal.
+    expect(isInsideRetryWindow(failed, failedAt + RETRY_WINDOW_MS + 60_000)).toBe(false);
+  });
+
+  it('is false for any status other than failed', () => {
+    expect(isInsideRetryWindow(domain({ status: 'pending' }), failedAt + 1_000)).toBe(false);
+  });
+
+  it('errs toward offering the retry when the timestamp is unreadable', () => {
+    expect(isInsideRetryWindow({ ...failed, statusChangedAt: 'not-a-date' }, failedAt)).toBe(true);
+  });
+});
+
 describe('SUGGESTED_LOCAL_PARTS', () => {
   it('matches the spec §3.2 stream table', () => {
     expect(SUGGESTED_LOCAL_PARTS).toEqual({ support: 'support', billing: 'billing', general: 'notifications' });
@@ -1867,6 +1897,12 @@ export const SUGGESTED_LOCAL_PARTS: Record<PartnerMailStreamValue, string> = {
 
 /** Spec §13: show the delay notice once provisioning has run for two minutes. */
 export const PROVISIONING_SLOW_AFTER_MS = 120_000;
+/**
+ * Spec §4.3 / §6.1: the worker moves a `failed` row to `removing` 72 h after it
+ * failed, and that is exactly the window in which "Try again" keeps the same DNS
+ * records. 72 h in ms.
+ */
+export const RETRY_WINDOW_MS = 72 * 60 * 60 * 1_000;
 /** Spec §10: `provisioning` polls every 2 s. */
 export const POLL_PROVISIONING_MS = 2_000;
 /** Spec §10: `pending` auto-refreshes every 15 s. */
@@ -1943,10 +1979,13 @@ export function sendableDomains(domains: SendingDomainDto[]): SendingDomainDto[]
 }
 
 /**
- * The exact From address a stream will send with. Composed from the local part
- * and the domain row in the SAME response — never read from
- * SenderIdentityDto.fromAddress, which W02b's mapper does not populate (see the
- * plan amendments).
+ * The exact From address a stream will send with, composed from a local part and
+ * the domain row in the SAME response.
+ *
+ * A saved identity also carries its own `fromAddress` from the API, and that is
+ * the authority for what the server will actually send with. This function is
+ * for the FORM: it previews the local part and domain the partner is editing
+ * right now, which no server field can know before the save.
  */
 export function fromAddressFor(
   identity: Pick<SenderIdentityDto, 'localPart' | 'sendingDomainId'>,
@@ -1972,6 +2011,24 @@ export function isProvisioningSlow(domain: SendingDomainDto, nowMs: number): boo
   if (Number.isNaN(created)) return false;
   return nowMs - created > PROVISIONING_SLOW_AFTER_MS;
 }
+
+/**
+ * Spec §10's `failed` row: "Retry (inside the window)". The window runs from the
+ * moment the row failed — `statusChangedAt` — for 72 h, after which the worker
+ * expires the row to `removing` and the same DNS records are gone.
+ *
+ * The SERVER is the authority: `requestDomainCheck` enforces the window too, so
+ * a click that races the boundary surfaces the server's error like any other
+ * failure. This only decides whether the button is worth offering, which is why
+ * an unparseable timestamp errs toward showing it rather than hiding the one
+ * action left on a broken domain.
+ */
+export function isInsideRetryWindow(domain: SendingDomainDto, nowMs: number): boolean {
+  if (domain.status !== 'failed') return false;
+  const failedAt = Date.parse(domain.statusChangedAt);
+  if (Number.isNaN(failedAt)) return true;
+  return nowMs - failedAt < RETRY_WINDOW_MS;
+}
 ```
 
 - [ ] **Step 3: Run green and commit**
@@ -1990,10 +2047,10 @@ git commit -m "feat(web): pure view model for the sending-domain states
 
 Every decision the tab makes — tab visibility, locked copy, failure copy, the
 missing record, sendable domains, the From address, the poll interval, the
-two-minute provisioning notice — as pure functions, so spec §10's state table is
-tested without rendering. The From address is composed from the domain row in the
-same response rather than SenderIdentityDto.fromAddress, which the API does not
-populate today.
+two-minute provisioning notice, the 72-hour retry window — as pure functions, so
+spec §10's state table is tested without rendering. The From address is composed
+from the domain row in the same response because the form has to preview the
+values being edited, which the saved identity's own fromAddress cannot know.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -2450,8 +2507,8 @@ the actions. This is where most of the state table lives.
 
 **Interfaces:**
 - Consumes: `SendingDomainDto` from `@breeze/shared`; `DnsRecordsTable`
-  (Task 5); `failureCopySuffix`, `firstUnhealthyRecord`, `isProvisioningSlow`
-  (Task 3); `useTranslation('settings')`.
+  (Task 5); `failureCopySuffix`, `firstUnhealthyRecord`, `isProvisioningSlow`,
+  `isInsideRetryWindow` (Task 3); `useTranslation('settings')`.
 - Produces:
   ```tsx
   export interface DomainStatusPanelProps {
@@ -2497,7 +2554,7 @@ function domain(over: Partial<SendingDomainDto> = {}): SendingDomainDto {
     id: 'd-1', domain: 'mail.acme.test', provider: 'fake', status: 'verified', statusReason: null,
     dnsRecords: [], verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
     lastTestError: null, lastSendError: null, lastSendErrorAt: null, providerManaged: true,
-    createdAt: CREATED,
+    createdAt: CREATED, statusChangedAt: CREATED,
     ...over,
   };
 }
@@ -2613,6 +2670,17 @@ describe('DomainStatusPanel — failed, suspended, removing', () => {
     expect(onRemove).toHaveBeenCalledWith(d);
   });
 
+  it('drops Try again once the 72-hour retry window has passed, keeping Remove', () => {
+    // Past the window the worker is about to expire the row and a retry can no
+    // longer keep the same DNS records, so offering it would be a lie.
+    renderPanel(domain({ status: 'failed', statusReason: 'dns_not_detected' }), {
+      nowMs: CREATED_MS + 73 * 60 * 60 * 1_000,
+    });
+    expect(screen.queryByTestId('sending-domain-d-1-retry')).toBeNull();
+    expect(screen.getByTestId('sending-domain-d-1-failed')).not.toBeNull();
+    expect(screen.getByTestId('sending-domain-d-1-remove')).not.toBeNull();
+  });
+
   it('offers no action at all on a suspended domain', () => {
     renderPanel(domain({ status: 'suspended', statusReason: 'platform_suspended' }));
     expect(screen.getByTestId('sending-domain-d-1-suspended').textContent)
@@ -2662,7 +2730,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { SendingDomainDto } from '@breeze/shared';
 import DnsRecordsTable from './DnsRecordsTable';
-import { failureCopySuffix, firstUnhealthyRecord, isProvisioningSlow } from './domainView';
+import { failureCopySuffix, firstUnhealthyRecord, isInsideRetryWindow, isProvisioningSlow } from './domainView';
 import '@/lib/i18n';
 
 export interface DomainStatusPanelProps {
@@ -2716,7 +2784,10 @@ export default function DomainStatusPanel({
   const suspended = domain.status === 'suspended';
   const sendable = domain.status === 'verified' || domain.status === 'at_risk';
   const canCheck = verifiesByDns && (domain.status === 'pending' || sendable);
-  const canRetry = domain.status === 'failed';
+  // Spec §10: Retry only INSIDE the 72 h window, which is the window in which a
+  // retry keeps the same DNS records. Past it the row is about to be expired by
+  // the worker and Remove is the only thing left worth offering.
+  const canRetry = isInsideRetryWindow(domain, nowMs);
   const canRemove = !suspended && !removing;
   const unhealthy = firstUnhealthyRecord(domain);
 
@@ -2904,15 +2975,16 @@ function domain(over: Partial<SendingDomainDto> = {}): SendingDomainDto {
     id: 'd-1', domain: 'mail.acme.test', provider: 'fake', status: 'verified', statusReason: null,
     dnsRecords: [], verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
     lastTestError: null, lastSendError: null, lastSendErrorAt: null, providerManaged: true,
-    createdAt: '2026-09-17T12:00:00.000Z',
+    createdAt: '2026-09-17T12:00:00.000Z', statusChangedAt: '2026-09-17T12:00:00.000Z',
     ...over,
   };
 }
 
 function identity(over: Partial<SenderIdentityDto> = {}): SenderIdentityDto {
   return {
-    id: 'i-1', stream: 'support', sendingDomainId: 'd-1', domain: '', localPart: 'help',
-    displayName: 'Acme Help', replyTo: null, fromAddress: '', updatedAt: '2026-09-17T12:00:00.000Z',
+    id: 'i-1', stream: 'support', sendingDomainId: 'd-1', domain: 'mail.acme.test', localPart: 'help',
+    displayName: 'Acme Help', replyTo: null, fromAddress: 'help@mail.acme.test',
+    updatedAt: '2026-09-17T12:00:00.000Z',
     ...over,
   };
 }
@@ -3137,7 +3209,8 @@ function StreamRow({ stream, targets, existing, inbound, busy, onSave, onClear }
   const [error, setError] = useState<string | null>(null);
 
   // The From address is COMPOSED here: the partner never types a full address
-  // (spec §4.4), and SenderIdentityDto.fromAddress is not populated by the API.
+  // (spec §4.4). A saved identity carries its own `fromAddress` from the API,
+  // but this preview has to follow the local part and domain being EDITED.
   const preview = fromAddressFor({ localPart, sendingDomainId }, targets);
 
   const repliesSuffix =
@@ -3400,7 +3473,7 @@ function domain(over: Partial<SendingDomainDto> = {}): SendingDomainDto {
     id: 'd-1', domain: 'mail.acme.test', provider: 'fake', status: 'verified', statusReason: null,
     dnsRecords: [], verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
     lastTestError: null, lastSendError: null, lastSendErrorAt: null, providerManaged: true,
-    createdAt: '2026-09-17T12:00:00.000Z',
+    createdAt: '2026-09-17T12:00:00.000Z', statusChangedAt: '2026-09-17T12:00:00.000Z',
     ...over,
   };
 }
@@ -3605,7 +3678,7 @@ function domain(over: Partial<SendingDomainDto> = {}): SendingDomainDto {
     id: 'd-1', domain: 'mail.acme.test', provider: 'fake', status: 'verified', statusReason: null,
     dnsRecords: [], verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null,
     lastTestError: null, lastSendError: null, lastSendErrorAt: null, providerManaged: true,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(), statusChangedAt: new Date().toISOString(),
     ...over,
   };
 }
@@ -4250,6 +4323,7 @@ const DOMAIN = {
   dnsRecords: [{ purpose: 'dkim', type: 'CNAME', host: 'resend._domainkey', fqdn: 'resend._domainkey.mail.acme.test', value: 'dkim.example', status: 'pending' }],
   verifiedAt: null, lastCheckedAt: null, lastTestAt: null, lastTestStatus: null, lastTestError: null,
   lastSendError: null, lastSendErrorAt: null, providerManaged: true, createdAt: '2026-09-17T12:00:00.000Z',
+  statusChangedAt: '2026-09-17T12:00:00.000Z',
 };
 
 const VERIFIED_DOMAIN = { ...DOMAIN, status: 'verified', dnsRecords: [{ ...DOMAIN.dnsRecords[0], status: 'verified' }] };
@@ -5499,7 +5573,7 @@ the test that proves it.
 | `verified` — test send plus last test result | 8 | `TestSendControl.test.tsx` in-flight, sent and failed result cases |
 | `at_risk` — amber banner naming the missing record | 3, 6 | `domainView.test.ts` `firstUnhealthyRecord`; `DomainStatusPanel.test.tsx` "names the missing record in the at-risk banner" |
 | `failed` — reason from `statusReason` | 3, 6 | `domainView.test.ts` `failureCopySuffix` table; `DomainStatusPanel.test.tsx` "explains a failure and offers both Try again and Remove" |
-| `failed` — Retry inside the window, and Remove | 6 | same test. Plan amendment 2: the client cannot compute the window because `SendingDomainDto` carries no `statusChangedAt`, so Retry is always offered and the server enforces the 72 h |
+| `failed` — Retry inside the window, and Remove | 3, 6 | `domainView.test.ts` `isInsideRetryWindow` — inside, outside, non-failed and unparseable cases; `DomainStatusPanel.test.tsx` "explains a failure and offers both Try again and Remove" plus "drops Try again once the 72-hour retry window has passed, keeping Remove". The window is measured from `statusChangedAt`; the server re-enforces it, so a click racing the boundary still surfaces the server error |
 | `suspended` — contact support, no actions | 6 | `DomainStatusPanel.test.tsx` "offers no action at all on a suspended domain" |
 | `removing` — disabled row | 6 | `DomainStatusPanel.test.tsx` "disables the row while it is being removed" |
 | `lastSendError` display | 6 | `DomainStatusPanel.test.tsx` "shows the most recent delivery refusal whatever the status is" |
