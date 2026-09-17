@@ -511,7 +511,7 @@ func TestInstalledVersionSessionStatus(t *testing.T) {
 
 func TestInstalledVersionLegacyFallback(t *testing.T) {
 	tmpDir := t.TempDir()
-	// Legacy status written at the root of baseDir next to agent.yaml
+	// Legacy status written at the root of baseDir next to agent.yaml with no sessions/ directory
 	legacyStatus := filepath.Join(tmpDir, "helper_status.yaml")
 	if err := os.WriteFile(legacyStatus, []byte("version: 0.111.1\npid: 5678\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -519,11 +519,30 @@ func TestInstalledVersionLegacyFallback(t *testing.T) {
 
 	mgr := New(context.Background(), nil, nil, "")
 	mgr.baseDir = tmpDir
-	// Active session exists but its status file hasn't been written yet
-	mgr.sessions["100"] = newSessionState("100", tmpDir)
 
 	if got := mgr.InstalledVersion(); got != "0.111.1" {
 		t.Fatalf("InstalledVersion() fallback = %q, want %q", got, "0.111.1")
+	}
+}
+
+func TestInstalledVersionLegacyFallbackIgnoredWhenSessionsDirExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Legacy status left behind at the root of baseDir
+	legacyStatus := filepath.Join(tmpDir, "helper_status.yaml")
+	if err := os.WriteFile(legacyStatus, []byte("version: 0.111.1\npid: 5678\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A sessions/ directory exists on disk (per-session helper has run)
+	if err := os.MkdirAll(filepath.Join(tmpDir, "sessions"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := New(context.Background(), nil, nil, "")
+	mgr.baseDir = tmpDir
+
+	// With sessions dir present, legacy root status must not be read to prevent stale update loops
+	if got := mgr.InstalledVersion(); got != "" {
+		t.Fatalf("InstalledVersion() = %q, want empty string when sessions directory exists", got)
 	}
 }
 
@@ -537,4 +556,3 @@ func TestInstalledVersionEmptyWhenNoStatus(t *testing.T) {
 		t.Fatalf("InstalledVersion() = %q, want empty string", got)
 	}
 }
-
