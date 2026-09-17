@@ -643,6 +643,44 @@ describe('W03 STRICT acknowledgement ceremony on decide', () => {
     expect(approvalCasSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'approved' }));
   });
 
+  // Review finding #3: the sole-operator RE-DERIVATION comment claims it
+  // applies "the SAME filter the fan-out applied", but the fan-out
+  // (intentService.ts) ALSO passes `alsoRequire: SCRIPTS_WRITE` for a
+  // run_script intent with strict hits — the re-derivation did not. Without
+  // this, a requester who is the only approvals:decide holder but does NOT
+  // hold scripts:write would be wrongly treated as sole-operator here (the
+  // fan-out would have excluded them from the four-eyes pool, but the
+  // re-derivation's un-narrowed resolveIntentApprovers call still counts
+  // them).
+  it('threads alsoRequire=scripts:write into the sole-operator re-derivation for a STRICT run_script self-approve', async () => {
+    const { approvalRow, intentRow } = mockFourEyesSelfApprove();
+    approvalRow.actionToolName = 'run_script';
+    approvalRow.actionArguments = { proposalId: PROPOSAL_ID, deviceIds: ['dev-1'] };
+    Object.assign(intentRow, {
+      actionName: 'run_script',
+      arguments: { proposalId: PROPOSAL_ID, deviceIds: ['dev-1'] },
+    });
+    vi.mocked(loadProposalRow).mockResolvedValue({ id: PROPOSAL_ID, orgId: 'org-9', strictHits: STRICT } as any);
+    vi.mocked(resolveStrictAcknowledgement).mockResolvedValue({ ok: true, acknowledged: STRICT });
+    vi.mocked(assertApprovalAssurance).mockResolvedValueOnce({
+      requiredLevel: 3,
+      decidedAssuranceLevel: 3,
+      decidedVia: 'webauthn_platform',
+      authenticatorDeviceId: 'dev-1',
+    });
+    mockFanInTxWithProposalWrite('intent-1');
+
+    const res = await postJson('/approvals/appr-1/approve', { acknowledgedPatterns: STRICT });
+    expect(res.status).toBe(200);
+    expect(resolveIntentApprovers).toHaveBeenCalledWith(
+      'org-9',
+      expect.objectContaining({
+        requireOrgWideGovernance: false,
+        alsoRequire: { resource: 'scripts', action: 'write' },
+      }),
+    );
+  });
+
   it('leaves a non-proposal intent completely unaffected', async () => {
     mockFourEyesSelfApprove({ requestedByUserId: 'requester-1' });
     mockFanInTx('intent-1');

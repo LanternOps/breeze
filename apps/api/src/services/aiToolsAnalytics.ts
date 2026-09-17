@@ -50,10 +50,31 @@ async function filterSlaRows<T extends { targetType: string | null; targetIds: s
   // Only an organization-scope principal can be narrowed, so a single org id.
   const orgId = auth.orgId;
   const needsDeviceAxis = rows.some((r) => (r.targetType ?? '').toLowerCase() === 'device');
-  const allowedDeviceIds = needsDeviceAxis && orgId
-    ? await resolveSiteAllowedDeviceIds(orgId, auth)
+  // `null` and `[]` are NOT interchangeable here: `null` means "not resolved"
+  // and `[]` means "resolved to nothing". A narrowed caller with no orgId
+  // cannot resolve a device set at all, so it gets `[]` (deny) — passing
+  // `null` used to read as "unrestricted" downstream (review #6110).
+  const allowedDeviceIds = needsDeviceAxis
+    ? (orgId ? (await resolveSiteAllowedDeviceIds(orgId, auth)) ?? [] : [])
     : null;
   return rows.filter((r) => !slaDefinitionOutOfScope(auth, r, allowedDeviceIds));
+}
+
+/**
+ * Annotation for an SLA page a narrowed caller had rows removed from. The
+ * site gate runs AFTER the SQL LIMIT, so without it a short or empty page is
+ * indistinguishable from "this organization tracks no SLAs".
+ */
+const SLA_SCOPE_PARTIAL_NOTE =
+  'Some SLA records were withheld because they target sites or devices outside your site access — this list may be incomplete.';
+
+/**
+ * Widen the SQL page for a narrowed caller so the post-LIMIT site filter still
+ * has enough rows to fill `limit`. Same shape as `manage_maintenance_windows`
+ * in aiToolsFleet.ts. Unrestricted callers scan exactly `limit`.
+ */
+function slaScanLimit(auth: AuthContext, limit: number): number {
+  return slaScopeNarrowed(auth) ? Math.min(Math.max(limit * 5, 100), 500) : limit;
 }
 
 function clampPercent(value: number): number {
@@ -227,12 +248,19 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .innerJoin(slaDefinitions, eq(slaCompliance.slaId, slaDefinitions.id))
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(slaCompliance.periodEnd))
-          .limit(limit);
+          .limit(slaScanLimit(auth, limit));
 
-        const visibleCompliance = await filterSlaRows(auth, rows);
+        const filteredCompliance = await filterSlaRows(auth, rows);
+        const visibleCompliance = filteredCompliance.slice(0, limit);
         const payload = visibleCompliance.map(({ targetType: _t, targetIds: _i, ...rest }) => rest);
+        const complianceNarrowed = slaScopeNarrowed(auth)
+          && (filteredCompliance.length < rows.length || payload.length === 0);
 
-        return JSON.stringify({ slaCompliance: payload, showing: payload.length });
+        return JSON.stringify({
+          slaCompliance: payload,
+          showing: payload.length,
+          ...(complianceNarrowed ? { scopeNote: SLA_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       if (action === 'capacity_predictions') {
@@ -371,11 +399,18 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           .from(slaDefinitions)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(slaDefinitions.createdAt))
-          .limit(limit);
+          .limit(slaScanLimit(auth, limit));
 
-        const visibleDefs = await filterSlaRows(auth, rows);
+        const filteredDefs = await filterSlaRows(auth, rows);
+        const visibleDefs = filteredDefs.slice(0, limit);
+        const defsNarrowed = slaScopeNarrowed(auth)
+          && (filteredDefs.length < rows.length || visibleDefs.length === 0);
 
-        return JSON.stringify({ slaDefinitions: visibleDefs, showing: visibleDefs.length });
+        return JSON.stringify({
+          slaDefinitions: visibleDefs,
+          showing: visibleDefs.length,
+          ...(defsNarrowed ? { scopeNote: SLA_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}. Use sla_compliance, capacity_predictions, or sla_definitions.` });

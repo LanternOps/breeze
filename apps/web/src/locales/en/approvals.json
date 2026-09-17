@@ -66,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Register an approver device in your profile, then try again.",
     "notSoleApprover": "Another eligible approver must decide this request.",
+    "siteCeiling": "This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.",
     "verificationFailed": "Verification was canceled or failed. Try again.",
     "alreadyDecided": "This request was already decided.",
     "expired": "This request expired before it could be decided.",

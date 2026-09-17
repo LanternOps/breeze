@@ -92,42 +92,86 @@ interface ActorBuilder {
  * `auth.` or `c.get(` — which is what distinguishes a real door from a test
  * fixture or a system/background literal that has no site axis to propagate.
  */
-function actorBuilders(): ActorBuilder[] {
+function actorBuildersIn(file: string, rawSrc: string): ActorBuilder[] {
   const builders: ActorBuilder[] = [];
+  const src = blankComments(rawSrc);
+
+  // Shape 1: a function declaration with a `*Actor` return type.
+  const declRe = /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = declRe.exec(src)) !== null) {
+    const parenClose = matchClose(src, src.indexOf('(', m.index + m[0].length - 1), '(', ')');
+    const annotation = /^\s*:\s*(\w*Actor)\b/.exec(src.slice(parenClose + 1));
+    if (!annotation) continue;
+    const body = functionBody(src, m.index, m[0].length);
+    if (body === null) continue;
+    builders.push({ file, name: m[1]!, actorType: annotation[1]!, body });
+  }
+
+  // Shape 2: an annotated binding — `const x: T = {` / `= (…): T => ({`.
+  const bindRe = /\b(?:const|let)\s+(\w+)\s*(?::\s*(\w*Actor)\b|=\s*\([^)]*\)\s*:\s*(\w*Actor)\b)/g;
+  while ((m = bindRe.exec(src)) !== null) {
+    const actorType = m[2] ?? m[3]!;
+    const open = src.indexOf('{', m.index);
+    if (open < 0) continue;
+    const body = src.slice(open, matchClose(src, open, '{', '}') + 1);
+    builders.push({ file, name: m[1]!, actorType, body });
+  }
+
+  return builders.filter((b) => /\bauth\./.test(b.body) || /\bc\.get\(/.test(b.body));
+}
+
+function actorBuilders(): ActorBuilder[] {
   const files = [
     ...aiToolsSources().map((f) => join(SERVICES_DIR, f)),
     ...walkTs(ROUTES_DIR),
   ];
-  for (const path of files) {
-    const src = blankComments(readFileSync(path, 'utf8'));
-    const file = relative(API_SRC, path);
-
-    // Shape 1: a function declaration with a `*Actor` return type.
-    const declRe = /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g;
-    let m: RegExpExecArray | null;
-    while ((m = declRe.exec(src)) !== null) {
-      const parenClose = matchClose(src, src.indexOf('(', m.index + m[0].length - 1), '(', ')');
-      const annotation = /^\s*:\s*(\w*Actor)\b/.exec(src.slice(parenClose + 1));
-      if (!annotation) continue;
-      const body = functionBody(src, m.index, m[0].length);
-      if (body === null) continue;
-      builders.push({ file, name: m[1]!, actorType: annotation[1]!, body });
-    }
-
-    // Shape 2: an annotated binding — `const x: T = {` / `= (…): T => ({`.
-    const bindRe = /\b(?:const|let)\s+(\w+)\s*(?::\s*(\w*Actor)\b|=\s*\([^)]*\)\s*:\s*(\w*Actor)\b)/g;
-    while ((m = bindRe.exec(src)) !== null) {
-      const actorType = m[2] ?? m[3]!;
-      const open = src.indexOf('{', m.index);
-      if (open < 0) continue;
-      const body = src.slice(open, matchClose(src, open, '{', '}') + 1);
-      builders.push({ file, name: m[1]!, actorType, body });
-    }
-  }
-  return builders.filter((b) => /\bauth\./.test(b.body) || /\bc\.get\(/.test(b.body));
+  return files.flatMap((path) =>
+    actorBuildersIn(relative(API_SRC, path), readFileSync(path, 'utf8')));
 }
 
 const ACTOR_BUILDERS = actorBuilders();
+
+// ------------------------------------------------------------ propagation
+
+/**
+ * `allowedSiteIds: <expr ending in>.allowedSiteIds` — the field is SET from
+ * something the builder was handed, not merely mentioned.
+ *
+ * Load-bearing (#6110 review 2). The original check was `/\ballowedSiteIds\b/`
+ * over the body, which a builder satisfies COSMETICALLY with
+ * `allowedSiteIds: undefined` — the exact ContractActor bug this suite exists
+ * to catch, dressed up as a fix. `undefined` is not "unrestricted by
+ * coincidence" in this codebase: it IS the unrestricted sentinel
+ * (`delegationCeiling.ts`), so a hard-coded one silently re-grants a
+ * site-restricted caller the whole org.
+ */
+const SETS_SITE_AXIS_FROM_SOURCE = /\ballowedSiteIds\s*:\s*[\w$]+(?:\??\.[\w$]+)*\.allowedSiteIds\b/;
+
+/** A destructure that BINDS the field out of the authenticated context. */
+const DESTRUCTURES_SITE_AXIS_FROM_AUTH =
+  /\{[^{}]*\ballowedSiteIds\b[^{}]*\}\s*=\s*(?:auth\b|c\.get\()/g;
+
+/**
+ * True when `body` actually THREADS the site axis through. Two accepted forms:
+ *
+ *   1. `allowedSiteIds: auth.allowedSiteIds` (or `actor.allowedSiteIds`, …) —
+ *      what all three live billing builders do.
+ *   2. object shorthand `{ …, allowedSiteIds, … }`, but ONLY when the same body
+ *      first destructured the field out of the auth context. The destructure
+ *      text itself is blanked before the shorthand is looked for, so
+ *      `const { allowedSiteIds } = auth;` with no use of it does not pass.
+ */
+function propagatesSiteAxis(body: string): boolean {
+  if (SETS_SITE_AXIS_FROM_SOURCE.test(body)) return true;
+  const destructureRe = new RegExp(DESTRUCTURES_SITE_AXIS_FROM_AUTH.source, 'g');
+  if (!destructureRe.test(body)) return false;
+  const withoutDestructures = body.replace(
+    new RegExp(DESTRUCTURES_SITE_AXIS_FROM_AUTH.source, 'g'),
+    '',
+  );
+  return /\ballowedSiteIds\s*[,}]/.test(withoutDestructures);
+}
 
 describe('contract: actor builders propagate the site axis', () => {
   it('discovers the actor declarations and builders to scan', () => {
@@ -146,11 +190,13 @@ describe('contract: actor builders propagate the site axis', () => {
       [...ACTOR_DECLARATIONS].filter(([, d]) => d.hasSiteAxis).map(([name]) => name),
     );
     const dropped = ACTOR_BUILDERS
-      .filter((b) => siteCarrying.has(b.actorType) && !/\ballowedSiteIds\b/.test(b.body))
+      .filter((b) => siteCarrying.has(b.actorType) && !propagatesSiteAxis(b.body))
       .map((b) => `${b.file}:${b.name} -> ${b.actorType}`);
     // A failure here is an actor door that silently drops the site axis, the
     // way `ContractActor` did. There is NO baseline: add
-    // `allowedSiteIds: auth.allowedSiteIds` to the builder.
+    // `allowedSiteIds: auth.allowedSiteIds` to the builder. Naming the field
+    // is NOT enough — `allowedSiteIds: undefined` is the unrestricted
+    // sentinel and fails here on purpose (#6110 review 2).
     expect(dropped).toEqual([]);
   });
 
@@ -243,21 +289,12 @@ describe('contract: the actor types with no site axis are a frozen, reasoned lis
 // the proof by a concurrent PR.
 
 describe('scanner: the builder scan discriminates a dropped site axis', () => {
-  const scan = (src: string) => {
-    const blanked = blankComments(src);
-    const out: Array<{ name: string; actorType: string; hasSite: boolean }> = [];
-    const declRe = /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g;
-    let m: RegExpExecArray | null;
-    while ((m = declRe.exec(blanked)) !== null) {
-      const parenClose = matchClose(blanked, blanked.indexOf('(', m.index + m[0].length - 1), '(', ')');
-      const annotation = /^\s*:\s*(\w*Actor)\b/.exec(blanked.slice(parenClose + 1));
-      if (!annotation) continue;
-      const body = functionBody(blanked, m.index, m[0].length);
-      if (body === null || !/\bauth\./.test(body)) continue;
-      out.push({ name: m[1]!, actorType: annotation[1]!, hasSite: /\ballowedSiteIds\b/.test(body) });
-    }
-    return out;
-  };
+  // Drives the LIVE `actorBuildersIn` + `propagatesSiteAxis`, not a re-typed
+  // copy of them (#6110 review 2): a second implementation can agree with the
+  // fixtures while the one that runs against the repo has drifted.
+  const scan = (src: string) =>
+    actorBuildersIn('fixture.ts', src)
+      .map((b) => ({ name: b.name, actorType: b.actorType, hasSite: propagatesSiteAxis(b.body) }));
 
   it('flags the ContractActor shape verbatim', () => {
     expect(scan(`
@@ -300,6 +337,73 @@ describe('scanner: the builder scan discriminates a dropped site axis', () => {
       function serviceErrorToJson(err: unknown): string | null {
         return auth.user.id;
       }
+    `)).toEqual([]);
+  });
+
+  it('`allowedSiteIds: undefined` is NOT propagation — the cosmetic fix fails', () => {
+    // #6110 review 2. A presence check (`/\ballowedSiteIds\b/`) accepted this.
+    // `undefined` is the UNRESTRICTED sentinel, so this builder is exactly as
+    // broken as the one that omits the field — and looks fixed in review.
+    expect(scan(`
+      function actorFromAuth(auth: AuthContext): ContractActor {
+        return { userId: auth.user.id, allowedSiteIds: undefined };
+      }
+    `)).toEqual([{ name: 'actorFromAuth', actorType: 'ContractActor', hasSite: false }]);
+  });
+
+  it('nor is a hard-coded empty list or null', () => {
+    for (const value of ['[]', 'null', "['00000000-0000-0000-0000-000000000000']"]) {
+      expect(scan(`
+        function actorFromAuth(auth: AuthContext): ContractActor {
+          return { userId: auth.user.id, allowedSiteIds: ${value} };
+        }
+      `)).toEqual([{ name: 'actorFromAuth', actorType: 'ContractActor', hasSite: false }]);
+    }
+  });
+
+  it('object SHORTHAND counts only with a destructure from the auth context', () => {
+    expect(scan(`
+      function actorFromAuth(auth: AuthContext): QuoteActor {
+        const { allowedSiteIds } = auth;
+        return { userId: auth.user.id, allowedSiteIds };
+      }
+    `)).toEqual([{ name: 'actorFromAuth', actorType: 'QuoteActor', hasSite: true }]);
+    // Destructured and then never used: the shorthand the check looks for is
+    // only the destructure itself, which is blanked before the search.
+    expect(scan(`
+      function actorFromAuth(auth: AuthContext): QuoteActor {
+        const { allowedSiteIds } = auth;
+        return { userId: auth.user.id };
+      }
+    `)).toEqual([{ name: 'actorFromAuth', actorType: 'QuoteActor', hasSite: false }]);
+    // Shorthand with no destructure at all — the identifier came from
+    // somewhere this scan cannot see, so it does not count.
+    expect(scan(`
+      function actorFromAuth(auth: AuthContext): QuoteActor {
+        return { userId: auth.user.id, allowedSiteIds };
+      }
+    `)).toEqual([{ name: 'actorFromAuth', actorType: 'QuoteActor', hasSite: false }]);
+  });
+
+  it('the ANNOTATED-BINDING builder shape is discovered and checked too', () => {
+    // Shape 2 of `actorBuildersIn` — `const x: T = { … }` and
+    // `const x = (…): T => ({ … })`. The old fixture block only ever drove
+    // shape 1, so nothing proved shape 2 discriminated anything.
+    expect(scan(`
+      const portalActor: DeliverableActor = {
+        userId: auth.user.id,
+        allowedSiteIds: auth.allowedSiteIds,
+      };
+    `)).toEqual([{ name: 'portalActor', actorType: 'DeliverableActor', hasSite: true }]);
+    expect(scan(`
+      const portalActor = (orgId: string): DeliverableActor => ({
+        userId: auth.user.id,
+        orgId,
+      });
+    `)).toEqual([{ name: 'portalActor', actorType: 'DeliverableActor', hasSite: false }]);
+    // …and a literal that never touches the auth context is not a door.
+    expect(scan(`
+      const systemActor: DeliverableActor = { userId: 'system' };
     `)).toEqual([]);
   });
 

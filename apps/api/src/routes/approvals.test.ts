@@ -2159,7 +2159,12 @@ describe('Task 5: decide-handler bound to action_intents', () => {
 
     const res = await buildApp().request('/approvals/appr-1/approve', { method: 'POST' });
     expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'site_ceiling' });
+    const body = await res.json();
+    expect(body.error).toBe('site_ceiling');
+    // Review finding #2: a non-retryable denial must carry a human-readable
+    // reason too, not just the bare machine token the web client maps.
+    expect(typeof body.message).toBe('string');
+    expect(body.message.length).toBeGreaterThan(0);
     // Fails closed BEFORE the CAS — the fan-in transaction never opens.
     expect(db.transaction).not.toHaveBeenCalled();
     expect(recordActionIntentEvent).toHaveBeenCalledWith(

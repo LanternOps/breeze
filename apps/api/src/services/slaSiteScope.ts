@@ -38,8 +38,10 @@ export interface SlaTargetShape {
  * - A narrowed target with no `targetIds` is unattributable and fails closed.
  *
  * `allowedDeviceIds` is the caller's resolved device allowlist — the
- * intersection of both axes from `resolveSiteAllowedDeviceIds`, or `null` when
- * the caller is restricted on neither axis.
+ * intersection of both axes from `resolveSiteAllowedDeviceIds`. For a NARROWED
+ * caller `null` means "could not be resolved" and denies; the two values are
+ * never interchangeable and callers must pass `[]`, not `null`, when a narrowed
+ * caller has no org to resolve devices against.
  */
 export function slaDefinitionOutOfScope(
   auth: SlaScopeAuth,
@@ -64,7 +66,13 @@ export function slaDefinitionOutOfScope(
     return !ids.every((id) => auth.canAccessSite!(id));
   }
 
-  if (allowedDeviceIds === null) return false;
+  // Reaching here means the caller IS narrowed (checked above) and the
+  // definition names concrete devices. `null` says the caller's device set
+  // could not be resolved — the callers pass it when they have no orgId to
+  // resolve against — which is not attributable and must fail closed. Reading
+  // it as "unrestricted" collapsed null and [] into the same answer and let a
+  // narrowed caller read out-of-scope compliance figures (review #6110).
+  if (allowedDeviceIds === null) return true;
   const allowed = new Set(allowedDeviceIds);
   return !ids.every((id) => allowed.has(id));
 }

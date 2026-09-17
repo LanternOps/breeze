@@ -126,6 +126,36 @@ function auditContractLineToolEvent(
   }
 }
 
+
+/**
+ * SCOPE PARITY WITH THE HTTP DOOR (#6110 review, finding 1).
+ *
+ * A tool must require exactly what its route requires. Every route file under `routes/contracts/` is
+ * `requireScope('partner','system')` (contracts.ts:16, bulk.ts:11, lines.ts:18,
+ * lifecycle.ts:13, periods.ts:10, generate.ts:14, reports.ts:21, deliverables.ts:19).
+ * An organization-scoped token therefore cannot reach this domain over HTTP at
+ * all — and an org token still carries the OWNING PARTNER's partnerId, so a
+ * bare partnerId-presence check is not a substitute. Autonomous AI-agent runs
+ * mint `scope: 'organization'` too (aiAgents/agentAuthContext.ts), so this gate
+ * refuses them as well; the `business` capability group that carries these
+ * tools already contains partner-only tools (aiToolsDeliverables.ts), so that is
+ * an existing, expected shape rather than a new one.
+ */
+/** Site-axis analogue of `SITE_SCOPE_EMPTY_NOTE` (aiToolsSiteScope.ts), worded
+ *  for contracts: the site-attributable unit here is the LINE, not a device. */
+const CONTRACT_SITE_SCOPE_NOTE =
+  'Your site access limits this result: contracts are shown only when they carry a line in one of your sites, '
+  + 'and such a contract may still have lines you cannot see. This is a restriction on your access, not an absence of data.';
+
+function partnerScopeRefusal(auth: AuthContext): string | null {
+  if (auth.scope === 'partner' || auth.scope === 'system') return null;
+  return JSON.stringify({
+    error: 'Contract access requires a partner-scoped session; organization-scoped callers cannot reach the '
+      + 'matching HTTP routes either',
+    code: 'PARTNER_SCOPE_REQUIRED',
+  });
+}
+
 export function registerContractTools(aiTools: Map<string, AiTool>): void {
   aiTools.set('list_contracts', {
     tier: 2 as AiToolTier,
@@ -150,6 +180,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       try {
         const rows = await listContracts(
@@ -160,7 +192,14 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
           },
           actorFromAuth(auth)
         );
-        return JSON.stringify({ contracts: rows, showing: rows.length });
+        return JSON.stringify({
+          contracts: rows,
+          showing: rows.length,
+          // Defence in depth beside the scope gate above: if a site-restricted
+          // caller ever does reach this tool, say so, so the model reads a short
+          // page as "limited by access" rather than "this is all that exists".
+          ...(auth.allowedSiteIds ? { scopeNote: CONTRACT_SITE_SCOPE_NOTE } : {}),
+        });
       } catch (err) {
         const json = serviceErrorToJson(err);
         if (json) return json;
@@ -186,6 +225,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       }
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       try {
         const result = await getContract(String(input.contractId), actorFromAuth(auth));
         return JSON.stringify(result);
@@ -282,6 +323,8 @@ export function registerContractTools(aiTools: Map<string, AiTool>): void {
       },
     },
     handler: async (input, auth) => {
+      const refusal = partnerScopeRefusal(auth);
+      if (refusal) return refusal;
       const actor = actorFromAuth(auth);
 
       const action = String(input.action);

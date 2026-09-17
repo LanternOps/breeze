@@ -47,7 +47,7 @@ import { getUserPermissions, hasPermission, userCanDecideApprovals, canAccessOrg
 import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
 import { createPamDecisionIntent } from '../pamActuationLifecycle';
 import { publishIntentTerminalOutbox } from '../aiOperator/taskOutbox';
-import { requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
+import { PERMISSION_GRANTS, requiredAssurance, type RiskTier, type ApprovalProof } from '@breeze/shared';
 import { scriptProposals } from '../../db/schema/scriptProposals';
 import { loadProposalRow } from '../scriptProposals/queries';
 import { resolveStrictAcknowledgement } from './strictAcknowledgement';
@@ -834,7 +834,20 @@ export async function decideApprovalRequest(
             actorId: userId,
             details: { approvalId: existing.id, errorCode: 'site_ceiling' },
           });
-          return { httpStatus: 403, body: { error: 'site_ceiling' } };
+          return {
+            httpStatus: 403,
+            body: {
+              error: 'site_ceiling',
+              // Review finding #2: a bare machine token left the web client
+              // with nothing to show but the token itself plus a generic
+              // "Try again" — actively wrong for a non-retryable denial. The
+              // client maps the `error` token to its own copy (never reads
+              // this string for UI), but a `message` gives every OTHER
+              // caller (API consumers, logs) a human-readable reason too.
+              message:
+                'This approval grants organization-wide authority. Your access is limited to specific sites, so another approver needs to decide it.',
+            },
+          };
         }
 
         // Sole-operator RE-DERIVATION (#2685). Four-eyes for a Tier-3 intent is
@@ -871,17 +884,35 @@ export async function decideApprovalRequest(
         // WebAuthn challenge. Gated to `approved` only — a deny stays available
         // in every case, since denying only cancels the action.
         if (linkedIntent.requestedByUserId === userId) {
-          // The SAME filter the fan-out applied (intentService.ts): for an
-          // org-wide governance intent, a site/exact-device-ceilinged holder of
-          // `approvals:decide` is not an eligible approver at all — the gate
-          // just above would 403 them. Passing a different value here than the
+          // Review finding #3: the SAME filters the fan-out applied
+          // (intentService.ts) — not just the org-wide-governance ceiling, but
+          // ALSO the STRICT-proposal `alsoRequire: scripts:write` narrowing
+          // (W03, #5612, spec §4.5). Passing a different value here than the
           // fan-out did is the bug this argument exists to prevent: the
           // re-derivation would either count an approver who cannot decide
           // (refusing a genuine sole operator with not_sole_approver) or miss
-          // one the fan-out queued (admitting a self-approve that is not sole).
+          // one the fan-out queued (admitting a self-approve that is not
+          // sole). Recomputed here rather than carried from the fan-out
+          // (there is nothing persisted to carry it in) — the inputs
+          // (`actionName === 'run_script'` + the proposal's current
+          // `strictHits`) are exactly what the fan-out itself derived them
+          // from, and are always available at decide time (the STRICT
+          // acknowledgement ceremony below re-loads the same proposal row).
+          let alsoRequire: { resource: string; action: string } | undefined;
+          if (linkedIntent.actionName === 'run_script') {
+            const proposalId = (linkedIntent.arguments as { proposalId?: unknown } | null)
+              ?.proposalId;
+            if (typeof proposalId === 'string' && proposalId.length > 0) {
+              const proposal = await loadProposalRow(proposalId);
+              if (proposal && (proposal.strictHits?.length ?? 0) > 0) {
+                alsoRequire = PERMISSION_GRANTS.SCRIPTS_WRITE;
+              }
+            }
+          }
           const eligibleNow = await runOutsideDbContext(() =>
             resolveIntentApprovers(linkedIntent!.orgId, {
               requireOrgWideGovernance: orgWideGovernance,
+              alsoRequire,
             }),
           );
           const othersEligible = eligibleNow.filter((candidate) => candidate !== userId);

@@ -82,6 +82,30 @@ function requireOrgAccess(actor: ContractActor, orgId: string): void {
  *    A contract with NO lines is unattributable and therefore denied, and
  *    `createContract` is denied outright for a restricted actor (mirroring
  *    `createManualInvoice` rejecting a null-site invoice).
+ *
+ * WHY THIS IS A SECOND LINE, NOT THE FIRST (#6110 review, finding 1).
+ * Every door onto this service is PARTNER-scoped: every route file under
+ * `routes/contracts/` is `requireScope('partner','system')` (contracts.ts:16,
+ * bulk.ts:11, lines.ts:18, lifecycle.ts:13, periods.ts:10, …), and the AI/MCP
+ * tools now refuse organization scope too (`aiToolsContracts.ts`
+ * `partnerScopeRefusal`). Only `scope === 'organization'` tokens ever carry
+ * `allowedSiteIds` (middleware/auth.ts:727-734), so in production a restricted
+ * `ContractActor` should never reach this file at all. The rule below is
+ * therefore DEFENCE IN DEPTH: it exists so that the day a fifth door opens at
+ * organization scope — a portal read, a new tool, a widened route — the site
+ * axis is already enforced instead of being discovered missing. Postgres RLS
+ * does not defend the sub-org axis, so there is no third line under this one.
+ *
+ * INTENTIONALLY FAIL-CLOSED ON NON-SITE-SCOPABLE LINE TYPES. Only
+ * `SITE_SCOPABLE_LINE_TYPES` (per_device, per_device_role —
+ * packages/shared/src/validators/contracts.ts:36) can carry a `site_id` at all;
+ * a `flat`, `manual`, `per_seat` or `per_device_group` line is always null-site.
+ * A restricted actor is therefore denied EVERY whole-document operation on any
+ * contract that carries even one such line — which is most real contracts. That
+ * is deliberate: the alternative is letting a site-limited actor cancel, re-price
+ * or re-currency a document whose value is partly attributable to sites it
+ * cannot see. Widening it needs a per-line authorization model, not a looser
+ * predicate here.
  */
 export function contractLineSiteDenied(
   actor: ContractActor,
@@ -105,7 +129,7 @@ function requireLineSiteAccess(actor: ContractActor, siteId: string | null | und
  * unrestricted actor; otherwise one id+site scan of the contract's lines, and a
  * denial if any line is unreachable or the contract has no lines at all.
  */
-async function requireWholeContractSiteAccess(
+export async function requireWholeContractSiteAccess(
   actor: ContractActor,
   contractId: string,
   executor: DbExecutor = db,
@@ -337,6 +361,17 @@ export async function getContract(contractId: string, actor: ContractActor) {
   // Site axis: a restricted actor sees only its reachable lines, and a contract
   // with none is denied (see contractLineSiteDenied). No-op when unrestricted.
   const lines = visibleLinesOrDeny(actor, allLines);
+  // #6110 finding 3: a PARTIAL read must not look like a complete one. When any
+  // line was hidden, say so, and withhold the billing-period history — every
+  // number in it (invoice totals, snapshot/uncovered/overage counts) is a
+  // WHOLE-DOCUMENT aggregate computed over lines this actor cannot see. Null +
+  // the flag is honest; a filtered-looking array of unfiltered totals is not.
+  const linesFilteredBySiteScope = actor.allowedSiteIds
+    ? lines.length !== allLines.length
+    : undefined;
+  if (linesFilteredBySiteScope === true) {
+    return { contract, lines: await withLineRefs(lines), periods: null, linesFilteredBySiteScope };
+  }
   // #3205 W07: one LEFT JOIN supplies the per-period outcome summary for the
   // detail table. JSON digests remain exclusive to the expanded outcome read.
   const periods = await db
@@ -360,13 +395,25 @@ export async function getContract(contractId: string, actor: ContractActor) {
     )
     .where(eq(contractBillingPeriods.contractId, contractId))
     .orderBy(desc(contractBillingPeriods.periodStart));
-  return { contract, lines: await withLineRefs(lines), periods };
+  return {
+    contract,
+    lines: await withLineRefs(lines),
+    periods: periods as typeof periods | null,
+    ...(linesFilteredBySiteScope === undefined ? {} : { linesFilteredBySiteScope }),
+  };
 }
 
 type ContractRow = typeof contracts.$inferSelect;
 export type ContractListRow = ContractRow & {
   estimatedPeriodValue: string | null;
   estimateError?: 'GROUP_EVALUATION_FAILED';
+  /**
+   * #6110 finding 3. Present ONLY for a site-restricted actor. True when this
+   * contract carries lines the actor cannot reach, in which case
+   * `estimatedPeriodValue` is withheld (null) rather than reported as a
+   * partial-but-unlabelled total.
+   */
+  linesFilteredBySiteScope?: boolean;
 };
 
 export async function listContracts(query: {
@@ -381,6 +428,18 @@ export async function listContracts(query: {
   if (actor.accessibleOrgIds !== null) {
     conds.push(inArray(contracts.orgId, actor.accessibleOrgIds));
   }
+  // Site axis in SQL, NOT after the fetch (#6110 finding 2). The post-fetch drop
+  // below still runs, but on its own it filtered the page AFTER `limit` had
+  // already been applied — a restricted actor could get an empty (or short) page
+  // while reachable contracts sat just past the cut. Narrowing here makes
+  // ordering and limit apply to the rows the actor can actually see.
+  if (actor.allowedSiteIds) {
+    // Empty allowlist = no site is reachable = no contract is. Answer without a
+    // query; an `IN ()` list would not even be valid SQL.
+    if (actor.allowedSiteIds.length === 0) return [];
+    const siteList = sql.join(actor.allowedSiteIds.map((s) => sql`${s}`), sql`, `);
+    conds.push(sql`EXISTS (SELECT 1 FROM contract_lines cl WHERE cl.contract_id = ${contracts.id} AND cl.site_id IN (${siteList}))`);
+  }
   const rows = await db.select().from(contracts)
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(contracts.createdAt))
@@ -393,10 +452,12 @@ export async function listContracts(query: {
   const ids = rows.map((r) => r.id);
   const allLines = await db.select().from(contractLines).where(inArray(contractLines.contractId, ids));
   const byContract = new Map<string, typeof allLines>();
+  /** Contracts that carry at least one line this actor cannot reach (#6110 finding 3). */
+  const partial = new Set<string>();
   for (const l of allLines) {
     // Site axis: a restricted actor's estimate must be built from ITS lines only,
     // and a contract with no reachable line is dropped from the page below.
-    if (contractLineSiteDenied(actor, l.siteId)) continue;
+    if (contractLineSiteDenied(actor, l.siteId)) { partial.add(l.contractId); continue; }
     const list = byContract.get(l.contractId);
     if (list) list.push(l); else byContract.set(l.contractId, [l]);
   }
@@ -423,9 +484,15 @@ export async function listContracts(query: {
       if (err instanceof ContractServiceError && err.code === 'GROUP_EVALUATION_FAILED') estimateError = err.code;
       else throw err;
     }
+    // #6110 finding 3: a per-period value summed over only the lines this actor
+    // can see is a DIFFERENT number from the contract's actual period value, and
+    // nothing on the row would say so. Withhold it and flag the row instead —
+    // `computeContractEstimate` already refuses the same aggregate outright.
+    const filtered = actor.allowedSiteIds ? partial.has(c.id) : undefined;
+    const flag = filtered === undefined ? {} : { linesFilteredBySiteScope: filtered };
     out.push(estimateError
-      ? { ...c, estimatedPeriodValue: null, estimateError }
-      : { ...c, estimatedPeriodValue: unresolved ? null : fromCents(cents) });
+      ? { ...c, estimatedPeriodValue: null, estimateError, ...flag }
+      : { ...c, estimatedPeriodValue: (unresolved || filtered) ? null : fromCents(cents), ...flag });
   }
   return out;
 }

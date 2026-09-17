@@ -333,8 +333,14 @@ describe('MCP interactive-approval-only gate (all Tier 3, tier-driven)', () => {
         action: 'get_value', deviceId: 'dev-1', keyPath: 'HKLM\\Software\\Foo', valueName: 'Bar',
       }, ['ai:read']);
       const body = await res.json();
-      expect(body.error).toBeDefined();
-      expect(body.error.code).not.toBe(undefined);
+      // Review finding #5: assert the SPECIFIC scope/tier refusal, not just
+      // "some error code exists" — that would pass identically for an
+      // unrelated failure (a thrown exception, a malformed request, …) and
+      // never actually pin that this is the tier-2-requires-ai:write gate.
+      expect(body.error).toEqual({
+        code: -32603,
+        message: 'Tool "registry_operations" requires ai:write scope',
+      });
       expect(mocks.executeTool).not.toHaveBeenCalled();
     });
 

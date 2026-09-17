@@ -66,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Registra un dispositivo di approvazione nel profilo e riprova.",
     "notSoleApprover": "Un’altra persona autorizzata deve decidere su questa richiesta.",
+    "siteCeiling": "Questa approvazione concede un'autorità a livello di intera organizzazione. Il tuo accesso è limitato a siti specifici, quindi un'altra persona autorizzata deve decidere su questa richiesta.",
     "verificationFailed": "La verifica è stata annullata o non è riuscita. Riprova.",
     "alreadyDecided": "Questa richiesta è già stata decisa.",
     "expired": "Questa richiesta è scaduta prima che si potesse decidere.",

@@ -196,6 +196,11 @@ export function registerAgentMgmtTools(aiTools: Map<string, AiTool>): void {
           totalOutdated,
           byVersion: outdated,
           ...(note ? { note } : {}),
+          // The rollup is narrowed but reads as a fleet-wide rollout figure;
+          // say what it actually covers (review #6110).
+          ...(auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined
+            ? { scopeNote: 'These counts cover only the devices within your access scope, not every device in the organization.' }
+            : {}),
         });
       }
 

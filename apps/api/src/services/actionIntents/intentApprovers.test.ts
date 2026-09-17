@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 
 vi.mock('../../db', () => ({
@@ -66,6 +66,7 @@ import {
   isAgentIntentDecideAuthorized,
   resolveAgentIntentApprovers,
   resolveIntentApprovers,
+  resolveIntentApproversWithDiagnostics,
   resolveIntentTargetScope,
 } from './intentApprovers';
 
@@ -243,6 +244,148 @@ describe('resolveIntentApprovers — requireOrgWideGovernance (audit §1.1 fan-o
       requireOrgWideGovernance: true,
     });
     expect(result).toEqual(['u-open']);
+  });
+});
+
+describe('resolveIntentApproversWithDiagnostics', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(db.select).mockReset();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('reports droppedBySiteCeiling and the pre-filter decider list when a candidate is site-restricted', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockImplementation(async (userId: string) =>
+      userId === 'u-site' ? perms({ allowedSiteIds: ['site-1'] }) : perms({ allowedSiteIds: undefined }),
+    );
+
+    const { approvers, diagnostics } = await resolveIntentApproversWithDiagnostics('org-1', {
+      requireOrgWideGovernance: true,
+    });
+    expect(approvers).toEqual(['u-open']);
+    expect(diagnostics).toEqual({
+      deciders: expect.arrayContaining(['u-open', 'u-site']),
+      droppedBySiteCeiling: 1,
+      droppedUnresolvable: 0,
+      orgLookupMissed: false,
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('reports droppedUnresolvable and warns when a candidate permission load fails', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-gone' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockResolvedValue(null as unknown as UserPermissions);
+
+    const { approvers, diagnostics } = await resolveIntentApproversWithDiagnostics('org-1', {
+      requireOrgWideGovernance: true,
+    });
+    expect(approvers).toEqual([]);
+    expect(diagnostics).toEqual({
+      deciders: ['u-gone'],
+      droppedBySiteCeiling: 0,
+      droppedUnresolvable: 1,
+      orgLookupMissed: false,
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports orgLookupMissed and warns when the org row itself cannot be found', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }],
+      partnerMembers: [],
+    });
+    // Org lookup (select #5) returns no row at all.
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+      }),
+    } as any);
+    vi.mocked(getUserPermissions).mockResolvedValue(perms({ allowedSiteIds: undefined }));
+
+    const { diagnostics } = await resolveIntentApproversWithDiagnostics('org-1', {
+      requireOrgWideGovernance: true,
+    });
+    expect(diagnostics?.orgLookupMissed).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null diagnostics when requireOrgWideGovernance is not set', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }],
+      partnerMembers: [],
+    });
+
+    const { diagnostics } = await resolveIntentApproversWithDiagnostics('org-1', {});
+    expect(diagnostics).toBeNull();
+  });
+
+  it('resolveIntentApprovers stays a plain string[] wrapper (existing callers unaffected)', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }],
+      partnerMembers: [],
+    });
+
+    const result = await resolveIntentApprovers('org-1', {});
+    expect(result).toEqual(['u-open']);
+  });
+
+  it('resolveIntentApprovers invokes onDiagnostics without changing its own return shape', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }, { userId: 'u-site' }],
+      partnerMembers: [],
+    });
+    queueGovernanceOrgLookup('partner-1');
+    vi.mocked(getUserPermissions).mockImplementation(async (userId: string) =>
+      userId === 'u-site' ? perms({ allowedSiteIds: ['site-1'] }) : perms({ allowedSiteIds: undefined }),
+    );
+
+    const onDiagnostics = vi.fn();
+    const result = await resolveIntentApprovers('org-1', { requireOrgWideGovernance: true, onDiagnostics });
+    expect(result).toEqual(['u-open']);
+    expect(onDiagnostics).toHaveBeenCalledTimes(1);
+    expect(onDiagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({ droppedBySiteCeiling: 1, droppedUnresolvable: 0, orgLookupMissed: false }),
+    );
+  });
+
+  it('resolveIntentApprovers never calls onDiagnostics when the ceiling filter never ran', async () => {
+    queueSelects({
+      grantingRoles: [{ roleId: 'role-decide' }],
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-open' }],
+      partnerMembers: [],
+    });
+
+    const onDiagnostics = vi.fn();
+    await resolveIntentApprovers('org-1', { onDiagnostics });
+    expect(onDiagnostics).not.toHaveBeenCalled();
   });
 });
 
@@ -588,6 +731,40 @@ describe('resolveAgentIntentApprovers', () => {
     expect(result).toEqual(['u-a']);
     expect(db.select).toHaveBeenCalledTimes(3);
     expect(getUserPermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it('move_org-shaped multi-requirement: a user needs EVERY required permission, not just one', async () => {
+    // Item 4 (review): requiredPermissionsForTool can return more than one
+    // pair — userHasActionAndTargetAuthority's loop must AND them, not treat
+    // holding any single one as sufficient.
+    vi.mocked(requiredPermissionsForTool).mockReturnValue([
+      { resource: 'tickets', action: 'write' },
+      { resource: 'organizations', action: 'write' },
+    ]);
+    queueAgentApproverSelects({
+      org: [{ partnerId: 'partner-1' }],
+      orgMembers: [{ userId: 'u-partial' }, { userId: 'u-full' }],
+      partnerMembers: [],
+    });
+    stubPermsByUser({
+      // Holds only tickets:write — NOT eligible.
+      'u-partial': makePerms({ permissions: [{ resource: 'tickets', action: 'write' }] }),
+      // Holds both — eligible.
+      'u-full': makePerms({
+        permissions: [
+          { resource: 'tickets', action: 'write' },
+          { resource: 'organizations', action: 'write' },
+        ],
+      }),
+    });
+
+    const result = await resolveAgentIntentApprovers({
+      orgId: 'org-1',
+      toolName: 'move_org',
+      input: { orgId: 'org-1' },
+      targetScope: { kind: 'indirect' },
+    });
+    expect(result).toEqual(['u-full']);
   });
 });
 

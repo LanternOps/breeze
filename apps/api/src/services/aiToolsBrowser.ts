@@ -113,8 +113,9 @@ export function policyWithinDeviceReadScope(
  *   (a policy spanning an out-of-scope site discloses that site's id); an empty
  *   target list is unattributable and fails closed.
  * - a `device` policy is visible only when every target device is in the
- *   caller's site-resolved device set (`allowedDeviceIds` = the intersection
- *   from `resolveSiteAllowedDeviceIds`, or `null` when not resolved).
+ *   caller's site-resolved device set (`siteAllowedDeviceIds` = the
+ *   intersection from `resolveSiteAllowedDeviceIds`). `null` (not resolved)
+ *   and an empty target list both fail closed, matching the `site` arm.
  */
 export function policyWithinSiteReadScope(
   auth: AuthContext,
@@ -130,12 +131,30 @@ export function policyWithinSiteReadScope(
     return ids.every((id) => auth.canAccessSite!(id));
   }
   if (targetType === 'device') {
-    if (siteAllowedDeviceIds === null) return true;
+    // Both arms fail closed on an unattributable policy (review #6110): `null`
+    // means the caller's device set could not be resolved, and an EMPTY target
+    // list satisfies `[].every(...)` vacuously. Either one used to make a
+    // device-targeted policy visible to a restricted caller while the `site`
+    // branch above denied the same shape.
+    if (siteAllowedDeviceIds === null) return false;
+    const ids = targetIds ?? [];
+    if (ids.length === 0) return false;
     const allowed = new Set(siteAllowedDeviceIds);
-    return (targetIds ?? []).every((id) => allowed.has(id));
+    return ids.every((id) => allowed.has(id));
   }
   return true;
 }
+
+/** Policies returned by `manage_browser_policy list`. */
+const BROWSER_POLICY_PAGE_LIMIT = 200;
+/**
+ * Wider scan for a narrowed caller, since both scope filters run after the SQL
+ * LIMIT. Bounded so a restricted caller cannot pull the whole table.
+ */
+const BROWSER_POLICY_SCAN_LIMIT = 1000;
+/** Says the page was narrowed, so an empty list is not read as "none exist". */
+const BROWSER_POLICY_SCOPE_PARTIAL_NOTE =
+  'Some browser policies were withheld because they target sites or devices outside your site access — this list may be incomplete.';
 
 export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
   function registerTool(tool: AiTool): void {
@@ -348,28 +367,41 @@ export function registerBrowserTools(aiTools: Map<string, AiTool>): void {
           conditions.push(eq(browserPolicies.orgId, input.orgId));
         }
 
+        // Both scope filters land AFTER the SQL LIMIT, so a restricted caller
+        // whose most-recently-updated policies are all out of scope got a short
+        // or empty page while reachable older ones existed — and an empty page
+        // reads to the model as "this organization has no browser policies".
+        // Over-scan a wider, still-bounded page and slice after filtering.
+        const restricted = Boolean(auth.allowedSiteIds || auth.allowedDeviceIds);
         const policies = await db
           .select()
           .from(browserPolicies)
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(desc(browserPolicies.updatedAt))
-          .limit(200);
+          .limit(restricted ? BROWSER_POLICY_SCAN_LIMIT : BROWSER_POLICY_PAGE_LIMIT);
 
         // Site axis: resolve the caller's device set ONLY when a device-targeted
         // policy is actually present (one scan at most, none when unrestricted).
+        // A narrowed caller with no orgId gets `[]` (deny), never `null` — the
+        // two are not interchangeable downstream (review #6110).
         const siteAllowedDeviceIds =
-          auth.allowedSiteIds && auth.orgId && policies.some((p) => p.targetType === 'device')
-            ? await resolveSiteAllowedDeviceIds(auth.orgId, auth)
+          auth.allowedSiteIds && policies.some((p) => p.targetType === 'device')
+            ? (auth.orgId ? (await resolveSiteAllowedDeviceIds(auth.orgId, auth)) ?? [] : [])
             : null;
 
         // Exact-device axis: drop policies that name a device outside this
         // caller's allowlist (no-op for an unrestricted caller). Site axis:
         // drop policies targeted exclusively at sites/devices out of reach.
-        const visible = policies.filter((policy) =>
+        const filtered = policies.filter((policy) =>
           policyWithinDeviceReadScope(auth, policy.targetType, policy.targetIds)
           && policyWithinSiteReadScope(auth, policy.targetType, policy.targetIds, siteAllowedDeviceIds));
+        const visible = filtered.slice(0, BROWSER_POLICY_PAGE_LIMIT);
+        const narrowed = restricted && (filtered.length < policies.length || visible.length === 0);
 
-        return JSON.stringify({ policies: visible });
+        return JSON.stringify({
+          policies: visible,
+          ...(narrowed ? { scopeNote: BROWSER_POLICY_SCOPE_PARTIAL_NOTE } : {}),
+        });
       }
 
       if (action === 'create') {

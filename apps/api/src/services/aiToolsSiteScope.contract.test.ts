@@ -330,6 +330,14 @@ describe('contract: AI tools touching a site-attributable table name the site ax
     expect(SITE_TABLES.get('incidents')).toContain('affectedDevices');
     expect(SITE_TABLES.get('deployments')).toContain('targetConfig');
     expect(SITE_TABLES.get('slaDefinitions')).toContain('targetIds');
+    // …and one attributable only through a PLURAL / suffixed site column
+    // (#6110 review 1). `organization_users.site_ids` is the column that FEEDS
+    // `auth.allowedSiteIds`; a singular-only pattern could not see it, nor any
+    // of the array site columns below.
+    expect(SITE_TABLES.get('organizationUsers')).toContain('siteIds');
+    expect(SITE_TABLES.get('maintenanceWindows')).toContain('siteIds');
+    expect(SITE_TABLES.get('networkBaselines')).toContain('authoritySiteIds');
+    expect(SITE_TABLES.get('fleetRemediationRunTargets')).toContain('siteIdSnapshot');
     // The UniFi vendor-id columns must NOT make their table site-attributable
     // on their own (`local_site_id` is a controller-local string, not a FK).
     expect(SITE_TABLES.get('unifiControllerSites')).toBeUndefined();
@@ -427,43 +435,64 @@ function optionalArgBaseline(): string[] {
   return [...OPTIONAL_SITE_ARG_EXCEPTIONS, ...OPTIONAL_SITE_ARG_KNOWN_OPEN_GAPS];
 }
 
+/**
+ * Scan ONE source string for scan (b). Pure, exactly like `scanSource` above,
+ * so the fixtures below drive the LIVE scanner rather than a re-typed copy
+ * (#6110 review 3: this scan read files directly and had no fixture at all —
+ * the one scanner in this file whose discrimination nothing proved).
+ *
+ * @param src source with comments already blanked.
+ */
+function scanOptionalArgTools(
+  file: string,
+  src: string,
+  crossFile: readonly string[] = [],
+): { unguarded: string[]; total: number } {
+  const unguarded: string[] = [];
+  let total = 0;
+  const helpers = [...guardedLocalHelpers(src, namesSiteAxis), ...crossFile];
+  const nameRe = /name:\s*'([a-z0-9_]+)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = nameRe.exec(src)) !== null) {
+    const schemaIdx = src.indexOf('input_schema', m.index);
+    const handlerIdx = src.indexOf('handler', m.index);
+    if (schemaIdx < 0 || handlerIdx < 0 || schemaIdx > handlerIdx) continue;
+    const propsIdx = src.indexOf('properties:', schemaIdx);
+    if (propsIdx < 0 || propsIdx > handlerIdx) continue;
+    const propsEnd = matchClose(src, src.indexOf('{', propsIdx), '{', '}');
+    const props = src.slice(propsIdx, propsEnd);
+    if (!/\b(?:deviceIds?|siteIds?)\s*:/.test(props)) continue;
+    // The schema's OWN `required:`, i.e. the first one after the `properties`
+    // object closes — a nested property schema can carry its own `required`.
+    const reqIdx = src.indexOf('required:', propsEnd);
+    const required = reqIdx >= 0 && reqIdx < handlerIdx
+      ? src.slice(reqIdx, src.indexOf(']', reqIdx))
+      : '';
+    // Only a tool where EVERY id it declares is mandatory escapes the scan: a
+    // mandatory `deviceId` alongside an optional `siteId` is still the shape.
+    const declared = [...props.matchAll(/\b(deviceIds?|siteIds?)\s*:/g)].map((d) => d[1]!);
+    if (declared.every((d) => new RegExp(`'${d}'`).test(required))) continue;
+    total++;
+    // Handler window: from `handler` to the next tool definition's `name:`.
+    nameRe.lastIndex = handlerIdx;
+    const next = nameRe.exec(src);
+    const window = src.slice(handlerIdx, next ? next.index : src.length);
+    nameRe.lastIndex = handlerIdx;
+    if (namesSiteAxis(window) || delegatesToGuardedHelper(window, helpers)) continue;
+    unguarded.push(`${file}:${m[1]!}`);
+  }
+  return { unguarded, total };
+}
+
 function optionalSiteArgTools(): { unguarded: string[]; total: number } {
   const unguarded: string[] = [];
   let total = 0;
   const crossFile = verifiedCrossFileDelegates();
   for (const file of AI_TOOLS_SOURCES) {
     const src = blankComments(readFileSync(join(SERVICES_DIR, file), 'utf8'));
-    const helpers = [...guardedLocalHelpers(src, namesSiteAxis), ...crossFile];
-    const nameRe = /name:\s*'([a-z0-9_]+)'/g;
-    let m: RegExpExecArray | null;
-    while ((m = nameRe.exec(src)) !== null) {
-      const schemaIdx = src.indexOf('input_schema', m.index);
-      const handlerIdx = src.indexOf('handler', m.index);
-      if (schemaIdx < 0 || handlerIdx < 0 || schemaIdx > handlerIdx) continue;
-      const propsIdx = src.indexOf('properties:', schemaIdx);
-      if (propsIdx < 0 || propsIdx > handlerIdx) continue;
-      const propsEnd = matchClose(src, src.indexOf('{', propsIdx), '{', '}');
-      const props = src.slice(propsIdx, propsEnd);
-      if (!/\b(?:deviceIds?|siteIds?)\s*:/.test(props)) continue;
-      // The schema's OWN `required:`, i.e. the first one after the `properties`
-      // object closes — a nested property schema can carry its own `required`.
-      const reqIdx = src.indexOf('required:', propsEnd);
-      const required = reqIdx >= 0 && reqIdx < handlerIdx
-        ? src.slice(reqIdx, src.indexOf(']', reqIdx))
-        : '';
-      // Only a tool where EVERY id it declares is mandatory escapes the scan: a
-      // mandatory `deviceId` alongside an optional `siteId` is still the shape.
-      const declared = [...props.matchAll(/\b(deviceIds?|siteIds?)\s*:/g)].map((d) => d[1]!);
-      if (declared.every((d) => new RegExp(`'${d}'`).test(required))) continue;
-      total++;
-      // Handler window: from `handler` to the next tool definition's `name:`.
-      nameRe.lastIndex = handlerIdx;
-      const next = nameRe.exec(src);
-      const window = src.slice(handlerIdx, next ? next.index : src.length);
-      nameRe.lastIndex = handlerIdx;
-      if (namesSiteAxis(window) || delegatesToGuardedHelper(window, helpers)) continue;
-      unguarded.push(`${file}:${m[1]!}`);
-    }
+    const { unguarded: hits, total: n } = scanOptionalArgTools(file, src, crossFile);
+    unguarded.push(...hits);
+    total += n;
   }
   return { unguarded, total };
 }
@@ -660,6 +689,34 @@ describe('scanner: site-attributable column detection', () => {
     expect([...bySite.keys()]).toEqual(['siteRows']);
     expect([...byDevice.keys()]).toEqual(['assets']);
   });
+
+  it('sees PLURAL and snapshot site columns, and no pgTable INDEX declaration', () => {
+    // #6110 review 1. A singular-only `/\w*[Ss]iteId:\s/` was blind to every
+    // ARRAY site column — including `organization_users.site_ids`, the column
+    // `auth.allowedSiteIds` is loaded FROM. The `siteIdIdx` / `uniqueSiteIdx`
+    // cases pin the other side: the index block of a `pgTable`'s second
+    // argument is inside the scanned slice and must not read as a column.
+    const found = tablesWithColumnIn(`
+      export const orgUsers = pgTable('organization_users', {
+        siteIds: uuid('site_ids').array(),
+      });
+      export const reportRuns = pgTable('report_runs', {
+        executionScopeSiteIds: uuid('execution_scope_site_ids').array(),
+      });
+      export const findings = pgTable('findings', {
+        siteIdSnapshot: uuid('site_id_snapshot'),
+      });
+      export const indexedOnly = pgTable('indexed_only', {
+        orgId: uuid('org_id'),
+      }, (t) => ({
+        siteIdIdx: index('site_id_idx').on(t.orgId),
+        uniqueSiteIdx: uniqueIndex('unique_site_idx').on(t.orgId),
+      }));
+    `, SITE_COLUMN_RE, NON_FLEET_SITE_ID_COLUMNS);
+    expect([...found.keys()].sort()).toEqual(['findings', 'orgUsers', 'reportRuns']);
+    expect(found.get('orgUsers')).toEqual(['siteIds']);
+    expect(found.get('findings')).toEqual(['siteIdSnapshot']);
+  });
 });
 
 describe('scanner: the table scan discriminates a present guard from an absent one', () => {
@@ -751,5 +808,102 @@ describe('scanner: the table scan discriminates a present guard from an absent o
     expect(scanSource('f.ts', deviceGated, { tables: FIXTURE_TABLES }).hits).toEqual([]);
     expect(scanSource('f.ts', deviceGated, { tables: FIXTURE_TABLES, reachable: true }).hits)
       .toEqual(['f.ts:alerts#0']);
+  });
+});
+
+describe('scanner: the optional-argument scan discriminates the optional-id shape', () => {
+  // #6110 review 3: scan (b) used to read the live files inline, so nothing
+  // proved it could tell a reported tool from a clean one.
+  const tool = (opts: { props: string; required: string; body: string }) => blankComments(`
+    registerTool({
+      definition: {
+        name: 'fixture_tool',
+        input_schema: {
+          type: 'object',
+          properties: {
+            ${opts.props}
+          },
+          required: [${opts.required}],
+        },
+      },
+      handler: async (input, auth) => {
+        ${opts.body}
+      },
+    });
+  `);
+
+  const OPTIONAL_DEVICE = { props: `deviceId: { type: 'string' },`, required: `'orgId'` };
+
+  it('an OPTIONAL deviceId with no site marker is reported', () => {
+    const src = tool({ ...OPTIONAL_DEVICE, body: 'return db.select().from(alerts);' });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: ['f.ts:fixture_tool'], total: 1 });
+  });
+
+  it('the same tool is clean once the handler names the site axis', () => {
+    const src = tool({
+      ...OPTIONAL_DEVICE,
+      body: 'return db.select().from(alerts).where(siteScopeCondition(auth, devices.siteId));',
+    });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 1 });
+  });
+
+  it('a MANDATORY deviceId is not the shape at all — not even counted', () => {
+    const src = tool({
+      props: `deviceId: { type: 'string' },`,
+      required: `'deviceId'`,
+      body: 'return db.select().from(alerts);',
+    });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 0 });
+  });
+
+  it('a mandatory deviceId alongside an OPTIONAL siteId is still the shape', () => {
+    const src = tool({
+      props: `deviceId: { type: 'string' },\n            siteId: { type: 'string' },`,
+      required: `'deviceId'`,
+      body: 'return db.select().from(alerts);',
+    });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: ['f.ts:fixture_tool'], total: 1 });
+  });
+
+  it('a `required` nested INSIDE a property schema does not mislabel the id', () => {
+    // `aiToolsConfigPolicy.ts` has this shape. Reading the nested `required`
+    // would report a mandatory deviceId as optional (or the reverse).
+    const src = tool({
+      props: `deviceId: { type: 'string' },\n            filter: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },`,
+      required: `'deviceId'`,
+      body: 'return db.select().from(alerts);',
+    });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 0 });
+  });
+
+  it('a local helper that narrows covers the handler that delegates to it', () => {
+    const src = blankComments(`
+      async function scopedIds(auth, orgId) {
+        return scopeDeviceIdsToCaller(auth, orgId, []);
+      }
+      registerTool({
+        definition: {
+          name: 'fixture_tool',
+          input_schema: {
+            type: 'object',
+            properties: { deviceId: { type: 'string' } },
+            required: ['orgId'],
+          },
+        },
+        handler: async (input, auth) => {
+          const ids = await scopedIds(auth, input.orgId);
+          return db.select().from(alerts);
+        },
+      });
+    `);
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: [], total: 1 });
+  });
+
+  it('a site marker named only in a COMMENT does not clear the tool', () => {
+    const src = tool({
+      ...OPTIONAL_DEVICE,
+      body: '// canAccessSite is applied upstream\n        return db.select().from(alerts);',
+    });
+    expect(scanOptionalArgTools('f.ts', src)).toEqual({ unguarded: ['f.ts:fixture_tool'], total: 1 });
   });
 });

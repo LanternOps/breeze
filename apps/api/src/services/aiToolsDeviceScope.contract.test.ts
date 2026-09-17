@@ -19,6 +19,7 @@ import {
   guardedLocalHelpers as guardedHelpersIn,
   NON_FLEET_DEVICE_ID_COLUMNS,
   DEVICE_COLUMN_RE,
+  TARGET_CONTENT_COLUMN_RE,
 } from './__testutils__/aiToolScopeScan';
 
 /**
@@ -74,6 +75,22 @@ const DEVICE_AXIS_MARKERS = [
   // `allowedDeviceIds` FIRST and only then the site axis
   // (`routes/tickets/siteScope.ts`), so naming it is naming the device axis.
   'deviceInSiteScope',
+  // `aiToolsSiteScope.ts` — applies BOTH axes to a list of device ids
+  // (`auth.allowedDeviceIds` intersection first, then the site allowlist), so
+  // naming it is naming the device axis. Its same-file wrappers (e.g.
+  // `scopedAffectedDevices` in aiToolsIncident.ts) name nothing else, which is
+  // why the cross-file call has to be a marker in its own right.
+  'scopeDeviceIdsToCaller',
+  // `siteCeilingAccess.ts` — `!hasSiteCeiling(auth) && !hasExactDeviceCeiling(auth)`.
+  // The second conjunct IS the device axis: a device-ceilinged caller (every
+  // agent run) is denied the org-wide governance write outright. Already a
+  // SITE marker in the twin suite; listing it here is exact parity, not a
+  // loosening. It gates the WRITE actions of the policy handlers — the
+  // list/get reads in the same handler are deliberately org-scoped on BOTH
+  // axes (org-wide governance config is not device data), which is the same
+  // judgement the site suite makes about the same call sites.
+  'canMutateOrgWideGovernance',
+  'hasExactDeviceCeiling',
 ] as const;
 
 // ---------------------------------------------------------------- utilities
@@ -211,7 +228,20 @@ const AI_TOOLS_SOURCES = aiToolsSources();
  * `aiToolsNetwork.ts` passed the whole contract with no device axis anywhere.
  */
 function deviceBearingTablesIn(src: string): Map<string, string[]> {
-  return tablesWithColumnIn(src, DEVICE_COLUMN_RE, NON_FLEET_DEVICE_ID_COLUMNS);
+  // `TARGET_CONTENT_COLUMN_RE` is the SECOND signal, adopted from the site
+  // suite by the #6110 review. `DEVICE_COLUMN_RE` is singular-only
+  // (`/\w*[Dd]eviceId:\s/`), so every table whose device attribution is an
+  // ARRAY or a jsonb target descriptor — `software_policies.target_ids`,
+  // `peripheral_policies.target_ids`, `incidents.affected_devices` — was
+  // invisible to this suite while the site twin had been scanning them all
+  // along. Widening it produced 24 hits, 23 of which resolved to guards this
+  // suite's marker list simply did not name (see the three additions above);
+  // the one residue is baselined below with its reason.
+  const out = tablesWithColumnIn(src, DEVICE_COLUMN_RE, NON_FLEET_DEVICE_ID_COLUMNS);
+  for (const [t, cols] of tablesWithColumnIn(src, TARGET_CONTENT_COLUMN_RE, NON_FLEET_DEVICE_ID_COLUMNS)) {
+    out.set(t, [...new Set([...(out.get(t) ?? []), ...cols])]);
+  }
+  return out;
 }
 
 function deviceBearingTables(): Map<string, string[]> {
@@ -247,9 +277,15 @@ const DEVICE_TABLE_BASELINE: readonly string[] = [
   'aiToolsBackup.ts:backupJobs#0',
   'aiToolsBackup.ts:restoreJobs#0',
   'aiToolsBackupVm.ts:restoreJobs#0',
-  // `manage_software_policy` delete: cascades compliance rows by policyId after
-  // the policy row itself was authorised — device-fan-out, not a device read.
-  'aiToolsCompliance.ts:softwareComplianceStatus#1',
+  // `create_incident`'s INSERT writes `affectedDevices` straight from
+  // `input.affectedDeviceIds`, and the tool declares
+  // `deviceArgs: ['affectedDeviceIds']`, so `executeTool` → `enforceDeviceArgs`
+  // → `verifyDeviceAccess` (org + exact-device + site) has already run over
+  // every id before the handler is entered; omitting the argument creates an
+  // incident with no affected devices. Same reasoning, same call site, as the
+  // site twin's `aiToolsIncident.ts:incidents#1` exception. Surfaced by the
+  // `TARGET_CONTENT_COLUMN_RE` widening, not by a source regression.
+  'aiToolsIncident.ts:incidents#1',
   // `query_psa_status`: counts ticket mappings for an already-authorised PSA
   // connection id; the count is org-level, but it is not device-narrowed.
   'aiToolsIntegrations.ts:psaTicketMappings#0',
@@ -301,6 +337,12 @@ describe('contract: AI tools touching a device-bearing table name the device axi
     // The widened column scan must keep seeing the non-`deviceId` spellings that
     // used to be invisible (#6096 review hole 2).
     expect(DEVICE_TABLES.get('discoveredAssets')).toContain('linkedDeviceId');
+    // …and the CONTENT signal adopted from the site suite (#6110 review 1):
+    // tables whose only device attribution is an array / jsonb target
+    // descriptor, invisible to the singular `DEVICE_COLUMN_RE`.
+    expect(DEVICE_TABLES.get('softwarePolicies')).toContain('targetIds');
+    expect(DEVICE_TABLES.get('peripheralPolicies')).toContain('targetIds');
+    expect(DEVICE_TABLES.get('incidents')).toContain('affectedDevices');
   });
 
   it('no call site outside the frozen baseline', () => {
@@ -611,5 +653,27 @@ describe('scanner: device-bearing column detection', () => {
     expect([...found.keys()].sort()).toEqual(['assets', 'unifiPorts']);
     expect(found.get('assets')).toEqual(['linkedDeviceId']);
     expect(found.get('unifiPorts')).toEqual(['collectorDeviceId']);
+  });
+
+  it('sees ARRAY / jsonb target columns the singular pattern misses', () => {
+    // The #6110 review hole: `deviceIds:` does NOT match `/\w*[Dd]eviceId:\s/`,
+    // so a table attributed only through its content was never scanned here.
+    const found = deviceBearingTablesIn(`
+      export const policies = pgTable('policies', {
+        targetType: varchar('target_type'),
+        targetIds: jsonb('target_ids').$type<string[]>(),
+      });
+      export const incidents = pgTable('incidents', {
+        affectedDevices: jsonb('affected_devices').$type<string[]>(),
+      });
+      export const proposals = pgTable('proposals', {
+        targetDeviceIds: jsonb('target_device_ids').$type<string[]>(),
+      });
+      export const plain = pgTable('plain', {
+        name: varchar('name'),
+      });
+    `);
+    expect([...found.keys()].sort()).toEqual(['incidents', 'policies', 'proposals']);
+    expect(found.get('policies')).toEqual(['targetIds']);
   });
 });

@@ -1059,6 +1059,13 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
           .where(and(...statsConditions));
 
         result.executionStats = stats;
+        // The numbers above are narrowed but look org-wide on the wire, so the
+        // model reports them as the script's whole history. Say what they cover
+        // (review #6110).
+        if (auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined) {
+          result.executionStatsScopeNote =
+            'These execution statistics cover only the devices within your access scope, not every device in the organization.';
+        }
       }
 
       return JSON.stringify(result);

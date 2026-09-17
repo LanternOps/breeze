@@ -247,3 +247,38 @@ describe('query_agent_versions check_upgrades — site narrowing', () => {
     expect(rendered.params).not.toContain(DEVICE_ID);
   });
 });
+
+describe('query_agent_versions check_upgrades — scope annotation (review #6110)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // `totalOutdated` / `byVersion` are narrowed correctly but read as a
+  // fleet-wide rollout figure, so the model reports "3 devices are behind" for
+  // the whole org when it only ever counted the caller's sites.
+  it('annotates the rollup for a site-restricted caller', async () => {
+    mockCheckUpgrades([{ currentVersion: '0.80.0', count: 3 }], [{ id: DEVICE_ID, siteId: 'site-1' }]);
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')(
+        { action: 'check_upgrades' },
+        makeAuth({ allowedSiteIds: ['site-1'], canAccessSite: () => true } as Partial<AuthContext>),
+      ),
+    );
+    expect(parsed.totalOutdated).toBe(3);
+    expect(parsed.scopeNote).toBeTruthy();
+  });
+
+  it('annotates the rollup for a device-bound run', async () => {
+    mockCheckUpgrades([{ currentVersion: '0.80.0', count: 1 }]);
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, deviceOnlyAuth()),
+    );
+    expect(parsed.scopeNote).toBeTruthy();
+  });
+
+  it('adds no annotation for an unrestricted caller', async () => {
+    mockCheckUpgrades([{ currentVersion: '0.80.0', count: 3 }]);
+    const parsed = JSON.parse(
+      await handlerFor('query_agent_versions')({ action: 'check_upgrades' }, makeAuth()),
+    );
+    expect(parsed.scopeNote).toBeUndefined();
+  });
+});

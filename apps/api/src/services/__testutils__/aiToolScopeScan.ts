@@ -351,7 +351,28 @@ export const NON_FLEET_DEVICE_ID_COLUMNS: ReadonlySet<string> = new Set([
   'possibleReplacementOfDeviceId',
 ]);
 
-export const SITE_COLUMN_RE = /\b(\w*[Ss]iteId):\s/;
+/**
+ * Site-attribution columns.
+ *
+ * The PLURAL and the `…Snapshot` spellings are load-bearing, not tidiness
+ * (#6110 review finding 1). A singular-only `/\w*[Ss]iteId:\s/` was blind to
+ * every ARRAY site column in the schema — `organization_users.site_ids` (the
+ * very column that feeds `auth.allowedSiteIds`), `maintenance_windows.site_ids`,
+ * `reports.execution_scope_site_ids` (x2), `patch_*.execution_scope_site_ids`,
+ * `discovery.authority_site_ids`, `sensitive_data.execution_authority_site_ids`
+ * — and to `fleet_findings.site_id_snapshot`. A table whose ONLY site
+ * attribution is one of those never entered `siteAttributableTables()`, so no
+ * call against it was ever scanned.
+ *
+ * The plural belongs HERE rather than in `TARGET_CONTENT_COLUMN_RE` below,
+ * because it is a site column and must be filtered through the SITE exclusion
+ * set (`NON_FLEET_SITE_ID_COLUMNS`), not the device one.
+ *
+ * Kept deliberately tight at the tail (`s` or `Snapshot`, then `:`): a loose
+ * `\w*` there also matches the index declarations in a `pgTable`'s second
+ * argument (`siteIdIdx:`, `uniqueSiteIdx:`), which are not columns.
+ */
+export const SITE_COLUMN_RE = /\b(\w*[Ss]iteId(?:s|Snapshot)?):\s/;
 export const DEVICE_COLUMN_RE = /\b(\w*[Dd]eviceId):\s/;
 
 /**
@@ -363,9 +384,17 @@ export const DEVICE_COLUMN_RE = /\b(\w*[Dd]eviceId):\s/;
  * 2026-09-17 audit §1.1 found unguarded — `incidents.affected_devices`,
  * `deployments.target_config`, `sla_definitions`/`sla_compliance`.`target_ids`,
  * `script_proposals.target_device_ids`, `browser_policies.target_ids` — none of
- * which declares a `site_id` or a singular `device_id`. Note the
- * singular/plural split: `deviceIds:` does NOT match `/\w*[Dd]eviceId:/`, so an
- * array column is invisible to the device suite too.
+ * which declares a `site_id` or a singular `device_id`.
+ *
+ * The singular/plural split is the whole reason this pattern exists:
+ * `deviceIds:` does NOT match `/\w*[Dd]eviceId:/`. That blinded the DEVICE
+ * suite as well until the #6110 review, which is why
+ * `aiToolsDeviceScope.contract.test.ts` now folds this pattern into its own
+ * `deviceBearingTablesIn` — both axes read the same content signal.
+ *
+ * Plural SITE columns deliberately do NOT live here: `siteIds` and friends are
+ * site columns, so they belong in `SITE_COLUMN_RE` above, where they are
+ * filtered through the site exclusion set rather than the device one.
  */
 export const TARGET_CONTENT_COLUMN_RE =
   /\b(targetIds|targetConfig|targetDeviceIds|affectedDevices|affectedDeviceIds|deviceIds):\s/;

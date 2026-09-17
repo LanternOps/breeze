@@ -61,49 +61,86 @@ import { canMutateOrgWideGovernance } from '../siteCeilingAccess';
  * `orgId`. Empty array when none qualify. Pure-read; opens its own system DB
  * context, so it may be called from any ambient context (or none).
  */
-export async function resolveIntentApprovers(
+export interface ResolveIntentApproversOpts {
+  /**
+   * W03 (#5612, spec §4.5): when the intent carries a script proposal with
+   * STRICT hits, only an approver who ALSO holds `scripts:write` can complete
+   * the acknowledgement ceremony — everyone else gets a 422 from the decide
+   * core. Fan out to the intersection so the queue does not fill with rows
+   * nobody can action. Returning an EMPTY list is correct here:
+   * createActionIntent already fails with no_eligible_approvers, which is a
+   * truthful refusal, not a reason to widen.
+   */
+  alsoRequire?: PermissionPair;
+  /**
+   * The FAN-OUT twin of the decide-side site-ceiling gate (audit §1.1,
+   * `decideApprovalRequest.ts`). Pass `isOrgWideGovernanceIntent(actionName,
+   * arguments)`: when true, a candidate who holds `approvals:decide` but
+   * carries a site (or exact-device) ceiling is DROPPED, because
+   * `canMutateOrgWideGovernance` would 403 them the moment they tried to
+   * approve — queueing them fills the inbox with rows nobody can action AND,
+   * worse, makes the sole-operator determination wrong in both directions.
+   *
+   * The fan-out and the sole-operator RE-DERIVATION in
+   * `decideApprovalRequest.ts` MUST pass the same value: if only one of them
+   * filters, an intent is either treated as having another eligible approver
+   * who cannot actually decide, or as sole-operator when it is not.
+   *
+   * Dropping every other candidate is deliberately NOT a special case: the
+   * intent behaves exactly as if those users did not hold `approvals:decide`
+   * at all — the requester falls to the sole-operator branch if THEY survive
+   * the same filter, and otherwise the intent is cancelled with
+   * `no_eligible_approvers` (intentService.ts).
+   */
+  requireOrgWideGovernance?: boolean;
+  /**
+   * Review finding #1: invoked with the ceiling-filter diagnostics whenever
+   * the filter actually ran (i.e. whenever
+   * `resolveIntentApproversWithDiagnostics` would return non-null
+   * diagnostics) — lets a caller that needs `resolveIntentApprovers`'s plain
+   * `string[]` return shape (intentService.ts's fan-out, so every existing
+   * test mock of this function keeps working unchanged) still observe WHY
+   * candidates were dropped, without switching call sites.
+   */
+  onDiagnostics?: (diagnostics: ResolveIntentApproversDiagnostics) => void;
+}
+
+/**
+ * Review finding #1: `resolveIntentApprovers` used to drop candidates (an
+ * unresolvable permission load, or the whole partner-only population when the
+ * org lookup missed) with no signal at all — the caller could not tell
+ * "nobody holds approvals:decide" apart from "three people do, all
+ * site-restricted". This is the diagnostic-carrying sibling; `deciders` is
+ * the pre-ceiling-filter candidate list (post `alsoRequire`, when present),
+ * `droppedBySiteCeiling`/`droppedUnresolvable` count the two reasons a
+ * candidate can fail to survive the org-wide-governance filter, and
+ * `orgLookupMissed` is true when the org row itself could not be read (which
+ * also means the partner axis was never applied, at all).
+ *
+ * `diagnostics` is `null` whenever the ceiling filter never ran (no
+ * `requireOrgWideGovernance`, or nobody survived `alsoRequire` first) — there
+ * is nothing to diagnose in that case.
+ */
+export interface ResolveIntentApproversDiagnostics {
+  deciders: string[];
+  droppedBySiteCeiling: number;
+  droppedUnresolvable: number;
+  orgLookupMissed: boolean;
+}
+
+export async function resolveIntentApproversWithDiagnostics(
   orgId: string,
-  opts?: {
-    /**
-     * W03 (#5612, spec §4.5): when the intent carries a script proposal with
-     * STRICT hits, only an approver who ALSO holds `scripts:write` can complete
-     * the acknowledgement ceremony — everyone else gets a 422 from the decide
-     * core. Fan out to the intersection so the queue does not fill with rows
-     * nobody can action. Returning an EMPTY list is correct here:
-     * createActionIntent already fails with no_eligible_approvers, which is a
-     * truthful refusal, not a reason to widen.
-     */
-    alsoRequire?: PermissionPair;
-    /**
-     * The FAN-OUT twin of the decide-side site-ceiling gate (audit §1.1,
-     * `decideApprovalRequest.ts`). Pass `isOrgWideGovernanceIntent(actionName,
-     * arguments)`: when true, a candidate who holds `approvals:decide` but
-     * carries a site (or exact-device) ceiling is DROPPED, because
-     * `canMutateOrgWideGovernance` would 403 them the moment they tried to
-     * approve — queueing them fills the inbox with rows nobody can action AND,
-     * worse, makes the sole-operator determination wrong in both directions.
-     *
-     * The fan-out and the sole-operator RE-DERIVATION in
-     * `decideApprovalRequest.ts` MUST pass the same value: if only one of them
-     * filters, an intent is either treated as having another eligible approver
-     * who cannot actually decide, or as sole-operator when it is not.
-     *
-     * Dropping every other candidate is deliberately NOT a special case: the
-     * intent behaves exactly as if those users did not hold `approvals:decide`
-     * at all — the requester falls to the sole-operator branch if THEY survive
-     * the same filter, and otherwise the intent is cancelled with
-     * `no_eligible_approvers` (intentService.ts).
-     */
-    requireOrgWideGovernance?: boolean;
-  },
-): Promise<string[]> {
+  opts?: ResolveIntentApproversOpts,
+): Promise<{ approvers: string[]; diagnostics: ResolveIntentApproversDiagnostics | null }> {
   const deciders = await resolveUsersWithPermissionForOrg(orgId, PERMISSIONS.APPROVALS_DECIDE);
   let eligible = deciders;
   if (opts?.alsoRequire && eligible.length > 0) {
     const also = new Set(await resolveUsersWithPermissionForOrg(orgId, opts.alsoRequire));
     eligible = eligible.filter((userId) => also.has(userId));
   }
-  if (!opts?.requireOrgWideGovernance || eligible.length === 0) return eligible;
+  if (!opts?.requireOrgWideGovernance || eligible.length === 0) {
+    return { approvers: eligible, diagnostics: null };
+  }
 
   // Same system-context contract as every other read in this module: the
   // partner id is load-bearing for `getUserPermissions` (the permission
@@ -118,9 +155,12 @@ export async function resolveIntentApprovers(
         .limit(1),
     ),
   );
+  const orgLookupMissed = !org;
   const partnerId = org?.partnerId ?? null;
 
   const kept: string[] = [];
+  let droppedBySiteCeiling = 0;
+  let droppedUnresolvable = 0;
   for (const userId of eligible) {
     const userPerms = await getUserPermissions(userId, {
       orgId,
@@ -128,9 +168,45 @@ export async function resolveIntentApprovers(
     });
     // Unresolvable permissions fail closed, exactly as in
     // `userHasActionAndTargetAuthority` below.
-    if (userPerms && canMutateOrgWideGovernance(userPerms)) kept.push(userId);
+    if (!userPerms) {
+      droppedUnresolvable++;
+      continue;
+    }
+    if (canMutateOrgWideGovernance(userPerms)) {
+      kept.push(userId);
+    } else {
+      droppedBySiteCeiling++;
+    }
   }
-  return kept;
+
+  if (orgLookupMissed || droppedUnresolvable > 0) {
+    // eslint-disable-next-line no-console -- deliberate operational signal, not a thrown error: a silent drop here previously erased partner-only or unresolvable approvers with no trace (review finding #1).
+    console.warn(
+      '[intentApprovers] resolveIntentApprovers dropped org-wide-governance candidates without a resolvable permission set',
+      { orgId, orgLookupMissed, droppedUnresolvable, candidateCount: eligible.length },
+    );
+  }
+
+  return {
+    approvers: kept,
+    diagnostics: { deciders: eligible, droppedBySiteCeiling, droppedUnresolvable, orgLookupMissed },
+  };
+}
+
+/**
+ * Given an org, returns the distinct set of user ids eligible to decide a
+ * Tier-3 action intent. Plain `string[]` wrapper around
+ * `resolveIntentApproversWithDiagnostics` for every caller that does not need
+ * the diagnostics (return type kept stable on purpose — see that function's
+ * docstring for what changed and why).
+ */
+export async function resolveIntentApprovers(
+  orgId: string,
+  opts?: ResolveIntentApproversOpts,
+): Promise<string[]> {
+  const { approvers, diagnostics } = await resolveIntentApproversWithDiagnostics(orgId, opts);
+  if (diagnostics) opts?.onDiagnostics?.(diagnostics);
+  return approvers;
 }
 
 // ============================================================
@@ -183,50 +259,15 @@ export const DEVICE_COMPLETE_TARGET_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Tool → actions whose EFFECT is an org-wide governance grant: an approval
- * that changes what may happen across the WHOLE org, with no per-site slice to
- * narrow it to.
- *
- * This is the approver-side twin of the raiser gate. The raiser of
- * `manage_ai_agents:authorize_supervised_key` is already refused by
- * `canMutateOrgWideGovernance` (services/aiToolsAiAgentGovernance.ts), which
- * is the same predicate every other org-wide governance object's write path
- * uses (webhooks, notification channels, config policies, PAM, backup — see
- * services/siteCeilingAccess.ts). Nothing applied it to the DECIDER of the
- * resulting four-eyes row, so a site-restricted holder of `approvals:decide`
- * could wave through a grant they could never have raised.
- *
- * Note this is only needed for the four_eyes lane. A SUPERVISED
- * agent-originated intent is already covered by the existing rule below:
- * `manage_ai_agents` is not in DEVICE_COMPLETE_TARGET_TOOLS, so its target
- * scope resolves to `{kind:'indirect'}` and
- * `userHasActionAndTargetAuthority` already requires
- * `allowedSiteIds === undefined`. Classifying the action here rather than
- * inventing a second, bespoke check keeps the two lanes on one notion of
- * "org-wide, nothing to narrow".
- *
- * An empty action set would mean "every action of this tool"; today every
- * entry is action-discriminated.
+ * Org-wide governance classification lives in the dependency-free leaf
+ * `orgWideGovernanceTools.ts` (see its header for why). Re-exported here
+ * because this module is where callers have always found it — and because
+ * `requireOrgWideGovernance` below is the filter it feeds.
  */
-export const ORG_WIDE_GOVERNANCE_TOOL_ACTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['manage_ai_agents', new Set(['authorize_supervised_key'])],
-]);
-
-/**
- * True when an intent's stored `(actionName, arguments)` names an org-wide
- * governance grant, i.e. one whose decider must clear the site/exact-device
- * ceiling (`canMutateOrgWideGovernance`) exactly as its raiser did.
- */
-export function isOrgWideGovernanceIntent(
-  toolName: string,
-  args: Record<string, unknown> | null | undefined,
-): boolean {
-  const actions = ORG_WIDE_GOVERNANCE_TOOL_ACTIONS.get(toolName);
-  if (!actions) return false;
-  if (actions.size === 0) return true;
-  const action = args?.action;
-  return typeof action === 'string' && actions.has(action);
-}
+export {
+  ORG_WIDE_GOVERNANCE_TOOL_ACTIONS,
+  isOrgWideGovernanceIntent,
+} from './orgWideGovernanceTools';
 
 export type IntentTargetScope =
   | { kind: 'devices'; siteIds: string[] } // fully resolved via deviceArgs ∪ run.deviceId

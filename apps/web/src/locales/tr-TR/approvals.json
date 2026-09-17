@@ -66,6 +66,7 @@
   "errors": {
     "noApproverDevice": "Profilinizde bir onay cihazı kaydedip yeniden deneyin.",
     "notSoleApprover": "Bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
+    "siteCeiling": "Bu onay, organizasyon genelinde yetki verir. Erişiminiz belirli sitelerle sınırlı olduğundan, bu isteğe başka bir yetkili onaylayıcı karar vermelidir.",
     "verificationFailed": "Doğrulama iptal edildi veya başarısız oldu. Yeniden deneyin.",
     "alreadyDecided": "Bu isteğe zaten karar verildi.",
     "expired": "Bu istek, karar verilmeden önce sona erdi.",

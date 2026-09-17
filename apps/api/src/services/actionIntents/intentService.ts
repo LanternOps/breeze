@@ -46,6 +46,7 @@ import {
   loadProposalGuardrailContext,
 } from '../scriptProposals';
 import { getUserPermissions, userCanDecideApprovals } from '../permissions';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '../siteCeilingAccess';
 import { PERMISSION_GRANTS, serializeAiOrigin } from '@breeze/shared';
 import { dispatchApprovalPushToTokens, getUserPushTokens } from '../expoPush';
 import { isTerminalIntentStatus, type IntentOutcomeSnapshot } from '../aiToolHandoff';
@@ -57,6 +58,7 @@ import {
   resolveIntentApprovers,
   resolveIntentTargetScope,
   type IntentTargetScope,
+  type ResolveIntentApproversDiagnostics,
 } from './intentApprovers';
 import { computeEffectDigestOutcome, EffectDigestUnresolvableError, type EffectDigestOutcome } from './effectDigest';
 import {
@@ -799,6 +801,14 @@ interface HumanFanoutArgs {
   agentEligibleApprovers: string[];
   requesterEligible: boolean;
   requesterId: string;
+  /**
+   * Review finding #1: diagnostics from the org-wide-governance ceiling
+   * filter that produced `eligibleApprovers`/`requesterEligible` (null when
+   * the intent isn't org-wide-governance-shaped, or no candidate reached the
+   * filter). Used ONLY to pick a more truthful cancellation errorCode below
+   * — never widens who is actually eligible.
+   */
+  governanceDiagnostics?: ResolveIntentApproversDiagnostics | null;
 }
 
 interface HumanFanoutResult {
@@ -836,6 +846,7 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     agentEligibleApprovers,
     requesterEligible,
     requesterId,
+    governanceDiagnostics,
   } = args;
 
   let approvalRequestIds: string[] = [];
@@ -929,15 +940,27 @@ async function runHumanFanout(args: HumanFanoutArgs): Promise<HumanFanoutResult>
     // No eligible approvers and the requester isn't one either — fail
     // closed: create then immediately cancel, visible in audit (spec §4
     // step 4 / §8).
+    //
+    // Review finding #1: when the ONLY reason nobody survived is the
+    // org-wide-governance site ceiling (every approvals:decide holder
+    // resolved fine but was site/exact-device restricted), report that as a
+    // distinct errorCode — `no_eligible_approvers` alone can't tell an
+    // operator "nobody holds the permission at all" apart from "several
+    // people do, but none of them can actually approve this specific
+    // org-wide grant".
+    const cancelErrorCode =
+      governanceDiagnostics && governanceDiagnostics.droppedBySiteCeiling > 0
+        ? 'no_eligible_approvers_site_ceiling'
+        : 'no_eligible_approvers';
     const [cancelled] = await tx
       .update(actionIntents)
-      .set({ status: 'cancelled', errorCode: 'no_eligible_approvers', decidedAt: new Date() })
+      .set({ status: 'cancelled', errorCode: cancelErrorCode, decidedAt: new Date() })
       .where(eq(actionIntents.id, inserted.id))
       .returning();
     finalIntent = cancelled ?? {
       ...inserted,
       status: 'cancelled',
-      errorCode: 'no_eligible_approvers',
+      errorCode: cancelErrorCode,
     };
     // #5205 W05 (#5210), spec §6.3: this row is freshly inserted in THIS same
     // transaction (createActionIntent's caller), so the CAS above cannot lose
@@ -1209,6 +1232,34 @@ export async function createActionIntent(
     if (typeof externalTool.revision !== 'string' || externalTool.revision.length === 0) {
       throw new ActionIntentError('externalTool.revision must be a non-empty string', 'invalid_external_tool');
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Site / exact-device ceiling on ORG-WIDE GOVERNANCE intents.
+  //
+  // THE choke point for the raise: every path that mints an intent — the chat
+  // preToolUse callback (services/aiAgentSdk.ts), the HTTP promote route
+  // (routes/aiAgents.ts) and every agent lane (runLoop, sweepFindings,
+  // patchPlan, alertVerdicts, ticketTriageFindings, aiTimeEntryProposal) —
+  // funnels through this function, so gating here covers all of them at once
+  // rather than being re-remembered per caller. (MCP never mints one at all:
+  // routes/mcpServer.ts fails every Tier-3 `tools/call` closed with
+  // MCP_APPROVAL_REQUIRED before it can reach an intent.)
+  //
+  // It must be the RAISE that is refused, not just the tool handler, because
+  // a Tier-3 intent outlives the handler: the row is minted BEFORE the
+  // handler runs, and after approval the release worker dispatches through
+  // the HEADLESS `*Action` functions (services/m365ToolsHeadless.ts,
+  // services/googleToolsHeadless.ts), which take no AuthContext and so never
+  // reach `canMutateOrgWideGovernance` at all. Without this, a site-restricted
+  // technician could mint an org-wide identity-tenant mutation and have
+  // someone else's approval execute it.
+  //
+  // Placed ahead of `resolveGuardrailForIntent` deliberately: the refusal
+  // precedes every DB read and write, so a refused raise leaves no row, no
+  // approval request and no proposal consumption behind.
+  if (isOrgWideGovernanceIntent(input.toolName, input.input) && !canMutateOrgWideGovernance(auth)) {
+    throw new ActionIntentError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'site_ceiling');
   }
 
   const { check: guardrail, context: guardrailContext } = externalTool
@@ -1653,12 +1704,22 @@ export async function createActionIntent(
   // disagrees with its own decide-time re-derivation, which passes this SAME
   // flag. The two call sites must always move together.
   const requireOrgWideGovernance = isOrgWideGovernanceIntent(input.toolName, input.input);
+  // Review finding #1: capture WHY candidates were dropped from the
+  // org-wide-governance ceiling filter (site-restricted vs. genuinely
+  // unresolvable vs. a missed org lookup) so the fail-closed cancellation
+  // below can report a distinct, more truthful errorCode instead of a bare
+  // `no_eligible_approvers` that can't distinguish "nobody holds
+  // approvals:decide" from "several do, all site-restricted".
+  let governanceDiagnostics: ResolveIntentApproversDiagnostics | null = null;
   const eligibleAll = await resolveIntentApprovers(orgId, {
     alsoRequire:
       input.toolName === 'run_script' && (guardrailContext?.proposal?.strictHits?.length ?? 0) > 0
         ? PERMISSION_GRANTS.SCRIPTS_WRITE
         : undefined,
     requireOrgWideGovernance,
+    onDiagnostics: (diagnostics) => {
+      governanceDiagnostics = diagnostics;
+    },
   });
   const eligibleApprovers = eligibleAll.filter((userId) => userId !== requesterId);
   const requesterEligible = eligibleAll.includes(requesterId);
@@ -2172,6 +2233,7 @@ export async function createActionIntent(
             agentEligibleApprovers,
             requesterEligible,
             requesterId,
+            governanceDiagnostics,
           }));
       }
 
@@ -2358,7 +2420,15 @@ export async function createActionIntent(
       outcome: cancelledForNoApprovers ? 'cancelled' : 'created',
       ...auditActor,
       details: cancelledForNoApprovers
-        ? { errorCode: creation.intent.errorCode ?? 'no_eligible_approvers', ...agentAuditDetails }
+        ? {
+          errorCode: creation.intent.errorCode ?? 'no_eligible_approvers',
+          // Review finding #1: carry WHY the fan-out came up empty into the
+          // audit trail, not just a bare errorCode — an operator (or a
+          // future incident) needs to tell "nobody holds approvals:decide"
+          // apart from "several people do, all site-restricted".
+          ...(governanceDiagnostics ? { governanceDiagnostics } : {}),
+          ...agentAuditDetails,
+        }
         : {
           approverCount: creation.approvalRequestIds.length,
           // Gated on four_eyes: supervised intents always have exactly one

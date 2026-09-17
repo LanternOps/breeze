@@ -381,6 +381,27 @@ describe('ApprovalsInbox', () => {
     expect(navigateToMock).not.toHaveBeenCalled();
   });
 
+  // Review finding #2: a decide-time 403 `site_ceiling` (the approver holds
+  // approvals:decide but is site/exact-device restricted, and the intent is
+  // an org-wide-governance grant) used to fall through to the generic
+  // "could not be submitted... Try again" copy — actively wrong for a
+  // refusal no retry can ever clear.
+  it('shows a non-retryable, specific inline message for a 403 site_ceiling refusal', async () => {
+    intentApprovalsMock.decide.mockRejectedValue(
+      new ActionError('Forbidden', 403, undefined, { error: 'site_ceiling' }),
+    );
+    render(<ApprovalsInbox />);
+    await screen.findByTestId('approval-row-approval-1');
+
+    fireEvent.click(screen.getByTestId('approval-approve-approval-1'));
+
+    const error = await screen.findByTestId('approval-error-approval-1');
+    expect(error).not.toHaveTextContent(/could not be submitted/i);
+    expect(error).not.toHaveTextContent('site_ceiling');
+    expect(error).toHaveTextContent(/organization-wide/i);
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
   it('polls for approvals every 30 seconds as a fallback for a dead WebSocket', async () => {
     vi.useFakeTimers();
     render(<ApprovalsInbox />);

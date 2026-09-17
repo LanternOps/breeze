@@ -123,8 +123,13 @@ async function filterSlaDefinitionsForSiteScope<T extends SlaTargetShape>(
   const scopeAuth = slaScopeAuthFor(perms);
   if (!slaScopeNarrowed(scopeAuth) || rows.length === 0) return rows;
   const needsDeviceAxis = rows.some((r) => (r.targetType ?? '').toLowerCase() === 'device');
-  const allowedDeviceIds = needsDeviceAxis && orgId
-    ? await resolveSiteAllowedDeviceIds(orgId, perms)
+  // `null` means "not resolved" and DENIES downstream; `[]` means "resolved to
+  // nothing". A narrowed caller with no orgId cannot resolve a device set, so
+  // it must get `[]` rather than `null` collapsing into "unrestricted"
+  // (review #6110). Only `needsDeviceAxis === false` may pass `null`, and then
+  // no row reaches the device branch at all.
+  const allowedDeviceIds = needsDeviceAxis
+    ? (orgId ? (await resolveSiteAllowedDeviceIds(orgId, perms)) ?? [] : [])
     : null;
   return rows.filter((r) => !slaDefinitionOutOfScope(scopeAuth, r, allowedDeviceIds));
 }

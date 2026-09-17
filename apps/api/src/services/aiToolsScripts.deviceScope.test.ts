@@ -178,3 +178,37 @@ describe('get_script_details includeExecutionStats — site axis', () => {
     expect(sql).not.toMatch(/site_id/);
   });
 });
+
+describe('get_script_details includeExecutionStats — scope annotation (review #6110)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // The aggregate is narrowed correctly, but the numbers come back looking
+  // org-wide. Without a note the model reports "this script ran 7 times" when
+  // it in fact ran 7 times *within the caller's sites*.
+  it('annotates the stats for a site-restricted caller', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedSiteIds: ['site-1'] }),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeTruthy();
+  });
+
+  it('annotates the stats for a device-bound run', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({ allowedDeviceIds: ['dev-1'] }),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeTruthy();
+  });
+
+  it('adds no annotation for an unrestricted caller', async () => {
+    mockScriptDetails();
+    const r = await handlerFor('get_script_details')(
+      { scriptId: 'script-1', includeExecutionStats: true },
+      makeAuth({}),
+    );
+    expect(JSON.parse(r).executionStatsScopeNote).toBeUndefined();
+  });
+});
