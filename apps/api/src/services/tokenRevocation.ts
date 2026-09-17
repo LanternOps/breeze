@@ -1,6 +1,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { getRedis } from './redis';
 import * as dbModule from '../db';
+import { utcMsFromOffsetlessDbTimestamp } from '../utils/offsetlessTimestamp';
 import { refreshTokenFamilies } from '../db/schema/refreshTokenFamilies';
 
 const ACCESS_TOKEN_REVOCATION_TTL_SECONDS = 15 * 60;
@@ -187,19 +188,14 @@ export async function revokeAllRefreshTokenFamiliesForUser(
 }
 
 // `users.passwordChangedAt` is a `timestamp` (no tz) column
-// (apps/api/src/db/schema/users.ts). postgres.js parses that offsetless wire
-// value with a bare `new Date(...)`, so the Date object Drizzle hands back
-// carries the UTC wall clock re-read as THIS PROCESS's local time — wrong by
-// exactly the host's UTC offset on any non-UTC host. A caller-supplied string
-// (e.g. an already-serialized `toISOString()` value) is not affected: it
-// carries an explicit 'Z' offset, so `new Date(string).getTime()` is already
-// correct and must NOT be re-corrected here. Same defect class as #4018; see
-// services/sso.ts's `utcMsFromOffsetlessTimestamp` for the canonical writeup
-// and testUtils/pgOffsetlessTimestamp.ts for the test-side simulation.
-function utcMsFromOffsetlessDbTimestamp(value: Date): number {
-  return value.getTime() - value.getTimezoneOffset() * 60_000;
-}
-
+// (apps/api/src/db/schema/users.ts), so the Date Drizzle hands back carries
+// the UTC wall clock re-read as THIS PROCESS's local time — wrong by exactly
+// the host's UTC offset on any non-UTC host. A caller-supplied string (e.g. an
+// already-serialized `toISOString()` value) is NOT affected: it carries an
+// explicit 'Z' offset, so `new Date(string).getTime()` is already correct and
+// must not be re-corrected. Same defect class as #4018; the correction itself
+// lives in utils/offsetlessTimestamp.ts (canonical writeup there), and
+// testUtils/pgOffsetlessTimestamp.ts is the test-side simulation.
 export function isTokenIssuedBeforePasswordChange(
   tokenIssuedAt: number | undefined,
   passwordChangedAt: Date | string | null | undefined
