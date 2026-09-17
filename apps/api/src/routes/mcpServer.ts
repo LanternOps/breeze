@@ -1498,7 +1498,19 @@ async function handleTenantToolCall(
     // MCP caller (an AI agent / API key) has no guarantee of tool_sources:read
     // the way the web Test drawer route does, so only the status token goes
     // out, not the free-text error a healthcheck route would show a human.
-    const health = await liveResolveTenantToolHealthByName(auth, toolName);
+    // Same defensive shape as the permission/rate-limit/org-resolution checks
+    // below: a throwing health lookup (DB blip) must not silently fall through
+    // to the "genuinely unknown" -32602 — that would misreport an operational
+    // hiccup as "this tool doesn't exist", which is worse than the original
+    // bug for debugging. Logged with toolName, same as every sibling catch in
+    // this function.
+    let health: { found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' };
+    try {
+      health = await liveResolveTenantToolHealthByName(auth, toolName);
+    } catch (err) {
+      console.error('[MCP] Tenant tool health check failed for:', toolName, err);
+      return jsonRpcError(id, -32000, 'Unable to verify tool availability');
+    }
     if (health.found && health.sourceStatus !== 'active') {
       return jsonRpcError(id, -32000, `Tool "${toolName}" is temporarily unavailable (source is ${health.sourceStatus}).`, {
         code: 'tool_source_unavailable',

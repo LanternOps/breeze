@@ -574,6 +574,26 @@ describe('toolSourcesRoutes', () => {
       expect(body.code).toBeUndefined();
     });
 
+    it('still returns the generic 404 (no existence oracle) for a REMOVED tool even when its source is unhealthy', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow({ status: 'error', lastError: 'boom' }),
+        tool: makeToolRow({ tier: 1, enabled: true, removedAt: new Date('2026-09-01T00:00:00Z') }),
+      });
+      vi.mocked(resolveTenantToolByName).mockResolvedValue(null);
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Tool is not currently available');
+      expect(body.code).toBeUndefined();
+    });
+
     it('still returns the generic 404 when the source is active but resolution fails for another reason (e.g. schema compile failure)', async () => {
       setAuth(orgAuth());
       vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({

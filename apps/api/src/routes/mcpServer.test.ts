@@ -1351,6 +1351,9 @@ describe('MCP transport integration', () => {
         expect.anything(),
         expect.objectContaining({ surface: 'mcp' }),
       );
+      // #6102: the health-check fallback is a failure-branch-only lookup — a
+      // resolve that already succeeded must never trigger the extra query.
+      expect(routeMocks.resolveTenantToolHealthByName).not.toHaveBeenCalled();
     });
 
     // #6102: an accessible tenant tool whose source is unhealthy must not
@@ -1402,6 +1405,38 @@ describe('MCP transport integration', () => {
       const body = await res.json();
       expect(body.error.code).toBe(-32602);
       expect(body.error.message).toBe('Unknown tool: hudu__no_such_tool');
+    });
+
+    it('tools/call fails closed (not "Unknown tool") when the health-check lookup itself throws', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockRejectedValue(new Error('DB timeout'));
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: {} },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Must NOT read as "this tool doesn't exist" — that's a worse lie than
+      // the original bug. A DB blip fails closed with its own distinct error.
+      expect(body.error.message).not.toBe('Unknown tool: hudu__get_asset');
+      expect(body.error.code).toBe(-32000);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[MCP] Tenant tool health check failed for:',
+        'hudu__get_asset',
+        expect.any(Error),
+      );
+      consoleErrorSpy.mockRestore();
     });
 
     it('denies a tier-2 tenant tool over MCP without ai:write scope', async () => {
