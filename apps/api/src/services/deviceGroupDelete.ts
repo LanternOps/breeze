@@ -100,7 +100,7 @@ export async function deleteDeviceGroup(groupId: string, orgId: string): Promise
     await tx.delete(deviceGroupMemberships).where(eq(deviceGroupMemberships.groupId, groupId));
     // group_membership_log FKs device_groups with no ON DELETE (#3313).
     await tx.delete(groupMembershipLog).where(eq(groupMembershipLog.groupId, groupId));
-    // Remove configuration policy assignments targeting this group so trigger doesn't fail
+    // ab_config_policy_assignment_group_owner_delete trigger validates surviving assignments on group delete.
     await tx.delete(configPolicyAssignments).where(
       and(
         eq(configPolicyAssignments.level, 'device_group'),
