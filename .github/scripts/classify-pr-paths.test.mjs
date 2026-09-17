@@ -61,7 +61,7 @@ test('classifier: app output — the CI-plumbing allowlist is app=false, everyth
   for (const [paths, expected] of [
     // Allowlisted tooling paths → app=false
     [['.github/workflows/release.yml'], 'app=false'],
-    [['.github/scripts/mobile-native-ci.test.mjs'], 'app=false'],
+    [['.github/scripts/ci-build-reuse.test.mjs'], 'app=false'],
     [['scripts/release/check-release-lineage.sh'], 'app=false'],
     [['scripts/security/check-npm-audit.sh'], 'app=false'],
     [['.github/release-provenance/candidate-tags.tsv'], 'app=false'],
@@ -525,3 +525,47 @@ for (const resultVar of heavyResultVars) {
     assert.equal(execution.status, 1, execution.stdout + execution.stderr);
   });
 }
+
+// ---- Independent review of #6178 (2026-09-17) --------------------------------
+// Tooling files that a HEAVY (app-gated) job executes must never be fast-tracked,
+// or editing them alone stops the only job that exercises them — in the PR run
+// AND the merge-queue entry, which classifies identically.
+for (const path of [
+  // guided-setup-smoke copies and runs it (scripts/smoke-guided-setup.sh).
+  'scripts/release/verify-release-images.sh',
+  // mobile-native-changes' paths-filter lists it to trigger the native iOS build.
+  '.github/scripts/mobile-native-ci.test.mjs',
+]) {
+  test(`classifier: ${path} is executed by a heavy job, so it is an app change`, () => {
+    const r = classify([path]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^app=true$/m);
+  });
+}
+
+test('every explicit app=true carve-out in the classifier is still referenced by something heavy', () => {
+  // A carve-out that no longer corresponds to a real consumer is dead weight; one that
+  // is missing is a silent skip. Pin the known set so both directions are a conscious edit.
+  const script = readFileSync(new URL('./classify-pr-paths.sh', import.meta.url), 'utf8');
+  for (const carved of [
+    '.github/workflows/ci.yml',
+    '.github/scripts/classify-pr-paths.sh',
+    '.github/scripts/prepare-ci-apt-sources.mjs',
+    '.github/scripts/mobile-native-ci.test.mjs',
+    'scripts/security/check-agent-binary-signatures.sh',
+    'scripts/release/verify-release-images.sh',
+  ]) {
+    assert.ok(script.includes(`    ${carved}) app=true ;;`), `missing carve-out for ${carved}`);
+  }
+  const smoke = readFileSync(new URL('../../scripts/smoke-guided-setup.sh', import.meta.url), 'utf8');
+  assert.ok(smoke.includes('scripts/release/verify-release-images.sh'));
+});
+
+test('the tooling-only path still validates workflow files: lint runs the workflow-security suite', () => {
+  // Other workflow files are fast-tracked (app=false). The only blocking validation of
+  // them must therefore live in a job that runs on `code` alone. security.yml also runs
+  // this suite, but it does not report `CI Success`, so it cannot block a merge.
+  const lint = job('lint');
+  assert.match(lint, /^    if: needs\.changes\.outputs\.code == 'true'$/m);
+  assert.match(lint, /run: pnpm test:workflow-security$/m);
+});

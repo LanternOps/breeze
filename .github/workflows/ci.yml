@@ -242,6 +242,13 @@ jobs:
       - name: Test CI build reuse contract
         run: node --test .github/scripts/ci-build-reuse.test.mjs
 
+      # The classifier fast-tracks changes to OTHER workflow files (app=false), and
+      # security.yml — which also runs this suite — does not report `CI Success`, so
+      # it cannot block a merge. lint runs on `code` alone, which makes this the
+      # blocking validation of a workflow-only change.
+      - name: Test workflow security contract
+        run: pnpm test:workflow-security
+
       - name: Verify temporary CI apt source isolation
         run: node --test .github/scripts/prepare-ci-apt-sources.test.mjs
 
