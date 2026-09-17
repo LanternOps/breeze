@@ -315,6 +315,19 @@ test('test-api setup steps run on every shard (no shard-1 guard)', () => {
   }
 });
 
+// ─── Item 3: integration-test sharded 8 ways, no lint/typecheck wait ────
+test('integration-test has an 8-way shard matrix and does not wait on lint/typecheck', () => {
+  const body = job('integration-test');
+  assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
+  assert.match(body, /^        shard: \[1, 2, 3, 4, 5, 6, 7, 8\]$/mu);
+  // The exact match already proves lint/typecheck are absent from the actual
+  // `needs:` YAML line (as opposed to a doesNotMatch scan, which would also
+  // trip on this test's own explanatory comment mentioning them by name).
+  assert.match(body, /^    needs: \[changes\]$/mu, 'integration-test must not needs: lint or typecheck — that added ~8 min to the critical path and a lint failure still fails CI Success via ci-success');
+  assert.match(body, /^    timeout-minutes: 40$/mu);
+  assert.match(body, /run: pnpm --filter=@breeze\/api test:integration --shard=\$\{\{ matrix\.shard \}\}\/8$/mu);
+});
+
 // Execute the real summary shell. The bypass may only fire on the literal
 // `false` from a SUCCESSFUL classifier; every other shape must stay red.
 const summaryScript = summary.split('        run: |\n')[1]

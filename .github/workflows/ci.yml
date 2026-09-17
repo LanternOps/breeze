@@ -2516,9 +2516,17 @@ jobs:
   # "CI Success" fan-in, and `needs.integration-test.result` there already
   # aggregates across the matrix (success only if every shard passed).
   integration-test:
-    name: Integration Tests (shard ${{ matrix.shard }}/4)
+    name: Integration Tests (shard ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, changes]
+    # Sharded 8 ways (was 4). Deliberately does NOT `needs: [lint, typecheck]`
+    # — that dependency added ~8 min of pure wait to the critical path before
+    # this job could even start, for no isolation benefit: a lint or
+    # typecheck failure still fails `CI Success` on its own (ci-success
+    # asserts LINT_RESULT/TYPECHECK_RESULT independently), so integration-test
+    # running concurrently with them cannot make a broken PR appear green —
+    # it only means an integration run against code that also fails lint
+    # runs to completion in parallel instead of being blocked behind it.
+    needs: [changes]
     if: needs.changes.outputs.code == 'true'
     strategy:
       # Report every shard's result — a red shard must not cancel the others
@@ -2526,14 +2534,17 @@ jobs:
       # breakages hid #1092 behind #1042 for a day).
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    # ~1/4 of the suite + env/container setup + one autoMigrate pass. Raised
-    # 25→40 on 2026-09-14: shard 3 hit exactly 25:00 on three consecutive
-    # merge-group runs (shards 1 and 4 at 23–24) after the day's integration
-    # suites landed, and a job timeout reports as `cancelled`, so every queue
-    # entry was silently dequeued with `failed_checks`. Before sharding this
-    # ceiling had been raised twice (30→40→55) as the sequential runtime grew;
-    # when a shard passes ~32 min, add a fifth shard instead of raising again.
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    # ~1/8 of the suite + env/container setup + one autoMigrate pass. Raised
+    # 25→40 on 2026-09-14 (back when this was 4-way): shard 3 hit exactly
+    # 25:00 on three consecutive merge-group runs (shards 1 and 4 at 23-24)
+    # after the day's integration suites landed, and a job timeout reports as
+    # `cancelled`, so every queue entry was silently dequeued with
+    # `failed_checks`. Before sharding this ceiling had been raised twice
+    # (30→40→55) as the sequential runtime grew; going 4→8 shards roughly
+    # halves each shard's share of the suite, so the 40-minute ceiling is kept
+    # as-is for now — when a shard passes ~32 min again, add more shards
+    # instead of raising it.
     timeout-minutes: 40
 
     steps:
@@ -2606,7 +2617,7 @@ jobs:
         # pnpm forwards args after the script name to the script itself, so
         # --shard reaches vitest. Sharding only splits the file list; files
         # within a shard still run sequentially (fileParallelism: false).
-        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/4
+        run: pnpm --filter=@breeze/api test:integration --shard=${{ matrix.shard }}/8
 
       # ee/workspace's integration suite expects its own tables
       # (workspace_sources, workspace_file_index, ...) to already exist on
