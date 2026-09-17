@@ -292,7 +292,11 @@ monitoringRoutes.get(
     if (!asset) return c.json({ error: 'Asset not found' }, 404);
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404, not 403 — an out-of-ceiling asset must be
+      // indistinguishable from a missing one, or a restricted caller can
+      // fingerprint asset ids in sites they cannot see (#5777, matching the
+      // deployments existence-oracle fix in #5545).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     // W01 (spec §4.4) — derived once and returned on BOTH exits below. The
@@ -462,7 +466,8 @@ monitoringRoutes.get(
     // Site scope is an app-layer-only authz axis; RLS does not defend it.
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404 — see /assets/:id above (#5777).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     const rows = await db
@@ -514,7 +519,8 @@ monitoringRoutes.get(
 
     const perms = c.get('permissions') as UserPermissions | undefined;
     if (perms?.allowedSiteIds && (typeof asset.siteId !== 'string' || !canAccessSite(perms, asset.siteId))) {
-      return c.json({ error: 'Access to this site denied' }, 403);
+      // Opaque 404 — see /assets/:id above (#5777).
+      return c.json({ error: 'Asset not found' }, 404);
     }
 
     const sysObjectId = readSysObjectId(asset.snmpData);
@@ -1100,7 +1106,11 @@ monitoringRoutes.get(
     {
       const userPerms = c.get('permissions') as UserPermissions | undefined;
       if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
-        return c.json({ error: 'Access to this site denied' }, 403);
+        // Opaque 404, not 403 — an out-of-ceiling device must be
+        // indistinguishable from a missing one, or a restricted caller can
+        // fingerprint device ids in sites they cannot see (#5777, matching
+        // the deployments existence-oracle fix in #5545).
+        return c.json({ error: 'Device not found' }, 404);
       }
     }
 
@@ -1161,7 +1171,8 @@ monitoringRoutes.get(
     {
       const userPerms = c.get('permissions') as UserPermissions | undefined;
       if (userPerms?.allowedSiteIds && (typeof device.siteId !== 'string' || !canAccessSite(userPerms, device.siteId))) {
-        return c.json({ error: 'Access to this site denied' }, 403);
+        // Opaque 404 — see /results/:deviceId/summary above (#5777).
+        return c.json({ error: 'Device not found' }, 404);
       }
     }
 
