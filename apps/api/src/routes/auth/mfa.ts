@@ -152,8 +152,19 @@ const mfaEnableWithStepUpSchema = mfaEnableSchema.extend({
   // already MFA-protected (see enforceExistingFactorStepUp in ./helpers).
   stepUpGrantId: z.string().optional()
 });
-const mfaDisableSchema = mfaVerifySchema.extend({
+// Exported so its shape (specifically the ssoReauthGrantId omission below) is
+// unit-testable without exercising the whole /mfa/disable handler — see
+// mfa.schemas.test.ts.
+export const mfaDisableSchema = mfaVerifySchema.extend({
   currentPassword: z.string().min(1).max(256)
+}).omit({
+  // #4050: mfaVerifySchema's ssoReauthGrantId exists for the passwordless-SSO
+  // enrollment-confirm case (see the comment on the field in ./schemas), but
+  // /mfa/disable requires currentPassword unconditionally above (not optional
+  // like the enable/setup-confirm schemas), so there is no passwordless path
+  // through this route for it to satisfy. Omit it explicitly rather than
+  // accept-and-silently-drop it.
+  ssoReauthGrantId: true,
 });
 
 export const mfaRoutes = new Hono();

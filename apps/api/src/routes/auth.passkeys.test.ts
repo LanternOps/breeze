@@ -773,7 +773,13 @@ describe('passkey MFA auth routes', () => {
       expect(passkeyMocks.generatePasskeyRegistrationOptions).toHaveBeenCalled();
     });
 
-    it('register/options returns the opaque 400 for a passwordless account with an invalid/expired grant', async () => {
+    // #4050: the 400 STATUS stays uniform with every sibling rejection (that
+    // is the half of the opacity rule that still matters); only the BODY is
+    // distinguishable now. Reaching this branch already required the account
+    // to be passwordless, which the `enrollment_proof_required` branch
+    // discloses anyway, so nothing new leaks — see
+    // ENROLLMENT_GRANT_EXPIRED_CODE in ./auth/helpers.
+    it('register/options returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant', async () => {
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
       vi.mocked(validateStepUpGrant).mockResolvedValueOnce(false);
@@ -786,9 +792,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
       expect(passkeyMocks.generatePasskeyRegistrationOptions).not.toHaveBeenCalled();
     });
@@ -816,7 +823,7 @@ describe('passkey MFA auth routes', () => {
       );
     });
 
-    it('register/verify returns the opaque 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
+    it('register/verify returns the distinct expired-grant 400 for a passwordless account with an invalid/expired grant (no passkey written)', async () => {
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // enforceExistingFactorStepUp's userIsMfaProtected
       dbState.selectQueue.push([{ passwordHash: null }]); // resolveEnrollmentStepUp probe
       dbState.selectQueue.push([{ mfaEnabled: false, passkeyCount: 0 }]); // resolveEnrollmentStepUp's userIsMfaProtected
@@ -833,9 +840,10 @@ describe('passkey MFA auth routes', () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: 'Invalid credentials',
-        message: 'Invalid credentials',
-        code: 'invalid_credentials',
+        error: 'Your identity verification has expired. Please verify with your identity provider again.',
+        message: 'Your identity verification has expired. Please verify with your identity provider again.',
+        code: 'enrollment_grant_expired',
+        reauthUrl: '/sso/reauth/start',
       });
     });
   });

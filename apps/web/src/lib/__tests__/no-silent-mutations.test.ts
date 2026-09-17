@@ -322,6 +322,16 @@ const TARGET_GLOBS = [
   // failed detach was silent and a successful one gave no feedback.
   'src/components/monitoring/MonitorEditor.tsx',
   'src/components/monitoring/DeployMonitorDialog.tsx',
+  // #4050 (deferred from #4018 / PR #4041): the account-security surface — MFA
+  // enable/disable, recovery-code rotation, passkey register/rename/delete, SSO
+  // re-auth, password and avatar changes. Every mutation here already reports
+  // its outcome, but through section-scoped inline banners rather than
+  // runAction, so each existing call site carries a reasoned
+  // `runaction-exempt:` marker. The point of guarding the file is the NEXT
+  // mutation: without an entry here, a bare fetchWithAuth added beside them
+  // ships with zero CI signal on the one page where a silently-failed
+  // "Disable MFA" or "Delete passkey" is a security-posture lie.
+  'src/components/settings/ProfilePage.tsx',
 ];
 
 const absoluteFiles: string[] = TARGET_GLOBS.map((rel) => resolve(WEB_ROOT, '..', rel));
@@ -661,7 +671,8 @@ describe('no silent mutations in targeted set', () => {
     // MonitorEditor.tsx and DeployMonitorDialog.tsx (140); network device page
     // truth W04 (#5992) adds the network asset single writer: 140 → 141.
     // Network device page truth W05 adds the probe hook: 141 → 142.
-    expect(absoluteFiles.length).toBe(142);
+    // #4050 adds settings/ProfilePage.tsx (account security): 142 → 143.
+    expect(absoluteFiles.length).toBe(143);
     for (const f of absoluteFiles) {
       expect(() => statSync(f)).not.toThrow();
     }
