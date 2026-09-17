@@ -109,6 +109,32 @@ export function summarizeTopologyDiagnosticRun(
 }
 
 /**
+ * Attribution is the agent's own label on its evidence, so it is a claim, not
+ * authority: the run's origin and its accepted plan are what the SERVER pinned.
+ * A step that names another origin device/agent, or a destination the accepted
+ * plan never assigned to that step, is refused rather than stored under the
+ * pinned run — otherwise one compromised agent could file evidence attributed
+ * to a different collector or a different destination.
+ *
+ * Returns the id of the first offending step, or null when every step agrees.
+ */
+export function misattributedDiagnosticStepId(
+  origin: { deviceId: string; agentId: string },
+  plan: Pick<TopologyDiagnosticPlan, 'steps'>,
+  steps: TopologyDiagnosticStep[],
+): string | null {
+  const planned = new Map(plan.steps.map((step) => [step.id, step]));
+  for (const step of steps) {
+    const expected = planned.get(step.id);
+    if (!expected) return step.id;
+    const { originDeviceId, originAgentId, destinationId } = step.attribution;
+    if (originDeviceId !== origin.deviceId || originAgentId !== origin.agentId) return step.id;
+    if (destinationId !== expected.destinationId) return step.id;
+  }
+  return null;
+}
+
+/**
  * Transport adapter shared by the WebSocket and REST result paths. The producer
  * identity comes from the authenticated connection and the already-validated
  * command row — never from the frame.
@@ -182,6 +208,15 @@ export async function acceptTopologyDiagnosticResult(
       const planStepIds = new Set(plan.steps.map((step) => step.id));
       if (frame.steps.some((step) => !planStepIds.has(step.id))) {
         throw unauthorized('Diagnostic result reports a step outside its accepted plan');
+      }
+      if (
+        misattributedDiagnosticStepId(
+          { deviceId: run.originSnapshot.deviceId, agentId: run.originSnapshot.agentId },
+          plan,
+          frame.steps,
+        )
+      ) {
+        throw unauthorized('Diagnostic result step attribution contradicts its accepted run');
       }
 
       const alreadyTerminal = TERMINAL_RUN_STATES.includes(run.state);

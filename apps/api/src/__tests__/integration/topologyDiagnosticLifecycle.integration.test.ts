@@ -642,6 +642,34 @@ describe('topology diagnostic results', () => {
     expect(await f.stepsForRun(run.id)).toHaveLength(0);
   });
 
+  it.each([
+    ['origin device', { originDeviceId: crypto.randomUUID() }],
+    ['origin agent', { originAgentId: 'agent-impostor' }],
+    ['destination', { destinationId: crypto.randomUUID() }],
+  ] as const)(
+    'refuses a result whose step attribution re-points its %s',
+    async (_label, overrides) => {
+      const f = await fixture();
+      const run = await accepted(f);
+      await dispatchTopologyDiagnosticRun(f.scope, run.id, { deliver: async () => true });
+      const [command] = await f.commandsForRun(run.id);
+      const current = (await f.asUser(() => getTopologyDiagnosticRun(f.context, run.id)))!;
+      const frame = resultFor(current);
+
+      await expect(
+        acceptTopologyDiagnosticResult(f.producer(command!.id), {
+          ...frame,
+          steps: frame.steps.map((step) => ({
+            ...step,
+            attribution: { ...step.attribution, ...overrides },
+          })),
+        }),
+      ).rejects.toMatchObject({ code: 'diagnostic_result_unauthorized' });
+      expect(await f.stepsForRun(run.id)).toHaveLength(0);
+      expect((await f.row(run.id))!.state).not.toBe('completed');
+    },
+  );
+
   it('refuses a structurally invalid frame instead of storing partial evidence', async () => {
     const f = await fixture();
     const run = await accepted(f);

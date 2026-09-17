@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { TopologyDiagnosticPlan, TopologyDiagnosticStep } from '@breeze/shared';
 
-import { summarizeTopologyDiagnosticRun } from './diagnosticResults';
+import {
+  misattributedDiagnosticStepId,
+  summarizeTopologyDiagnosticRun,
+} from './diagnosticResults';
 
 const stepId = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
 
@@ -131,5 +134,64 @@ describe('summarizeTopologyDiagnosticRun', () => {
         step(1, 'failed_check', 'destination_unreachable'),
       ]).reasons,
     ).toEqual(['destination_unreachable', 'icmp_check_failed']);
+  });
+});
+
+describe('misattributedDiagnosticStepId', () => {
+  const origin = { deviceId: stepId(9), agentId: 'agent-1' };
+  const withAttribution = (
+    index: number,
+    overrides: Partial<TopologyDiagnosticStep['attribution']>,
+  ): TopologyDiagnosticStep => {
+    const base = step(index, 'succeeded');
+    return { ...base, attribution: { ...base.attribution, ...overrides } };
+  };
+
+  it('accepts steps whose attribution matches the pinned origin and plan', () => {
+    expect(
+      misattributedDiagnosticStepId(origin, plan([true, true]), [
+        step(0, 'succeeded'),
+        step(1, 'succeeded'),
+      ]),
+    ).toBeNull();
+  });
+
+  it('rejects a step claiming a foreign origin device', () => {
+    expect(
+      misattributedDiagnosticStepId(origin, plan([true]), [
+        withAttribution(0, { originDeviceId: stepId(8) }),
+      ]),
+    ).toBe(stepId(1));
+  });
+
+  it('rejects a step claiming a foreign origin agent', () => {
+    expect(
+      misattributedDiagnosticStepId(origin, plan([true]), [
+        withAttribution(0, { originAgentId: 'agent-2' }),
+      ]),
+    ).toBe(stepId(1));
+  });
+
+  it('rejects a step naming a destination the accepted plan never gave it', () => {
+    expect(
+      misattributedDiagnosticStepId(origin, plan([true]), [
+        withAttribution(0, { destinationId: stepId(8) }),
+      ]),
+    ).toBe(stepId(1));
+  });
+
+  it('rejects a step that drops the destination its plan step carries', () => {
+    const planned = plan([true]);
+    planned.steps[0]!.destinationId = stepId(8);
+    expect(
+      misattributedDiagnosticStepId(origin, planned, [
+        withAttribution(0, { destinationId: null }),
+      ]),
+    ).toBe(stepId(1));
+    expect(
+      misattributedDiagnosticStepId(origin, planned, [
+        withAttribution(0, { destinationId: stepId(8) }),
+      ]),
+    ).toBeNull();
   });
 });
