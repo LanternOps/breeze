@@ -1,5 +1,5 @@
 ---
-title: Partner sending domains (custom outbound email domain on hosted)
+title: Partner sending domains (custom outbound email domains, hosted and self-hosted)
 date: 2026-09-17
 status: Draft — awaiting Todd's review (Gate A). Advisor quorum applied (Fable + Opus; Codex capped until 2026-09-19)
 tracking_issue: none yet — register with feature-lifecycle after approval
@@ -26,6 +26,13 @@ MSPs want their customers to see mail from the MSP, not from Breeze. This spec
 lets a partner add a DNS domain, publish the DKIM/SPF records we show them, and
 once the domain verifies, send customer-facing mail From an address on it.
 
+Self-hosted instances have the mirror-image gap. The operator already sends
+from their own domain by setting `EMAIL_FROM`, usually through an SMTP relay,
+but gets exactly one address for everything: tickets, invoices and password
+resets all come from the same mailbox. They need per-stream senders, on
+whatever transport they run, without an upgrade changing anything they did not
+ask for. §2.1 covers how the same design serves both.
+
 ### 0.1 Decisions already made (Todd, 2026-09-10)
 
 Recorded in memory `email_send_domain_has_no_mx_reply_path_broken`; not
@@ -40,6 +47,11 @@ relitigated here.
 3. **Resend first, Amazon SES second.** Stay on Resend now. Cut hosted to SES
    when partner domains outgrow Resend's plan caps or EU-region sending is
    wanted. Order: interface → Resend adapter → ship → SES adapter.
+
+Decision 2 was made with hosted in mind. §2.1 proposes one amendment for
+self-hosted instances (the `static` adapter, D7): there the operator owns the
+mail relay, so "unsupported on SMTP" would withhold per-stream senders from the
+deployments that can authorise any From domain themselves.
 
 ### 0.2 Provider facts this design rests on
 
@@ -128,6 +140,19 @@ requirement on `sendEmail` and removal of the raw `from`.
   drop every staff member's mail. §8.5 marks our own mail instead.
 - *Resolver cache.* Declined for v1 (§8.3).
 
+**Second round, self-hosted (same advisor, same blind format).** It agreed
+independently that the self-hosted need is per-stream senders rather than a DNS
+wizard, that an operator-attested mode is the right answer on SMTP and Mailgun,
+that a pre-existing provider domain must be adopted and never deleted, and that
+the hosted safeguards must default off. Adopted from it: a `static` domain only
+becomes `verified` after the relay accepts a test send (§5.1); new env vars must
+never be wired through `requireIf` on `EMAIL_PROVIDER` (§11); a send-only
+provider key degrades to a clear "unavailable" state instead of failing each
+request (§5.1). Not adopted: forcing an explicit Reply-To on the `support`
+stream when inbound email is unconfigured. The From address is one the partner
+chose as their support mailbox, which is a better reply target than today's
+`EMAIL_FROM`; the UI warns instead (§4.4).
+
 ## 1. Goals and non-goals
 
 **Goals**
@@ -144,8 +169,15 @@ requirement on `sendEmail` and removal of the raw `from`.
   compiler refuses an unclassified send.
 - G6. Provider-side domains are released when a partner removes them, is
   offboarded, or is cascade-deleted.
-- G7. Works unchanged on self-hosted instances that configure a supported
-  provider; invisible elsewhere.
+- G7. Self-hosted is a first-class deployment, not a by-product (§2.1):
+  - per-stream sender addresses work on **any** transport a self-hoster runs
+    (SMTP relay, Mailgun, Resend), not only where a domain API exists;
+  - upgrading changes nothing: no new required env var, no boot refusal, and
+    every email identical until the operator opts in;
+  - nothing depends on hosted-only machinery (trust states, inbound webhooks,
+    a dedicated provider account);
+  - the feature can never damage the operator's existing mail setup, in
+    particular never delete a provider domain it did not create.
 
 **Non-goals**
 
@@ -172,7 +204,7 @@ requirement on `sendEmail` and removal of the raw `from`.
              │                  identity + verified domain + eligible?
              │                       │ no                  │ yes
              ▼                       ▼                     ▼
-      PLATFORM LANE  ◄──── fallback (display name) ── PARTNER LANE
+      PLATFORM LANE  ◄──────── fallback From ──────── PARTNER LANE
    EMAIL_PROVIDER / EMAIL_FROM                  EmailDomainProvider.send()
    existing account + key                       separate account + key
 ```
@@ -199,6 +231,38 @@ creates, verifies, polls, and deletes. No route needs
 `SELF_MANAGED_DB_CONTEXT_ROUTES`, provider outages and the 10 req/s limit are
 handled in one place, and every operation retries with backoff.
 
+### 2.1 Deployment modes
+
+| | Hosted | Self-hosted, domain API (`resend`) | Self-hosted, any relay (`static`) | Not configured |
+|---|---|---|---|---|
+| `EMAIL_DOMAINS_PROVIDER` | `resend` | `resend` | `static` | unset (default) |
+| Who proves the domain | Partner, by DNS, via the wizard | Partner/operator, by DNS, via the wizard | Operator lists it in `EMAIL_DOMAINS_STATIC_ALLOWED`, then the relay must accept a test send | — |
+| Partner-lane transport | Separate provider account (required) | Same or separate account (operator's choice) | The platform transport itself (`EMAIL_PROVIDER`) with the custom From | — |
+| Trust gating | `partnerTrustMode()`; GA requires `enforce` | `off` (the function returns `off` whenever `!isHosted()`), so every partner is eligible | `off` | — |
+| Caps, allowlist, auto-suspend | On | Off unless the operator sets them | Off unless set | — |
+| Delivery webhooks (W05) | Required for GA | Optional; polling alone is complete | Not applicable | — |
+| Behaviour after upgrade | — | Unchanged until opted in | Unchanged until opted in | Unchanged. Tab hidden, routes 404, worker not registered. |
+
+Why self-hosted needs more than "set `EMAIL_FROM`":
+
+- A self-hosted MSP already sends from its own domain, but from **one** address
+  for everything. What it lacks is `support@` for tickets and `billing@` for
+  invoices. Sender identities and the purpose registry give it that; the
+  `static` adapter makes them available without a domain API.
+- Most self-hosters relay through SMTP (Microsoft 365, Postfix, SES SMTP). The
+  operator controls which From domains that relay may use, so there is no DNS
+  for Breeze to check. The operator lists the domains; a row becomes `verified`
+  when the relay accepts a test send from it, which catches the common failure
+  (the relay refusing the sender) at setup instead of on a customer's invoice.
+- Self-hosted instances are usually one partner, sometimes several. A `static`
+  entry may be bound to a partner (`acme.com:acme-slug`); an unbound entry can
+  be claimed by any partner on the instance, which is right for the
+  single-partner case and documented as such.
+
+Rules that differ by mode, each stated where it applies: the platform-domain
+rejection (§4.1), adoption of a pre-existing provider domain (§5.1), the drift
+report (§6.4), cap defaults (§9.1), boot validation (§11).
+
 ## 3. Data model
 
 Three tables. Migration named to sort after the newest committed migration at
@@ -212,8 +276,10 @@ no inner `BEGIN/COMMIT`, RLS in the same file.
 | `id` | uuid pk | |
 | `partner_id` | uuid not null → `partners(id)` | RLS axis. No `ON DELETE CASCADE` (§3.5). |
 | `domain` | varchar(253) not null | Lowercase ASCII (A-label). |
-| `provider` | varchar(20) not null | `resend` \| `ses` \| `fake`. |
-| `provider_domain_id` | text null | Null while `provisioning` and after release. |
+| `provider` | varchar(20) not null | `resend` \| `ses` \| `static` \| `fake`. |
+| `provider_domain_id` | text null | Null while `provisioning` and after release. Always null for `static`. |
+| `provider_managed` | boolean not null default true | False when the provider domain existed before Breeze asked for it (§5.1). Breeze never deletes a provider domain it does not manage. |
+| `provision_attempted_at` | timestamptz null | Written and committed before the provider create call; lets a retry tell "ours from a crashed attempt" from "pre-existing". |
 | `provider_region` | varchar(32) null | |
 | `status` | varchar(20) not null default `provisioning` | §5.2. CHECK constraint on the value set. |
 | `status_reason` | varchar(64) null | Machine code: `provider_conflict`, `provider_rejected`, `quota_exhausted`, `dns_not_detected`, `dns_removed`, `platform_suspended`, `abuse_auto`, `failed_expired`, `user_removed`. |
@@ -224,6 +290,7 @@ no inner `BEGIN/COMMIT`, RLS in the same file.
 | `verified_at` | timestamptz null | First verification. Sticky. |
 | `status_changed_at` | timestamptz not null | |
 | `last_test_at`, `last_test_status`, `last_test_error` | | Test-send result (§7). |
+| `last_send_error`, `last_send_error_at` | text, timestamptz null | The most recent `domain_unusable` refusal, shown in the UI. Written by the worker from the `sync-domain` job payload, never by the send path, which may be running in a context that cannot write this table. |
 | `created_by` | uuid → `users(id)` ON DELETE SET NULL | |
 | `created_at`, `updated_at` | timestamptz not null | |
 
@@ -325,8 +392,9 @@ different lifecycles. The same domain may legitimately do both:
   same transaction. A delete path that forgets this fails loudly instead of
   leaking a provider domain. (The org-merge trigger-classification contract
   covers `BEFORE UPDATE` triggers on `org_id` tables; it does not apply.)
-- `releaseSendingDomainsForPartner(partnerId)` (system context) writes outbox
-  rows and nulls `provider_domain_id` for every domain of the partner. Called
+- `releaseSendingDomainsForPartner(partnerId)` (system context) nulls
+  `provider_domain_id` for every domain of the partner, writing an outbox row
+  first for each one that is `provider_managed`. Called
   first thing in `cascadeDeletePartner` and in `finalizePartnerOffboarding`
   (`services/tenantOffboarding.ts`).
 - Any migration statement that writes rows elects system scope first
@@ -345,9 +413,11 @@ path, port, `@`, wildcard, IP literal, fewer than two labels, any label outside
 
 The API additionally rejects:
 
-- platform-owned domains: the domains of `EMAIL_FROM`, `TICKETS_INBOUND_DOMAIN`,
-  `PUBLIC_APP_URL`, and a static list (`2breeze.app`, `breezermm.com`,
-  `lanternops.io`), including their subdomains;
+- **hosted only** — platform-owned domains: the domains of `EMAIL_FROM`,
+  `TICKETS_INBOUND_DOMAIN`, `PUBLIC_APP_URL`, and a static list (`2breeze.app`,
+  `breezermm.com`, `lanternops.io`), including their subdomains. On a
+  self-hosted instance the `EMAIL_FROM` domain *is* the MSP's domain and is
+  exactly what the operator will add, so this rule must not run there;
 - consumer mail domains (`isConsumerEmailDomain`, `services/consumerEmailDomains.ts`);
 - public suffixes (add `tldts`; no PSL library is in the repo today);
 - anything in the operator's `EMAIL_DOMAINS_DENYLIST`.
@@ -428,10 +498,11 @@ export interface ProviderDnsRecord {
 }
 
 export interface ProviderDomain {
-  providerDomainId: string;
+  providerDomainId: string | null;   // null for `static`
   region?: string;
+  createdAt?: Date;                  // provider-side creation time, when known
   state: 'pending' | 'verified' | 'at_risk' | 'failed';
-  records: ProviderDnsRecord[];
+  records: ProviderDnsRecord[];      // empty for `static`
 }
 
 export type PartnerLaneSendError =
@@ -441,7 +512,8 @@ export type PartnerLaneSendError =
   | { kind: 'ambiguous'; detail: string };        // timeout, 5xx, network
 
 export interface EmailDomainProvider {
-  readonly id: 'resend' | 'ses' | 'fake';
+  readonly id: 'resend' | 'ses' | 'static' | 'fake';
+  readonly verifiesByDns: boolean;   // false for `static`: no wizard, no polling
   createDomain(i: { domain: string; region?: string; partnerRef: string }): Promise<ProviderDomain>;
   findDomainByName(domain: string): Promise<ProviderDomain | null>;
   getDomain(providerDomainId: string): Promise<ProviderDomain>;
@@ -460,12 +532,42 @@ delivery webhooks can attribute events (§9.3).
 
 ### 5.1 Adapters
 
-- **`resend`** — second `Resend` client on `EMAIL_DOMAINS_RESEND_API_KEY`.
-  Creates with `region = EMAIL_DOMAINS_REGION`, default return path.
-  `createDomain` on "already exists" calls `findDomainByName` and adopts the
-  object: the unique index guarantees no other local row owns that name, and
-  the one-account-per-instance rule guarantees no other instance does. This
-  makes a crash between provider create and the local update recoverable.
+- **`resend`** — second `Resend` client on `EMAIL_DOMAINS_RESEND_API_KEY`
+  (on self-hosted this may be the operator's one Resend account). Creates with
+  `region = EMAIL_DOMAINS_REGION`, default return path. Provisioning is
+  find-then-create, and classifies what it finds:
+  1. Commit `provision_attempted_at = now()`.
+  2. `findDomainByName`. Nothing found → `createDomain` → `provider_managed = true`.
+  3. Found, and its provider `createdAt` is later than `provision_attempted_at`
+     → ours, from an attempt that crashed before the local update → adopt,
+     `provider_managed = true`.
+  4. Found, and older → it pre-existed → adopt with `provider_managed = false`.
+     If it is already verified, the row is `verified` at once.
+  Case 4 is the normal self-hosted path: the operator adds `acme.com`, which is
+  already the verified `EMAIL_FROM` domain in their account. **A row with
+  `provider_managed = false` is never deleted at the provider**; removing it
+  only drops the local row. Deleting it would take down the operator's primary
+  sending domain. An ambiguous case resolves to "not managed": leaking one
+  provider domain is recoverable, deleting someone's mail domain is not.
+  The adapter never falls back to `RESEND_API_KEY`: self-hosters' existing key
+  is almost always `sending_access`. On worker start it probes once with
+  `listDomains`; a permission error sets the capability to
+  `supported: false, reason: 'provider_key_send_only'`, which the settings tab
+  explains, rather than failing every add-domain request.
+- **`static`** — self-hosted only; refused by `config/validate.ts` when
+  `isHosted()`. No external calls. `createDomain` returns `pending` with no
+  records when the domain is in `EMAIL_DOMAINS_STATIC_ALLOWED` and, if the
+  entry is bound (`domain:partner-slug`), the partner matches; otherwise it
+  fails with `provider_rejected` and the UI tells the user to ask the instance
+  administrator. **The row becomes `verified` when a test send is accepted by
+  the relay** (§6.1); a refusal leaves it `pending` with the relay's error shown
+  verbatim. `send` hands the message to the platform transport with the custom
+  From. A relay refusal of the sender (SMTP `550 5.7.60`, `553`, a
+  Mailgun or Resend "domain not verified") maps to `domain_unusable`, so the
+  message falls back to `EMAIL_FROM` instead of being lost. `deleteDomain` is a
+  no-op. Breeze cannot check that the relay signs for the domain: the docs say
+  plainly that listing a domain does not authorise it, and that DKIM/SPF for it
+  are the operator's mail setup.
 - **`fake`** — deterministic, for unit, integration, E2E and wt-stack.
   `*.verify.test` verifies on the first check, `*.fail.test` fails,
   `conflict.test` raises the conflict. `send` hands the message to the platform
@@ -479,7 +581,7 @@ delivery webhooks can attribute events (§9.3).
 | Status | Meaning | Sends on partner lane |
 |---|---|---|
 | `provisioning` | Row written; provider object not created yet. | no |
-| `pending` | Provider object exists; waiting for DNS. | no |
+| `pending` | Provider object exists; waiting for DNS. For `static`: listed by the operator; waiting for an accepted test send. | no |
 | `verified` | Provider confirms the sending records. | yes |
 | `at_risk` | Was verified; provider reports DNS missing (72 h grace). | yes, with fallback |
 | `failed` | Provider gave up, or provisioning was refused. `status_reason` says which. | no |
@@ -503,15 +605,24 @@ under the account's 10 req/s for sends.
 
 - **`sync-domain { domainId }`** (`jobId = domainId`, so duplicates collapse).
   Advances one row one step, idempotently:
-  - `provisioning` → `createDomain` → store id, region, records → `pending` →
-    `requestVerification`. Provider conflict or rejection → `failed` with reason.
+  - `provisioning` → find-then-create (§5.1) → store id, region, records,
+    `provider_managed` → `pending` (or `verified` when adopted already
+    verified) → `requestVerification` when still pending and the adapter
+    verifies by DNS. A `static` row waits in `pending` for its test send.
+    Provider conflict or rejection → `failed` with reason.
   - `pending` / `verified` / `at_risk` → `getDomain` → map → update. A
     `check_requested_at` newer than `last_checked_at` calls
-    `requestVerification` first.
+    `requestVerification` first. Adapters with `verifiesByDns = false` never
+    call `requestVerification`; for `static`, `getDomain` is a local lookup
+    against `EMAIL_DOMAINS_STATIC_ALLOWED`, re-run on worker start and daily,
+    so a domain the operator delists stops being used.
   - `failed` for more than 72 h → `removing` (`failed_expired`).
-  - `removing` → `deleteDomain` → null `provider_domain_id` → delete the row
-    (identities cascade).
+  - `removing` → `deleteDomain` **only when `provider_managed`** → null
+    `provider_domain_id` → delete the row (identities cascade).
   - `suspended` → no provider calls.
+
+  The release path in §3.5 follows the same rule: an outbox row is written only
+  for a managed provider domain.
 - **`sweep`** (repeatable, 60 s): selects due rows
   (`next_check_at <= now()`, `LIMIT 25`, `FOR UPDATE SKIP LOCKED`), enqueues
   `sync-domain` for each, and drains due outbox rows.
@@ -519,9 +630,10 @@ under the account's 10 req/s for sends.
   directly, bypassing `resolveSender`, so a domain can be tested before any
   identity exists: From `<support identity local part, else "test">@<domain>`,
   To the requesting user's own address, tagged `purpose=sending_domain.test`.
-  It still requires the row to be `verified` or `at_risk` and the partner to
-  hold the capability, and it counts against the daily cap. The outcome is
-  written to `last_test_*`.
+  It requires the partner to hold the capability and the row to be `verified`
+  or `at_risk`, or, for `static` only, `pending`: there an accepted test send
+  is the verification step and moves the row to `verified`. It counts against
+  the daily cap. The outcome is written to `last_test_*`.
 
 Routes enqueue `sync-domain` after commit so the UI sees DNS records within
 seconds instead of waiting for the sweep.
@@ -542,9 +654,11 @@ notice that the partner's domain is broken must not be sent from it.
 
 ### 6.4 Drift report
 
-Daily, `listDomains()` is compared with local rows and outbox rows. A provider
-domain with neither, older than 24 h, raises an ops alert. Nothing is deleted
-automatically.
+Hosted only (`isHosted()`), where the partner-lane account is dedicated to the
+instance. Daily, `listDomains()` is compared with local rows and outbox rows. A
+provider domain with neither, older than 24 h, raises an ops alert. Nothing is
+deleted automatically. On self-hosted the account is the operator's own and
+holds domains Breeze knows nothing about, so the report would only be noise.
 
 ## 7. API
 
@@ -585,12 +699,15 @@ Shared Zod schemas live in `packages/shared/src/validators/sendingDomains.ts`.
 export type PartnerMailStream = 'support' | 'billing' | 'general';
 type MailPurposePolicy =
   | { lane: 'platform' }
-  | { lane: 'partner'; stream: PartnerMailStream };
+  | { lane: 'partner'; stream: PartnerMailStream;
+      // The From used when no partner identity applies. Preserves what each
+      // send site does TODAY; see "fallback From" below.
+      fallbackFrom: 'default' | 'partner_display_name' };
 
 export const MAIL_PURPOSES = {
   'auth.password_reset':          { lane: 'platform' },
-  'ticket.customer_notification': { lane: 'partner', stream: 'support' },
-  'quote.sent':                   { lane: 'partner', stream: 'billing' },
+  'ticket.customer_notification': { lane: 'partner', stream: 'support', fallbackFrom: 'default' },
+  'quote.sent':                   { lane: 'partner', stream: 'billing', fallbackFrom: 'partner_display_name' },
   // … one entry per row of §8.2
 } as const satisfies Record<string, MailPurposePolicy>;
 
@@ -670,9 +787,19 @@ It returns the partner lane only when all hold:
 3. an identity exists for the stream and its domain is `verified` or `at_risk`;
 4. the partner is under the daily partner-lane cap (§9.1).
 
-Otherwise it returns the platform lane with the existing display-name form,
-`"<Partner> via Breeze" <EMAIL_FROM address>`, for partner-lane purposes, and
-the bare default for platform purposes.
+Otherwise it returns the platform lane with the purpose's **fallback From**,
+which is whatever that send site produces today:
+
+- `partner_display_name` — `"<Partner> via Breeze" <EMAIL_FROM address>`. Only
+  `quote.sent` and `invoice.sent`, the two sites that do this now.
+- `default` — the bare `EMAIL_FROM`. Everything else, including ticket mail,
+  portal mail and reports.
+
+This is what makes W01 byte-identical, and it matters most on self-hosted: an
+operator whose `EMAIL_FROM` is already `"Acme Support" <support@acme.com>`
+must not see ticket mail relabelled "Acme MSP via Breeze" by an upgrade.
+Extending the display-name form to more purposes on hosted is a separate
+product change, not part of this feature.
 
 No cache in v1. Sends are low-rate, the read is one indexed query, and a cache
 must be invalidated from three unrelated write paths (domain status, trust
@@ -686,8 +813,9 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
 ### 8.4 Failure semantics
 
 - `domain_unusable` or `lane_unavailable` → the message was definitively not
-  sent. Send it on the platform lane with the display-name form, log the
-  reason, and enqueue an immediate `sync-domain` for that domain.
+  sent. Send it on the platform lane with the purpose's fallback From, log the
+  reason, and enqueue an immediate `sync-domain` for that domain, carrying the
+  refusal text for `last_send_error`.
 - `message_rejected` or `ambiguous` → throw, as today. An ambiguous failure is
   never retried on the other lane, so a recipient cannot receive two copies.
 
@@ -711,6 +839,11 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
   a technician may legitimately write from the shared mailbox.
 - Customer auto-replies are unaffected: they are dropped on `Auto-Submitted`
   today regardless of our From.
+- A self-hosted instance may run without inbound email
+  (`TICKETS_INBOUND_DOMAIN` unset). Then there is no inbound path to loop
+  through, the rules above are inert, and partner-lane ticket mail simply has
+  no Reply-To override: replies go to the From address, so the UI warning in
+  §4.4 (the local part must be a monitored mailbox) is the safeguard.
 
 ## 9. Abuse and deliverability controls
 
@@ -720,15 +853,22 @@ none. Tickets keep `{slug}@TICKETS_INBOUND_DOMAIN`; quotes and invoices keep
   the `default` branch in `partnerTrust.decide`: denied for `probation` and
   `restricted`, allowed for `trusted`, and governed by `partnerTrustMode()`
   like the other capabilities. Enforced on writes (middleware) and at send
-  time (§8.3).
+  time (§8.3). `partnerTrustMode()` returns `off` whenever `!isHosted()`
+  (`config/partnerTrustMode.ts:12`) and self-hosted partners are created
+  `trusted`, so on self-hosted the gate is always open with no configuration.
+  Hosted general availability requires `PARTNER_TRUST_MODE=enforce`; in
+  `shadow` the gate only logs.
 - **Dark launch**: `EMAIL_DOMAINS_PARTNER_ALLOWLIST`. Empty means every
   eligible partner; set means only those partner ids.
 - **Kill switch**: platform-admin suspend / unsuspend / force-release.
   Suspension takes effect on the next send because resolution reads the row.
 - **Caps**: `EMAIL_DOMAINS_MAX_PER_PARTNER` (default 3 rows),
-  `EMAIL_DOMAINS_DAILY_SEND_CAP` (default 2,000 partner-lane messages per
-  partner per UTC day; Redis counter). Over the cap the message goes out on the
-  platform lane, as it would today, and an abuse signal fires.
+  `EMAIL_DOMAINS_DAILY_SEND_CAP` (partner-lane messages per partner per UTC
+  day; Redis counter). Over the cap the message goes out on the platform lane,
+  as it would today, and an abuse signal fires. The send cap defaults to 2,000
+  when `isHosted()` and to **unlimited** otherwise: a self-hoster's volume is
+  their own business, and a default that silently moved their ticket mail back
+  to the old From at message 2,001 would be a bug report, not a protection.
 - **Domain hygiene**: §4.1 rejections.
 - **Audit**: every mutation and every status transition.
 
@@ -757,6 +897,13 @@ partner's sending domains.
 
 Until W05 is live, hosted runs with the allowlist set.
 
+W05 is a gate for **hosted** general availability, not a functional dependency.
+Many self-hosted instances sit behind NAT or a VPN and cannot receive provider
+webhooks; polling (§6) is complete without them. On self-hosted the webhook
+endpoint is inert unless `EMAIL_DOMAINS_WEBHOOK_SECRET` is set, automatic
+suspension is off unless its thresholds are set, and the stats table simply
+stays empty. `static` mode has no provider events at all.
+
 ## 10. Web UI
 
 `apps/web/src/components/settings/PartnerSendingDomainTab.tsx`, a new tab in
@@ -766,6 +913,7 @@ tab that holds `InboundEmailCard`. Tab state in `window.location.hash`.
 | State | What the partner sees |
 |---|---|
 | unsupported | Tab hidden. |
+| `static` mode | No DNS table, no "Check now". Add-domain form, then "Send a test email to verify": the relay's acceptance verifies the domain, its refusal is shown verbatim. Then the identities form. Note: "Sending domains on this server are managed by its mail configuration; SPF and DKIM for them are set up outside Breeze." A domain the operator has not listed fails with "Ask your Breeze administrator to allow this domain." |
 | not eligible | Locked card: why (probation, restricted) and a link to the trust page. |
 | empty | Add-domain form, the subdomain recommendation and its reasons. |
 | `provisioning` | "Preparing DNS records…", polls every 2 s. |
@@ -783,21 +931,40 @@ every shipped locale. Every interactive element has a `data-testid`.
 
 | Env var | Default | Notes |
 |---|---|---|
-| `EMAIL_DOMAINS_PROVIDER` | unset | `resend` \| `fake`. `fake` refused in production. |
+| `EMAIL_DOMAINS_PROVIDER` | unset | `resend` \| `static` \| `fake`. `fake` refused in production; `static` refused when `isHosted()`. |
+| `EMAIL_DOMAINS_STATIC_ALLOWED` | empty | `static` only. Comma-separated `domain` or `domain:partner-slug`. The operator's statement that the instance's mail relay may send as these domains. |
 | `EMAIL_DOMAINS_RESEND_API_KEY` | — | `full_access` key of the partner-lane account, used by the domain worker. Required when the provider is `resend`. Must differ from `RESEND_API_KEY` when `isHosted()`. |
 | `EMAIL_DOMAINS_RESEND_SENDING_KEY` | falls back to the key above | Optional `sending_access` key of the same account for partner-lane sends, so the send path never holds the management key. |
 | `EMAIL_DOMAINS_REGION` | `us-east-1` | EU instance: `eu-west-1`. |
 | `EMAIL_DOMAINS_MAX_PER_PARTNER` | `3` | |
-| `EMAIL_DOMAINS_DAILY_SEND_CAP` | `2000` | |
+| `EMAIL_DOMAINS_DAILY_SEND_CAP` | `2000` hosted, unlimited self-hosted | `0` = unlimited. |
 | `EMAIL_DOMAINS_PARTNER_ALLOWLIST` | empty | Comma-separated partner ids. |
 | `EMAIL_DOMAINS_DENYLIST` | empty | Extra refused domains. |
-| `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | W05. |
+| `EMAIL_DOMAINS_WEBHOOK_SECRET` | — | W05. Unset = webhook endpoint inert. |
+
+**Every variable is optional, and none is ever required by an upgrade.** With
+all of them unset a self-hosted instance boots and behaves exactly as before.
+Validation only ever fails on a contradiction the operator introduced
+(`resend` without a key, `fake` in production) or on a hosted-only rule
+(`static` on hosted, identical keys on hosted). A self-hosted `resend` setup
+may use one key for both lanes; validation logs one informational line noting
+that partner-domain mail then shares the account's reputation.
+
+Two implementation rules keep that promise. In `config/validate.ts`, the new
+variables are plain optional strings, and any `requireIf` is keyed on
+`EMAIL_DOMAINS_PROVIDER` only, never on `EMAIL_PROVIDER`: a
+`requireIf(EMAIL_PROVIDER === 'resend', …)` (the existing pattern at
+`validate.ts:1681-1712`) would refuse boot on every Resend self-host that
+upgrades. And the worker registers only when the provider is set, the same
+enable check as `initializeAbuseSignalsWorker` (`jobs/abuseSignalsSweep.ts:149`).
 
 Declared in `apps/api/src/config/env.ts`, validated in `config/validate.ts`,
 documented in `.env.example` and `deploy/.env.example`, and mapped in the
 `&api-env` anchor of `deploy/docker-compose.prod.yml` (api and worker). On the
 droplets the same mapping must be added to `/opt/breeze/docker-compose.yml`; a
-value in `.env` alone is inert.
+value in `.env` alone is inert. Self-hosters on the repo's compose file get the
+mapping with the upgrade; those on a customised compose file need the same
+lines, which the release notes call out.
 
 The partner-lane key can read every message sent through that account. It
 lives only in env, is never logged, and the account carries partner-lane mail
@@ -823,6 +990,12 @@ only.
   Breeze-issued TXT challenge that must resolve before the provider object is
   created: it removes squatting and unproven provider objects entirely, at the
   cost of a second DNS change and wait for every partner. Additive later.
+- **D7 — `static` adapter for self-hosted.** Recommend **yes**. It amends the
+  2026-09-10 "SMTP = unsupported" decision for self-hosted only. Without it,
+  per-stream senders exist only for the minority of self-hosters on Resend,
+  while the SMTP majority, who can already authorise any From domain on their
+  own relay, get nothing. The adapter makes no external calls and adds one env
+  var. The alternative is to ship `resend` only and revisit on demand.
 
 ## 13. Error handling
 
@@ -836,20 +1009,41 @@ only.
 | Provider delete fails | The row stays `removing`, or the outbox row backs off; ops alert after 10 attempts. |
 | Partner cascade-deleted with live domains | `releaseSendingDomainsForPartner` writes outbox rows first; a path that skips it aborts on the release guard. |
 | Partner suspended or restricted | Resolution falls to the platform lane on the next send. Provider domains are kept; a platform admin can force-release. |
+| `static`: the relay refuses the custom sender | At setup: the test send fails, the row stays `pending` with the relay's error, and nothing is sent from it. Later (rights revoked): `domain_unusable` → the message goes out from `EMAIL_FROM`, and the row shows the refusal as `last_send_error` so the operator can fix SendAs rights or the relay's allowed senders. The domain stays `verified`: Breeze cannot tell a permanent refusal from a transient one. |
+| Self-hosted removes a domain that pre-existed in their provider account | Local row deleted; the provider domain is untouched (`provider_managed = false`). |
+| Operator removes a domain from `EMAIL_DOMAINS_STATIC_ALLOWED` | On the next boot, rows for it move to `failed` / `provider_rejected`; sends fall back to `EMAIL_FROM`. |
 
 ## 14. Testing
 
 - **Validators** (`packages/shared`): table-driven domain and identity cases,
   including IDN, public suffix, platform domains, display-name spoofs.
-- **Adapter contract tests**: one suite run against `fake` and, with a mocked
-  SDK, `resend`. Status mapping, record normalisation, adopt-on-conflict,
-  404-as-success delete, send-error classification. A recorded-fixture test
-  pins the unverified items in §0.2.
+- **Adapter contract tests**: one suite run against `fake`, `static` and, with
+  a mocked SDK, `resend`. Status mapping, record normalisation, the four
+  find-then-create cases (§5.1), 404-as-success delete, send-error
+  classification including SMTP sender refusals. A recorded-fixture test pins
+  the unverified items in §0.2.
+- **Never delete what we did not create**: a row adopted with
+  `provider_managed = false` goes through removal, partner release and
+  failed-row expiry, and `deleteDomain` is asserted never called and no outbox
+  row written. This is the test that protects a self-hoster's primary domain.
+- **Deployment-mode matrix** (`config/validate.test.ts` and resolver tests),
+  hosted × self-hosted: all new env unset boots and resolves everything to
+  the platform lane; `static` refused on hosted; identical keys refused on
+  hosted and accepted on self-hosted; the platform-domain rule rejects
+  `2breeze.app` on hosted and accepts the `EMAIL_FROM` domain on self-hosted;
+  the send cap defaults per mode; trust mode `off` leaves every partner
+  eligible.
+- **Transport matrix for `static`**: the partner-lane send with a custom From
+  through each platform transport (`smtp`, `mailgun`, `resend`), and the
+  fallback when the transport refuses the sender.
 - **State machine**: every `sync-domain` transition, idempotent re-runs, crash
   recovery, cadence, failed-row expiry.
 - **Sender resolution**: the eligibility matrix (lane off, allowlist,
   status, trust state × trust mode, identity missing, each domain status, cap),
   Reply-To precedence, null `partnerId`.
+- **W01 golden test**: for every purpose, the rendered From, Reply-To and
+  headers equal what the send site produced before the change, under each
+  `EMAIL_PROVIDER`. This is the "upgrade changes nothing" guarantee in code.
 - **`sendEmail`**: each error class; an ambiguous failure never reaches the
   second lane. The three tests that pin the literal platform From
   (`email.test.ts`, `invoiceResend.test.ts`, `quoteLifecycle.test.ts`) gain
@@ -878,9 +1072,9 @@ only.
 | Wave | Content | Hosted state after merge |
 |---|---|---|
 | **W01 — Sender contract** | `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified per §8.2, registry property tests. `resolveSender` exists and always returns the platform lane. | **No behaviour change.** Every email is byte-identical to today. |
-| **W02 — Foundation** | Migration and schema (three tables, RLS, release guard), allowlist registrations, shared validators, `EmailDomainProvider` with `resend` and `fake` adapters, worker and cadence, partner and admin routes, `custom_sending_domain` capability, config, release hooks in `cascadeDeletePartner` and `finalizePartnerOffboarding`, audit. | Dark: provider unset. |
+| **W02 — Foundation** | Migration and schema (three tables, RLS, release guard), allowlist registrations, shared validators, `EmailDomainProvider` with `resend`, `static` and `fake` adapters, worker and cadence, partner and admin routes, `custom_sending_domain` capability, config, release hooks in `cascadeDeletePartner` and `finalizePartnerOffboarding`, audit. | Dark: provider unset. |
 | **W03 — Partner lane** | The partner-lane branch of `resolveSender`, partner-lane transport, fallback semantics, daily cap, `X-Breeze-Outbound` and the loop-prevention rules. | Dark: provider unset. |
-| **W04 — Web UI and docs** | Settings tab, identities, test send, i18n, E2E, `apps/docs` page, self-hosting env reference. | Enabled for allow-listed partners only. Dogfood on OliveTech. |
+| **W04 — Web UI and docs** | Settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, and the self-hosting guide (§16.2). | Enabled for allow-listed partners only. Dogfood on OliveTech. Self-hosters can opt in from this release. |
 | **W05 — Feedback and abuse** | Delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics. | Allowlist removed: general availability for trusted partners. |
 | **Later, own spec** | SES adapter, SES tenants per partner, regional cutover. | |
 
@@ -892,15 +1086,52 @@ before each PR.
 
 ## 16. Rollout
 
+### 16.1 Hosted
+
 1. Create the partner-lane Resend teams (US, and EU in `eu-west-1`), Pro plan,
    `full_access` keys. Add the env vars to both droplets' `.env` **and** the
    compose `environment:` mapping.
 2. Merge W01–W04 with the provider unset. Nothing changes for any tenant.
-3. Set the provider and an allowlist containing OliveTech. Run the lab check
-   (§14) on a LanternOps-owned subdomain.
+3. Confirm `PARTNER_TRUST_MODE=enforce` on both regions. Set the provider and
+   an allowlist containing OliveTech. Run the lab check (§14) on a
+   LanternOps-owned subdomain.
 4. Merge W05, watch one week of stats on the allow-listed partners, clear the
    allowlist.
 5. Close #4199 once the 2026-09-10 SPF/DMARC fix is confirmed against a fresh
    verification email. #3363 (no MX and no Reply-To on `2breeze.app`) is not
    fixed by this feature and stays open: partners without a custom domain still
    send from the shared address.
+
+### 16.2 Self-hosted
+
+Self-hosters upgrade on their own schedule and read the release notes, not this
+spec, so the guarantees have to hold without any action from them.
+
+- **Upgrading is a no-op.** The migration creates three empty tables. No new
+  env var is required, no existing one changes meaning, the worker is not
+  registered, the settings tab is hidden, and the W01 golden test proves every
+  email is unchanged. The GitHub Release body (the `release` skill's
+  self-hoster section) says exactly that, and lists the new optional variables.
+- **Opting in, SMTP or Mailgun** (`static`): set `EMAIL_DOMAINS_PROVIDER=static`
+  and `EMAIL_DOMAINS_STATIC_ALLOWED=acme.com`, restart, add the domain in
+  Partner Settings, send the test email that verifies it, set the `support`
+  and `billing` addresses. The guide states
+  the precondition in one sentence: the relay must already be allowed to send
+  as those addresses (Microsoft 365 SendAs rights, Postfix sender maps, the
+  relay's verified domains), with SPF/DKIM for the domain already in place.
+- **Opting in, Resend** (`resend`): a `full_access` key is needed; a
+  sending-only key cannot manage domains. One account for both lanes is fine.
+  A domain already verified in the account is adopted, shows as verified at
+  once, and is never deleted by Breeze.
+- **Docs** (W04): a "Custom sender addresses" page under `apps/docs` deploy
+  docs, linked from `deploy/environment.mdx`, with the three setups side by
+  side (one address via `EMAIL_FROM`; per-stream via `static`; DNS wizard via
+  `resend`), plus the compose mapping lines for operators on a customised
+  compose file.
+- **Multi-partner self-hosted instances**: bind each `static` entry to a
+  partner (`domain:partner-slug`). An unbound entry can be claimed by any
+  partner on the instance.
+- **Out of scope for self-hosted in this feature**: a Mailgun domain-API
+  adapter (the interface allows one; `static` covers Mailgun users today), and
+  partner-supplied SMTP credentials per partner on a shared instance, which
+  remains excluded everywhere.
