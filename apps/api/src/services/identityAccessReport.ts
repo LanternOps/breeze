@@ -152,13 +152,15 @@ function countInt(value: unknown): number | null {
  */
 function emptySummary(
   orgId: string,
+  orgName: string | null,
   generatedAt: string,
   coverage: SigninCoverage,
   gaps: string[],
+  adminDetail: boolean,
 ): IdentityAccessSummary {
   return {
     orgId,
-    orgName: null,
+    orgName,
     generatedAt,
     coverage: { ...coverage, note: gaps.join(' ') },
     identity: {
@@ -182,7 +184,12 @@ function emptySummary(
       conditionalAccessFailures: null,
       byRiskLevel: null,
     },
-    adminSignins: null,
+    // `null` means "the setting was off" (the happy path's own convention,
+    // L~576 below). On an empty-data gap page that meaning must be kept
+    // distinct from "never measured" — an honest empty array here routes the
+    // PDF renderer to its existing "no data was available" branch instead of
+    // the false "administrator sign-in detail was switched off" one (#6100).
+    adminSignins: adminDetail ? [] : null,
     conditionalAccess: { policies: null, changedThisPeriod: null },
     remoteAccess: null,
     rows: [],
@@ -249,7 +256,19 @@ export async function generateIdentityAccessReport(
     generatedAt,
   };
 
-  // --- OD-8 = A: a restricted authority gets NOTHING, and nothing is read -----
+  // Read on every path, including both gap returns below: this is the org's
+  // own display name, not M365 identity data, so it carries none of the scope
+  // or "0 sign-ins" risk those returns exist to avoid — and a PII-bearing
+  // evidence artifact naming no customer is a distribution hazard on its own
+  // (#6100).
+  const [orgRow] = await db
+    .select({ id: organizations.id, name: organizations.name })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+  const orgName = orgRow?.name ?? null;
+
+  // --- OD-8 = A: a restricted authority gets NOTHING IDENTITY-SHAPED READ ----
   // Not a filter, a refusal. There is no site dimension on M365 identity data,
   // so "the sites you may see" cannot narrow it; serving it anyway would be a
   // scope escalation. The reason the result is empty is the READER'S SCOPE, so
@@ -258,31 +277,25 @@ export async function generateIdentityAccessReport(
     const gap = 'This report is org-wide: Microsoft 365 identity data has no site '
       + 'dimension, so it cannot be narrowed to the sites this account may see. It is '
       + 'withheld rather than shown in part. Ask an organization-wide account to run it.';
-    return result(generatedAt, emptySummary(orgId, generatedAt, baseCoverage, [gap]));
+    return result(generatedAt, emptySummary(orgId, orgName, generatedAt, baseCoverage, [gap], cfg.adminDetail));
   }
 
   // --- The feature flag ------------------------------------------------------
   // `M365_TENANT_SYNC_ENABLED` off means nothing has ever been collected. Say
-  // which absence this is, and read nothing: the tables would simply be empty
-  // and "0 sign-ins" would be the exact lie this report type exists to prevent.
+  // which absence this is, and read nothing identity-shaped: the tables would
+  // simply be empty and "0 sign-ins" would be the exact lie this report type
+  // exists to prevent.
   if (!isM365TenantSyncEnabled()) {
     const gap = 'Microsoft 365 tenant sync is not enabled for this deployment, so no '
       + 'identity or sign-in data has been collected. This is a configuration gap, not '
       + 'a statement about sign-in activity.';
-    return result(generatedAt, emptySummary(orgId, generatedAt, baseCoverage, [gap]));
+    return result(generatedAt, emptySummary(orgId, orgName, generatedAt, baseCoverage, [gap], cfg.adminDetail));
   }
 
   const gaps: string[] = [];
 
   const freshness = await loadDomainFreshness(orgId, ['signin_events', 'users', 'ca_policies']);
   const signinFreshness = freshness.signin_events;
-
-  const [orgRow] = await db
-    .select({ id: organizations.id, name: organizations.name })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .limit(1);
-  const orgName = orgRow?.name ?? null;
 
   // --- 1. Identity inventory --------------------------------------------------
   // The rollup is read for its "unknown" counters; the live user rows are the
