@@ -104,6 +104,8 @@ Terms are the Operator spec's. Additions in bold.
 
 A recipe appears in the library for an org only as one of: `ready`, `setup_required` (with the missing capability named), `unavailable`. Readiness is computed from rows, never from a model: connection status, `permission_manifest_version` against the profile version, `observed_grants` against the recipe's required app roles, tool-source health, and the admitting agent's allowlist. A tenant that has not re-consented sees **setup required: re-consent Microsoft 365**, not a failed task. This is the Operator spec's §4 availability rule applied per capability.
 
+`setup_required` means something the tenant can fix. A capability the product does not have yet (the Exchange Online effects before M2) is classed `always_manual`: it never blocks `ready`, and the card says how many steps will be done by hand.
+
 Offboarding degrades by provider, not as a whole: an org with Google ready and M365 on the v1 profile can run the recipe with the M365 effects beyond disable/reset rendered as human-work steps (§6.5).
 
 ## 5. Data model
@@ -208,11 +210,11 @@ Step execution by kind is coordinator code, not recipe code:
 Only in `reason` steps, and only to produce data the server validates:
 
 1. **Intake** — resolve "Dana in accounting" to a contact and its provider accounts; ask when ambiguous. Output is candidate ids; the technician confirms.
-2. **Discovery synthesis** — from deterministic reads (licenses, group memberships and *ownerships*, mail delegates, forwarding, shared-mailbox access, enrolled devices, Breeze devices where the contact is the primary user), flag what a fixed list cannot: sole owner of a group or Team, a license whose removal orphans a shared mailbox, a service account that looks like a person.
+2. **Discovery synthesis** — from deterministic reads (licenses, group memberships and ownerships, mail delegates, forwarding, enrolled mobile devices), flag what a fixed list cannot: sole owner of a group or Team, a license whose removal orphans a shared mailbox, a service account that looks like a person.
 3. **Exception triage** — when a probe fails, classify retry / human-work / handoff within the recipe's permitted set.
 4. **Completion narrative** — prose over the event timeline; facts come from rows.
 
-The model never proposes an effect that `buildPlan` did not produce, never edits plan arguments, and never marks anything done. Discovery reads are coordinator-issued tool calls, not model-chosen.
+The model never proposes an effect that `buildPlan` did not produce, never edits plan arguments, and never marks anything done. Discovery reads are coordinator-issued tool calls, not model-chosen. Two read gaps at this baseline: there is no M365 group-ownership read action, so M365 ownership is `unknown` and any such group the plan touches becomes human-work (follow-up: `m365.group.owners.list`); and Breeze has no device-to-person link — only the agent-reported `devices.last_user` string — so matching devices are a suggestion in the start form, never an effect target, and hardware is always human-work. When the plan keeps the mailbox, `m365_remove_license` is omitted from the plan entirely and replaced by a manual conversion item, so the mailbox deletion clock never starts.
 
 ### 6.3 `identity_offboarding` spine
 
@@ -231,7 +233,7 @@ intake (reason) → confirm_identity (human_work: technician confirms contact + 
 
 Ordering is a recipe-owned, tested safety contract, lifted from the comment in `googleOffboardUserAction`: mailbox effects run while the account is active because suspension blocks Gmail impersonation, and disable/suspend is last so that **a task stopped at any point leaves an account that is more restricted than before, never one that is disabled with mail unrouted.** *On M365, license removal is gated on shared-mailbox conversion being confirmed when the plan keeps the mailbox (a human-work step until M2): removing the Exchange license first starts the mailbox's deletion clock.
 
-`google_offboard_user` is **not** called by the recipe. One tool call with seven effects has one operation key: a replay re-runs all seven and "3/7 OK" has no per-effect result row. The recipe dispatches the granular tools (`google_set_vacation`, `google_set_forwarding`, `google_add_mail_delegate`, `google_remove_from_group`, `google_remove_license`, `google_wipe_mobile_device`, `google_signout`, `google_suspend_user`), which are already registered, Tier 3, and headless-capable. The composite stays for chat use; deprecating it is a follow-up.
+`google_offboard_user` is **not** called by the recipe. One tool call with seven effects has one operation key: a replay re-runs all seven and "3/7 OK" has no per-effect result row. The recipe dispatches the granular tools (`google_set_vacation`, `google_set_forwarding`, `google_add_mail_delegate`, `google_remove_from_group`, `google_remove_license`, `google_signout`, `google_suspend_user`), which are already registered, Tier 3, and headless-capable. **The mobile step is the exception: `google_wipe_mobile_device` is a full factory reset (`admin_remote_wipe`) and its own description says it is not for offboarding. The selective corporate-account wipe (`admin_account_wipe`) is reachable today only inside the composite, so R1 adds a granular `google_account_wipe_mobile_device` tool and the recipe never plans the factory-reset one.** The composite stays for chat use; deprecating it is a follow-up.
 
 `identity_onboarding` is the mirror with one inversion: account creation is first, and the temporary credential is secret-bearing (the `reset_password` sealing path). Its human-work steps are hardware assignment and first-login handover.
 
