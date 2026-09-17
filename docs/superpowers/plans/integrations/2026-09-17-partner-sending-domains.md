@@ -55,6 +55,40 @@ W03; W04 enables allow-listed partners; W05 is the hosted GA gate (spec §15, §
    drops `cc` today (`services/email.ts:275-284`). W01's golden test records
    that as-is; fixing it is a separate issue, not part of a byte-identical wave.
 
+7. **Spec §8.2 misses one send site**, `routes/auth/verifyEmail.ts` →
+   `sendEmailChanged` (`auth.email_changed`, platform). And its two
+   `ticketNotifyWorker` rows are one `sendEmail` call; W01 makes the worker's
+   `EmailPayload` a discriminated union carrying the purpose.
+8. **Two partner-lane sites have no partner id in hand** (`routes/portal/auth.ts`
+   portal password reset; `services/reportDelivery.ts` `emailReportRun`). W01
+   passes `null` (no new reads in a byte-identical wave); **W03 widens both**, or
+   portal resets and the whole `general` stream could never use a partner domain.
+9. **Spec §3.5's "no other list applies" is wrong.** Two more contracts fire:
+   `ALLOWED_WITHOUT_CAPABILITY_CHECK` in
+   `apps/api/src/__tests__/partner-wide-write-coverage.test.ts` (every
+   `src/services/**` / `src/routes/**` file that mutates a partner-axis table;
+   `src/jobs/**` is not scanned), and `config/envComposeParity.test.ts` (each
+   `.env.example` must match its paired compose file, so the root
+   `docker-compose.yml` is mapped too). Both run in the required **Test API** job.
+10. **Env vars are declared in the zod schema in `config/validate.ts`**, not
+    `config/env.ts` (spec §11), as optional strings — compose maps an unset var
+    as `""`, so a bare `z.enum` would refuse boot on upgrade.
+11. **Interface deltas forced by `static`:** `createDomain` input gains
+    `partnerSlug?: string | null` (the allow-list binds by slug); `static`'s
+    `getDomain` keys on the domain name and never returns `verified`, so
+    `syncSendingDomain` treats `pending` from a `verifiesByDns = false` adapter
+    as "no change" and the test-send job calls `markStaticDomainVerified`.
+12. **Worker registration needs a readiness rule and a schedule slot:**
+    `'sending_domains_configured'` in `jobs/workerReadinessManifest.ts` (else
+    `/ready` pins false when the provider is unset) and
+    `'sending-domains-daily': '3 21 * * *'` in `jobs/scheduleRegistry.ts` (a bare
+    24 h `every` fails the schedule contract test and stampedes at 00:00 UTC).
+13. **Partner write routes also carry `canManagePartnerWidePolicies`**, as
+    `PATCH /partners/me` (the stack §7 names) does inline.
+14. **Structured transport errors land in W03.** `deliverRaw` inherits today's
+    opaque throws, so W02a's `static` send-error classifier is text-based; W03
+    adds `EmailTransportError` (message preserved) and upgrades the classifier.
+
 ## Migration slots reserved
 
 Newest committed migration on `origin/main` (`5104a31e7`, 2026-09-17) is
@@ -110,12 +144,13 @@ export interface ResolveSenderInput {
 }
 export function resolveSender(input: ResolveSenderInput): Promise<ResolvedSender>;
 export function platformFallbackFrom(purpose: MailPurpose, defaultFrom: string, partnerName?: string | null): string;
+export function fromWithDisplayName(defaultFrom: string, displayName: string): string;   // moved from EmailService
 ```
 
 `apps/api/src/services/email.ts`
 
 ```ts
-interface SendEmailBase { to; cc?; subject; html; text?; replyTo?; headers?; attachments? }   // today's fields minus `from`
+export interface SendEmailBase { to; cc?; subject; html; text?; replyTo?; headers?; attachments? }   // today's fields minus `from`
 export type SendEmailParams = SendEmailBase & (
   | { purpose: PlatformMailPurpose; partnerId?: never; partnerName?: never }
   | { purpose: PartnerLaneMailPurpose; partnerId: string | null; partnerName?: string | null }
@@ -179,6 +214,11 @@ class EmailService {
   `apps/api/src/routes/admin/sendingDomains.ts` exporting
   `adminSendingDomainsRoutes`.
 - Registry entry `'staff.sending_domain_status': { lane: 'platform' }`.
+- `domainSync.ts` also exports `markStaticDomainVerified(domainId, now?)`.
+  `services/emailDomains/statusMail.ts`: `buildSendingDomainStatusTemplate`,
+  `sendSendingDomainStatusEmail`. `services/emailDomains/keyProbe.ts`:
+  `recordProviderKeyProbe`, `readProviderKeyProbe` (the probe verdict crosses
+  api ↔ worker through Redis).
 
 ### Defined in W03
 
