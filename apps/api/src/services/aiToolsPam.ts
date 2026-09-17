@@ -12,7 +12,13 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent, type EventType } from './eventBus';
 import { evaluatePamRules, type PamRuleMatch } from './pamRuleEngine';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  deviceSiteDenied,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
+} from './aiToolsSiteScope';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
@@ -452,6 +458,16 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(elevationRequests.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds && typeof input.deviceId === 'string' && !frozenDeviceIds.includes(input.deviceId)) {
+        return JSON.stringify({ results: [], scopeNote: SITE_SCOPE_EMPTY_NOTE });
+      }
+      const elevationDeviceCondition = deviceScopeCondition(auth, elevationRequests.deviceId);
+      if (elevationDeviceCondition) conditions.push(elevationDeviceCondition);
 
       const limit = clampNumber(input.limit, 25, 100);
       const rows = await db

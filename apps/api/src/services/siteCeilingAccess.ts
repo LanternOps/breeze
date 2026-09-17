@@ -24,8 +24,8 @@
  */
 import type { AuthContext } from '../middleware/auth';
 
-export type SiteCeilingAuth = Pick<AuthContext, 'scope'> &
-  Partial<Pick<AuthContext, 'allowedSiteIds' | 'allowedDeviceIds'>>;
+export type SiteCeilingAuth = Pick<AuthContext, 'scope' | 'allowedSiteIds'> &
+  Partial<Pick<AuthContext, 'allowedDeviceIds'>>;
 
 /**
  * True when the caller is an organization-scope principal carrying ANY site

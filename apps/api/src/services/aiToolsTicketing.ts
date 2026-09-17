@@ -8,11 +8,14 @@
 
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
+import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
 import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
+// One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
+// does not import this module, so the edge is acyclic.
+import { findAlertWithAccess } from './aiToolsAlerts';
 import type { AiTool, AiToolTier } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -169,18 +172,6 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
     return null;
   }
   return ticket;
-}
-
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  if (!alert) return null;
-  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
-    return null;
-  }
-  return alert;
 }
 
 async function canManageAnyTicketComment(auth: AuthContext): Promise<boolean> {

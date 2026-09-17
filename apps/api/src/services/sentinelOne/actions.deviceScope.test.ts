@@ -47,23 +47,49 @@ function deviceBoundAuth(deviceIds: string[], siteIds?: string[]): AuthContext {
 
 const THREATS = [{ id: 'threat-1', s1ThreatId: 's1-threat-1', deviceId: 'dev-2' }];
 
+/** Unrestricted human: `canAccessSite` is ALWAYS defined (middleware/auth.ts),
+ * and returns true for every site. No exact-device axis, no site allowlist. */
+function unrestrictedHumanAuth(): AuthContext {
+  return {
+    user: { id: 'u1', email: 'a@b.c', name: 'A', isPlatformAdmin: false },
+    token: {} as any,
+    partnerId: null,
+    orgId: 'org-1',
+    scope: 'organization',
+    accessibleOrgIds: ['org-1'],
+    orgCondition: () => undefined,
+    canAccessOrg: () => true,
+    allowedDeviceIds: undefined,
+    allowedSiteIds: undefined,
+    canAccessSite: () => true,
+  } as unknown as AuthContext;
+}
+
+/** Counts the device-table reads the scope check performs. */
+let deviceSelectCount = 0;
+
 /**
  * `select({id,s1ThreatId,deviceId}).from().where()` = the threat match;
- * `select({siteId}).from().where().limit()` = deviceIdSiteDenied's device read.
+ * a select carrying `siteId` = the device-scope read (batched `where()` OR the
+ * legacy per-device `where().limit()` — both shapes are served so the batching
+ * fix is observable as a COUNT change, not a mock-shape change).
  */
 function mockSelects(threats: typeof THREATS, deviceSites: Record<string, string | null>) {
+  deviceSelectCount = 0;
+  const deviceRows = Object.entries(deviceSites).map(([id, siteId]) => ({ id, siteId }));
   mockDb.select.mockImplementation((cols?: any) => {
     if (cols && 's1ThreatId' in cols) {
       return { from: () => ({ where: () => Promise.resolve(threats) }) };
     }
-    if (cols && 'siteId' in cols && Object.keys(cols).length === 1) {
+    if (cols && 'siteId' in cols) {
+      deviceSelectCount += 1;
       return {
         from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve(
-              Object.keys(deviceSites).length ? [{ siteId: Object.values(deviceSites)[0] }] : [],
-            ),
-          }),
+          where: () => {
+            const result: any = Promise.resolve(deviceRows);
+            result.limit = () => Promise.resolve(deviceRows.slice(0, 1));
+            return result;
+          },
         }),
       };
     }
@@ -141,6 +167,47 @@ describe('executeS1ThreatActionForOrg — exact-device scope', () => {
 
     expect(result.ok).toBe(true);
     expect(dispatchS1ThreatAction).toHaveBeenCalledOnce();
+  });
+
+  it('allows an unrestricted human (canAccessSite defined) a threat with NO device, and queries no devices', async () => {
+    mockSelects([{ id: 'threat-1', s1ThreatId: 's1-threat-1', deviceId: null as any }], {});
+
+    const result = await executeS1ThreatActionForOrg({
+      orgId: 'org-1',
+      integrationId: 'int-1',
+      requestedBy: 'u1',
+      action: 'kill',
+      threatIds: ['s1-threat-1'],
+      auth: unrestrictedHumanAuth(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(deviceSelectCount).toBe(0);
+    expect(dispatchS1ThreatAction).toHaveBeenCalledOnce();
+  });
+
+  it('batches the device lookup into ONE query for a site-restricted caller across many threats', async () => {
+    mockSelects(
+      [
+        { id: 'threat-1', s1ThreatId: 's1-threat-1', deviceId: 'dev-1' },
+        { id: 'threat-2', s1ThreatId: 's1-threat-2', deviceId: 'dev-2' },
+        { id: 'threat-3', s1ThreatId: 's1-threat-3', deviceId: 'dev-3' },
+      ],
+      { 'dev-1': 'site-1', 'dev-2': 'site-1', 'dev-3': 'site-1' },
+    );
+
+    const siteOnlyAuth = { ...deviceBoundAuth([], ['site-1']), allowedDeviceIds: undefined } as AuthContext;
+    const result = await executeS1ThreatActionForOrg({
+      orgId: 'org-1',
+      integrationId: 'int-1',
+      requestedBy: 'u1',
+      action: 'kill',
+      threatIds: ['s1-threat-1', 's1-threat-2', 's1-threat-3'],
+      auth: siteOnlyAuth,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(deviceSelectCount).toBe(1);
   });
 
   it('unrestricted caller (no auth forwarded) is unchanged', async () => {

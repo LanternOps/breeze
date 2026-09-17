@@ -13,7 +13,13 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import {
+  deviceScopeCondition,
+  deviceSiteDenied,
+  deviceIdSiteDenied,
+  resolveSiteAllowedDeviceIds,
+  runFrozenDeviceIds,
+} from './aiToolsSiteScope';
 
 type VaultHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -97,6 +103,16 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(localVaults.deviceId, allowed));
       }
+
+      // Exact-device axis, applied independently of the site axis: a device-LESS
+      // analysis run carries `allowedDeviceIds` with NO `allowedSiteIds`, so the
+      // branch above no-ops for it and the tool read the whole org (#6086).
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (frozenDeviceIds && typeof input.deviceId === 'string' && !frozenDeviceIds.includes(input.deviceId)) {
+        return JSON.stringify({ vaults: [], showing: 0 });
+      }
+      const vaultDeviceCondition = deviceScopeCondition(auth, localVaults.deviceId);
+      if (vaultDeviceCondition) conditions.push(vaultDeviceCondition);
 
       const limit = clampLimit(input.limit);
       const rows = await db

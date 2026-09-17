@@ -157,6 +157,16 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
       }
 
+      // Exact-device axis (#6096 I4) — UNCONDITIONAL, beside the site block and
+      // never inside it: a device-LESS analysis run carries `allowedDeviceIds`
+      // with no site axis at all. Change events name a device by
+      // `linkedDeviceId`, so a device-bound run would otherwise read every
+      // sibling finding at its own site. `inArray` also drops UNLINKED rows
+      // (rogue devices never matched to a fleet device): SQL `IN` is never true
+      // for NULL, and such a row is not attributable to the run's device.
+      const changeDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (changeDeviceScope) conditions.push(changeDeviceScope);
+
       if (orgId) conditions.push(eq(networkChangeEvents.orgId, orgId));
 
       const siteId = typeof input.site_id === 'string' ? input.site_id : undefined;
@@ -229,6 +239,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         }
         conditions.push(inArray(networkChangeEvents.siteId, auth.allowedSiteIds));
       }
+      // Exact-device axis (#6096 I4): acknowledging is a write on a finding
+      // about a specific device. Same shape as get_network_changes above —
+      // applied whether or not the site axis is set, and excluding unlinked
+      // rows for a device-restricted caller.
+      const ackDeviceScope = deviceScopeCondition(auth, networkChangeEvents.linkedDeviceId);
+      if (ackDeviceScope) conditions.push(ackDeviceScope);
 
       const [event] = await db
         .select()
@@ -242,6 +258,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
 
       // Defense in depth for malformed/stale fixtures and future query edits.
       if (siteAccessDenied(auth, event.siteId)) {
+        return JSON.stringify({ error: 'Event not found or access denied' });
+      }
+      // Same, on the device axis: an unlinked (NULL) or sibling-linked event is
+      // outside a device-restricted caller's reach.
+      if (auth.allowedDeviceIds
+        && (!event.linkedDeviceId || !auth.allowedDeviceIds.includes(event.linkedDeviceId))) {
         return JSON.stringify({ error: 'Event not found or access denied' });
       }
 
@@ -687,6 +709,12 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
         if (auth.allowedSiteIds.length === 0) return JSON.stringify({ error: 'Asset not found or access denied' });
         conditions.push(inArray(discoveredAssets.siteId, auth.allowedSiteIds));
       }
+      // Exact-device axis, independent of the site axis (a device-LESS run has
+      // no `allowedSiteIds`). `inArray` is never true for NULL, so an asset not
+      // linked to a Breeze device is invisible to a device-restricted run —
+      // same fail-closed rule as `assertMonitorSiteAccess` (#6086).
+      const assetDeviceCondition = deviceScopeCondition(auth, discoveredAssets.linkedDeviceId);
+      if (assetDeviceCondition) conditions.push(assetDeviceCondition);
 
       const [asset] = await db
         .select({

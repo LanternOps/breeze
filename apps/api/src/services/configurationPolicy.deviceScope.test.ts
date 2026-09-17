@@ -84,6 +84,24 @@ describe('authorizeAssignmentTarget — exact-device axis', () => {
     expect(r.valid).toBe(true);
   });
 
+  it('denies an EMPTY device_group — `members.some` is vacuously false (#6096 I8)', async () => {
+    mockReads({ deviceSiteId: undefined, groupSiteId: 'site-1', memberIds: [] });
+    const r = await authorizeAssignmentTarget(auth(['dev-1'], ['site-1']), 'device_group', 'grp-empty');
+    expect(r.valid).toBe(false);
+  });
+
+  it('denies an empty device_group for a device-LESS analysis run too', async () => {
+    mockReads({ deviceSiteId: undefined, groupSiteId: 'site-1', memberIds: [] });
+    const r = await authorizeAssignmentTarget(auth(['dev-1'], undefined), 'device_group', 'grp-empty');
+    expect(r.valid).toBe(false);
+  });
+
+  it('an empty device_group stays assignable for a site-only caller (no device ceiling)', async () => {
+    mockReads({ deviceSiteId: undefined, groupSiteId: 'site-1', memberIds: [] });
+    const r = await authorizeAssignmentTarget(auth(undefined, ['site-1']), 'device_group', 'grp-empty');
+    expect(r.valid).toBe(true);
+  });
+
   it('denies a SITE target for a device-restricted caller (fans out past the allowlist)', async () => {
     mockReads({});
     const r = await authorizeAssignmentTarget(auth(['dev-1'], undefined), 'site', 'site-1');

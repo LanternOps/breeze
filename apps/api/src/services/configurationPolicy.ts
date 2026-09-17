@@ -2203,7 +2203,12 @@ export async function authorizeAssignmentTarget(
           .select({ deviceId: deviceGroupMemberships.deviceId })
           .from(deviceGroupMemberships)
           .where(eq(deviceGroupMemberships.groupId, targetId));
-        if (members.some((member) => !allowedDevices.has(member.deviceId))) return deviceScopeError;
+        // An EMPTY group makes `some` vacuously false (#6096 I8) — that is not
+        // "every member is in scope", it is "the target's reach is unknown and
+        // unbounded": membership is reconciled asynchronously (dynamic groups)
+        // and the assignment survives the next device joining. Fail closed.
+        if (members.length === 0
+          || members.some((member) => !allowedDevices.has(member.deviceId))) return deviceScopeError;
       }
       return { valid: true };
     }

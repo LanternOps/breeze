@@ -82,6 +82,7 @@ import {
   deviceScopeCondition,
   filterToDeviceScope,
   resolveSiteAllowedDeviceIds,
+  SITE_SCOPE_EMPTY_NOTE,
 } from './aiToolsSiteScope';
 import {
   checkAutomationTargetsWithinSiteScope,
@@ -431,7 +432,21 @@ async function alertRuleTargetDenied(
   auth: AuthContext,
   rule: { targetType: string; targetId: string },
 ): Promise<boolean> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return false;
+  // Both axes, read INDEPENDENTLY (#6096 C2). The old guard was
+  // `!auth.allowedSiteIds || !auth.canAccessSite`, which (a) waved a device-LESS
+  // analysis run — device axis, no site axis — through as unrestricted, and
+  // (b) failed OPEN when `allowedSiteIds` was set but `canAccessSite` was not.
+  // `deviceSiteDenied` already denies that second shape, so only the
+  // genuinely-unrestricted caller short-circuits here.
+  const siteRestricted = auth.allowedSiteIds !== undefined;
+  const deviceRestricted = auth.allowedDeviceIds !== undefined;
+  if (!siteRestricted && !deviceRestricted) return false;
+  // Site- and group-shaped targets keep their site-only check: a rule is a
+  // site-shaped fleet resource, and denying those on the device axis would make
+  // every one of them unreachable for a device-bound run (#6096 D2). The alert
+  // DATA a rule exposes is narrowed separately by `alertSiteCondition`, which
+  // carries the device axis. An org-wide ('all') target has no site to check at
+  // all and is denied for every narrowed caller by the default branch.
   switch (rule.targetType) {
     case 'site':
       return deviceSiteDenied(auth, rule.targetId);
@@ -985,12 +1000,21 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           requiresReboot: patches.requiresReboot,
         };
 
+        // Both axes, independent of each other: a site-restricted human sees
+        // their sites' patch inventory, a device-bound or device-LESS agent run
+        // only its own devices'. `null` = unrestricted (no narrowing, no query).
+        const patchListAllowed = await resolveSiteAllowedDeviceIds(orgId, auth);
+        if (patchListAllowed && patchListAllowed.length === 0) {
+          return JSON.stringify({ patches: [], showing: 0, note: SITE_SCOPE_EMPTY_NOTE });
+        }
+        const patchListScope: SQL[] = patchListAllowed ? [inArray(devicePatches.deviceId, patchListAllowed)] : [];
+
         if (deviceId) {
           // Per-device: patches on this specific device, with install status.
           const rows = await db.select({ ...patchCols, status: devicePatches.status })
             .from(devicePatches)
             .innerJoin(patches, eq(devicePatches.patchId, patches.id))
-            .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...catalogConds))
+            .where(and(eq(devicePatches.orgId, orgId), eq(devicePatches.deviceId, deviceId), ...patchListScope, ...catalogConds))
             .orderBy(desc(patches.createdAt))
             .limit(limit);
           return JSON.stringify({ patches: rows, showing: rows.length, scope: { deviceId } });
@@ -1003,7 +1027,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const rows = await db.selectDistinct({ ...patchCols, createdAt: patches.createdAt })
           .from(patches)
           .innerJoin(devicePatches, eq(devicePatches.patchId, patches.id))
-          .where(and(eq(devicePatches.orgId, orgId), ...catalogConds))
+          .where(and(eq(devicePatches.orgId, orgId), ...patchListScope, ...catalogConds))
           .orderBy(desc(patches.createdAt))
           .limit(limit);
 
@@ -1034,12 +1058,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             sql`EXISTS (SELECT 1 FROM device_patches dp WHERE dp.patch_id = ${patchApprovals.patchId} AND dp.org_id = ${orgId})`,
           ));
 
-        // Site axis (app-layer only; RLS does NOT enforce it): the precomputed
-        // snapshot aggregates EVERY site, so a site-restricted caller must not
-        // receive it. Recompute from device_patches over the caller's in-scope
-        // devices instead (mirrors routes/patches/compliance.ts:82-97, which
-        // zeroes the response for a zero-site caller).
-        if (auth.allowedSiteIds) {
+        // Site AND exact-device axes (app-layer only; RLS does NOT enforce
+        // either): the precomputed snapshot aggregates EVERY device in the org,
+        // so no narrowed caller may receive it. Recompute from device_patches
+        // over the caller's in-scope devices instead (mirrors
+        // routes/patches/compliance.ts:82-97, which zeroes the response for a
+        // zero-site caller). `resolveSiteAllowedDeviceIds` intersects both axes
+        // and only returns null when NEITHER is set, so a device-LESS analysis
+        // run lands here too (#6096 C2) instead of falling through to the
+        // org-wide snapshot below.
+        if (auth.allowedSiteIds || auth.allowedDeviceIds) {
           const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!allowed || allowed.length === 0) {
             return JSON.stringify({
@@ -1406,6 +1434,24 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
+      // Device groups are SITE-shaped, so read paths gate on the group's site.
+      // update and delete are not read paths: delete removes every member's
+      // membership and reconciles peripheral policy for all of them, and update
+      // can rewrite the dynamic `filterConditions` that decide who is in the
+      // group. Both therefore reach DEVICES, and a device-bound run shares its
+      // site with every sibling (#6096 I2). Mirrors `deploymentSiteDenied`:
+      // deny when ANY member is outside the frozen set, fail closed on an
+      // unresolvable member, and never query for a caller with no device
+      // ceiling (site-restricted humans are unaffected).
+      const groupMembershipDeviceDenied = async (groupId: string): Promise<boolean> => {
+        if (!auth.allowedDeviceIds) return false;
+        const allowed = new Set(auth.allowedDeviceIds);
+        const members = await db.select({ deviceId: deviceGroupMemberships.deviceId })
+          .from(deviceGroupMemberships)
+          .where(eq(deviceGroupMemberships.groupId, groupId));
+        return members.some((m) => !m.deviceId || !allowed.has(m.deviceId));
+      };
+
       if (action === 'list') {
         const conditions: SQL[] = [];
         const oc = orgWhere(auth, deviceGroups.orgId);
@@ -1563,6 +1609,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Exact-device axis, beside the site check and never inside it (#6096 I2).
+        // A filterConditions rewrite is denied outright for a device-restricted
+        // caller: the new predicate decides FUTURE membership, so the current
+        // member list says nothing about its reach.
+        if (auth.allowedDeviceIds
+          && (input.filterConditions !== undefined || await groupMembershipDeviceDenied(existing.id))) {
+          return JSON.stringify({ error: DEVICE_SCOPE_FLEET_DENIED_MESSAGE });
+        }
 
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (typeof input.name === 'string') updates.name = input.name;
@@ -1582,6 +1636,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         if (!existing) return JSON.stringify({ error: 'Group not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
         if (deviceSiteDenied(auth, existing.siteId)) return JSON.stringify({ error: 'Group not found or access denied' });
+        // Exact-device axis (#6096 I2): the delete unmembers every device in the
+        // group and reconciles peripheral policy for each one.
+        if (await groupMembershipDeviceDenied(existing.id)) {
+          return JSON.stringify({ error: DEVICE_SCOPE_FLEET_DENIED_MESSAGE });
+        }
 
         let result: Awaited<ReturnType<typeof deleteDeviceGroup>>;
         try {
@@ -2039,7 +2098,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // Site axis: omit automations whose resolvable target set escapes the
         // caller's site allowlist (only queries the DB for restricted callers).
         let visible: any[];
-        if (auth.allowedSiteIds !== undefined) {
+        if (isScopeNarrowedCaller(auth)) {
           visible = [];
           const scanSize = 100;
           let databaseOffset = 0;
@@ -2049,7 +2108,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               .limit(scanSize).offset(databaseOffset);
             if (batch.length === 0) break;
             for (const row of batch) {
-              if ((await checkAutomationTargetsWithinSiteScope(row as any, siteScopePerms(auth))).ok) {
+              // Both axes, via the same helper the by-id actions use (#6096 C2):
+              // the site-only check no-ops for a device-LESS analysis run, which
+              // then received every automation in the org.
+              if ((await automationSiteDenied(row as any)) === null) {
                 visible.push(row);
                 if (visible.length === limit) break;
               }
@@ -2082,7 +2144,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const getDenied = await automationSiteDenied(auto);
         if (getDenied) return JSON.stringify({ error: getDenied });
 
-        if (auth.allowedSiteIds !== undefined) {
+        if (isScopeNarrowedCaller(auth)) {
           const { lastRunAt: _lastRunAt, runCount: _runCount, ...restricted } = auto;
           return JSON.stringify({ automation: restricted });
         }
@@ -2367,7 +2429,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         // target resolves to a site outside the caller's allowlist (only queries
         // for restricted callers).
         let visibleRules = rows;
-        if (auth.allowedSiteIds) {
+        if (auth.allowedSiteIds || auth.allowedDeviceIds) {
           const denied = await Promise.all(rows.map((r) => alertRuleTargetDenied(auth, r)));
           visibleRules = rows.filter((_, i) => !denied[i]);
         }

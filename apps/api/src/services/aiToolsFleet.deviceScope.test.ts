@@ -186,6 +186,50 @@ describe('manage_patches approvals — device/site-narrowed callers cannot set f
   });
 });
 
+// ── 2b. manage_patches list — the org-wide catalog is a sibling inventory ────
+describe('manage_patches list — patch inventory carries both axes', () => {
+  /** First select = the org device scan (resolveSiteAllowedDeviceIds); second = the list. */
+  function mockList(orgDevices: Array<{ id: string; siteId: string | null }>) {
+    const wheres: SQL[] = [];
+    let call = 0;
+    mockDb.select.mockImplementation(() => ({
+      from: () => ({
+        where: (cond: SQL) => {
+          wheres.push(cond);
+          return call++ === 0 && orgDevices.length > 0
+            ? Promise.resolve(orgDevices)
+            : { orderBy: () => ({ limit: () => Promise.resolve([]) }) };
+        },
+        innerJoin: () => ({
+          where: (cond: SQL) => { wheres.push(cond); return { orderBy: () => ({ limit: () => Promise.resolve([]) }) }; },
+        }),
+      }),
+    }));
+    (mockDb as any).selectDistinct = mockDb.select;
+    return wheres;
+  }
+  const render = (cond: SQL) => new PgDialect().sqlToQuery(cond);
+
+  it.each([
+    ['device-bound run', () => deviceBoundAuth()],
+    ['device-LESS run', () => deviceLessRunAuth()],
+  ])('%s: the org-wide list is narrowed to the run device, never a sibling', async (_name, auth) => {
+    const wheres = mockList([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }]);
+    await handlerFor('manage_patches')({ action: 'list' }, auth());
+    const listed = render(wheres.at(-1)!);
+    expect(listed.sql).toMatch(/"device_id" in \(/);
+    expect(listed.params).toContain('dev-1');
+    expect(listed.params).not.toContain('dev-2');
+  });
+
+  it('unrestricted caller: no device narrowing and no org device scan', async () => {
+    const wheres = mockList([]);
+    await handlerFor('manage_patches')({ action: 'list' }, unrestrictedAuth());
+    expect(wheres).toHaveLength(1);
+    expect(render(wheres[0]!).sql).not.toMatch(/"device_id" in \(/);
+  });
+});
+
 // ── 3. manage_deployments control actions ────────────────────────────────────
 describe('manage_deployments — control actions carry the device axis', () => {
   function mockDeployment(members: Array<{ deviceId: string; siteId: string }>) {
@@ -522,5 +566,224 @@ describe('manage_service_monitors list — narrowed to policies that reach the c
     const body = JSON.parse(await handlerFor('manage_service_monitors')({ action: 'list' }, unrestrictedAuth()));
     expect(body.showing).toBe(2);
     expect(assignmentQueries).toBe(0);
+  });
+});
+
+// ── 9. alert RULES: the target gate must apply without a site axis ───────────
+/**
+ * #6096 C2 — `alertRuleTargetDenied` opened with
+ * `if (!auth.allowedSiteIds || !auth.canAccessSite) return false`, so a
+ * device-LESS analysis run (device axis only) was treated as unrestricted and
+ * every org-wide rule resolved for it. The second half of that guard also
+ * failed OPEN when `allowedSiteIds` was set but `canAccessSite` was not.
+ */
+describe('manage_alert_rules target gate — device axis without a site axis', () => {
+  function mockRules(rules: Array<Record<string, unknown>>) {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return {
+          from: () => ({
+            where: () => ({
+              limit: () => Promise.resolve(rules),
+              orderBy: () => ({ limit: () => Promise.resolve(rules) }),
+            }),
+          }),
+        };
+      }
+      const chain: any = {
+        leftJoin: () => chain,
+        where: () => ({
+          orderBy: () => ({ limit: () => Promise.resolve([]) }),
+          then: (resolve: any) => resolve([{ total: 0 }]),
+        }),
+      };
+      return { from: () => chain };
+    });
+  }
+
+  const ALL_RULE = { id: 'r-all', name: 'Org-wide', targetType: 'all', targetId: 'org-1', orgId: 'org-1' };
+  const SITE_RULE = { id: 'r-site', name: 'Site', targetType: 'site', targetId: 'site-1', orgId: 'org-1' };
+  const SIBLING_DEVICE_RULE = { id: 'r-dev2', name: 'Sibling', targetType: 'device', targetId: 'dev-2', orgId: 'org-1' };
+
+  it('get_rule hides an org-wide ("all") rule from a device-LESS run', async () => {
+    mockRules([ALL_RULE]);
+    const r = await handlerFor('manage_alert_rules')({ action: 'get_rule', ruleId: 'r-all' }, deviceLessRunAuth());
+    expect(JSON.parse(r).error).toMatch(/not found or access denied/i);
+  });
+
+  it('get_rule hides a rule targeting a SIBLING DEVICE from a device-LESS run', async () => {
+    mockRules([SIBLING_DEVICE_RULE]);
+    const r = await handlerFor('manage_alert_rules')({ action: 'get_rule', ruleId: 'r-dev2' }, deviceLessRunAuth());
+    expect(JSON.parse(r).error).toMatch(/not found or access denied/i);
+  });
+
+  it('keeps a SITE-shaped rule reachable for a device-LESS run (#6096 D2 — the alert DATA is narrowed instead)', async () => {
+    mockRules([SITE_RULE]);
+    const body = JSON.parse(await handlerFor('manage_alert_rules')({ action: 'get_rule', ruleId: 'r-site' }, deviceLessRunAuth()));
+    expect(body.error).toBeUndefined();
+    expect(body.rule.id).toBe('r-site');
+  });
+
+  it('list_rules drops org-wide and sibling-device rules for a device-LESS run', async () => {
+    mockRules([ALL_RULE, SIBLING_DEVICE_RULE]);
+    const body = JSON.parse(await handlerFor('manage_alert_rules')({ action: 'list_rules' }, deviceLessRunAuth()));
+    expect(body.rules).toEqual([]);
+    expect(body.showing).toBe(0);
+  });
+
+  it('a device-BOUND run keeps a rule targeting its own site (no regression)', async () => {
+    mockRules([SITE_RULE]);
+    const body = JSON.parse(await handlerFor('manage_alert_rules')({ action: 'get_rule', ruleId: 'r-site' }, deviceBoundAuth()));
+    expect(body.error).toBeUndefined();
+    expect(body.rule.id).toBe('r-site');
+  });
+
+  it('an unrestricted caller keeps every rule (no regression)', async () => {
+    mockRules([ALL_RULE, SITE_RULE]);
+    const body = JSON.parse(await handlerFor('manage_alert_rules')({ action: 'list_rules' }, unrestrictedAuth()));
+    expect(body.showing).toBe(2);
+  });
+});
+
+// ── 10. manage_automations list ──────────────────────────────────────────────
+describe('manage_automations list — the target scan runs for the device axis too', () => {
+  const AUTO = {
+    id: 'auto-1', name: 'A', description: null, enabled: true, trigger: {}, onFailure: 'stop',
+    lastRunAt: null, runCount: 0, createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    orgId: 'org-1', partnerId: null, conditions: {}, managedByMonitorId: null,
+  };
+
+  function mockList(rows: unknown[]) {
+    mockDb.select.mockImplementation(() => {
+      const tail: any = {
+        orderBy: () => tail,
+        limit: () => tail,
+        offset: () => Promise.resolve(rows),
+        then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject),
+      };
+      return { from: () => ({ where: () => tail }) };
+    });
+  }
+
+  it('omits an automation that targets a sibling device (device-LESS run)', async () => {
+    mockList([AUTO]);
+    automationTargetMock.mockResolvedValue(['dev-2']);
+    const body = JSON.parse(await handlerFor('manage_automations')({ action: 'list' }, deviceLessRunAuth()));
+    expect(body.automations).toEqual([]);
+    expect(body.showing).toBe(0);
+  });
+
+  it('keeps an automation that targets only the run device', async () => {
+    mockList([AUTO]);
+    automationTargetMock.mockResolvedValue(['dev-1']);
+    const body = JSON.parse(await handlerFor('manage_automations')({ action: 'list' }, deviceLessRunAuth()));
+    expect(body.showing).toBe(1);
+    expect(body.automations[0].id).toBe('auto-1');
+  });
+
+  it('an unrestricted caller lists everything and resolves no targets', async () => {
+    mockList([AUTO]);
+    const body = JSON.parse(await handlerFor('manage_automations')({ action: 'list' }, unrestrictedAuth()));
+    expect(body.showing).toBe(1);
+    expect(automationTargetMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── 11. manage_patches compliance ────────────────────────────────────────────
+describe('manage_patches compliance — the org-wide snapshot is not for narrowed runs', () => {
+  function mockCompliance(orgDevices: Array<{ id: string; siteId: string }>) {
+    mockDb.select.mockImplementation((cols?: any) => {
+      const keys = cols ? Object.keys(cols) : [];
+      if (keys.length === 2 && keys.includes('id') && keys.includes('siteId')) {
+        return { from: () => ({ where: () => Promise.resolve(orgDevices) }) };
+      }
+      if (keys.includes('devicesNeedingPatches')) {
+        return { from: () => ({ where: () => Promise.resolve([{ pending: 2, installed: 1, failed: 0, missing: 1, devicesNeedingPatches: 1 }]) }) };
+      }
+      if (keys.includes('total')) {
+        return { from: () => ({ where: () => Promise.resolve([{ total: 3 }]) }) };
+      }
+      // precomputed org-wide snapshot
+      return { from: () => ({ where: () => ({ orderBy: () => ({ limit: () => Promise.resolve([{ id: 'snap-1', totalDevices: 999 }]) }) }) }) };
+    });
+  }
+
+  it('recomputes over the allowlist for a device-LESS run instead of returning the org snapshot', async () => {
+    mockCompliance([{ id: 'dev-1', siteId: 'site-1' }, { id: 'dev-2', siteId: 'site-1' }]);
+    const body = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, deviceLessRunAuth()));
+    expect(body.snapshot.id).toBeUndefined();
+    expect(body.snapshot.siteScoped).toBe(true);
+    expect(body.snapshot.totalDevices).toBe(1);
+  });
+
+  it('an unrestricted caller still gets the precomputed snapshot (no regression)', async () => {
+    mockCompliance([]);
+    const body = JSON.parse(await handlerFor('manage_patches')({ action: 'compliance' }, unrestrictedAuth()));
+    expect(body.snapshot.id).toBe('snap-1');
+  });
+});
+
+// ── 12. manage_groups update / delete reach every member ─────────────────────
+/**
+ * #6096 I2 — update/delete were gated on the GROUP's site alone. Deleting a
+ * group removes every member's membership and reconciles peripheral policy for
+ * all of them; updating one can rewrite the dynamic `filterConditions` that
+ * decide who is in it. Both reach devices, so the device axis applies.
+ */
+describe('manage_groups update/delete — the device axis covers the membership', () => {
+  function mockGroupMembers(memberIds: Array<string | null>) {
+    let call = 0;
+    mockDb.select.mockImplementation(() => {
+      if (call++ === 0) {
+        return { from: () => ({ where: () => ({ limit: () => Promise.resolve([{ id: 'g1', name: 'G', orgId: 'org-1', siteId: 'site-1' }]) }) }) };
+      }
+      return { from: () => ({ where: () => Promise.resolve(memberIds.map((deviceId) => ({ deviceId }))) }) };
+    });
+    mockDb.update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+  }
+
+  it('denies delete when the group holds a sibling device at the same site', async () => {
+    mockGroupMembers(['dev-1', 'dev-2']);
+    const r = await handlerFor('manage_groups')({ action: 'delete', groupId: 'g1' }, deviceBoundAuth());
+    expect(JSON.parse(r).error).toMatch(/access denied|cannot act on the fleet/i);
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('denies delete for a device-LESS run whose group reaches other devices', async () => {
+    mockGroupMembers(['dev-2']);
+    const r = await handlerFor('manage_groups')({ action: 'delete', groupId: 'g1' }, deviceLessRunAuth());
+    expect(JSON.parse(r).error).toMatch(/access denied|cannot act on the fleet/i);
+  });
+
+  it('denies update when the group holds a sibling device', async () => {
+    mockGroupMembers(['dev-1', 'dev-2']);
+    const r = await handlerFor('manage_groups')({ action: 'update', groupId: 'g1', name: 'renamed' }, deviceBoundAuth());
+    expect(JSON.parse(r).error).toMatch(/access denied|cannot act on the fleet/i);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('denies a filterConditions rewrite even when the group is currently in scope', async () => {
+    mockGroupMembers(['dev-1']);
+    const r = await handlerFor('manage_groups')(
+      { action: 'update', groupId: 'g1', filterConditions: { logic: 'and', conditions: [] } },
+      deviceBoundAuth(),
+    );
+    expect(JSON.parse(r).error).toMatch(/access denied|cannot act on the fleet/i);
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+
+  it('still allows a rename when every member is the run device', async () => {
+    mockGroupMembers(['dev-1']);
+    const r = await handlerFor('manage_groups')({ action: 'update', groupId: 'g1', name: 'renamed' }, deviceBoundAuth());
+    expect(JSON.parse(r).success).toBe(true);
+  });
+
+  it('a site-restricted human (no device ceiling) is unaffected', async () => {
+    const auth = deviceBoundAuth() as any;
+    delete auth.allowedDeviceIds;
+    mockGroupMembers(['dev-1', 'dev-2']);
+    const r = await handlerFor('manage_groups')({ action: 'update', groupId: 'g1', name: 'renamed' }, auth);
+    expect(JSON.parse(r).success).toBe(true);
   });
 });

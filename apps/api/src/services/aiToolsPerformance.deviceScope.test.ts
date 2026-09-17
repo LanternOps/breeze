@@ -71,7 +71,7 @@ function handlerFor(name: string): AiTool['handler'] {
 
 function makeAuth(over: Partial<AuthContext> = {}): AuthContext {
   return {
-    user: { id: 'user-1', email: 't@e.st', name: 'T', isPlatformAdmin: false },
+    user: { id: 'user-1', email: 't@example.com', name: 'T', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: null,
     orgId: ORG_ID,

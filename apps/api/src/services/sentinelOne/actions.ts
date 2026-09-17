@@ -9,7 +9,7 @@ import {
 import { captureException } from '../sentry';
 import { redactLogMessage } from '../logRedaction';
 import { SentinelOneHttpError, type S1ThreatAction } from './client';
-import { deviceIdSiteDenied } from '../aiToolsSiteScope';
+import { deviceSiteDenied } from '../aiToolsSiteScope';
 import type { AuthContext } from '../../middleware/auth';
 
 const NO_ACTIVITY_ID_WARNING = 'Provider did not return activityId; action cannot be tracked';
@@ -345,25 +345,53 @@ export async function executeS1IsolationForOrg(params: {
  * Returns the s1 threat ids that are out of scope; `[]` for an unrestricted
  * caller (and for callers that forward no `auth` at all, e.g. the HTTP route,
  * which is already gated by `requirePermission` + its own site checks).
+ *
+ * "Unrestricted" is `!allowedDeviceIds && !allowedSiteIds` ONLY. `canAccessSite`
+ * must not appear in that hatch: it is defined for every human caller
+ * (middleware/auth.ts) — unrestricted ones simply get a closure that returns
+ * true for all sites — so including it made the hatch unreachable and 403'd an
+ * unrestricted admin on any threat with a NULL `device_id` (routine for an
+ * unmatched agent). The device read is one batched `inArray`, not one SELECT
+ * per threat device.
  */
 async function outOfScopeThreatIds(
   auth: AuthContext,
   threats: Array<{ s1ThreatId: string; deviceId: string | null }>,
 ): Promise<string[]> {
-  if (!auth.allowedDeviceIds && !auth.allowedSiteIds && !auth.canAccessSite) return [];
+  if (!auth.allowedDeviceIds && !auth.allowedSiteIds) return [];
+
   const denied: string[] = [];
-  const decided = new Map<string, boolean>();
+  const toCheck: Array<{ s1ThreatId: string; deviceId: string }> = [];
   for (const threat of threats) {
     if (!threat.deviceId) {
       denied.push(threat.s1ThreatId);
       continue;
     }
-    let isDenied = decided.get(threat.deviceId);
-    if (isDenied === undefined) {
-      isDenied = await deviceIdSiteDenied(auth, threat.deviceId);
-      decided.set(threat.deviceId, isDenied);
+    if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(threat.deviceId)) {
+      denied.push(threat.s1ThreatId);
+      continue;
     }
-    if (isDenied) denied.push(threat.s1ThreatId);
+    toCheck.push({ s1ThreatId: threat.s1ThreatId, deviceId: threat.deviceId });
+  }
+
+  // Device-less analysis runs carry `allowedDeviceIds` with no site axis at
+  // all; the exact-device check above is the whole gate for them, so skip the
+  // device read entirely rather than failing them closed on a missing site.
+  if (!auth.allowedSiteIds || toCheck.length === 0) return denied;
+
+  const uniqueDeviceIds = Array.from(new Set(toCheck.map((t) => t.deviceId)));
+  const rows = await db
+    .select({ id: devices.id, siteId: devices.siteId })
+    .from(devices)
+    .where(inArray(devices.id, uniqueDeviceIds));
+  const siteById = new Map(rows.map((row) => [row.id, row.siteId]));
+
+  for (const threat of toCheck) {
+    // Unknown device → deny for a restricted caller (fail closed).
+    if (!siteById.has(threat.deviceId)
+      || deviceSiteDenied(auth, siteById.get(threat.deviceId), threat.deviceId)) {
+      denied.push(threat.s1ThreatId);
+    }
   }
   return denied;
 }

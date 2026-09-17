@@ -27,6 +27,7 @@ import {
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from './siteCeilingAccess';
 
 type SlaHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -132,12 +133,15 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
           // No in-scope devices: the caller cannot observe any breach events, so
           // compliance is indeterminate — never fabricate a healthy 'compliant'.
           return JSON.stringify({
-            configs: configs.map((config) => ({
+            configs: configs.map(({ targetDevices, targetGroups, ...config }) => ({
               ...config,
               complianceStatus: 'unknown',
               activeBreaches: null,
-              targetDeviceCount: Array.isArray(config.targetDevices) ? config.targetDevices.length : 0,
-              targetGroupCount: Array.isArray(config.targetGroups) ? config.targetGroups.length : 0,
+              // Counts only — the raw rosters are device/group UUID lists, and
+              // this is the branch whose whole point is that the caller can see
+              // NOTHING about the devices in question (#6096 I5).
+              targetDeviceCount: Array.isArray(targetDevices) ? targetDevices.length : 0,
+              targetGroupCount: Array.isArray(targetGroups) ? targetGroups.length : 0,
             })),
             showing: configs.length,
             scopeNote: SITE_SCOPE_EMPTY_NOTE,
@@ -156,14 +160,17 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
         .groupBy(backupSlaEvents.slaConfigId);
 
       const breachMap = new Map(breachCounts.map((entry) => [entry.slaConfigId, entry.count]));
-      const rows = configs.map((config) => {
+      const rows = configs.map(({ targetDevices, targetGroups, ...config }) => {
         const activeBreaches = breachMap.get(config.id) ?? 0;
         return {
           ...config,
           complianceStatus: activeBreaches > 0 ? 'breach' : 'compliant',
           activeBreaches,
-          targetDeviceCount: Array.isArray(config.targetDevices) ? config.targetDevices.length : 0,
-          targetGroupCount: Array.isArray(config.targetGroups) ? config.targetGroups.length : 0,
+          // Same as above: this tool reports SLA COMPLIANCE, and the counts are
+          // what it promises. The rosters would hand a device-bound run the ids
+          // of every sibling the SLA covers.
+          targetDeviceCount: Array.isArray(targetDevices) ? targetDevices.length : 0,
+          targetGroupCount: Array.isArray(targetGroups) ? targetGroups.length : 0,
         };
       });
 
@@ -415,6 +422,16 @@ export function registerSLABackupTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('configure_backup_sla', async (input, auth) => {
       const action = input.action as string;
+
+      // A backup SLA config is an ORG-WIDE governance object: it is created and
+      // edited without necessarily naming any device, and the worker fans it out
+      // over `targetDevices`/`targetGroups`. `deviceArgs: ['targetDevices']`
+      // above only guards the argument when it is PRESENT, so it no-ops on a
+      // create/update that omits it (#6096 I3) — hence a ceiling check on the
+      // caller itself, covering the site axis AND the exact-device axis.
+      if (!canMutateOrgWideGovernance(auth)) {
+        return JSON.stringify({ error: SITE_CEILING_WRITE_DENIED_MESSAGE });
+      }
 
       if (action === 'create') {
         const orgId = getOrgId(auth);

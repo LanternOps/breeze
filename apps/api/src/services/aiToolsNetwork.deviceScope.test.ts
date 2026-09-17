@@ -65,7 +65,7 @@ function handlerFor(name: string): AiTool['handler'] {
 
 function makeAuth(over: Partial<AuthContext> = {}): AuthContext {
   return {
-    user: { id: 'user-1', email: 't@e.st', name: 'T', isPlatformAdmin: false },
+    user: { id: 'user-1', email: 't@example.com', name: 'T', isPlatformAdmin: false },
     token: {} as AuthContext['token'],
     partnerId: null,
     orgId: ORG_ID,
@@ -138,5 +138,110 @@ describe('get_ip_history reverse lookup — exact-device narrowing', () => {
     expect(parsed.count).toBe(2);
     const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
     expect(rendered.params).not.toContain(DEVICE_ID);
+  });
+});
+
+/**
+ * #6096 I4 — network CHANGE EVENTS were scoped by org + site only, so a
+ * device-bound run read (and could acknowledge) rogue/new-device findings for
+ * every sibling device at its site, and a device-LESS analysis run read the
+ * whole org. Rows with a NULL `linkedDeviceId` are not attributable to the
+ * run's device either, so a device-restricted caller must not see them — which
+ * `inArray` gives for free (SQL `IN` is never true for NULL).
+ */
+describe('network change events — exact-device narrowing', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const EVENT_ID = '55555555-5555-4555-8555-555555555555';
+
+  it('get_network_changes narrows on linked_device_id for a device-bound run', async () => {
+    const { capturedWhere } = captureWhere([]);
+    await handlerFor('get_network_changes')({}, deviceBoundAuth());
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
+    expect(rendered.sql).toContain('linked_device_id');
+    expect(rendered.params).toContain(DEVICE_ID);
+  });
+
+  it('get_network_changes narrows for the device-LESS shape (no site axis)', async () => {
+    const { capturedWhere } = captureWhere([]);
+    await handlerFor('get_network_changes')({}, deviceOnlyAuth());
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
+    expect(rendered.sql).toContain('linked_device_id');
+    expect(rendered.params).toContain(DEVICE_ID);
+  });
+
+  it('get_network_changes leaves an unrestricted caller unnarrowed', async () => {
+    const { capturedWhere } = captureWhere([]);
+    await handlerFor('get_network_changes')({}, makeAuth());
+    const captured = capturedWhere();
+    if (captured) {
+      expect(new PgDialect().sqlToQuery(captured as SQL).sql).not.toContain('linked_device_id');
+    }
+  });
+
+  function mockAckEvent(event: Record<string, unknown> | undefined) {
+    let captured: unknown;
+    mockDb.select.mockImplementation(() => {
+      const chain: any = {};
+      chain.from = () => chain;
+      chain.where = (c: unknown) => { captured = c; return chain; };
+      chain.limit = () => Promise.resolve(event ? [event] : []);
+      return chain;
+    });
+    (db as any).update.mockReturnValue({ set: () => ({ where: () => Promise.resolve() }) });
+    return () => captured;
+  }
+
+  it('acknowledge_network_device narrows the lookup to the allowlist', async () => {
+    const captured = mockAckEvent({ id: EVENT_ID, siteId: SITE_ID, linkedDeviceId: DEVICE_ID, acknowledged: false, notes: null });
+    const parsed = JSON.parse(await handlerFor('acknowledge_network_device')({ event_id: EVENT_ID }, deviceOnlyAuth()));
+    expect(parsed.success).toBe(true);
+    const rendered = new PgDialect().sqlToQuery(captured() as SQL);
+    expect(rendered.sql).toContain('linked_device_id');
+    expect(rendered.params).toContain(DEVICE_ID);
+  });
+
+  it('acknowledge_network_device denies a sibling-linked event that slipped past the query', async () => {
+    mockAckEvent({ id: EVENT_ID, siteId: SITE_ID, linkedDeviceId: SIBLING_DEVICE_ID, acknowledged: false, notes: null });
+    const parsed = JSON.parse(await handlerFor('acknowledge_network_device')({ event_id: EVENT_ID }, deviceBoundAuth()));
+    expect(parsed.error).toMatch(/not found or access denied/i);
+    expect((db as any).update).not.toHaveBeenCalled();
+  });
+
+  it('acknowledge_network_device denies an UNLINKED (rogue) event for a device-restricted caller', async () => {
+    mockAckEvent({ id: EVENT_ID, siteId: SITE_ID, linkedDeviceId: null, acknowledged: false, notes: null });
+    const parsed = JSON.parse(await handlerFor('acknowledge_network_device')({ event_id: EVENT_ID }, deviceOnlyAuth()));
+    expect(parsed.error).toMatch(/not found or access denied/i);
+    expect((db as any).update).not.toHaveBeenCalled();
+  });
+
+  it('acknowledge_network_device still works unrestricted for an unlinked event', async () => {
+    mockAckEvent({ id: EVENT_ID, siteId: SITE_ID, linkedDeviceId: null, acknowledged: false, notes: null });
+    const parsed = JSON.parse(await handlerFor('acknowledge_network_device')({ event_id: EVENT_ID }, makeAuth()));
+    expect(parsed.success).toBe(true);
+  });
+});
+
+describe('get_network_asset_reachability — exact-device narrowing on linked_device_id', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const ASSET_ID = '66666666-6666-4666-8666-666666666666';
+
+  it.each([
+    ['device-bound run', deviceBoundAuth],
+    ['device-LESS run', deviceOnlyAuth],
+  ])('%s: the asset lookup carries the device axis, so a sibling-linked or unlinked asset is not found', async (_n, auth) => {
+    const { capturedWhere } = captureWhere([]);
+    const result = JSON.parse(await handlerFor('get_network_asset_reachability')({ asset_id: ASSET_ID }, auth()));
+    const rendered = new PgDialect().sqlToQuery(capturedWhere() as SQL);
+    expect(rendered.sql).toMatch(/"linked_device_id" in \(/);
+    expect(rendered.params).toContain(DEVICE_ID);
+    expect(result.error).toBe('Asset not found or access denied');
+  });
+
+  it('leaves an unrestricted caller unnarrowed', async () => {
+    const { capturedWhere } = captureWhere([]);
+    await handlerFor('get_network_asset_reachability')({ asset_id: ASSET_ID }, makeAuth());
+    expect(new PgDialect().sqlToQuery(capturedWhere() as SQL).sql).not.toContain('linked_device_id');
   });
 });

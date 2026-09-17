@@ -30,6 +30,7 @@ vi.mock('./ticketService', () => ({
   changeTicketStatus: vi.fn(async () => ({ id: 't1', status: 'resolved' })),
   assignTicket: vi.fn(async () => ({ id: 't1', assignedTo: 'u2' })),
   addTicketComment: vi.fn(async () => ({ comment: { id: 'c1' } })),
+  createTicketFromAlert: vi.fn(async () => ({ id: 't-from-alert' })),
 }));
 
 import { db } from '../db';
@@ -271,5 +272,47 @@ describe('manage_tickets — unrestricted caller unaffected on the by-id path', 
     const parsed = JSON.parse(await handler()({ action: 'get', ticketId: 't1' }, unrestricted()));
     expect(parsed.error).toBeUndefined();
     expect(parsed.ticket.id).toBe('t1');
+  });
+});
+
+/**
+ * #6096 I6 — the ticketing copy of `findAlertWithAccess` diverged from the
+ * corrected one in aiToolsAlerts.ts: its `alert.deviceId && …` short-circuit
+ * waved a device-LESS (org-wide) alert straight through for a device-bound
+ * run. An org-wide alert is attributable to NONE of the run's devices, so it
+ * must be denied — unlike a device-less TICKET, which stays reachable.
+ */
+describe('manage_tickets alert path — exact-device axis', () => {
+  const fromAlert = (auth: AuthContext) =>
+    handler()({ action: 'create_from_alert', alertId: 'a1' }, auth);
+
+  it('DENIES a device-LESS (org-wide) alert for a device-bound run', async () => {
+    queueSelect([{ id: 'a1', orgId: 'org-1', deviceId: null }]);
+    expect(JSON.parse(await fromAlert(deviceBound())).error).toBe('Alert not found');
+    expect(ticketService.createTicketFromAlert).not.toHaveBeenCalled();
+  });
+
+  it('DENIES a device-LESS alert for the device-LESS analysis shape too', async () => {
+    queueSelect([{ id: 'a1', orgId: 'org-1', deviceId: null }]);
+    expect(JSON.parse(await fromAlert(deviceLess())).error).toBe('Alert not found');
+    expect(ticketService.createTicketFromAlert).not.toHaveBeenCalled();
+  });
+
+  it('DENIES a sibling-device alert in the same site', async () => {
+    queueSelect([{ id: 'a1', orgId: 'org-1', deviceId: 'dev-2' }], [{ siteId: 'site-1' }]);
+    expect(JSON.parse(await fromAlert(deviceBound())).error).toBe('Alert not found');
+  });
+
+  it('ALLOWS an alert on the run’s own device', async () => {
+    queueSelect([{ id: 'a1', orgId: 'org-1', deviceId: 'dev-1' }], [{ siteId: 'site-1' }]);
+    const parsed = JSON.parse(await fromAlert(deviceBound()));
+    expect(parsed.error).toBeUndefined();
+    expect(ticketService.createTicketFromAlert).toHaveBeenCalled();
+  });
+
+  it('ALLOWS an org-wide alert for an unrestricted caller (no regression)', async () => {
+    queueSelect([{ id: 'a1', orgId: 'org-1', deviceId: null }]);
+    const parsed = JSON.parse(await fromAlert(unrestricted()));
+    expect(parsed.error).toBeUndefined();
   });
 });

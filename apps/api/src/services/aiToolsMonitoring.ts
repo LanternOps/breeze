@@ -543,6 +543,12 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
           conditions.push(inArray(serviceProcessCheckResults.deviceId, allowed));
         }
 
+        // Exact-device axis, applied independently of the site axis: a
+        // device-LESS analysis run carries `allowedDeviceIds` with NO
+        // `allowedSiteIds`, so the branch above no-ops for it (#6086).
+        const resultsDeviceCondition = deviceScopeCondition(auth, serviceProcessCheckResults.deviceId);
+        if (resultsDeviceCondition) conditions.push(resultsDeviceCondition);
+
         const limit = Math.min(Math.max(1, Number(input.limit) || 100), 500);
 
         const results = await db
@@ -592,6 +598,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Source 1: Distinct service names from device change log
         const changeLogConditions: SQL[] = [eq(deviceChangeLog.orgId, orgId), eq(deviceChangeLog.changeType, 'service')];
         if (siteAllowedDeviceIds) changeLogConditions.push(inArray(deviceChangeLog.deviceId, siteAllowedDeviceIds));
+        // Exact-device axis, applied independently of the site axis (#6086).
+        const changeLogDeviceCondition = deviceScopeCondition(auth, deviceChangeLog.deviceId);
+        if (changeLogDeviceCondition) changeLogConditions.push(changeLogDeviceCondition);
         let changeLogNames: { subject: string }[] = [];
         try {
           changeLogNames = await db
@@ -611,6 +620,9 @@ export function registerMonitoringTools(aiTools: Map<string, AiTool>): void {
         // Source 2: Distinct service/process names from check results
         const checkNameConditions: SQL[] = [eq(serviceProcessCheckResults.orgId, orgId)];
         if (siteAllowedDeviceIds) checkNameConditions.push(inArray(serviceProcessCheckResults.deviceId, siteAllowedDeviceIds));
+        // Exact-device axis, applied independently of the site axis (#6086).
+        const checkNameDeviceCondition = deviceScopeCondition(auth, serviceProcessCheckResults.deviceId);
+        if (checkNameDeviceCondition) checkNameConditions.push(checkNameDeviceCondition);
         let checkNames: { name: string; watchType: string }[] = [];
         try {
           checkNames = await db

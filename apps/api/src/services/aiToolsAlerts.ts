@@ -42,7 +42,12 @@ function getOrgId(auth: AuthContext): string | null {
 // Resolve an alert within org scope AND enforce the site axis (app-layer only;
 // RLS does NOT enforce site): the alert's device must be in a site the caller
 // can access. Returns null when not found or site-denied.
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
+//
+// EXPORTED as the single implementation of alert-by-id access for AI tools:
+// aiToolsTicketing.ts kept a hand-copied twin that drifted (#6096 I6 — its
+// `alert.deviceId &&` short-circuit admitted org-wide alerts for a
+// device-bound run). One body, one contract.
+export async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   const conditions: SQL[] = [eq(alerts.id, alertId)];
   const orgCond = auth.orgCondition(alerts.orgId);
   if (orgCond) conditions.push(orgCond);
