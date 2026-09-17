@@ -34,6 +34,7 @@ vi.mock('../../services/remoteSessionTeardown', () => ({
 import {
   devices,
   organizations,
+  partners,
   organizationUsers,
   remoteSessions,
   roles,
@@ -50,6 +51,7 @@ import {
 } from '../../services/remoteRevocationLease';
 import {
   assignUserToOrganization,
+  assignUserToPartner,
   createOrganization,
   createPartner,
   createRole,
@@ -358,6 +360,58 @@ describe('revocation lease against live Postgres', () => {
 
       const result = await renewRevocationLease(f.session.id);
 
+      expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
+    });
+
+    // The Partner Admin axis the kill switch is named for: a partner-scoped
+    // user (users.org_id NULL) whose PARTNER role forces MFA. Re-points the
+    // fixture's session at a partner member; the policy then runs its
+    // partner_users -> roles join and reads partners.settings for real.
+    async function buildPartnerAdminFixture() {
+      const db = getTestDb();
+      const f = await buildFixture();
+      const partnerRole = await createRole({
+        scope: 'partner',
+        partnerId: f.partner.id,
+        name: `Partner Admin ${f.session.id}`,
+      });
+      await db.update(roles).set({ forceMfa: true }).where(eq(roles.id, partnerRole.id));
+      const admin = await createUser({
+        partnerId: f.partner.id,
+        orgId: null,
+        email: `lease-padmin-${f.session.id}@example.com`,
+      });
+      await assignUserToPartner(admin.id, f.partner.id, partnerRole.id, 'all');
+      await db
+        .update(remoteSessions)
+        .set({ userId: admin.id })
+        .where(eq(remoteSessions.id, f.session.id));
+      const partnerFixture = { ...f, user: admin };
+      await resnapshot(partnerFixture);
+      return partnerFixture;
+    }
+
+    it('kill switch off: a factorless Partner Admin (force_mfa partner role) keeps renewing', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+
+      const row = await loadRevocationRecheckRow(f.session.id);
+      expect(row!.user.orgId).toBeNull();
+      expect(row!.partnerMembership?.orgAccess).toBe('all');
+
+      const result = await renewRevocationLease(f.session.id);
+      expect(result.status).toBe('renewed');
+    });
+
+    it('revokes a factorless Partner Admin when PARTNER settings require MFA', async () => {
+      process.env.MFA_FORCE_FOR_PARTNER_ADMIN = 'false';
+      const f = await buildPartnerAdminFixture();
+      await getTestDb()
+        .update(partners)
+        .set({ settings: { security: { requireMfa: true } } })
+        .where(eq(partners.id, f.partner.id));
+
+      const result = await renewRevocationLease(f.session.id);
       expect(result).toMatchObject({ status: 'revoked', reason: 'mfa_required' });
     });
 
