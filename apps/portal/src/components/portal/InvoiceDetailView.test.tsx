@@ -98,4 +98,22 @@ describe('InvoiceDetailView line labels (#3319)', () => {
     );
     expect(screen.queryByTestId('invoice-line-ticket-1')).toBeNull();
   });
+
+  it('does not merge two number-less tickets into one group', () => {
+    renderDetail([
+      line({ ticketId: 't-1', ticketNumber: null, ticketSubject: 'Email issue', name: 'Work 1' }),
+      line({ ticketId: 't-2', ticketNumber: null, ticketSubject: 'VPN issue', name: 'Work 2' }),
+    ]);
+    expect(screen.getByText(/Email issue/)).toBeTruthy();
+    expect(screen.getByText(/VPN issue/)).toBeTruthy();
+    expect(screen.getAllByText(/Ticket work/)).toHaveLength(2);
+  });
+
+  it('does not render ticket header for lines without ticketId or ticketNumber', () => {
+    renderDetail([
+      line({ ticketId: null, ticketNumber: null, name: 'Standard Subscription' }),
+    ]);
+    expect(screen.queryByText(/Ticket work/)).toBeNull();
+    expect(screen.getByText('Standard Subscription')).toBeTruthy();
+  });
 });

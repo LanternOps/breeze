@@ -17,13 +17,11 @@ import {
 } from './invoiceTypes';
 import { StatusPill } from './shared/StatusPill';
 
-function LineRow({ line, currency, taxRate, showTax, inTicketGroup }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean; inTicketGroup?: boolean }) {
+function LineRow({ line, currency, taxRate, showTax }: { line: InvoiceLine; currency: string; taxRate: string | null; showTax: boolean }) {
   const child = !!line.parentLineId;
   const tax = showTax ? lineTaxAmount(line.lineTotal, line.taxable, taxRate) : null;
-  const title = inTicketGroup ? (line.description || line.name || 'Labor') : lineTitle(line);
-  const blurb = inTicketGroup
-    ? (line.name && line.name !== title && (!line.ticketNumber || !line.name.startsWith(`[${line.ticketNumber}]`)) ? line.name : null)
-    : lineBlurb(line);
+  const title = lineTitle(line);
+  const blurb = lineBlurb(line);
   return (
     <tr className="border-b align-top last:border-0">
       <td className={`px-4 py-3 sm:px-5 ${child ? 'pl-8 text-muted-foreground' : 'text-foreground'}`}>
@@ -196,7 +194,9 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                           <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
                             <div className="flex flex-wrap items-center gap-2 text-xs">
                               <span className="font-semibold text-foreground">
-                                {group.ticketNumber ? `Ticket #${group.ticketNumber}` : 'Ticket work'}
+                                {group.ticketNumber
+                                  ? t('invoiceDocument.ticketHeader', { number: group.ticketNumber })
+                                  : t('invoiceDocument.ticketWork')}
                                 {group.ticketSubject ? `: ${group.ticketSubject}` : ''}
                               </span>
                               {group.ticketCategory && (
@@ -209,7 +209,7 @@ export function InvoiceDocument({ detail, customerName }: DocumentProps) {
                         </tr>
                       )}
                       {group.lines.map((l) => (
-                        <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} inTicketGroup={!!group.ticketId} />
+                        <LineRow key={l.id} line={l} currency={currency} taxRate={invoice.taxRate} showTax={showTax} />
                       ))}
                     </Fragment>
                   ))}

@@ -1918,6 +1918,8 @@
       "unitPrice": "Prezzo unitario"
     },
     "terms": "Termini e condizioni",
+    "ticketHeader": "Ticket n. {{number}}",
+    "ticketWork": "Lavoro relativo al ticket",
     "totals": {
       "amountDue": "Importo dovuto",
       "paid": "Pagato",

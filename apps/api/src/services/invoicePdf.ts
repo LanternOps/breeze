@@ -16,7 +16,7 @@
 
 import { createHash } from 'node:crypto';
 import PDFDocument from 'pdfkit';
-import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, count, eq, getTableColumns, isNull, ne, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { invoices, invoiceLineDevices, invoiceLines, invoiceDocuments, organizations, partners, portalBranding, tickets, ticketCategories } from '../db/schema';
 import { stripeConnectAccounts } from '../db/schema/stripePayments';
@@ -191,10 +191,8 @@ export function renderInvoiceHtml(invoice: InvoiceRow, lines: InvoiceLineRow[], 
       const taxCell = showTax
         ? `<td style="padding:6px 8px;font-size:13px;color:#6b7280;text-align:right;white-space:nowrap;">${t === null ? '&mdash;' : escapeHtml(formatMoney(t, currency, locale))}</td>`
         : '';
-      const title = g.ticketId ? (l.description || l.name || 'Labor') : lineTitle(l);
-      const blurb = g.ticketId
-        ? (l.name && l.name !== title && (!g.ticketNumber || !l.name.startsWith(`[${g.ticketNumber}]`)) ? l.name : '')
-        : lineBlurb(l);
+      const title = lineTitle(l);
+      const blurb = lineBlurb(l);
       return `
       <tr>
         <td style="padding:6px 8px;font-size:13px;color:#1f2937;">${escapeHtml(title)}${blurb ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;">${escapeHtml(blurb)}</div>` : ''}</td>
@@ -427,7 +425,7 @@ export function renderInvoicePdfBuffer(
           doc.fillColor('#1f2937').fontSize(9.5).font('Helvetica-Bold').text(fullHeader, left, y, { width: colDescW });
           const hHead = doc.heightOfString(fullHeader, { width: colDescW });
           if (group.ticketCategory) {
-            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(`Categorie: ${group.ticketCategory}`, left, y + hHead + 1, { width: colDescW });
+            doc.fillColor('#6b7280').fontSize(8.5).font('Helvetica').text(`Category: ${group.ticketCategory}`, left, y + hHead + 1, { width: colDescW });
             y += hHead + 14;
           } else {
             y += hHead + 4;
@@ -436,10 +434,8 @@ export function renderInvoicePdfBuffer(
         for (const l of group.lines) {
           if (y > doc.page.height - 140) { doc.addPage(); y = 50; }
           doc.fillColor('#1f2937').fontSize(10).font('Helvetica');
-          const title = group.ticketId ? (l.description || l.name || 'Labor') : lineTitle(l);
-          const blurb = group.ticketId
-            ? (l.name && l.name !== title && (!group.ticketNumber || !l.name.startsWith(`[${group.ticketNumber}]`)) ? l.name : '')
-            : lineBlurb(l);
+          const title = lineTitle(l);
+          const blurb = lineBlurb(l);
           const titleHeight = doc.heightOfString(title, { width: colDescW });
           const blurbHeight = blurb ? doc.heightOfString(blurb, { width: colDescW }) + 2 : 0;
           const descHeight = titleHeight + blurbHeight;
@@ -633,32 +629,16 @@ async function loadInvoiceForRender(invoiceId: string): Promise<{
   const [invoice] = await db.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) return null;
   const lines = await db.select({
-    id: invoiceLines.id,
-    invoiceId: invoiceLines.invoiceId,
-    orgId: invoiceLines.orgId,
-    parentLineId: invoiceLines.parentLineId,
-    sourceType: invoiceLines.sourceType,
-    sourceId: invoiceLines.sourceId,
-    sourceContractId: invoiceLines.sourceContractId,
-    catalogItemId: invoiceLines.catalogItemId,
-    ticketId: invoiceLines.ticketId,
-    name: invoiceLines.name,
-    description: invoiceLines.description,
-    quantity: invoiceLines.quantity,
-    unitPrice: invoiceLines.unitPrice,
-    costBasis: invoiceLines.costBasis,
-    revenueAllocation: invoiceLines.revenueAllocation,
-    taxable: invoiceLines.taxable,
-    customerVisible: invoiceLines.customerVisible,
-    lineTotal: invoiceLines.lineTotal,
-    isUnapprovedTime: invoiceLines.isUnapprovedTime,
-    sortOrder: invoiceLines.sortOrder,
-    createdAt: invoiceLines.createdAt,
-    ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+    ...getTableColumns(invoiceLines),
+    ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
     ticketSubject: tickets.subject,
     ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
   }).from(invoiceLines)
-    .leftJoin(tickets, eq(invoiceLines.ticketId, tickets.id))
+    .leftJoin(tickets, and(
+      eq(invoiceLines.ticketId, tickets.id),
+      eq(tickets.orgId, invoice.orgId),
+      isNull(tickets.deletedAt),
+    ))
     .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
     .where(eq(invoiceLines.invoiceId, invoiceId))
     .orderBy(invoiceLines.sortOrder);

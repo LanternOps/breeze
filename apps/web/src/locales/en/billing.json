@@ -1918,6 +1918,8 @@
       "unitPrice": "Unit price"
     },
     "terms": "Terms & Conditions",
+    "ticketHeader": "Ticket #{{number}}",
+    "ticketWork": "Ticket work",
     "totals": {
       "amountDue": "Amount due",
       "paid": "Paid",

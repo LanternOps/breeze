@@ -262,14 +262,15 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
               </thead>
               <tbody>
                 {(() => {
-                  const list: { key: string; ticketNumber: string | null; ticketSubject?: string | null; ticketCategory?: string | null; lines: typeof lines }[] = [];
+                  const list: { key: string; ticketId: string | null; ticketNumber: string | null; ticketSubject?: string | null; ticketCategory?: string | null; lines: typeof lines }[] = [];
                   const map = new Map<string, typeof list[0]>();
                   for (const l of lines) {
-                    const key = l.ticketNumber ?? '__none__';
+                    const key = l.ticketId ?? (l.ticketNumber ? `num_${l.ticketNumber}` : '__none__');
                     let g = map.get(key);
                     if (!g) {
                       g = {
                         key,
+                        ticketId: l.ticketId ?? null,
                         ticketNumber: l.ticketNumber ?? null,
                         ticketSubject: l.ticketSubject ?? null,
                         ticketCategory: l.ticketCategory ?? null,
@@ -282,12 +283,12 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                   }
                   return list.map((group) => (
                     <Fragment key={group.key}>
-                      {group.ticketNumber && (
+                      {(group.ticketId || group.ticketNumber) && (
                         <tr className="border-b bg-muted/30">
                           <td colSpan={showTax ? 5 : 4} className="px-4 py-2 sm:px-5">
                             <div className="flex flex-wrap items-center gap-2 text-xs">
                               <span className="font-semibold text-foreground">
-                                Ticket #{group.ticketNumber}{group.ticketSubject ? `: ${group.ticketSubject}` : ''}
+                                {group.ticketNumber ? `Ticket #${group.ticketNumber}` : 'Ticket work'}{group.ticketSubject ? `: ${group.ticketSubject}` : ''}
                               </span>
                               {group.ticketCategory && (
                                 <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground font-medium">
@@ -301,12 +302,8 @@ export function PublicInvoiceView({ token, initial = null, error }: PublicInvoic
                       {group.lines.map((l) => {
                         const index = lines.indexOf(l);
                         const tax = showTax ? lineTax(l.lineTotal, l.taxable, taxRate) : null;
-                        const title = group.ticketNumber
-                          ? (l.description || l.name || '—')
-                          : ((l.name ?? l.description ?? '').trim() || '—');
-                        const blurb = group.ticketNumber
-                          ? (l.name && l.name !== title && (!group.ticketNumber || !l.name.startsWith(`[${group.ticketNumber}]`)) ? l.name.trim() : '')
-                          : (l.name ? (l.description ?? '').trim() : '');
+                        const title = (l.name ?? l.description ?? '').trim() || '—';
+                        const blurb = l.name ? (l.description ?? '').trim() : '';
                         return (
                           <tr key={`${title}-${index}`} className="border-b align-top last:border-0">
                             <td className="px-4 py-3 text-foreground sm:px-5">

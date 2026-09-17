@@ -81,7 +81,7 @@ export interface InvoiceLine {
   sourceType: InvoiceLineSourceType;
   parentLineId: string | null;
   catalogItemId: string | null;
-  ticketId: string | null;
+  ticketId?: string | null;
   ticketNumber?: string | null;
   ticketSubject?: string | null;
   ticketCategory?: string | null;

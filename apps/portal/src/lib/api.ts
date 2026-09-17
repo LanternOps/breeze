@@ -470,6 +470,7 @@ export interface SellerSnapshot {
 }
 
 export interface InvoiceLine {
+  ticketId?: string | null;
   ticketNumber: string | null;
   ticketSubject?: string | null;
   ticketCategory?: string | null;

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { zValidator } from '../lib/validation';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, sql, isNull } from 'drizzle-orm';
 import { computeChargeNow } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import { invoices, invoiceLines, invoiceStripePayments, tickets, ticketCategories } from '../db/schema';
@@ -126,7 +126,8 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
     }
 
     const rows = await db.select({
-      ticketNumber: sql<string | null>`COALESCE(${tickets.internalNumber}, ${tickets.ticketNumber})`,
+      ticketId: invoiceLines.ticketId,
+      ticketNumber: sql<string | null>`COALESCE(${tickets.ticketNumber}, ${tickets.internalNumber})`,
       ticketSubject: tickets.subject,
       ticketCategory: sql<string | null>`COALESCE(${ticketCategories.name}, ${tickets.category})`,
       name: invoiceLines.name,
@@ -136,7 +137,11 @@ invoicesPublicRoutes.get('/:token', zValidator('param', tokenParam), async (c) =
       taxable: invoiceLines.taxable,
       lineTotal: invoiceLines.lineTotal,
     }).from(invoiceLines)
-      .leftJoin(tickets, eq(invoiceLines.ticketId, tickets.id))
+      .leftJoin(tickets, and(
+        eq(invoiceLines.ticketId, tickets.id),
+        eq(tickets.orgId, inv.orgId),
+        isNull(tickets.deletedAt),
+      ))
       .leftJoin(ticketCategories, eq(tickets.categoryId, ticketCategories.id))
       .where(and(eq(invoiceLines.invoiceId, inv.id), eq(invoiceLines.customerVisible, true)))
       .orderBy(invoiceLines.sortOrder);
