@@ -1258,7 +1258,17 @@ export async function createActionIntent(
   // Placed ahead of `resolveGuardrailForIntent` deliberately: the refusal
   // precedes every DB read and write, so a refused raise leaves no row, no
   // approval request and no proposal consumption behind.
-  if (isOrgWideGovernanceIntent(input.toolName, input.input) && !canMutateOrgWideGovernance(auth)) {
+  //
+  // HUMAN lane only. An `ai_agent` principal is governed by
+  // `checkAgentGuardrails` (resolved just below), which already denies these
+  // tools categorically (`agent_policy_denied`: session-only / secret-bearing /
+  // human-only). A device-bound run carries `allowedSiteIds`, so letting this
+  // gate run first would mask that denial with the wrong lane's error code.
+  if (
+    auth.principal?.kind !== 'ai_agent'
+    && isOrgWideGovernanceIntent(input.toolName, input.input)
+    && !canMutateOrgWideGovernance(auth)
+  ) {
     throw new ActionIntentError(SITE_CEILING_WRITE_DENIED_MESSAGE, 'site_ceiling');
   }
 

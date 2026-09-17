@@ -2950,6 +2950,27 @@ describe('createActionIntent org-wide governance site ceiling', () => {
     expect(guardrailMock.checkGuardrails).not.toHaveBeenCalled();
   });
 
+  it('leaves an ai_agent principal to the agent guardrails, not the human site ceiling', async () => {
+    // A device-bound run carries `allowedSiteIds`. If the human ceiling ran
+    // first it would mask the agent lane's own categorical denial
+    // (`agent_policy_denied`, secret-bearing / session-only) with the wrong
+    // error code — caught by agentIntentLifecycle.integration.test.ts in CI.
+    const agentAuth = { ...(makeAgentAuth() as object), allowedSiteIds: ['site-1'] } as Parameters<
+      typeof createActionIntent
+    >[0];
+    let caught: unknown;
+    try {
+      await createActionIntent(
+        agentAuth,
+        agentInput({ toolName: 'm365_reset_password', input: { userPrincipalName: 'a@b.test' } }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    // Whatever the agent lane decides, it is NOT the human site ceiling.
+    expect((caught as { code?: string } | undefined)?.code).not.toBe('site_ceiling');
+  });
+
   it('refuses a raiser whose ceiling is the EMPTY site list', async () => {
     // `allowedSiteIds: []` is a ceiling of zero sites, not "unrestricted".
     await expect(
