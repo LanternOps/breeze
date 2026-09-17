@@ -111,3 +111,68 @@ export function emailTemplateLabel(id: EmailTemplateId): string {
 export function emailTemplateHasCta(id: EmailTemplateId): boolean {
   return HAS_CTA_BY_ID[id];
 }
+
+/** Copy shown in the Settings editor when a partner has not saved an override.
+ *  Ticket subjects use merge vars so the form matches what send-time code builds. */
+export type EmailTemplateFieldDefaults = {
+  subject: string;
+  heading: string;
+  buttonLabel: string;
+  html: string;
+};
+
+const FIELD_DEFAULTS_BY_ID: Record<EmailTemplateId, EmailTemplateFieldDefaults> = {
+  ticket_comment_notification: {
+    subject: '[{{ticket_number}}] New reply: {{ticket_subject}}',
+    heading: 'New reply on your ticket',
+    buttonLabel: 'View ticket',
+    html:
+      `<p>Your ticket has a new reply. Sign in to the portal to view it.</p>
+<p>{{email_only_hint}}</p>
+<p>{{cta_button}}</p>`,
+  },
+  ticket_autoresponse: {
+    subject: '[{{ticket_number}}] We received your request: {{ticket_subject}}',
+    heading: 'We received your request',
+    buttonLabel: '',
+    html:
+      `<p>Thanks — we've received your request and opened ticket <strong>{{ticket_number}}</strong>.</p>
+<p>Reply to this email to add more detail; our team will follow up.</p>`,
+  },
+  ticket_resolved: {
+    subject: '[{{ticket_number}}] Resolved: {{ticket_subject}}',
+    heading: 'Your ticket has been resolved',
+    buttonLabel: 'View ticket',
+    html:
+      `<p>Your ticket has been resolved.</p>
+<p>{{resolution_note}}</p>
+<p>{{cta_button}}</p>`,
+  },
+  quote_send: {
+    subject: 'Proposal {{quote_number}} from {{partner_name}}',
+    heading: 'Proposal {{quote_number}}',
+    buttonLabel: 'Review & accept',
+    html:
+      `<p>Hi there,</p>
+<p>{{partner_name}} has sent you proposal <strong>{{quote_number}}</strong> for <strong>{{total}}</strong>.</p>`,
+  },
+  invoice_send: {
+    subject: 'Invoice {{invoice_number}} from {{partner_name}}',
+    heading: 'Invoice {{invoice_number}}',
+    buttonLabel: 'View invoice',
+    html:
+      `<p>Hi there,</p>
+<p>{{partner_name}} has sent you invoice <strong>{{invoice_number}}</strong>.</p>`,
+  },
+  portal_invite: {
+    subject: "You're invited to the {{org_name}} support portal",
+    heading: 'Join the {{org_name}} portal',
+    buttonLabel: 'Set your password',
+    html:
+      `<p>You have been invited to the support portal, where you can open tickets, view invoices, and track your devices.</p>`,
+  },
+};
+
+export function emailTemplateFieldDefaults(id: EmailTemplateId): EmailTemplateFieldDefaults {
+  return FIELD_DEFAULTS_BY_ID[id];
+}

@@ -4,6 +4,7 @@ import {
   varsForEmailTemplate,
   emailTemplateLabel,
   emailTemplateHasCta,
+  emailTemplateFieldDefaults,
 } from './emailTemplates';
 
 describe('email template catalog', () => {
@@ -81,5 +82,33 @@ describe('email template catalog', () => {
     expect(varsForEmailTemplate('portal_invite')).toEqual([
       'requester_name', 'partner_name', 'invite_url', 'org_name',
     ]);
+  });
+});
+
+describe('emailTemplateFieldDefaults', () => {
+  it('exposes the public-reply notice copy partners see in the editor', () => {
+    expect(emailTemplateFieldDefaults('ticket_comment_notification')).toEqual({
+      subject: '[{{ticket_number}}] New reply: {{ticket_subject}}',
+      heading: 'New reply on your ticket',
+      buttonLabel: 'View ticket',
+      html:
+        `<p>Your ticket has a new reply. Sign in to the portal to view it.</p>
+<p>{{email_only_hint}}</p>
+<p>{{cta_button}}</p>`,
+    });
+  });
+
+  it('covers every catalog id with a subject, heading, and html body', () => {
+    for (const id of EMAIL_TEMPLATE_IDS) {
+      const fields = emailTemplateFieldDefaults(id);
+      expect(fields.subject.length).toBeGreaterThan(0);
+      expect(fields.heading.length).toBeGreaterThan(0);
+      expect(fields.html).toContain('<p>');
+    }
+  });
+
+  it('has no button label for templates without a CTA', () => {
+    expect(emailTemplateFieldDefaults('ticket_autoresponse').buttonLabel).toBe('');
+    expect(emailTemplateFieldDefaults('ticket_comment_notification').buttonLabel).toBe('View ticket');
   });
 });
