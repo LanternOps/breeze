@@ -1,5 +1,7 @@
 -- Site-bound execution rows are distinct from reusable partner-wide monitor configuration.
 ALTER TABLE network_monitors ADD COLUMN IF NOT EXISTS site_id uuid;
+-- FORCE RLS binds the migration role; without system scope the backfill matches zero rows.
+SELECT set_config('breeze.scope', 'system', true);
 DO $$ DECLARE n bigint; BEGIN
  UPDATE network_monitors m SET site_id = a.site_id FROM discovered_assets a
  WHERE m.asset_id = a.id AND m.org_id = a.org_id AND m.site_id IS NULL;
