@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W03: Service, Worker and Routes — Implementation Plan
 
@@ -211,7 +211,7 @@ Binding for every task in this plan. Do not relax any of them without changing t
 - **The worker registers only when a provider is configured** — the `initializeAbuseSignalsWorker` enable-check shape (`jobs/abuseSignalsSweep.ts:149-188`), plus the readiness rule of plan amendment 3.
 - **Provider calls never run while a pooled DB connection is held** (#1105). Every provider/Redis/SMTP round trip sits *between* short `withSystemDbAccessContext` phases, never inside one — `jobs/ticketOutboxPublisher.ts:130-260` is the reference shape.
 - **Rigor is high** (tenancy, partner cascade, abuse surface). Red first on every task: write the failing test, run it, watch it fail for the stated reason, then implement. Before the PR run the contract suites against a real database: `pnpm test-stack up`, then the integration and RLS runs of Task 11, then `pnpm test-stack down`.
-- Branch `feature/__PARENT__-partner-sending-domains/wave-__W03__`; PR body contains `Closes #__W03__`. `get_feature_status` before starting.
+- Branch `feature/6180-partner-sending-domains/wave-6183`; PR body contains `Closes #6183`. `get_feature_status` before starting.
 - Test command form is `cd apps/api && npx vitest run <path>`. Never `pnpm --filter … test -- --run <path>` (the `--` is forwarded into argv and vitest runs the whole suite in watch mode).
 - Commit after every task with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -5278,7 +5278,7 @@ Expected: the worktree's private Postgres and Redis are gone. Nothing else reaps
 
 - [ ] **Step 8: Open the PR**
 
-Body must contain `Closes #__W03__`, the list of plan amendments above, and an explicit statement that the wave lands dark (provider unset → routes 404, worker not registered). Request one independent review round (high rigor: tenancy, partner cascade, abuse surface).
+Body must contain `Closes #6183`, the list of plan amendments above, and an explicit statement that the wave lands dark (provider unset → routes 404, worker not registered). Request one independent review round (high rigor: tenancy, partner cascade, abuse surface).
 
 ---
 

@@ -2,7 +2,7 @@
 title: Partner sending domains (custom outbound email domains, hosted and self-hosted)
 date: 2026-09-17
 status: Approved by Todd 2026-09-17 (Gate A) as written — D1–D7 resolved per the recommendations in §12. Advisor quorum applied (Fable + Opus; Codex capped until 2026-09-19)
-tracking_issue: none yet — register with feature-lifecycle after approval
+tracking_issue: LanternOps/breeze#6180
 related:
   - docs/superpowers/specs/ticketing/2026-06-13-ticketing-phase4-email-to-ticket-design.md
   - docs/superpowers/specs/ticketing/2026-06-29-m365-exchange-mailbox-email-to-ticket-design.md

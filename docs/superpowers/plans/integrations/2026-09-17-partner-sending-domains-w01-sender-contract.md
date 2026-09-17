@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W01: Sender Contract — Implementation Plan
 
@@ -44,7 +44,7 @@ Deviations from, and corrections to, the spec's §8.2 table and the index's W01 
 - **No database read anywhere in W01.** `resolveSender` returns the platform lane for every input; the partner branch (and its read) is W04. No call site may gain a query to supply `partnerId` — pass `null` and record it (spec §8.1).
 - **No new env var.** W01 reads no new configuration; `config/env.ts` and `config/validate.ts` are untouched (spec G7: "no new required env var, no boot refusal").
 - **No migration, no schema, no route, no worker.** W01 is types and call sites only. The index reserves no migration slot for it.
-- Branch `feature/__PARENT__-partner-sending-domains/wave-__W01__`; PR body contains `Closes #__W01__`. `get_feature_status` before starting.
+- Branch `feature/6180-partner-sending-domains/wave-6181`; PR body contains `Closes #6181`. `get_feature_status` before starting.
 - Test command form: `cd apps/api && npx vitest run <path>` — never `pnpm --filter … test -- --run <path>` (it runs the whole suite; CLAUDE.md "Two traps"). Vitest path filters are plain substrings, so list sibling files explicitly.
 - Typecheck command (what CI's `typecheck` job runs, from the repo root): `pnpm exec tsc --noEmit --project apps/api/tsconfig.json`. `apps/api/tsconfig.json` has `"include": ["src/**/*"]`, so **test files are type-checked** — a test that constructs `SendEmailParams` must compile.
 - Rigor is **low/medium** for this wave (index "Rules every wave inherits": W01 is wide but low-risk): red first on every task, typecheck, affected tests, then the full `apps/api` unit suite before the PR. No RLS or integration contract suite is needed — W01 adds no table and no DB access.
@@ -2791,4 +2791,4 @@ Expected: clean.
 | The three tests pinning the literal platform From updated, keeping their fallback assertions | spec §14 `sendEmail` bullet | 7 (`quoteLifecycle.test.ts`, `invoiceResend.test.ts`), 8 (`email.test.ts`) |
 | No rendered email changes; hosted state after merge = no behaviour change | spec §15 row W01 | 3, 7, 10 |
 | No new env var, no migration, no boot refusal | spec G7, §15 | 10 (Step 6) |
-| Branch, `Closes #__W01__`, commit trailer, `cd apps/api && npx vitest run <path>` | index "Rules every wave inherits" | Global Constraints, every task |
+| Branch, `Closes #6181`, commit trailer, `cd apps/api && npx vitest run <path>` | index "Rules every wave inherits" | Global Constraints, every task |

@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W05: Web UI and Docs — Implementation Plan
 
@@ -157,8 +157,8 @@ same PR.
   address is composed for display only (spec §4.4).
 - **The tab is hidden when the feature is unsupported** — and per plan amendment
   3 that means exactly: the `GET` 404s, or `capability.provider === null`.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W05__`; the PR
-  body contains `Closes #__W05__`.** `get_feature_status` before starting.
+- **Branch `feature/6180-partner-sending-domains/wave-6185`; the PR
+  body contains `Closes #6185`.** `get_feature_status` before starting.
 - **Web test command form:** `cd apps/web && npx vitest run <path>`. Never
   `pnpm --filter <pkg> test -- --run <path>` — pnpm forwards the literal `--`,
   vitest swallows `--run`, and the whole suite runs in watch mode. A trailing
@@ -5484,8 +5484,8 @@ Expected: no project from this worktree still running.
 
 - [ ] **Step 7: Open the PR**
 
-Branch `feature/__PARENT__-partner-sending-domains/wave-__W05__`, PR body
-contains `Closes #__W05__`, the release-notes block from Task 14 under a
+Branch `feature/6180-partner-sending-domains/wave-6185`, PR body
+contains `Closes #6185`, the release-notes block from Task 14 under a
 `## Release notes` heading, and a line stating that `portal-dev-e2e` is
 non-blocking so the new spec is signal rather than a gate. `get_feature_status`
 and `complete_wave` per the feature-lifecycle skill.

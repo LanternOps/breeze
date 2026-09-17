@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W06: Delivery Feedback and Abuse Controls — Implementation Plan
 
@@ -328,8 +328,8 @@ in the same PR.
   vitest swallows `--run`, and the whole suite runs in watch mode). Vitest's path
   filter is a plain substring, so list sibling files explicitly and check the
   reported file count. `apps/web` uses `cd apps/web && npx vitest run <path>`.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W06__`; PR body
-  contains `Closes #__W06__`.** `get_feature_status` before starting.
+- **Branch `feature/6180-partner-sending-domains/wave-6186`; PR body
+  contains `Closes #6186`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -5546,9 +5546,9 @@ session brought up. Nothing reaps a local stack for you.
 
 ```bash
 cd /Users/toddhebebrand/.herdr/worktrees/breeze/outbound-email-domain
-git push -u origin feature/__PARENT__-partner-sending-domains/wave-__W06__
+git push -u origin feature/6180-partner-sending-domains/wave-6186
 gh pr create --base main --title "W06: partner sending domains — delivery feedback and abuse controls" --body "$(cat <<'EOF'
-Closes #__W06__
+Closes #6186
 
 W06 of the partner-sending-domains feature (spec §9.2, §9.3, §11, §16.1 step 4).
 This is the gate for HOSTED general availability, not a functional dependency of

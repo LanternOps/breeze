@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner sending domains — Plan Index
 
@@ -8,19 +8,19 @@ tracking_issue: LanternOps/breeze#__PARENT__
 recommendations). The amendments below are applied by these plans.
 
 One plan document per wave. Each wave is one PR on its own branch
-`feature/__PARENT__-partner-sending-domains/wave-<sub-issue#>` with
+`feature/6180-partner-sending-domains/wave-<sub-issue#>` with
 `Closes #<sub-issue#>` in the PR body. State lives on GitHub
 (feature-lifecycle); the wave issue is the source of truth for status, never
 this index. `get_feature_status` before starting any wave.
 
 | Wave | Plan | Depends on |
 |---|---|---|
-| W01 (#__W01__) | [Sender contract: `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified, `resolveSender` (platform lane only), `deliverRaw`, golden test](2026-09-17-partner-sending-domains-w01-sender-contract.md) | — |
-| W02 (#__W02__) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`](2026-09-17-partner-sending-domains-w02-data-model-and-adapters.md) | W01 (`deliverRaw`) |
-| W03 (#__W03__) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w03-service-worker-routes.md) | W02 |
-| W04 (#__W04__) | [Partner lane: partner branch of `resolveSender`, partner-lane send with fallback semantics, daily cap, `X-Breeze-Outbound` and loop prevention](2026-09-17-partner-sending-domains-w04-partner-lane.md) | W01, W03 |
-| W05 (#__W05__) | [Web UI and docs: settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, self-hosting guide](2026-09-17-partner-sending-domains-w05-web-ui-and-docs.md) | W03 (UI), W04 (end-to-end) |
-| W06 (#__W06__) | [Feedback and abuse: delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics](2026-09-17-partner-sending-domains-w06-delivery-feedback-and-abuse.md) | W04 |
+| W01 (#6181) | [Sender contract: `MAIL_PURPOSES` registry, required `purpose` on `sendEmail`, raw `from` removed, every send site classified, `resolveSender` (platform lane only), `deliverRaw`, golden test](2026-09-17-partner-sending-domains-w01-sender-contract.md) | — |
+| W02 (#6182) | [Foundation A: migration (three tables, RLS, release guard), Drizzle schema, allowlist registrations, shared validators, env + boot validation, `EmailDomainProvider` with `resend` / `static` / `fake` adapters, `custom_sending_domain` capability, provider-release hooks in `cascadeDeletePartner` / `finalizePartnerOffboarding`](2026-09-17-partner-sending-domains-w02-data-model-and-adapters.md) | W01 (`deliverRaw`) |
+| W03 (#6183) | [Foundation B: domain service, `sending-domains` worker and cadence, partner and admin routes, outbox drain, audit, status-transition mail, drift report](2026-09-17-partner-sending-domains-w03-service-worker-routes.md) | W02 |
+| W04 (#6184) | [Partner lane: partner branch of `resolveSender`, partner-lane send with fallback semantics, daily cap, `X-Breeze-Outbound` and loop prevention](2026-09-17-partner-sending-domains-w04-partner-lane.md) | W01, W03 |
+| W05 (#6185) | [Web UI and docs: settings tab (DNS and `static` variants), identities, test send, i18n, E2E, `apps/docs` page, self-hosting guide](2026-09-17-partner-sending-domains-w05-web-ui-and-docs.md) | W03 (UI), W04 (end-to-end) |
+| W06 (#6186) | [Feedback and abuse: delivery webhooks, daily stats, automatic suspension, abuse signals, evidence-card entry, admin metrics](2026-09-17-partner-sending-domains-w06-delivery-feedback-and-abuse.md) | W04 |
 
 W01 → W02 → W03 → W04 are serial. W05 may start once W03 has merged (its
 E2E needs W04). W06 starts after W04. Hosted stays dark (provider unset) through

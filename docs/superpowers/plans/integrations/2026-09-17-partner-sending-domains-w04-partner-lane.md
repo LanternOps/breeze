@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W04: Partner Lane — Implementation Plan
 
@@ -52,7 +52,7 @@ Verbatim binding rules for this wave.
 - **No new table, no migration, no new env var.** W04 consumes `EMAIL_DOMAINS_*` as W02 declared them; the index reserves no migration slot for this wave.
 - **Rigor is high** (send path, tenancy, abuse surface — index "Rules every wave inherits"). Red first on every task: write the failing assertion, run it, watch it fail, then implement. Before the PR: `pnpm test-stack up`, the RLS and integration contract suites, then `pnpm test-stack down` — nothing reaps it for you.
 - **Test command form:** `cd apps/api && npx vitest run <path>`. Never `pnpm --filter <pkg> test -- --run <path>`: pnpm forwards the literal `--`, vitest swallows `--run`, and the whole suite runs in watch mode. Vitest's path filter is a plain substring, so list sibling files explicitly and check the reported file count.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W04__`; PR body contains `Closes #__W04__`.** `get_feature_status` before starting.
+- **Branch `feature/6180-partner-sending-domains/wave-6184`; PR body contains `Closes #6184`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
@@ -4061,4 +4061,4 @@ Expected: the second command lists nothing this session started. Say in the PR w
 | Loop prevention: own Message-ID ignored; a technician writing from the identity address is not | §14 "Loop prevention" | 10 |
 | The send path never writes a partner-axis table (no `ALLOWED_WITHOUT_CAPABILITY_CHECK` entry) | §3.1; W02 amendment 3 | Global Constraints, 4, 12 Step 4 |
 | Hosted state after merge: dark (provider unset) | §15 row W04 | 2 (`lane_unconfigured` before any read), 5 (golden test unchanged), 11 (live dark case), 12 |
-| Branch, `Closes #__W04__`, commit trailer, `cd apps/api && npx vitest run <path>`, contract suites before the PR | index "Rules every wave inherits" | Global Constraints, every task |
+| Branch, `Closes #6184`, commit trailer, `cd apps/api && npx vitest run <path>`, contract suites before the PR | index "Rules every wave inherits" | Global Constraints, every task |

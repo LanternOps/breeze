@@ -1,5 +1,5 @@
 ---
-tracking_issue: LanternOps/breeze#__PARENT__
+tracking_issue: LanternOps/breeze#6180
 ---
 # Partner Sending Domains W02: Data Model, Config and Adapters — Implementation Plan
 
@@ -191,8 +191,8 @@ binding.
   vitest swallows `--run`, and the whole suite runs in watch mode).
   `packages/shared` and `apps/web` use the same `cd <dir> && npx vitest run
   <path>` form.
-- **Branch `feature/__PARENT__-partner-sending-domains/wave-__W02__`; PR body
-  contains `Closes #__W02__`.** `get_feature_status` before starting.
+- **Branch `feature/6180-partner-sending-domains/wave-6182`; PR body
+  contains `Closes #6182`.** `get_feature_status` before starting.
 - **Commit after every task** with the trailer
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -5245,7 +5245,7 @@ Expected: this worktree's test stack is gone. Say in the PR what, if anything,
 was left running.
 
 PR body must contain:
-- `Closes #__W02__`
+- `Closes #6182`
 - the three new tables with their tenancy shape and the justification spec §3.1
   requires for a partner-axis (not org-XOR-partner) config table: the From
   domain is the MSP's identity, a per-org sending domain is the internal
