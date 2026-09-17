@@ -556,12 +556,19 @@ describe('topology diagnostic results', () => {
     await dispatchTopologyDiagnosticRun(f.scope, run.id, { deliver: async () => true });
     const [command] = await f.commandsForRun(run.id);
     const current = (await f.asUser(() => getTopologyDiagnosticRun(f.context, run.id)))!;
+    const revisions = () => system(async () => (await db.execute(sql`SELECT health_revision::text AS health, graph_revision::text AS graph, dirty_revision::text AS dirty
+      FROM topology_site_state WHERE org_id=${f.scope.orgId}::uuid AND site_id=${f.scope.siteId}::uuid`))[0]!);
+    const before = await revisions();
 
     const first = await acceptTopologyDiagnosticResult(
       f.producer(command!.id),
       resultFor(current),
     );
     expect(first).toEqual({ accepted: true, historicalOnly: false });
+    // A new outcome refreshes health only; the map's structure did not change and nothing is rebuilt.
+    const after = await revisions();
+    expect(BigInt(String(after.health))).toBe(BigInt(String(before.health)) + 1n);
+    expect({ graph: after.graph, dirty: after.dirty }).toEqual({ graph: before.graph, dirty: before.dirty });
 
     const settled = (await f.asUser(() => getTopologyDiagnosticRun(f.context, run.id)))!;
     expect(settled.state).toBe('completed');
@@ -575,6 +582,7 @@ describe('topology diagnostic results', () => {
       resultFor(current),
     );
     expect(replay).toEqual({ accepted: true, historicalOnly: true });
+    expect((await revisions()).health).toBe(after.health);
     expect(await f.stepsForRun(run.id)).toHaveLength(run.plan.steps.length);
     expect((await f.row(run.id))!.state).toBe('completed');
   });

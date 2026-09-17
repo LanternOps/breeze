@@ -124,12 +124,12 @@ describe('summarizeTopologyDiagnosticRun', () => {
     ).toMatchObject({ assessment: 'healthy', coverage: 'complete' });
   });
 
-  it('collects deduplicated, sorted step reasons', () => {
+  it('collects deduplicated, sorted assessment and step reasons', () => {
     expect(
       summarizeTopologyDiagnosticRun(plan([true, true]), [
         step(0, 'failed_check', 'destination_unreachable'),
         step(1, 'failed_check', 'destination_unreachable'),
       ]).reasons,
-    ).toEqual(['destination_unreachable']);
+    ).toEqual(['destination_unreachable', 'icmp_check_failed']);
   });
 });

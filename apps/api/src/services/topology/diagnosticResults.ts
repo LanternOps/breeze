@@ -1,3 +1,5 @@
+import { assessTopologyDiagnosticRun } from './diagnosticHealth';
+import { advanceTopologyHealthRevision } from './monitorOverlays';
 import { and, eq } from 'drizzle-orm';
 
 import {
@@ -57,28 +59,33 @@ const MEASURED_FAILURES = new Set(['failed_check', 'timeout']);
 export function summarizeTopologyDiagnosticRun(
   plan: Pick<TopologyDiagnosticPlan, 'steps'>,
   steps: TopologyDiagnosticStep[],
+  options: { now?: Date } = {},
 ): TopologyDiagnosticSummary {
+  // One assessor decides health for the run row and the graph projection, so
+  // the two can never disagree about the same evidence.
+  // Steps in an accepted frame are being received now; the agent cannot stamp that.
+  const receivedAt = (options.now ?? new Date()).toISOString();
+  const { summary } = assessTopologyDiagnosticRun(
+    plan as TopologyDiagnosticPlan,
+    steps.map((step) => ({ ...step, receivedAt: step.receivedAt ?? receivedAt })),
+    options,
+  );
+  const assessment = summary.status;
+
+  // Run coverage is about the required plan: an unsupported or indeterminate
+  // step was answered but measured nothing, so it leaves coverage short.
   const byId = new Map(steps.map((step) => [step.id, step]));
   const required = plan.steps.filter((step) => step.required);
-  const outcomes = required.map((step) => byId.get(step.id));
-
-  const measured = outcomes.filter(
-    (step) => step && (step.state === 'succeeded' || MEASURED_FAILURES.has(step.state)),
-  ) as TopologyDiagnosticStep[];
-  const successes = measured.filter((step) => step.state === 'succeeded').length;
-  const failures = measured.length - successes;
-
+  const measured = required.filter((entry) => {
+    const state = byId.get(entry.id)?.state;
+    return state === 'succeeded' || (state !== undefined && MEASURED_FAILURES.has(state));
+  });
   const coverage: TopologyDiagnosticSummary['coverage'] =
     required.length > 0 && measured.length === required.length
       ? 'complete'
       : measured.length > 0
         ? 'partial'
         : 'none';
-
-  let assessment: TopologyDiagnosticSummary['assessment'];
-  if (failures > 0) assessment = successes > 0 ? 'degraded' : 'failed_check';
-  else if (coverage === 'complete') assessment = 'healthy';
-  else assessment = 'unknown';
 
   // `failed` is reserved for orchestration failure. An `unsupported` or
   // `skipped` step is a complete, honest agent answer that leaves coverage
@@ -90,11 +97,12 @@ export function summarizeTopologyDiagnosticRun(
       : 'completed';
 
   const reasons = [
-    ...new Set(
-      steps
+    ...new Set([
+      ...summary.reasons,
+      ...steps
         .map((step) => step.reason)
         .filter((reason): reason is string => typeof reason === 'string'),
-    ),
+    ]),
   ].sort();
 
   return { state, assessment, coverage, reasons: reasons.slice(0, 64) };
@@ -207,7 +215,7 @@ export async function acceptTopologyDiagnosticResult(
         return { accepted: true, historicalOnly: true };
       }
 
-      const summary = summarizeTopologyDiagnosticRun(plan, frame.steps);
+      const summary = summarizeTopologyDiagnosticRun(plan, frame.steps, { now });
       await db
         .update(topologyDiagnosticRuns)
         .set({
@@ -226,6 +234,8 @@ export async function acceptTopologyDiagnosticResult(
             eq(topologyDiagnosticRuns.state, run.state),
           ),
         );
+      // Health moved; structure and layout did not.
+      await advanceTopologyHealthRevision(db, { orgId: run.orgId, siteId: run.siteId });
       return { accepted: true, historicalOnly: false };
     }, 'topology diagnostic result acceptance'),
   );
