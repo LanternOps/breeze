@@ -41,14 +41,37 @@ A 2026-09-17 review found the registry has outgrown both. Verified on main `9fa3
 5. **No write without read-back.** A `manage_*` action must have a read action that returns what it wrote.
 6. **Never rename a tool.** Names are in client allowlists, audit rows, approvals and `ai_tool_executions`.
 
+## Domains (decided 2026-09-17)
+
+Closed union; adding one is a reviewed change. A tool has exactly one. `psa` was rejected as a name: `query_psa_status` already uses "PSA" for external ConnectWise-style sync.
+
+| Domain | Contents |
+|---|---|
+| `core` | always-loaded context tools: `resolve_device_context`, `query_devices`, `list_organizations`, `search_documentation`, … (final set from A-W01 telemetry) |
+| `devices` | device detail, groups, tags, custom fields, files, registry, processes, remote sessions, active users, performance |
+| `scripts` | scripts, library, proposals, executions, automations, playbooks, tenant variables |
+| `patching` | patches, update rings, software policies/inventory/catalog, deployments, maintenance windows, vulnerabilities |
+| `monitoring` | alerts, alert rules, monitors, service monitors, logs, metrics/analytics, incidents, SLA |
+| `network` | discovery assets, topology, SNMP, baselines, network changes, DNS, IP history |
+| `security` | posture, CIS, compliance/config policies, PAM/elevation, peripherals, browser, sensitive data, user risk, audit log |
+| `backup` | backup configs/profiles/status, vaults, snapshots, SLA, DR, Hyper-V, MSSQL |
+| `tickets` | tickets, time entries, parts, checklists, ticket configuration |
+| `billing` | contracts, invoices, quotes, catalog, distributor lookup, Pax8 |
+| `accounts` | organizations, sites, contacts, org documents, key dates, deliverables |
+| `integrations` | M365, Google, C2C, Huntress, SentinelOne, webhooks, notification channels, PSA sync |
+| `admin` | users/roles reads, saved filters, reports, agent versions/log level, invite funnel |
+| `ai` | AI-agent governance, runs, schedules, operator tasks, artifacts, tool sources |
+
+Page-context boosts combine domains (a ticket page loads `tickets` + `devices` + `accounts`); nothing ever requires picking one.
+
 ## Feature A — Agent tool efficiency (in-product agents)
 
 | Wave | Scope | Blast radius |
 |---|---|---|
 | **A-W01 Baseline and harness** | (a) Request-capture harness per surface (web chat, Helper basic/standard/extended, agent `full` profile, script AI, one BYO `ANTHROPIC_BASE_URL` endpoint): tools sent, `input_tokens`, `cache_creation/read_input_tokens`, time-to-first-token, whether `tool_reference`/ToolSearch appears. Answers "is tool search already on, and where does it silently fall back or fail?". (b) Golden tool-selection eval: ~60 real MSP prompts → expected tool(+action), scored on first-call accuracy and calls-to-answer; runs in CI as non-blocking report. (c) Hot/cold tool report from `ai_tool_executions` (90 days, both regions — read-only SQL Todd runs or a platform-admin report endpoint). Output: a baseline doc committed next to this spec. | Low |
-| **A-W02 Registry metadata** | Add `domain` (closed union, ~11 values + `core`), `searchHint`, `alwaysLoad` to `AiTool` and the SDK declaration; extend the parity contract test; new contract test: every tool has exactly one domain and a hint ≤ 120 chars. Generate the system prompt's "Available Tools by Domain" block from the registry (delete the hand list). Pass `searchHint`/`alwaysLoad` through `tool()`. | Low–medium (touches all tool files mechanically) |
+| **A-W02 Registry metadata** | Add `domain` (closed union of 14, see Domains), `searchHint`, `alwaysLoad` to `AiTool` and the SDK declaration; extend the parity contract test; new contract test: every tool has exactly one domain and a hint ≤ 120 chars. Generate the system prompt's "Available Tools by Domain" block from the registry (delete the hand list). Pass `searchHint`/`alwaysLoad` through `tool()`. | Low–medium (touches all tool files mechanically) |
 | **A-W03 Description diet** | Lint in Test API: tool description ≤ 300 chars, param description ≤ 160, no workflow prose. Move long how-to text into `mcpGuidance` prompts + `search_documentation` content; keep disambiguation ("vulnerability vs posture vs patching") once, in the generated index. Frozen baseline of offenders shrinks to zero across the wave. Re-run A-W01 eval — accuracy must not drop. | Low |
-| **A-W04 Load policy per surface** | Explicit `ENABLE_TOOL_SEARCH` policy instead of inherited default. `alwaysLoad` core set chosen from A-W01 telemetry (target ≤ 15). Helper switches from permission-only allowlist to real `onlyTools` subset (8–14 tools, no search needed). Web chat: page-context domain boost (device page → `devices`, `scripts`, `patching` always-loaded). BYO endpoints that reject tool search fall back to `onlyTools` by domain picked from page context + a `list_tool_domains`/`load_tool_domain` pair *only on that fallback path*. Tenant `extraTools`: deterministic order, registered last, deferred, so the core tools prefix stays cache-stable. | Medium (agent behaviour; credit cost) |
+| **A-W04 Load policy per surface** | Explicit `ENABLE_TOOL_SEARCH` policy instead of inherited default. `alwaysLoad` core set chosen from A-W01 telemetry (target ≤ 15). Helper switches from permission-only allowlist to real `onlyTools` subset (8–14 tools, no search needed). Web chat: page-context domain boost (device page → `devices`, `scripts`, `patching`; ticket page → `tickets`, `devices`, `accounts`). BYO endpoints that reject tool search fall back to `onlyTools` by domain picked from page context + a `list_tool_domains`/`load_tool_domain` pair *only on that fallback path*. Tenant `extraTools`: deterministic order, registered last, deferred, so the core tools prefix stays cache-stable. | Medium (agent behaviour; credit cost) |
 | **A-W05 Output efficiency** | Fix #6140 redactor first if not already landed (own PR, security-reviewed). Then: per-tool result shaping review for the 20 hottest tools, pagination params where results are truncated by the 8k cap, `resource_link`-style handles for large payloads (exports, logs), structured results. | Medium–high (#6140 loosens a secrets filter) |
 | **A-W06 Coverage burn-down, agent-first** | From #6141, only the gaps in-product agents hit: time entries read (#6139), org contacts read, incident list, network asset list/detail, remediation suggestions, AI-agent reads, `list_sites`. Each new tool ships with domain + hint + read-back. Adds the `MCP_COVERAGE` route→tool contract test so the gap stops growing. | Per tool; tenancy-sensitive reads need route parity tests |
 
@@ -78,7 +101,7 @@ A-W02 is the keystone: both features and the #6141 contract test consume its met
 
 ## Open decisions
 
-1. **Domain list.** Proposed: `core, devices, scripts, patching, monitoring, network, security, backup, psa, billing, cloud, admin, ai`. Closed union; adding one is a reviewed change.
+1. ~~Domain list~~ — **decided 2026-09-17**, see Domains.
 2. **Tool search on Haiku surfaces.** If A-W01 shows Haiku 4.5 selects worse through search than from a static subset, Helper and triage profiles stay on `onlyTools`.
 3. **Hot/cold telemetry access.** Read-only SQL run by Todd vs a platform-admin report endpoint (the latter is reusable for ongoing pruning).
 4. **Advisor quorum.** Codex `xhigh` opinion on B-W02's grant shape and A-W04's BYO fallback is owed before those waves are planned (subscription exhausted until 2026-09-19).
