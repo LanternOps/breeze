@@ -177,7 +177,18 @@ describe('ci-success gating contract', () => {
   it('every code job is gated on the classifier (docs-only PRs skip it)', () => {
     // docs-check is gated on the `docs` output instead; build-mobile-ios inherits the gate
     // through mobile-native-changes (its two lines are pinned by mobile-native-ci.test.mjs).
-    const exempt = new Set(['changes', 'docs-check', 'ci-success', 'main-red-alert', 'build-mobile-ios']);
+    // topology-browser-gate is gated on the narrower `topology_browser` output,
+    // which the classifier only ever sets on a non-docs path — so it is already
+    // skipped on a docs-only PR. Its two lines are pinned by
+    // classify-pr-paths.test.mjs.
+    const exempt = new Set([
+      'changes',
+      'docs-check',
+      'ci-success',
+      'main-red-alert',
+      'build-mobile-ios',
+      'topology-browser-gate',
+    ]);
     const ungated = workflowJobs.filter((job) => {
       if (exempt.has(job)) return false;
       const body = jobBodies.get(job) ?? '';
