@@ -228,8 +228,14 @@ func ValidateDestination(target Target, address netip.Addr, route networkcontext
 	if address.IsLoopback() {
 		return ErrBlocked
 	} // Stub exception requires the runner's fresh resolver proof.
+	// The planned gateway is a claim the server made from stored evidence; only
+	// the live selected route says where traffic actually leaves this host. They
+	// must agree for EVERY gateway target, not only the link-local ones.
+	if target.Kind == "observed_gateway" && (route.NextHop == nil || *route.NextHop != address.WithZone("").String()) {
+		return ErrBlocked
+	}
 	if address.IsLinkLocalUnicast() {
-		if target.Kind != "observed_gateway" || target.Zone == nil || *target.Zone != route.InterfaceKey || route.NextHop == nil || *route.NextHop != address.WithZone("").String() {
+		if target.Kind != "observed_gateway" || target.Zone == nil || *target.Zone != route.InterfaceKey {
 			return ErrBlocked
 		}
 	}

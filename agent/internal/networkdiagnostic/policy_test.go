@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+
 	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"net/netip"
 	"os"
@@ -54,5 +56,40 @@ func TestDestinationPolicy(t *testing.T) {
 	}
 	if e := ValidateDestination(Target{Kind: "observed_gateway", Zone: ptr("if-2")}, netip.MustParseAddr("fe80::1"), route); e == nil {
 		t.Fatal("foreign zone")
+	}
+}
+
+// The planned gateway is a claim about the graph; only the live selected route
+// says where traffic actually leaves. They must agree for every gateway target,
+// not only the link-local ones.
+func TestGatewayDestinationRequiresLiveNextHop(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		address string
+		zone    *string
+		nextHop *string
+		blocked bool
+	}{
+		{name: "routable gateway matches live next hop", address: "192.0.2.1", nextHop: ptr("192.0.2.1")},
+		{name: "routable gateway differs from live next hop", address: "192.0.2.1", nextHop: ptr("192.0.2.254"), blocked: true},
+		{name: "routable gateway with no live next hop", address: "192.0.2.1", nextHop: nil, blocked: true},
+		{name: "link-local gateway matches", address: "fe80::1", zone: ptr("if-1"), nextHop: ptr("fe80::1")},
+		{name: "link-local gateway foreign zone", address: "fe80::1", zone: ptr("if-2"), nextHop: ptr("fe80::1"), blocked: true},
+		{name: "link-local gateway differs from live next hop", address: "fe80::1", zone: ptr("if-1"), nextHop: ptr("fe80::2"), blocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route := networkcontext.RouteSelection{InterfaceKey: "if-1", ContextKey: "ctx", Attribution: "observed", NextHop: tc.nextHop}
+			e := ValidateDestination(
+				Target{Kind: "observed_gateway", Zone: tc.zone},
+				netip.MustParseAddr(tc.address),
+				route,
+			)
+			if tc.blocked && !errors.Is(e, ErrBlocked) {
+				t.Fatalf("expected ErrBlocked, got %v", e)
+			}
+			if !tc.blocked && e != nil {
+				t.Fatalf("expected allowed, got %v", e)
+			}
+		})
 	}
 }
