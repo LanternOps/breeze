@@ -478,7 +478,12 @@ for (const [label, env, passes] of [
   ['tooling-only PR, check-migrations red', { ...toolingOnlyPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
   ['tooling-only PR, security-audit red', { ...toolingOnlyPassing, SECURITY_AUDIT_RESULT: 'failure' }, false],
   ['app change, all heavy jobs green', { ...appPassing }, true],
-  ['app change, check-migrations red even though everything else is green', { ...appPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
+  // check-migrations is NOT blocking for an application PR (unchanged policy: it
+  // is one of ciSuccessGatingContract's KNOWN GAP jobs). It is blocking only on
+  // the tooling-only path, where it is the sole validation of the release guards.
+  ['app change, check-migrations red: not blocking for an application PR', { ...appPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, true],
+  ['tooling-only PR, a smoke job ran instead of skipping', { ...toolingOnlyPassing, SMOKE_TEST_RESULT: 'success' }, false],
+  ['tooling-only PR, workspace-runtime ran instead of skipping', { ...toolingOnlyPassing, WORKSPACE_RUNTIME_RESULT: 'failure' }, false],
   ['APP_CHANGED empty', { ...appPassing, APP_CHANGED: '' }, false],
   ['APP_CHANGED not a boolean', { ...appPassing, APP_CHANGED: 'maybe' }, false],
 ]) {

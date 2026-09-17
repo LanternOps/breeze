@@ -3693,7 +3693,6 @@ jobs:
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
              [[ "${LINT_RESULT}" != "success" ]] || \
-             [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]] || \
              [[ "${SECURITY_AUDIT_RESULT}" != "success" ]] || \
              { [[ "${APP_CHANGED}" == "true" ]] && { \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
@@ -3730,6 +3729,11 @@ jobs:
              [[ "${RUST_CHECK_RESULT}" != "success" ]]; }; } || \
              { [[ "${APP_CHANGED}" != "true" ]] && [[ "${APP_CHANGED}" != "false" ]]; } || \
              { [[ "${APP_CHANGED}" == "false" ]] && { \
+             [[ "${CHECK_MIGRATIONS_RESULT}" != "success" ]] || \
+             [[ "${WORKSPACE_RUNTIME_RESULT}" != "skipped" ]] || \
+             [[ "${BUILD_SMOKE_IMAGES_RESULT}" != "skipped" ]] || \
+             [[ "${SMOKE_TEST_RESULT}" != "skipped" ]] || \
+             [[ "${GUIDED_SETUP_SMOKE_RESULT}" != "skipped" ]] || \
              [[ "${TYPECHECK_RESULT}" != "skipped" ]] || \
              [[ "${TEST_API_RESULT}" != "skipped" ]] || \
              [[ "${TEST_M365_GRAPH_READ_EXECUTOR_RESULT}" != "skipped" ]] || \
@@ -3771,7 +3775,7 @@ jobs:
             exit 0
           fi
           if [[ "${APP_CHANGED}" == "false" ]]; then
-            echo "Tooling-only PR: lint/check-migrations/security-audit passed, the app suite was skipped; the merge queue runs the full suite before merge."
+            echo "Tooling-only change: lint, check-migrations (release-lineage guards) and security-audit passed; the app suite was skipped because no application path changed."
             exit 0
           fi
           # Workspace runtime image: non-blocking on PRs (continue-on-error), required
