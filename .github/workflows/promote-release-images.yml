@@ -13,12 +13,24 @@ name: Promote Release Images
 # same verification, without re-running the asset upload. It never builds or
 # pushes image bytes: it retags the exact digests the release pipeline signed.
 #
-# Guarantees (enforced by scripts/release/check-release-lineage.test.mjs):
-#   - dispatch-only, and only from `main` (the verifier script is main's);
+# What actually holds the line (enforced by check-release-lineage.test.mjs):
+#   - the manifest signature is verified against the official release key, and
+#     the manifest must name this exact tag and repository;
 #   - the inventory artifact comes from a Release run whose head SHA is the
 #     tag's commit, and the manifest's own `sourceCommit` must match it too;
-#   - the manifest signature is verified against the official release key;
-#   - the image matrix and moving-channel policy mirror release.yml exactly.
+#   - moving channels (`:X.Y`, `:X`, `:latest`) move ONLY when the tag is the
+#     newest stable release. release.yml cannot walk a channel backwards
+#     because it only runs at tag-push time; a hand dispatch could (a typo'd
+#     old tag), so an older or pre-release tag gets its exact tags only;
+#   - the image matrix mirrors release.yml exactly, in both directions.
+#
+# The main-only check below is a FOOTGUN GUARD, not a trust boundary: a
+# workflow_dispatch runs the workflow file from the dispatched ref, so anyone
+# who can push a branch can dispatch their own edited copy. The controls above
+# do not depend on it — nobody without the release signing key can produce an
+# inventory this workflow (or any copy of its verify step) would accept for a
+# digest the release pipeline did not sign. Branch/tag rulesets are what limit
+# who can dispatch with packages:write at all.
 
 on:
   workflow_dispatch:
@@ -47,14 +59,26 @@ jobs:
     name: Resolve release run for ${{ inputs.tag }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
     outputs:
       run_id: ${{ steps.resolve.outputs.run_id }}
       tag_sha: ${{ steps.resolve.outputs.tag_sha }}
+      newest_stable: ${{ steps.resolve.outputs.newest_stable }}
     steps:
+      - name: Refuse a dispatch from any ref but main
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # A step that FAILS, not a job-level `if:` — a skipped job reports
+          # success, and a green run that promoted nothing is worse than a red one.
+          if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+            echo "dispatch this workflow from main (got ${DISPATCH_REF}): the verifier must be main's" >&2
+            exit 1
+          fi
+
       - name: Resolve the tag commit and the Release run that signed its images
         id: resolve
         env:
@@ -73,8 +97,14 @@ jobs:
             exit 1
           fi
 
-          # The commit the tag points at (annotated tags are dereferenced).
-          tag_sha="$(gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)"
+          # The commit the TAG points at. Resolved through refs/tags explicitly
+          # (not commits/{ref}, which a same-named branch would make ambiguous);
+          # an annotated tag object is dereferenced to its commit.
+          ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          tag_sha="$(jq -r .object.sha <<<"$ref_json")"
+          if [[ "$(jq -r .object.type <<<"$ref_json")" == "tag" ]]; then
+            tag_sha="$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq .object.sha)"
+          fi
           if [[ ! "$tag_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "could not resolve ${RELEASE_TAG} to a commit" >&2
             exit 1
@@ -107,8 +137,27 @@ jobs:
             exit 1
           fi
 
-          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
-          echo "tag_sha=${tag_sha}" >> "$GITHUB_OUTPUT"
+          # Moving channels may only move FORWARD. They follow this tag only
+          # when it is a stable release and no higher stable tag exists.
+          newest_stable=false
+          if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            highest="$(gh api --paginate "repos/${REPOSITORY}/git/matching-refs/tags/v" \
+              --jq '.[].ref | sub("^refs/tags/"; "")' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)"
+            if [[ "$highest" == "$RELEASE_TAG" ]]; then
+              newest_stable=true
+            else
+              echo "::warning::${RELEASE_TAG} is not the newest stable release (${highest} is): exact tags only, moving channels untouched"
+            fi
+          else
+            echo "::warning::${RELEASE_TAG} is a pre-release: exact tags only, moving channels untouched"
+          fi
+
+          {
+            echo "run_id=${run_id}"
+            echo "tag_sha=${tag_sha}"
+            echo "newest_stable=${newest_stable}"
+          } >> "$GITHUB_OUTPUT"
           echo "Promoting ${RELEASE_TAG} (${tag_sha}) from Release run ${run_id}"
 
   promote:
@@ -116,7 +165,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [resolve]
-    if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
       actions: read
@@ -191,6 +239,7 @@ jobs:
           RELEASE_REF_NAME: ${{ inputs.tag }}
           RELEASE_SHA: ${{ needs.resolve.outputs.tag_sha }}
           MOVING_CHANNELS: ${{ matrix.image.moving_channels }}
+          NEWEST_STABLE: ${{ needs.resolve.outputs.newest_stable }}
         run: |
           set -euo pipefail
           VERSION="${RELEASE_REF_NAME#v}"
@@ -203,7 +252,7 @@ jobs:
             --tag "${SIGNED_IMAGE_REPOSITORY}:${VERSION}"
             --tag "${SIGNED_IMAGE_REPOSITORY}:sha-${SHORT_SHA}"
           )
-          if [[ "$MOVING_CHANNELS" == "true" ]]; then
+          if [[ "$MOVING_CHANNELS" == "true" && "$NEWEST_STABLE" == "true" ]]; then
             MAJOR="${VERSION%%.*}"
             remainder="${VERSION#*.}"
             MINOR="${remainder%%.*}"

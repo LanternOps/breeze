@@ -358,7 +358,15 @@ test('the out-of-band image promotion workflow keeps every guarantee of the in-r
   // Dispatch-only, from main, for one exact tag: never a push/PR/schedule trigger.
   assert.match(text, /^on:\n  workflow_dispatch:\n    inputs:\n      tag:/m);
   assert.ok(!/^  (push|pull_request|pull_request_target|schedule|workflow_run):/m.test(text));
-  assert.ok(text.includes("github.ref == 'refs/heads/main'"), 'must only run from main');
+  // Footgun guard (NOT a trust boundary — a dispatch runs the dispatched ref's
+  // copy of this file): it must FAIL the run, never skip it green.
+  assert.ok(text.includes('"$DISPATCH_REF" != "refs/heads/main"'), 'must refuse a non-main dispatch');
+  assert.ok(!/^    if: github\.ref/m.test(text), 'a job-level if: skips green; refuse in a failing step');
+
+  // Moving channels only ever move forward: gated on newest-stable, not just the matrix flag.
+  assert.ok(text.includes('"$MOVING_CHANNELS" == "true" && "$NEWEST_STABLE" == "true"'));
+  assert.ok(text.includes('sort -V | tail -n 1'));
+  assert.ok(text.includes('git/ref/tags/'), 'the tag must be resolved through refs/tags, not an ambiguous ref');
 
   // Same trust decision: the signed inventory, the official key, exact digests.
   assert.ok(text.includes('release-image-manifest.mjs verify'));
@@ -378,6 +386,9 @@ test('the out-of-band image promotion workflow keeps every guarantee of the in-r
   const matrixRows = promotion.match(/- \{ name: [^}]+\}/g);
   assert.ok(matrixRows && matrixRows.length >= 7);
   for (const row of matrixRows) assert.ok(text.includes(row), `image matrix drifted: ${row}`);
+  // ...and in the other direction: no image promoted here that release.yml does not promote.
+  const ownRows = text.match(/- \{ name: [^}]+\}/g) ?? [];
+  assert.deepEqual([...ownRows].sort(), [...matrixRows].sort());
 });
 
 test('drift monitoring classifies candidates before the side-branch fallback', () => {
