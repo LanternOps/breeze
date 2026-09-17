@@ -1,0 +1,28 @@
+# Trivy ignore list for the ai-workspace image scan job only (security.yml,
+# matrix entry `image: ai-workspace`, wired via the trivy-action `trivyignores`
+# input). Do not reuse this file for any other image's scan.
+#
+# Both entries below are reported by Trivy against files inside pip's own
+# vendor tree (pip/_vendor/msgpack, pip/_vendor/pkg_resources) in the upstream
+# `python:3.13-slim-bookworm` base image — NOT against anything installed from
+# our requirements.lock (verified: `pip list` in the built image shows neither
+# package). Trivy actually reads pip's bundled `bom.cdx.json`/`vendor.txt`
+# SBOM metadata, which pins msgpack==1.1.2 and setuptools==70.3.0 as the
+# versions pip vendors internally. `pip install msgpack>=1.2.1
+# 'setuptools>=78.1.1'` was tried and confirmed NOT to clear these findings:
+# it adds separate top-level packages alongside pip's vendored copies without
+# touching the vendored code Trivy is actually scanning. The base image is
+# already the newest available under this same digest (re-pulling the
+# floating `python:3.13-slim-bookworm` tag on 2026-09-16 resolved to the same
+# digest we pin), so there is no newer pip release to pick up here yet. This
+# is upstream-controlled and gets revisited whenever the base image is bumped.
+#
+# msgpack: GHSA-6v7p-g79w-8964 (out-of-bounds read / crash on Unpacker reuse
+# after certain errors) — fixed upstream in msgpack 1.2.1, vendored copy is
+# 1.1.2.
+GHSA-6v7p-g79w-8964
+
+# setuptools: CVE-2025-47273 (path traversal in setuptools PackageIndex) —
+# fixed upstream in setuptools 78.1.1, vendored copy (as pip/_vendor/pkg_resources)
+# is 70.3.0. PackageIndex is a legacy easy_install code path we never invoke.
+CVE-2025-47273

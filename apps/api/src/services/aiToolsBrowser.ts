@@ -56,8 +56,12 @@ function resolveWritableToolOrgId(
 // A site-restricted caller may only mutate policies that target sites entirely
 // within their allowlist. Org/group/device/tag targets are not site-bounded, so
 // a site-restricted caller cannot confirm scope over them and is denied.
-// Unrestricted callers (no `allowedSiteIds`) always pass. Mirrors the
-// route-layer browserSecurity.ts helper (AuthContext flavour).
+//
+// An EXACT-DEVICE caller (`allowedDeviceIds`, set on every device-bound agent
+// run) is denied outright: a browser policy targets sites/orgs/groups, never a
+// single device, so such a caller can never confirm scope over one. Callers
+// with NEITHER restriction always pass. Mirrors the route-layer
+// browserSecurity.ts helper (AuthContext flavour).
 export function policyWithinSiteWriteScope(
   auth: AuthContext,
   targetType: string,

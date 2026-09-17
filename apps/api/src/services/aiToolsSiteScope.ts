@@ -38,6 +38,13 @@ export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
   return auth.allowedDeviceIds ? [...auth.allowedDeviceIds] : null;
 }
 
+/**
+ * The org's device ids this caller may see: the INTERSECTION of the site
+ * allowlist and the exact-device allowlist. Returns `null` when the caller is
+ * restricted on neither axis (unrestricted — no narrowing, and no query); an
+ * empty array means restricted with nothing in scope, which is NOT the same
+ * thing and must never be collapsed into `null` by a caller.
+ */
 export async function resolveSiteAllowedDeviceIds(
   orgId: string,
   auth: AuthContext,
@@ -55,7 +62,7 @@ export async function resolveSiteAllowedDeviceIds(
 /**
  * Partition an org's devices into the caller's in-scope (`allowed`) and
  * out-of-site-scope (`forbidden`) sets in a single query. Returns `null` when
- * the caller is NOT site-restricted (no narrowing needed).
+ * the caller is NOT site- or device-restricted (no narrowing needed).
  *
  * The `forbidden` set is the complement of `allowed` over the org's devices and
  * lets a caller exclude rows that *reference* an out-of-scope fleet device by id
@@ -83,11 +90,24 @@ export async function resolveSiteDevicePartition(
 }
 
 /**
- * True when a site-restricted caller must be denied access to a device with the
- * given `siteId`. Exact-device callers must also supply an allowed device ID;
- * a site/group-only resource cannot prove that boundary and is denied.
- * A null-site device is denied for a site-restricted caller. Use this for tools
- * that have already loaded a device row (with its siteId) by some other key.
+ * True when a site-restricted caller must be denied access to a resource that
+ * lives at the given `siteId`. Use this for tools that have already loaded a
+ * device row (with its siteId) by some other key. A null-site device is denied
+ * for a site-restricted caller.
+ *
+ * `deviceId` selects which axes apply, and the three values are distinct:
+ *   - a string — a DEVICE-keyed resource: an exact-device caller
+ *     (`allowedDeviceIds`) must have this id in its allowlist, and the site
+ *     check applies on top.
+ *   - `null` — a device-keyed resource whose device could not be resolved
+ *     (removed, or a snapshot with no device). Fails closed for an
+ *     exact-device caller.
+ *   - omitted — a SITE-only resource (a device group, a deployment, an alert
+ *     rule): there is no device axis to check, so only the site axis applies.
+ *     Passing no id here is NOT a weaker call — `agentAuthContext` pins
+ *     `allowedDeviceIds` on every device-bound run, so denying these on the
+ *     device axis would make every site-shaped fleet resource unreachable for
+ *     every such run (#6096 D2).
  */
 export function deviceSiteDenied(
   auth: AuthContext,
@@ -95,7 +115,8 @@ export function deviceSiteDenied(
   deviceId?: string | null,
 ): boolean {
   // A site alone cannot establish membership in an exact device scope.
-  if (auth.allowedDeviceIds && (!deviceId || !auth.allowedDeviceIds.includes(deviceId))) return true;
+  if (auth.allowedDeviceIds && deviceId !== undefined
+    && (deviceId === null || !auth.allowedDeviceIds.includes(deviceId))) return true;
   if (auth.allowedSiteIds && !auth.canAccessSite) return true;
   if (!auth.canAccessSite) return false;
   return !auth.canAccessSite(siteId);

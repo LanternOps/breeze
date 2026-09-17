@@ -40,11 +40,31 @@ describe('authenticated artifact download', () => {
     expect(downloadBlob).toHaveBeenCalledWith(blob, 'report.csv');
   });
 
-  it.each([404, 503])('shows a failure and never downloads an HTTP %i error body', async (status) => {
-    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status } as Response);
+  it('shows the generic failure toast (not the expired one) for an HTTP 503 error body', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status: 503 } as Response);
     await downloadArtifact(click('report.csv'));
     expect(downloadBlob).not.toHaveBeenCalled();
-    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'error', message: 'Download failed' }));
+  });
+
+  it.each([404, 410])('shows a distinct "expired" toast (not the generic failure one) for HTTP %i', async (status) => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status } as Response);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await downloadArtifact(click('report.csv'));
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'error', message: 'This file has expired and is no longer available to download.',
+    }));
+    expect(consoleError).toHaveBeenCalledWith('[downloadArtifact]', expect.objectContaining({ path: '/api/v1/ai/artifacts/a1' }));
+    consoleError.mockRestore();
+  });
+
+  it('logs the error to console before showing the generic failure toast', async () => {
+    vi.mocked(fetchWithAuth).mockResolvedValue({ ok: false, status: 503 } as Response);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await downloadArtifact(click('report.csv'));
+    expect(consoleError).toHaveBeenCalledWith('[downloadArtifact]', expect.objectContaining({ path: '/api/v1/ai/artifacts/a1' }));
+    consoleError.mockRestore();
   });
 
   it('routes a 401 to session-expiry handling instead of a generic failure toast', async () => {

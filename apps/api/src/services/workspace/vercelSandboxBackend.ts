@@ -5,6 +5,7 @@
  * on 2026-09-13 and cross-checked against
  *   https://vercel.com/docs/sandbox/sdk-reference
  *   https://vercel.com/docs/sandbox/concepts/firewall
+ * Re-checked 2026-09-16 against 3.3.0 — still current, no SDK bump since.
  * The plan doc (docs/superpowers/plans/ai-mcp/2026-09-13-execution-plane-w02-
  * sandbox-adapter.md) carries the full table; the load-bearing names are:
  *
@@ -17,8 +18,14 @@
  *            NO stdin field exists — see execWithStdin below.
  *   files    sandbox.writeFiles([{ path, content, mode? }])   (no mkdir -p)
  *            sandbox.fs.mkdir(path, { recursive: true })
- *            sandbox.readFile({ path }, { signal }) -> ReadableStream | null
+ *            sandbox.readFile({ path }, { signal }) -> Promise<Readable | null>
+ *              (Node's Readable, not a web ReadableStream — see the `AnySandbox`
+ *              type below, which is what's actually declared and used)
  *            sandbox.fs.readdir(path, { withFileTypes: true }) / fs.lstat
+ *              (fs.lstat is the PRE-TRANSFER size gate: this backend's
+ *              `readFile()` stats a file before calling sandbox.readFile on
+ *              it, so a file exceeding the caller's byte cap is rejected
+ *              without ever pulling its bytes into the API process)
  *   stop     sandbox.stop() -> { activeCpuDurationMs?, duration?, memory?, vcpus? }
  *            getters (populated only after stop): sandbox.activeCpuUsageMs,
  *            sandbox.totalActiveCpuDurationMs, sandbox.totalDurationMs

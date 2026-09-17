@@ -429,6 +429,23 @@ describe('mergeAgentPolicies — tighten only', () => {
       .toEqual(['run_script', 'manage_services:restart']);
   });
 
+  // #6096 D5c. `minAnomalyScore` is a FLOOR ("only fire at or above this"), so
+  // `Math.max` is the tighten-only rule here — the same direction as the
+  // intersections above, spelled differently because the value is a threshold.
+  it('minAnomalyScore: the stricter (higher) floor wins', () => {
+    const partner = policy({ triggers: { ...policy().triggers, minAnomalyScore: 5 } });
+    const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+      .toBe(5);
+  });
+
+  it('minAnomalyScore: an unset partner floor leaves the org floor intact', () => {
+    const partner = policy();
+    const org = policy({ triggers: { ...policy().triggers, minAnomalyScore: 3 } });
+    expect(mergeAgentPolicies(partner, org, { allowedModels: null }).effective.triggers.minAnomalyScore)
+      .toBe(3);
+  });
+
   it('supervisedActionKeys: bare partner key is a ceiling over its actions', () => {
     const partner = policy({ actAssets: { scriptIds: [], supervisedActionKeys: ['manage_services'] } });
     const org = policy({ actAssets: { scriptIds: [], supervisedActionKeys: [KEY_A] } });

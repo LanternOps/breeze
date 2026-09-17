@@ -11,8 +11,8 @@
  *
  * Everything is capped by the run's own `AnalysisLimits`, and every cap
  * failure is a `WorkspaceToolError` with a stable code the model reads. The
- * caps are enforced HERE, not in the tool handlers, so a second caller (the
- * chat-launched path, W05) cannot route around them.
+ * caps are enforced HERE, not in the tool handlers, so no other caller —
+ * present or future — can route around them.
  *
  * DB context: this runs inside the BullMQ run loop, which holds no ambient
  * context, so every write self-contexts through `inSystemDbContext` — a
@@ -156,7 +156,10 @@ export class WorkspaceService {
    * separates "there is nothing to bill" (`finalize()` → null) from "the
    * sandbox is already gone" (`finalize()` → the usage captured before the
    * destroy). `this.handle === null` cannot make that distinction: it is also
-   * null after `cancel()` and after `stopFor()`.
+   * null after any successful `destroyHandle()` call (`cancel()`, `stopFor()`,
+   * and the bootstrap-failure path) — a FAILED destroy leaves `this.handle`
+   * set (the reaper needs it to retry), so `handle === null` alone would
+   * under-report "already gone".
    */
   private everCreated = false;
   /**
@@ -258,6 +261,12 @@ export class WorkspaceService {
     } catch (error) {
       this.terminal = 'workspace_unavailable';
       if (error instanceof VercelSandboxCreateError) {
+        // The provider created a real sandbox and then failed to clean it up
+        // on the way back out (`error.handle` is that orphan). This branch
+        // ALSO back-fills `providerRef`/`runtimeImage` — the same `(creating)`
+        // placeholder problem the success path's `important` patch guards
+        // against, just reached via a different failure — so the reaper can
+        // still find and retry-destroy this orphan by its real provider ref.
         this.handle = error.handle;
         this.everCreated = true;
         await this.patchRow({ providerRef: error.handle.providerRef, runtimeImage: error.handle.runtimeImage ?? null, status: 'destroy_failed' }, { important: true });
@@ -293,7 +302,12 @@ export class WorkspaceService {
       }
     } catch (error) {
       this.terminal = 'workspace_unavailable';
-      await this.destroyHandle();
+      // A real, ready sandbox exists at this point — mirror stopFor()'s
+      // pattern so the row never sits at status: 'ready' pointing at a
+      // provider ref that is (or is being) torn down (a `destroy_failed` row
+      // left at 'ready' would otherwise never reach the reaper).
+      const { destroyed } = await this.destroyHandle();
+      await this.patchRow({ status: destroyed ? 'destroyed' : 'destroy_failed', destroyedAt: destroyed ? new Date() : null });
       await recordWorkspaceCreateFailure(this.backendName);
       captureException(error instanceof Error ? error : new Error(String(error)));
       throw new WorkspaceToolError('workspace_unavailable', 'The compute workspace could not be initialized.');
@@ -604,9 +618,13 @@ export class WorkspaceService {
     }
 
     // `destroyHandle()` is a no-op when the sandbox is already gone (it
-    // returns true on a null handle), so a cancelled/capped run destroys
-    // exactly once across both paths. W02's `destroy()` returns the usage it
-    // captured on the way down — the last chance to get a real number.
+    // returns `destroyed: true` on a null handle), so a cancelled/capped run
+    // destroys the PROVIDER SANDBOX exactly once across both paths — but only
+    // when that destroy succeeds: a failed destroy leaves `this.handle` set
+    // (see the field comment on `everCreated`), so a later call here will
+    // call `backend.destroy()` again rather than treating the sandbox as
+    // already gone. W02's `destroy()` returns the usage it captured on the
+    // way down — the last chance to get a real number.
     const { destroyed, usage: destroyUsage } = await this.destroyHandle();
     if (!usage && destroyUsage) {
       usage = destroyUsage;

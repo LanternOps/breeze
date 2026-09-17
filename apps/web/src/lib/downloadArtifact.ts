@@ -4,6 +4,13 @@ import { showToast } from '@/components/shared/Toast';
 import { downloadBlob } from './downloadBlob';
 import { i18n } from './i18n';
 
+/** Carries the HTTP status through to the `catch` so it can pick the right toast. */
+class ArtifactDownloadError extends Error {
+  constructor(public readonly status: number) {
+    super(`Artifact download failed (${status})`);
+  }
+}
+
 /** Artifact routes require a bearer token; a plain anchor cannot supply it. */
 export async function downloadArtifact(event: MouseEvent<HTMLAnchorElement>): Promise<void> {
   event.preventDefault();
@@ -20,13 +27,21 @@ export async function downloadArtifact(event: MouseEvent<HTMLAnchorElement>): Pr
         handleSessionExpired();
         return;
       }
-      throw new Error(`Artifact download failed (${response.status})`);
+      throw new ArtifactDownloadError(response.status);
     }
     // The API sanitizes this quoted filename; transcript links do not otherwise
     // know the original script/stdout filename.
     const filename = response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/i)?.[1];
     downloadBlob(await response.blob(), filename || fallbackName);
-  } catch {
-    showToast({ type: 'error', message: i18n.t('reports:reports.reportsList.errors.downloadFailed') });
+  } catch (error) {
+    console.error('[downloadArtifact]', { path, error });
+    // Artifacts carry a TTL (spec §5.2) — a 404/410 here most often means the
+    // artifact has expired and been reaped, not a transient failure, so it
+    // gets its own message rather than the generic "try again" framing.
+    const status = error instanceof ArtifactDownloadError ? error.status : undefined;
+    const message = status === 404 || status === 410
+      ? i18n.t('settings:aiAgentsPage.runs.detail.artifacts.downloadExpired')
+      : i18n.t('reports:reports.reportsList.errors.downloadFailed');
+    showToast({ type: 'error', message });
   }
 }

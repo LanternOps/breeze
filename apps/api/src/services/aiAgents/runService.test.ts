@@ -623,6 +623,18 @@ describe('resource scope applies to every admission path', () => {
     expect(result).toEqual({ created: false, skipped: 'trigger_filter_mismatch' });
     expect(enqueueAgentRunJob).not.toHaveBeenCalled();
   });
+
+  // #6096 D5b — the positive control the deny cases above need: the gate must
+  // ADMIT an in-scope device, or "everything is refused" would read identical.
+  it('admits a manual device run inside the configured site', async () => {
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot({ triggers: triggers({ siteIds: [SITE_A] }) }));
+    seedAdmissionReads();
+    // The scope check's own device read comes first, then the ownership probe.
+    dbMockState.rowQueues.devices = [[{ siteId: SITE_A, tags: [] }], [{ id: DEVICE_ID }]];
+    const result = await createAndEnqueueAgentRun(input({ triggerKind: 'manual' }));
+    expect(result).toMatchObject({ created: true });
+    expect(enqueueAgentRunJob).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('createAndEnqueueAgentRun skip reasons', () => {

@@ -16,9 +16,18 @@ docker run --rm --platform linux/amd64 --network none \
   breeze-ai-workspace:analysis-v1 python3 /opt/breeze-runtime/smoke.py
 ```
 
-CI builds this image on code changes and runs the smoke test as the image’s
-unprivileged user with networking disabled. `CI Success` requires this check;
-it does not publish images or use Vercel credentials.
+CI (`Workspace Runtime Smoke` in `ci.yml`) builds this image on code changes
+and runs the smoke test as the image's unprivileged user with networking
+disabled (`docker build-push-action` with `push: false`, so it publishes
+nothing and needs no Vercel credentials). Before the build it also runs
+`check-lock.py`, which fails when a `requirements.in` pin has no matching
+`name==version` line in `requirements.lock` (PEP-503-normalized package name
+comparison) — it does not verify package hashes or re-resolve dependencies,
+so a `requirements.lock` that matches versions but was hand-edited to a wrong
+hash would still pass. The job is non-blocking on a plain PR
+(`continue-on-error` is set only for the `pull_request` event) but required —
+blocking — once the PR enters the merge queue, where it runs under
+`merge_group` and `continue-on-error` no longer applies.
 
 The smoke test calculates a known total and writes/reopens XLSX, DOCX and PDF files, extracts PDF text with two libraries,
 and renders the PDF with Poppler.

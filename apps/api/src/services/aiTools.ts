@@ -95,11 +95,6 @@ import { registerExportTools } from './aiToolsExport';
 // getToolTier so checkGuardrails can gate them; import the tier tables for fallback.
 import { m365ToolTiers, registerM365Tools } from './aiToolsM365';
 import { googleToolTiers } from './aiToolsGoogle';
-// Execution plane (spec §5.5). Session-only, like the M365/Google helpdesk
-// tools: it dispatches through makeSessionAwareHandler and is NEVER added to
-// the `aiTools` execution map. Its tier still has to be visible to getToolTier
-// so checkGuardrails can gate it.
-
 // ============================================
 // Shared Types
 // ============================================

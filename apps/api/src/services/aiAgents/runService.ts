@@ -461,10 +461,11 @@ async function deviceMatchesAnyGroup(
 /**
  * Spec §5.3 trigger filters.
  *
- * Asymmetry is deliberate and load-bearing: `alertSeverities` is an explicit
- * opt-in list (empty matches NOTHING — an agent with no severities selected
- * must not fire on everything), while every other filter is a narrowing one
- * where absent means "all" and empty means "none".
+ * Asymmetry is deliberate and load-bearing. `alertSeverities` is REQUIRED and
+ * has NO spelling that means unrestricted: it is an explicit opt-in list, and
+ * an empty one matches NOTHING (an agent with no severities selected must not
+ * fire on everything). Every other filter here is optional and narrowing:
+ * ABSENT means "all", and PRESENT — including `[]` — means "only these".
  *
  * `deviceGroupIds` (wave 6 PR 4, #3828 Task 1 — previously "deliberately NOT
  * evaluated", see git history for the old docstring): resolves group
@@ -1056,11 +1057,11 @@ export async function createAndEnqueueAgentRun(
   // Wave 6 PR 3 (#3828) — design authority: a ticket-triggered run is ALWAYS
   // shadow, regardless of the agent's configured effective mode. This is a
   // downgrade only ('off' already skipped above at mode_off — a ticket
-  // trigger can never turn a disabled agent on). Placed here (immediately
-  // after the mode_off check, before the circuit breaker / trigger filter /
-  // maintenance-window / admission-counter gates below) so every earlier and
-  // later admission rule sees the SAME modeAtStart a real 'act'-mode agent
-  // would have produced for any other trigger kind — forcing shadow changes
+  // trigger can never turn a disabled agent on). Placed here (after the
+  // mode_off and resource-scope gates above, before the circuit breaker /
+  // trigger filter / maintenance-window / admission-counter gates below) so
+  // every earlier and later admission rule sees the SAME modeAtStart a real
+  // 'act'-mode agent would have produced for any other trigger kind — forcing shadow changes
   // only what the run records and how the guardrail tool gate treats it
   // (aiGuardrails.ts's shadow branch + the device-less-mutation deny, since
   // ticket runs are also always device-less), never admission precedence.

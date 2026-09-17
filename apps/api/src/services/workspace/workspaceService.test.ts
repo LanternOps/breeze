@@ -283,14 +283,27 @@ describe('WorkspaceService lifecycle', () => {
     expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
   });
 
-  it('records the real provider reference before service bootstrap fails', async () => {
+  it('records the real provider reference before service bootstrap fails, and patches the row destroyed (mirrors stopFor)', async () => {
     const backend = new RecordingBackend();
     backend.nextExec = { exitCode: 1 };
     const svc = new WorkspaceService(ctxFor(), backend);
     await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
     expect(dbCalls.updated).toContainEqual(expect.objectContaining({ providerRef: 'sbx-1' }));
     expect(backend.destroyCount).toBe(1);
+    // A bootstrap failure destroys a real, ready sandbox — the row must not
+    // be left at status: 'ready' pointing at a provider ref that no longer
+    // exists (that's what a reaper would try to destroy again forever).
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroyed', destroyedAt: expect.any(Date) });
     await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+  });
+
+  it('marks the row destroy_failed (not destroyed) when the bootstrap-failure destroy itself fails', async () => {
+    const backend = new RecordingBackend();
+    backend.nextExec = { exitCode: 1 };
+    vi.spyOn(backend, 'destroy').mockRejectedValue(new Error('provider down'));
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
   });
 
   it('opens the breaker on a bootstrap failure and never records success', async () => {

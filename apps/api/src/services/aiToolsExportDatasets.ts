@@ -125,14 +125,24 @@ const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
 /** Agent attribution ids are not human report principals. Keep their export
  * inside the intersection of the authenticated ceiling and frozen run frame.
  *
- * A missing org match, allowlist, or frozen run frame is NOT an error case —
- * `runTargets` is only ever populated inside an `analysis` run frame (spec
- * §8). A ticket/anomaly/design ai_agent principal never carries one, and that
- * is an ordinary device-less call, not a caller bug: it must resolve to an
- * empty export exactly like the other zero-in-scope branches below, never a
- * thrown error that would surface as a tool failure on every such run. */
+ * A missing allowlist or frozen run frame is NOT an error case — `runTargets`
+ * is only ever populated inside an `analysis` run frame (spec §8). A
+ * ticket/anomaly/design ai_agent principal never carries one, and that is an
+ * ordinary device-less call, not a caller bug: it must resolve to an empty
+ * export exactly like the other zero-in-scope branches below, never a thrown
+ * error that would surface as a tool failure on every such run.
+ *
+ * A principal org that disagrees with the REQUEST org is the opposite: it can
+ * only come from a caller wiring the wrong org into the request, and reporting
+ * it as an empty export would dress a caller bug up as "no data". Throw (like
+ * `export_requires_run`) so it is visible (#6096 D4). */
 async function agentInventoryPager(req: DatasetRequest, software: boolean): Promise<ExportPager> {
-  if (req.auth.orgId !== req.orgId || !req.auth.allowedDeviceIds?.length || !req.runTargets?.length) {
+  if (req.auth.orgId !== req.orgId) {
+    throw new Error(
+      'export_dataset: the agent principal\'s organization does not match the requested organization',
+    );
+  }
+  if (!req.auth.allowedDeviceIds?.length || !req.runTargets?.length) {
     return emptyPager;
   }
   const frame = new Set(req.runTargets);

@@ -2124,7 +2124,8 @@
           "ticketIdPlaceholder": "ID del ticket",
           "attachedToTicket": "Adjuntado al ticket como nota interna",
           "attachFailed": "No se pudo adjuntar el archivo a ese ticket",
-          "attachedButCommentFailed": "Se adjuntó el archivo, pero no se pudo agregar la nota al ticket"
+          "attachedButCommentFailed": "Se adjuntó el archivo, pero no se pudo agregar la nota al ticket",
+          "downloadExpired": "Este archivo ha vencido y ya no se puede descargar."
         },
         "workspace": {
           "title": "Lo que se ejecutó en el entorno aislado",

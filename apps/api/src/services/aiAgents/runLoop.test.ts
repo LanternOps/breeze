@@ -1439,20 +1439,49 @@ describe('executeAgentRun', () => {
     });
   });
 
-  it.each([
-    ['get_device_details', true],
-    ['get_invite_funnel', false],
-    ['resolve_device_context', false],
-  ])('a resource-scoped run only dispatches audited tools: %s', async (tool, allowed) => {
+  // #6096 D1 — resource scope bounds WHICH DEVICE a run may touch, never which
+  // tools it may call. A site / tag / group filter is the ordinary MSP
+  // configuration; a read-only tool fence on it silently stripped remediation
+  // from every scoped agent. The device boundary is carried by the run's
+  // exact-device allowlist (`agentAuthContext` pins `allowedDeviceIds` to the
+  // run device and ~30 aiTools* helpers enforce it), plus the start-gate and
+  // per-tool recheck of the RUN DEVICE against the scope.
+  it('a resource-scoped run still dispatches a remediation tool', async () => {
+    const scoped = policy({ mode: 'act', toolAllowlist: ['manage_services'] });
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped, modeAtStart: 'act' });
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    for (let i = 0; i < 4; i++) deviceRows.push([{ siteId: SITE_ID, tags: [] }]);
+    revalidateActExecution.mockImplementation(async (args: Record<string, unknown>) => ({
+      ok: true, pin: { op: args.op, target: { kind: 'service', serviceName: 'Spooler' } },
+    }));
+    verifyActExecution.mockResolvedValue({ execution: 'succeeded', verification: 'passed' });
+    scriptQuery({
+      toolCalls: [{ tool: 'manage_services', input: { action: 'restart', deviceId: DEVICE_ID, serviceName: 'Spooler' } }],
+      assistantText: 'Restarted the spooler service.',
+    });
+
+    await executeAgentRun(RUN_ID);
+
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    expect(startToolExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('resource scope does not narrow the profile tool allowlist or the MCP registry', async () => {
     const scoped = policy();
     scoped.triggers.siteIds = [SITE_ID];
     seedRows({ effective: scoped });
     const deviceRows = (dbMockState.rowQueues.devices ??= []);
     for (let i = 0; i < 4; i++) deviceRows.push([{ siteId: SITE_ID, tags: [] }]);
-    scriptQuery({ toolCalls: [{ tool: tool as string, input: { deviceId: DEVICE_ID } }] });
+    scriptQuery({ toolCalls: [{ tool: 'get_invite_funnel', input: {} }] });
+
     await executeAgentRun(RUN_ID);
-    expect(preVerdicts[0]).toMatchObject({ allowed });
-    expect(lastQueryOptions?.allowedTools).not.toContain('mcp__breeze__get_invite_funnel');
+
+    expect(preVerdicts[0]).toMatchObject({ allowed: true });
+    // Identical to the unscoped full-profile negative control below: the
+    // profile allowlist decides exposure, scope does not touch it.
+    expect(lastQueryOptions?.allowedTools).toEqual(BREEZE_MCP_TOOL_NAMES);
+    expect(createBreezeMcpServer.mock.calls[0]?.[5]).toBeUndefined();
   });
 
   it('a newly scoped org-wide queued run is skipped before invoking the model', async () => {
@@ -1460,9 +1489,57 @@ describe('executeAgentRun', () => {
     const narrowed = policy();
     narrowed.triggers.siteIds = [SITE_ID];
     resolveEffectiveAgentSystem.mockResolvedValue(snapshot(narrowed));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await executeAgentRun(RUN_ID);
     expect(queryMock).not.toHaveBeenCalled();
-    expect(finalTransition()!.patch.errorCode).toBe('policy_revoked_before_start');
+    // A clean scope mismatch reports what admission reports, not a revocation.
+    expect(finalTransition()!.patch.errorCode).toBe('trigger_filter_mismatch');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('resource scope'),
+      expect.objectContaining({ runId: RUN_ID, deviceId: null }),
+    );
+  });
+
+  it('an UNVERIFIABLE resource scope skips under its own error code, not the mismatch code', async () => {
+    // #6096 D3: a failed policy resolution is an infrastructure failure. Fail
+    // closed, but never report it as "the operator's filter did not match".
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    // No device rows are queued beyond the one `loadRunContext` consumes, so
+    // the scope check's own device lookup throws.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('resource_scope_unverifiable');
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('could not verify'),
+      expect.objectContaining({ runId: RUN_ID }),
+    );
+  });
+
+  it('logs the tool name when a per-tool scope recheck throws, and denies the call', async () => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    // Exactly enough device rows for the start gate (snapshot + current), so
+    // the first PER-TOOL recheck runs the queue dry and throws.
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    deviceRows.push([{ siteId: SITE_ID, tags: [] }], [{ siteId: SITE_ID, tags: [] }]);
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await executeAgentRun(RUN_ID);
+
+    expect(preVerdicts[0]).toMatchObject({
+      allowed: false, error: expect.stringContaining('resource scope'),
+    });
+    expect(error).toHaveBeenCalledWith(
+      '[aiAgentRunLoop] resource scope recheck failed',
+      expect.objectContaining({ runId: RUN_ID, toolName: 'query_devices' }),
+    );
   });
 
   it('keeps the original scope when live policy removes its restriction', async () => {

@@ -11,15 +11,6 @@ export function hasAgentResourceScope(triggers: AiAgentTriggers): boolean {
     || triggers.deviceGroupIds !== undefined;
 }
 
-/** Tools verified to enforce an exact device allowlist, including enumeration.
- * Extend only with a regression test proving sibling-device isolation. Other
- * tools can expose org/site data even when their primary device argument is safe.
- */
-export const RESOURCE_SCOPED_AGENT_TOOLS: ReadonlySet<string> = new Set([
-  'query_devices', 'get_device_details', 'get_device_context', 'set_device_context',
-  'analyze_metrics', 'analyze_boot_performance',
-]);
-
 /**
  * Until fleet evidence and every fleet tool support these filters, a scoped
  * agent must have an exact device target. A focus device or a staged dataset
@@ -29,6 +20,17 @@ export async function agentRunMatchesResourceScope(
   triggers: AiAgentTriggers,
   orgId: string,
   deviceId: string | null,
+  /**
+   * Three-valued, and the caller must pass what ADMISSION saw, not what it
+   * wishes were true:
+   *   - `undefined` — skip the check (the caller has no admission-time site to
+   *     compare against, e.g. admission itself).
+   *   - `null` — the device had NO site at admission; a device that has since
+   *     been given one no longer matches.
+   *   - a string — the device's site at admission; it must still be that site.
+   * This is what stops a device from being moved between sites mid-run and
+   * carrying its admitted run along with it.
+   */
   expectedSiteId?: string | null,
 ): Promise<boolean> {
   if (!hasAgentResourceScope(triggers)) return true;

@@ -128,9 +128,14 @@ function artifactContentType(contentType: string, name: string): string {
 
 /**
  * Head/tail of the RAW content (spec §5.2), NOT a compacted or rendered form —
- * the whole point is that the technician can see what the model saw. NUL is
- * stripped because Postgres `text` rejects it outright, and bare secrets are
- * redacted with the same patterns the chat path already applies.
+ * the whole point is that the technician can see what the model saw. A Buffer
+ * that is not valid UTF-8, or contains a NUL byte, gets NO preview at all
+ * (both slices come back empty) — a text MIME label cannot make arbitrary
+ * binary bytes safe to display. A string input has NUL stripped (Postgres
+ * `text` rejects it outright) rather than being blanked, since a caller that
+ * already decoded the bytes to a string has vouched for them being text.
+ * Bare secrets are redacted with the same patterns the chat path already
+ * applies.
  */
 export function buildPreviews(raw: Buffer | string): { headPreview: string; tailPreview: string } {
   // A text MIME label cannot make arbitrary binary bytes safe to display.
@@ -174,6 +179,20 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
     : await readPreviewSlice(put.key, put.bytes);
 
   const { headPreview, tailPreview } = buildPreviews(previewSource);
+  // `artifactContentType` above only promotes a KNOWN extension; an unnamed or
+  // unrecognised one (e.g. `findings`, `summary.out`) is left as
+  // application/octet-stream even though `buildPreviews` just proved the
+  // content decodes as valid, printable UTF-8 text (that's the only way it
+  // produced a non-empty preview — see the doc on `buildPreviews`). Persist
+  // text/plain in that case so `isTextArtifactContentType` — the render-time
+  // gate in `toArtifactDto` and the web preview toggle
+  // (RunArtifactsSection.tsx) — doesn't blank a preview we already know is
+  // safe. A genuinely binary octet-stream artifact produces an empty preview
+  // and is left unpromoted.
+  const persistedContentType = contentType.trim().toLowerCase() === 'application/octet-stream'
+    && (headPreview !== '' || tailPreview !== '')
+    ? 'text/plain'
+    : contentType;
   const ttlDays = input.ttlDays ?? ARTIFACT_DEFAULT_TTL_DAYS;
 
   try {
@@ -185,7 +204,7 @@ export async function createArtifact(input: CreateArtifactInput): Promise<Artifa
         sessionId: input.sessionId ?? null,
         kind: input.kind,
         name: sanitizeArtifactName(input.name),
-        contentType: contentType.slice(0, 128),
+        contentType: persistedContentType.slice(0, 128),
         bytes: put.bytes,
         sha256: put.sha256,
         blobKey: put.key,

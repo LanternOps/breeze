@@ -96,7 +96,7 @@ import {
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem, type ResolvedAgent } from './effectivePolicy';
-import { agentRunMatchesResourceScope, hasAgentResourceScope, RESOURCE_SCOPED_AGENT_TOOLS } from './runResourceScope';
+import { agentRunMatchesResourceScope, hasAgentResourceScope } from './runResourceScope';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
 import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
 import { getCachedAiKillStateSnapshot, readAiKillState } from '../aiKillState';
@@ -569,7 +569,9 @@ export function createAgentRunPreToolUse(args: {
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
-  revalidateResourceScope?: (toolName: string) => Promise<boolean>;
+  /** `true` in scope; `false` a clean mismatch; `null` unverifiable. Anything
+   *  but `true` denies the call — see `isRunResourceScopeCurrent`. */
+  revalidateResourceScope?: (toolName: string) => Promise<boolean | null>;
   guardrailPolicy: AgentGuardrailPolicy;
   outcome: AgentRunOutcome;
   intentIds: string[];
@@ -799,8 +801,9 @@ export function createAgentRunPreToolUse(args: {
 
   return async (toolName, input) => {
     // No `.catch` — `isRunResourceScopeCurrent` already fails closed on a throw.
-    if (args.revalidateResourceScope && !(await args.revalidateResourceScope(toolName))) {
-      const reason = 'Agent resource scope was revoked or could not be verified. Stop and do not retry.';
+    if (args.revalidateResourceScope && (await args.revalidateResourceScope(toolName)) !== true) {
+      const reason = 'This run\'s device is no longer within the agent\'s resource scope, '
+        + 'or that scope could not be verified. Stop and do not retry.';
       outcome.deniedActions.push({ tool: toolName, reason });
       return { allowed: false, error: reason };
     }
@@ -1851,7 +1854,7 @@ async function driveSdkLoop(
   // computed at the top of this function — the SAME list that narrowed
   // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
   // never drift apart.
-  let exposedNames = profileAllowlist
+  const exposedNames = profileAllowlist
     ? profileAllowlist.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
@@ -1870,18 +1873,9 @@ async function driveSdkLoop(
   // below instead, which `createBreezeMcpServer` always includes regardless
   // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
   // whole registry, unchanged.
-  let onlyTools = profileAllowlist
+  const onlyTools = profileAllowlist
     ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
     : undefined;
-
-  if (hasAgentResourceScope(effective.triggers)) {
-    onlyTools = new Set([...RESOURCE_SCOPED_AGENT_TOOLS].filter((name) => !onlyTools || onlyTools.has(name)));
-    const permitted = new Set([
-      ...[...onlyTools].map((name) => `mcp__breeze__${name}`),
-      ...outcomeToolsForRun(run).map((name) => OUTCOME_MCP_TOOL_NAMES[name]),
-    ]);
-    exposedNames = exposedNames.filter((name) => permitted.has(name));
-  }
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2126,20 +2120,37 @@ export async function executeAgentRun(runId: string): Promise<void> {
   // 2. Stop-gate. The queue can deliver minutes after admission, and the kill
   //    switch or the operator's policy may have changed since. This decides
   //    only WHETHER to start — the loop itself runs on the run's immutable
-  //    snapshot (see driveSdkLoop).
+  //    snapshot except for the agent's RESOURCE SCOPE, which is rechecked here
+  //    and again before every tool call against a TTL-cached resolution of the
+  //    current policy. That recheck is narrow-only: it can deny a run whose
+  //    device fell outside the scope, never widen one (see driveSdkLoop).
   const { stopped, current } = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
   // ONE resolution of the current policy for the whole gate, then reused (under
   // a short TTL) by every per-tool-call resource-scope recheck below — the gate
   // used to resolve it twice back to back, and the pre-tool hook once per call.
   const readCurrentPolicy = createCurrentPolicyReader(ctx, current);
-  if (stopped || !(await isRunResourceScopeCurrent(ctx, readCurrentPolicy))) {
+  const scopeCurrent = stopped ? true : await isRunResourceScopeCurrent(ctx, readCurrentPolicy);
+  if (stopped || scopeCurrent !== true) {
+    // A clean scope mismatch is the same policy event admission reports
+    // (`trigger_filter_mismatch`); an UNVERIFIABLE scope is an infrastructure
+    // failure and must not masquerade as one (#6096 D3).
+    const reason = stopped
+      ? 'policy_revoked_before_start'
+      : scopeCurrent === false ? 'trigger_filter_mismatch' : 'resource_scope_unverifiable';
+    if (scopeCurrent === false) {
+      console.warn('[aiAgentRunLoop] the run\'s device is outside the agent\'s resource scope', {
+        runId, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      });
+    } else if (scopeCurrent === null) {
+      console.error('[aiAgentRunLoop] could not verify the run\'s resource scope before start', {
+        runId, orgId: run.orgId, agentId: run.agentId, deviceId: run.deviceId,
+      });
+    }
     await transitionRunStatus(runId, 'running', 'skipped', {
-      errorCode: 'policy_revoked_before_start',
+      errorCode: reason,
       finishedAt: new Date(),
     });
-    await safePublish('ai.agent.run.skipped', run.orgId, {
-      runId, agentId: run.agentId, reason: 'policy_revoked_before_start',
-    });
+    await safePublish('ai.agent.run.skipped', run.orgId, { runId, agentId: run.agentId, reason });
     return;
   }
 
@@ -2723,12 +2734,11 @@ async function cleanupExecutionLedger(
 /**
  * How long a run may reuse one resolution of its agent's CURRENT policy.
  *
- * `resolveEffectiveAgentSystem` is four queries and a system transaction.
- * Resolving it per tool call taxed every run — scoped or not — for a narrowing
- * edit that is rare and, at 5s, still lands well inside a run. The bound is
- * what makes it safe to skip: a widening edit can never take effect (the run
- * is also matched against its own immutable snapshot, below), so the only
- * thing staleness can delay is a narrowing, by at most this long.
+ * The contract this bound buys: staleness can only ever DELAY a narrowing, by
+ * at most this long, and never let a widening take effect — the run is matched
+ * against its own immutable snapshot as well as the current policy. That is
+ * what makes it safe not to pay `resolveEffectiveAgentSystem` (four queries
+ * and a system transaction) on every tool call.
  */
 const RESOURCE_SCOPE_RECHECK_TTL_MS = 5_000;
 
@@ -2778,36 +2788,49 @@ function createCurrentPolicyReader(ctx: RunContext, seed: ResolvedAgent | null):
  * already in flight because someone flipped the agent to shadow. A `null`
  * current policy means the scope could not be VERIFIED, not that the agent is
  * disabled — fail closed either way.
+ *
+ * Three-valued on purpose (#6096 D3): `true` in scope, `false` a CLEAN scope
+ * mismatch (the run's device is outside the scope), `null` the scope could not
+ * be VERIFIED (a failed policy resolution or a throw). Both non-true results
+ * fail closed; the start gate reports them under different error codes so a
+ * misconfigured filter is never mistaken for a broken database.
+ *
+ * Scope does NOT fence which tools may be called — it bounds which DEVICE they
+ * may touch, and the run's exact-device allowlist (`agentAuthContext`) carries
+ * that boundary into every device-keyed tool. `toolName` is for logging only.
  */
 async function isRunResourceScopeCurrent(
   ctx: RunContext,
   readCurrentPolicy: CurrentPolicyReader,
   toolName?: string,
-): Promise<boolean> {
+): Promise<boolean | null> {
   const snapshotTriggers = ctx.run.policySnapshot.effective.triggers;
   try {
     const current = await readCurrentPolicy();
-    if (!current) return false;
+    if (!current) return null;
     const scoped = hasAgentResourceScope(snapshotTriggers)
       || hasAgentResourceScope(current.effective.triggers);
-    // An unscoped run pays nothing beyond the (cached) read above: no tool
-    // fence, no device lookups.
+    // An unscoped run pays nothing beyond the (cached) read above: no device
+    // lookups.
     if (!scoped) return true;
-    if (toolName
-      && !RESOURCE_SCOPED_AGENT_TOOLS.has(toolName)
-      && !(outcomeToolsForRun(ctx.run) as readonly string[]).includes(toolName)) return false;
     return await agentRunMatchesResourceScope(
       snapshotTriggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
     ) && await agentRunMatchesResourceScope(
       current.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
     );
-  } catch {
-    return false;
+  } catch (error) {
+    console.error('[aiAgentRunLoop] resource scope recheck failed', {
+      runId: ctx.run.id, toolName, error,
+    });
+    return null;
   }
 }
 
 /**
- * Kill switch + current effective policy. True means "do not start".
+ * Kill switch + current effective policy. Returns `{ stopped, current }`:
+ * `stopped: true` means "do not start", and `current` is the resolution the
+ * caller reuses for the resource-scope gate (`null` when it could not be
+ * resolved, which is always also `stopped`).
  *
  * `agentId` is not decoration. `resolveEffectiveAgentSystem` re-resolves by
  * (org, kind) and always reports the CURRENT partner baseline, so without this

@@ -30,7 +30,9 @@ export type { AiArtifactKind };
  *
  *  - `run_id` is NULLABLE. A chat session can capture an oversized tool result
  *    with no run in flight (spec §5.4: technicians gather live reads in chat
- *    and hand the handles to workspace_launch_analysis). The composite
+ *    and hand the handles to a workspace analysis run — chat-initiated launch
+ *    is currently disabled, #6086, but a preconfigured agent's run still
+ *    stages these same handles). The composite
  *    `(run_id, org_id) -> ai_agent_runs(id, org_id)` FK is MATCH SIMPLE, so it
  *    is unchecked while run_id is NULL and binding otherwise. ON DELETE CASCADE
  *    + DEFERRABLE INITIALLY IMMEDIATE (org merge runs SET CONSTRAINTS ALL

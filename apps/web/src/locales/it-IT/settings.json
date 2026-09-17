@@ -2124,7 +2124,8 @@
           "ticketIdPlaceholder": "ID ticket",
           "attachedToTicket": "Allegato al ticket come nota interna",
           "attachFailed": "Impossibile allegare il file a quel ticket",
-          "attachedButCommentFailed": "Il file è stato allegato, ma non è stato possibile aggiungere la nota al ticket"
+          "attachedButCommentFailed": "Il file è stato allegato, ma non è stato possibile aggiungere la nota al ticket",
+          "downloadExpired": "Questo file è scaduto e non è più disponibile per il download."
         },
         "workspace": {
           "title": "Cosa è stato eseguito nella sandbox",

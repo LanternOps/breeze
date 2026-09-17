@@ -66,15 +66,21 @@ function formatBytes(bytes: number): string {
  * The chat surface for an `analysis` run (execution-plane spec §5.5).
  *
  * POLLING IS THE SOURCE OF TRUTH, not the `run` prop. The SSE stream only
- * exists for the duration of a turn, and `workspace_launch_analysis` returns
- * immediately — so for the common case (ask, wait, read) no event ever reaches
- * the browser. `run` is a live upgrade for the case where the technician kept
- * typing while the run worked.
+ * exists for the duration of a turn, so for a run whose turn already closed
+ * (the common case: ask, wait, read) no event ever reaches the browser. `run`
+ * is a live upgrade for the case where the technician kept typing while the
+ * run worked. (Chat-initiated launch is currently disabled — #6086 — so today
+ * every run reaching this card was started by a preconfigured agent; this
+ * polling contract is unaffected either way and stays ready for when
+ * delegated authorization lands.)
  *
- * Artifacts are anchors with `download`, pointing at the API route that serves
- * them as `Content-Disposition: attachment` (spec §8). Nothing here renders
- * artifact CONTENT: a name and a size, and the bytes only ever leave as a file.
- * The name is rendered as a React text child, so an artifact called
+ * Artifacts are anchors with `download`, but the click handler
+ * (`downloadArtifact`) fetches through the authenticated API and saves a Blob
+ * instead of letting the browser navigate to the route directly — the same
+ * pattern as `RunArtifactsSection`. The route serves the bytes as
+ * `Content-Disposition: attachment` (spec §8). Nothing here renders artifact
+ * CONTENT: a name and a size, and the bytes only ever leave as a file. The
+ * name is rendered as a React text child, so an artifact called
  * `<img src=x onerror=…>` is escaped, never parsed.
  */
 export default function AiRunCard({ runId, initialStatus, run }: AiRunCardProps) {

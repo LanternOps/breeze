@@ -179,26 +179,31 @@ describe('createArtifact', () => {
     expect(mocks.insertValues[0]).toMatchObject({ contentType, headPreview: '', tailPreview: '' });
   });
 
-  it('gives an application/octet-stream artifact a preview when its content is UTF-8 text', async () => {
+  it('promotes an application/octet-stream artifact to text/plain when its content is UTF-8 text with a preview', async () => {
     mocks.insertRows.push([row()]);
     await createArtifact({
       orgId: ORG, runId: RUN, kind: 'output', name: 'findings', contentType: 'application/octet-stream',
       body: Buffer.from('alpha finding: high risk'), maxBytes: 1024,
       createdByTool: 'workspace_collect', region: 'us',
     });
+    // Promoted so isTextArtifactContentType (the render-time gate in toArtifactDto
+    // and the web preview toggle) doesn't blank a preview we already know is safe,
+    // printable text just because no known extension named it.
     expect(mocks.insertValues[0]).toMatchObject({
-      contentType: 'application/octet-stream', headPreview: 'alpha finding: high risk',
+      contentType: 'text/plain', headPreview: 'alpha finding: high risk',
     });
   });
 
-  it('gives no preview to an application/octet-stream artifact containing NUL bytes', async () => {
+  it('gives no preview to an application/octet-stream artifact containing NUL bytes, and does not promote it', async () => {
     mocks.insertRows.push([row()]);
     await createArtifact({
       orgId: ORG, runId: RUN, kind: 'output', name: 'blob1', contentType: 'application/octet-stream',
-      body: Buffer.from('lead-in trail'), maxBytes: 1024,
+      body: Buffer.from('lead-in\u0000trail'), maxBytes: 1024,
       createdByTool: 'workspace_collect', region: 'us',
     });
-    expect(mocks.insertValues[0]).toMatchObject({ headPreview: '', tailPreview: '' });
+    expect(mocks.insertValues[0]).toMatchObject({
+      contentType: 'application/octet-stream', headPreview: '', tailPreview: '',
+    });
   });
 
   it('gives no preview to an application/octet-stream artifact with real binary (PDF magic) content', async () => {
@@ -286,6 +291,23 @@ describe('deleteArtifact — blob first, then row (the row is the only key index
 describe('listArtifactsForAuth / toArtifactDto', () => {
   it('suppresses previews already stored for binary artifacts', () => {
     const dto = toArtifactDto(row({ contentType: 'application/pdf', headPreview: '%PDF', tailPreview: 'binary' }) as ArtifactRecord);
+    expect(dto.headPreview).toBe('');
+    expect(dto.tailPreview).toBe('');
+  });
+
+  it('shows the preview for an octet-stream artifact that createArtifact promoted to text/plain', () => {
+    const dto = toArtifactDto(row({
+      contentType: 'text/plain', headPreview: 'alpha finding: high risk', tailPreview: 'high risk',
+    }) as ArtifactRecord);
+    expect(dto.headPreview).toBe('alpha finding: high risk');
+    expect(dto.tailPreview).toBe('high risk');
+  });
+
+  it('keeps octet-stream and no preview for a genuinely binary artifact (never promoted)', () => {
+    const dto = toArtifactDto(row({
+      contentType: 'application/octet-stream', headPreview: '', tailPreview: '',
+    }) as ArtifactRecord);
+    expect(dto.contentType).toBe('application/octet-stream');
     expect(dto.headPreview).toBe('');
     expect(dto.tailPreview).toBe('');
   });

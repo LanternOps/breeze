@@ -2124,7 +2124,8 @@
           "ticketIdPlaceholder": "Ticket ID",
           "attachedToTicket": "Attached to the ticket as an internal note",
           "attachFailed": "Could not attach the file to that ticket",
-          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added"
+          "attachedButCommentFailed": "The file was attached, but the ticket note could not be added",
+          "downloadExpired": "This file has expired and is no longer available to download."
         },
         "workspace": {
           "title": "What ran in the workspace",

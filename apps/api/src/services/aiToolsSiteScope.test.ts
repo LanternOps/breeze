@@ -61,12 +61,24 @@ describe('exact device scope intersects site scope', () => {
     expect(await resolveSiteAllowedDeviceIds('org-1', auth({ canAccessSite: undefined }))).toEqual([]);
   });
 
-  it('requires an in-scope device ID for indirect device or site-only resources', () => {
+  it('requires an in-scope device ID for a device-keyed resource', () => {
     const ctx = auth({ allowedDeviceIds: ['target'] });
     expect(deviceSiteDenied(ctx, 'site-1', 'target')).toBe(false);
     expect(deviceSiteDenied(ctx, 'site-2', 'target')).toBe(true);
     expect(deviceSiteDenied(ctx, 'site-1', 'sibling')).toBe(true);
-    expect(deviceSiteDenied(ctx, 'site-1')).toBe(true);
+    // An unresolvable device on a device-keyed resource fails closed.
+    expect(deviceSiteDenied(ctx, 'site-1', null)).toBe(true);
+  });
+
+  // #6096 D2: `agentAuthContext` pins `allowedDeviceIds` on EVERY device-bound
+  // run, and the site-only fleet resources (groups, deployments, alert rules)
+  // pass no device id. Denying those on the device axis made every such
+  // resource "not found" for every device-bound full run.
+  it('falls through to the site check for a site-only resource', () => {
+    const ctx = auth({ allowedDeviceIds: ['target'] });
+    expect(deviceSiteDenied(ctx, 'site-1')).toBe(false);
+    expect(deviceSiteDenied(ctx, 'site-2')).toBe(true);
+    expect(deviceSiteDenied(ctx, null)).toBe(true);
   });
 
   it('rejects indirect access to sibling alerts/snapshots before querying the device', async () => {

@@ -256,6 +256,8 @@ export function mergeAgentPolicies(
       deviceTags: intersectOptional(partner.triggers.deviceTags, org.triggers.deviceTags),
       anomalyTypes: intersectOptional(partner.triggers.anomalyTypes, org.triggers.anomalyTypes),
       metricNames: intersectOptional(partner.triggers.metricNames, org.triggers.metricNames),
+      // `minAnomalyScore` is a FLOOR ("fire only at or above this"), so `max`
+      // IS the tighten-only rule — the same direction as the intersections.
       minAnomalyScore: partner.triggers.minAnomalyScore === undefined
         ? org.triggers.minAnomalyScore
         : org.triggers.minAnomalyScore === undefined

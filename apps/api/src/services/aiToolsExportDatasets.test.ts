@@ -109,9 +109,12 @@ describe('dataset adapters', () => {
       expect(generateDeviceInventoryReport).not.toHaveBeenCalled();
     });
 
-    it('denies a cross-organization request before reading inventory, without throwing', async () => {
-      const pager = await DATASET_ADAPTERS[dataset].createPager({ ...request, orgId: 'org-other' });
-      expect((await pager(null)).rows).toEqual([]);
+    // #6096 D4: a principal org that disagrees with the request org is a
+    // CALLER bug, not a device-less run. An empty pager would report it as "no
+    // data" — the one shape a data-minimisation boundary must never fake.
+    it('throws on a cross-organization request instead of reporting an empty export', async () => {
+      await expect(DATASET_ADAPTERS[dataset].createPager({ ...request, orgId: 'org-other' }))
+        .rejects.toThrow(/organization/i);
       expect(readDeviceInventoryRows).not.toHaveBeenCalled();
       expect(readSoftwareInventoryRows).not.toHaveBeenCalled();
     });

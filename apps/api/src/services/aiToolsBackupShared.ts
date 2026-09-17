@@ -75,10 +75,11 @@ export async function loadSnapshotWithSiteAccess(
 
   if (!row) return { error: SNAPSHOT_DENIED };
 
-  // Site axis (app-layer only; RLS does NOT enforce it). Resolve the snapshot's
-  // SOURCE device site and gate it exactly like a restore target. Gated on
-  // `allowedSiteIds` (the restriction marker) so unrestricted callers incur no
-  // extra query — `canAccessSite` is always present, allow-all when unrestricted.
+  // Site + exact-device axes (app-layer only; RLS enforces neither). Resolve
+  // the snapshot's SOURCE device and gate it exactly like a restore target.
+  // Gated on EITHER restriction marker (`allowedSiteIds` or `allowedDeviceIds`)
+  // so a caller restricted on neither incurs no extra query — `canAccessSite`
+  // is always present, allow-all when unrestricted.
   if (auth.allowedSiteIds || auth.allowedDeviceIds) {
     const [sourceDevice] = row.deviceId
       ? await db

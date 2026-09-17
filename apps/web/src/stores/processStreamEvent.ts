@@ -84,13 +84,16 @@ export interface ChatRunProgressEntry {
 }
 
 /**
- * A workspace `analysis` run launched from this conversation (execution-plane
- * spec §5.5). Seeded by the `workspace_launch_analysis` tool result, advanced
- * by `run_progress`/`run_result` while a turn is open, and reconciled by
- * `AiRunCard`'s poll of `GET /ai/agents/runs/:runId` — which is the source of
- * truth, because the SSE stream only exists during a turn and the run outlives
- * it. Keyed by run id, not by tool-use id: a run survives the turn that started
- * it and can be referred to again later in the conversation.
+ * A workspace `analysis` run associated with this conversation
+ * (execution-plane spec §5.5), advanced by `run_progress`/`run_result` while a
+ * turn is open, and reconciled by `AiRunCard`'s poll of
+ * `GET /ai/agents/runs/:runId` — which is the source of truth, because the
+ * SSE stream only exists during a turn and the run outlives it. Keyed by run
+ * id, not by tool-use id: a run survives the turn that started it and can be
+ * referred to again later in the conversation. Chat-initiated launch is
+ * currently disabled (#6086 — no tool seeds this from within a turn), but the
+ * shape and the reconciliation contract are retained for when delegated
+ * authorization lands.
  */
 export interface ChatRunState {
   runId: string;

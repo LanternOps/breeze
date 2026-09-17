@@ -28,7 +28,9 @@ export default function AttachArtifactToTicket({
   const [open, setOpen] = useState(false);
   const [ticketId, setTicketId] = useState('');
   const [busy, setBusy] = useState(false);
-  // A failed comment can retry its existing upload without creating an orphan.
+  // A failed comment can retry against the existing pending reference row
+  // (from `/attachments/from-artifact`, below) without creating a duplicate —
+  // nothing is uploaded here, it's a reference, not a copy.
   const pending = useRef(new Map<string, string>());
 
   const submit = async () => {
@@ -60,9 +62,10 @@ export default function AttachArtifactToTicket({
             body: JSON.stringify({ content: '', isPublic: false, attachmentIds: [attachmentId] }),
           }),
         successMessage: t('aiAgentsPage.runs.detail.artifacts.attachedToTicket'),
-        // The file is already attached by this point (the upload above
-        // succeeded) — only the internal-note comment failed. "attachFailed"
-        // would be a false claim here; it is reserved for the staging call.
+        // The attachment reference already exists by this point (the call
+        // above succeeded) — only the internal-note comment failed.
+        // "attachFailed" would be a false claim here; it is reserved for the
+        // reference-creation call.
         errorFallback: t('aiAgentsPage.runs.detail.artifacts.attachedButCommentFailed'),
         onUnauthorized: handleSessionExpired,
       });

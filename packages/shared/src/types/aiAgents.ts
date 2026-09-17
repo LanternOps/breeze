@@ -311,9 +311,11 @@ export interface AiAgentTriggers {
    *
    * These are an EXECUTION boundary, not just a trigger filter (#6086): a run
    * of a scoped agent is admitted only for an exact device inside the scope,
-   * the scope is rechecked before execution and before every tool call
-   * (`services/aiAgents/runResourceScope.ts`), and such a run is exposed only
-   * the tools verified to enforce an exact-device allowlist.
+   * and that scope is rechecked before execution and before every tool call
+   * (`services/aiAgents/runResourceScope.ts`). The boundary is over DEVICES,
+   * not tools: a scoped run keeps its agent's full tool allowlist, and every
+   * device-keyed tool is bounded to the run's own device by the exact-device
+   * allowlist the run's auth context carries (`agentAuthContext.ts`).
    */
   siteIds?: string[];
   deviceGroupIds?: string[];
