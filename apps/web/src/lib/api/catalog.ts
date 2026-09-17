@@ -29,9 +29,6 @@ export interface CatalogItem {
   sku: string | null;
   description: string | null;
   billingType: CatalogBillingType;
-  /** @deprecated server mirror of the partner-currency price-book row — web code
-   *  must not read it (Task 19 grep); removed with the cleanup migration. */
-  unitPrice: string;
   costBasis: string | null;
   /** ISO 4217 code `costBasis` is denominated in (NOT NULL server-side). */
   costCurrency: string;
@@ -354,8 +351,8 @@ export const CATALOG_TYPE_CHIP: Record<CatalogItemType, string> = {
 };
 
 /** The item's price-book row for `currencyCode` (case-insensitive), or null when
- *  the book has no row in that currency. Never falls back to another currency
- *  or to the deprecated `unitPrice` mirror — a gap is a gap (no conversion, ever). */
+ *  the book has no row in that currency. Never falls back to another currency's
+ *  row — a gap is a gap (no conversion, ever). */
 export function priceFor(
   item: Pick<CatalogItem, 'prices'> | { prices?: PriceBookEntry[] | null },
   currencyCode: string | null | undefined,

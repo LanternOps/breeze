@@ -399,6 +399,9 @@
       },
       "loading": "Chargement des rapports...",
       "never": "Jamais",
+      "success": {
+        "generated": "Rapport « {{name}} » généré."
+      },
       "visibleInPortal": "Visible dans le portail client",
       "newReport": "Nouveau rapport",
       "nextOccurrence": "Suite : {{next}}",

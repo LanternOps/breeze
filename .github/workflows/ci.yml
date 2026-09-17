@@ -1988,7 +1988,10 @@ jobs:
   # ─── Go agent lint ────────────────────────────────────────────────────
   # The `lint` job above is JS/TS + compose guards only; the Go agent was
   # never vet/lint-gated in CI (golangci-lint lived only in agent/Makefile).
-  # `go vet` is an unconditional gate (the tree is already vet-clean).
+  # `go vet` is an unconditional gate. "The tree is vet-clean" used to be
+  # written here without qualification; it was only ever true of the DEFAULT
+  # (linux) build, which excludes every `//go:build windows` file — see the
+  # cross-compiled vet steps below and #3046.
   # golangci-lint runs in new-issues-only mode so the pre-existing backlog
   # (incl. ~20 unformatted files) does not block PRs — burn it down separately.
   lint-agent:
@@ -2016,6 +2019,28 @@ jobs:
 
       - name: go vet
         working-directory: agent
+        run: go vet ./...
+
+      # #3046: the step above runs on ubuntu-latest, so every `//go:build
+      # windows` file is excluded from the build and was never vetted at all —
+      # and the Windows `go test` job does not cover the gap, because `go test`
+      # only runs a subset of vet that excludes unsafeptr. Cross-compiling
+      # closes it with no Windows runner: vet only has to typecheck and analyse
+      # the Windows build, not execute it. Non-unsafeptr analysers are an
+      # unconditional gate; unsafeptr is baselined per file. Rationale for both
+      # (and for per-file rather than file:line:col) is in the script header.
+      - name: go vet (Windows cross-compile)
+        run: bash scripts/check-windows-vet.sh
+
+      # Same blind spot, darwin side (#3046). The darwin build is fully
+      # vet-clean today, including unsafeptr, so this needs no baseline.
+      # CGO_ENABLED=0 is inherited from the job env — the darwin cgo backends
+      # cannot be compiled on a Linux runner anyway; build-agent covers those.
+      - name: go vet (macOS cross-compile)
+        working-directory: agent
+        env:
+          GOOS: darwin
+          GOARCH: arm64
         run: go vet ./...
 
       # #5892: the pinned binary is ~130MB and `go install` re-fetches its own

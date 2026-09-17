@@ -26,9 +26,12 @@ export interface ToolSourceDiscoveryJobData {
   sourceId: string;
 }
 
-/** Stable per-source dedupe key — a source with a job already queued/active is not re-enqueued. */
+/**
+ * Stable per-source dedupe key — a source with a job already queued/active is not re-enqueued.
+ * Must not contain ':' — BullMQ 5 throws "Custom Id cannot contain :" on Queue.add.
+ */
 function toolSourceDiscoveryJobId(sourceId: string): string {
-  return `discover:${sourceId}`;
+  return `discover-${sourceId}`;
 }
 
 let discoveryQueue: Queue<ToolSourceDiscoveryJobData> | null = null;

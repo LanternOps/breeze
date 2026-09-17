@@ -399,6 +399,9 @@
       },
       "loading": "Cargando informes...",
       "never": "Nunca",
+      "success": {
+        "generated": "Informe \"{{name}}\" generado."
+      },
       "visibleInPortal": "Visible en el portal del cliente",
       "newReport": "Nuevo informe",
       "nextOccurrence": "Siguiente: {{next}}",
