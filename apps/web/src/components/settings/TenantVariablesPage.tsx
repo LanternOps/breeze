@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import '@/lib/i18n';
 import { KeyRound, Lock, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { TenantVariable } from '@breeze/shared';
-import { fetchWithAuth } from '../../stores/auth';
+import { applyOrgId, fetchWithAuth } from '../../stores/auth';
 import { ActionError, runAction } from '@/lib/runAction';
 import { loginPathWithNext } from '@/lib/authScope';
 import { navigateTo } from '@/lib/navigation';
@@ -41,6 +41,8 @@ function draftFrom(variable: TenantVariable): Draft {
   };
 }
 
+type VariableListResult = { ok: true; data: TenantVariable[] } | { ok: false };
+
 // Module-level (survives an Astro soft-navigation remount, since the JS module
 // graph stays loaded across it — see lib/orgSwitch.ts): coalesce an identical
 // in-flight GET across component instances. An org switch fires the "re-run on
@@ -48,19 +50,35 @@ function draftFrom(variable: TenantVariable): Draft {
 // result is discarded on unmount) moments before the soft navigation tears it
 // down and mounts a fresh instance that fetches again on its own mount —
 // without this, the same query goes out twice for one switch (#6103).
-let inFlightListUrl: string | null = null;
-let inFlightListRequest: Promise<Response | null> | null = null;
+//
+// The cache stores the PARSED result, not the raw Response: a Response body
+// can only be read once, so handing the same in-flight Response to two
+// coalesced callers would throw "body stream already read" on whichever
+// awaits `.json()` second (an uncaught rejection inside `void load()`, with
+// no setError/setLoading cleanup for that caller).
+let inFlightListKey: string | null = null;
+let inFlightListRequest: Promise<VariableListResult> | null = null;
 
-function fetchVariableList(url: string): Promise<Response | null> {
-  if (inFlightListUrl === url && inFlightListRequest) {
+function fetchVariableList(url: string, ambientOrgId: string | null): Promise<VariableListResult> {
+  // Key on the fully-resolved URL (post orgId injection), matching exactly
+  // what fetchWithAuth will request — not the raw path. Two calls for the
+  // same path but different orgs (a rapid org switch landing mid-flight) must
+  // never be coalesced into the wrong tenant's data.
+  const key = applyOrgId(url, { ambient: ambientOrgId });
+  if (inFlightListKey === key && inFlightListRequest) {
     return inFlightListRequest;
   }
-  const request = fetchWithAuth(url).catch(() => null);
-  inFlightListUrl = url;
+  const request = (async (): Promise<VariableListResult> => {
+    const response = await fetchWithAuth(url).catch(() => null);
+    if (!response || !response.ok) return { ok: false };
+    const body = (await response.json()) as { data?: TenantVariable[] };
+    return { ok: true, data: body.data ?? [] };
+  })();
+  inFlightListKey = key;
   inFlightListRequest = request;
   void request.finally(() => {
-    if (inFlightListUrl === url) {
-      inFlightListUrl = null;
+    if (inFlightListKey === key) {
+      inFlightListKey = null;
       inFlightListRequest = null;
     }
   });
@@ -92,16 +110,18 @@ export default function TenantVariablesPage() {
     setError(false);
     // A selected org includes its inherited partner rows. All Organizations
     // instead lists only partner-wide definitions (#5353).
-    const response = await fetchVariableList(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables');
-    if (!response || !response.ok) {
+    const result = await fetchVariableList(
+      partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables',
+      orgScope.orgId
+    );
+    if (!result.ok) {
       setError(true);
       setLoading(false);
       return;
     }
-    const body = (await response.json()) as { data?: TenantVariable[] };
-    setVariables(body.data ?? []);
+    setVariables(result.data);
     setLoading(false);
-  }, [partnerOnly]);
+  }, [partnerOnly, orgScope.orgId]);
 
   // Re-run on an org switch (not just mount): `load()` reads whatever org
   // fetchWithAuth currently injects, so a stale list otherwise lingers on

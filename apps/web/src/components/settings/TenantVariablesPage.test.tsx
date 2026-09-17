@@ -1,9 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TenantVariablesPage from './TenantVariablesPage';
 import { fetchWithAuth } from '../../stores/auth';
 
-vi.mock('../../stores/auth', () => ({ fetchWithAuth: vi.fn() }));
+vi.mock('../../stores/auth', async (importOriginal) => {
+  // applyOrgId is a pure URL-building helper (no network/state) — keep the
+  // real implementation so the coalescing cache key matches production
+  // exactly; only fetchWithAuth needs mocking.
+  const actual = await importOriginal<typeof import('../../stores/auth')>();
+  return { ...actual, fetchWithAuth: vi.fn() };
+});
 const showToast = vi.fn();
 vi.mock('../shared/Toast', () => ({ showToast: (a: unknown) => showToast(a) }));
 
@@ -166,6 +172,76 @@ describe('TenantVariablesPage', () => {
 
     resolveSwitchFetch!(makeJsonResponse({ data: [SECRET_VAR] }));
     await screen.findByTestId('tenant-variable-row-s1_site_token');
+  });
+
+  it('lets two concurrently-coalesced callers both read the shared response without throwing (#6103)', async () => {
+    // A real Response body can only be read once — a second `.json()` call
+    // throws "body stream already read". makeJsonResponse's mocked `.json()`
+    // doesn't model that (it can be called any number of times), so this
+    // double reads once and throws on the second, exactly like the real
+    // fetch API. If two coalesced instances both stay mounted (not
+    // guaranteed the outgoing one unmounts before the shared request
+    // resolves) and both `await response.json()` on the same raw Response,
+    // the second read throws as an unhandled rejection with no user-visible
+    // error. The fix caches the PARSED result, not the raw Response, so this
+    // must not happen.
+    let bodyRead = false;
+    const singleReadResponse = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockImplementation(async () => {
+        if (bodyRead) throw new TypeError('Body is unusable: body stream already read');
+        bodyRead = true;
+        return { data: [ORG_VAR, SECRET_VAR] };
+      })
+    } as unknown as Response;
+
+    let resolveFetch: ((r: Response) => void) | undefined;
+    const deferred = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    fetchMock.mockImplementation(async () => deferred);
+
+    render(<TenantVariablesPage />);
+    const second = render(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    resolveFetch!(singleReadResponse);
+
+    // Both mounted instances must resolve successfully (no unhandled
+    // rejection — vitest fails the run on one, which is the regression guard).
+    await screen.findAllByTestId('tenant-variable-row-syslog_host');
+    expect(within(second.container).getByTestId('tenant-variable-row-syslog_host')).toBeTruthy();
+  });
+
+  it('does not coalesce requests for the same path across different orgs (#6103)', async () => {
+    // A rapid org switch landing mid-flight must never let a second caller
+    // silently receive the FIRST org's in-flight (and possibly wrong-tenant)
+    // response just because the raw path string matches. Neither request
+    // needs to resolve for this assertion — only the call count matters.
+    const neverResolves = new Promise<Response>(() => {});
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables' && (!init || !init.method)) {
+        return neverResolves;
+      }
+      return makeJsonResponse({ data: [] });
+    });
+
+    scopeState.isPartnerScope = false;
+    scopeState.orgId = 'org-a';
+    const { unmount, rerender } = render(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Org switches to a different org before the first request resolves; the
+    // still-mounted instance's effect fires a second request for the SAME
+    // raw path but a DIFFERENT ambient org.
+    scopeState.orgId = 'org-b';
+    rerender(<TenantVariablesPage />);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    unmount();
   });
 
   it('does not request partner scope for an organization-scoped caller', async () => {
