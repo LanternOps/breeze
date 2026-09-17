@@ -49,7 +49,6 @@ async function seedPartnerFixture(label: string) {
       itemType: 'service',
       name: `${label} Service`,
       billingType: 'one_time',
-      unitPrice: '100.00',
       costCurrency: 'USD',
     }).returning({ id: catalogItems.id });
     if (!connection || !org || !item) throw new Error('failed to seed accounting mapping fixture');
@@ -109,7 +108,6 @@ describe('accounting_entity_mappings RLS and integrity', () => {
       itemType: 'service',
       name: 'Second Service',
       billingType: 'one_time',
-      unitPrice: '50.00',
       costCurrency: 'USD',
     }).returning({ id: catalogItems.id }));
     if (!secondItem) throw new Error('failed to seed second catalog item');

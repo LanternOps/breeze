@@ -97,7 +97,6 @@ async function seedFixture(): Promise<Fixture> {
         partnerId: partnerA.id,
         itemType: 'service',
         name: 'A-only service',
-        unitPrice: '10.00',
         costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });
@@ -113,7 +112,6 @@ async function seedFixture(): Promise<Fixture> {
         partnerId: partnerA.id,
         itemType: 'service',
         name: 'A-only component',
-        unitPrice: '2.00',
         costCurrency: 'USD',
       })
       .returning({ id: catalogItems.id });
@@ -310,7 +308,6 @@ describe('catalog RLS isolation (breeze_app)', () => {
           partnerId: partnerA.id, // wrong partner — RLS must reject
           itemType: 'service',
           name: 'forged',
-          unitPrice: '1.00',
           costCurrency: 'USD',
         })
       )

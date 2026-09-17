@@ -54,6 +54,15 @@ export const createCatalogItemSchema = z.object({
   billingType: catalogBillingTypeSchema.default('one_time'),
   billingFrequency: catalogBillingFrequencySchema.nullable().optional(),
   commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
+  /**
+   * Legacy single-price input alias. NOT the dropped `catalog_items.unit_price`
+   * mirror (#3812 removed that column): the service maps this value into the
+   * PARTNER-currency row of `catalog_item_prices`, exactly as `prices` does for
+   * an explicit currency. It stays because the TD SYNNEX, EC Express and Pax8
+   * import seams (and their web drawers) still post a bare `unitPrice` with no
+   * `sellCurrency`; removing it would silently drop the imported sell price.
+   * Retire it only once every caller sends `prices[]`.
+   */
   unitPrice: money.optional(),
   prices: z.array(itemPriceInputSchema).max(40).optional(),
   costBasis: money.nullable().optional(),
@@ -107,6 +116,8 @@ export const updateCatalogItemSchema = z.object({
   billingType: catalogBillingTypeSchema.optional(),
   billingFrequency: catalogBillingFrequencySchema.nullable().optional(),
   commitmentTermMonths: z.number().int().min(1).max(120).nullable().optional(),
+  /** Legacy single-price alias — writes the PARTNER-currency `catalog_item_prices`
+   *  row (see createCatalogItemSchema.unitPrice). */
   unitPrice: money.optional(),
   costBasis: money.nullable().optional(),
   costCurrency: currencyCodeSchema.optional(),

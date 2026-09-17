@@ -79,7 +79,7 @@ export default function TicketPartsCard({ ticketId, currencyCode }: Props) {
   const pickCatalogItem = (it: CatalogItem) => {
     setCatalogItemId(it.id);
     setDescription(it.name);
-    // Never the deprecated unitPrice mirror: price-book row in the org currency or blank.
+    // Price-book row in the org currency, or blank — never another currency's row.
     const price = priceFor(it, currencyCode);
     setUnitPrice(price != null ? String(Number(price)) : '');
     const costUsable = it.costBasis != null && !!currencyCode && it.costCurrency?.toUpperCase() === currencyCode.toUpperCase();

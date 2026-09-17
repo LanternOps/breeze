@@ -253,7 +253,7 @@ export interface CreateCatalogItemWithPriceOptions {
 /**
  * Insert a catalog item plus ONE catalog_item_prices row (multi-currency wave
  * 3). Document services resolve sell prices from the price book, never from
- * the deprecated catalog_items.unit_price mirror, so a fixture item with no
+ * a column on catalog_items, so a fixture item with no
  * price-book row hits NO_PRICE_FOR_CURRENCY when a line is added from it.
  * Caller supplies the DB context (system scope for seeds).
  */
@@ -265,7 +265,6 @@ export async function createCatalogItemWithPrice(opts: CreateCatalogItemWithPric
       partnerId: opts.partnerId,
       itemType: opts.itemType ?? 'service',
       name: opts.name,
-      unitPrice: opts.unitPrice,
       costBasis: opts.costBasis ?? null,
       costCurrency: opts.costCurrency ?? opts.currencyCode,
       billingType: 'one_time',

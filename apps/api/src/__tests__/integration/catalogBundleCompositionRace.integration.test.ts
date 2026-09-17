@@ -71,10 +71,10 @@ async function seedFixture(): Promise<Fixture> {
     const mk = async (name: string, isBundle: boolean) => {
       const [row] = await db.insert(catalogItems).values({
         partnerId, name: `${name}-${suffix}`, sku: `${name}-${suffix}`,
+        // cost_currency is NOT NULL (multi-currency wave 3); the deprecated
+        // unit_price mirror was dropped in #3812.
         itemType: 'service', billingType: 'one_time', isBundle, isActive: true,
-        // Both still NOT NULL: unit_price is the deprecated partner-currency
-        // mirror #3812 wants to drop; cost_currency arrived with wave 3.
-        unitPrice: '10.00', costCurrency: 'USD'
+        costCurrency: 'USD'
       }).returning({ id: catalogItems.id });
       return row!.id;
     };
@@ -254,8 +254,7 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
       for (const [id, name, isBundle] of [[BUNDLE, 'case-bundle', true], [COMP, 'case-comp', false], [OTHER, 'case-other', false]] as const) {
         await db.insert(catalogItems).values({
           id, partnerId: f.partnerId, name: `${name}-${id.slice(0, 4)}`, sku: `${name}-${id.slice(0, 4)}`,
-          itemType: 'service', billingType: 'one_time', isBundle, isActive: true,
-          unitPrice: '10.00', costCurrency: 'USD'
+          itemType: 'service', billingType: 'one_time', isBundle, isActive: true, costCurrency: 'USD'
         });
       }
     });
@@ -956,8 +955,7 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
     const unrelated = await withSystemDbAccessContext(async () => {
       const [row] = await db.insert(catalogItems).values({
         partnerId: f.partnerId, name: `unrelated-${Date.now()}`, sku: `unrelated-${Date.now()}`,
-        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true,
-        unitPrice: '10.00', costCurrency: 'USD'
+        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true, costCurrency: 'USD'
       }).returning({ id: catalogItems.id });
       return row!.id;
     });
@@ -1058,8 +1056,7 @@ describe.runIf(RUN)('#3816 catalog bundle composition races', () => {
       }).returning({ id: partners.id });
       const [row] = await db.insert(catalogItems).values({
         partnerId: p!.id, name: `foreign-${suffix}`, sku: `foreign-${suffix}`,
-        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true,
-        unitPrice: '10.00', costCurrency: 'USD'
+        itemType: 'service', billingType: 'one_time', isBundle: false, isActive: true, costCurrency: 'USD'
       }).returning({ id: catalogItems.id });
       return { partnerId: p!.id, itemId: row!.id };
     });

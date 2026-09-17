@@ -1719,7 +1719,7 @@ export async function addCatalogLine(
     if (!item) throw new QuoteServiceError('Catalog item not found', 404, 'CATALOG_ITEM_NOT_FOUND');
     // Multi-currency wave 3 (#3775, B3): the sell price comes from the price book
     // (org override in the quote's currency → catalog_item_prices row for that
-    // currency), never from the deprecated catalog_items.unit_price mirror and
+    // currency), never from another currency's price-book row and
     // never converted. Resolved on the already-locked tx (quote → lines → catalog
     // plain SELECTs — no new lock edge). A gap is a typed 409 so the caller can
     // fall back to a manual line.

@@ -1,0 +1,27 @@
+-- #3812 (follow-up to multi-currency wave 3, #3772 / #3775) — drop the
+-- deprecated `catalog_items.unit_price` write-only mirror.
+--
+-- Wave 3 (2026-08-29-a-catalog-item-prices.sql) moved every sell price into the
+-- per-currency price book `catalog_item_prices` and left `catalog_items.unit_price`
+-- behind as a read-mirror of the partner-currency row: `catalogService` kept
+-- writing it on create / update / setItemPrice / removeItemPrice / import
+-- recovery so any straggler reader would keep working, and that migration's
+-- COMMENT ON COLUMN recorded the intent to drop it "by a later cleanup
+-- migration". This is that migration.
+--
+-- No reader remains: `resolvePrice` (catalogService), quote/invoice/contract line
+-- creation, the AI `search_catalog` tool, the accounting mapping service and the
+-- web/portal catalog surfaces all resolve sell prices from
+-- `catalog_item_org_pricing` -> `catalog_item_prices`, never from this column.
+-- The mirror writes are removed in the same PR.
+--
+-- Fix-forward only: 2026-08-29-a-catalog-item-prices.sql is shipped and MUST NOT
+-- be edited. Its seed block and its COMMENT ON COLUMN both run against the column
+-- while it still exists (they sort earlier), so a fresh-database replay is
+-- unaffected — the column is created by 2026-06-14-product-catalog.sql, seeded
+-- and commented on 2026-08-29, and dropped here.
+--
+-- Idempotent: IF EXISTS makes a re-apply a no-op. Nothing depends on the column
+-- (no index, constraint, view, or FK references it), so no CASCADE is needed and
+-- none is used — a plain DROP fails loudly if that assumption ever stops holding.
+ALTER TABLE catalog_items DROP COLUMN IF EXISTS unit_price;

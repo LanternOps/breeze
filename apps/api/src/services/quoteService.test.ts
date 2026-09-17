@@ -30,7 +30,7 @@ vi.mock('../db', () => {
 });
 
 // Multi-currency wave 3 (#3775): addCatalogLine prices the line through the
-// catalog price-book resolver, never from catalog_items.unit_price. Mock the
+// catalog price-book resolver (catalog_item_prices). Mock the
 // resolver only; CatalogServiceError stays real so the code-mapping path is
 // exercised.
 vi.mock('./catalogService', async (importOriginal) => {

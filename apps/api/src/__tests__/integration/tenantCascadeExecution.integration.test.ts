@@ -141,8 +141,8 @@ async function seed(): Promise<SeedHandles> {
   const accountingConnectionId = connection!.id;
 
   const [catalogItem] = (await testDb.execute(sql`
-    INSERT INTO catalog_items (partner_id, item_type, name, unit_price, cost_currency)
-    VALUES (${partnerId}, 'service', 'Managed Service', 100.00, 'USD')
+    INSERT INTO catalog_items (partner_id, item_type, name, cost_currency)
+    VALUES (${partnerId}, 'service', 'Managed Service', 'USD')
     RETURNING id
   `)) as unknown as Array<{ id: string }>;
   const catalogItemId = catalogItem!.id;

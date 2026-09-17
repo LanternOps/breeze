@@ -1359,7 +1359,7 @@ export async function changeContractCurrency(
 /**
  * Multi-currency wave 3 (#3775, spec §6): a catalog-sourced contract line is
  * priced by the resolver in the CONTRACT's currency (org override → price book,
- * never the deprecated unit_price mirror, never converted) and any client-
+ * never another currency's row, never converted) and any client-
  * supplied unitPrice/taxable is IGNORED — the resolver is authoritative, exactly
  * as generateDueInvoice's catalog path already is. A tech who wants a different
  * price adds a non-catalog line, which still requires and stamps the client

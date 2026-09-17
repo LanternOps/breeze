@@ -61,7 +61,7 @@ const resp = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
 
 const catItem = (over: Partial<CatalogItem> = {}): CatalogItem => ({
   id: 'cat-1', partnerId: 'p1', itemType: 'service', name: 'Managed workstation', sku: 'MW-1', description: null,
-  billingType: 'recurring', unitPrice: '999.00', costBasis: '20.00', costCurrency: 'USD', markupPercent: null,
+  billingType: 'recurring', costBasis: '20.00', costCurrency: 'USD', markupPercent: null,
   unitOfMeasure: 'each', taxable: true, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
   prices: [{ currencyCode: 'EUR', unitPrice: '42.00' }, { currencyCode: 'USD', unitPrice: '50.00' }],
   ...over,

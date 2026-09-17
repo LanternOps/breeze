@@ -69,7 +69,7 @@ const seedPartner = (currencyCode: string | null = 'EUR') => {
 
 const item = (over: Partial<CatalogItem> = {}): CatalogItem => ({
   id: 'item-1', partnerId: 'p-1', itemType: 'service', name: 'Managed WS', sku: null, description: null,
-  billingType: 'one_time', unitPrice: '100.00', costBasis: null, costCurrency: 'EUR', markupPercent: null, unitOfMeasure: 'each',
+  billingType: 'one_time', costBasis: null, costCurrency: 'EUR', markupPercent: null, unitOfMeasure: 'each',
   taxable: false, taxCategory: null, isBundle: false, isActive: true, createdAt: '', updatedAt: '',
   prices: [{ currencyCode: 'EUR', unitPrice: '100.00' }], ...over,
 });

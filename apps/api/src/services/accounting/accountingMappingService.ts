@@ -936,12 +936,11 @@ function buildCustomerPayload(org: OrgRow): AccountingCustomerPayload {
  * line, a catalog item syncs once per partner, not once per org, so
  * `AccountingItemPayload` carries exactly one currency+price pair.
  *
- * Deliberately queries `catalog_item_prices` directly rather than reading
- * `catalogItems.unitPrice` — that column is a deprecated read-mirror the
- * schema comment marks "read by nothing" (schema/catalog.ts), and it is not
- * guaranteed to exist in the partner currency (an item created from cost +
- * markup in a different currency can have zero rows in the partner currency).
- * A missing row is therefore a real, user-actionable gap, not a bug — this
+ * Queries `catalog_item_prices` — since #3812 that table is the only place a
+ * sell price exists (the deprecated `catalog_items.unit_price` mirror is
+ * dropped). A partner-currency row is not guaranteed: an item created from
+ * cost + markup in a different currency can have zero rows in the partner
+ * currency. A missing row is therefore a real, user-actionable gap, not a bug — this
  * throws `item_price_required` (409) before any provider call, same shape as
  * `income_account_required`.
  */

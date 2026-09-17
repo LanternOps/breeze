@@ -56,13 +56,12 @@ async function seedPax8Quote(options: {
       name: 'Pax8-backed license',
       billingType: recurrence === 'one_time' ? 'one_time' : 'recurring',
       billingFrequency: recurrence === 'annual' ? 'annual' : (recurrence === 'monthly' ? 'monthly' : null),
-      unitPrice: '19.95',
       costCurrency: 'USD',
       taxable: false,
     }).returning();
     if (!catalogItem) throw new Error('catalog seed failed');
     // Price-book row (multi-currency wave 3): addCatalogLine resolves the sell
-    // price from catalog_item_prices, never from the deprecated unit_price mirror.
+    // price from catalog_item_prices — the only sell-price authority.
     await db.insert(catalogItemPrices).values({
       itemId: catalogItem.id,
       partnerId: partner.id,
@@ -227,7 +226,6 @@ describe('quote acceptance stages Pax8 fulfillment (real Postgres)', () => {
         name: 'Foreign product',
         billingType: 'recurring',
         billingFrequency: 'monthly',
-        unitPrice: '5.00',
         costCurrency: 'USD',
       }).returning();
       const [foreignIntegration] = await db.insert(pax8Integrations).values({

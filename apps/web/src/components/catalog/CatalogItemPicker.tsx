@@ -14,7 +14,7 @@ interface Props {
   onSelect: (item: CatalogItem) => void;
   /** Document currency (ISO 4217). The price cell shows the item's price-book row
    *  in THIS currency, or a muted "no price" note when the book has no row —
-   *  never another currency's number and never the deprecated `unitPrice`
+   *  never another currency's number and never a legacy item-level
    *  mirror. Items without a price stay selectable: the server answers the add
    *  with `NO_PRICE_FOR_CURRENCY` and the editor toasts the gap. */
   currencyCode: string;
