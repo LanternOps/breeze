@@ -434,6 +434,25 @@ describe('agentAuthMiddleware - tenant-status gate', () => {
     expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
   });
 
+  // #6097 — the eventlogs submit route's BullMQ log-forwarding enqueue was
+  // discovered running inside the request-long wrap, pinning a pooled
+  // connection idle-in-transaction across the Redis round trip on every
+  // forwarded submit. The handler now self-manages its own short org-scoped
+  // contexts (see routes/agents/eventlogs.ts), so the middleware must NOT
+  // also wrap the whole request in its own request-long org transaction.
+  it('skips the request-long org wrap for the self-managed eventlogs route', async () => {
+    buildSelectMock([makeDevice()]);
+    vi.mocked(getAgentTenantState).mockResolvedValue('active');
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/eventlogs' });
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await agentAuthMiddleware(c, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(withDbAccessContext)).not.toHaveBeenCalled();
+  });
+
   // The command RESULT route ends in `result`, not `commands` — it must keep
   // the request-long org wrap.
   it('keeps the request-long org wrap for the command result route', async () => {
@@ -522,11 +541,11 @@ describe('agentAuthMiddleware - currentPartnerId population (#4673 W02)', () => 
     expect(dbContext.accessibleOrgIds).toEqual(['org-1']);
   });
 
-  // The three SELF_MANAGED_DB_CONTEXT_ACTIONS routes (heartbeat, reliability,
-  // commands) skip the request-long wrap and hand-build their own org context.
-  // They can only populate `currentPartnerId` if the middleware surfaces the
-  // partner id on the agent context — so it must be there even on the routes
-  // where the middleware itself opens no transaction at all.
+  // The four SELF_MANAGED_DB_CONTEXT_ACTIONS routes (heartbeat, reliability,
+  // commands, eventlogs) skip the request-long wrap and hand-build their own
+  // org context. They can only populate `currentPartnerId` if the middleware
+  // surfaces the partner id on the agent context — so it must be there even
+  // on the routes where the middleware itself opens no transaction at all.
   it('surfaces partnerId on the agent context for the self-managed heartbeat route', async () => {
     buildSelectMock([makeDevice()]);
 
@@ -547,6 +566,16 @@ describe('agentAuthMiddleware - currentPartnerId population (#4673 W02)', () => 
     buildSelectMock([makeDevice()]);
 
     const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/reliability' });
+
+    await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
+
+    expect((c.get('agent') as unknown as { partnerId: string }).partnerId).toBe('partner-1');
+  });
+
+  it('surfaces partnerId on the agent context for the self-managed eventlogs route', async () => {
+    buildSelectMock([makeDevice()]);
+
+    const c = createContext({ token: VALID_TOKEN, path: '/api/v1/agents/agent-1/eventlogs' });
 
     await agentAuthMiddleware(c, vi.fn().mockResolvedValue(undefined));
 

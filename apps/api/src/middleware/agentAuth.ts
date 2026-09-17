@@ -311,8 +311,19 @@ export async function suspendAgentToken(deviceId: string, reason: AgentTokenSusp
  * parked idle-in-transaction waiting for an inner connection, reaped at the
  * 60s idle_in_transaction_session_timeout as `500 @60s`, re-polled by agents,
  * repeat (US prod outage, 2026-07-24).
+ *
+ * `eventlogs` (#6097) is here because its BullMQ log-forwarding enqueue was
+ * discovered running inside the request-long wrap, pinning a pooled
+ * connection idle-in-transaction across the Redis round trip on every
+ * forwarded event-log submit — the exact #1105 shape. `runOutsideDbContext`
+ * alone does not fix this (see the note at the wrap site below): only an
+ * opted-out route avoids ever opening the outer transaction. The handler now
+ * self-manages two short org-scoped contexts of its own (one for the
+ * device/settings read, one for the insert + forwarding-config read), with
+ * the rate-limit check and the forwarding enqueue running genuinely outside
+ * any open transaction in between.
  */
-const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands']);
+const SELF_MANAGED_DB_CONTEXT_ACTIONS = new Set(['heartbeat', 'reliability', 'commands', 'eventlogs']);
 
 /**
  * Single-segment actions allowed during a TENANT (`offboarding`) drain:

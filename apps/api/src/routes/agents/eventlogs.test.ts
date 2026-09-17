@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 
 const AGENT_ID = 'agent-001';
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const ORG_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const ORG_ID = 'org-1';
 
 const mocks = vi.hoisted(() => ({
   select: vi.fn(),
@@ -15,25 +15,23 @@ const mocks = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
 }));
 
-// #1105 depth-tracking: withDbAccessContext increments/decrements a shared
-// counter around its callback so a test can prove a given call (e.g. the
-// forwarding enqueue) runs OUTSIDE the request's held DB context, mirroring
-// the real request-long wrap agentAuthMiddleware opens around this route.
+// #1105 / #6097 — depth-tracking: withDbAccessContext increments/decrements a
+// shared counter around its callback so a test can prove the Redis-only work
+// (rate limiter, forwarding enqueue) runs with NO context open at all — real
+// exits of the (mocked) `baseDb.transaction` callback, not merely outside the
+// AsyncLocalStorage store the way `runOutsideDbContext` alone would leave it.
+// `eventlogs` is now in SELF_MANAGED_DB_CONTEXT_ACTIONS (agentAuth.ts), so
+// there is no outer middleware wrap in production — the route opens its own
+// two short contexts, tracked here the same way reliability.test.ts does.
 let contextDepth = 0;
+const dbContextCalls: Array<Record<string, unknown>> = [];
 vi.mock('../../db', () => ({
   db: {
     select: mocks.select,
     insert: mocks.insert,
   },
-  runOutsideDbContext: vi.fn((fn: () => unknown) => {
-    contextDepth -= 1;
-    try {
-      return fn();
-    } finally {
-      contextDepth += 1;
-    }
-  }),
-  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => {
+  withDbAccessContext: vi.fn(async (ctx: Record<string, unknown>, fn: () => Promise<unknown>) => {
+    dbContextCalls.push(ctx);
     contextDepth += 1;
     try {
       return await fn();
@@ -72,6 +70,10 @@ vi.mock('../../services/logForwarding', () => ({
   getOrgForwardingConfig: mocks.getOrgForwardingConfig,
 }));
 
+vi.mock('../../services/sentry', () => ({
+  captureException: vi.fn(),
+}));
+
 vi.mock('./helpers', () => {
   const sanitizeTimestamp = (value: unknown): Date | null => {
     if (typeof value !== 'string' || value.trim() === '') return null;
@@ -92,15 +94,14 @@ vi.mock('./helpers', () => {
   };
 });
 
-import { withDbAccessContext } from '../../db';
 import { eventLogsRoutes } from './eventlogs';
 
-function mockDeviceLookup() {
+function mockDeviceLookup(overrides: Record<string, unknown> = {}) {
   mocks.select.mockReturnValueOnce({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
         limit: vi.fn().mockResolvedValue([
-          { id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, hostname: 'win-01' },
+          { id: DEVICE_ID, agentId: AGENT_ID, orgId: ORG_ID, hostname: 'win-01', ...overrides },
         ]),
       }),
     }),
@@ -150,12 +151,16 @@ describe('agent event log routes', () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-05-02T12:00:00.000Z'));
+    contextDepth = 0;
+    dbContextCalls.length = 0;
 
     app = new Hono();
-    // Simulate agentAuthMiddleware setting the main-agent credential so the
-    // requireAgentRole guard on eventLogsRoutes lets ingest tests through.
+    // Simulate agentAuthMiddleware setting the main-agent credential. Since
+    // `eventlogs` is self-managed (SELF_MANAGED_DB_CONTEXT_ACTIONS), the real
+    // middleware does NOT also wrap this route in its own request-long
+    // withDbAccessContext — only the agent context is set here.
     app.use('*', async (c, next) => {
-      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: 'org-1', siteId: 'site-1', role: 'agent' } as never);
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: ORG_ID, partnerId: 'partner-1', siteId: 'site-1', role: 'agent' } as never);
       return next();
     });
     app.route('/agents', eventLogsRoutes);
@@ -226,33 +231,75 @@ describe('agent event log routes', () => {
     expect(forwarded.events[0]).not.toHaveProperty('rawData');
   });
 
-  it('enqueues log forwarding OUTSIDE the held request DB context (#6097 / #1105)', async () => {
+  it('runs the rate limiter and the forwarding enqueue with NO DB context open (#6097 / #1105)', async () => {
     mockDeviceLookup();
     mockInsertSuccess();
 
+    let depthDuringRateLimit: number | null = null;
+    mocks.rateLimiter.mockImplementation(async () => {
+      depthDuringRateLimit = contextDepth;
+      return { allowed: true, remaining: 999, resetAt: new Date('2026-05-02T13:00:00.000Z') };
+    });
     let depthDuringEnqueue: number | null = null;
     mocks.enqueueLogForwarding.mockImplementation(async () => {
       depthDuringEnqueue = contextDepth;
     });
 
-    // Simulate agentAuthMiddleware's request-long withDbAccessContext wrap
-    // around the whole handler (eventlogs.ts does not opt out via
-    // SELF_MANAGED_DB_CONTEXT_ACTIONS, so the real middleware holds this
-    // open for the entire request).
-    const res = await withDbAccessContext(
-      { scope: 'organization', orgId: 'org-1' } as never,
-      async () => app.request(`/agents/${AGENT_ID}/eventlogs`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ events: [makeEvent()] }),
-      })
-    );
+    const res = await app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
 
     expect(res.status).toBe(200);
+    expect(mocks.rateLimiter).toHaveBeenCalled();
     expect(mocks.enqueueLogForwarding).toHaveBeenCalled();
-    // depth 0 == outside every withDbAccessContext; depth 1 would mean the
-    // enqueue ran while the request's pooled connection was still pinned.
+    // depth 0 == no withDbAccessContext callback currently on the stack, i.e.
+    // no `baseDb.transaction` — not just outside the ALS store the way
+    // `runOutsideDbContext` alone would leave it while the real transaction
+    // (mocked here as the withDbAccessContext callback) is still open.
+    expect(depthDuringRateLimit).toBe(0);
     expect(depthDuringEnqueue).toBe(0);
+  });
+
+  it('runs the device lookup and the insert inside an org-scoped context for the device\'s org', async () => {
+    mockDeviceLookup();
+    mockInsertSuccess();
+
+    const res = await app.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
+
+    expect(res.status).toBe(200);
+    // Two short contexts: phase 1 (lookup + settings), phase 2 (insert +
+    // forwarding config) — both org-scoped to the agent's org, never system.
+    expect(dbContextCalls).toHaveLength(2);
+    for (const ctx of dbContextCalls) {
+      expect(ctx.scope).toBe('organization');
+      expect(ctx.orgId).toBe(ORG_ID);
+      expect(ctx.accessibleOrgIds).toEqual([ORG_ID]);
+      expect(ctx.currentPartnerId).toBe('partner-1');
+    }
+  });
+
+  it('returns 401 when the agent context carries no org (never opens a vacuous context)', async () => {
+    const noOrgApp = new Hono();
+    noOrgApp.use('*', async (c, next) => {
+      c.set('agent', { deviceId: 'dev-1', agentId: 'agent-1', orgId: undefined, siteId: 'site-1', role: 'agent' } as never);
+      return next();
+    });
+    noOrgApp.route('/agents', eventLogsRoutes);
+
+    const res = await noOrgApp.request(`/agents/${AGENT_ID}/eventlogs`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [makeEvent()] }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(dbContextCalls).toHaveLength(0);
   });
 
   it('does not re-forward duplicate events absorbed by the dedup index (#2390 retry passes)', async () => {
