@@ -1777,11 +1777,18 @@ async function bootstrap(): Promise<void> {
   }
 
   // Register local agent binaries in DB and optionally sync to S3 (BINARY_SOURCE=local only)
+  //
+  // #6098: deliberately NOT wrapped in runWithSystemDbAccess. syncBinaries()
+  // does GitHub release/manifest fetches (BINARY_SOURCE=github, and as a
+  // local-mode fallback) — wrapping the whole call in a system DB context
+  // held a pooled connection idle-in-transaction across that network phase
+  // for the entire boot (verified: 2.7s hold, the #1105 safeFetch tripwire
+  // fired x10). syncBinaries() and everything it calls now open their own
+  // short withSystemDbAccessContext around only their DB reads/writes, so no
+  // ambient context is needed — or wanted — here.
   const binarySource = (process.env.BINARY_SOURCE || 'github').trim().toLowerCase();
   try {
-    await runWithSystemDbAccess(async () => {
-      await syncBinaries();
-    });
+    await syncBinaries();
   } catch (err) {
     if (binarySource === 'local') {
       console.error('[startup] Binary sync failed in BINARY_SOURCE=local mode (fatal):', err);

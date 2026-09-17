@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { eq, and, inArray } from "drizzle-orm";
-import { db } from "../db";
+import { db, withSystemDbAccessContext } from "../db";
 import { agentVersions } from "../db/schema";
 import { isS3Configured, syncDirectory } from "./s3Storage";
 import {
@@ -68,33 +68,33 @@ const MAX_RELEASE_API_JSON_BYTES = 8 * 1024 * 1024;
 // closes half of that.
 const RELEASE_FETCH_TIMEOUT_MS = 30_000;
 
-// #1105 tripwire — READ BEFORE ENABLING DB_CONTEXT_TRIPWIRE_STRICT.
+// #1105 tripwire — this module's fetches no longer run inside a held DB
+// access context (fixed by #6098; was #4262's deferred follow-up).
 //
-// `safeFetch` calls `assertOutsideHeldDbContext`. All four call sites in this
-// module run INSIDE a held DB access context:
-//   - boot: index.ts wraps syncBinaries() in runWithSystemDbAccess
-//     → withSystemDbAccessContext → withDbAccessContext (a real transaction);
-//   - route: POST /agent-versions/sync-github takes the withDbAccessContext
-//     branch in middleware/auth.ts and is NOT in SELF_MANAGED_DB_CONTEXT_ROUTES.
+// `safeFetch` calls `assertOutsideHeldDbContext`. Previously, both call sites
+// in this module ran INSIDE a held DB access context:
+//   - boot: index.ts wrapped syncBinaries() in runWithSystemDbAccess
+//     → withSystemDbAccessContext → withDbAccessContext (a real transaction),
+//     holding a pooled connection idle-in-transaction for the whole boot-time
+//     network phase (verified: 2.7s hold, tripwire fired x10 — #6098);
+//   - route: POST /agent-versions/sync-github took the withDbAccessContext
+//     branch in middleware/auth.ts (same hazard, one request at a time).
 //
-// This is PRE-EXISTING: the bare `fetch` these replaced did the identical
-// round-trip inside the identical transaction. The tripwire only ever
-// instrumented safeFetch, so adopting the guard made an existing problem
-// VISIBLE rather than creating one. Today that is a console.warn plus a deduped
-// Sentry event; DB_CONTEXT_TRIPWIRE_STRICT is set by no CI job.
-//
-// The latent hazard, stated so the next person is warned rather than surprised:
-// under that strict flag `assertOutsideHeldDbContext` THROWS, syncBinaries
-// throws, and index.ts treats that as fatal in BINARY_SOURCE=local mode — the
-// API refuses to boot. Before this module adopted safeFetch, flipping the flag
-// was safe here.
-//
-// Do NOT "fix" this by wrapping these fetches in runOutsideDbContext: that exits
-// the AsyncLocalStorage store without releasing the pooled connection, silencing
-// the alarm while leaving the connection pinned idle-in-transaction across the
-// network round-trip. The real fix is to run the network phase before the system
-// context opens and let this module open its own short contexts around only its
-// DB writes — a boot-critical restructure that belongs in its own PR (#4262).
+// The fix does NOT wrap these fetches in runOutsideDbContext — that would only
+// swap the AsyncLocalStorage `db` pointer; the caller's `baseDb.transaction()`
+// promise is still awaiting this function's return, so the pooled connection
+// stays pinned idle-in-transaction regardless. Instead:
+//   - every DB access this module makes (the four `db.transaction` writes and
+//     the one `db.select` read) opens its OWN short `withSystemDbAccessContext`
+//     around just that access, so this module never NEEDS an ambient context;
+//   - the boot call site (index.ts) no longer wraps `syncBinaries()` in any
+//     context at all;
+//   - `POST /agent-versions/sync-github` is registered in
+//     `SELF_MANAGED_DB_CONTEXT_ROUTES` so `authMiddleware` doesn't open one
+//     either.
+// `withSystemDbAccessContext` reuses an already-open ambient context rather
+// than nesting (see `withDbAccessContext`'s early-return), so this is also
+// safe for any future caller that still wraps a call in its own context.
 
 /**
  * Render an outbound-fetch failure for an operator.
@@ -511,7 +511,9 @@ async function registerLocalBinaries(args: {
   // below), so it's stamped with this SERVER's own configured edition.
   const edition = getBinaryEdition();
 
-  await db.transaction(async (tx) => {
+  // #6098: own short system-scoped context around the write — this function's
+  // caller no longer holds one across the fetch phase that produced `binaries`.
+  await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     for (const bin of binaries) {
       const osParam = bin.platform === "macos" ? "darwin" : bin.platform;
       const downloadUrl = downloadUrlFor(osParam, bin.architecture);
@@ -582,7 +584,7 @@ async function registerLocalBinaries(args: {
           },
         });
     }
-  });
+  }));
 }
 
 // Official-manifest local registration (BYO signing edition follow-up).
@@ -770,7 +772,8 @@ async function registerFromOfficialManifest(args: {
   // not just skip them here.
   const excludedFilenames = new Set<string>();
 
-  await db.transaction(async (tx) => {
+  // #6098: own short system-scoped context around the write.
+  await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     for (const bin of binaries) {
       let verified;
       try {
@@ -861,7 +864,7 @@ async function registerFromOfficialManifest(args: {
 
       registeredFilenames.add(bin.filename);
     }
-  });
+  }));
 
   return { registeredFilenames, excludedFilenames };
 }
@@ -1531,25 +1534,30 @@ async function ensureCurrentVersionRegistered(): Promise<void> {
     // component support shipped would otherwise never backfill the backup
     // row — the old check only looked at component="agent" and returned
     // early, leaving breeze-backup permanently unregistered for that version.
-    const existingRows = await db
-      .select({
-        component: agentVersions.component,
-        platform: agentVersions.platform,
-        architecture: agentVersions.architecture,
-        isLatest: agentVersions.isLatest,
-        // Selected because (version, platform, architecture, component,
-        // edition) is the unique key — the same platform/arch can carry both a
-        // self-host and a hosted agent row, and the backup row must mirror the
-        // isLatest of its OWN edition's sibling, not whichever came back first.
-        edition: agentVersions.edition,
-      })
-      .from(agentVersions)
-      .where(
-        and(
-          eq(agentVersions.version, currentVersion),
-          inArray(agentVersions.component, ["agent", "backup"]),
+    // #6098: own short system-scoped context around the read — this is the
+    // safety net that runs unconditionally at boot, so it must not depend on
+    // (or need) an ambient context from its caller.
+    const existingRows = await withSystemDbAccessContext(() =>
+      db
+        .select({
+          component: agentVersions.component,
+          platform: agentVersions.platform,
+          architecture: agentVersions.architecture,
+          isLatest: agentVersions.isLatest,
+          // Selected because (version, platform, architecture, component,
+          // edition) is the unique key — the same platform/arch can carry both a
+          // self-host and a hosted agent row, and the backup row must mirror the
+          // isLatest of its OWN edition's sibling, not whichever came back first.
+          edition: agentVersions.edition,
+        })
+        .from(agentVersions)
+        .where(
+          and(
+            eq(agentVersions.version, currentVersion),
+            inArray(agentVersions.component, ["agent", "backup"]),
+          ),
         ),
-      );
+    );
 
     const agentRows = existingRows.filter((r) => r.component === "agent");
     const hasAgent = agentRows.length > 0;
@@ -1825,7 +1833,9 @@ async function upsertVersion(
   // When auto-promote is on (default) behavior is byte-for-byte unchanged.
   const autoPromote = getAgentAutoPromote();
   const edition = signedMetadata.edition;
-  await db.transaction(async (tx) => {
+  // #6098: own short system-scoped context around the write — the fetch that
+  // produced signedMetadata already completed with no context held.
+  await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     if (autoPromote) {
       await tx
         .update(agentVersions)
@@ -1877,7 +1887,7 @@ async function upsertVersion(
           ...(autoPromote ? { isLatest: true } : {}),
         },
       });
-  });
+  }));
 }
 
 // Narrow variant used only by backfillBackupRowsForVersion. upsertVersion's
@@ -1903,7 +1913,8 @@ async function upsertBackupVersionExplicit(
   releaseNotes: string | null | undefined,
   isLatest: boolean,
 ) {
-  await db.transaction(async (tx) => {
+  // #6098: own short system-scoped context around the write.
+  await withSystemDbAccessContext(() => db.transaction(async (tx) => {
     await tx
       .insert(agentVersions)
       .values({
@@ -1944,5 +1955,5 @@ async function upsertBackupVersionExplicit(
           isLatest,
         },
       });
-  });
+  }));
 }
