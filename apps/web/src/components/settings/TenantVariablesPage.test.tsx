@@ -123,6 +123,51 @@ describe('TenantVariablesPage', () => {
     expect(fetchMock).toHaveBeenLastCalledWith('/tenant-variables');
   });
 
+  it('coalesces the outgoing page instance\'s org-switch refetch with the freshly-mounted instance\'s mount fetch (#6103)', async () => {
+    // Models Astro's real navigation lifecycle for a same-URL org switch:
+    // the org store updates (and the STILL-MOUNTED old page instance reacts
+    // and starts refetching) before the soft navigation tears that instance
+    // down and mounts a fresh one, which immediately fetches again on mount.
+    // Without coalescing that is two network requests for data the old
+    // instance's fetch result is thrown away.
+    let resolveSwitchFetch: ((r: Response) => void) | undefined;
+    const deferred = new Promise<Response>((resolve) => {
+      resolveSwitchFetch = resolve;
+    });
+    const baseImpl = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url === '/tenant-variables?scope=partner' && (!init || !init.method)) {
+        return deferred;
+      }
+      return baseImpl(input, init);
+    });
+
+    const { unmount, rerender } = render(<TenantVariablesPage />);
+    await screen.findByTestId('tenant-variable-row-syslog_host');
+    fetchMock.mockClear();
+
+    // Org store flips to All-orgs; the still-mounted old instance's effect
+    // reacts and kicks off its own (soon-to-be-discarded) fetch.
+    scopeState.orgId = null;
+    rerender(<TenantVariablesPage />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Astro's remount: old instance torn down, brand-new instance mounted —
+    // in the browser this happens while the first request above is still
+    // in flight.
+    unmount();
+    render(<TenantVariablesPage />);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Only ONE network request should have gone out for the partner-scope
+    // query across both instances.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveSwitchFetch!(makeJsonResponse({ data: [SECRET_VAR] }));
+    await screen.findByTestId('tenant-variable-row-s1_site_token');
+  });
+
   it('does not request partner scope for an organization-scoped caller', async () => {
     scopeState.isPartnerScope = false;
     scopeState.orgId = null;

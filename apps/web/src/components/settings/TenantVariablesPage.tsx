@@ -41,6 +41,32 @@ function draftFrom(variable: TenantVariable): Draft {
   };
 }
 
+// Module-level (survives an Astro soft-navigation remount, since the JS module
+// graph stays loaded across it — see lib/orgSwitch.ts): coalesce an identical
+// in-flight GET across component instances. An org switch fires the "re-run on
+// org switch" effect below on the STILL-MOUNTED outgoing page instance (whose
+// result is discarded on unmount) moments before the soft navigation tears it
+// down and mounts a fresh instance that fetches again on its own mount —
+// without this, the same query goes out twice for one switch (#6103).
+let inFlightListUrl: string | null = null;
+let inFlightListRequest: Promise<Response | null> | null = null;
+
+function fetchVariableList(url: string): Promise<Response | null> {
+  if (inFlightListUrl === url && inFlightListRequest) {
+    return inFlightListRequest;
+  }
+  const request = fetchWithAuth(url).catch(() => null);
+  inFlightListUrl = url;
+  inFlightListRequest = request;
+  void request.finally(() => {
+    if (inFlightListUrl === url) {
+      inFlightListUrl = null;
+      inFlightListRequest = null;
+    }
+  });
+  return request;
+}
+
 /**
  * Tenant variables management (#3409). A variable is defined once — for one
  * org or for every org under the partner — and referenced from scripts.
@@ -66,7 +92,7 @@ export default function TenantVariablesPage() {
     setError(false);
     // A selected org includes its inherited partner rows. All Organizations
     // instead lists only partner-wide definitions (#5353).
-    const response = await fetchWithAuth(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables').catch(() => null);
+    const response = await fetchVariableList(partnerOnly ? '/tenant-variables?scope=partner' : '/tenant-variables');
     if (!response || !response.ok) {
       setError(true);
       setLoading(false);

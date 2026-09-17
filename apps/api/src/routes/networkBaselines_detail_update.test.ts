@@ -283,6 +283,52 @@ describe('networkBaseline routes', () => {
       expect(res.status).toBe(200);
     });
 
+    it('recomputes nextScanAt from the new interval instead of carrying the stale one forward (#6103)', async () => {
+      // normalizeBaselineScanSchedule is mocked as a passthrough (`(s) => s ?? default`)
+      // in this file, so whatever schedule object the route builds and hands it is
+      // exactly what a real caller (the DB write) would receive. That lets this test
+      // assert the route's OWN merge logic — the stale-carry-forward bug lives there,
+      // not inside normalizeBaselineScanSchedule itself.
+      const staleNextScanAt = '2026-01-01T00:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: staleNextScanAt },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      // Interval changes; the web form never sends nextScanAt.
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scanSchedule: { enabled: true, intervalHours: 6 } }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.intervalHours).toBe(6);
+      // The stale nextScanAt from the pre-edit interval must NOT survive the merge —
+      // it must be cleared so the (real, unmocked in production) normalizer computes
+      // a fresh one from the new interval.
+      expect(writtenSchedule?.nextScanAt).not.toBe(staleNextScanAt);
+    });
+
     it('should return 400 when neither scanSchedule nor alertSettings provided', async () => {
       const res = await app.request(`/baselines/${BASELINE_ID}`, {
         method: 'PATCH',
