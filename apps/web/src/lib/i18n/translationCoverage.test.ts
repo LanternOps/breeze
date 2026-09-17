@@ -150,6 +150,8 @@ const namespaceDuplicateBaselines = {
     // Tool catalog W01 PR C (#5216): one reviewed cognate per locale — see the
     // per-locale note where it is not obvious.
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical pt-BR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 13,
   },
   'es-419': {
@@ -277,6 +279,7 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 16,
   },
   'fr-FR': {
@@ -428,6 +431,9 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 23,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-FR cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'fr-CA': {
@@ -575,6 +581,9 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 22,
     'toolSources.json': 1,
+    // Topology (#5997): 'Configuration', 'Diagnostics', 'Site' and
+    // targetFields.port 'Port' are identical fr-CA cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 15,
   },
   'de-DE': {
@@ -718,6 +727,9 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 15,
     'toolSources.json': 1,
+    // Topology (#5997): 'Name', 'Revision' and targetFields.hostname/port
+    // ('Hostname'/'Port') are identical de-DE cognates.
+    'topology.json': 4,
     'vulnerabilities.json': 20,
   },
   'it-IT': {
@@ -820,6 +832,7 @@ const namespaceDuplicateBaselines = {
     // interpolations plus the SI hour symbol — no wording to translate (#3776).
     'tickets.json': 8,
     'toolSources.json': 1,
+    'topology.json': 0,
     'vulnerabilities.json': 17,
   },
   'tr-TR': {
@@ -906,6 +919,8 @@ const namespaceDuplicateBaselines = {
     // no amount is locale-invariant punctuation, identical in every catalog.
     'tickets.json': 12,
     'toolSources.json': 1,
+    // Topology (#5997): 'Site' is the identical tr-TR cognate.
+    'topology.json': 1,
     'vulnerabilities.json': 11,
   },
 } satisfies Record<TranslatedLocale, Record<string, number>>;
