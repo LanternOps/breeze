@@ -50,6 +50,11 @@ AGENT_DIR="${REPO_ROOT}/agent"
 BASELINE="${AGENT_DIR}/vet-windows-unsafeptr-baseline.txt"
 
 export GOOS=windows
+# amd64 only, deliberately: the agent has no `*_windows_arm64.go` files and no
+# `windows && arm64` build constraints today, so a second arch would vet an
+# identical file set for twice the runtime. If Windows-on-ARM-specific files are
+# ever added they would escape this guard exactly the way `//go:build windows`
+# files escaped the linux vet — loop over both arches here at that point.
 export GOARCH=amd64
 export CGO_ENABLED=0
 
@@ -71,9 +76,18 @@ echo "==> go vet (GOOS=windows, unsafeptr) — baselined per file"
 # itself is sound, so a non-zero exit here only means unsafeptr findings exist.
 vet_unsafeptr="$(go vet ./... 2>&1 || true)"
 
+# The `|| true` on grep is load-bearing, not defensive noise. grep exits 1 when
+# it selects zero lines; under `set -euo pipefail` that propagates out of the
+# pipeline, and because this is a plain assignment (not an `if` condition like
+# pass 1) `set -e` would kill the script BEFORE it prints the diff or the
+# ::error:: line — a bare exit 1 with no diagnosis. Zero matches is a legitimate
+# state: it is precisely the end of the baseline burn-down, the outcome this
+# script exists to reward. It also occurs if a future Go toolchain rewords the
+# diagnostic this grep matches on, in which case we want the loud mismatch
+# below, not a silent abort.
 actual="$(
   printf '%s\n' "${vet_unsafeptr}" \
-    | grep -F 'possible misuse of unsafe.Pointer' \
+    | { grep -F 'possible misuse of unsafe.Pointer' || true; } \
     | sed -E 's/^(.*):[0-9]+:[0-9]+: .*$/\1/' \
     | sort \
     | uniq -c \
@@ -105,7 +119,10 @@ if [[ ! -f "${BASELINE}" ]]; then
   exit 1
 fi
 
-expected="$(grep -v '^#' "${BASELINE}" | grep -v '^[[:space:]]*$' | sort)"
+# `|| true` for the same reason as above: a fully burned-down baseline is all
+# comments, and grep selecting zero lines must yield an empty string rather
+# than aborting the script.
+expected="$({ grep -v '^#' "${BASELINE}" | grep -v '^[[:space:]]*$' || true; } | sort)"
 
 if [[ "${expected}" != "${actual}" ]]; then
   echo
@@ -116,4 +133,9 @@ if [[ "${expected}" != "${actual}" ]]; then
   exit 1
 fi
 
-echo "    matches baseline ($(printf '%s\n' "${expected}" | wc -l | tr -d ' ') files)"
+if [[ -z "${expected}" ]]; then
+  echo "    baseline is empty and no findings remain — the unsafeptr burn-down is complete."
+  echo "    Consider deleting the baseline and folding pass 2 into the unconditional pass 1."
+else
+  echo "    matches baseline ($(printf '%s\n' "${expected}" | wc -l | tr -d ' ') files)"
+fi
