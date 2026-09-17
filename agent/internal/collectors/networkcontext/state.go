@@ -180,7 +180,7 @@ func (s *State) AcceptReport(receipt Receipt) error {
 	if receipt.AcceptedSequence != p.Sequence || receipt.ContentDigest != p.ContentDigest || receipt.BaseSnapshotID == "" {
 		return errors.New("receipt digest mismatch")
 	}
-	if p.ReportKind == "full" && receipt.BaseSnapshotID != p.SnapshotID && !(receipt.BaseSnapshotID == s.data.BaseSnapshotID && receipt.ContentDigest == s.data.ContentDigest) {
+	if p.ReportKind == "full" && receipt.BaseSnapshotID != p.SnapshotID && (receipt.BaseSnapshotID != s.data.BaseSnapshotID || receipt.ContentDigest != s.data.ContentDigest) {
 		return errors.New("receipt snapshot mismatch")
 	}
 	if p.ReportKind == "unchanged" && receipt.BaseSnapshotID != p.BaseSnapshotID {
@@ -202,17 +202,17 @@ func atomicStateWrite(path string, b []byte) error {
 		return e
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if e = f.Chmod(0600); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if _, e = f.Write(b); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if e = f.Sync(); e != nil {
-		f.Close()
+		_ = f.Close()
 		return e
 	}
 	if e = f.Close(); e != nil {

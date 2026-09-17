@@ -39,7 +39,7 @@ func TestTopologyDiagnosticCancelPersistsBeforeAcknowledgment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	if _, err = j.Accept(networkdiagnostic.Command{CommandID: commandID, RunID: runID, AttemptID: attemptID}); err != networkdiagnostic.ErrCancelled {
 		t.Fatal(err)
 	}
