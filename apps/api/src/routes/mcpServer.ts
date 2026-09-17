@@ -1080,6 +1080,17 @@ async function liveResolveTenantToolByName(
   return resolveTenantToolByName(auth, toolName);
 }
 
+// #6102: same lazy-import reasoning as `liveResolveTenantToolByName` above —
+// only called on that function's failure branch, so the extra module load
+// costs nothing on the hot (tool resolves) path.
+async function liveResolveTenantToolHealthByName(
+  auth: AuthContext,
+  toolName: string,
+): Promise<{ found: boolean; sourceStatus?: 'active' | 'error' | 'disabled' }> {
+  const { resolveTenantToolHealthByName } = await import('../services/toolSources/resolver');
+  return resolveTenantToolHealthByName(auth, toolName);
+}
+
 async function liveExecuteTenantTool(
   d: TenantToolDescriptor,
   toolInput: Record<string, unknown>,
@@ -1480,6 +1491,20 @@ async function handleTenantToolCall(
 ): Promise<JsonRpcResponse> {
   const d = await liveResolveTenantToolByName(auth, toolName);
   if (!d) {
+    // #6102: distinguish "genuinely unknown/inaccessible" (still the same
+    // -32602 below — no existence oracle for a caller without access) from
+    // "exists, caller has access, but its source isn't active right now".
+    // Never echoes the source's raw lastError text over this transport: an
+    // MCP caller (an AI agent / API key) has no guarantee of tool_sources:read
+    // the way the web Test drawer route does, so only the status token goes
+    // out, not the free-text error a healthcheck route would show a human.
+    const health = await liveResolveTenantToolHealthByName(auth, toolName);
+    if (health.found && health.sourceStatus !== 'active') {
+      return jsonRpcError(id, -32000, `Tool "${toolName}" is temporarily unavailable (source is ${health.sourceStatus}).`, {
+        code: 'tool_source_unavailable',
+        sourceStatus: health.sourceStatus,
+      });
+    }
     return jsonRpcError(id, -32602, `Unknown tool: ${toolName}`);
   }
   const tier = d.tier;

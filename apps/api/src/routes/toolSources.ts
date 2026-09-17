@@ -390,7 +390,31 @@ toolSourcesRoutes.post(
     // partner-wide branch (#6023). `null` (partner-wide source) is a no-op.
     const qualifiedName = qualifiedToolName(source.slug, tool.name);
     const descriptor = await resolveTenantToolByName(auth, qualifiedName, source.orgId);
-    if (!descriptor) return c.json({ error: 'Tool is not currently available' }, 404);
+    if (!descriptor) {
+      // #6102: `getSourceAndToolWithAccess` above already ran the tenant/access
+      // check (source access + tool existence, independent of health) — this
+      // is purely a health DISTINCTION on top of that, never a substitute for
+      // it. A tool a caller genuinely can't see or that's disabled/removed
+      // still falls through to the identical generic 404 below (no existence
+      // oracle). Only when the tool is enabled, not removed, and the only
+      // reason `resolveTenantToolByName` returned null is the source's own
+      // `status` do we surface the distinct, actionable 503 — safe to include
+      // `lastError` here because this route is already gated on
+      // `requireToolSourcesRead`, the same permission that lets this caller
+      // read `lastError` off `GET /tool-sources/:id`.
+      if (tool.enabled && tool.removedAt === null && source.status !== 'active') {
+        return c.json(
+          {
+            error: `Tool source "${source.name}" is not active (status: ${source.status})`,
+            code: 'tool_source_unavailable',
+            sourceStatus: source.status,
+            lastError: source.lastError,
+          },
+          503,
+        );
+      }
+      return c.json({ error: 'Tool is not currently available' }, 404);
+    }
 
     const start = Date.now();
     // Detailed form: a test call that FAILED must not read as a success. The

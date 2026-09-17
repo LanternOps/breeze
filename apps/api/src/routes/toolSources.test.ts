@@ -524,6 +524,91 @@ describe('toolSourcesRoutes', () => {
       expect(body.data.isError).toBe(true);
       expect(body.data.result).toContain('Tool rate limit exceeded');
     });
+
+    // #6102: distinguish "source unhealthy" from "tool genuinely unavailable"
+    // — an accessible tool whose source flipped to `error` must not read as
+    // the same 404 a caller without access (or a truly missing tool) gets.
+    it('returns 503 tool_source_unavailable for an accessible, enabled, non-removed tool whose source is not active', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow({ status: 'error', lastError: 'connect ECONNREFUSED 127.0.0.1:9999' }),
+        tool: makeToolRow({ tier: 1, enabled: true, removedAt: null }),
+      });
+      // The active-status-filtered resolver still returns null — that's the
+      // whole bug: it can't see a non-active source's tools at all.
+      vi.mocked(resolveTenantToolByName).mockResolvedValue(null);
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe('tool_source_unavailable');
+      expect(body.sourceStatus).toBe('error');
+      // This route is already gated on tool_sources:read (the same permission
+      // GET /tool-sources/:id needs), so lastError isn't a new leak here.
+      expect(body.lastError).toBe('connect ECONNREFUSED 127.0.0.1:9999');
+      expect(vi.mocked(executeTenantToolDetailed)).not.toHaveBeenCalled();
+    });
+
+    it('still returns the generic 404 (no existence oracle) for a disabled tool even when its source is unhealthy', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow({ status: 'error', lastError: 'boom' }),
+        tool: makeToolRow({ tier: 1, enabled: false, removedAt: null }),
+      });
+      vi.mocked(resolveTenantToolByName).mockResolvedValue(null);
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Tool is not currently available');
+      expect(body.code).toBeUndefined();
+    });
+
+    it('still returns the generic 404 when the source is active but resolution fails for another reason (e.g. schema compile failure)', async () => {
+      setAuth(orgAuth());
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue({
+        source: makeRow({ status: 'active' }),
+        tool: makeToolRow({ tier: 1, enabled: true, removedAt: null }),
+      });
+      vi.mocked(resolveTenantToolByName).mockResolvedValue(null);
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Tool is not currently available');
+    });
+
+    it('an inaccessible source/tool gets the SAME 404 as a missing one — access check runs before the health distinction', async () => {
+      setAuth(orgAuth());
+      // No access at all: getSourceAndToolWithAccess itself returns null.
+      vi.mocked(service.getSourceAndToolWithAccess).mockResolvedValue(null);
+
+      const res = await app.request(`/tool-sources/${SRC_ID}/tools/${TOOL_ID}/test`, {
+        method: 'POST',
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ input: {} }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toBe('Tool not found');
+      expect(vi.mocked(resolveTenantToolByName)).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /:id/discover', () => {

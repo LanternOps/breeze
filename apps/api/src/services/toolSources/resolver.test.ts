@@ -9,9 +9,11 @@ import { toolSourcesEnabled } from '../../config/env';
 import {
   buildLoadTenantToolForExecutionQuery,
   buildLoadTenantToolBindingStateQuery,
+  buildResolveTenantToolHealthQuery,
   buildResolveTenantToolsQuery,
   compileToolDescriptor,
   loadTenantToolForExecution,
+  resolveTenantToolHealthByName,
   resolveTenantTools,
   type ResolvedToolRow,
 } from './resolver';
@@ -170,6 +172,45 @@ describe('buildLoadTenantToolForExecutionQuery — dispatch-time owner predicate
     expect(text).not.toContain('"tool_source_tools"."org_id" is null');
     expect(text.match(/\bor\b/)).toBeNull();
     expect(params).toHaveLength(4);
+  });
+});
+
+describe('buildResolveTenantToolHealthQuery — #6102 health check, owner-scoped but NOT status-filtered (DB-less, real db.toSQL())', () => {
+  it('applies the same owner predicate as the resolver, and enabled/not-removed, but NOT the active-status filter', () => {
+    const built = buildResolveTenantToolHealthQuery(orgAuth(ORG_A), 'hudu__get_asset');
+    expect(built).not.toBeNull();
+    const { sql: text, params } = built!.toSQL();
+
+    expect(text).toContain('"tool_source_tools"."qualified_name" = $');
+    expect(params).toContain('hudu__get_asset');
+    expect(text).toContain('"tool_source_tools"."enabled"');
+    expect(text).toContain('"tool_source_tools"."removed_at" is null');
+    // Owner predicate present (same shape as buildResolveTenantToolsQuery).
+    expect(text).toContain('"tool_source_tools"."org_id"');
+    expect(params).toContain(ORG_A);
+    // The health check's whole point is to see an INACTIVE source's row —
+    // it must NOT filter on tool_sources.status.
+    expect(text).not.toMatch(/"tool_sources"\."status" = /);
+  });
+
+  it('resolves to no query when the owner predicate is not derivable (system scope) — same "nothing to authorize" contract', () => {
+    expect(buildResolveTenantToolHealthQuery(systemAuth(), 'hudu__get_asset')).toBeNull();
+  });
+});
+
+describe('resolveTenantToolHealthByName', () => {
+  afterEach(() => {
+    vi.mocked(toolSourcesEnabled).mockReset();
+  });
+
+  it('returns found:false when toolSourcesEnabled() is false', async () => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(false);
+    await expect(resolveTenantToolHealthByName(orgAuth(ORG_A), 'hudu__get_asset')).resolves.toEqual({ found: false });
+  });
+
+  it('returns found:false for system scope (nothing to authorize against)', async () => {
+    vi.mocked(toolSourcesEnabled).mockReturnValue(true);
+    await expect(resolveTenantToolHealthByName(systemAuth(), 'hudu__get_asset')).resolves.toEqual({ found: false });
   });
 });
 

@@ -36,6 +36,7 @@ const routeMocks = vi.hoisted(() => ({
   enforceIpAllowlist: vi.fn(),
   resolveTenantTools: vi.fn(),
   resolveTenantToolByName: vi.fn(),
+  resolveTenantToolHealthByName: vi.fn(),
   executeTenantTool: vi.fn(),
   executeTenantToolDetailed: vi.fn(),
   // A real vi.fn() (not a plain testState-backed factory) so individual tests
@@ -159,6 +160,7 @@ vi.mock('../services/aiGuardrails', async (importOriginal) => {
 vi.mock('../services/toolSources/resolver', () => ({
   resolveTenantTools: (...args: any[]) => routeMocks.resolveTenantTools(...args),
   resolveTenantToolByName: (...args: any[]) => routeMocks.resolveTenantToolByName(...args),
+  resolveTenantToolHealthByName: (...args: any[]) => routeMocks.resolveTenantToolHealthByName(...args),
 }));
 vi.mock('../services/toolSources/execute', () => ({
   executeTenantTool: (...args: any[]) => routeMocks.executeTenantTool(...args),
@@ -417,6 +419,7 @@ describe('MCP transport integration', () => {
     routeMocks.checkPermissionRequirements.mockReset().mockResolvedValue(null);
     routeMocks.resolveTenantTools.mockReset().mockResolvedValue([]);
     routeMocks.resolveTenantToolByName.mockReset().mockResolvedValue(null);
+    routeMocks.resolveTenantToolHealthByName.mockReset().mockResolvedValue({ found: false });
     routeMocks.executeTenantTool.mockReset().mockResolvedValue(JSON.stringify({ ok: true }));
     routeMocks.executeTenantToolDetailed
       .mockReset()
@@ -1348,6 +1351,57 @@ describe('MCP transport integration', () => {
         expect.anything(),
         expect.objectContaining({ surface: 'mcp' }),
       );
+    });
+
+    // #6102: an accessible tenant tool whose source is unhealthy must not
+    // read as "unknown tool" over MCP — but it also must not leak the raw
+    // lastError to a caller with no guaranteed tool_sources:read.
+    it('tools/call reports tool_source_unavailable (not "Unknown tool") for an accessible tenant tool whose source is not active', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: true, sourceStatus: 'error' });
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__get_asset', arguments: { id: 'a-1' } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32000);
+      expect(body.error.data).toEqual({ code: 'tool_source_unavailable', sourceStatus: 'error' });
+      expect(body.error.message).not.toMatch(/^Unknown tool/);
+      expect(routeMocks.executeTenantToolDetailed).not.toHaveBeenCalled();
+    });
+
+    it('tools/call still reports the generic "Unknown tool" for a tenant tool name the caller genuinely has no access to', async () => {
+      delete process.env.IS_HOSTED;
+      setTestApiKey({ scopes: ['ai:read'] });
+      routeMocks.resolveTenantToolByName.mockResolvedValue(null);
+      routeMocks.resolveTenantToolHealthByName.mockResolvedValue({ found: false });
+
+      const res = await mcpServerRoutes.request('/message', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-API-Key': 'brz_test' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hudu__no_such_tool', arguments: {} },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32602);
+      expect(body.error.message).toBe('Unknown tool: hudu__no_such_tool');
     });
 
     it('denies a tier-2 tenant tool over MCP without ai:write scope', async () => {
