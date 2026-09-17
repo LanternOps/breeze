@@ -68,6 +68,7 @@ jobs:
     outputs:
       code: ${{ steps.classify.outputs.code }}
       docs: ${{ steps.classify.outputs.docs }}
+      recovery_media: ${{ steps.classify.outputs.recovery_media }}
     steps:
       - name: Checkout (classifier script only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -100,7 +101,7 @@ jobs:
           # a code change through as docs-only.
           full_suite() {
             echo "$1" >&2
-            printf 'code=true\ndocs=true\n' | tee -a "${GITHUB_OUTPUT}"
+            printf 'code=true\ndocs=true\nrecovery_media=true\n' | tee -a "${GITHUB_OUTPUT}"
           }
           if [[ "${EVENT_NAME}" == "pull_request" ]]; then
             # The PR files API needs no checkout and sees renames/deletes too.
@@ -1896,7 +1897,7 @@ jobs:
   recovery-media-e2e:
     name: Recovery media E2E (QEMU)
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.recovery_media == 'true'
     runs-on: ubuntu-latest
     # ~7 min ISO build + up to 40 min QEMU rebuild cycle (see run-qemu.sh).
     timeout-minutes: 60
@@ -3557,6 +3558,7 @@ jobs:
           BUILD_AGENT_RESULT: ${{ needs.build-agent.result }}
           TEST_AGENT_RESULT: ${{ needs.test-agent.result }}
           TEST_AGENT_WINDOWS_RESULT: ${{ needs.test-agent-windows.result }}
+          RECOVERY_MEDIA_REQUIRED: ${{ needs.changes.outputs.recovery_media }}
           RECOVERY_MEDIA_E2E_RESULT: ${{ needs.recovery-media-e2e.result }}
           WINDOWS_RUNTIME_SMOKE_RESULT: ${{ needs.windows-runtime-smoke.result }}
           INTEGRATION_TEST_RESULT: ${{ needs.integration-test.result }}
@@ -3611,7 +3613,9 @@ jobs:
              [[ "${BUILD_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_RESULT}" != "success" ]] || \
              [[ "${TEST_AGENT_WINDOWS_RESULT}" != "success" ]] || \
-             [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]] || \
+             { [[ "${RECOVERY_MEDIA_REQUIRED}" == "true" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "success" ]]; } || \
+             { [[ "${RECOVERY_MEDIA_REQUIRED}" != "true" ]] && [[ "${RECOVERY_MEDIA_REQUIRED}" != "false" ]]; } || \
+             { [[ "${RECOVERY_MEDIA_REQUIRED}" == "false" ]] && [[ "${RECOVERY_MEDIA_E2E_RESULT}" != "skipped" ]]; } || \
              [[ "${WINDOWS_RUNTIME_SMOKE_RESULT}" != "success" ]] || \
              [[ "${INTEGRATION_TEST_RESULT}" != "success" ]] || \
              [[ "${CHECK_MIGRATIONS_NONSUPERUSER_RESULT}" != "success" ]] || \

@@ -83,6 +83,7 @@ for (const [label, detector, required, result, passes] of [
       encoding: 'utf8',
       env: {
         ...process.env, ...passingResults, IS_PR: 'true',
+        RECOVERY_MEDIA_REQUIRED: 'true',
         MOBILE_NATIVE_CHANGES_RESULT: detector,
         MOBILE_NATIVE_REQUIRED: required,
         BUILD_MOBILE_IOS_RESULT: result,

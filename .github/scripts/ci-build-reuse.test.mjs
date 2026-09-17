@@ -138,7 +138,7 @@ for (const result of ['failure', 'cancelled', 'skipped', '']) {
         encoding: 'utf8',
         env: {
           ...process.env, ...passing, IS_PR: isPr, CODE_CHANGED: 'true', DOCS_CHANGED: 'false',
-          MOBILE_NATIVE_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
+          MOBILE_NATIVE_REQUIRED: 'true', RECOVERY_MEDIA_REQUIRED: 'true', BUILD_SMOKE_IMAGES_RESULT: result,
           SMOKE_TEST_RESULT: 'skipped', GUIDED_SETUP_SMOKE_RESULT: 'skipped',
         },
       });
