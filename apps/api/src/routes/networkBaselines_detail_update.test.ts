@@ -329,6 +329,91 @@ describe('networkBaseline routes', () => {
       expect(writtenSchedule?.nextScanAt).not.toBe(staleNextScanAt);
     });
 
+    it('keeps the existing nextScanAt when intervalHours is unchanged (#6103)', async () => {
+      // The other half of the branch introduced by the fix: an edit that
+      // touches scanSchedule but NOT the interval (e.g. toggling `enabled`)
+      // must not reset the schedule clock. An off-by-one here (clearing
+      // nextScanAt whenever any scanSchedule field changes) would silently
+      // push out every baseline's next run on unrelated edits.
+      const frozenNextScanAt = '2026-02-01T00:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: frozenNextScanAt },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      // Same intervalHours as the stored schedule; only `enabled` flips.
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({ scanSchedule: { enabled: false, intervalHours: 24 } }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.enabled).toBe(false);
+      expect(writtenSchedule?.nextScanAt).toBe(frozenNextScanAt);
+    });
+
+    it('respects an explicit nextScanAt override even when intervalHours also changes (#6103)', async () => {
+      // The override path: a caller (e.g. a manual reschedule) that supplies
+      // its own nextScanAt must win over the recompute-from-new-interval
+      // behavior, not get silently discarded.
+      const explicitNextScanAt = '2026-03-15T12:00:00.000Z';
+      const baseline = makeBaseline({
+        scanSchedule: { enabled: true, intervalHours: 24, nextScanAt: '2026-01-01T00:00:00.000Z' },
+      });
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([baseline]),
+          }),
+        }),
+      } as any);
+
+      let capturedSet: Record<string, unknown> | undefined;
+      vi.mocked(db.update).mockReturnValueOnce({
+        set: vi.fn().mockImplementation((value: Record<string, unknown>) => {
+          capturedSet = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([baseline]),
+            }),
+          };
+        }),
+      } as any);
+
+      const res = await app.request(`/baselines/${BASELINE_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token' },
+        body: JSON.stringify({
+          scanSchedule: { enabled: true, intervalHours: 6, nextScanAt: explicitNextScanAt },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const writtenSchedule = capturedSet?.scanSchedule as Record<string, unknown> | undefined;
+      expect(writtenSchedule?.intervalHours).toBe(6);
+      expect(writtenSchedule?.nextScanAt).toBe(explicitNextScanAt);
+    });
+
     it('should return 400 when neither scanSchedule nor alertSettings provided', async () => {
       const res = await app.request(`/baselines/${BASELINE_ID}`, {
         method: 'PATCH',
