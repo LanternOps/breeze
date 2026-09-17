@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceTopologyAbsence, effectiveTopologyCapture, type TopologyAbsenceState } from './collectionState';
+import { advanceTopologyAbsence, effectiveTopologyCapture, retainTopologyKnownKeys, TOPOLOGY_KNOWN_KEY_LIMIT, type TopologyAbsenceState } from './collectionState';
 const empty=():TopologyAbsenceState=>({active:[],transitions:[]});
 const input=(sequence:string,minutes:number,extra={})=>({sequence,digest:'digest',effectiveAt:new Date(1_000_000+minutes*60000),outcome:'complete',positiveKeys:[] as string[],previousKeys:['route'],generation:sequence,...extra});
 describe('source-scoped absence transitions',()=>{
@@ -29,6 +29,24 @@ describe('source-scoped absence transitions',()=>{
     const second=advanceTopologyAbsence(first,input('2',5,{previousKeys:['route','new-route']}));
     expect(second.newTransitions[0]!.rowKeys).toEqual(['route']);
     expect(second.state.active.find(g=>g.rowKeys.includes('new-route'))!.qualifyingSequence).toBeUndefined();
+  });
+});
+describe('bounded absence memory',()=>{
+  it('forgets a miss streak once its withdrawal is queued',()=>{
+    const first=advanceTopologyAbsence(empty(),input('1',0)).state;
+    const second=advanceTopologyAbsence(first,input('2',5));
+    expect(second.newTransitions).toHaveLength(1);
+    expect(second.state.active).toEqual([]);
+  });
+  it('stops tracking withdrawn keys so a churning section cannot grow without limit',()=>{
+    const withdrawn=advanceTopologyAbsence(advanceTopologyAbsence(empty(),input('1',0)).state,input('2',5)).newTransitions;
+    expect(retainTopologyKnownKeys(['route','kept'],['fresh'],withdrawn)).toEqual(['fresh','kept']);
+  });
+  it('never evicts a current positive when the cap is reached',()=>{
+    const old=Array.from({length:TOPOLOGY_KNOWN_KEY_LIMIT},(_,i)=>`old-${i}`);
+    const kept=retainTopologyKnownKeys(old,['now-1','now-2'],[]);
+    expect(kept).toHaveLength(TOPOLOGY_KNOWN_KEY_LIMIT);
+    expect(kept.slice(0,2)).toEqual(['now-1','now-2']);
   });
 });
 describe('conservative capture freshness',()=>{

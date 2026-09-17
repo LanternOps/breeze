@@ -7,7 +7,7 @@ import { db, assertInTransaction } from '../../db';
 import { topologyCollectionRuns, topologyCollectionSources, topologySiteState } from '../../db/schema';
 import { requireCurrentTopologyProducer } from './collectionAuthority';
 import { normalizeNetworkContext } from './collectionDigest';
-import { effectiveTopologyCapture, advanceTopologyAbsence, readTopologyAbsence } from './collectionState';
+import { effectiveTopologyCapture, advanceTopologyAbsence, readTopologyAbsence, retainTopologyKnownKeys } from './collectionState';
 import { compareTopologySequences } from './sequence';
 import { outcomeHasPositives, sourceKey, sourceKeyString, type AuthenticatedTopologyProducer, type NormalizedTopologyReport, type NormalizedTopologySnapshot, type TopologyIngestReceipt, type TopologySourceReceipt } from './collectionTypes';
 
@@ -53,7 +53,8 @@ async function confirm(p: AuthenticatedTopologyProducer,source: Source,input: {
   const [updated]=await db.update(topologyCollectionSources).set({acceptedSequence:input.sequence,confirmedSequence:input.sequence,
     confirmedThroughAt:outcomeHasPositives(source.lastOutcome)?timing.effectiveAt:source.confirmedThroughAt,
     freshUntil:outcomeHasPositives(source.lastOutcome)?timing.freshUntil:source.freshUntil,
-    currentBaseline:{...source.currentBaseline,_lastCapture:{snapshotId:input.snapshotId,capturedAt:input.capturedAt}},
+    currentBaseline:{...source.currentBaseline,_lastCapture:{snapshotId:input.snapshotId,capturedAt:input.capturedAt},
+      ...(Array.isArray(source.currentBaseline._knownKeys)?{_knownKeys:retainTopologyKnownKeys(source.currentBaseline._knownKeys as string[],[],absence.newTransitions)}:{})},
     pendingMisses:{...absence.state},lastReceivedAt:new Date(),updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source.id)).returning();
   return receipt(updated!);
 }
@@ -107,12 +108,13 @@ async function admit(p: AuthenticatedTopologyProducer,snapshot: NormalizedTopolo
     observedAt:new Date(snapshot.capturedAt),effectiveAt:timing.effectiveAt,outcome:snapshot.section.outcome,completionScope:{...snapshot.key,inputRevision,initialBaseline:source!.firstBaselineAt===null},
     snapshot:{...snapshot},rowCount:snapshot.section.rowCount,omittedRowCount:snapshot.section.omittedRowCount??0,normalizedBytes:bytes,expectedIntervalSeconds:snapshot.expectedIntervalSeconds});
   const old=source!.currentBaseline.section as NormalizedTopologySnapshot['section']|undefined;
+  const knownKeys=(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]);
   const absence=advanceTopologyAbsence(readTopologyAbsence(source!.pendingMisses),{digest:snapshot.contentDigest,sequence:snapshot.sequence,effectiveAt:timing.effectiveAt,
     outcome:snapshot.section.outcome,positiveKeys:outcomeHasPositives(snapshot.section.outcome)?topologyPositiveKeys(snapshot.section):[],
-    previousKeys:(source!.currentBaseline._knownKeys as string[]|undefined)??(old?topologyPositiveKeys(old):[]),generation:randomUUID()});
+    previousKeys:knownKeys,generation:randomUUID()});
   for (const transition of absence.newTransitions) transition.inputRevision=inputRevision;
   const [updated]=await db.update(topologyCollectionSources).set({acceptedSequence:snapshot.sequence,confirmedSequence:snapshot.sequence,
-    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:[...new Set([...(source!.currentBaseline._knownKeys as string[]|undefined ?? (old?topologyPositiveKeys(old):[])),...topologyPositiveKeys(snapshot.section)])]},firstBaselineAt:source!.firstBaselineAt??new Date(),
+    contentDigest:snapshot.contentDigest,baseSnapshotId:snapshot.snapshotId,currentBaseline:{...snapshot,_knownKeys:retainTopologyKnownKeys(knownKeys,topologyPositiveKeys(snapshot.section),absence.newTransitions)},firstBaselineAt:source!.firstBaselineAt??new Date(),
     pendingMisses:{...absence.state},lastOutcome:snapshot.section.outcome,lastFullValidationAt:new Date(),lastReceivedAt:new Date(),
     expectedIntervalSeconds:snapshot.expectedIntervalSeconds,confirmedThroughAt:outcomeHasPositives(snapshot.section.outcome)?timing.effectiveAt:source!.confirmedThroughAt,
     freshUntil:outcomeHasPositives(snapshot.section.outcome)?timing.freshUntil:source!.freshUntil,updatedAt:new Date()}).where(eq(topologyCollectionSources.id,source!.id)).returning();

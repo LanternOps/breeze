@@ -39,7 +39,17 @@ export function advanceTopologyAbsence(state: TopologyAbsenceState,input:{
       const next=qualifyTopologyMiss({...group,digest:input.digest},input)!;
       if (next.qualifyingSequence && !group.qualifyingSequence) newTransitions.push(next);
       return next;
-    });
+    // A queued withdrawal is owned by `transitions`; keeping its streak as well
+    // would retain every key a churning section has ever dropped.
+    }).filter(group=>!group.qualifyingSequence);
   }
   return {state:{...state,active,transitions:[...state.transitions,...newTransitions]},newTransitions};
+}
+
+export const TOPOLOGY_KNOWN_KEY_LIMIT=16384;
+/** Keys a source may still withdraw. Current positives sort first so the cap
+ * only costs an old key its explicit withdrawal; its support still ages out. */
+export function retainTopologyKnownKeys(previous:string[],positives:string[],withdrawn:PendingTopologyMiss[]):string[] {
+  const gone=new Set(withdrawn.flatMap(miss=>miss.rowKeys));
+  return [...new Set([...positives,...previous])].filter(key=>!gone.has(key)).slice(0,TOPOLOGY_KNOWN_KEY_LIMIT);
 }
