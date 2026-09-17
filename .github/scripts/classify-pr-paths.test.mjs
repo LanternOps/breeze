@@ -23,7 +23,7 @@ const classify = (paths) =>
     input: paths.join('\n') + (paths.length ? '\n' : ''),
   });
 
-test('classifier: docs-only path sets report code=false docs=true agent=false', () => {
+test('classifier: docs-only path sets report code=false docs=true agent=false app=false', () => {
   for (const paths of [
     ['docs/guide.md'],
     ['apps/docs/src/content/docs/agent.mdx'],
@@ -32,17 +32,17 @@ test('classifier: docs-only path sets report code=false docs=true agent=false', 
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
-    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false', paths.join(', '));
+    assert.equal(run.stdout.trim(), 'code=false\ndocs=true\nagent=false\napp=false', paths.join(', '));
   }
 });
 
 test('classifier: any non-docs path reports code=true; docs=true only when a docs path is present', () => {
   for (const [paths, expected] of [
-    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false'],
-    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false'],
-    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true'],
-    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false'],
-    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false'],
+    [['apps/api/src/index.ts'], 'code=true\ndocs=false\nagent=false\napp=true'],
+    [['README.md', 'apps/web/src/App.tsx'], 'code=true\ndocs=true\nagent=false\napp=true'],
+    [['docs/guide.md', '.github/workflows/ci.yml'], 'code=true\ndocs=true\nagent=true\napp=true'],
+    [['apps/mobile/docs.md.bak'], 'code=true\ndocs=false\nagent=false\napp=true'],
+    [['packages/shared/src/markdown/render.ts'], 'code=true\ndocs=false\nagent=false\napp=true'],
   ]) {
     const run = classify(paths);
     assert.equal(run.status, 0, run.stderr);
@@ -50,11 +50,46 @@ test('classifier: any non-docs path reports code=true; docs=true only when a doc
   }
 });
 
-test('classifier: an empty file list fails closed to code=true docs=true agent=true', () => {
+test('classifier: an empty file list fails closed to code=true docs=true agent=true app=true', () => {
   const run = classify([]);
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true');
+  assert.equal(run.stdout.trim(), 'code=true\ndocs=true\nagent=true\napp=true');
   assert.match(run.stderr, /fail-closed/u);
+});
+
+test('classifier: app output — the CI-plumbing allowlist is app=false, everything else (incl. its explicit exceptions) is app=true', () => {
+  for (const [paths, expected] of [
+    // Allowlisted tooling paths → app=false
+    [['.github/workflows/release.yml'], 'app=false'],
+    [['.github/scripts/mobile-native-ci.test.mjs'], 'app=false'],
+    [['scripts/release/check-release-lineage.sh'], 'app=false'],
+    [['scripts/security/check-npm-audit.sh'], 'app=false'],
+    [['.github/release-provenance/candidate-tags.tsv'], 'app=false'],
+    [['.github/workflows/release.yml', 'scripts/security/check-npm-audit.sh'], 'app=false'],
+    [['docs/guide.md', 'scripts/release/check-release-lineage.sh'], 'app=false'],
+    // Explicit exceptions carved OUT of the allowlist → app=true
+    [['.github/workflows/ci.yml'], 'app=true'],
+    [['.github/scripts/classify-pr-paths.sh'], 'app=true'],
+    // prepare-ci-apt-sources.mjs is consumed by rust-check and
+    // guided-setup-smoke (both HEAVY jobs, not lint/check-migrations/
+    // security-audit), so it must not fast-track past the app gate.
+    [['.github/scripts/prepare-ci-apt-sources.mjs'], 'app=true'],
+    // check-agent-binary-signatures.sh is consumed by build-agent (a HEAVY
+    // job), so it must not fast-track past the app gate either.
+    [['scripts/security/check-agent-binary-signatures.sh'], 'app=true'],
+    // Anything outside the allowlist, including .github/actions/**
+    [['.github/actions/install-chromium/action.yml'], 'app=true'],
+    [['package.json'], 'app=true'],
+    [['pnpm-lock.yaml'], 'app=true'],
+    [['apps/api/src/index.ts'], 'app=true'],
+    // Mixed tooling + app → app=true
+    [['scripts/release/check-release-lineage.sh', 'apps/web/src/App.tsx'], 'app=true'],
+  ]) {
+    const run = classify(paths);
+    assert.equal(run.status, 0, run.stderr);
+    const appLine = run.stdout.trim().split('\n').find((l) => l.startsWith('app='));
+    assert.equal(appLine, expected, paths.join(', '));
+  }
 });
 
 test('classifier: agent output — agent/** and the CI plumbing that gates it are agent=true, everything else agent=false', () => {
@@ -139,7 +174,7 @@ test('merge_group: a docs-only entry is classified docs-only', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/docs/src/content/docs/agent.mdx': 'b\n', 'README.md': 'c\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=false\ndocs=true\nagent=false');
+  assert.equal(output, 'code=false\ndocs=true\nagent=false\napp=false');
 });
 
 test('merge_group: a mixed entry is classified as code', () => {
@@ -148,7 +183,7 @@ test('merge_group: a mixed entry is classified as code', () => {
     { seed: { 'docs/guide.md': 'a\n', 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=false');
+  assert.equal(output, 'code=true\ndocs=true\nagent=false\napp=true');
 });
 
 test('merge_group: a code-only entry is classified as code', () => {
@@ -157,7 +192,7 @@ test('merge_group: a code-only entry is classified as code', () => {
     { seed: { 'apps/api/src/index.ts': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=false');
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=true');
 });
 
 test('merge_group: an agent-only entry is classified as code and agent', () => {
@@ -166,7 +201,16 @@ test('merge_group: an agent-only entry is classified as code and agent', () => {
     { seed: { 'agent/internal/foo.go': 'b\n' } },
   );
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=false\nagent=true');
+  assert.equal(output, 'code=true\ndocs=false\nagent=true\napp=true');
+});
+
+test('merge_group: a tooling-only entry is classified as code but not app', () => {
+  const { execution, output } = runClassifier(
+    { EVENT_NAME: 'merge_group' },
+    { seed: { 'scripts/security/check-npm-audit.sh': 'a\n', '.github/workflows/release.yml': 'b\n' } },
+  );
+  assert.equal(execution.status, 0, execution.stdout + execution.stderr);
+  assert.equal(output, 'code=true\ndocs=false\nagent=false\napp=false');
 });
 
 test('merge_group: an unresolvable base sha fails safe to the full suite', () => {
@@ -178,21 +222,21 @@ test('merge_group: an unresolvable base sha fails safe to the full suite', () =>
   ]) {
     const { execution, output } = runClassifier(env, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true', JSON.stringify(env));
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true', JSON.stringify(env));
   }
 });
 
 test('merge_group: an empty diff fails closed to the full suite', () => {
   const { execution, output } = runClassifier({ EVENT_NAME: 'merge_group' });
   assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-  assert.equal(output, 'code=true\ndocs=true\nagent=true');
+  assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true');
 });
 
 test('workflow_dispatch and any other event still run the full suite', () => {
   for (const EVENT_NAME of ['workflow_dispatch', 'push', 'schedule']) {
     const { execution, output } = runClassifier({ EVENT_NAME }, { seed: { 'docs/guide.md': 'a\n' } });
     assert.equal(execution.status, 0, execution.stdout + execution.stderr);
-    assert.equal(output, 'code=true\ndocs=true\nagent=true', EVENT_NAME);
+    assert.equal(output, 'code=true\ndocs=true\nagent=true\napp=true', EVENT_NAME);
   }
 });
 
@@ -226,11 +270,24 @@ test('every code job is gated on the classifier', () => {
     'build-mobile-ios', // inherits the gate through mobile-native-changes (pinned by mobile-native-ci.test.mjs)
     'recovery-media-e2e', // compound gate (code AND agent) — asserted separately below
   ]);
+  // These three validate CI plumbing itself (the classifier tests, the
+  // release-lineage/migration-immutability guards, the supply-chain guards)
+  // and must keep running on a tooling-only PR, so they stay gated on `code`
+  // alone — never additionally on `app`.
+  const codeOnly = new Set(['lint', 'check-migrations', 'security-audit']);
   for (const name of jobs) {
     if (exempt.has(name)) continue;
     const body = job(name);
     assert.match(body, /^    needs: \[[^\]]*\bchanges\b[^\]]*\]$/mu, `${name} must list changes in needs:`);
-    assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR`);
+    if (codeOnly.has(name)) {
+      assert.match(body, /^    if: needs\.changes\.outputs\.code == 'true'$/mu, `${name} must be skipped on a docs-only PR, and stay code-only (not app-gated)`);
+    } else {
+      assert.match(
+        body,
+        /^    if: needs\.changes\.outputs\.code == 'true' && needs\.changes\.outputs\.app == 'true'$/mu,
+        `${name} must be skipped on a docs-only OR tooling-only PR`,
+      );
+    }
   }
 });
 
@@ -253,7 +310,7 @@ test('ci-success asserts recovery-media-e2e with the three-branch AGENT_CHANGED 
   assert.match(summary, /AGENT_CHANGED: \$\{\{ needs\.changes\.outputs\.agent \}\}/u);
   assert.match(
     summary,
-    /\{ \[\[ "\$\{AGENT_CHANGED\}" == "true" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "success" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" != "true" \]\] && \[\[ "\$\{AGENT_CHANGED\}" != "false" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" == "false" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "skipped" \]\]; \} \|\|/u,
+    /\{ \[\[ "\$\{AGENT_CHANGED\}" == "true" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "success" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" != "true" \]\] && \[\[ "\$\{AGENT_CHANGED\}" != "false" \]\]; \} \|\| \\\n\s*\{ \[\[ "\$\{AGENT_CHANGED\}" == "false" \]\] && \[\[ "\$\{RECOVERY_MEDIA_E2E_RESULT\}" != "skipped" \]\]; \}/u,
     'ci-success must assert AGENT_CHANGED true→success, false→skipped, anything else→fail (mirrors MOBILE_NATIVE_REQUIRED)',
   );
   assert.doesNotMatch(
@@ -316,6 +373,12 @@ test('test-api setup steps run on every shard (no shard-1 guard)', () => {
 });
 
 // ─── Item 3: integration-test sharded 8 ways, no lint/typecheck wait ────
+test('ci-success asserts lint/check-migrations/security-audit unconditionally and gates the rest on APP_CHANGED', () => {
+  assert.match(summary, /needs: \[[^\]]*\bcheck-migrations\b[^\]]*\]/u, 'ci-success must needs: check-migrations — CHECK_MIGRATIONS_RESULT was previously asserted nowhere');
+  assert.match(summary, /APP_CHANGED: \$\{\{ needs\.changes\.outputs\.app \}\}/u);
+  assert.match(summary, /CHECK_MIGRATIONS_RESULT: \$\{\{ needs\.check-migrations\.result \}\}/u);
+});
+
 test('integration-test has an 8-way shard matrix and does not wait on lint/typecheck', () => {
   const body = job('integration-test');
   assert.match(body, /^    name: Integration Tests \(shard \$\{\{ matrix\.shard \}\}\/8\)$/mu);
@@ -336,7 +399,7 @@ const summaryScript = summary.split('        run: |\n')[1]
 const resultVars = [...summary.matchAll(/^          (\w+_RESULT):/gmu)].map((m) => m[1]);
 const allOf = (value) => Object.fromEntries(resultVars.map((v) => [v, value]));
 const passing = {
-  ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true',
+  ...allOf('success'), MOBILE_NATIVE_REQUIRED: 'false', BUILD_MOBILE_IOS_RESULT: 'skipped', AGENT_CHANGED: 'true', APP_CHANGED: 'true',
 };
 const docsOnlySkipped = {
   ...allOf('skipped'), CHANGES_RESULT: 'success', MOBILE_NATIVE_REQUIRED: '', AGENT_CHANGED: '', DOCS_CHANGED: 'true', DOCS_CHECK_RESULT: 'success',
@@ -371,5 +434,89 @@ for (const [label, env, passes] of [
       env: { ...process.env, IS_PR: 'true', ...env },
     });
     assert.equal(execution.status, passes ? 0 : 1, execution.stdout + execution.stderr);
+  });
+}
+
+// ─── Item 4: APP_CHANGED three-branch gate (tooling-only PRs) ───────────
+// LINT_RESULT/CHECK_MIGRATIONS_RESULT/SECURITY_AUDIT_RESULT must stay
+// required unconditionally (they validate CI plumbing itself). Every other
+// code job is required only when APP_CHANGED == 'true', must be `skipped`
+// when APP_CHANGED == 'false', and any other value must fail closed — the
+// same three-branch shape as AGENT_CHANGED/MOBILE_NATIVE_REQUIRED above.
+// Hardcoded (not derived from resultVars) so these cases still assert real
+// behavior before CHECK_MIGRATIONS_RESULT/APP_CHANGED exist in the summary.
+const heavyResultVars = [
+  'TYPECHECK_RESULT', 'TEST_API_RESULT', 'TEST_M365_GRAPH_READ_EXECUTOR_RESULT',
+  'TEST_M365_GRAPH_ACTIONS_EXECUTOR_RESULT', 'TEST_M365_COMMUNICATIONS_EXECUTOR_RESULT',
+  'TEST_WEB_RESULT', 'TEST_MOBILE_RESULT', 'MOBILE_NATIVE_CHANGES_RESULT',
+  'TEST_PORTAL_RESULT', 'TEST_VIEWER_RESULT', 'TEST_OFFICE_ADDIN_CORE_RESULT',
+  'TEST_EXCEL_ADDIN_RESULT', 'TEST_WORD_ADDIN_RESULT', 'TEST_POWERPOINT_ADDIN_RESULT',
+  'TEST_OUTLOOK_ADDIN_RESULT', 'BUILD_API_RESULT', 'BUILD_M365_GRAPH_READ_EXECUTOR_RESULT',
+  'BUILD_M365_GRAPH_ACTIONS_EXECUTOR_RESULT', 'BUILD_M365_COMMUNICATIONS_EXECUTOR_RESULT',
+  'BUILD_WEB_RESULT', 'BUILD_PORTAL_RESULT', 'BUILD_AGENT_RESULT', 'TEST_AGENT_RESULT',
+  'TEST_AGENT_WINDOWS_RESULT', 'WINDOWS_RUNTIME_SMOKE_RESULT', 'INTEGRATION_TEST_RESULT',
+  'CHECK_MIGRATIONS_NONSUPERUSER_RESULT', 'RUST_CHECK_RESULT',
+  'AUTH_BROWSER_TRANSITION_BROWSER_CONTRACT_RESULT',
+];
+const toolingOnlyPassing = {
+  ...allOf('skipped'), // everything defaults to skipped for a tooling-only PR...
+  ...Object.fromEntries(['LINT_RESULT', 'CHECK_MIGRATIONS_RESULT', 'SECURITY_AUDIT_RESULT'].map((v) => [v, 'success'])),
+  CHANGES_RESULT: 'success',
+  CODE_CHANGED: 'true',
+  APP_CHANGED: 'false',
+  AGENT_CHANGED: 'false',
+  DOCS_CHANGED: 'false',
+  DOCS_CHECK_RESULT: 'skipped',
+  MOBILE_NATIVE_REQUIRED: '',
+  BUILD_MOBILE_IOS_RESULT: 'skipped',
+};
+const appPassing = { ...passing, APP_CHANGED: 'true' };
+
+for (const [label, env, passes] of [
+  ['tooling-only PR, every heavy job correctly skipped', { ...toolingOnlyPassing }, true],
+  ['tooling-only PR, lint red', { ...toolingOnlyPassing, LINT_RESULT: 'failure' }, false],
+  ['tooling-only PR, check-migrations red', { ...toolingOnlyPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
+  ['tooling-only PR, security-audit red', { ...toolingOnlyPassing, SECURITY_AUDIT_RESULT: 'failure' }, false],
+  ['app change, all heavy jobs green', { ...appPassing }, true],
+  ['app change, check-migrations red even though everything else is green', { ...appPassing, CHECK_MIGRATIONS_RESULT: 'failure' }, false],
+  ['APP_CHANGED empty', { ...appPassing, APP_CHANGED: '' }, false],
+  ['APP_CHANGED not a boolean', { ...appPassing, APP_CHANGED: 'maybe' }, false],
+]) {
+  test(`CI Success (app-gate): ${label}`, () => {
+    const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
+      encoding: 'utf8',
+      env: { ...process.env, IS_PR: 'true', ...env },
+    });
+    assert.equal(execution.status, passes ? 0 : 1, execution.stdout + execution.stderr);
+  });
+}
+
+// A tooling-only PR where a single heavy job unexpectedly ran (success) or
+// failed must still fail closed — its `if:` should have skipped it.
+for (const resultVar of ['TEST_WEB_RESULT', 'BUILD_AGENT_RESULT', 'INTEGRATION_TEST_RESULT']) {
+  test(`CI Success (app-gate): tooling-only PR, ${resultVar} unexpectedly ran (success)`, () => {
+    const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
+      encoding: 'utf8',
+      env: { ...process.env, IS_PR: 'true', ...toolingOnlyPassing, [resultVar]: 'success' },
+    });
+    assert.equal(execution.status, 1, execution.stdout + execution.stderr);
+  });
+  test(`CI Success (app-gate): tooling-only PR, ${resultVar} red`, () => {
+    const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
+      encoding: 'utf8',
+      env: { ...process.env, IS_PR: 'true', ...toolingOnlyPassing, [resultVar]: 'failure' },
+    });
+    assert.equal(execution.status, 1, execution.stdout + execution.stderr);
+  });
+}
+
+// app=true with one heavy job unexpectedly skipped must fail closed.
+for (const resultVar of heavyResultVars) {
+  test(`CI Success (app-gate): app change, ${resultVar} unexpectedly skipped`, () => {
+    const execution = spawnSync('bash', ['-e', '-c', summaryScript], {
+      encoding: 'utf8',
+      env: { ...process.env, IS_PR: 'true', ...appPassing, [resultVar]: 'skipped' },
+    });
+    assert.equal(execution.status, 1, execution.stdout + execution.stderr);
   });
 }
