@@ -761,22 +761,18 @@ monitoringRoutes.patch(
       else setValues.privPassword = encryptSnmpSecret(body.privPassword);
     }
 
-    // Same absent-vs-null contract as PUT above (#6099): `templateId` ABSENT
-    // on a row that has no template yet means "choose for me" — auto-apply a
-    // suggestion. This is the only mutation path most saves ever take once a
-    // device row exists (the web form only PUTs on the very first save), so
-    // without this branch auto-apply was reachable only on create.
-    let templateSuggestion: TemplateSuggestion | null = null;
-    const templateIdProvided = Object.prototype.hasOwnProperty.call(body, 'templateId');
-    if (!templateIdProvided && !existing.templateId) {
-      templateSuggestion = await suggestTemplate({
-        sysObjectId: readSysObjectId(asset.snmpData),
-        assetType: asset.assetType ?? null,
-        orgId: asset.orgId,
-      });
-      if (templateSuggestion) setValues.templateId = templateSuggestion.templateId;
-    }
-
+    // Deliberately NOT auto-applying a template suggestion here (#6099
+    // follow-up). PATCH is a partial-edit endpoint: unlike PUT/create, an
+    // absent `templateId` on PATCH does not mean "no explicit choice yet" —
+    // it means "this edit isn't about the template." Every PATCH caller that
+    // omits templateId for an unrelated field (the web form's own explicit
+    // clear followed by, say, an interval change; AI tools; scheduler/
+    // threshold saves; agent paths) must leave templateId exactly as it was,
+    // including staying null after an explicit clear. Auto-apply only
+    // belongs on the one-time "no explicit choice yet" moment, which is PUT.
+    // The web UI already has the suggestion from a separate GET
+    // (`/monitoring/templates/suggest`, W03) and offers "Use suggestion"
+    // from there, so nothing is lost by not echoing it here too.
     if (Object.keys(setValues).length === 0) return c.json({ error: 'No fields to update' }, 400);
 
     // Captured before the scheduler fields below are mixed in, so the audit
@@ -805,10 +801,7 @@ monitoringRoutes.patch(
 
     return c.json({
       success: true,
-      snmpDevice: serializeSnmpDevice(updated),
-      templateSuggestion: templateSuggestion
-        ? { ...templateSuggestion, applied: updated.templateId === templateSuggestion.templateId }
-        : null
+      snmpDevice: serializeSnmpDevice(updated)
     });
   }
 );

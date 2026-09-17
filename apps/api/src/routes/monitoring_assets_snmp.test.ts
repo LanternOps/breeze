@@ -952,9 +952,14 @@ describe('monitoring routes', () => {
     });
   });
 
-  describe('PATCH /monitoring/assets/:id/snmp — template auto-apply on an already-configured device (#6099)', () => {
-    // Every save after the first goes through PATCH (the web form only PUTs
-    // on create), so this is the path most real edits actually take.
+  describe('PATCH /monitoring/assets/:id/snmp — omitted templateId is never auto-applied (#6099 follow-up)', () => {
+    // PATCH is a partial-edit endpoint, not the one-time "no explicit choice
+    // yet" moment PUT/create is. An absent templateId here must leave
+    // templateId exactly as it was — including staying null after an
+    // explicit clear — because every PATCH caller that omits templateId for
+    // an unrelated field (web form, AI tools, scheduler/threshold saves,
+    // agent paths) would otherwise get a template silently re-assigned as a
+    // side effect.
     function mockPatchChain(existing: Record<string, unknown>) {
       vi.mocked(db.select)
         .mockReturnValueOnce({
@@ -982,14 +987,11 @@ describe('monitoring routes', () => {
       body: JSON.stringify(body),
     });
 
-    it('applies a suggestion and echoes templateSuggestion when templateId is omitted on a device row with no template', async () => {
+    it('leaves templateId null, never consults the suggester, and does not echo templateSuggestion when the key is omitted on a device row with no template', async () => {
       mockPatchChain({ id: SNMP_DEVICE_ID, templateId: null, isActive: true });
-      vi.mocked(suggestTemplate).mockResolvedValue({
-        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
-      });
       const updateSet = vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'tpl-xerox', pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
         }),
       });
       vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
@@ -999,29 +1001,55 @@ describe('monitoring routes', () => {
       const res = await patch({ pollingInterval: 600 });
 
       expect(res.status).toBe(200);
-      expect(suggestTemplate).toHaveBeenCalled();
-      expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
-      expect((await res.json()).templateSuggestion).toEqual({
-        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
-        reason: 'Detected Xerox printer, using Xerox Printer', applied: true,
-      });
-    });
-
-    it('does not suggest, and leaves the template alone, when the device already has one and templateId is omitted', async () => {
-      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'tpl-chosen', isActive: true });
-      const updateSet = vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: 'tpl-chosen', pollingInterval: 600, isActive: true, lastPolled: null, lastStatus: null }]),
-        }),
-      });
-      vi.mocked(db.update).mockReturnValueOnce({ set: updateSet } as never);
-
-      const res = await patch({ pollingInterval: 600 });
-
-      expect(res.status).toBe(200);
       expect(suggestTemplate).not.toHaveBeenCalled();
       expect(updateSet.mock.calls[0]?.[0]).not.toHaveProperty('templateId');
-      expect((await res.json()).templateSuggestion).toBeNull();
+      const body = await res.json();
+      expect(body.snmpDevice.templateId).toBeNull();
+      expect(body).not.toHaveProperty('templateSuggestion');
+    });
+
+    it('keeps a template null after an explicit clear followed by an unrelated edit that omits the key', async () => {
+      // Round 1: explicit clear — templateId: null is provided, so it's
+      // written as null (existing "null-as-unset is preserved" contract).
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: 'tpl-old', isActive: true });
+      const clearSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: clearSet } as never);
+
+      const clearRes = await patch({ templateId: null });
+      expect(clearRes.status).toBe(200);
+      expect(clearSet.mock.calls[0]?.[0]).toMatchObject({ templateId: null });
+
+      // Round 2: an unrelated field changes on the now-untemplated row, and
+      // the web form (per the #6099 fix) omits templateId entirely. It must
+      // NOT come back.
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: null, isActive: true });
+      const editSet = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: null, username: null, templateId: null, pollingInterval: 900, isActive: true, lastPolled: null, lastStatus: null }]),
+        }),
+      });
+      vi.mocked(db.update).mockReturnValueOnce({ set: editSet } as never);
+
+      const editRes = await patch({ pollingInterval: 900 });
+      expect(editRes.status).toBe(200);
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(editSet.mock.calls[0]?.[0]).not.toHaveProperty('templateId');
+      expect((await editRes.json()).snmpDevice.templateId).toBeNull();
+    });
+
+    it('still 400s "No fields to update" when the only content is an absent templateId', async () => {
+      mockPatchChain({ id: SNMP_DEVICE_ID, templateId: null, isActive: true });
+
+      const res = await patch({});
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('No fields to update');
+      expect(suggestTemplate).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 });
