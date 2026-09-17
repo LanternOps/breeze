@@ -33,7 +33,7 @@ describe('topology template tenancy',()=>{
   await expect(withSystemDbAccessContext(()=>db.transaction(async tx=>{
    await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
    await tx.execute(sql`UPDATE organizations SET partner_id=${f.b.partnerId}::uuid WHERE id=${f.a.orgId}::uuid`);
-  }))).rejects.toThrow();
+  }))).rejects.toThrow('organization transfer requires topology detach/rebind');
   await expect(withSystemDbAccessContext(()=>db.transaction(async tx=>{
    await tx.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
    await tx.execute(sql`UPDATE topology_config_templates SET partner_id=${f.b.partnerId}::uuid WHERE id=${f.templateId}::uuid`);
