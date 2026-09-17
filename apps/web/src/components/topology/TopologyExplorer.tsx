@@ -33,7 +33,10 @@ export default function TopologyExplorer({ siteId, focusNodeId, settings }: { si
   const navigate = useCallback((next: TopologyNavigation) => { const value = { ...next, siteId }; setNavigation(value); writeTopologyHash(value); }, [siteId]);
   const selection = navigation.selection;
   const selected = graph ? selectedTopologyEntity(graph, selection) : undefined;
-  const nodes = useMemo(() => graph ? [...graph.nodes, ...graph.presentation.nodes] : [], [graph?.revisions.graph, graph?.view]);
+  // A bounded expansion can change the visible projection without changing the
+  // site's structural revision. Health-only updates keep this key unchanged.
+  const measurementKey = JSON.stringify(graph ? [...graph.nodes, ...graph.presentation.nodes].map(node => [node.id, node.label, 'kind' in node ? node.kind : node.role]) : []);
+  const nodes = useMemo(() => graph ? [...graph.nodes, ...graph.presentation.nodes] : [], [measurementKey, graph?.view]);
   useEffect(() => {
     if (!navigation.search.trim()) { setSearchNodes([]); return; }
     const abort = new AbortController(); setSearchError(undefined);

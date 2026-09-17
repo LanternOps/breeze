@@ -43,3 +43,14 @@ it('read-only users can arrange but cannot save shared coordinates', async () =>
   await screen.findByTestId('topology-arrange');
   expect(screen.queryByTestId('topology-layout-save')).not.toBeInTheDocument();
 });
+
+it('measures newly expanded nodes when the site graph revision is unchanged', async () => {
+  const initial = topologyGraphFixture();
+  const added = { ...initial.nodes[0], id: '10000000-0000-4000-8000-000000000099', label: 'Expanded peer' };
+  initial.frontier = [{ token: 'next', label: 'More nodes', memberCount: 1 }];
+  vi.mocked(fetchWithAuth).mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes('/expansions/')
+    ? { ...initial, nodes: [...initial.nodes, added], frontier: [] } : initial)));
+  const { container } = render(<TopologyExplorer siteId={SITE} settings={topologySettingsFixture()} />);
+  fireEvent.click(await screen.findByTestId('topology-frontier'));
+  await waitFor(() => expect(container.querySelector(`[data-node-id="${added.id}"]`)).toHaveTextContent('Expanded peer'));
+});
