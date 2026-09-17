@@ -25,6 +25,11 @@ type AssetMonitoringDetail = {
   snmpDevice: SnmpDevice | null;
   networkMonitors?: { totalCount: number; activeCount: number };
 };
+type SuggestTemplateEnvelope = {
+  sysObjectId: string | null;
+  assetType: string | null;
+  suggestion: TemplateSuggestion | null;
+};
 type AssetNetworkCheck = {
   id: string;
   name: string;
@@ -117,7 +122,9 @@ export function MonitoringSection({ asset, assetId, onSaved, onAnnounce }: {
     if (suggestionFailed && suggestResult.status === 'rejected') {
       console.warn('[network-settings] template suggestion failed', assetId, suggestResult.reason);
     }
-    setSuggestion(suggestResult.status === 'fulfilled' ? suggestResult.value ?? null : null);
+    setSuggestion(suggestResult.status === 'fulfilled'
+      ? (suggestResult.value as SuggestTemplateEnvelope | null)?.suggestion ?? null
+      : null);
     setLoading(false);
   }, [assetId, t]);
 
