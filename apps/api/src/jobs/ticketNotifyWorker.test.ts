@@ -121,6 +121,7 @@ vi.mock('../services/expoPush', async (orig) => {
   };
 });
 
+import { resolveCommentNotificationPortalHref } from '../services/inboundEmail/commentNotificationPortalHref';
 import { handleTicketEvent } from './ticketNotifyWorker';
 
 describe('handleTicketEvent', () => {
@@ -644,6 +645,28 @@ describe('handleTicketEvent', () => {
     // HTML-escaped entities must appear; raw tag must NOT
     expect(call.html).toContain('&lt;script&gt;');
     expect(call.html).not.toContain('<script>');
+  });
+
+  it('sends resolved mail without a portal button when the portal URL is unusable', async () => {
+    vi.mocked(resolveCommentNotificationPortalHref).mockRejectedValueOnce(
+      new Error('Invalid portal ticket URL'),
+    );
+    selectMock.mockResolvedValueOnce([{
+      id: 't-1', orgId: 'o-1', internalNumber: 'T-2026-0099', subject: 'Slow VPN',
+      submitterEmail: 'user@acme.example', resolutionNote: 'Fixed', status: 'resolved',
+    }]);
+
+    await handleTicketEvent({
+      type: 'ticket.status_changed', ticketId: 't-1', orgId: 'o-1', partnerId: 'p-1',
+      actorUserId: 'u-1', eventId: 'evt-portal-fallback', payload: { from: 'open', to: 'resolved' },
+    });
+
+    expect(sendEmailMock).toHaveBeenCalledTimes(1);
+    const html = (sendEmailMock.mock.calls[0]![0] as { html: string }).html;
+    expect(html).toContain('Your ticket has been resolved.');
+    expect(html).toContain('Fixed');
+    expect(html).not.toContain('href="https://example.test/portal/tickets/t-1"');
+    expect(html).not.toContain('%%BREEZE_CTA_BUTTON%%');
   });
 
   it('ticket.updated is an explicit no-op — no ticket lookup, no insert, no email', async () => {

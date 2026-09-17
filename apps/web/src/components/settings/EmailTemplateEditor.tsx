@@ -38,17 +38,66 @@ const SAMPLE_VARS: Record<string, string> = {
   resolution_note: 'Replaced the failing drive.',
 };
 
+/** Same tags as apps/api/src/services/richTextSanitize.ts RICH_TEXT_ALLOWED_TAGS. */
+const PREVIEW_ALLOWED_TAGS = new Set([
+  'p', 'br', 'strong', 'em', 'u', 'h3', 'h4', 'ul', 'ol', 'li', 'a',
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td',
+]);
+const PREVIEW_DISCARD_TAGS = new Set([
+  'script', 'style', 'iframe', 'object', 'embed', 'base', 'form', 'link', 'meta', 'svg',
+]);
+
+function isSafePreviewHref(href: string): boolean {
+  const trimmed = href.trim();
+  if (trimmed.startsWith('//')) return false;
+  const scheme = trimmed.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
+  if (!scheme) return true;
+  return scheme.toLowerCase() === 'http' || scheme.toLowerCase() === 'https';
+}
+
 function previewSafeHtml(html: string): string {
   const filled = renderTemplate(html, SAMPLE_VARS as TicketTemplateVars);
   if (typeof DOMParser === 'undefined') return filled;
   const doc = new DOMParser().parseFromString(filled, 'text/html');
-  doc.querySelectorAll('script,iframe,object,embed').forEach((el) => el.remove());
-  doc.querySelectorAll('*').forEach((el) => {
-    for (const attr of [...el.attributes]) {
-      if (attr.name.startsWith('on') || attr.name === 'srcdoc') el.removeAttribute(attr.name);
+  const sanitizeNode = (node: Node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType !== 1) continue;
+      const el = child as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      sanitizeNode(el);
+      if (PREVIEW_DISCARD_TAGS.has(tag)) {
+        el.remove();
+        continue;
+      }
+      if (!PREVIEW_ALLOWED_TAGS.has(tag)) {
+        el.replaceWith(...el.childNodes);
+        continue;
+      }
+      for (const attr of [...el.attributes]) {
+        if (tag === 'a' && attr.name === 'href' && isSafePreviewHref(attr.value)) continue;
+        el.removeAttribute(attr.name);
+      }
     }
-  });
+  };
+  sanitizeNode(doc.body);
   return doc.body.innerHTML;
+}
+
+function overrideFromPartnerResponse(data: unknown, id: EmailTemplateId): EmailTemplateOverride | null {
+  if (!data || typeof data !== 'object') return null;
+  const settings = (data as { settings?: unknown }).settings;
+  if (!settings || typeof settings !== 'object') return null;
+  const bag = (settings as { emailTemplates?: unknown }).emailTemplates;
+  if (!bag || typeof bag !== 'object') return null;
+  const raw = (bag as Record<string, unknown>)[id];
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  return {
+    subject: typeof o.subject === 'string' ? o.subject : null,
+    heading: typeof o.heading === 'string' ? o.heading : null,
+    buttonLabel: typeof o.buttonLabel === 'string' ? o.buttonLabel : null,
+    html: typeof o.html === 'string' ? o.html : null,
+  };
 }
 
 interface Props {
@@ -79,7 +128,7 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
   const persist = async (fields: EmailTemplateOverride) => {
     setSaving(true);
     try {
-      await runAction({
+      const saved = await runAction({
         request: () =>
           fetchWithAuth('/orgs/partners/me', {
             method: 'PATCH',
@@ -97,11 +146,12 @@ export default function EmailTemplateEditor({ templateId, value, onBack, onSaved
           return d;
         },
       });
-      onSaved(fields);
-      setSubject(fields.subject ?? '');
-      setHeading(fields.heading ?? '');
-      setButtonLabel(fields.buttonLabel ?? '');
-      setHtml(fields.html ?? '');
+      const stored = overrideFromPartnerResponse(saved, templateId) ?? fields;
+      onSaved(stored);
+      setSubject(stored.subject ?? '');
+      setHeading(stored.heading ?? '');
+      setButtonLabel(stored.buttonLabel ?? '');
+      setHtml(stored.html ?? '');
     } catch (err) {
       handleActionError(err, t('emailTemplates.saveFailed'));
     } finally {

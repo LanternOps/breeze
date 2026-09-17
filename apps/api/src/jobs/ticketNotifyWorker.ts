@@ -170,11 +170,19 @@ async function composeLaidOutRequesterMail(
   ticket: TicketRow,
   id: 'ticket_comment_notification' | 'ticket_resolved',
 ): Promise<{ html: string; subject: string; replyTo: string | undefined }> {
-  const { href, hasPortalUser } = await resolveCommentNotificationPortalHref({
-    ticketId: ticket.id,
-    orgId: ticket.orgId,
-    submitterEmail: ticket.submitterEmail ?? '',
-  });
+  let href = '';
+  let hasPortalUser = false;
+  try {
+    const resolved = await resolveCommentNotificationPortalHref({
+      ticketId: ticket.id,
+      orgId: ticket.orgId,
+      submitterEmail: ticket.submitterEmail ?? '',
+    });
+    href = resolved.href;
+    hasPortalUser = resolved.hasPortalUser;
+  } catch (err) {
+    console.error('[TicketNotify] portal href unavailable; sending without CTA', err);
+  }
   const partner = await loadPartnerMailBits(ticket.partnerId);
   const orgName = ticket.orgId ? await getOrgName(ticket.orgId) : '';
   const rendered = renderPartnerEmail({
@@ -191,7 +199,7 @@ async function composeLaidOutRequesterMail(
       email_only_hint: hasPortalUser ? '' : EMAIL_ONLY_HINT,
       ...(id === 'ticket_resolved' ? { resolution_note: ticket.resolutionNote ?? '' } : {}),
     },
-    ctaUrl: href,
+    ctaUrl: href || undefined,
     brandName: partner.name,
     internalNumber: ticket.internalNumber,
     ticketSubject: ticket.subject,
@@ -310,16 +318,15 @@ async function collectAssigneeNotification(
  * no anchor stamp — that keeps Resolved from emitting a bare-anchor Message-ID
  * that would collide with the autoresponse.
  *
- * `bodyHtml` as a builder is only for side effects (resolved freshness guard).
+ * `beforeSend` is only for side effects (resolved freshness guard).
  * Customer html/subject come from renderPartnerEmail. `subjectOverride` replaces
  * the renderer subject when a caller needs to; comment/resolved pass the
  * renderer subject by default. Assignee mail never enters here.
  */
 async function collectRequesterEmail(
   event: TicketEvent,
-  bodyHtml: string | ((ticket: TicketRow) => string),
-  subjectPrefix: string,
   commentId?: string,
+  beforeSend?: (ticket: TicketRow) => void,
   subjectOverride?: string,
 ): Promise<EmailPayload[]> {
   // Pre-commit emission contract: ticket may not be visible yet — throw to trigger retry.
@@ -327,11 +334,9 @@ async function collectRequesterEmail(
   if (!ticket) {
     throw new Error(`Ticket not found (likely uncommitted): ${event.ticketId}`);
   }
-  // Run the builder first so the resolved freshness guard retries even when we
+  // Run the guard first so the resolved freshness check retries even when we
   // later skip send (missing submitterEmail).
-  if (typeof bodyHtml === 'function') {
-    bodyHtml(ticket);
-  }
+  beforeSend?.(ticket);
   if (!ticket.submitterEmail) return [];
 
   // Customer-facing reply routing: if this partner has a connected M365 mailbox, send
@@ -574,12 +579,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         // Skip requester email for inbound comments — the comment originated FROM the
         // requester's email, so echoing it back would create a mail loop.
         if (event.payload.isPublic && !event.payload.inbound) {
-          emailPayloads = await collectRequesterEmail(
-            event,
-            '',
-            'New reply',
-            event.payload.commentId
-          );
+          emailPayloads = await collectRequesterEmail(event, event.payload.commentId);
         }
         return;
       }
@@ -599,6 +599,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
         if (event.payload.to === 'resolved') {
           emailPayloads = await collectRequesterEmail(
             event,
+            undefined,
             (ticket) => {
               // Freshness guard (read-your-own-write race): the ticket row fetched
               // here can be STALE relative to the status_changed event that queued
@@ -623,9 +624,7 @@ export async function handleTicketEvent(event: TicketEvent, jobId?: string): Pro
                   `Ticket transition not yet visible (likely uncommitted): ${ticket.id}`
                 );
               }
-              return '';
             },
-            'Resolved'
           );
         }
         return;
