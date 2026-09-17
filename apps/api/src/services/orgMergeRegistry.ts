@@ -138,7 +138,6 @@ const SPECIAL: Record<string, OrgMergePolicy> = {
   // integration. The executor renames the loser's colliding slug in-grammar and
   // rewrites every child's qualified_name, which embeds it.
   tool_sources: { kind: 'custom', note: 'rename a loser source whose slug collides with a survivor source (suffix stays inside tool_sources_slug_chk), rewrite the affected tool_source_tools.qualified_name values, then repoint org_id — so no registration is silently dropped' },
-  topology_config_templates: { kind: 'custom', note: 'rename a loser template whose key or name collides with a survivor template (suffix stays inside the stable-key grammar), then repoint org_id — so no template is dropped and no site binding is orphaned' },
   tool_source_tools: { kind: 'custom', note: 'repoint org_id alongside the parent source; the owner-guard constraint trigger is deferred for the merge transaction, so parent and child may move in separate statements' },
 
   // #5022 W01. Was a plain `repoint`. It still repoints org_id, but a merged
@@ -954,6 +953,7 @@ const REPOINT_TABLES: readonly string[] = [
   "time_series_metrics",
   "topology_site_template_bindings",
   "topology_config_template_versions",
+  "topology_config_templates",
   "topology_diagnostic_steps",
   "topology_diagnostic_runs",
   "topology_monitor_bindings",

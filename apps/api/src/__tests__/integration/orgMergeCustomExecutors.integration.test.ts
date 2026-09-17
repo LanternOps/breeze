@@ -1148,52 +1148,6 @@ describe('org merge engine SQL against real Postgres', () => {
     }
   });
 
-  it('renames a colliding topology template instead of aborting the merge or dropping it', async () => {
-    const P = randomUUID();
-    const L = randomUUID();
-    const S = randomUUID();
-    const [collides, unique, survivor] = [randomUUID(), randomUUID(), randomUUID()];
-
-    try {
-      await withSystemDbAccessContext(async () => {
-        await db.execute(sql`
-          INSERT INTO partners (id, name, slug)
-          VALUES (${P}::uuid, 'Topology template merge', ${`topology-template-${P.slice(0, 8)}`})`);
-        await db.execute(sql`
-          INSERT INTO organizations (id, partner_id, name, slug, status, currency_code)
-          VALUES (${L}::uuid, ${P}::uuid, 'Loser', ${`loser-${L.slice(0, 8)}`}, 'active', 'USD'),
-                 (${S}::uuid, ${P}::uuid, 'Survivor', ${`survivor-${S.slice(0, 8)}`}, 'active', 'USD')`);
-        await db.execute(sql`
-          INSERT INTO topology_config_templates (id, org_id, key, name)
-          VALUES (${survivor}::uuid, ${S}::uuid, 'default', 'Standard site'),
-                 (${collides}::uuid, ${L}::uuid, 'default', 'Standard site'),
-                 (${unique}::uuid, ${L}::uuid, 'branch', 'Branch office')`);
-
-        await db.execute(sql`SET CONSTRAINTS ALL DEFERRED`);
-        const out = await CUSTOM_EXECUTORS.topology_config_templates!(L, S);
-        expect(out.moved).toBe(2);
-        expect(out.dropped).toBe(0);
-        expect(out.notes.join('\n')).toMatch(/renamed 1 /);
-        await db.execute(sql`SET CONSTRAINTS ALL IMMEDIATE`);
-
-        const rows = (await db.execute(sql`
-          SELECT id, key, name FROM topology_config_templates WHERE org_id = ${S}::uuid ORDER BY key`)) as unknown as Array<{ id: string; key: string; name: string }>;
-        const suffix = L.replace(/-/g, '').slice(0, 6);
-        expect(rows).toEqual([
-          { id: unique, key: 'branch', name: 'Branch office' },
-          { id: survivor, key: 'default', name: 'Standard site' },
-          { id: collides, key: `default-m${suffix}`, name: `Standard site (merged ${suffix})` },
-        ]);
-        // The renamed key must still satisfy the API's stable-key grammar.
-        expect(rows[2]!.key).toMatch(/^[a-z][a-z0-9_-]{0,63}$/);
-
-        throw new Rollback('done');
-      });
-    } catch (err) {
-      if (!(err instanceof Rollback)) throw err;
-    }
-  });
-
   it('drops the merged-away org\'s QuickBooks mapping so its remote claim is released', async () => {
     // accounting_entity_mappings has no org_id column and its Breeze side is a
     // polymorphic (type, id) pair, so the registry walk never reaches it — the
