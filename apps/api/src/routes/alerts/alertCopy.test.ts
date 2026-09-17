@@ -30,4 +30,13 @@ describe('fillStoredAlertCopy', () => {
     });
     expect(filled.title).toBe('HOST-1 is offline');
   });
+
+  it('prefers an explicit deviceLabel over the hostname join', () => {
+    const filled = fillStoredAlertCopy({
+      title: '{{device}} offline',
+      deviceHostname: 'DESKTOP-8UG65K6',
+      context: null,
+    }, 'Front desk');
+    expect(filled.title).toBe('Front desk offline');
+  });
 });

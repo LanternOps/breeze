@@ -368,6 +368,7 @@ alertsRoutes.get(
         suppressedUntil: alerts.suppressedUntil,
         createdAt: alerts.createdAt,
         deviceHostname: devices.hostname,
+        deviceDisplayName: devices.displayName,
         ruleName: alertRules.name,
         // Org name for the fleet (All-organizations) view, where the web list
         // shows an Organization column so cross-org rows stay legible.
@@ -439,15 +440,16 @@ alertsRoutes.get(
     const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
+      const { deviceDisplayName, ...rest } = alert;
       return fillStoredAlertCopy({
-        ...alert,
+        ...rest,
         aiVerdict: verdict
           ? {
             ...projectAlertAiVerdictSummary(verdict),
             feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
           }
           : null,
-      });
+      }, deviceDisplayName || rest.deviceHostname);
     });
 
     return c.json({

@@ -811,7 +811,9 @@ export async function processSendNotification(data: SendNotificationJobData): Pr
       severity: alert.severity,
       message: alert.message || '',
       deviceId: alert.deviceId,
+      device: device?.displayName || device?.hostname || '',
       deviceName: device?.displayName || device?.hostname || '',
+      hostname: device?.hostname || '',
       orgName: org?.name || '',
       triggeredAt: alert.triggeredAt.toISOString(),
     });

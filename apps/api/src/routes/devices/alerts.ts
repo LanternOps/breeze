@@ -7,6 +7,7 @@ import { getDeviceWithOrgAndSiteCheck, SITE_ACCESS_DENIED } from './helpers';
 import { db } from '../../db';
 import { alerts, alertRules, alertTemplates } from '../../db/schema';
 import { PERMISSIONS } from '../../services/permissions';
+import { fillDevicePlaceholders } from '@breeze/shared';
 
 export const alertsRoutes = new Hono();
 
@@ -78,20 +79,24 @@ alertsRoutes.get(
       .orderBy(desc(alerts.triggeredAt))
       .limit(query.limit);
 
-    // Transform to match frontend expectations
-    const data = deviceAlerts.map(alert => ({
-      id: alert.id,
-      message: alert.message || alert.title,
-      summary: alert.title,
-      severity: alert.severity,
-      status: alert.status,
-      createdAt: alert.triggeredAt?.toISOString(),
-      timestamp: alert.triggeredAt?.toISOString(),
-      acknowledgedAt: alert.acknowledgedAt?.toISOString(),
-      resolvedAt: alert.resolvedAt?.toISOString(),
-      ruleName: alert.ruleName,
-      templateName: alert.templateName,
-    }));
+    const deviceLabel = device.displayName || device.hostname;
+    const data = deviceAlerts.map((alert) => {
+      const title = fillDevicePlaceholders(alert.title, deviceLabel);
+      const message = alert.message ? fillDevicePlaceholders(alert.message, deviceLabel) : alert.message;
+      return {
+        id: alert.id,
+        message: message || title,
+        summary: title,
+        severity: alert.severity,
+        status: alert.status,
+        createdAt: alert.triggeredAt?.toISOString(),
+        timestamp: alert.triggeredAt?.toISOString(),
+        acknowledgedAt: alert.acknowledgedAt?.toISOString(),
+        resolvedAt: alert.resolvedAt?.toISOString(),
+        ruleName: alert.ruleName,
+        templateName: alert.templateName,
+      };
+    });
 
     return c.json({ data });
   }
