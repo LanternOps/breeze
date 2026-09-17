@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { scriptParametersSchema, alertTriggerKey, buildTriggerKey, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
+import { scriptParametersSchema, alertTriggerKey, buildTriggerKey, interpolateAlertTemplate, type RemediationTrigger, type DeploymentTargetConfig } from '@breeze/shared';
 import { db, runOutsideDbContext, withSystemDbAccessContext } from '../db';
 import {
   alertRules,
@@ -1837,8 +1837,17 @@ async function executeCreateAlertAction(
   // rows; each alert lands in the org whose device raised it (#2133).
   const ruleId = await ensureAutomationAlertRule(context.device.orgId);
 
-  const title = action.alertTitle ?? `${context.automation.name} automation alert`;
-  const message = action.alertMessage;
+  const deviceLabel = context.device.displayName || context.device.hostname;
+  const templateContext = {
+    device: deviceLabel,
+    deviceName: deviceLabel,
+    hostname: context.device.hostname,
+  };
+  const title = interpolateAlertTemplate(
+    action.alertTitle ?? `${context.automation.name} automation alert`,
+    templateContext,
+  );
+  const message = interpolateAlertTemplate(action.alertMessage, templateContext);
 
   const [createdAlert] = await db
     .insert(alerts)

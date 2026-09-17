@@ -36,6 +36,7 @@ import { emitAlertStateFeedback } from '../../services/mlFeedbackEmitters';
 import { latestVerdictsForAlerts, projectAlertAiVerdictSummary } from '../../services/aiAgents/alertVerdicts';
 import { listAlertsSchema, resolveAlertSchema, suppressAlertSchema, bulkAlertActionSchema, type AlertStatusValue } from './schemas';
 import { getPagination, ensureOrgAccess, getAlertWithOrgCheck, alertSiteScopeCondition } from './helpers';
+import { fillStoredAlertCopy } from './alertCopy';
 import { withAlertActorNames } from './actorNames';
 import { canAccessSite, getUserPermissions, hasPermission, PERMISSIONS, type UserPermissions } from '../../services/permissions';
 import { createTicketFromAlert, TicketServiceError } from '../../services/ticketService';
@@ -438,7 +439,7 @@ alertsRoutes.get(
     const correlatedAlerts = attachAlertCorrelationSummaries(alertsWithActorNames, correlationRows);
     const data = correlatedAlerts.map((alert) => {
       const verdict = verdictMap.get(alert.id);
-      return {
+      return fillStoredAlertCopy({
         ...alert,
         aiVerdict: verdict
           ? {
@@ -446,7 +447,7 @@ alertsRoutes.get(
             feedbackByName: feedbackByNameByVerdictId.get(verdict.id) ?? null,
           }
           : null,
-      };
+      });
     });
 
     return c.json({
@@ -1374,7 +1375,7 @@ alertsRoutes.get(
       ? await withAlertActorNames([{ id: verdict.id, feedbackBy: verdict.feedbackBy }])
       : [];
 
-    return c.json(withMlAlertContext({
+    return c.json(withMlAlertContext(fillStoredAlertCopy({
       ...alertWithActorNames,
       device: device ? {
         id: device.id,
@@ -1397,7 +1398,7 @@ alertsRoutes.get(
           feedbackByName: feedbackByNameRow?.feedbackByName ?? null,
         }
         : null,
-    }));
+    }, device?.displayName || device?.hostname)));
   }
 );
 
