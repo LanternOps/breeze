@@ -1500,6 +1500,44 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
   notes: [],
 });
 
+// topology_config_templates — org-owned rows are unique on (org_id, key) and
+// on (org_id, name), so a plain repoint aborts the whole merge on 23505 when
+// both orgs own a template called `default`. Dropping the loser's copy would
+// silently unbind every site pinned to one of its versions, so this renames on
+// collision, exactly as tool_sources does. The key suffix stays inside the
+// stable-key grammar (^[a-z][a-z0-9_-]{0,63}$); key and name collide
+// independently, so each is renamed only when it actually collides.
+const mergeTopologyConfigTemplates: CustomMergeExecutor = async (loser, survivor) => {
+  const suffix = sql`substr(replace(${uuid(loser)}::text, '-', ''), 1, 6)`;
+  const renamed = await run(sql`
+    UPDATE topology_config_templates AS t
+       SET key = CASE WHEN EXISTS (
+                   SELECT 1 FROM topology_config_templates AS s
+                    WHERE s.org_id = ${uuid(survivor)} AND s.key = t.key)
+                 THEN left(t.key, 56) || '-m' || ${suffix} ELSE t.key END,
+           name = CASE WHEN EXISTS (
+                   SELECT 1 FROM topology_config_templates AS s
+                    WHERE s.org_id = ${uuid(survivor)} AND s.name = t.name)
+                 THEN left(t.name, 240) || ' (merged ' || ${suffix} || ')' ELSE t.name END,
+           updated_at = now()
+     WHERE t.org_id = ${uuid(loser)}
+       AND EXISTS (
+         SELECT 1 FROM topology_config_templates AS s
+          WHERE s.org_id = ${uuid(survivor)}
+            AND (s.key = t.key OR s.name = t.name)
+       )`);
+  const moved = await run(buildRepoint('topology_config_templates', loser, survivor));
+  return {
+    moved,
+    dropped: 0,
+    notes: renamed > 0
+      ? [
+        `topology_config_templates: renamed ${renamed} topology template from the merged-away org whose key or name already existed under the survivor (suffixed with the merged org id; nothing deleted, and every site binding still points at the same template)`,
+      ]
+      : [],
+  };
+};
+
 /**
  * The `move`-phase half of every `custom` table (which, for all but one of
  * them, is the whole executor).
@@ -1507,6 +1545,7 @@ const mergeToolSourceTools: CustomMergeExecutor = async (loser, survivor) => ({
 export const CUSTOM_EXECUTORS: Readonly<Record<string, CustomMergeExecutor>> = {
   automation_resource_bindings: mergeAutomationResourceBindings,
   tool_sources: mergeToolSources,
+  topology_config_templates: mergeTopologyConfigTemplates,
   tool_source_tools: mergeToolSourceTools,
   contacts: mergeContacts,
   backup_configs: mergeBackupConfigs,
