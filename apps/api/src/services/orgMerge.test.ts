@@ -511,7 +511,7 @@ describe('runPolicy phases', () => {
   it('a custom table with a resolve half runs it in the resolve pass, and only repoints in move', async () => {
     const policy = { kind: 'custom', note: 'discovered_assets' } as const;
 
-    // 5 child re-homes + 1 DELETE, all in the RESOLVE pass.
+    // Monitor-authority detach + 4 child re-homes + 1 DELETE, all in the RESOLVE pass.
     mockState.executeResponses = [
       { count: 0 }, { count: 2 }, { count: 0 }, { count: 0 }, { count: 0 }, { count: 1 },
     ];
@@ -519,9 +519,13 @@ describe('runPolicy phases', () => {
     expect(resolved.dropped).toBe(1);
     expect(resolved.moved).toBe(0);
     expect(mockState.executedSql).toHaveLength(6);
+    // A same-IP collision is not same-site identity: monitors are detached, never
+    // re-parented onto the surviving asset, and that happens before anything else.
+    expect(mockState.executedSql[0]).toMatch(/breeze_detach_topology_monitor_authority/);
+    expect(mockState.executedSql.join('\n')).not.toMatch(/UPDATE\s+"?network_monitors/);
     // The children are re-homed BEFORE the delete — the other order is the
     // 23503 this whole executor exists to prevent.
-    expect(mockState.executedSql.slice(0, 5).every((s) => /UPDATE/.test(s) && !/DELETE/.test(s))).toBe(true);
+    expect(mockState.executedSql.slice(1, 5).every((s) => /UPDATE/.test(s) && !/DELETE/.test(s))).toBe(true);
     expect(mockState.executedSql[5]).toMatch(/DELETE FROM/);
     expect(resolved.notes.join('\n')).toMatch(/dropped 1 duplicate discovered asset/);
     expect(resolved.notes.join('\n')).toMatch(/snmp_devices: 2/);
