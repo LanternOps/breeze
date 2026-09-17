@@ -513,10 +513,21 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
+          if (errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+            // #4050: the grant the server just rejected is dead. Dropping it is what
+          // turns the API's `reauthUrl` affordance into a button the user can
+          // actually press: `hasSsoReauthGrant` gates MFASettings'
+          // `mfa-sso-reauth-retry` and the passkey card's `passkey-sso-reauth`,
+          // so without this the banner says "verify again" while the only
+          // visible control replays the same dead proof — a worse dead end than
+          // the "Invalid credentials" copy this code replaced. Deliberately NOT
+          // clearing `ssoSetupReady`: the enrollment view should stay put and
+          // swap its submit button, not collapse to the status card.
+            setSsoReauthGrantId(null);
+            throw new Error(t('profilePage.ssoReauthProofExpired'));
+          }
           throw new Error(
-            errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE
-              ? t('profilePage.ssoReauthProofExpired')
-              : errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
+            errorData.error ?? errorData.message ?? t('profilePage.failedToStartMfaHttp', { status: response.status })
           );
         }
 
@@ -719,10 +730,13 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+        if (errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // See requestMfaSetup — same dead-grant handling on the terminal write.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
-          errorData.code === ENROLLMENT_GRANT_EXPIRED_CODE
-            ? t('profilePage.ssoReauthProofExpired')
-            : errorData.error ?? errorData.message ?? t('profilePage.failedToEnableMfaHttp', { status: response.status })
+          errorData.error ?? errorData.message ?? t('profilePage.failedToEnableMfaHttp', { status: response.status })
         );
       }
 
@@ -1052,6 +1066,12 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
           setPasskeyError(t('profilePage.passkeyStepUpVerificationExpired'));
           return;
         }
+        if (optionsData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // The passkey road calls the SAME resolveEnrollmentStepUp as the TOTP
+          // road above, so it can receive this code too — see requestMfaSetup.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
           optionsData.error ?? optionsData.message ?? t('profilePage.failedToStartPasskeyHttp', { status: optionsResponse.status })
         );
@@ -1072,6 +1092,11 @@ export default function ProfilePage({ initialUser }: ProfilePageProps) {
 
       const verifyData = await verifyResponse.json().catch(() => ({}));
       if (!verifyResponse.ok) {
+        if (verifyData.code === ENROLLMENT_GRANT_EXPIRED_CODE) {
+          // See requestMfaSetup — same dead-grant handling on the terminal write.
+          setSsoReauthGrantId(null);
+          throw new Error(t('profilePage.ssoReauthProofExpired'));
+        }
         throw new Error(
           verifyData.error ?? verifyData.message ?? t('profilePage.failedToSavePasskeyHttp', { status: verifyResponse.status })
         );
