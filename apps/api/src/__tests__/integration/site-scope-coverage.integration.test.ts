@@ -155,7 +155,7 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   'routes/agents/changes.ts:PUT /:id/changes',
   'routes/agents/commands.ts:POST /:id/commands/:commandId/result',
   // Agent-token heartbeat ingest. Surfaced by #4019 (its `onedriveDeviceState`
-  // upsert sits ~22 KB into the handler, far past the old 4000-byte window):
+  // upsert sits tens of KB into the handler, far past the old 4000-byte window):
   // every device write in the handler is keyed on `device.id` from the bearer
   // match, so there is no user `permissions` context and no caller-supplied
   // device selector.
@@ -180,7 +180,7 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // Same agent-token path as /renew-cert/confirm above, and exempt for the same
   // reason: every `deviceMtlsCertificates.deviceId` predicate is
   // `eq(…, device.id)` for the agent authenticated by agentBearerAuthMiddleware.
-  // Surfaced by #4019 — the writes sit ~8 KB into the handler.
+  // Surfaced by #4019 — the writes sit well past the old 4000-byte window.
   'routes/agents/mtls.ts:POST /renew-cert',
   'routes/agents/sessions.ts:PUT /:id/sessions',
   'routes/agents/state.ts:PUT /:id/config-state',
@@ -214,7 +214,7 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // moved its mobile_devices queries into services/mobileDeviceIdentity.ts, and
   // the ratchet removed it. #4019 brought it back: the handler still upserts
   // `mobileDevices` directly (`onConflictDoUpdate({ target: mobileDevices
-  // .deviceId })`, ~4.2 KB in), which the old 4000-byte window could not see.
+  // .deviceId })`), well past the point the old 4000-byte window stopped reading.
   // The exemption REASON is the unchanged one: `mobile_devices.device_id` is a
   // mobile INSTALLATION id, not an RMM device with a site, and the row is
   // already narrowed by `userId` — tighter than site scope.
@@ -251,8 +251,8 @@ const SITE_SCOPE_INPUT_EXEMPT: ReadonlySet<string> = new Set<string>([
   // no user session and no `permissions` context at all. The single
   // `eq(devices.id, row.deviceId)` read is keyed on the device recorded ON the
   // token row and runs inside runInRecoveryOrgContext(row.orgId) — the caller
-  // supplies no device selector. Its device access sits ~5 KB into the handler,
-  // past the old byte window.
+  // supplies no device selector. Its device access sits past the old byte
+  // window.
   'routes/backup/bmr.ts:POST /bmr/recover/authenticate',
   // Org record-page overview: partner/system scope only, gated on ORGS_READ +
   // auth.canAccessOrg(id), and the `devices` read is a pure aggregate
@@ -557,6 +557,20 @@ describe('site-scope coverage — scanner truncation blind spot', () => {
   it('never stops reading before a perms-sourced site gate', async () => {
     const blind = await findRoutesWithGateBeyondWindow();
     const truncated = await findRoutesWithTruncatedHandlerWindow();
+
+    // Non-degeneracy control. `blind` being empty is the PASSING state, so this
+    // assertion would stay green forever if the wiring silently broke (wrong
+    // import, a `scanAllRoutes` filter bug, ROUTE_DIR pointing at an empty
+    // tree) and both helpers just returned []. The corpus really does contain
+    // handlers longer than HANDLER_SLICE_BYTES — several were added to the
+    // exempt sets above precisely because widening the detector caught them —
+    // so require that the scanner still sees at least one.
+    expect(
+      truncated.length,
+      'No route window truncates at HANDLER_SLICE_BYTES at all — the truncation ' +
+        'detector is almost certainly not wired to the corpus any more, which ' +
+        'would make the blind-spot assertion below vacuously green.',
+    ).toBeGreaterThan(0);
 
     const message =
       blind.length === 0

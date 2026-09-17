@@ -77,9 +77,12 @@ function codeTokens(text: string): string[] {
 describe('stripComments — corpus parse guard (#4019)', () => {
   it('removes ONLY comments from every file under src/routes', async () => {
     const files = await listTsFiles(ROUTE_DIR);
-    // A zero-file scan would make this suite vacuously green (the same failure
-    // mode the site-scope suite guards against for its own corpus).
-    expect(files.length).toBeGreaterThan(100);
+    // A zero-file — or quietly shrunken — scan would make this suite vacuously
+    // green (the same failure mode the site-scope suite guards against for its
+    // own corpus). The real corpus is ~500 files; the floor tracks it closely
+    // enough that a broken recursive walk that silently drops a subtree fails
+    // here instead of passing on a rump.
+    expect(files.length).toBeGreaterThan(400);
 
     const damaged: string[] = [];
     for (const file of files) {

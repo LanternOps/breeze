@@ -524,6 +524,42 @@ describe('stripComments', () => {
   it('does not fuse identifiers across an inline block comment', () => {
     expect(stripComments('canAcc/* x */essSite')).toBe('canAcc essSite');
   });
+
+  it('keeps division intact after a closing paren or bracket', () => {
+    // `)` and `]` end a VALUE, so a following `/` divides. Getting this wrong
+    // would open a phantom regex that swallows code to the next `/`.
+    const src = 'const a = (x)/y; const b = arr[0]/2; const g = canAccessSite(p, s);';
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('handles an escaped delimiter inside a regex literal', () => {
+    const src = ['const RE = /^a\\/b$/;', 'const keep = eq(deviceMetrics.deviceId, id);'].join('\n');
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('handles a template interpolation nested inside another template', () => {
+    const src = 'const t = `outer ${`inner ${a / b} // tail`} done`;';
+    expect(stripComments(src)).toBe(src);
+  });
+
+  it('strips a comment inside a NESTED template interpolation', () => {
+    const out = stripComments('const t = `o ${`i ${x /* gone */} `} `;');
+    expect(out).not.toContain('gone');
+    expect(out).toContain('`o ${`i ${x');
+  });
+
+  it('does not run past the line end on an unterminated string literal', () => {
+    // A stray quote must not turn the rest of the file into string content —
+    // that would hide every gate and device reference below it.
+    const src = ["const broken = 'oops;", 'const keep = canAccessSite(p, s); // note'].join('\n');
+    const out = stripComments(src);
+    expect(out).toContain('canAccessSite(p, s);');
+    expect(out).not.toContain('note');
+  });
+
+  it('strips an unterminated block comment through end of file', () => {
+    expect(stripComments('const a = 1;\n/* never closed\nmore prose')).toBe('const a = 1;\n\n');
+  });
 });
 
 describe('analyzeRouteSource — comments cannot change the answer (#4019)', () => {
