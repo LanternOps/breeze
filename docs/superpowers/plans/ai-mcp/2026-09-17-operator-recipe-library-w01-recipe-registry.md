@@ -1,5 +1,5 @@
 ---
-tracking_issue: PENDING
+tracking_issue: LanternOps/breeze#6165
 ---
 
 # Operator Recipe Library — Wave E1: Recipe Registry and Coordinator Dispatch Refactor Implementation Plan

@@ -1,5 +1,5 @@
 ---
-tracking_issue: PENDING
+tracking_issue: LanternOps/breeze#6165
 ---
 
 # Operator Recipe Library — Wave M1: M365 Graph identity write catalog, verification probes, permission profile v2, consent UX

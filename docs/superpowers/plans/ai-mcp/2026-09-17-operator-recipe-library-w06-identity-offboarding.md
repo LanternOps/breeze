@@ -1,5 +1,5 @@
 ---
-tracking_issue: PENDING
+tracking_issue: LanternOps/breeze#6165
 ---
 
 # Operator Recipe Library — Wave R1: `identity_offboarding`, the Recipe Library surface, readiness, and the deterministic release gate Implementation Plan

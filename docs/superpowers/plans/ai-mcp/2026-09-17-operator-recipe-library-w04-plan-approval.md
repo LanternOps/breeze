@@ -1,5 +1,5 @@
 ---
-tracking_issue: PENDING
+tracking_issue: LanternOps/breeze#6165
 ---
 
 # Operator Recipe Library — Wave E4: Plan approval and the `effect` step kind Implementation Plan

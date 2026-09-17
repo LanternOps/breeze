@@ -1,5 +1,5 @@
 ---
-tracking_issue: PENDING
+tracking_issue: LanternOps/breeze#6165
 ---
 
 # Operator Recipe Library — Wave E3: human-work steps bound to ticket checklist items, and the `maintenance_window` wait writer Implementation Plan

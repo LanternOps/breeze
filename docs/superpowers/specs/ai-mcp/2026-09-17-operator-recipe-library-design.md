@@ -1,7 +1,8 @@
 ---
 title: Operator Recipe Library — Breeze-shipped MSP procedures, starting with employee offboarding and onboarding
 date: 2026-09-17
-status: draft for product and engineering review
+status: approved 2026-09-17; implementation not started
+tracking_issue: LanternOps/breeze#6165
 baseline_commit: 59a94162c
 scope: apps/api (aiOperator, m365ControlPlane, tickets), apps/m365-graph-actions-executor, packages/shared, apps/web
 builds_on:
@@ -23,7 +24,7 @@ related:
 - **Boundary with Flows (#5215):** a Recipe owns an outcome and must prove it; a Flow owns a sequence and reports what each step returned (§3). This spec recommends both run on the `ai_operator_*` substrate; that recommendation changes an open feature and is raised as decision D1, not assumed.
 - **Name:** "playbook" stays with the shipped device self-healing feature (`playbook_definitions`). The user-facing word here is **recipe**, as the Operator spec already decided (§3 there: "'Recipe' is the user-facing name for a supported workflow").
 - **Not in scope:** tenant-authored recipes, a recipe DSL or graph executor, autonomous end-customer email, rollback of identity changes, DNS/registrar tooling, mailbox data migration.
-- **Status:** draft. Nothing is implemented. Register the feature on approval.
+- **Status:** approved 2026-09-17. Nothing is implemented. Plans: `docs/superpowers/plans/ai-mcp/2026-09-17-operator-recipe-library-w01…w07-*.md`.
 
 ## 1. Outcome and scope
 
@@ -235,7 +236,7 @@ Ordering is a recipe-owned, tested safety contract, lifted from the comment in `
 
 `google_offboard_user` is **not** called by the recipe. One tool call with seven effects has one operation key: a replay re-runs all seven and "3/7 OK" has no per-effect result row. The recipe dispatches the granular tools (`google_set_vacation`, `google_set_forwarding`, `google_add_mail_delegate`, `google_remove_from_group`, `google_remove_license`, `google_signout`, `google_suspend_user`), which are already registered, Tier 3, and headless-capable. **The mobile step is the exception: `google_wipe_mobile_device` is a full factory reset (`admin_remote_wipe`) and its own description says it is not for offboarding. The selective corporate-account wipe (`admin_account_wipe`) is reachable today only inside the composite, so R1 adds a granular `google_account_wipe_mobile_device` tool and the recipe never plans the factory-reset one.** The composite stays for chat use; deprecating it is a follow-up.
 
-`identity_onboarding` is the mirror with one inversion: account creation is first, and the temporary credential is secret-bearing (the `reset_password` sealing path). Its human-work steps are hardware assignment and first-login handover.
+`identity_onboarding` is the mirror with one inversion: account creation is first, and the temporary credential is secret-bearing (the `reset_password` sealing path). No Google create-user tool exists at this baseline, so Google account creation is an `always_manual` human-work step until one ships (follow-up). Adding a person to a role-assignable or admin group is never a planned effect. Seat availability is read from synced `m365_license_skus`; authority stays with the executor's live pre-read, so a stale sync fails closed into a checklist item. Its human-work steps are hardware assignment, credential handover, and MFA enrolment.
 
 ### 6.4 Plan approval
 
@@ -247,7 +248,8 @@ Every mutating Google and M365 tool is `TIER3_FOUR_EYES`. Nine effects across tw
 - On approval, each effect's operation is dispatched under the plan approval: the release path accepts an effect **only if** `(task_id, plan_revision, ordinal, argument_digest)` is a member of the approved set. Membership is checked at release, against rows, after the usual revalidation.
 - Any change — a discovered group, an edited forward address, a provider dropping to human-work — bumps `revision`, supersedes the approval, and requires a new one. "Existing approvals only authorize their pinned arguments" (Operator spec §7.1) is preserved: the unit of pinning is the set.
 - Expiry, requester-cannot-self-approve, and sole-operator step-up self-approval are inherited from action intents unchanged.
-- Secret-bearing effects (onboarding's temporary password) are excluded from plan approval and keep their individual intent.
+- Secret-bearing effects (onboarding's account creation and its temporary password) never share a plan with other effects. A create must still be task-linked, and task linkage requires a plan approval, so a secret-bearing effect rides its own plan: a plan set is either all secret-bearing or none, and a **mixed** set is refused at mint and at release. Onboarding therefore has two approvals at two plan revisions — create the accounts, then provision them — because a provisioning argument (the new account's external id) cannot exist before the account does. The credential is revealed through the existing requester-only reveal path; because child effects are minted under the plan's approver, the approver — not the technician who started the task — reveals it, and the handover step names that person.
+- A `non_idempotent` effect whose pre-probe is anything but `unsatisfied` hands off. For `m365.user.create`, a `satisfied` pre-probe means a UPN collision, not "already done".
 - Per-effect audit is not lost: each operation still writes its own `ai_operator_operations` row, event, and audit entry, attributed to the plan approval's approver.
 
 `createActionIntent` gains an allowlist ceiling: neither the plan intent nor a child effect may name a tool the admitting agent's frozen snapshot does not allow, checked at mint and again at release. This is new work — PR #6110's ceiling is a *site* ceiling and never reads `toolAllowlist`.
@@ -375,8 +377,10 @@ E1–E4 and M1 are high blast radius (tenancy, auth, approvals): full rigor, int
 - **D3** — No new agent kind; identity recipes run under `helpdesk`. Recommend yes.
 - **D4** — New feature, E2 = Operator P3-2, pointer left on #5205. Recommend yes.
 - **D5** — Intune: retire only, never full wipe, in the first catalog. Recommend yes.
+- **D7** — R2 narrows E4's secret-bearing refusal from "any" to "mixed sets" — the only `intentService.ts` change outside E4. Same independent adversarial review requirement as D6, before R2a is dispatched.
 - **D6** — E4 loosens `createActionIntent`'s task-context rule for plan-approved effects. Requires an independent adversarial review (Opus or Codex `xhigh`) of that branch before merge.
 
 ## 13. Review history
 
+- 2026-09-17 — Approved by Todd. Wave plans W01–W07 written the same day against `59a94162c`; their authors' findings against the real code are folded into §5.1, §5.3, §6.1, §6.3, §6.4, §6.6, §6.7, §7.1, §4.1 and decisions D6–D7.
 - 2026-09-17 — Drafted by Claude at Todd's request. Duplicate check against `origin/main` specs, plans, and issues: no spec covers employee lifecycle; overlaps are the Operator completion spec (built on) and Flows #5215 (boundary in §3). Independent advisor pass (Opus; Codex was out of usage until 09-19) concurred on building on the Operator substrate and contributed the plan-approval primitive, the gate class, and probe-before-write; the `contacts` target (D2) is the author's and was not reviewed by the advisor.
