@@ -788,6 +788,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   export const upsertSenderIdentitySchema: z.ZodType<{ sendingDomainId: string; localPart: string; displayName?: string | null; replyTo?: string | null }, …>;
   ```
   and the DTOs `SendingDomainDnsRecordDto`, `SendingDomainDto`, `SenderIdentityDto`, `SendingDomainsCapabilityDto`, `SendingDomainsListResponse`.
+  Fields W04 depends on and that must stay **required** (not optional, not
+  nullable): `SendingDomainDto.statusChangedAt` (the 72 h retry window on a
+  `failed` row), `SenderIdentityDto.domain` and `SenderIdentityDto.fromAddress`
+  (the identity card renders the exact From without re-joining). All three are
+  declared required below and pinned by the DTO-shape test in Step 1.
 - Consumes: `zod`, the WHATWG `URL` global (identical in Node 22 and every shipped browser).
 
 - [ ] **Step 1: Write the failing table-driven tests**
@@ -954,7 +959,62 @@ describe('constant sets', () => {
     expect([...PARTNER_MAIL_STREAMS]).toEqual(['support', 'billing', 'general']);
   });
 });
+
+describe('DTO shape W04 is built against', () => {
+  // A runtime fixture typed as the DTO: an omitted or wrongly-nullable field is
+  // a compile error, and the assertions below keep the fields W04 depends on
+  // from quietly becoming optional later.
+  const domainDto: SendingDomainDto = {
+    id: '11111111-2222-3333-4444-555555555555',
+    domain: 'acme.com',
+    provider: 'resend',
+    status: 'failed',
+    statusReason: 'dns_not_detected',
+    statusChangedAt: '2026-09-17T10:00:00.000Z',
+    dnsRecords: [],
+    verifiedAt: null,
+    lastCheckedAt: '2026-09-17T09:00:00.000Z',
+    lastTestAt: null,
+    lastTestStatus: null,
+    lastTestError: null,
+    lastSendError: null,
+    lastSendErrorAt: null,
+    providerManaged: true,
+    createdAt: '2026-09-15T10:00:00.000Z'
+  };
+
+  const identityDto: SenderIdentityDto = {
+    id: '66666666-7777-8888-9999-000000000000',
+    stream: 'support',
+    sendingDomainId: domainDto.id,
+    domain: 'acme.com',
+    localPart: 'support',
+    displayName: 'Acme MSP Support',
+    replyTo: null,
+    fromAddress: 'support@acme.com',
+    updatedAt: '2026-09-17T10:00:00.000Z'
+  };
+
+  it('statusChangedAt is a REQUIRED ISO string — W04 computes the 72 h retry window on a failed row from it', () => {
+    expect(typeof domainDto.statusChangedAt).toBe('string');
+    expect(Number.isNaN(Date.parse(domainDto.statusChangedAt))).toBe(false);
+    // Required, so it cannot be narrowed to include null/undefined.
+    const required: string = domainDto.statusChangedAt;
+    expect(required).toBe('2026-09-17T10:00:00.000Z');
+  });
+
+  it('SenderIdentityDto.domain and .fromAddress are REQUIRED — the identity card renders the From without re-joining', () => {
+    const domain: string = identityDto.domain;
+    const fromAddress: string = identityDto.fromAddress;
+    expect(domain).toBe('acme.com');
+    expect(fromAddress).toBe(`${identityDto.localPart}@${identityDto.domain}`);
+  });
+});
 ```
+
+The fixture needs the DTO types in scope — add
+`import type { SendingDomainDto, SenderIdentityDto } from '../types/sendingDomains';`
+to the top of this test file.
 
 Run: `cd packages/shared && npx vitest run src/validators/sendingDomains.test.ts`
 Expected: FAIL — `Cannot find module './sendingDomains'`.
@@ -1159,6 +1219,12 @@ export interface SendingDomainDto {
   provider: SendingDomainProviderId;
   status: SendingDomainStatusValue;
   statusReason: SendingDomainStatusReason | null;
+  /**
+   * When `status` last changed. REQUIRED, never null — the column is
+   * `NOT NULL DEFAULT now()`. W04 needs it to compute the 72 h retry window on
+   * a `failed` row (spec §4.3, §10), which no other field carries.
+   */
+  statusChangedAt: string;
   dnsRecords: SendingDomainDnsRecordDto[];
   verifiedAt: string | null;
   lastCheckedAt: string | null;
@@ -5214,7 +5280,7 @@ Every in-scope requirement, and the task that discharges it.
 | 14 | `normalizeSendingDomain` per §4.1 shared half, table-driven with complete case lists | 3 |
 | 15 | Identity rules of §4.4: `local_part` regex + consecutive dots + reserved names; `display_name` strip, 78 chars, no `@` or `://` | 3 |
 | 16 | Shared constants and Zod schemas under the index's exact names | 3 |
-| 17 | DTOs defined in full for W04's UI (domain row, identity, capability, list response, DNS record) | 3 |
+| 17 | DTOs defined in full for W04's UI (domain row, identity, capability, list response, DNS record), including `SendingDomainDto.statusChangedAt` for the 72 h retry window and required `SenderIdentityDto.domain` / `.fromAddress`, pinned by a DTO-shape test | 3 |
 | 18 | API-only rejections in `domainPolicy.ts`: hosted-only platform domains, consumer domains, public suffixes via `tldts`, `EMAIL_DOMAINS_DENYLIST` | 4 |
 | 19 | All ten `EMAIL_DOMAINS_*` vars of §11 declared and validated; `requireIf` keyed only on `EMAIL_DOMAINS_PROVIDER`; `fake` refused in production; `static` refused when hosted; identical keys refused when hosted; one info line self-hosted | 5 |
 | 20 | `services/emailDomains/config.ts`: `getEmailDomainsConfig`, `isPartnerLaneConfigured`, `EMAIL_DOMAINS_STATIC_ALLOWED` parsing (`domain` / `domain:partner-slug`), cap default 2000 hosted / unlimited self-hosted, `0` = unlimited | 5 |

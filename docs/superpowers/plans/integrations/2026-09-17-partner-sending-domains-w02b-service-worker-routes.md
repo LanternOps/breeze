@@ -80,8 +80,9 @@ export interface SendingDomainDto {              // ISO-8601 STRINGS, not Date
   verifiedAt: string | null; lastCheckedAt: string | null;
   lastTestAt: string | null; lastTestStatus: 'pending' | 'sent' | 'failed' | null; lastTestError: string | null;
   lastSendError: string | null; lastSendErrorAt: string | null;
+  statusChangedAt: string;                       // ISO, from status_changed_at (NOT NULL)
   providerManaged: boolean; createdAt: string;
-}                                                // no providerRegion, no nextCheckAt, no statusChangedAt
+}                                                // no providerRegion, no nextCheckAt
 export interface SenderIdentityDto {
   id: string; stream: PartnerMailStreamValue; sendingDomainId: string;
   domain: string;                                // the JOINED domain name
@@ -3078,8 +3079,8 @@ vi.mock('../../jobs/sendingDomainsWorker', () => ({ enqueueSyncDomain: enqueueSy
 
 import {
   DOMAIN_UNAVAILABLE_MESSAGE, SendingDomainServiceError, createSendingDomain, deleteSenderIdentity,
-  forceReleaseSendingDomain, getSendingDomainsCapability, requestDomainCheck, requestDomainRemoval,
-  suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
+  forceReleaseSendingDomain, getSendingDomainsCapability, listSendingDomains, requestDomainCheck,
+  requestDomainRemoval, suspendSendingDomain, unsuspendSendingDomain, upsertSenderIdentity,
 } from './sendingDomainService';
 
 const PARTNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -3104,6 +3105,56 @@ beforeEach(() => {
   evaluateMock.mockReturnValue({ allow: true });
   probeRead.mockResolvedValue(null);
   policyMock.mockReturnValue(undefined);
+});
+
+describe('listSendingDomains DTO shape (W04 renders these fields)', () => {
+  it('fills every SendingDomainDto field, including statusChangedAt, as an ISO string', async () => {
+    const at = new Date('2026-09-17T12:00:00.000Z');
+    rows.push([{
+      id: DOMAIN_ID, partnerId: PARTNER_ID, domain: 'mail.acme.test', provider: 'fake',
+      status: 'at_risk', statusReason: 'dns_removed', dnsRecords: [],
+      providerManaged: true, providerRegion: 'us-east-1',
+      verifiedAt: at, lastCheckedAt: at, nextCheckAt: at, statusChangedAt: at,
+      lastTestAt: null, lastTestStatus: null, lastTestError: null,
+      lastSendError: null, lastSendErrorAt: null, createdAt: at,
+    }]);
+    rows.push([]);   // identities
+
+    const { domains } = await listSendingDomains(partner());
+
+    expect(domains[0]).toEqual({
+      id: DOMAIN_ID, domain: 'mail.acme.test', provider: 'fake',
+      status: 'at_risk', statusReason: 'dns_removed', dnsRecords: [],
+      verifiedAt: at.toISOString(), lastCheckedAt: at.toISOString(),
+      lastTestAt: null, lastTestStatus: null, lastTestError: null,
+      lastSendError: null, lastSendErrorAt: null,
+      statusChangedAt: at.toISOString(),
+      providerManaged: true, createdAt: at.toISOString(),
+    });
+    // Poll scheduling and the provider region are not the partner's business.
+    expect(domains[0]).not.toHaveProperty('nextCheckAt');
+    expect(domains[0]).not.toHaveProperty('providerRegion');
+  });
+
+  it('joins each identity to its domain and computes fromAddress', async () => {
+    const at = new Date('2026-09-17T12:00:00.000Z');
+    rows.push([]);   // domains
+    rows.push([{
+      identity: {
+        id: 'i1', partnerId: PARTNER_ID, sendingDomainId: DOMAIN_ID, stream: 'support',
+        localPart: 'help', displayName: 'Acme Support', replyTo: null, updatedAt: at,
+      },
+      domain: 'mail.acme.test',
+    }]);
+
+    const { identities } = await listSendingDomains(partner());
+
+    expect(identities[0]).toEqual({
+      id: 'i1', stream: 'support', sendingDomainId: DOMAIN_ID,
+      domain: 'mail.acme.test', localPart: 'help', displayName: 'Acme Support',
+      replyTo: null, fromAddress: 'help@mail.acme.test', updatedAt: at.toISOString(),
+    });
+  });
 });
 
 describe('getSendingDomainsCapability', () => {
@@ -3474,8 +3525,9 @@ const iso = (value: Date | null | undefined): string | null => (value ? value.to
 
 /**
  * W02a's `SendingDomainDto` is an EXACT field set with ISO-8601 strings, and it
- * deliberately omits `providerRegion`, `nextCheckAt` and `statusChangedAt` —
- * scheduling detail and the provider's region are not the partner's business.
+ * deliberately omits `providerRegion` and `nextCheckAt` — the poll schedule and
+ * the provider's region are not the partner's business. `statusChangedAt` IS
+ * included: the UI dates the "at risk since"/"failed" banners from it.
  * Keep this mapper exhaustive against that type rather than spreading the row.
  */
 function toDomainDto(row: typeof partnerSendingDomains.$inferSelect): SendingDomainDto {
@@ -3493,6 +3545,7 @@ function toDomainDto(row: typeof partnerSendingDomains.$inferSelect): SendingDom
     lastTestError: row.lastTestError ?? null,
     lastSendError: row.lastSendError ?? null,
     lastSendErrorAt: iso(row.lastSendErrorAt),
+    statusChangedAt: row.statusChangedAt.toISOString(),
     providerManaged: row.providerManaged,
     createdAt: row.createdAt.toISOString(),
   };
@@ -3920,7 +3973,7 @@ export async function forceReleaseSendingDomain(domainId: string): Promise<void>
 - [ ] **Step 4: Run it green**
 
 Run: `cd apps/api && npx vitest run src/services/emailDomains/sendingDomainService.test.ts src/__tests__/partner-wide-write-coverage.test.ts`
-Expected: 34 passed in the service suite; `partner-wide-write-coverage.test.ts` green (the Step 0 entry is no longer stale, and the sweep does not flag the file).
+Expected: 36 passed in the service suite; `partner-wide-write-coverage.test.ts` green (the Step 0 entry is no longer stale, and the sweep does not flag the file).
 
 - [ ] **Step 5: Commit**
 
@@ -5282,6 +5335,6 @@ Every in-scope spec requirement, mapped to the task that satisfies it and the te
 | W02a amendment 4 — `createDomain` carries `partnerSlug` | 3 | "passes the partner SLUG to createDomain" |
 | W02a amendment 5 — `static` `getDomain` keys on the domain name; `pending` is no change; only a test send verifies | 3, 4 | "does NOT demote a verified static row"; "keys a static getDomain on the DOMAIN NAME"; "DOES fail a static row the operator delisted"; the `markStaticDomainVerified` block; "an accepted static test send verifies the row THERE" |
 | W02a's typed provider errors drive `status_reason` | 3 | the `ProviderDomainConflictError` / `ProviderDomainRejectedError` `it.each`, plus the unclassified fallback |
-| W02a's DTO field sets and ISO-8601 strings are honoured exactly | 6 | `toDomainDto` / `toIdentityDto` are exhaustive against the pinned types; the identity read joins its domain for `fromAddress` |
+| W02a's DTO field sets and ISO-8601 strings are honoured exactly (incl. `statusChangedAt`, `domain`, `fromAddress`) | 6 | "fills every SendingDomainDto field, including statusChangedAt"; "joins each identity to its domain and computes fromAddress" |
 | `email_provider_domain_releases.reason` stays inside its CHECK | 6 | "force-release of a MANAGED domain writes the outbox row" asserts `reason: 'force_release'` |
 | `last_test_status` stays inside its CHECK (`pending`/`sent`/`failed`) | 4 | the test-send block asserts `lastTestStatus: 'sent'` and `'failed'` |
