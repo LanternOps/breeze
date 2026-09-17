@@ -901,4 +901,54 @@ describe('monitoring routes', () => {
       expect(updateSet.mock.calls[0]?.[0]).toMatchObject({ templateId: null });
     });
   });
+
+  describe('PUT /monitoring/assets/:id/snmp — template auto-apply reachable from the real web form body (#6099)', () => {
+    const asset = {
+      id: ASSET_ID, orgId: ORG_ID, siteId: SITE_ALLOWED, hostname: 'xerox-01', ipAddress: '10.0.0.5',
+      assetType: 'printer', snmpData: { sysObjectId: '.1.3.6.1.4.1.253.8.62.1.37.1.4.1.1' },
+    };
+
+    it('applies a suggestion and echoes templateSuggestion for a body with no templateId key, on an asset with no template', async () => {
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockReturnValue({ for: vi.fn().mockResolvedValue([asset]) }),
+            }),
+          }),
+        } as never)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+            }),
+          }),
+        } as never);
+      vi.mocked(suggestTemplate).mockResolvedValue({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer', reason: 'Detected Xerox printer, using Xerox Printer',
+      });
+      const insertValues = vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: SNMP_DEVICE_ID, snmpVersion: 'v2c', port: 161, community: 'enc:v1:mock', username: null, templateId: 'tpl-xerox', pollingInterval: 300, isActive: true, lastPolled: null, lastStatus: null }]),
+      });
+      vi.mocked(db.insert).mockReturnValueOnce({ values: insertValues } as never);
+
+      // The exact shape the fixed MonitoringSection.tsx handleSave now sends
+      // when the user never touches the template selector: no `templateId`
+      // key at all (previously it always sent `templateId: null`, which
+      // defeated this branch — #6099).
+      const res = await app.request(`/monitoring/assets/${ASSET_ID}/snmp`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token', 'x-restrict-site': SITE_ALLOWED },
+        body: JSON.stringify({ snmpVersion: 'v2c', community: 'public', pollingInterval: 300, port: 161 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(suggestTemplate).toHaveBeenCalled();
+      expect(insertValues.mock.calls[0]?.[0]).toMatchObject({ templateId: 'tpl-xerox' });
+      expect((await res.json()).templateSuggestion).toEqual({
+        templateId: 'tpl-xerox', templateName: 'Xerox Printer',
+        reason: 'Detected Xerox printer, using Xerox Printer', applied: true,
+      });
+    });
+  });
 });
