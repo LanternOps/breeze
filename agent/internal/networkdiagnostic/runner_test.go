@@ -46,7 +46,6 @@ type fakeProbe struct {
 	serverName                        string
 	journal                           *Journal
 	command                           Command
-	routeChanged                      bool
 	onResolve                         func()
 }
 

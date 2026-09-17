@@ -131,7 +131,7 @@ func TestJournalExclusiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	if second, err := OpenJournal(path); err == nil {
-		second.Close()
+		_ = second.Close()
 		t.Fatal("two journal owners")
 	}
 	if err := first.Close(); err != nil {
@@ -141,7 +141,7 @@ func TestJournalExclusiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer next.Close()
+	defer func() { _ = next.Close() }()
 }
 func TestJournalCancellationTombstoneSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal")
@@ -153,12 +153,12 @@ func TestJournalCancellationTombstoneSurvivesRestart(t *testing.T) {
 	if err = j.Cancel(c.CommandID, c.RunID, c.AttemptID); err != nil {
 		t.Fatal(err)
 	}
-	j.Close()
+	_ = j.Close()
 	j, err = OpenJournal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	if _, err = j.Accept(c); !errors.Is(err, ErrCancelled) {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestJournalRejectsDifferentCommandForSameAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	c := journalCommandFixture()
 	if _, err = j.Accept(c); err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestJournalFullAndClockRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer j.Close()
+	defer func() { _ = j.Close() }()
 	now := time.Now()
 	j.clock = func() time.Time { return now }
 	for i := 0; i < 10000; i++ {
@@ -208,7 +208,7 @@ func TestJournalIntentPersistenceStagesFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer j.Close()
+			defer func() { _ = j.Close() }()
 			c := journalCommandFixture()
 			if _, err = j.Accept(c); err != nil {
 				t.Fatal(err)

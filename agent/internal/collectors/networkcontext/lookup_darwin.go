@@ -31,7 +31,7 @@ func lookupDarwinRoute(ctx context.Context, request RouteLookupRequest, keys map
 	if e != nil {
 		return RouteSelection{}, e
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	if e = syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &syscall.Timeval{Usec: 100000}); e != nil {
 		return RouteSelection{}, e
 	}

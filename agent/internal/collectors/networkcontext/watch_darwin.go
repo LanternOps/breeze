@@ -14,7 +14,7 @@ func WatchChanges(ctx context.Context, notify func()) error {
 	if e != nil {
 		return e
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	if e = syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &syscall.Timeval{Usec: 100000}); e != nil {
 		return e
 	}

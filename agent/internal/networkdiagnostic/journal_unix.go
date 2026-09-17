@@ -16,7 +16,7 @@ func replaceJournal(from, to string) error {
 	if e != nil {
 		return e
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 

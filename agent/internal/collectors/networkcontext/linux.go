@@ -60,7 +60,7 @@ func dumpNetlink(parent context.Context, typ uint16) ([]syscall.NetlinkMessage, 
 	if e != nil {
 		return nil, e
 	}
-	defer syscall.Close(fd)
+	defer func() { _ = syscall.Close(fd) }()
 	if e = syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); e != nil {
 		return nil, e
 	}
