@@ -36,6 +36,7 @@ type networkContextManager struct {
 	pendingReset    string
 	enabled         bool
 	captured        time.Time
+	retryNotBefore  time.Time
 	cancel          context.CancelFunc
 }
 
@@ -68,7 +69,7 @@ func (m *networkContextManager) configure(c networkContextConfig) error {
 		return networkcontext.ErrMalformed
 	}
 	current := m.state.Snapshot()
-	if current.ProducerEpoch == "" && !c.EpochFreshlyIssued {
+	if (current.ProducerEpoch == "" || m.pendingReset == c.ProducerEpoch) && !c.EpochFreshlyIssued {
 		if m.pendingReset == "" || m.pendingReset == c.ProducerEpoch {
 			m.pendingReset = c.ProducerEpoch
 			m.config = c
@@ -119,6 +120,9 @@ func (m *networkContextManager) attach(now time.Time, stop <-chan struct{}) (*ne
 	// Retry one immutable capture until acknowledged; retries preserve sequence
 	// and never become an unchanged confirmation of a new collection.
 	if state.Pending != nil {
+		if now.Before(m.retryNotBefore) {
+			return nil, nil
+		}
 		report := state.Pending
 		if !m.captured.IsZero() {
 			age := now.Sub(m.captured).Milliseconds()
@@ -185,9 +189,24 @@ func (m *networkContextManager) attach(now time.Time, stop <-chan struct{}) (*ne
 	return nil, nil
 }
 func (m *networkContextManager) ack(receipt networkcontext.Receipt) error {
+	return m.ackAt(receipt, time.Now())
+}
+func (m *networkContextManager) ackAt(receipt networkcontext.Receipt, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.state.AcceptReport(receipt)
+	err := m.state.AcceptReport(receipt)
+	m.retryNotBefore = time.Time{}
+	if err != nil && receipt.RetryAfterSeconds > 0 {
+		m.retryNotBefore = now.Add(time.Duration(receipt.RetryAfterSeconds) * time.Second)
+	}
+	if errors.Is(err, networkcontext.ErrEpochRequired) {
+		m.pendingReset = m.config.ProducerEpoch
+		m.enabled = false
+		if m.cancel != nil {
+			m.cancel()
+		}
+	}
+	return err
 }
 func (h *Heartbeat) applyNetworkContextConfig(raw any) {
 	b, err := json.Marshal(raw)

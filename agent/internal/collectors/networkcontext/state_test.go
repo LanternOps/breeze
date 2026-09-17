@@ -153,3 +153,60 @@ func TestReceiptRejectionRequestsFreshFullWithoutResettingSequence(t *testing.T)
 		})
 	}
 }
+
+func pendingStateForReceipt(t *testing.T) *State {
+	t.Helper()
+	s, _ := OpenState(filepath.Join(t.TempDir(), "state"))
+	if err := s.InstallEpoch("p", "e"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AllocateSequence(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreReport(Report{Version: 1, ProducerEpoch: "e", Sequence: "1", ReportKind: "unchanged", BaseSnapshotID: "base", ContentDigest: "digest"}); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A rejection the server will repeat for the same bytes must replace the
+// capture; otherwise every heartbeat resends it forever.
+func TestPermanentRejectionDropsPendingCapture(t *testing.T) {
+	for _, reason := range []string{"snapshot_conflict", "incomplete_sections", "scope_not_admitted", "content_digest_mismatch", "section_digest_mismatch", "unsupported_major", "some_future_reason"} {
+		t.Run(reason, func(t *testing.T) {
+			s := pendingStateForReceipt(t)
+			if err := s.AcceptReport(Receipt{ProducerEpoch: "e", ReportSequence: "0", Reason: reason}); err == nil || s.Snapshot().Pending == nil {
+				t.Fatal("rejection of another capture cleared pending", err)
+			}
+			if err := s.AcceptReport(Receipt{ProducerEpoch: "e", ReportSequence: "1", Reason: reason}); err != nil {
+				t.Fatal(err)
+			}
+			state := s.Snapshot()
+			if state.Pending != nil || state.Sequence != 1 || state.BaseSnapshotID != "" || state.ContentDigest != "" {
+				t.Fatal(state)
+			}
+		})
+	}
+}
+
+func TestStaleSequenceRejectionRequiresEpochReset(t *testing.T) {
+	s := pendingStateForReceipt(t)
+	err := s.AcceptReport(Receipt{ProducerEpoch: "e", ReportSequence: "1", Reason: "stale_sequence"})
+	if !errors.Is(err, ErrEpochRequired) || s.Snapshot().Pending != nil {
+		t.Fatal(err, s.Snapshot().Pending)
+	}
+}
+
+func TestTransientRejectionKeepsPendingCapture(t *testing.T) {
+	for _, receipt := range []Receipt{
+		{ProducerEpoch: "e", ReportSequence: "1", Reason: "collection_unavailable"},
+		{ProducerEpoch: "e", ReportSequence: "1", Reason: "producer_unavailable"},
+		{ProducerEpoch: "e", ReportSequence: "1", Reason: "materialization_disabled"},
+		{ProducerEpoch: "e", ReportSequence: "1", Reason: "scope_not_admitted", RetryAfterSeconds: 300},
+	} {
+		s := pendingStateForReceipt(t)
+		if err := s.AcceptReport(receipt); err == nil || s.Snapshot().Pending == nil {
+			t.Fatal(receipt.Reason, err)
+		}
+	}
+}

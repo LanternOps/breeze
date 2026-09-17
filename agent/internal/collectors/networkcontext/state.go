@@ -18,6 +18,15 @@ import (
 
 var ErrEpochRequired = errors.New("server producer epoch required")
 
+var transientRejections = map[string]bool{
+	"collection_unavailable":   true,
+	"materialization_disabled": true,
+	"producer_epoch_changed":   true,
+	"producer_scope_changed":   true,
+	"producer_unavailable":     true,
+	"snapshot_budget_exceeded": true,
+}
+
 type Receipt struct {
 	ReportSequence       string    `json:"reportSequence,omitempty"`
 	ProducerEpoch        string    `json:"producerEpoch"`
@@ -26,6 +35,7 @@ type Receipt struct {
 	BaseSnapshotID       string    `json:"baseSnapshotId"`
 	NextFullValidationAt time.Time `json:"nextFullValidationAt"`
 	Reason               string    `json:"reason,omitempty"`
+	RetryAfterSeconds    int       `json:"retryAfterSeconds,omitempty"`
 }
 type ProducerState struct {
 	InterfaceKeys        map[string]string `json:"interfaceKeys,omitempty"`
@@ -144,17 +154,28 @@ func (s *State) AcceptReport(receipt Receipt) error {
 		return errors.New("receipt does not match pending capture")
 	}
 	next := s.data
-	if receipt.Reason == "full_snapshot_required" || receipt.Reason == "invalid_capture_time" {
+	if receipt.Reason != "" {
+		// The server can accept these same bytes later; keep the immutable capture.
+		if transientRejections[receipt.Reason] || receipt.RetryAfterSeconds > 0 {
+			return fmt.Errorf("report deferred: %s", receipt.Reason)
+		}
 		if receipt.ReportSequence != p.Sequence {
 			return errors.New("rejection does not match pending capture")
 		}
+		// Any other verdict repeats for the same bytes, including reasons added
+		// by a newer server. Replace the capture with a fresh full read.
 		next.BaseSnapshotID = ""
 		next.ContentDigest = ""
 		next.Pending = nil
-		return s.save(next)
-	}
-	if receipt.Reason != "" {
-		return fmt.Errorf("report rejected: %s", receipt.Reason)
+		if e := s.save(next); e != nil {
+			return e
+		}
+		if receipt.Reason == "stale_sequence" {
+			// The server is ahead of this state (restored disk or clone); a later
+			// sequence would be rejected too, so only a new epoch converges.
+			return ErrEpochRequired
+		}
+		return nil
 	}
 	if receipt.AcceptedSequence != p.Sequence || receipt.ContentDigest != p.ContentDigest || receipt.BaseSnapshotID == "" {
 		return errors.New("receipt digest mismatch")

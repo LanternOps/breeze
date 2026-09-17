@@ -2,6 +2,8 @@ package heartbeat
 
 import (
 	"encoding/json"
+
+	"github.com/breeze-rmm/agent/internal/collectors/networkcontext"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,5 +79,65 @@ func TestNetworkContextInvalidIdentityRecovers(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestNetworkContextStaleSequenceRequestsEpochReset(t *testing.T) {
+	m, e := newNetworkContextManager(filepath.Join(t.TempDir(), "state"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := networkContextConfig{AcceptedVersions: []int{1}, ProducerEpoch: "rolled-back", SourceIdentity: "p", ExpectedIntervalSeconds: 300, EpochFreshlyIssued: true}
+	if e = m.configure(c); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = m.state.AllocateSequence(); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.state.StoreReport(networkcontext.Report{Version: 1, ProducerEpoch: "rolled-back", Sequence: "1", ReportKind: "unchanged", BaseSnapshotID: "base", ContentDigest: "digest"}); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.ack(networkcontext.Receipt{ProducerEpoch: "rolled-back", ReportSequence: "1", Reason: "stale_sequence"}); e == nil {
+		t.Fatal("stale rejection reported as accepted")
+	}
+	// The server keeps returning the same epoch until it grants the reset.
+	c.EpochFreshlyIssued = false
+	if e = m.configure(c); e != nil || m.enabled {
+		t.Fatal("kept collecting under a sequence the server already passed", e)
+	}
+	report, reset := m.attach(time.Now(), nil)
+	if report != nil || reset == nil || reset.PreviousEpoch != "rolled-back" {
+		t.Fatal(report, reset)
+	}
+	c.ProducerEpoch, c.EpochFreshlyIssued = "granted", true
+	if e = m.configure(c); e != nil || !m.enabled || m.state.Snapshot().Sequence != 0 {
+		t.Fatal(e)
+	}
+}
+
+func TestNetworkContextHonorsRetryAfter(t *testing.T) {
+	m, e := newNetworkContextManager(filepath.Join(t.TempDir(), "state"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	c := networkContextConfig{AcceptedVersions: []int{1}, ProducerEpoch: "e", SourceIdentity: "p", ExpectedIntervalSeconds: 300, EpochFreshlyIssued: true}
+	if e = m.configure(c); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = m.state.AllocateSequence(); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.state.StoreReport(networkcontext.Report{Version: 1, ProducerEpoch: "e", Sequence: "1", ReportKind: "unchanged", BaseSnapshotID: "base", ContentDigest: "digest"}); e != nil {
+		t.Fatal(e)
+	}
+	now := time.Now()
+	if e = m.ackAt(networkcontext.Receipt{ProducerEpoch: "e", ReportSequence: "1", Reason: "scope_not_admitted", RetryAfterSeconds: 300}, now); e == nil {
+		t.Fatal("deferral reported as accepted")
+	}
+	if report, _ := m.attach(now.Add(299*time.Second), nil); report != nil {
+		t.Fatal("resent before the server's retry window")
+	}
+	if report, _ := m.attach(now.Add(300*time.Second), nil); report == nil || report.Sequence != "1" {
+		t.Fatal("deferred capture was not retried", report)
 	}
 }
