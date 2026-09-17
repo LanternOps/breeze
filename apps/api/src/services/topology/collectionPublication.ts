@@ -10,6 +10,15 @@ import { emptyProjection, type CollectionPublication, type CollectionEvent, type
 
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 const where=(scope:TopologyScope,table:{orgId:typeof topologyCollectionSources.orgId;siteId:typeof topologyCollectionSources.siteId})=>and(eq(table.orgId,scope.orgId),eq(table.siteId,scope.siteId));
+/** Several rows can project one relationship (two addresses in one prefix on
+ * one interface). A missed row withdraws only what no present row still supports. */
+export function releaseMissedRows(rows:Record<string,string[]>,missed:string[]):{remaining:Record<string,string[]>;withdrawn:string[]} {
+  const gone=new Set(missed);
+  const remaining=Object.fromEntries(Object.entries(rows).filter(([rowKey])=>!gone.has(rowKey)));
+  const supported=new Set(Object.values(remaining).flat());
+  const withdrawn=[...new Set(missed.flatMap(rowKey=>rows[rowKey]??[]))].filter(id=>!supported.has(id));
+  return {remaining,withdrawn};
+}
 /** Called under the publisher's site lock. Every publisher, including legacy
  * replay, folds collection events through exactly the same revision barrier. */
 export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,through:bigint,inventory:{nodes:NodePublication[];relationships:RelationshipPublication[];bindings:BindingPublication[]}):Promise<CollectionPublication> {
@@ -53,14 +62,12 @@ export async function prepareCollectionPublication(tx:Tx,scope:TopologyScope,thr
     const baseline=baselines.get(source.id)!;
     const rowRelationships={...(baseline._rowRelationships as Record<string,string[]>|undefined??{})};
     if(event.kind==='miss'){
-      for(const rowKey of event.miss.rowKeys){
-        for(const id of rowRelationships[rowKey]??[]){
-          const key=`${source.id}:${id}`,old=support.get(key);
-          if(old){support.set(key,{...old,lifecycle:'withdrawn',completeMissCount:2,lastMissSequence:event.miss.qualifyingSequence,lastMissAt:new Date(event.miss.qualifyingEffectiveAt!)});changedSupport.add(key);}
-        }
-        delete rowRelationships[rowKey];
+      const released=releaseMissedRows(rowRelationships,event.miss.rowKeys);
+      for(const id of released.withdrawn){
+        const key=`${source.id}:${id}`,old=support.get(key);
+        if(old){support.set(key,{...old,lifecycle:'withdrawn',completeMissCount:2,lastMissSequence:event.miss.qualifyingSequence,lastMissAt:new Date(event.miss.qualifyingEffectiveAt!)});changedSupport.add(key);}
       }
-      baseline._rowRelationships=rowRelationships;
+      baseline._rowRelationships=released.remaining;
       const previous=checkpoint.get(source.id);
       checkpoint.set(source.id,{sourceId:source.id,epoch:source.producerEpoch,sequence:event.miss.qualifyingSequence!,digest:previous?.digest??source.publishedDigest??event.miss.digest,baseline});
       continue;

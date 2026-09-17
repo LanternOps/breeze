@@ -40,6 +40,20 @@ describe('atomic baseline evidence publication',()=>{
   await f.publish();expect((await f.graph()).find(r=>r.kind==='default_route')?.lifecycle).toBe('withdrawn');
   await f.ingest(f.full('4',1000));await f.publish();expect((await f.graph()).find(r=>r.kind==='default_route')?.lifecycle).toBe('active');
  });
+ it('keeps a membership that a second address in the same prefix still supports',async()=>{
+  const second=(r:Parameters<NonNullable<Parameters<Awaited<ReturnType<typeof fixture>>['full']>[2]>>[0])=>{
+   const row=r.sections.find(s=>s.kind==='interfaces')!.rows[0]!;row.addresses=[...row.addresses,{...row.addresses[0]!,address:'192.0.2.11'}];};
+  const f=await fixture();const both=f.full('1',-1200000,second);await f.ingest(both);await f.publish();
+  const members=async()=>(await f.graph()).filter(r=>r.kind==='network_member');
+  expect(await members()).toHaveLength(1);
+  // The first address disappears for two complete reads; 192.0.2.11 remains.
+  const one=f.full('2',-600000,r=>{second(r);const row=r.sections.find(s=>s.kind==='interfaces')!.rows[0]!;row.addresses=row.addresses.slice(1);});
+  await f.ingest(one);await f.publish();
+  await f.ingest({version:1,reportKind:'unchanged',producerEpoch:f.producer.producerEpoch,sequence:'3',snapshotId:crypto.randomUUID(),baseSnapshotId:one.snapshotId,
+   capturedAt:new Date().toISOString(),captureAgeAtSendMs:0,expectedIntervalSeconds:300,contentDigest:one.contentDigest});
+  await f.publish();
+  expect((await members()).map(r=>r.lifecycle)).toEqual(['active']);
+ });
  it('rolls evidence and source checkpoints back when the publisher is fenced',async()=>{
   const f=await fixture();await f.ingest(f.full('1',-1000));
   const result=await f.scoped(()=>publishTopologyBuild({orgId:f.orgId,siteId:f.siteId},{buildFence:'9999',inputRevision:'1',nodes:[],relationships:[],bindings:[]}));
