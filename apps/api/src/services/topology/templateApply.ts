@@ -349,6 +349,20 @@ export async function applyTopologyTemplatePreview(
               result: 'success',
               details: { siteId: row.siteId, previewId },
             });
+            // A site refused at admission is never seen by the worker, so this
+            // is the only place its conflict can reach the audit trail.
+            if (code)
+              await db.insert(auditLogs).values({
+                actorType: 'user',
+                orgId: row.orgId,
+                actorId: actor.user.id,
+                actorEmail: actor.user.email,
+                action: 'topology.template.application_conflict',
+                resourceType: 'topology_template_application',
+                resourceId: id,
+                result: 'failure',
+                details: { siteId: row.siteId, previewId, code },
+              });
           }
         }),
       'topology template application admission',

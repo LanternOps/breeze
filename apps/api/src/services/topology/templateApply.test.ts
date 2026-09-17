@@ -7,7 +7,11 @@ import {
   assertEffectCapabilities,
   summarizeTemplateApplication,
 } from './templateApply';
-import { applicationId } from './templateApplicationStore';
+import {
+  applicationEffectDigest,
+  applicationId,
+} from './templateApplicationStore';
+import { PREVIEW_TTL_MS } from './templateApplicationTypes';
 import { freezeApplicationActor } from './templateApplicationAuthority';
 import type { AuthContext } from '../../middleware/auth';
 const id = '00000000-0000-4000-8000-000000000001';
@@ -45,6 +49,55 @@ describe('application admission invariants', () => {
         },
       ]).state,
     ).toBe('failed');
+  });
+  it('binds a preview to ten minutes', () => {
+    expect(PREVIEW_TTL_MS).toBe(10 * 60_000);
+  });
+  it('digests requester, permission version, expiry and every approved effect field', () => {
+    const base = {
+      actor: { user: { id }, authEpoch: 1, mfaEpoch: 1 } as never,
+      permissionVersion: 'v1',
+      expiresAt: '2026-09-17T00:10:00.000Z',
+      effect: {
+        siteId: id,
+        expectedBindingRevision: '0',
+        expectedSettingsRevision: '0',
+        partnerVersionId: null,
+        orgVersionId: null,
+        overrides: { targets: {}, policies: {} },
+        resolvedDigest: 'a'.repeat(64),
+        templateRevisions: {},
+        enableRecurring: false,
+        operationId: id,
+      },
+    } as Parameters<typeof applicationEffectDigest>[0];
+    const baseline = applicationEffectDigest(base);
+    expect(applicationEffectDigest(structuredClone(base))).toBe(baseline);
+    const mutations: Array<Partial<typeof base>> = [
+      { permissionVersion: 'v2' },
+      { expiresAt: '2026-09-17T00:11:00.000Z' },
+      { actor: { user: { id }, authEpoch: 2, mfaEpoch: 1 } as never },
+      { effect: { ...base.effect!, expectedBindingRevision: '1' } },
+      { effect: { ...base.effect!, expectedSettingsRevision: '1' } },
+      { effect: { ...base.effect!, resolvedDigest: 'b'.repeat(64) } },
+      { effect: { ...base.effect!, templateRevisions: { [id]: '1:1:active' } } },
+      { effect: { ...base.effect!, enableRecurring: true } },
+      {
+        effect: {
+          ...base.effect!,
+          overrides: {
+            targets: {},
+            policies: {},
+            passive: { enabled: true },
+          } as never,
+        },
+      },
+      { effect: null },
+    ];
+    for (const mutation of mutations)
+      expect(applicationEffectDigest({ ...base, ...mutation })).not.toBe(
+        baseline,
+      );
   });
   it('never persists bearer tokens with the approved actor', () => {
     const auth = {

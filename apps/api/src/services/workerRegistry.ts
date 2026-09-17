@@ -97,6 +97,14 @@ export const WORKER_REGISTRY: readonly WorkerRegistration[] = [
     },
   },
   {
+    name: 'topologyTemplateApplyWorker',
+    placement: 'global',
+    load: async () => {
+      const m = await import('../jobs/topologyTemplateApplyWorker');
+      return { init: m.initializeTopologyTemplateApplyWorker, shutdown: m.shutdownTopologyTemplateApplyWorker };
+    },
+  },
+  {
     name: 'alertWorkers',
     placement: 'global',
     load: async () => {

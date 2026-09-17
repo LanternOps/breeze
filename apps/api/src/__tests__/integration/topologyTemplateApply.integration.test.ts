@@ -88,7 +88,57 @@ async function fixture(count = 1) {
     })),
   };
   const run = <T>(fn: () => Promise<T>) => withAuthDbAccessContext(auth, fn);
-  return { env, auth, permissions, siteIds, request, run };
+  /** A published library version owned by this fixture's org or partner. */
+  const publishVersion = async (owner: 'organization' | 'partner') => {
+    const templateId = randomUUID(),
+      versionId = randomUUID();
+    const ownerOrg = owner === 'organization' ? env.organization.id : null,
+      ownerPartner = owner === 'partner' ? env.partner.id : null;
+    await getTestDb().execute(
+      sql`INSERT INTO topology_config_templates(id,org_id,partner_id,key,name)
+        VALUES(${templateId}::uuid,${ownerOrg}::uuid,${ownerPartner}::uuid,${`k-${versionId.slice(0, 8)}`},${`Template ${versionId.slice(0, 8)}`})`,
+    );
+    await getTestDb().execute(
+      sql`INSERT INTO topology_config_template_versions(id,template_id,org_id,partner_id,version,state,payload,content_digest,published_at)
+        VALUES(${versionId}::uuid,${templateId}::uuid,${ownerOrg}::uuid,${ownerPartner}::uuid,1,'published',
+        ${JSON.stringify({ targets: {}, policies: {}, passive: { enabled: true } })}::jsonb,${'0'.repeat(64)},now())`,
+    );
+    return { templateId, versionId };
+  };
+  const auditActions = async (operationId: string) =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db.execute(
+        sql`SELECT action,result,details FROM audit_logs WHERE resource_type='topology_template_application' AND resource_id=${operationId}::uuid`,
+      );
+      return rows.map((row) => String(row.action)).sort();
+    });
+  const bindingCount = async () =>
+    withSystemDbAccessContext(async () => {
+      const [row] = await db.execute(
+        sql`SELECT count(*)::int n FROM topology_site_template_bindings WHERE org_id=${env.organization.id}::uuid`,
+      );
+      return row!.n as number;
+    });
+  const outcomes = async (operationId: string) =>
+    withSystemDbAccessContext(async () => {
+      const rows = await db
+        .select()
+        .from(topologyChangeOutbox)
+        .where(eq(topologyChangeOutbox.aggregateId, operationId));
+      return rows.map((row) => (row.payload as any).outcome);
+    });
+  return {
+    env,
+    auth,
+    permissions,
+    siteIds,
+    request,
+    run,
+    publishVersion,
+    auditActions,
+    bindingCount,
+    outcomes,
+  };
 }
 describe('durable topology template applications', () => {
   it('commits198of200 sites once, conflicts changed/unauthorized sites, and redacts denied status', async () => {
@@ -267,6 +317,138 @@ describe('durable topology template applications', () => {
       );
       expect(count!.n).toBe(0);
     });
+  });
+  it('conflicts a pinned version whose template revision moved after admission', async () => {
+    const f = await fixture();
+    const { templateId, versionId } = await f.publishVersion('organization');
+    const preview = await f.run(() =>
+      previewTopologyTemplateApplication(f.auth, f.permissions, {
+        ...f.request,
+        orgVersionId: versionId,
+      }),
+    );
+    expect(preview.sites[0]!.errors).toEqual([]);
+    const op = await f.run(() =>
+      applyTopologyTemplatePreview(
+        f.auth,
+        f.permissions,
+        preview.token,
+        'revision-moved',
+      ),
+    );
+    // The library moved between admission and execution: the approved effect
+    // no longer describes the content it was digested against.
+    await getTestDb().execute(
+      sql`UPDATE topology_config_templates SET revision=revision+1 WHERE id=${templateId}::uuid`,
+    );
+    expect(await drainTopologyTemplateApplications()).toBe(1);
+    expect(await f.outcomes(op.id)).toEqual([
+      {
+        siteId: f.env.site.id,
+        state: 'conflict',
+        code: 'template_revision_changed',
+        settingsRevision: null,
+      },
+    ]);
+    expect(await f.bindingCount()).toBe(0);
+    expect(await f.auditActions(op.id)).toEqual([
+      'topology.template.application_accepted',
+      'topology.template.application_conflict',
+    ]);
+  });
+  it('refuses another partner library version instead of resolving it', async () => {
+    const f = await fixture();
+    const other = await fixture();
+    const foreign = await other.publishVersion('partner');
+    const preview = await f.run(() =>
+      previewTopologyTemplateApplication(f.auth, f.permissions, {
+        ...f.request,
+        partnerVersionId: foreign.versionId,
+      }),
+    );
+    expect(preview.sites[0]!.errors).toEqual([
+      { code: 'template_version_unavailable', field: null },
+    ]);
+    expect(preview.sites[0]!.effects).toEqual([]);
+    const op = await f.run(() =>
+      applyTopologyTemplatePreview(
+        f.auth,
+        f.permissions,
+        preview.token,
+        'cross-partner',
+      ),
+    );
+    expect(await drainTopologyTemplateApplications()).toBe(0);
+    expect(await f.outcomes(op.id)).toEqual([
+      {
+        siteId: f.env.site.id,
+        state: 'conflict',
+        code: 'template_version_unavailable',
+        settingsRevision: null,
+      },
+    ]);
+    expect(await f.bindingCount()).toBe(0);
+    // A site the worker will never touch still has to leave a conflict trail.
+    expect(await f.auditActions(op.id)).toEqual([
+      'topology.template.application_accepted',
+      'topology.template.application_conflict',
+    ]);
+  });
+  it('audits each commit and refuses a tampered approved effect', async () => {
+    const f = await fixture(2);
+    const { versionId } = await f.publishVersion('organization');
+    const preview = await f.run(() =>
+      previewTopologyTemplateApplication(f.auth, f.permissions, {
+        ...f.request,
+        orgVersionId: versionId,
+      }),
+    );
+    expect(Date.parse(preview.expiresAt) - Date.now()).toBeGreaterThan(
+      9 * 60_000,
+    );
+    expect(Date.parse(preview.expiresAt) - Date.now()).toBeLessThanOrEqual(
+      10 * 60_000,
+    );
+    const op = await f.run(() =>
+      applyTopologyTemplatePreview(
+        f.auth,
+        f.permissions,
+        preview.token,
+        'tamper',
+      ),
+    );
+    // Rewriting the stored effect must not change what is applied: the digest
+    // is what binds the approved intent, not the row it is stored in.
+    const tampered = await withSystemDbAccessContext(() =>
+      db.execute(
+        sql`UPDATE topology_change_outbox
+          SET payload=jsonb_set(payload,'{effect,overrides,passive,enabled}','true'::jsonb)
+          WHERE aggregate_id=${op.id}::uuid AND event_kind=${INTENT_EVENT} AND site_id=${f.siteIds[1]!}::uuid
+            AND payload->'effect'->'overrides'->'passive'->>'enabled'='false'
+          RETURNING id`,
+      ),
+    );
+    // Prove the control actually mutated a row before trusting the red below.
+    expect(tampered).toHaveLength(1);
+    expect(await drainTopologyTemplateApplications()).toBe(2);
+    const byState = Object.fromEntries(
+      (await f.outcomes(op.id)).map((outcome) => [outcome.siteId, outcome]),
+    );
+    expect(byState[f.siteIds[0]!]).toMatchObject({
+      state: 'applied',
+      code: null,
+    });
+    expect(byState[f.siteIds[1]!]).toMatchObject({
+      state: 'conflict',
+      code: 'preview_invalidated',
+    });
+    expect(await f.bindingCount()).toBe(1);
+    expect(await f.auditActions(op.id)).toEqual([
+      'topology.template.application_accepted',
+      'topology.template.application_accepted',
+      'topology.template.application_applied',
+      'topology.template.application_conflict',
+    ]);
   });
   it('rolls back configuration when journal publication fails and retries once after recovery', async () => {
     const f = await fixture();
