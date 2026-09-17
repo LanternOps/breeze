@@ -123,6 +123,7 @@ target_label       text NOT NULL  -- frozen display label
 target_ordinal     int  NOT NULL
 state              text NOT NULL
 detached_at / detached_reason     -- existing reason list; 'scope_invalidated' covers a merged/deleted contact
+-- device_id / ticket_id are PLAIN FKs (Operator spec §11.3); only contact_id is composite. On a device or ticket org-move and on org merge the target is DETACHED, never re-stamped: contacts are repointed by org merge, so the task fence must detach in the merge's resolve phase, before the move phase. Any later table referencing a contact does the same.
 CHECK exactly one of (device_id, ticket_id, contact_id) is set, or the row is detached
 ```
 
@@ -150,7 +151,7 @@ step_kind          text NOT NULL CHECK in ('reason','effect','probe','wait','hum
 checklist_item_id  uuid NULL     -- human_work only; composite (checklist_item_id, org_id) → ticket_checklist_items
 ```
 
-And on `ticket_checklist_items`: a fourth `source` value `operator_task`, and a nullable `operator_step_id` (no FK across the partner-wide template boundary is needed here — both rows are org-scoped, so this one is a real composite FK, `ON DELETE SET NULL`). `source` is a pgEnum today; adding a value is `ALTER TYPE … ADD VALUE IF NOT EXISTS` in its own migration, sorted ahead of any file that uses the value (a new enum value cannot be used in the transaction that adds it).
+And on `ticket_checklist_items`: a fourth `source` value `operator_task`, and a nullable `operator_step_id`. The link has ONE owning FK: `ai_operator_task_steps.checklist_item_id` is a plain single-column FK, `ON DELETE SET NULL`; `ticket_checklist_items.operator_step_id` is provenance with no FK, the same rationale as `source_template_item_id`. A composite `(checklist_item_id, org_id)` FK is not possible: `ticket_checklist_items.org_id` is re-stamped by both ticket org-movers while a step's `org_id` is immutable, so a composite FK would abort every ticket org-move with 23503. The movers and the org-merge fence detach the link by hand. `source` is a pgEnum; the new value is added by `ALTER TYPE … ADD VALUE IF NOT EXISTS` in its own migration, sorted ahead of any file that uses it (a new enum value cannot be used in the transaction that adds it; no `-- @no-transaction` needed). Steps also carry `remind_after_at` and `reminded_at`. A task has no ticket column: its ticket is a `ticket` target row.
 
 ### 5.4 `ai_operator_plan_approvals` — new
 
@@ -183,7 +184,8 @@ interface RecipeDefinition<Input> {
   steps: Record<StepKey, StepDefinition>;
   permittedNextSteps: Record<StepKey, readonly StepKey[]>; // what the MODEL may propose; sparse
   bounds: RecipeBounds;                                  // stricter than policy, never looser
-  buildPlan(input: Input, facts: DiscoveryFacts): PlannedEffect[];   // pure
+  crossCheckStepInputs?(stepKey, proposedInputs, frozenInput): CrossCheckResult; // pure; pinned-argument check (service_recovery's frozen serviceName)
+  buildPlan(input: Input, facts: DiscoveryFacts): PlannedEffect[];   // pure; DiscoveryFacts is an opaque readonly record until R1 produces it
   operationKey(args): string;                            // delegates to buildTaskOperationKey
 }
 ```
@@ -237,7 +239,7 @@ Ordering is a recipe-owned, tested safety contract, lifted from the comment in `
 
 Every mutating Google and M365 tool is `TIER3_FOUR_EYES`. Nine effects across two providers is up to eighteen approvals per leaver; nobody will use that. Flows forbids pre-approving four-eyes tools and the Operator spec has no plan-level approval, so this is new and is designed explicitly.
 
-- `buildPlan` produces an ordered list of `PlannedEffect { ordinal, toolName, provider, accountExternalId, canonicalArguments }`.
+- `buildPlan` produces an ordered list of `PlannedEffect { ordinal, toolName, provider, targetId, accountExternalId, canonicalArguments }`, `provider ∈ breeze | m365 | google`. `accountExternalId` is null for a `breeze` effect (a device command names its target row, not a provider account).
 - `effect_set_digest` = SHA-256 over the canonical serialization of that list (same canonicalizer as `action_intents.arguments`).
 - One action intent is minted with tool name `operator_plan`, Tier 3, four-eyes, whose immutable arguments are the digest, the task id, the plan revision, and a bounded human-readable rendering of every effect. The approval card shows the full list, per provider, with the target's frozen labels.
 - On approval, each effect's operation is dispatched under the plan approval: the release path accepts an effect **only if** `(task_id, plan_revision, ordinal, argument_digest)` is a member of the approved set. Membership is checked at release, against rows, after the usual revalidation.
@@ -246,7 +248,9 @@ Every mutating Google and M365 tool is `TIER3_FOUR_EYES`. Nine effects across tw
 - Secret-bearing effects (onboarding's temporary password) are excluded from plan approval and keep their individual intent.
 - Per-effect audit is not lost: each operation still writes its own `ai_operator_operations` row, event, and audit entry, attributed to the plan approval's approver.
 
-`createActionIntent` needs a ceiling check that a plan intent cannot name a tool the admitting agent's snapshot does not allow — the same ceiling PR #6110 adds for single tier-3 intents; confirm its final shape before E4.
+`createActionIntent` gains an allowlist ceiling: neither the plan intent nor a child effect may name a tool the admitting agent's frozen snapshot does not allow, checked at mint and again at release. This is new work — PR #6110's ceiling is a *site* ceiling and never reads `toolAllowlist`.
+
+Child effects are minted as action intents decided `plan_approval`, so the durable release worker, audit trail, intent-id idempotency, and secret handling are reused. That requires one deliberate loosening: a task-linked intent today requires an agent run; E4 permits `task` context for a non-agent principal only when accompanied by a plan approval whose rows and the task's live revision prove membership. Supersession is judged by the task's live `revision`, not the approval row's state. `operator_plan` also gets an `EFFECT_DIGEST_RESOLVERS` entry that re-hashes the effect rows at release. **This branch, and that `revalidateRelease` never grows a blanket `plan_approval` system-decided arm, gets an independent adversarial review before E4 merges (D6).**
 
 ### 6.5 Human-work steps
 
@@ -263,13 +267,14 @@ There is no executor-side dedup store and neither Graph nor the Google Directory
 - Pre-write probe observes the desired end state ("already not a member"). If true, the operation settles `succeeded` with `result.noop = true` and no write is dispatched. Replay is a no-op by observation.
 - Post-write probe is the verification adapter. Success of the write call never implies success of the effect (Operator spec §13: "Failed/inconclusive verification cannot produce 'Resolved'").
 - Per-action classification, stated in the action's definition: `idempotent` (group remove, license remove, disable, revoke sessions), `idempotent_by_probe` (forwarding, auto-reply), `non_idempotent` (create user, reset password — never auto-retried; unknown effect → handoff).
-- Task outcome `verified_resolved` requires the final `verify_outcome` probe plus every effect's post-probe. Anything else is `partial` with the unverified effects listed.
+- Some effects have no observable end state (`google_signout`: the Directory API exposes no session-validity field; `m365.user.reset_password`). A recipe declares such an effect `unobservable` and names the outcome criterion that subsumes it (a verified suspend makes live sessions moot). Its probe result stays `unknown` and the completion record says "dispatched, not independently verifiable".
+- Task outcome `verified_resolved` requires the final `verify_outcome` probe plus a `satisfied` post-probe for every observable effect. An `unknown` on an observable effect, or an unsubsumed unobservable one, is `partial` with the unverified effects listed.
 
 The completion record is bounded text written at `document`: target labels, each effect with its result and approver, each human-work item with its completer, unresolved items, and total cost. It is posted as an internal ticket comment and is the evidence artifact for service deliverables.
 
 ### 6.7 Bounds
 
-Identity recipes: deadline 14 days (the Operator default is 72 h; `service_recovery` is 24 h), reasoning runs ≤ 6, one active target, mutation attempts ≤ 2 per effect, cost ceiling in the agent policy `limits` (snapshot v10, P3-2). Waiting tasks consume no run concurrency. The migration recipe will need a separate long-horizon budget class and a check that `ai_operator_tasks_wake_idx` still plans well with weeks-old waiting rows; that is recorded here and deferred.
+Identity recipes: deadline 14 days (the Operator default is 72 h; `service_recovery` is 24 h), reasoning runs ≤ 6, one active target, mutation attempts ≤ 2 per effect, cost ceiling in the agent policy `limits` (a policy snapshot version bump in E2 — the Operator spec's "9→10" is stale; the version is 13 at this baseline, so E2 takes it to 14). Waiting tasks consume no run concurrency. The migration recipe will need a separate long-horizon budget class and a check that `ai_operator_tasks_wake_idx` still plans well with weeks-old waiting rows; that is recorded here and deferred.
 
 ### 6.8 Authority
 
@@ -284,8 +289,8 @@ The two M365 specs that froze the catalog at two actions named this work as defe
 | Action id | Graph call | App role | Class |
 |---|---|---|---|
 | `m365.user.revoke_sessions` | `POST /users/{id}/revokeSignInSessions` | `User.ReadWrite.All` (held) | idempotent |
-| `m365.user.license.remove` | `POST /users/{id}/assignLicense` (removeLicenses) | `User.ReadWrite.All` + `Organization.Read.All` | idempotent |
-| `m365.user.license.assign` | same (addLicenses) | same | idempotent_by_probe; fails closed on no available seat |
+| `m365.user.license.remove` | `POST /users/{id}/assignLicense` (removeLicenses) | `User.ReadWrite.All` (held) | idempotent |
+| `m365.user.license.assign` | same (addLicenses) | `User.ReadWrite.All` + `Organization.Read.All` (seat pre-read) | idempotent_by_probe; fails closed on no available seat |
 | `m365.group.membership.remove` | `DELETE /groups/{gid}/members/{id}/$ref` | `GroupMember.ReadWrite.All` | idempotent |
 | `m365.group.membership.add` | `POST /groups/{gid}/members/$ref` | `GroupMember.ReadWrite.All` | idempotent |
 | `m365.intune.device.retire` | `POST /deviceManagement/managedDevices/{id}/retire` | `DeviceManagementManagedDevices.PrivilegedOperations.All` | idempotent; retire only — full wipe is excluded |
@@ -293,6 +298,8 @@ The two M365 specs that froze the catalog at two actions named this work as defe
 | `m365.user.mailbox.auto_reply` | `PATCH /users/{id}/mailboxSettings` | `MailboxSettings.ReadWrite` | idempotent_by_probe |
 
 `GroupMember.ReadWrite.All` is chosen over the roadmap comment's `Group.ReadWrite.All`: the recipe never creates or deletes groups, and least privilege is the consent story. Role-assignable and dynamic-membership groups are detected at discovery and rendered as human-work. Verify each app-role GUID against Microsoft's published list when implementing; do not copy from this table.
+
+Probes run on the read executor, with one exception: the read profile holds no `MailboxSettings.Read`, and adding it would force a second re-consent on a second app registration, so the auto-reply probe is a read-only arm on the actions executor. Session revocation has no directly observable end state; its criterion is `signInSessionsValidFromDateTime ≥` the effect's request time, and anything else is `unsatisfied`, never assumed. The new tools are session-only like `m365_disable_user` (the agent tool catalog's contract test makes `m365ToolTiers` membership and agent-reachable registry membership mutually exclusive); recipes reach them through action intents and the release worker's headless map, not through the model. One offboarding is roughly nine writes in a minute, so the per-connection write budget (10/min, 100/day) rises to 30/min, 300/day — a safety-limit change called out for review. `consent_upgrade_required` is returned only when grants have been authoritatively observed, so a never-reconciled v1 connection keeps its two v1 actions.
 
 Each action touches, in one PR: `packages/shared/src/m365/writeActions.ts` (id list, schema arm, **result arm**), executor `writeActions.ts` case, a probe in the read executor, `m365ToolTiers`, `TOOL_TIERS`, `aiGuardrails` four-eyes list and RBAC map, `M365_HEADLESS_ACTIONS` (parity test), `secretBearingTools.ts` where applicable, the approval-card verb map, `routes/approvals.ts M365_MUTATION_TOOLS`, `intentReleaseWorker`, mobile approvals, and the tests that enumerate the id list. The tools are useful from chat on their own and ship independently of any recipe.
 
@@ -336,7 +343,7 @@ Both classes keep: own flag, zero false verified-success, metrics before enablem
 | Wave | Content | Depends on |
 |---|---|---|
 | **E1** | Recipe registry + coordinator dispatch refactor; port `service_recovery`. No schema. | — |
-| **E2** | `_task_targets` (incl. `contact`), `_task_target_accounts`, `_task_steps`, `_task_events`; migrate inline target; policy snapshot v10. This *is* Operator P3-2 with the deltas in §5. | E1 |
+| **E2** | `_task_targets` (incl. `contact`), `_task_target_accounts`, `_task_steps`, `_task_events`; migrate inline target; policy snapshot 13→14. This *is* Operator P3-2 with the deltas in §5. | E1 |
 | **E3** | Human-work step + checklist linkage; `maintenance_window` writer. | E2 |
 | **E4** | Plan approval. | E2 |
 | **M1** | M365 Graph write catalog + probes + profile v2 + consent UX. | — (parallel with E1–E4) |
@@ -366,6 +373,7 @@ E1–E4 and M1 are high blast radius (tenancy, auth, approvals): full rigor, int
 - **D3** — No new agent kind; identity recipes run under `helpdesk`. Recommend yes.
 - **D4** — New feature, E2 = Operator P3-2, pointer left on #5205. Recommend yes.
 - **D5** — Intune: retire only, never full wipe, in the first catalog. Recommend yes.
+- **D6** — E4 loosens `createActionIntent`'s task-context rule for plan-approved effects. Requires an independent adversarial review (Opus or Codex `xhigh`) of that branch before merge.
 
 ## 13. Review history
 
