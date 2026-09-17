@@ -2,7 +2,7 @@ import {and,eq,isNull,inArray} from 'drizzle-orm';
 import {networkContextFullSchema,topologyContextSectionSchema,createTopologyDiagnosticSchema,type CreateTopologyDiagnosticRequest,type TopologyOriginEligibility} from '@breeze/shared';
 import {db} from '../../db';
 import {devices,topologyNodes,topologyRelationships,topologyNodeBindings,topologyInterfaces,topologyCollectionSources,topologyRelationshipSupport,topologyProbeTargets,topologySiteState} from '../../db/schema';
-import {assertDeviceExecuteAllowed} from '../partnerTrust.commands';
+import {deviceExecuteAllowedForOrg} from '../partnerTrust.commands';
 import {hasPermission,type UserPermissions} from '../permissions';
 import {requireTopologySiteAccess,type TopologyRequestContext} from './access';
 import {scopedWrite} from './writes';
@@ -75,6 +75,11 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
  const sources=await db.select().from(topologyCollectionSources).where(and(scopedWrite(ctx.scope,topologyCollectionSources),eq(topologyCollectionSources.producerKind,'agent'),inArray(topologyCollectionSources.producerId,deviceIds)));
  const interfaces=await db.select().from(topologyInterfaces).where(scopedWrite(ctx.scope,topologyInterfaces));
  const support=await db.select().from(topologyRelationshipSupport).where(and(scopedWrite(ctx.scope,topologyRelationshipSupport),eq(topologyRelationshipSupport.lifecycle,'active')));
+ // Every candidate below came from `devices WHERE org_id = scope.orgId`, so
+ // partner trust for this command type is loop-invariant. Evaluate it ONCE:
+ // per-device evaluation opened a second pooled connection and wrote one
+ // denial audit row per device on a read-only listing of up to 1000 devices.
+ const trustDenied=!await deviceExecuteAllowedForOrg(ctx.scope.orgId,'network_diagnostic',ctx.auth.user.id);
  const now=Date.now(),candidates:DiagnosticCandidate[]=[];
  for(const device of inventory){
   const binding=bindings.find(row=>row.deviceId===device.id);if(!binding||originalNodes.size&&!originalNodes.has(binding.nodeId))continue;
@@ -83,7 +88,7 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
   for(const source of sources.filter(row=>row.producerId===device.id&&row.protocol==='routes'&&(!request.contextKey||row.contextKey===request.contextKey)&&(!request.family||row.addressFamily===request.family))){
    const routeSection=topologyContextSectionSchema.safeParse(source.publishedBaseline.section);if(!routeSection.success||routeSection.data.kind!=='routes')continue;
    const reasons=collectorEligibilityReasons({now,settingsRevision:settings.settingsRevision,capabilities:caps,permissions:ctx.permissions,device,source,root});
-   try{await assertDeviceExecuteAllowed(device.id,'network_diagnostic',ctx.auth.user.id);}catch{reasons.push('trust_denied');}
+   if(trustDenied)reasons.push('trust_denied');
    const gateways:DiagnosticCandidate['gatewayEvidence']=[];const usedInterfaces=new Set<string>();
    const mapping=source.publishedBaseline._rowRelationships as Record<string,string[]>|undefined;
    for(const route of routeSection.data.rows){
@@ -112,6 +117,13 @@ async function loadDiagnosticPlanningSnapshot(ctx:TopologyRequestContext,input:C
  candidates.sort((a,b)=>a.eligibility.rank-b.eligibility.rank||a.eligibility.origin.deviceId.localeCompare(b.eligibility.origin.deviceId)||a.eligibility.origin.contextKey.localeCompare(b.eligibility.origin.contextKey));
  return {graphRevision:state.graphRevision.toString(),settings,targets:targets.map(row=>({id:row.id,revision:row.revision.toString(),definition:row.definition})),candidates};
 }
+/** The collectors response promises at most 100 items; never return more. */
+export const TOPOLOGY_COLLECTOR_PAGE_LIMIT=100;
+
 export async function selectTopologyOrigins(ctx:TopologyRequestContext,request:CreateTopologyDiagnosticRequest,repository:DiagnosticPlanningRepository=topologyDiagnosticRepository):Promise<TopologyOriginEligibility[]>{
- return (await repository.load(ctx,createTopologyDiagnosticSchema.parse(request))).candidates.map(candidate=>candidate.eligibility);
+ const eligibilities=(await repository.load(ctx,createTopologyDiagnosticSchema.parse(request))).candidates.map(candidate=>candidate.eligibility);
+ // A site with more collectors than the page allows must not silently drop the
+ // usable ones: eligible first, each group keeping the loader's rank order
+ // (Array#sort is stable), then cut to what the schema promises.
+ return eligibilities.sort((a,b)=>Number(b.eligible)-Number(a.eligible)).slice(0,TOPOLOGY_COLLECTOR_PAGE_LIMIT);
 }

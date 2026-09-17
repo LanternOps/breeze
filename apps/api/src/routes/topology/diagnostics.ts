@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import {
   createTopologyDiagnosticSchema,
   topologyCollectorsQuerySchema,
+  topologyCollectorsResponseSchema,
   type CreateTopologyDiagnosticRequest,
 } from '@breeze/shared';
 
@@ -48,10 +49,18 @@ function idempotencyKey(header: string | undefined): string {
 topologyDiagnosticRoutes.get(
   `${base}/collectors`,
   requireTopologySiteCapability('read'),
-  topologyOperation(async (c) => ({
-    items: await selectTopologyOrigins(c.get('topologyContext'), collectorRequest(c.req.query())),
-    nextCursor: null,
-  })),
+  // The response is validated against the contract it advertises, so a page
+  // that outgrew the promised ceiling is a server error, never a silent
+  // over-sized body.
+  topologyOperation(async (c) =>
+    topologyCollectorsResponseSchema.parse({
+      items: await selectTopologyOrigins(
+        c.get('topologyContext'),
+        collectorRequest(c.req.query()),
+      ),
+      nextCursor: null,
+    }),
+  ),
 );
 
 topologyDiagnosticRoutes.post(
