@@ -303,3 +303,33 @@ workbench, agreement templates, Stripe Connect columns, custom fields and variab
 fields are device-only; ticket custom fields are an unrelated jsonb). Permission gates were
 checked in components, not traced through routes. Counts are approximate. The mobile app and
 the customer portal were out of scope.
+
+## 10. Planning corrections (2026-09-17)
+
+Found while the wave plans were written. *verified* = re-read by the orchestrator; *reported*
+= a planning agent cited it, not re-read. Findings 21 and 24 carry their corrections inline.
+
+- **Finding 32 / M14 is smaller than written.** `org_ticket_settings.slaOverrides` already
+  has an enforced shared zod schema (`packages/shared/src/validators/ticketConfig.ts:61`).
+  *verified* `ticket_forms.fields` likewise (`ticketForms.ts`); the real gap is the
+  `ticketing.inbound` and `timeTracking.sessionSuggestions` sub-objects, typed only by a
+  route-local schema in `routes/orgs.ts`. M14 becomes "promote to shared + tolerant reads".
+  *reported*
+- **Finding 29 / M13 is smaller than written.** `OrgTicketSettingsEditor` already has one
+  page-level Save; the mixed save patterns are inside `InboundEmailCard.tsx`. *reported*
+- **Finding 22 / M11.** One render-time computation site (`loadInvoiceForRender`) feeds PDF,
+  email, portal and HTML; the defect is only that issue time never considered the
+  `portal_branding.footerText` fallback. Unifying changes no issued invoice; a **future**
+  invoice with no partner footer snapshots the portal footer at issue instead of tracking it
+  live — consistent with rule 6, called out in the plan. *reported*
+- **M4 is larger than written.** `PartnerBillingSettings.tsx` has no tab mechanism today; the
+  Defaults / Documents / Rates (reserved) / Connections shell is new. *reported*
+- **M5 destination decided.** No billables review screen exists; the export becomes an action
+  on the Invoices list page (`InvoicesPage.tsx`), not a card in another settings tab.
+- **M8.** `canManageInbound` is a local constant in one web file, not a wire contract;
+  `CustomerDomainsCard` already renders inside `InboundEmailCard`. *reported*
+- **Sequencing against #4628 / #4547.** Critical path is `W01 placement → #4628 W02 →
+  #4547 block hours (p1)`. W01 is mount-only on `TicketCategoriesPage.tsx`,
+  `OrgTicketSettingsEditor.tsx` and `OrgBillingSettings.tsx`. W02 splits: the API half
+  (M11, M12, M14) ships any time; the web half (M10, M13) lands after #4628 W02, which
+  rewrites two of its target files. Wave 2 (M16–M19) follows #4547.
