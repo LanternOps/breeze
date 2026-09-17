@@ -75,19 +75,19 @@ export function unknownHealth(scope: 'node' | 'relationship') {
     freshness: 'unknown' as const, reasons: [{ code: 'monitoring_unavailable', message: 'Topology monitoring is not available in this milestone.' }] };
 }
 function timestamp(value: string | Date | null): string | null { return value ? new Date(value).toISOString() : null; }
-export function presentNode(row: NodeRow, canEdit: boolean): GraphNode {
+export function presentNode(row: NodeRow, canEdit: boolean, health?: GraphNode['health']): GraphNode {
   if (row.bindings.length > 100) throw new GraphReadError('topology_binding_limit', 503, 'Node binding detail exceeds the supported projection limit');
   return { id: row.id, kind: row.kind, role: row.role?.trim() || null, label: row.label.trim().slice(0, 255) || `${row.kind} ${row.id}`, bindings: row.bindings,
     lifecycle: row.lifecycle, freshness: 'unknown', evidence: { classes: row.kind === 'manual' ? ['manual'] : [],
       methods: row.legacy ? ['legacy'] : [], count: row.legacy || row.kind === 'manual' ? '1' : '0', lastObservedAt: timestamp(row.lastObservedAt) },
-    health: unknownHealth('node'), availableActions: canEdit && row.kind === 'manual' ? ['edit', 'delete'] : [] };
+    health: health ?? unknownHealth('node'), availableActions: canEdit && row.kind === 'manual' ? ['edit', 'delete'] : [] };
 }
-export function presentRelationship(row: RelationshipRow, canEdit: boolean): GraphRelationship {
+export function presentRelationship(row: RelationshipRow, canEdit: boolean, health?: GraphRelationship['health']): GraphRelationship {
   return { id: row.id, kind: row.kind, directionality: row.kind === 'physical_link' ? 'undirected' : 'directed',
     sourceNodeId: row.sourceNodeId, targetNodeId: row.targetNodeId, sourceInterfaceId: row.sourceInterfaceId ?? null, targetInterfaceId: row.targetInterfaceId ?? null,
     meaning: row.kind, directness: row.directness, confidence: row.confidence, lifecycle: row.lifecycle,
     evidence: { classes: [row.evidenceClass], methods: row.legacy ? ['legacy'] : row.evidenceClass === 'manual' ? ['manual'] : [],
-      count: row.supportCount, lastObservedAt: timestamp(row.lastSupportedAt) }, freshness: row.observedFreshUntil ? (Date.parse(row.observedFreshUntil)>Date.now()?'fresh':'stale') : 'unknown', health: unknownHealth('relationship'),
+      count: row.supportCount, lastObservedAt: timestamp(row.lastSupportedAt) }, freshness: row.observedFreshUntil ? (Date.parse(row.observedFreshUntil)>Date.now()?'fresh':'stale') : 'unknown', health: health ?? unknownHealth('relationship'),
     excluded: false, availableActions: canEdit && row.evidenceClass === 'manual' ? ['edit', 'delete'] : [] };
 }
 export function safeCount(value: string | number | undefined): number {

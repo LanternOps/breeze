@@ -50,6 +50,75 @@ it('starts with a nonempty bounded graph and reports omitted entities and bounda
   expect(nodeQuery.sql).toMatch(/limit/i); expect(nodeQuery.params).toContain(1);
 });
 
+describe('attributed health overlay', () => {
+  const RESULT = '70000000-0000-4000-8000-000000000001';
+  const MONITOR = '60000000-0000-4000-8000-000000000001';
+  const DEVICE = '80000000-0000-4000-8000-000000000001';
+  const healthQuery = { ...query, includeHealth: true } as const;
+  const binding = {
+    bindingId: '90000000-0000-4000-8000-000000000001', nodeId: NODE, relationshipId: null,
+    contextKey: 'default', family: 'ipv4', metricRole: 'connectivity',
+    originDeviceId: DEVICE, originNodeId: OTHER, originSiteId: SITE,
+    monitorId: MONITOR, monitorName: 'Gateway ping', monitorType: 'icmp_ping', monitorTarget: '192.0.2.1',
+    monitorActive: true, pollingInterval: 60,
+    resultId: RESULT, resultStatus: 'online', resultDeviceId: DEVICE, resultAt: new Date().toISOString(),
+  };
+
+  it('carries the reused monitor result into node health without issuing any command', async () => {
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: '1' }]).mockResolvedValueOnce([{ count: '0' }])
+      .mockResolvedValueOnce([node]).mockResolvedValueOnce([]).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([binding]).mockResolvedValueOnce([{ monitorId: MONITOR, count: '1' }]);
+
+    const graph = await getTopologyGraph(ctx, healthQuery);
+
+    expect(graphResponseSchema.safeParse(graph).success).toBe(true);
+    expect(graph.nodes[0]!.health).toMatchObject({
+      status: 'healthy', coverage: 'monitored', freshness: 'fresh', scope: 'node',
+      originNodeId: OTHER, resultId: RESULT,
+    });
+    // A read never dispatches work: no writes at all, and nothing touches the
+    // command queue the agents poll.
+    for (const call of mocks.execute.mock.calls) {
+      const statement = sqlText(call).sql;
+      expect(statement).not.toMatch(/\b(insert|update|delete)\b/i);
+      expect(statement).not.toMatch(/device_commands/i);
+    }
+  });
+
+  it('leaves health unmeasured with a reason when the projection does not ask for it', async () => {
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: '1' }]).mockResolvedValueOnce([{ count: '0' }])
+      .mockResolvedValueOnce([node]).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const graph = await getTopologyGraph(ctx, query);
+
+    expect(graph.nodes[0]!.health).toMatchObject({ status: 'unknown', coverage: 'unmonitored' });
+    expect(graph.nodes[0]!.health.reasons.length).toBeGreaterThan(0);
+    expect(mocks.execute.mock.calls.some((call) => sqlText(call).sql.includes('topology_monitor_bindings'))).toBe(false);
+  });
+
+  it('answers the health endpoint from the same attributed overlays', async () => {
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }])
+      .mockResolvedValueOnce([binding]).mockResolvedValueOnce([{ monitorId: MONITOR, count: '0' }]);
+
+    const health = await getTopologyHealth(ctx, { nodeIds: [NODE], relationshipIds: [] });
+
+    expect(health.healthRevision).toBe('4');
+    expect(health.graphRevision).toBe('9007199254740993');
+    expect(health.nodes[0]).toMatchObject({ id: NODE, health: { status: 'healthy', resultId: RESULT } });
+  });
+
+  it('reports a canonical entity with no bound monitor as unmonitored, not healthy', async () => {
+    mocks.execute.mockResolvedValueOnce(state).mockResolvedValueOnce([{ id: NODE }]).mockResolvedValueOnce([]);
+
+    const health = await getTopologyHealth(ctx, { nodeIds: [NODE], relationshipIds: [] });
+
+    expect(health.nodes[0]!.health).toMatchObject({ status: 'unknown', coverage: 'unmonitored', resultId: null });
+    expect(health.nodes[0]!.health.reasons[0]!.code).toBe('no_monitor_binding');
+  });
+});
+
 it('returns a passive empty baseline if state has never been created', async () => {
   mocks.execute.mockResolvedValueOnce([]);
   const graph = await getTopologyGraph(ctx, query);
