@@ -122,6 +122,12 @@ describe('buildPreviews (spec §5.2 — RAW bytes, never a rendered form)', () =
     expect(tailPreview).toBe('{"a":1}');
   });
 
+  it.each([Buffer.from([0xff, 0xfe, 0x61]), Buffer.from('binary\u0000data')])(
+    'does not decode binary bytes even when labelled as text', (body) => {
+      expect(buildPreviews(body)).toEqual({ headPreview: '', tailPreview: '' });
+    },
+  );
+
   it('caps each side at ARTIFACT_PREVIEW_BYTES and takes head from the start, tail from the end', () => {
     const raw = `HEAD${'x'.repeat(10_000)}TAIL`;
     const { headPreview, tailPreview } = buildPreviews(raw);
@@ -153,6 +159,33 @@ describe('createArtifact', () => {
     expect(written.bytes).toBe(20);
     expect(String(written.sha256)).toMatch(/^[0-9a-f]{64}$/);
     expect(String(written.blobKey)).toMatch(/^us\/\d{4}\/\d{2}\//);
+  });
+
+  it.each([
+    ['report.pdf', 'application/pdf'],
+    ['data.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['unknown.bin', 'application/octet-stream'],
+  ])('stores %s with an appropriate MIME type and no binary preview', async (name, contentType) => {
+    mocks.insertRows.push([row()]);
+    const read = vi.spyOn(blobs, 'openStream');
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name, contentType: 'application/octet-stream',
+      body: Readable.from([Buffer.from('binary file data')]), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ contentType, headPreview: '', tailPreview: '' });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('preserves previews for generic workspace CSV outputs', async () => {
+    mocks.insertRows.push([row()]);
+    await createArtifact({
+      orgId: ORG, runId: RUN, kind: 'output', name: 'results.CSV', contentType: 'application/octet-stream',
+      body: Buffer.from('name,total\nAlpha,60'), maxBytes: 1024,
+      createdByTool: 'workspace_collect', region: 'us',
+    });
+    expect(mocks.insertValues[0]).toMatchObject({ contentType: 'text/csv', headPreview: 'name,total\nAlpha,60' });
   });
 
   it('compensates by deleting the blob when the row insert fails, and rethrows', async () => {
@@ -218,6 +251,12 @@ describe('deleteArtifact — blob first, then row (the row is the only key index
 });
 
 describe('listArtifactsForAuth / toArtifactDto', () => {
+  it('suppresses previews already stored for binary artifacts', () => {
+    const dto = toArtifactDto(row({ contentType: 'application/pdf', headPreview: '%PDF', tailPreview: 'binary' }) as ArtifactRecord);
+    expect(dto.headPreview).toBe('');
+    expect(dto.tailPreview).toBe('');
+  });
+
   it('never exposes blobKey and renders the download path', async () => {
     mocks.selectRows.push([row()]);
     const auth = { orgCondition: () => undefined } as never;

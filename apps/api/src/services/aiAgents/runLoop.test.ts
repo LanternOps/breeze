@@ -1411,6 +1411,57 @@ describe('executeAgentRun', () => {
     });
   });
 
+  it.each([
+    ['get_device_details', true],
+    ['get_invite_funnel', false],
+    ['resolve_device_context', false],
+  ])('a resource-scoped run only dispatches audited tools: %s', async (tool, allowed) => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ effective: scoped });
+    const deviceRows = (dbMockState.rowQueues.devices ??= []);
+    for (let i = 0; i < 4; i++) deviceRows.push([{ siteId: SITE_ID, tags: [] }]);
+    scriptQuery({ toolCalls: [{ tool: tool as string, input: { deviceId: DEVICE_ID } }] });
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed });
+    expect(lastQueryOptions?.allowedTools).not.toContain('mcp__breeze__get_invite_funnel');
+  });
+
+  it('a newly scoped org-wide queued run is skipped before invoking the model', async () => {
+    seedRows({ deviceId: null });
+    const narrowed = policy();
+    narrowed.triggers.siteIds = [SITE_ID];
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(narrowed));
+    await executeAgentRun(RUN_ID);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.patch.errorCode).toBe('policy_revoked_before_start');
+  });
+
+  it('keeps the original scope when live policy removes its restriction', async () => {
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    seedRows({ deviceId: null, effective: scoped });
+    resolveEffectiveAgentSystem.mockResolvedValue(snapshot(policy()));
+    await executeAgentRun(RUN_ID);
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(finalTransition()!.to).toBe('skipped');
+  });
+
+  it('denies the next tool when resource scope is narrowed during a run', async () => {
+    seedRows({ deviceId: null });
+    const unrestricted = snapshot(policy());
+    const scoped = policy();
+    scoped.triggers.siteIds = [SITE_ID];
+    resolveEffectiveAgentSystem
+      .mockResolvedValueOnce(unrestricted)
+      .mockResolvedValueOnce(unrestricted)
+      .mockResolvedValue(snapshot(scoped));
+    scriptQuery({ toolCalls: [{ tool: 'query_devices', input: {} }] });
+    await executeAgentRun(RUN_ID);
+    expect(preVerdicts[0]).toMatchObject({ allowed: false, error: expect.stringContaining('resource scope') });
+    expect(startToolExecution).not.toHaveBeenCalled();
+  });
+
   it('policy revoked between admission and start => skipped, no SDK call', async () => {
     seedRows();
     resolveEffectiveAgentSystem.mockResolvedValue(snapshot(policy({ enabled: false })));

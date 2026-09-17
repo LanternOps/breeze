@@ -109,7 +109,7 @@ export const CORE_TENANT_EXPORT_POLICY: TenantExportPolicyRegistry = {
   // customer's own data, not an API response, so it is not in scope of that
   // comment.
   "ai_run_artifacts": tablePolicy("org_id", {"included":["id","org_id","run_id","session_id","kind","name","content_type","bytes","sha256","blob_key","head_preview","tail_preview","source_device_id","created_by_tool","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
-  "ai_run_workspaces": tablePolicy("org_id", {"included":["id","org_id","run_id","backend","provider_ref","region","status","created_at","ready_at","destroying_since","destroyed_at","deadline_at","cpu_ms","wall_ms","mem_allocated_mb","compute_cents","staged_bytes","artifact_bytes","step_count","destroy_attempts","last_error"],"reviewedIncluded":["bootstrap_hash"],"excludedSensitive":[],"excludedOpen":["steps"]}),
+  "ai_run_workspaces": tablePolicy("org_id", {"included":["id","org_id","run_id","backend","provider_ref","region","status","created_at","ready_at","destroying_since","destroyed_at","deadline_at","cpu_ms","wall_ms","mem_allocated_mb","compute_cents","staged_bytes","artifact_bytes","step_count","destroy_attempts","last_error"],"reviewedIncluded":["bootstrap_hash","runtime_image"],"excludedSensitive":[],"excludedOpen":["steps"]}),
   "ai_screenshots": tablePolicy("org_id", {"included":["id","device_id","org_id","session_id","storage_key","width","height","size_bytes","captured_by","reason","expires_at","created_at"],"reviewedIncluded":[],"excludedSensitive":[],"excludedOpen":[]}),
   // AI script authoring W04 (#5612). protected_resources is jsonb, so it is
   // excludedOpen per CLAUDE.md — an open container may embed capabilities,

@@ -79,7 +79,7 @@ export async function loadSnapshotWithSiteAccess(
   // SOURCE device site and gate it exactly like a restore target. Gated on
   // `allowedSiteIds` (the restriction marker) so unrestricted callers incur no
   // extra query — `canAccessSite` is always present, allow-all when unrestricted.
-  if (auth.allowedSiteIds && auth.canAccessSite) {
+  if (auth.allowedSiteIds || auth.allowedDeviceIds) {
     const [sourceDevice] = row.deviceId
       ? await db
           .select({ siteId: devices.siteId })
@@ -88,7 +88,7 @@ export async function loadSnapshotWithSiteAccess(
           .limit(1)
       : [];
     // Unknown/removed source device → siteId undefined → denied (fail closed).
-    if (deviceSiteDenied(auth, sourceDevice?.siteId ?? null)) {
+    if (deviceSiteDenied(auth, sourceDevice?.siteId ?? null, sourceDevice ? row.deviceId : null)) {
       return { error: SNAPSHOT_DENIED };
     }
   }

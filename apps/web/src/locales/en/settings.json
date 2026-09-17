@@ -2119,10 +2119,10 @@
           "title": "Files this run produced",
           "download": "Download",
           "preview": "Preview",
-          "attachToTicket": "Attach to a ticket",
-          "attach": "Attach {{name}}",
+          "attachToTicket": "Attach as internal note",
+          "attach": "Attach {{name}} as internal note",
           "ticketIdPlaceholder": "Ticket ID",
-          "attachedToTicket": "Attached to the ticket",
+          "attachedToTicket": "Attached to the ticket as an internal note",
           "attachFailed": "Could not attach the file to that ticket"
         },
         "workspace": {

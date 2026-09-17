@@ -291,7 +291,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it).
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const resolvedConfig = await resolveBackupConfigForDevice(deviceId);
       if (!resolvedConfig?.configId) {
@@ -419,7 +419,7 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under the caller's org AND site scope: the source
       // snapshot must be within the caller's site scope, not just the target

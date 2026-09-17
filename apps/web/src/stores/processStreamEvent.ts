@@ -184,9 +184,7 @@ export function processStreamEvent(
         // executionId, and the awaited tool is by construction the one whose
         // result has not yet arrived.
         const awaited = s.pendingApproval;
-        const toolUse = awaited
-          ? s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId)
-          : undefined;
+        const toolUse = s.messages.find((m) => m.role === 'tool_use' && m.toolUseId === event.toolUseId);
         // Parallel calls to the same tool: the awaited one is the LATEST
         // tool_use of that name (approval_required is published from the
         // pre-tool hook, i.e. right after its tool_use_start), so an earlier
@@ -197,7 +195,9 @@ export function processStreamEvent(
         const resolvesPending =
           !!awaited && !!toolUse && toolUse.toolName === awaited.toolName && latestOfName?.toolUseId === toolUse.toolUseId;
         return {
-          messages: [...s.messages, resultMsg],
+          // Specialized result cards (including analysis runs) need the tool
+          // name even when the tool did not require approval.
+          messages: [...s.messages, { ...resultMsg, toolName: toolUse?.toolName }],
           ...(resolvesPending ? { pendingApproval: null } : {}),
         };
       });

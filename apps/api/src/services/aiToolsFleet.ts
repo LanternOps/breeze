@@ -1028,7 +1028,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             inArray(devices.id, input.deviceIds as string[]),
           ));
         const ownedIds = new Set(
-          ownedDevices.filter((d) => !deviceSiteDenied(auth, d.siteId)).map((d) => d.id),
+          ownedDevices.filter((d) => !deviceSiteDenied(auth, d.siteId, d.id)).map((d) => d.id),
         );
         const unauthorizedIds = (input.deviceIds as string[]).filter((id) => !ownedIds.has(id));
         if (unauthorizedIds.length > 0) {
@@ -1062,7 +1062,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+        if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
         const [rollback] = await db.insert(patchRollbacks).values({
           deviceId: device.id,
@@ -1406,7 +1406,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .from(devices)
           .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, deviceIdList)));
         const insertableIds = candidateRows
-          .filter((d) => !deviceSiteDenied(auth, d.siteId))
+          .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
           .map((d) => d.id);
         if (insertableIds.length === 0) {
           return JSON.stringify({ success: true, added: 0, message: 'No in-scope devices to add' });
@@ -1445,7 +1445,7 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .from(devices)
           .where(and(eq(devices.orgId, group.orgId), inArray(devices.id, requestedIds)));
         const removableIds = candidateRows
-          .filter((d) => !deviceSiteDenied(auth, d.siteId))
+          .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
           .map((d) => d.id);
         const skipped = requestedIds.length - removableIds.length;
         if (removableIds.length === 0) {

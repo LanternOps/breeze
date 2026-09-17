@@ -235,7 +235,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 
@@ -320,7 +320,7 @@ export function registerAgentLogTools(aiTools: Map<string, AiTool>): void {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 

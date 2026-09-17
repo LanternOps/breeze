@@ -151,6 +151,8 @@ export const aiRunWorkspaces = pgTable('ai_run_workspaces', {
   providerRef: text('provider_ref').notNull(),
   region: text('region').$type<AiWorkspaceRegion>().notNull(),
   bootstrapHash: text('bootstrap_hash'),
+  /** Deployment-selected reference, not necessarily an immutable/resolved digest. */
+  runtimeImage: text('runtime_image'),
   status: text('status').$type<AiWorkspaceStatus>().notNull().default('creating'),
 
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

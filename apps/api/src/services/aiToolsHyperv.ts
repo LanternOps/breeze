@@ -417,7 +417,7 @@ export function registerHypervTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Load the snapshot under org AND site scope (source device site gated),
       // so a site-restricted caller cannot import a cross-site snapshot onto a

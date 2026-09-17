@@ -19,6 +19,7 @@ import type { AiTool } from './aiTools';
 import { publishEvent } from './eventBus';
 import { assertDeviceExecuteAllowed, TrustDeniedError } from './partnerTrust.commands';
 import { aiDispatchDeviceCommand } from './aiDispatch';
+import { resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -52,26 +53,6 @@ function resolveWritableToolOrgId(
   return { error: 'orgId is required for this operation' };
 }
 
-// Resolve the device IDs a site-restricted caller may read within their org,
-// narrowed by `auth.allowedSiteIds`. Returns null when the caller is NOT
-// site-restricted (no narrowing needed). Site is an app-layer concept only —
-// Postgres RLS does NOT defend it — so a site-restricted org user must not read
-// extension/violation rows for devices in other sites within the same org.
-// Mirrors the route-layer browserSecurity.ts helper (AuthContext flavour).
-async function resolveSiteAllowedDeviceIds(
-  orgId: string,
-  auth: AuthContext,
-): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
-  const orgDevices = await db
-    .select({ id: devices.id, siteId: devices.siteId })
-    .from(devices)
-    .where(eq(devices.orgId, orgId));
-  return orgDevices
-    .filter((d) => auth.canAccessSite!(d.siteId))
-    .map((d) => d.id);
-}
-
 // A site-restricted caller may only mutate policies that target sites entirely
 // within their allowlist. Org/group/device/tag targets are not site-bounded, so
 // a site-restricted caller cannot confirm scope over them and is denied.
@@ -82,6 +63,7 @@ export function policyWithinSiteWriteScope(
   targetType: string,
   targetIds: string[] | null | undefined,
 ): boolean {
+  if (auth.allowedDeviceIds) return false;
   if (!auth.allowedSiteIds || !auth.canAccessSite) return true;
   if (targetType !== 'site') return false;
   const ids = targetIds ?? [];

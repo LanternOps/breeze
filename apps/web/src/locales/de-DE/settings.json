@@ -2119,10 +2119,10 @@
           "title": "Von diesem Lauf erzeugte Dateien",
           "download": "Herunterladen",
           "preview": "Vorschau",
-          "attachToTicket": "An ein Ticket anhängen",
-          "attach": "{{name}} anhängen",
+          "attachToTicket": "Als interne Notiz anhängen",
+          "attach": "{{name}} als interne Notiz anhängen",
           "ticketIdPlaceholder": "Ticket-ID",
-          "attachedToTicket": "An das Ticket angehängt",
+          "attachedToTicket": "Als interne Notiz an das Ticket angehängt",
           "attachFailed": "Die Datei konnte nicht an dieses Ticket angehängt werden"
         },
         "workspace": {

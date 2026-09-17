@@ -2119,10 +2119,10 @@
           "title": "Arquivos gerados por esta execução",
           "download": "Baixar",
           "preview": "Visualizar",
-          "attachToTicket": "Anexar a um chamado",
-          "attach": "Anexar {{name}}",
+          "attachToTicket": "Anexar como nota interna",
+          "attach": "Anexar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID do chamado",
-          "attachedToTicket": "Anexado ao chamado",
+          "attachedToTicket": "Anexado ao chamado como nota interna",
           "attachFailed": "Não foi possível anexar o arquivo a esse chamado"
         },
         "workspace": {

@@ -165,7 +165,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
       // Site axis (app-layer only; RLS does NOT enforce it): deny vault/secret
       // reads for devices outside a site-restricted caller's allowlist.
-      if (deviceSiteDenied(auth, device.siteId)) {
+      if (deviceSiteDenied(auth, device.siteId, device.id)) {
         return JSON.stringify({ error: 'Device not found or access denied' });
       }
 
@@ -369,7 +369,7 @@ export function registerVaultTools(aiTools: Map<string, AiTool>): void {
 
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis: deny creating a vault on a device outside the caller's sites.
-        if (deviceSiteDenied(auth, device.siteId)) {
+        if (deviceSiteDenied(auth, device.siteId, device.id)) {
           return JSON.stringify({ error: 'Device not found or access denied' });
         }
 

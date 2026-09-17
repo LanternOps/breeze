@@ -12,9 +12,9 @@
  * row, flattened: the sandbox reads these with pandas/jq, so nested objects and
  * a `logs: [...]` envelope would both be hostile.
  */
-import { and, desc, gt, lt, or, eq } from 'drizzle-orm';
+import { and, desc, gt, lt, or, eq, inArray, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { agentLogs, deviceMetrics } from '../db/schema';
+import { agentLogs, deviceMetrics, devices } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { searchFleetLogs } from './logSearch';
 import { buildAgentLogConditions } from './aiToolsAgentLogs';
@@ -23,6 +23,8 @@ import { readCatalog, readDeviceFindings, normStatus } from './aiToolsVulnerabil
 import {
   generateDeviceInventoryReport,
   generateSoftwareInventoryReport,
+  readDeviceInventoryRows,
+  readSoftwareInventoryRows,
 } from './reportGenerationService';
 // `aiLiveReportAuthority` lives in aiToolsFleet.ts (exported by Task 4), NOT in
 // siteScope.ts — importing it from the latter is a module-not-found at runtime.
@@ -119,6 +121,33 @@ async function scopedDeviceIds(req: DatasetRequest): Promise<string[] | null> {
 
 /** A pager that yields nothing — the shape a zero-in-scope caller gets. */
 const emptyPager: ExportPager = async () => ({ rows: [], nextCursor: null });
+
+/** Agent attribution ids are not human report principals. Keep their export
+ * inside the intersection of the authenticated ceiling and frozen run frame. */
+async function agentInventoryPager(req: DatasetRequest, software: boolean): Promise<ExportPager> {
+  if (req.auth.orgId !== req.orgId || !req.auth.allowedDeviceIds?.length || !req.runTargets?.length) {
+    throw new Error('Agent inventory export requires an organization and frozen device scope');
+  }
+  const frame = new Set(req.runTargets);
+  const requested = req.deviceIds === null ? null : new Set(req.deviceIds);
+  const ids = req.auth.allowedDeviceIds.filter((id) => frame.has(id) && (!requested || requested.has(id)));
+  if (!ids.length) return emptyPager;
+  const conditions: SQL[] = [inArray(devices.id, ids)];
+  if (req.auth.allowedSiteIds) {
+    if (!req.auth.allowedSiteIds.length) return emptyPager;
+    conditions.push(inArray(devices.siteId, req.auth.allowedSiteIds));
+  }
+  if (req.siteId) {
+    if (req.auth.canAccessSite && !req.auth.canAccessSite(req.siteId)) return emptyPager;
+    conditions.push(eq(devices.siteId, req.siteId));
+  }
+  if (!software && Array.isArray(req.filters.osTypes) && req.filters.osTypes.length) {
+    conditions.push(inArray(devices.osType, req.filters.osTypes as Array<'windows' | 'macos' | 'linux'>));
+  }
+  return singlePagePager(() => software
+    ? readSoftwareInventoryRows(req.orgId, conditions)
+    : readDeviceInventoryRows(req.orgId, conditions));
+}
 
 /** A source that produces its whole result in one builder call. Wrapped as a
  *  one-page pager so the writer's cap/preview machinery is identical for all
@@ -265,6 +294,7 @@ const deviceInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
+    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, false);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // #5776: `generateDeviceInventoryReport` now honours `filters.deviceIds`
@@ -290,6 +320,7 @@ const softwareInventoryAdapter: DatasetAdapter = {
   tier: 1,
   deviceScoped: false,
   async createPager(req) {
+    if (req.auth.principal?.kind === 'ai_agent') return agentInventoryPager(req, true);
     const authority = await aiLiveReportAuthority(req.auth, req.orgId, 'read');
     if (!authority) return emptyPager;
     // This generator DOES honour filters.deviceIds, so the restriction goes

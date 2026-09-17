@@ -78,7 +78,7 @@ async function loadDeviceWithAccess(deviceId: string, auth: AuthContext) {
     .where(and(...conditions))
     .limit(1);
 
-  if (!device) return null;
+  if (!device || (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(device.id))) return null;
   if (auth.canAccessSite && !auth.canAccessSite(device.siteId)) return null;
   return device;
 }

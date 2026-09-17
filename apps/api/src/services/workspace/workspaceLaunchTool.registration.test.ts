@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { TOOL_TIERS } from '../aiAgentSdkTools';
+import { TOOL_TIERS, createBreezeMcpServer } from '../aiAgentSdkTools';
 import { TOOL_CAPABILITY } from '../aiAgents/agentToolCatalog';
 import { AGENT_HUMAN_ONLY_TOOLS, TOOL_PERMISSIONS } from '../aiGuardrails';
 import { toolInputSchemas } from '../aiToolSchemas';
@@ -29,8 +29,8 @@ describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
     expect(requiresLiveSession(WORKSPACE_LAUNCH_TOOL_NAME)).toBe(true);
   });
 
-  it('is tiered 1 in the SDK tier table — it executes nothing on the fleet', () => {
-    expect(TOOL_TIERS[WORKSPACE_LAUNCH_TOOL_NAME]).toBe(1);
+  it('is absent from the SDK chat allowlist', () => {
+    expect(TOOL_TIERS[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
   });
 
   it('is NOT in TOOL_CAPABILITY — that map is the headless agent surface, and this tool is not on it', () => {
@@ -46,12 +46,14 @@ describe('workspace_launch_analysis registration (spec §5.3, §5.5)', () => {
     expect(TOOL_CAPABILITY.m365_lookup_user).toBeUndefined();
   });
 
-  it('has a SESSION-AWARE tool() declaration on the Breeze MCP server', () => {
-    // Session-aware, not plain `makeHandler`: the run must be stamped with the
-    // chat session that started it, and `makeSessionAwareHandler` is also what
-    // fails the call closed when there is no session to stamp.
-    expect(SDK_TOOLS_SOURCE).toContain(`makeSessionAwareHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
-    expect(SDK_TOOLS_SOURCE).not.toContain(`makeHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
+  it('is absent from the actual MCP tool registry while worker tools remain', () => {
+    const server = createBreezeMcpServer(() => ({}) as never);
+    const instance = server.instance as unknown as { _registeredTools: Record<string, unknown> };
+    expect(instance._registeredTools[WORKSPACE_LAUNCH_TOOL_NAME]).toBeUndefined();
+    expect(SDK_TOOLS_SOURCE).not.toContain(`makeSessionAwareHandler('${WORKSPACE_LAUNCH_TOOL_NAME}'`);
+    for (const name of ['workspace_stage', 'workspace_run', 'workspace_collect', 'workspace_cancel']) {
+      expect(aiTools.has(name)).toBe(true);
+    }
   });
 
   it('has an input schema — without one, every call fails validation', () => {

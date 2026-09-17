@@ -2119,10 +2119,10 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un billet",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du billet",
-          "attachedToTicket": "Joint au billet",
+          "attachedToTicket": "Joint au billet comme note interne",
           "attachFailed": "Impossible de joindre le fichier à ce billet"
         },
         "workspace": {

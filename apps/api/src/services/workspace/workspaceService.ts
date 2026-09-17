@@ -21,6 +21,7 @@
  * never be held across a network round trip (#1105).
  */
 import path from 'node:path';
+import { VercelSandboxCreateError } from './vercelSandboxBackend';
 import { eq } from 'drizzle-orm';
 import {
   db, getCurrentDbAccessContext, runOutsideDbContext, withSystemDbAccessContext,
@@ -146,7 +147,7 @@ export class WorkspaceService {
   private handle: SandboxHandle | null = null;
   private rowId: string | null = null;
   private readyAt: Date | null = null;
-  private terminal: 'workspace_cancelled' | 'compute_cap_reached' | 'workspace_expired' | null = null;
+  private terminal: 'workspace_cancelled' | 'compute_cap_reached' | 'workspace_expired' | 'workspace_unavailable' | null = null;
   private finalized = false;
   private finalUsage: SandboxUsage | null = null;
   private estimated = false;
@@ -236,6 +237,7 @@ export class WorkspaceService {
         providerRef: '(creating)',
         region,
         bootstrapHash: WORKSPACE_BOOTSTRAP_HASH,
+        runtimeImage: null,
         status: 'creating',
         deadlineAt,
       })
@@ -254,7 +256,14 @@ export class WorkspaceService {
         image: WORKSPACE_BOOTSTRAP_IMAGE,
       });
     } catch (error) {
-      await this.patchRow({ status: 'destroyed', destroyedAt: new Date() });
+      this.terminal = 'workspace_unavailable';
+      if (error instanceof VercelSandboxCreateError) {
+        this.handle = error.handle;
+        this.everCreated = true;
+        await this.patchRow({ providerRef: error.handle.providerRef, runtimeImage: error.handle.runtimeImage ?? null, status: 'destroy_failed' }, { important: true });
+      } else {
+        await this.patchRow({ status: 'destroyed', destroyedAt: new Date() });
+      }
       await recordWorkspaceCreateFailure(this.backendName);
       captureException(error instanceof Error ? error : new Error(String(error)));
       throw new WorkspaceToolError(
@@ -267,18 +276,26 @@ export class WorkspaceService {
     this.everCreated = true;
     await recordWorkspaceCreateSuccess(this.backendName);
     this.readyAt = new Date();
-    // Exec by argv, never a shell string — even for the directory bootstrap.
-    await this.backend.exec(handle, ['mkdir', '-p', WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR], {
-      timeoutMs: 10_000, maxStdoutBytes: 4096,
-    });
     // `important`: this patch is the ONLY thing that replaces the
     // `(creating)` placeholder with the real provider ref. If it is lost, the
     // reaper — the sole path that can destroy this sandbox after a worker
     // crash — calls `destroy()` with the placeholder, never finds the box, and
     // the vendor bills it indefinitely. Every other patch here self-heals.
     await this.patchRow({
-      providerRef: handle.providerRef, status: 'ready', readyAt: this.readyAt,
+      providerRef: handle.providerRef, runtimeImage: handle.runtimeImage ?? null, status: 'ready', readyAt: this.readyAt,
     }, { important: true });
+    try {
+      // Exec by argv, never a shell string — even for the directory bootstrap.
+      const result = await this.backend.exec(handle, ['mkdir', '-p', WORKSPACE_IN_DIR, WORKSPACE_OUT_DIR, WORKSPACE_TMP_DIR], {
+        timeoutMs: 10_000, maxStdoutBytes: 4096,
+      });
+      if (result.exitCode !== 0 || result.timedOut) throw new Error('Workspace directory bootstrap failed');
+    } catch (error) {
+      this.terminal = 'workspace_unavailable';
+      await this.destroyHandle();
+      throw new WorkspaceToolError('workspace_unavailable', 'The compute workspace could not be initialized.');
+    }
+
   }
 
   /**
@@ -310,13 +327,16 @@ export class WorkspaceService {
 
     const staged: Array<{ handle: string; path: string; bytes: number }> = [];
     for (const handle of handles) {
-      if (!this.ctx.allowedInputHandles.includes(handle) && !this.produced.has(handle)) {
+      // Other run tools (notably export_dataset) create artifacts outside this
+      // service. Check persisted ownership, not only the in-memory output set.
+      const record = await resolveArtifact(handle, { orgId: this.ctx.orgId });
+      if (!this.ctx.allowedInputHandles.includes(handle) && !this.produced.has(handle)
+        && record?.runId !== this.ctx.runId) {
         throw new WorkspaceToolError(
           'staged_handle_not_allowed',
           "That handle is not one of this run's inputs and was not produced by this run.",
         );
       }
-      const record = await resolveArtifact(handle, { orgId: this.ctx.orgId });
       if (!record) throw new WorkspaceToolError('artifact_forbidden', 'That artifact is not available to this run.');
       if (record.bytes > WORKSPACE_MAX_FILE_BYTES) {
         throw new WorkspaceToolError(
@@ -512,7 +532,14 @@ export class WorkspaceService {
         throw new WorkspaceToolError('artifact_bytes_cap', 'This run has reached its artifact-bytes cap.');
       }
 
-      const name = labels?.[raw] ?? path.posix.basename(resolved);
+      const basename = path.posix.basename(resolved);
+      const extension = path.posix.extname(basename);
+      const label = labels?.[raw]?.trim();
+      // Labels become download filenames, so preserve the collected file's type.
+      let name = label || basename;
+      if (extension && !name.toLowerCase().endsWith(extension.toLowerCase())) {
+        name += extension;
+      }
       const record = await this.persistArtifact('output', name, 'application/octet-stream', bytes, 'workspace_collect');
       this.artifactBytes += bytes.length;
       out.push({ handle: record.id, name, bytes: bytes.length });
@@ -597,7 +624,7 @@ export class WorkspaceService {
     const computeCents = calculateComputeCents(this.backendName, usage, WORKSPACE_MEMORY_GB);
     await this.patchRow({
       status: destroyed ? 'destroyed' : 'destroy_failed',
-      destroyedAt: new Date(),
+      destroyedAt: destroyed ? new Date() : null,
       cpuMs: usage.cpuMs,
       wallMs: usage.wallMs,
       memAllocatedMb: usage.memAllocatedMb,
@@ -632,10 +659,10 @@ export class WorkspaceService {
   /** Destroy once, tolerate failure (the reaper retries). */
   private async destroyHandle(): Promise<{ destroyed: boolean; usage: SandboxUsage | null }> {
     const handle = this.handle;
-    this.handle = null;
     if (!handle) return { destroyed: true, usage: null };
     try {
       const usage = await this.backend.destroy(handle);
+      this.handle = null;
       if (usage && !this.lastUsage) this.lastUsage = usage;
       return { destroyed: true, usage: usage ?? null };
     } catch (error) {
@@ -695,8 +722,8 @@ export class WorkspaceService {
     if (this.terminal) return;
     this.terminal = reason;
     await this.captureUsageBeforeDestroy();
-    await this.destroyHandle();
-    await this.patchRow({ status: 'destroyed', destroyedAt: new Date() });
+    const { destroyed } = await this.destroyHandle();
+    await this.patchRow({ status: destroyed ? 'destroyed' : 'destroy_failed', destroyedAt: destroyed ? new Date() : null });
   }
 
   /** Progress is observability: it must never fail a step. */

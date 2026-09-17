@@ -15,8 +15,8 @@
  *    tools that look the device up by id directly should instead route through
  *    the site-gated `verifyDeviceAccess` in aiTools.ts.
  *
- * All helpers are no-ops for unrestricted callers (`allowedSiteIds` undefined /
- * no `canAccessSite`) — identical behavior, no regression.
+ * Site and exact-device restrictions are intersected. Human callers without
+ * an exact-device restriction retain their existing site access.
  */
 
 import { db } from '../db';
@@ -33,48 +33,22 @@ import type { AuthContext } from '../middleware/auth';
 export const SITE_SCOPE_EMPTY_NOTE =
   'No devices are within your site access — this result is limited by site-based access restrictions, not necessarily an absence of data.';
 
-/**
- * Resolve the device IDs a site-restricted caller may read within `orgId`,
- * narrowed by their site allowlist. Returns `null` when the caller is NOT
- * site-restricted (no narrowing needed — callers should skip the inArray).
- * A restricted caller with zero in-scope devices gets an empty array (caller
- * should short-circuit to empty results).
- */
-/**
- * Execution plane W04 (#5715) — the FROZEN device set of a device-LESS agent
- * run, for tools that narrow on the site axis only.
- *
- * `buildAgentAuthContext` pins `allowedDeviceIds` (and nothing else) for an
- * `analysis` run: it has no device, so it has no site scope either. Every
- * fleet-wide read tool narrows exclusively by `allowedSiteIds`, so without
- * this helper such a run reads the WHOLE ORG — defeating
- * `analysisMaxInputDevicesPerRun`, the frozen `staged_inputs.deviceIds` and
- * spec §8's data-minimisation claim in one step.
- *
- * Deliberately returns `null` whenever a site axis IS present: a device-bound
- * run (`full`/`verdict`/`triage`) legitimately reads its device's SITE today,
- * and silently tightening that to the single device would change behaviour no
- * caller asked to change. The condition below is reachable only by the
- * device-less-run shape this wave introduced.
- */
+/** Exact device scope is independent of site scope. Empty means no devices. */
 export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
-  if (auth.allowedSiteIds) return null;
-  return auth.allowedDeviceIds && auth.allowedDeviceIds.length > 0
-    ? [...auth.allowedDeviceIds]
-    : null;
+  return auth.allowedDeviceIds ? [...auth.allowedDeviceIds] : null;
 }
 
 export async function resolveSiteAllowedDeviceIds(
   orgId: string,
   auth: AuthContext,
 ): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return null;
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.orgId, orgId));
   return orgDevices
-    .filter((d) => auth.canAccessSite!(d.siteId))
+    .filter((d) => !deviceSiteDenied(auth, d.siteId, d.id))
     .map((d) => d.id);
 }
 
@@ -95,7 +69,7 @@ export async function resolveSiteDevicePartition(
   orgId: string,
   auth: AuthContext,
 ): Promise<{ allowed: string[]; forbidden: string[] } | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return null;
   const orgDevices = await db
     .select({ id: devices.id, siteId: devices.siteId })
     .from(devices)
@@ -103,21 +77,26 @@ export async function resolveSiteDevicePartition(
   const allowed: string[] = [];
   const forbidden: string[] = [];
   for (const d of orgDevices) {
-    (auth.canAccessSite!(d.siteId) ? allowed : forbidden).push(d.id);
+    (!deviceSiteDenied(auth, d.siteId, d.id) ? allowed : forbidden).push(d.id);
   }
   return { allowed, forbidden };
 }
 
 /**
  * True when a site-restricted caller must be denied access to a device with the
- * given `siteId`. Fails closed: a null-site device is denied for a restricted
- * caller. Always false (allow) for an unrestricted caller. Use this for tools
+ * given `siteId`. Exact-device callers must also supply an allowed device ID;
+ * a site/group-only resource cannot prove that boundary and is denied.
+ * A null-site device is denied for a site-restricted caller. Use this for tools
  * that have already loaded a device row (with its siteId) by some other key.
  */
 export function deviceSiteDenied(
   auth: AuthContext,
   siteId: string | null | undefined,
+  deviceId?: string | null,
 ): boolean {
+  // A site alone cannot establish membership in an exact device scope.
+  if (auth.allowedDeviceIds && (!deviceId || !auth.allowedDeviceIds.includes(deviceId))) return true;
+  if (auth.allowedSiteIds && !auth.canAccessSite) return true;
   if (!auth.canAccessSite) return false;
   return !auth.canAccessSite(siteId);
 }
@@ -132,12 +111,13 @@ export async function deviceIdSiteDenied(
   auth: AuthContext,
   deviceId: string,
 ): Promise<boolean> {
-  if (!auth.canAccessSite) return false;
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) return true;
+  if (!auth.canAccessSite && !auth.allowedSiteIds) return false;
   const [row] = await db
     .select({ siteId: devices.siteId })
     .from(devices)
     .where(eq(devices.id, deviceId))
     .limit(1);
   // Unknown device → deny for a restricted caller (fail closed).
-  return deviceSiteDenied(auth, row?.siteId ?? null);
+  return !row || deviceSiteDenied(auth, row.siteId, deviceId);
 }

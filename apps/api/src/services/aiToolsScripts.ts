@@ -89,6 +89,9 @@ async function verifyDeviceAccess(
   auth: AuthContext,
   requireOnline = false
 ): Promise<{ device: typeof devices.$inferSelect } | { error: string }> {
+  if (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(deviceId)) {
+    return { error: 'Device not found or access denied' };
+  }
   const conditions: SQL[] = [eq(devices.id, deviceId)];
   const orgCond = auth.orgCondition(devices.orgId);
   if (orgCond) conditions.push(orgCond);
@@ -1128,6 +1131,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       const executionConditions: SQL[] = [eq(scriptExecutions.scriptId, input.scriptId as string)];
       const executionOrgCondition = auth.orgCondition(scriptExecutions.orgId);
       if (executionOrgCondition) executionConditions.push(executionOrgCondition);
+      if (auth.allowedDeviceIds !== undefined) {
+        executionConditions.push(inArray(scriptExecutions.deviceId, auth.allowedDeviceIds));
+      }
       if (auth.allowedSiteIds !== undefined) {
         executionConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
       }
@@ -1223,7 +1229,9 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
         ))
         .limit(1);
 
-      if (!execution) return JSON.stringify({ error: 'Execution not found' });
+      if (!execution || (auth.allowedDeviceIds && !auth.allowedDeviceIds.includes(execution.deviceId))) {
+        return JSON.stringify({ error: 'Execution not found' });
+      }
       // Site axis: same rule verifyDeviceAccess applies on the write path.
       if (auth.canAccessSite && !auth.canAccessSite(execution.deviceSiteId)) {
         return JSON.stringify({ error: 'Execution not found' });

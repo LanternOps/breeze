@@ -96,6 +96,7 @@ import {
 import { actTargetSummary, recordActVerifyFailureAlert, verifyActExecution } from './actVerify';
 import { executeBuiltInPlaybookForRun } from './playbookActExecutor';
 import { resolveEffectiveAgentSystem } from './effectivePolicy';
+import { agentRunMatchesResourceScope, hasAgentResourceScope, RESOURCE_SCOPED_AGENT_TOOLS } from './runResourceScope';
 import { loadTicketContext, type TicketRunContext } from './ticketContext';
 import { loadAnomalyContext, type AnomalyRunContext } from './anomalyContext';
 import { getCachedAiKillStateSnapshot, readAiKillState } from '../aiKillState';
@@ -121,6 +122,7 @@ import { scheduleFixWatch } from '../../jobs/fixWatchWorker';
 import { actEvidenceSourceId, insertOpEvidence, type OpEvidenceInsert } from './opEvidence';
 import {
   buildAgentRunSystemPrompt,
+  analysisPromptContext,
   buildAgentRunTaskPrompt,
   type AgentRunAnomalyPromptContext,
   type AgentRunDesignPromptContext,
@@ -567,6 +569,7 @@ export function createAgentRunPreToolUse(args: {
   agentName: string;
   agentAuth: AuthContext;
   agentKind: AiAgentKind;
+  revalidateResourceScope?: (toolName: string) => Promise<boolean>;
   guardrailPolicy: AgentGuardrailPolicy;
   outcome: AgentRunOutcome;
   intentIds: string[];
@@ -795,6 +798,12 @@ export function createAgentRunPreToolUse(args: {
   }
 
   return async (toolName, input) => {
+    if (args.revalidateResourceScope
+      && !(await args.revalidateResourceScope(toolName).catch(() => false))) {
+      const reason = 'Agent resource scope was revoked or could not be verified. Stop and do not retry.';
+      outcome.deniedActions.push({ tool: toolName, reason });
+      return { allowed: false, error: reason };
+    }
     // #5205 W06, spec §7.3 — THE TASK FENCE. There is no run-level cancel in
     // this codebase (baseline C17: `cancelled`/`expired` are valid
     // `ai_agent_runs` statuses with zero production writers and no route), so
@@ -1525,6 +1534,9 @@ function patchOutcomeRefs(ctx: RunContext): PatchPlanToolRefs | undefined {
 
 function promptContext(ctx: RunContext, effective: AiAgentPolicy): AgentRunPromptContext {
   return {
+    analysis: ctx.run.profile === 'analysis'
+      ? analysisPromptContext(ctx.run.triggerRef, ctx.run.stagedInputs)
+      : null,
     agent: { name: ctx.agent.name, kind: ctx.agent.kind },
     run: { id: ctx.run.id, mode: ctx.run.modeAtStart, triggerKind: ctx.run.triggerKind },
     device: ctx.device
@@ -1805,6 +1817,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
     run, agentName: ctx.agent.name, agentAuth, agentKind: ctx.agent.kind, guardrailPolicy, outcome,
     intentIds, allowedPending, sessionId: ctx.sessionId, executionIdPending, actPinPending,
     actReservation, deadlineMs, design: designRefs, patch: patchRefs,
+    revalidateResourceScope: (toolName) => isRunResourceScopeCurrent(ctx, toolName),
     // W03 seeds the run frame from the single-device runs that exist today.
     // W04's `analysis` profile replaces both values with the admission-frozen
     // target set and the profile's `analysisMaxStagedBytesPerRun`. An empty
@@ -1834,7 +1847,7 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // computed at the top of this function — the SAME list that narrowed
   // `guardrailPolicy.toolAllowlist` above, so exposure and authority can
   // never drift apart.
-  const exposedNames = profileAllowlist
+  let exposedNames = profileAllowlist
     ? profileAllowlist.map((name) => (
       isOutcomeTool(name) ? OUTCOME_MCP_TOOL_NAMES[name] : `mcp__breeze__${name.split(':')[0]}`
     ))
@@ -1853,9 +1866,18 @@ async function driveSdkLoop(ctx: RunContext, effective: AiAgentPolicy): Promise<
   // below instead, which `createBreezeMcpServer` always includes regardless
   // of `onlyTools`. Full runs pass no `onlyTools` and keep registering the
   // whole registry, unchanged.
-  const onlyTools = profileAllowlist
+  let onlyTools = profileAllowlist
     ? new Set(profileAllowlist.map((name) => name.split(':')[0]!).filter((name) => !isOutcomeTool(name)))
     : undefined;
+
+  if (hasAgentResourceScope(effective.triggers)) {
+    onlyTools = new Set([...RESOURCE_SCOPED_AGENT_TOOLS].filter((name) => !onlyTools || onlyTools.has(name)));
+    const permitted = new Set([
+      ...[...onlyTools].map((name) => `mcp__breeze__${name}`),
+      ...outcomeToolsForRun(run).map((name) => OUTCOME_MCP_TOOL_NAMES[name]),
+    ]);
+    exposedNames = exposedNames.filter((name) => permitted.has(name));
+  }
 
   // No getActiveSession: a headless run has no ActiveSession, and the
   // session-aware tools (M365/Google) correctly refuse without one. The
@@ -2102,7 +2124,7 @@ export async function executeAgentRun(runId: string): Promise<void> {
   //    only WHETHER to start — the loop itself runs on the run's immutable
   //    snapshot (see driveSdkLoop).
   const stopped = await isStoppedBeforeStart(run.orgId, agent.kind, run.agentId);
-  if (stopped) {
+  if (stopped || !(await isRunResourceScopeCurrent(ctx))) {
     await transitionRunStatus(runId, 'running', 'skipped', {
       errorCode: 'policy_revoked_before_start',
       finishedAt: new Date(),
@@ -2690,6 +2712,26 @@ async function cleanupExecutionLedger(
   }
 }
 
+/** Recheck both admission scope and live scope; edits may narrow, never widen a run. */
+async function isRunResourceScopeCurrent(ctx: RunContext, toolName?: string): Promise<boolean> {
+  try {
+    const current = await resolveEffectiveAgentSystem(ctx.run.orgId, ctx.agent.kind);
+    if (!current || current.agentId !== ctx.run.agentId
+      || !current.effective.enabled || current.effective.mode === 'off') return false;
+    if (toolName && (hasAgentResourceScope(ctx.run.policySnapshot.effective.triggers)
+      || hasAgentResourceScope(current.effective.triggers))
+      && !RESOURCE_SCOPED_AGENT_TOOLS.has(toolName)
+      && !(outcomeToolsForRun(ctx.run) as readonly string[]).includes(toolName)) return false;
+    return await agentRunMatchesResourceScope(
+      ctx.run.policySnapshot.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
+    ) && await agentRunMatchesResourceScope(
+      current.effective.triggers, ctx.run.orgId, ctx.run.deviceId, ctx.device?.siteId ?? null,
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Kill switch + current effective policy. True means "do not start".
  *
@@ -2702,8 +2744,8 @@ async function cleanupExecutionLedger(
  * "still enabled" to mean anything.
  *
  * An org OVERRIDE does not trip this: the resolver reports the baseline id
- * either way, so ordinary org-level policy edits still reach the run through
- * the enabled/mode check alone.
+ * either way, so org-level policy edits still reach the enabled/mode check. Resource
+ * restrictions are separately revalidated before execution and every tool call.
  */
 async function isStoppedBeforeStart(
   orgId: string,

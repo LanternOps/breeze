@@ -1,11 +1,15 @@
 ---
 title: AI Analysis Runs
-description: Ask for cross-device analysis in chat, get findings plus files you can keep.
+description: Inspect sandboxed AI agent analysis, findings and downloadable files.
 ---
 
 import { Steps, Aside } from '@astrojs/starlight/components';
 
-An **analysis run** is what you start when the question needs more than a lookup: "pull yesterday's security logs from the finance servers and tell me which accounts failed logon from outside the office, with the list attached." Breeze exports the data it needs, writes and runs code against it in an isolated workspace, and hands back findings plus files you can download, attach to a ticket, or put in a report.
+AI agents can export data, run code against it in an isolated workspace, and produce findings plus downloadable files. The run page records what happened and the files produced.
+
+<Aside type="caution" title="Background launches from chat are disabled">
+  Chat cannot start background analysis runs in this version. Delegating a user's request to an agent requires a separate authorization design that preserves the user's access restrictions. Preconfigured AI agent execution and historical run results remain available.
+</Aside>
 
 <Aside type="caution" title="This runs on rented compute, and it is off until you say otherwise">
   Analysis code executes in a sandbox hosted in your organization's region — not on your devices, and not on your own servers. It is **off by default for every organization** and an administrator has to turn it on per organization under **Settings → Organization → Security**. Until then the capability is simply absent: nothing breaks, and nobody can start a run. Self-hosted Breeze does not have this feature at all.
@@ -23,29 +27,17 @@ The workspace is a per-run virtual machine that is destroyed when the run ends.
 
 Anything the analysis wants *done* comes back as a **proposal**. Proposals are text: turning one into a real action is the same approval you already use, with the same tier gate and the same audit record. The sandbox is not a way around approvals — it cannot reach a device even if it tried.
 
-## Starting a run from chat
+## Configured agent access
 
-<Steps>
+An agent's site, device-group, and device-tag restrictions apply to manual runs as well as automatic triggers. Partner and organization filters combine by intersection; non-overlapping filters permit no access. Scope is checked again when a queued run starts and before each tool call.
 
-1. Ask in chat for the analysis you want. Name the devices or the site if it matters.
-
-2. Breeze answers with a **run card** showing the run id and its progress. Runs take minutes, not seconds — you can keep working, close the chat, or come back later.
-
-3. When the run finishes, the card shows the summary and one chip per file it produced. Click a chip to download it, or **Open the full run** to see everything.
-
-</Steps>
-
-Starting a run is something only a person does from a live chat session — an AI agent cannot launch one on its own.
-
-If the conversation ends before the run does — you closed the tab, your session timed out, or Breeze was updated — **nothing is lost**. The result is always written to the run page, and the card links straight to it. Chat is where you start a run and the convenient place to read it; the run page is where it is kept.
-
-If you already pulled a file from a device in this conversation, Breeze can stage it into the workspace — that is how live device files get analysed, since reading a file off a machine still needs your approval each time.
+Agents with these restrictions currently require a single device target. Organization-wide runs are refused until their evidence and tools support the same restrictions. Scoped runs expose device lookup, device context, and device metric analysis tools; broader tools are refused until their scope handling is verified. Moving the device to another site during a run also stops further scoped tool calls.
 
 ## Reading the run
 
 The run page is the audit surface. Besides the usual trigger and status, an analysis run shows:
 
-- **Files this run produced** — name, kind, size, a preview, and a download. Files always download as attachments; Breeze never renders them.
+- **Files this run produced** — name, kind, size, a text preview when supported, and a download. Files always download as attachments; Breeze never renders them.
 - **What ran in the workspace** — every step in order, with the language, the exit code, how long it took, and links to the exact script and its output. This is how you check a finding rather than take it on faith.
 - **Compute** — the sandbox's own cost, tracked separately from the run's model/token cost.
 
@@ -53,7 +45,7 @@ Files are kept for **30 days** and then deleted. A ticket or report you attached
 
 ## Attaching a file to a ticket
 
-Open the run, find the file, and choose **Attach to a ticket**. Nothing is copied — the ticket points at the same file, so even a large output attaches instantly. The attachment expires with the file.
+Open the run, find the file, and choose **Attach to a ticket**. Breeze copies the file into a ticket attachment and adds an internal comment. The success message appears after both steps complete.
 
 A report run can attach the same file the same way, by reference rather than by copy.
 

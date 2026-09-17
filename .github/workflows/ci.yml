@@ -3516,11 +3516,48 @@ jobs:
             echo "No .env.stack — the stack was never brought up; nothing to tear down."
           fi
 
+  # Build-time dependencies must work without network access during analysis.
+  workspace-runtime:
+    name: Workspace Runtime Smoke
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Build analysis runtime (no publishing)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: docker/ai-workspace
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: breeze-ai-workspace:ci
+          cache-from: type=gha,scope=workspace-runtime
+          cache-to: type=gha,mode=max,scope=workspace-runtime
+
+      - name: Verify non-root offline document round trips
+        run: |
+          docker run --rm --platform linux/amd64 --network none \
+            breeze-ai-workspace:ci sh -ec '
+              test "$(id -u)" != 0
+              test -w /work/in && test -w /work/out && test -w /work/tmp
+              python3 /opt/breeze-runtime/smoke.py
+              node -e "if (1 + 2 !== 3) process.exit(1)"
+            '
+
   # Summary job that depends on all other jobs for branch protection
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [changes, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
+    needs: [changes, workspace-runtime, docs-check, lint, typecheck, test-api, test-m365-graph-read-executor, test-m365-graph-actions-executor, test-m365-communications-executor, test-web, test-mobile, mobile-native-changes, build-mobile-ios, test-portal, test-viewer, test-office-addin-core, test-excel-addin, test-word-addin, test-powerpoint-addin, test-outlook-addin, security-audit, build-api, build-m365-graph-read-executor, build-m365-graph-actions-executor, build-m365-communications-executor, build-web, build-portal, build-agent, test-agent, test-agent-windows, recovery-media-e2e, windows-runtime-smoke, integration-test, check-migrations-nonsuperuser, rust-check, build-smoke-images, smoke-test, guided-setup-smoke, auth-browser-transition-browser-contract]
     if: ${{ !cancelled() }}
     steps:
       - name: Check all jobs passed
@@ -3529,6 +3566,7 @@ jobs:
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
           DOCS_CHECK_RESULT: ${{ needs.docs-check.result }}
+          WORKSPACE_RUNTIME_RESULT: ${{ needs.workspace-runtime.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           TEST_API_RESULT: ${{ needs.test-api.result }}
@@ -3582,6 +3620,7 @@ jobs:
           if [[ "${CHANGES_RESULT}" != "success" ]] || \
              { [[ "${DOCS_CHANGED}" != "false" ]] && [[ "${DOCS_CHECK_RESULT}" != "success" ]]; } || \
              { [[ "${CODE_CHANGED}" != "false" ]] && { \
+             [[ "${WORKSPACE_RUNTIME_RESULT}" != "success" ]] || \
              [[ "${LINT_RESULT}" != "success" ]] || \
              [[ "${TYPECHECK_RESULT}" != "success" ]] || \
              [[ "${TEST_API_RESULT}" != "success" ]] || \

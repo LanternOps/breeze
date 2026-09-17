@@ -2119,10 +2119,10 @@
           "title": "Bu çalıştırmanın oluşturduğu dosyalar",
           "download": "İndir",
           "preview": "Önizleme",
-          "attachToTicket": "Bilete ekle",
-          "attach": "{{name}} dosyasını ekle",
+          "attachToTicket": "Dahili not olarak ekle",
+          "attach": "{{name}} dosyasını dahili not olarak ekle",
           "ticketIdPlaceholder": "Bilet No",
-          "attachedToTicket": "Bilete eklendi",
+          "attachedToTicket": "Bilete dahili not olarak eklendi",
           "attachFailed": "Dosya bu bilete eklenemedi"
         },
         "workspace": {

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { AiAgentRunWorkspaceDto } from '@breeze/shared';
+import { downloadArtifact } from '@/lib/downloadArtifact';
 
 /**
  * What actually ran inside the sandbox (execution-plane spec §5.8).
@@ -66,6 +67,7 @@ export default function RunWorkspaceSection({
                   data-testid={`run-workspace-step-script-${step.ordinal}`}
                   href={`/api/v1/ai/artifacts/${step.scriptArtifactHandle}`}
                   download
+                  onClick={downloadArtifact}
                   className="underline"
                 >
                   {t('aiAgentsPage.runs.detail.workspace.script')}
@@ -80,6 +82,7 @@ export default function RunWorkspaceSection({
                   data-testid={`run-workspace-step-stdout-${step.ordinal}`}
                   href={`/api/v1/ai/artifacts/${step.stdoutArtifactHandle}`}
                   download
+                  onClick={downloadArtifact}
                   className="underline"
                 >
                   {t('aiAgentsPage.runs.detail.workspace.stdout')}

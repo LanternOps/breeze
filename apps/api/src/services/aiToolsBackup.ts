@@ -309,7 +309,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
           .where(and(...deviceConditions)).limit(1);
         if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
         // Site axis (app-layer only; RLS does NOT enforce it).
-        if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+        if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
         // Latest backup job for device
         const jobOrgCond = orgWhere(auth, backupJobs.orgId);
@@ -443,7 +443,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         .where(and(...deviceConditions))
         .limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 25), 100);
       const snapshotOrgCond = orgWhere(auth, backupSnapshots.orgId);
@@ -513,7 +513,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const [device] = await db.select({ id: devices.id, status: devices.status, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
       if (device.status !== 'online') {
         return JSON.stringify({ error: `Device is ${device.status}, cannot execute backup` });
       }
@@ -611,7 +611,7 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
       const [device] = await db.select({ id: devices.id, siteId: devices.siteId }).from(devices)
         .where(and(...deviceConditions)).limit(1);
       if (!device) return JSON.stringify({ error: 'Device not found or access denied' });
-      if (deviceSiteDenied(auth, device.siteId)) return JSON.stringify({ error: 'Device not found or access denied' });
+      if (deviceSiteDenied(auth, device.siteId, device.id)) return JSON.stringify({ error: 'Device not found or access denied' });
 
       // Verify the snapshot under the caller's org AND site scope: the source
       // snapshot's device must be within the caller's site scope, not just the
