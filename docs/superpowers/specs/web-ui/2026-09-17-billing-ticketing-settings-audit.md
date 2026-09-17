@@ -1,7 +1,8 @@
 # Billing + ticketing settings — audit and consolidation direction
 
-Status: **audit, awaiting Todd's read**. Not a build spec — it ends in five decisions and a
-ranked list of moves; the approved moves become one tracked feature.
+Status: **approved by Todd 2026-09-17** — all five decisions taken as recommended (§8). Not a
+build spec — it ends in five decisions and a ranked list of moves; the approved moves become
+one tracked feature (#6164), planned under `docs/superpowers/plans/web-ui/`.
 Origin: Todd, 2026-09-17, while reviewing the billing-profiles spec (#4628): "I see
 \[spaghetti\] already happening with the billing and ticketing settings and want to
 consolidate and simplify it instead of adding mess."
@@ -254,7 +255,7 @@ Categories tab and the org Ticketing tab. It should land in the final layout, no
 current one. **Wave 0 goes first** (it is small and UI-only); #4628 W01 (work types) can run
 in parallel; #4628 W02 follows Wave 0.
 
-## 8. Open Decisions
+## 8. Decisions (answered 2026-09-17 — Todd approved the recommendations)
 
 1. **Where do Billing and Ticketing settings live?**
    - **A — two symmetrical pages, `Settings → Billing` and `Settings → Ticketing`, single-
@@ -264,20 +265,26 @@ in parallel; #4628 W02 follows Wave 0.
      Billing's permission gate (`invoices:write`) has to move into the hub.
    - **C — leave as is** (Billing a page, Ticketing a hub tab with sub-tabs).
    **Recommend A.**
+   **DECIDED: A** — two symmetrical pages, single-level tabs.
 
 2. **Partner identity (M16).** A — one source, letterhead overrides only when different;
    B — keep two records and add a "copy from company" button. **Recommend A.**
+   **DECIDED: A.**
 
 3. **Invoices snapshot their theme at issue (M17).** A — yes, with a no-visible-change
    backfill; B — leave live. **Recommend A** — an issued invoice should not restyle itself.
+   **DECIDED: A** — snapshot at issue, no-visible-change backfill.
 
 4. **Missing levels — add only these two?** Org payment terms (M19: net-15 for one client
    is a routine ask) and a partner portal template for new orgs (M20). **Recommend M19 yes,
    M20 optional, nothing else.**
+   **DECIDED: M19 yes; M20 stays optional — not in the registered waves, revisit after
+   Wave 2; no other new levels.**
 
 5. **Delivery.** A — one tracked feature, "Settings consolidation", three waves as in §5,
    Wave 0 before #4628 W02; B — fold the moves into whatever feature touches each screen
    next. **Recommend A** — B is how it got this way.
+   **DECIDED: A** — one tracked feature, three waves, Wave 0 before #4628 W02.
 
 ## 9. Limits of this audit
 
