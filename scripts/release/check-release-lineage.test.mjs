@@ -347,6 +347,39 @@ test('the only release tag promotion consumes and verifies the signed manifest',
   }
 });
 
+test('the out-of-band image promotion workflow keeps every guarantee of the in-release job', () => {
+  // promote-release-images.yml exists so a release whose create-release job
+  // died AFTER signing the image inventory (a stalled asset upload, v0.114.0)
+  // can still get its version tags — without a hand-run `imagetools create`.
+  // It must be at least as strict as promote-signed-release-images.
+  const path = join(REPO_ROOT, '.github', 'workflows', 'promote-release-images.yml');
+  const text = readFileSync(path, 'utf8');
+
+  // Dispatch-only, from main, for one exact tag: never a push/PR/schedule trigger.
+  assert.match(text, /^on:\n  workflow_dispatch:\n    inputs:\n      tag:/m);
+  assert.ok(!/^  (push|pull_request|pull_request_target|schedule|workflow_run):/m.test(text));
+  assert.ok(text.includes("github.ref == 'refs/heads/main'"), 'must only run from main');
+
+  // Same trust decision: the signed inventory, the official key, exact digests.
+  assert.ok(text.includes('release-image-manifest.mjs verify'));
+  assert.ok(text.includes('RELEASE_MANIFEST_ED25519_PUBLIC_KEY'));
+  assert.ok(text.includes('docker buildx imagetools create'));
+  assert.ok(text.includes('@${SIGNED_IMAGE_DIGEST}'), 'must retag the exact signed digest');
+  assert.ok(!text.includes('docker/build-push-action@'), 'promotion must never rebuild image bytes');
+
+  // The inventory comes from the release run FOR THAT TAG, bound to the tag's commit.
+  assert.ok(text.includes('name: signed-release-image-manifest'));
+  assert.ok(text.includes('run-id:'));
+  assert.ok(text.includes('sourceCommit'), 'manifest sourceCommit must be bound to the tag commit');
+  assert.ok(text.includes('headSha'), 'the source run must be bound to the tag commit');
+
+  // Same image set and moving-channel policy as release.yml.
+  const promotion = jobText(requiredReleaseJob('promote-signed-release-images'));
+  const matrixRows = promotion.match(/- \{ name: [^}]+\}/g);
+  assert.ok(matrixRows && matrixRows.length >= 7);
+  for (const row of matrixRows) assert.ok(text.includes(row), `image matrix drifted: ${row}`);
+});
+
 test('drift monitoring classifies candidates before the side-branch fallback', () => {
   const driftText = readFileSync(DRIFT_WORKFLOW, 'utf8');
   const classifierIndex = driftText.indexOf('scripts/release/check-release-lineage.sh');
