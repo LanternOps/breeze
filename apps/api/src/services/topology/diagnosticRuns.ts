@@ -180,13 +180,23 @@ async function requireDiagnosticAuthority(ctx: TopologyRequestContext): Promise<
   }
 }
 
+/**
+ * Advisory-lock salt for topology diagnostic starts. Paired with the org id it
+ * keeps this lock from colliding with any other feature's org-keyed lock.
+ */
+const TOPOLOGY_DIAGNOSTIC_START_LOCK_SALT = 0x746f7064; // "topd"
+
+/** Anything that can run the usage count — the pool, or an open transaction. */
+type DiagnosticQuotaExecutor = Pick<typeof db, 'execute'>;
+
 async function readUsage(
+  executor: DiagnosticQuotaExecutor,
   ctx: TopologyRequestContext,
   deviceId: string,
 ): Promise<TopologyDiagnosticUsage> {
   const active = sql`state IN ('queued','running')`;
   const recent = sql`queued_at > now() - interval '${sql.raw(String(START_WINDOW_SECONDS))} seconds'`;
-  const [row] = await db.execute<{
+  const [row] = await executor.execute<{
     active_agent: string;
     active_site: string;
     active_org: string;
@@ -254,16 +264,6 @@ export async function createTopologyDiagnosticRun(
     throw new TopologyOperationError('topology_site_not_found', 404);
   }
 
-  const refusal = exceededTopologyDiagnosticQuota(await readUsage(ctx, plan.origin.deviceId));
-  if (refusal) {
-    throw new TopologyOperationError(
-      'diagnostic_quota_exceeded',
-      429,
-      `Diagnostic budget exhausted (${refusal.reason})`,
-      refusal.retryAfterSeconds,
-    );
-  }
-
   const runId = randomUUID();
   const attemptId = randomUUID();
   const intent: TopologyDiagnosticIntent = {
@@ -276,6 +276,26 @@ export async function createTopologyDiagnosticRun(
   };
 
   const inserted = await db.transaction(async (tx) => {
+    // The budget is a check-then-insert, so it only holds if nothing else can
+    // insert between the two. Diagnostic starts are rare, so one advisory lock
+    // per ORG — taken inside this transaction and released with it — is enough
+    // to serialize them; without it N concurrent requests carrying distinct
+    // Idempotency-Keys each counted zero active runs and were all accepted.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(${TOPOLOGY_DIAGNOSTIC_START_LOCK_SALT}::int, hashtext(${ctx.scope.orgId})::int)`,
+    );
+    // Counted on this same transaction/connection, behind the same lock as the
+    // insert below.
+    const refusal = exceededTopologyDiagnosticQuota(await readUsage(tx, ctx, plan.origin.deviceId));
+    if (refusal) {
+      throw new TopologyOperationError(
+        'diagnostic_quota_exceeded',
+        429,
+        `Diagnostic budget exhausted (${refusal.reason})`,
+        refusal.retryAfterSeconds,
+      );
+    }
+
     const [row] = await tx
       .insert(topologyDiagnosticRuns)
       .values({

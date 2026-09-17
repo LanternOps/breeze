@@ -32,6 +32,7 @@ import type {
 } from '../../services/topology/diagnosticTypes';
 import {
   TOPOLOGY_DIAGNOSTIC_INTENT_EVENT,
+  TOPOLOGY_DIAGNOSTIC_QUOTAS,
   cancelTopologyDiagnosticRun,
   createTopologyDiagnosticRun,
   getTopologyDiagnosticRun,
@@ -686,6 +687,31 @@ describe('topology diagnostic budgets and sweeping', () => {
     // The released slot proves the budget is derived from live state, not a
     // counter that a terminal transition could forget to decrement.
     await expect(f.create(crypto.randomUUID())).resolves.toMatchObject({ state: 'queued' });
+  });
+
+  it('serializes concurrent starts so the per-agent budget cannot be raced', async () => {
+    const f = await fixture();
+    const CONCURRENT = 12;
+    // Distinct Idempotency-Keys, so nothing here is deduplicated: only the
+    // budget stands between these requests and 12 accepted runs on one agent.
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: CONCURRENT }, () => f.create(crypto.randomUUID())),
+    );
+
+    const accepted = outcomes.filter((outcome) => outcome.status === 'fulfilled');
+    expect(accepted).toHaveLength(TOPOLOGY_DIAGNOSTIC_QUOTAS.activeRunsPerAgent);
+    expect(
+      outcomes.filter(
+        (outcome) =>
+          outcome.status === 'rejected' &&
+          (outcome.reason as { code?: string }).code === 'diagnostic_quota_exceeded',
+      ),
+    ).toHaveLength(CONCURRENT - TOPOLOGY_DIAGNOSTIC_QUOTAS.activeRunsPerAgent);
+    for (const outcome of accepted) {
+      expect(
+        (await f.row((outcome as PromiseFulfilledResult<{ id: string }>).value.id))!.state,
+      ).toBe('queued');
+    }
   });
 
   it('expires an abandoned run and stops its queued command from ever landing', async () => {
