@@ -19,7 +19,7 @@ export type TopologySourceReceipt = {
   baseSnapshotId?: string; reason?: 'stale_sequence' | 'full_snapshot_required' | 'snapshot_budget_exceeded' | 'invalid_capture_time' | 'snapshot_conflict';
 };
 export type TopologyIngestReceipt = {
-  producerEpoch?: string; accepted: boolean; acceptedSequence?: string; contentDigest?: string; baseSnapshotId?: string;
+  producerEpoch?: string; reportSequence?: string; accepted: boolean; acceptedSequence?: string; contentDigest?: string; baseSnapshotId?: string;
   nextFullValidationAt?: string; reason?: string; retryAfterSeconds?: number; sourceReceipts: TopologySourceReceipt[];
 };
 export type TopologyCaptureTime = { effectiveAt: Date | null; freshUntil: Date | null };

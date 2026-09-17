@@ -27,5 +27,12 @@ export async function topologyHeartbeat(device:{id:string;orgId:string;siteId:st
       receipt={producerEpoch:config.producerEpoch,accepted:false,reason,sourceReceipts:[]};
     }
   }
+  // The agent discards a rejected capture only when the rejection names it;
+  // an unnamed rejection leaves it resending the same bytes every heartbeat.
+  if(receipt){
+    const claimed=input.networkContextV1&&typeof input.networkContextV1==='object'&&'sequence' in input.networkContextV1?input.networkContextV1.sequence:undefined;
+    if(typeof claimed==='string'&&/^(0|[1-9]\d{0,19})$/.test(claimed))receipt.reportSequence=claimed;
+    if(config.producerEpoch)receipt.producerEpoch??=config.producerEpoch;
+  }
   return {config,receipt};
 }
