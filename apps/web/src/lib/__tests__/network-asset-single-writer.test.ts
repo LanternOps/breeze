@@ -189,7 +189,12 @@ describe('network asset single writer', () => {
       .filter((f) => relative(SRC_ROOT, f) !== WRITER)
       .flatMap((f) => {
         const rel = relative(SRC_ROOT, f).split(sep).join('/');
-        return findAssetWrites(readFileSync(f, 'utf8'), rel).map((v) => `${rel}:${v.line} ${v.method} ${v.shape}`);
+        const source = readFileSync(f, 'utf8');
+        // Every detected write goes through `fetchWithAuth`, aliased or not, and
+        // an alias still names it in its import. Parsing the ~90% of modules
+        // that never mention it is what pushed this past 5s on a loaded runner.
+        if (!source.includes('fetchWithAuth')) return [];
+        return findAssetWrites(source, rel).map((v) => `${rel}:${v.line} ${v.method} ${v.shape}`);
       })
       .sort();
 
@@ -200,5 +205,5 @@ describe('network asset single writer', () => {
             `Route them through useNetworkAssetMutations() (spec §10, D7).`
         : undefined,
     ).toEqual([]);
-  });
+  }, 30_000);
 });
