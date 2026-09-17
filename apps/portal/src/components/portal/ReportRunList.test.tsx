@@ -153,6 +153,18 @@ describe('ReportRunList', () => {
     it('leaves a name with neither prefix untouched', () => {
       expect(reportDisplayName('Executive summary')).toBe('Executive summary');
     });
+
+    it('tolerates a dash with no surrounding whitespace', () => {
+      expect(reportDisplayName('Service evidence—Vulnerability management')).toBe(
+        'Vulnerability management',
+      );
+    });
+
+    it('does not trim the prefix when it appears mid-string, not at the start', () => {
+      expect(reportDisplayName('Report: Service evidence — Vulnerability management')).toBe(
+        'Report: Service evidence — Vulnerability management',
+      );
+    });
   });
 
   it('totals the ledger in a foot line', () => {
