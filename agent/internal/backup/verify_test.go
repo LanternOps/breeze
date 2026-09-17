@@ -1,7 +1,9 @@
 package backup
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -491,5 +493,159 @@ func TestTestRestore_SkipsContentlessEntries(t *testing.T) {
 	}
 	if res.Status != "passed" || res.FilesVerified != 1 || res.FilesFailed != 0 {
 		t.Fatalf("result = %+v", res)
+	}
+}
+
+type cancelAfterDownloadProvider struct {
+	manifestKey string
+	manifest    []byte
+	files       map[string][]byte
+	cancelOn    string
+	cancel      context.CancelFunc
+	downloads   []string
+}
+
+func (p *cancelAfterDownloadProvider) Upload(localPath, remotePath string) error {
+	return nil
+}
+
+func (p *cancelAfterDownloadProvider) Download(remotePath, localPath string) error {
+	p.downloads = append(p.downloads, remotePath)
+
+	var data []byte
+	if remotePath == p.manifestKey {
+		data = p.manifest
+	} else {
+		var ok bool
+		data, ok = p.files[remotePath]
+		if !ok {
+			return os.ErrNotExist
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(localPath, data, 0o644); err != nil {
+		return err
+	}
+
+	if remotePath == p.cancelOn {
+		p.cancel()
+	}
+
+	return nil
+}
+
+func (p *cancelAfterDownloadProvider) List(prefix string) ([]string, error) {
+	return nil, nil
+}
+
+func (p *cancelAfterDownloadProvider) Delete(remotePath string) error {
+	return nil
+}
+
+func newCancelAfterFirstDownloadProvider(t *testing.T, snapshotID string) (
+	context.Context,
+	*cancelAfterDownloadProvider,
+	string,
+	string,
+) {
+	t.Helper()
+
+	firstPath := path.Join(snapshotRootDir, snapshotID, "files", "first.txt")
+	secondPath := path.Join(snapshotRootDir, snapshotID, "files", "second.txt")
+
+	snapshot := Snapshot{
+		ID: snapshotID,
+		Files: []SnapshotFile{
+			{
+				SourcePath: "/tmp/first.txt",
+				BackupPath: firstPath,
+				Size:       5,
+			},
+			{
+				SourcePath: "/tmp/second.txt",
+				BackupPath: secondPath,
+				Size:       6,
+			},
+		},
+		Size: 11,
+	}
+
+	manifest, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	provider := &cancelAfterDownloadProvider{
+		manifestKey: path.Join(snapshotRootDir, snapshotID, snapshotManifestKey),
+		manifest:    manifest,
+		files: map[string][]byte{
+			firstPath:  []byte("first"),
+			secondPath: []byte("second"),
+		},
+		cancelOn: firstPath,
+		cancel:   cancel,
+	}
+
+	return ctx, provider, firstPath, secondPath
+}
+
+func TestVerifyIntegrityContextStopsAfterCancellation(t *testing.T) {
+	ctx, provider, firstPath, secondPath :=
+		newCancelAfterFirstDownloadProvider(t, "verify-context-cancel")
+
+	_, err := VerifyIntegrityContext(ctx, provider, "verify-context-cancel")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("VerifyIntegrityContext error = %v, want context.Canceled", err)
+	}
+
+	if len(provider.downloads) != 2 {
+		t.Fatalf("downloads = %v, want manifest + first file only", provider.downloads)
+	}
+	if provider.downloads[1] != firstPath {
+		t.Fatalf("first file download = %q, want %q", provider.downloads[1], firstPath)
+	}
+	for _, got := range provider.downloads {
+		if got == secondPath {
+			t.Fatalf("second file was downloaded after cancellation: %v", provider.downloads)
+		}
+	}
+}
+
+func TestTestRestoreContextStopsAfterCancellation(t *testing.T) {
+	ctx, provider, firstPath, secondPath :=
+		newCancelAfterFirstDownloadProvider(t, "restore-context-cancel")
+
+	result, err := TestRestoreContext(
+		ctx,
+		provider,
+		"restore-context-cancel",
+		t.TempDir(),
+		nil,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TestRestoreContext error = %v, want context.Canceled", err)
+	}
+
+	if len(provider.downloads) != 2 {
+		t.Fatalf("downloads = %v, want manifest + first file only", provider.downloads)
+	}
+	if provider.downloads[1] != firstPath {
+		t.Fatalf("first file download = %q, want %q", provider.downloads[1], firstPath)
+	}
+	for _, got := range provider.downloads {
+		if got == secondPath {
+			t.Fatalf("second file was downloaded after cancellation: %v", provider.downloads)
+		}
+	}
+
+	if result.RestorePath != "" {
+		if _, statErr := os.Stat(result.RestorePath); !os.IsNotExist(statErr) {
+			t.Fatalf("restore path still exists after cancellation: %q", result.RestorePath)
+		}
 	}
 }

@@ -2119,11 +2119,13 @@
           "title": "Arquivos gerados por esta execução",
           "download": "Baixar",
           "preview": "Visualizar",
-          "attachToTicket": "Anexar a um chamado",
-          "attach": "Anexar {{name}}",
+          "attachToTicket": "Anexar como nota interna",
+          "attach": "Anexar {{name}} como nota interna",
           "ticketIdPlaceholder": "ID do chamado",
-          "attachedToTicket": "Anexado ao chamado",
-          "attachFailed": "Não foi possível anexar o arquivo a esse chamado"
+          "attachedToTicket": "Anexado ao chamado como nota interna",
+          "attachFailed": "Não foi possível anexar o arquivo a esse chamado",
+          "attachedButCommentFailed": "O arquivo foi anexado, mas não foi possível adicionar a nota ao chamado",
+          "downloadExpired": "Este arquivo expirou e não está mais disponível para download."
         },
         "workspace": {
           "title": "O que foi executado na sandbox",

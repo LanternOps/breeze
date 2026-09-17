@@ -339,6 +339,7 @@ When admission is refused, Breeze does not create a run row, so nothing new appe
 | Skip reason | Meaning | Also published as an event |
 |---|---|---|
 | `trigger_filter_mismatch` | The anomaly opt-in gate or a narrowing trigger filter did not match. | Yes |
+| `resource_scope_unverifiable` | The run's device could not be checked against the agent's site, group or tag scope (database error). The run is skipped rather than allowed; retry once the platform is healthy. | Yes |
 | `no_effective_agent` | No enabled partner baseline agent of that kind exists. | No, log only |
 | `kill_switch_off` | `BREEZE_AI_AGENTS_ENABLED` is off. | No, log only |
 

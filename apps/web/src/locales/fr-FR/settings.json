@@ -2119,11 +2119,13 @@
           "title": "Fichiers produits par cette exécution",
           "download": "Télécharger",
           "preview": "Aperçu",
-          "attachToTicket": "Joindre à un ticket",
-          "attach": "Joindre {{name}}",
+          "attachToTicket": "Joindre comme note interne",
+          "attach": "Joindre {{name}} comme note interne",
           "ticketIdPlaceholder": "ID du ticket",
-          "attachedToTicket": "Joint au ticket",
-          "attachFailed": "Impossible de joindre le fichier à ce ticket"
+          "attachedToTicket": "Joint au ticket comme note interne",
+          "attachFailed": "Impossible de joindre le fichier à ce ticket",
+          "attachedButCommentFailed": "Le fichier a été joint, mais la note n'a pas pu être ajoutée au ticket",
+          "downloadExpired": "Ce fichier a expiré et n'est plus disponible au téléchargement."
         },
         "workspace": {
           "title": "Ce qui s’est exécuté dans le bac à sable",

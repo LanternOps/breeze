@@ -35,7 +35,12 @@ vi.mock('../db/schema/orgs', () => ({
   },
 }));
 
-vi.mock('drizzle-orm', () => ({
+// Partial mock: the three operators this suite inspects are stubbed, but the
+// rest of drizzle-orm stays real. `aiToolsSiteScope` (the shared device-axis
+// helpers) pulls in the schema barrel, whose untouched tables are built with
+// `sql`, `timestamp`, … — a total mock makes the whole suite fail to import.
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   and: (...args: unknown[]) => ({ _op: 'and', args }),
   eq: (a: unknown, b: unknown) => ({ _op: 'eq', a, b }),
   inArray: (a: unknown, b: unknown) => ({ _op: 'inArray', a, b }),

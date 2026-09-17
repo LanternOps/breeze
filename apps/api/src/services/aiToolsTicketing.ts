@@ -8,10 +8,14 @@
 
 import { and, desc, eq, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db';
-import { alerts, deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
+import { deviceHardware, devices, ticketDrafts, tickets } from '../db/schema';
 import type { AuthContext } from '../middleware/auth';
 import { isAiAgentPrincipal } from '../middleware/auth';
 import { deviceInSiteScope, ticketSiteScopeCondition } from '../routes/tickets/siteScope';
+import { deviceIdSiteDenied, deviceScopeCondition } from './aiToolsSiteScope';
+// One implementation of alert-by-id access, not a twin (#6096 I6). aiToolsAlerts
+// does not import this module, so the edge is acyclic.
+import { findAlertWithAccess } from './aiToolsAlerts';
 import type { AiTool, AiToolTier } from './aiTools';
 import type { ToolExecutionContext } from './toolExecutionContext';
 import {
@@ -150,9 +154,11 @@ function entryCurrency(entry: { currencyCode?: string | null }): string | null {
  *
  * Site axis: RLS enforces only the org axis, so a site-restricted
  * org user must also be gated on the SITE axis here. After the org-scoped load,
- * a device-bound ticket is resolved only when its device's site is in the
- * caller's allowlist (deviceInSiteScope); deviceless (org-level) tickets stay
- * accessible at org scope — matching getScopedTicketOr404 in the HTTP route.
+ * a device-bound ticket is resolved only when its device is in the caller's
+ * exact-device allowlist AND its site is in the caller's site allowlist
+ * (deviceInSiteScope enforces both axes independently, #6086 finding 6);
+ * deviceless (org-level) tickets stay accessible at org scope — they are not
+ * device-attributable — matching getScopedTicketOr404 in the HTTP route.
  *
  * Returns the ticket row, or null when not found / out of the caller's scope.
  */
@@ -166,18 +172,6 @@ async function findTicketWithAccess(ticketId: string, auth: AuthContext) {
     return null;
   }
   return ticket;
-}
-
-async function findAlertWithAccess(alertId: string, auth: AuthContext) {
-  const conditions: SQL[] = [eq(alerts.id, alertId)];
-  const orgCond = auth.orgCondition(alerts.orgId);
-  if (orgCond) conditions.push(orgCond);
-  const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
-  if (!alert) return null;
-  if (alert.deviceId && !(await deviceInSiteScope(auth, alert.deviceId))) {
-    return null;
-  }
-  return alert;
 }
 
 async function canManageAnyTicketComment(auth: AuthContext): Promise<boolean> {
@@ -470,6 +464,14 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         // their allowed sites (deviceless org-level tickets stay visible).
         const siteCondition = ticketSiteScopeCondition(auth);
         if (siteCondition) conditions.push(siteCondition);
+        // Exact-device axis (#6086 finding 6): a device-bound agent run must not
+        // enumerate a SIBLING device's tickets. Independent of the site axis —
+        // a device-less analysis run carries allowedDeviceIds with no
+        // allowedSiteIds, so the site condition above is undefined for it.
+        // Deviceless (org-level) tickets stay visible: they are not
+        // device-attributable (same carve-out as findTicketWithAccess).
+        const deviceCondition = deviceScopeCondition(auth, tickets.deviceId);
+        if (deviceCondition) conditions.push(or(isNull(tickets.deviceId), deviceCondition)!);
         if (input.orgId) conditions.push(eq(tickets.orgId, input.orgId as string));
         if (input.deviceId) conditions.push(eq(tickets.deviceId, input.deviceId as string));
         if (input.status) conditions.push(eq(tickets.status, input.status as TicketStatus));
@@ -872,6 +874,13 @@ export function registerTicketingTools(aiTools: Map<string, AiTool>): void {
         if (found.deviceId !== null) return JSON.stringify({ linked: false, reason: 'already_linked' });
 
         const deviceId = matches[0]!.id;
+        // Exact-device/site axes (#6086 finding 6): the identity match above is
+        // org-only, so without this a device-bound run could link (and then
+        // pivot through) a device outside its allowlist. Fails closed on an
+        // unresolvable device; a no-op for unrestricted callers.
+        if (await deviceIdSiteDenied(auth, deviceId)) {
+          return JSON.stringify({ linked: false, reason: 'device_out_of_scope' });
+        }
         // The `device_id IS NULL` guard in the WHERE (not just the read above)
         // is the actual CAS — closes the race between two concurrent
         // link_device calls both passing the "not yet linked" read.

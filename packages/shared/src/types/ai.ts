@@ -262,9 +262,10 @@ export type AiStreamEvent =
       redactions?: Array<{ rule: string; count: number; location: string }>;
       blockReason?: string;
     }
-  // ── Execution plane (spec §5.5) — a workspace `analysis` run launched from
-  //    this chat session by `workspace_launch_analysis`. Published by
-  //    services/workspace/chatRunBridge.ts, NOT by the SDK message loop: these
+  // ── Execution plane (spec §5.5) — a workspace `analysis` run associated
+  //    with this chat session. Chat-initiated launch is currently disabled
+  //    (#6086); this event shape is retained for when delegated authorization
+  //    lands. Published by services/workspace/chatRunBridge.ts, NOT by the SDK message loop: these
   //    arrive out of band from the worker role, so a client may see them at any
   //    point in a turn, or (when no turn is open) not at all — the run card
   //    polls GET /ai/agents/runs/:runId as its always-correct source and treats

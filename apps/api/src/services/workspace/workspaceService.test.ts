@@ -1,3 +1,4 @@
+import { VercelSandboxCreateError } from './vercelSandboxBackend';
 /**
  * Execution plane W04 — WorkspaceService lifecycle (spec §5.3, §6.2, §9).
  *
@@ -41,6 +42,8 @@ vi.mock('../aiCostTracker', () => ({
 }));
 
 vi.mock('../aiAgents/runProgress', () => ({ emitRunProgress: vi.fn(async () => {}) }));
+
+vi.mock('../sentry', () => ({ captureException: vi.fn() }));
 
 vi.mock('./workspaceBreaker', () => ({
   isWorkspaceBreakerOpen: vi.fn(async () => false),
@@ -93,13 +96,14 @@ class RecordingBackend implements SandboxBackend {
   destroyCount = 0;
   usageError: Error | null = null;
   createError: Error | null = null;
+  runtimeImage: string | undefined;
   files = new Map<string, Buffer>();
   nextExec: Partial<ExecResult> = {};
 
   async create(spec: SandboxCreateSpec): Promise<SandboxHandle> {
     this.creates.push(spec);
     if (this.createError) throw this.createError;
-    return { backend: 'fake', providerRef: 'sbx-1', region: 'eu', createdAt: new Date() };
+    return { backend: 'fake', providerRef: 'sbx-1', region: 'eu', createdAt: new Date(), runtimeImage: this.runtimeImage };
   }
 
   async exec(_h: SandboxHandle, cmd: string[], opts: { timeoutMs: number }): Promise<ExecResult> {
@@ -161,12 +165,17 @@ function seedArtifact(id: string, orgId: string, runId: string | null, name: str
   artifacts.set(id, { id, orgId, runId, name, bytes: body.length, body });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   dbCalls.inserted.length = 0;
   dbCalls.updated.length = 0;
   artifacts.clear();
   created.length = 0;
   vi.mocked(emitRunProgress).mockClear();
+  const { recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess } = await import('./workspaceBreaker');
+  vi.mocked(recordWorkspaceCreateFailure).mockClear();
+  vi.mocked(recordWorkspaceCreateSuccess).mockClear();
+  const { captureException } = await import('../sentry');
+  vi.mocked(captureException).mockClear();
   process.env.BREEZE_REGION = 'eu';
   process.env.AI_WORKSPACE_BACKEND = 'fake';
 });
@@ -188,6 +197,20 @@ describe('WorkspaceService lifecycle', () => {
     expect(dbCalls.inserted).toHaveLength(1);
     expect(dbCalls.inserted[0]!.status).toBe('creating');
     expect(dbCalls.updated.some((u) => u.status === 'ready')).toBe(true);
+  });
+
+  it.each([
+    `analysis@sha256:${'a'.repeat(64)}`,
+    'analysis:release',
+    'vercel/sandbox/universal',
+    undefined,
+  ])('records actual backend runtime %s independently of the legacy request', async (runtimeImage) => {
+    const backend = new RecordingBackend();
+    backend.runtimeImage = runtimeImage;
+    await new WorkspaceService(ctxFor(), backend).ensure();
+    expect(dbCalls.inserted[0]!.runtimeImage).toBeNull();
+    expect(dbCalls.updated.find((u) => u.status === 'ready')?.runtimeImage).toBe(runtimeImage ?? null);
+    expect(backend.creates[0]!.image).not.toBe(runtimeImage);
   });
 
   it('refuses with workspace_unavailable while the breaker is open, without calling the provider', async () => {
@@ -235,6 +258,76 @@ describe('WorkspaceService lifecycle', () => {
     await svc.cancel();
     expect(backend.destroyCount).toBe(1);
     await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_cancelled' });
+  });
+
+  it('retries a failed cancellation during finalize and never reports failed deletion as destroyed', async () => {
+    const backend = new RecordingBackend();
+    vi.spyOn(backend, 'destroy').mockRejectedValue(new Error('provider down'));
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await svc.ensure();
+    await svc.cancel();
+    await svc.finalize();
+    expect(backend.destroy).toHaveBeenCalledTimes(2);
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
+    expect(dbCalls.updated).not.toContainEqual(expect.objectContaining({ status: 'destroyed' }));
+  });
+
+  it('keeps cap-triggered deletion failures available to the reaper', async () => {
+    const backend = new RecordingBackend();
+    backend.nextExec = { durationMs: 40_000 };
+    vi.spyOn(backend, 'destroy').mockRejectedValue(new Error('provider down'));
+    const svc = new WorkspaceService(ctxFor({ limits: { ...ctxFor().limits, analysisMaxComputeSeconds: 30 } }), backend);
+    await svc.runStep({ script: 'x', language: 'bash' });
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
+    await svc.finalize();
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
+  });
+
+  it('records the real provider reference before service bootstrap fails, and patches the row destroyed (mirrors stopFor)', async () => {
+    const backend = new RecordingBackend();
+    backend.nextExec = { exitCode: 1 };
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(dbCalls.updated).toContainEqual(expect.objectContaining({ providerRef: 'sbx-1' }));
+    expect(backend.destroyCount).toBe(1);
+    // A bootstrap failure destroys a real, ready sandbox — the row must not
+    // be left at status: 'ready' pointing at a provider ref that no longer
+    // exists (that's what a reaper would try to destroy again forever).
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroyed', destroyedAt: expect.any(Date) });
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+  });
+
+  it('marks the row destroy_failed (not destroyed) when the bootstrap-failure destroy itself fails', async () => {
+    const backend = new RecordingBackend();
+    backend.nextExec = { exitCode: 1 };
+    vi.spyOn(backend, 'destroy').mockRejectedValue(new Error('provider down'));
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroy_failed', destroyedAt: null });
+  });
+
+  it('opens the breaker on a bootstrap failure and never records success', async () => {
+    const { recordWorkspaceCreateFailure, recordWorkspaceCreateSuccess } = await import('./workspaceBreaker');
+    const { captureException } = await import('../sentry');
+    const backend = new RecordingBackend();
+    backend.nextExec = { exitCode: 1 };
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(recordWorkspaceCreateFailure).toHaveBeenCalledWith('fake');
+    expect(recordWorkspaceCreateSuccess).not.toHaveBeenCalled();
+    expect(captureException).toHaveBeenCalled();
+  });
+
+  it('persists a bootstrap orphan identity and retries its deletion at finalize', async () => {
+    const backend = new RecordingBackend();
+    backend.createError = new VercelSandboxCreateError({ backend: 'vercel', providerRef: 'orphan', region: 'eu', createdAt: new Date(), runtimeImage: 'analysis:orphan' }, new Error('cleanup failed'));
+    const svc = new WorkspaceService(ctxFor(), backend);
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    expect(dbCalls.updated).toContainEqual(expect.objectContaining({ providerRef: 'orphan', runtimeImage: 'analysis:orphan', status: 'destroy_failed' }));
+    await expect(svc.ensure()).rejects.toMatchObject({ code: 'workspace_unavailable' });
+    await svc.finalize();
+    expect(backend.destroyCount).toBe(1);
+    expect(dbCalls.updated.at(-1)).toMatchObject({ status: 'destroyed' });
   });
 
   it('finalize is idempotent, destroys once and records usage + cents', async () => {
@@ -325,7 +418,7 @@ describe('WorkspaceService lifecycle', () => {
 describe('WorkspaceService.stage', () => {
   it('stages only handles in staged_inputs or produced by this run', async () => {
     seedArtifact('h-allowed', 'org-1', 'run-1', 'app.log', Buffer.from('hello'));
-    seedArtifact('h-other', 'org-1', 'run-1', 'secret.log', Buffer.from('nope'));
+    seedArtifact('h-other', 'org-1', 'another-run', 'secret.log', Buffer.from('nope'));
     const backend = new RecordingBackend();
     const svc = new WorkspaceService(ctxFor({ allowedInputHandles: ['h-allowed'] }), backend);
 
@@ -334,6 +427,19 @@ describe('WorkspaceService.stage', () => {
     expect(backend.writes.at(-1)!.bytes.toString()).toBe('hello');
 
     await expect(svc.stage(['h-other'])).rejects.toMatchObject({ code: 'staged_handle_not_allowed' });
+  });
+
+  it('stages an export created by another tool in this run, but not foreign-org or unowned artifacts', async () => {
+    seedArtifact('export', 'org-1', 'run-1', 'devices.csv', Buffer.from('name\nqa-device\n'));
+    seedArtifact('foreign', 'org-2', 'run-1', 'devices.csv', Buffer.from('private'));
+    seedArtifact('unowned', 'org-1', null, 'devices.csv', Buffer.from('private'));
+    const backend = new RecordingBackend();
+    const svc = new WorkspaceService(ctxFor({ allowedInputHandles: [] }), backend);
+    const result = await svc.stage(['export']);
+    expect(result.staged[0]!.path).toBe('/work/in/devices.csv');
+    expect(backend.writes.at(-1)!.bytes.toString()).toBe('name\nqa-device\n');
+    await expect(svc.stage(['foreign'])).rejects.toMatchObject({ code: 'staged_handle_not_allowed' });
+    await expect(svc.stage(['unowned'])).rejects.toMatchObject({ code: 'staged_handle_not_allowed' });
   });
 
   it('reports a foreign-org handle as artifact_forbidden, never "not found"', async () => {
@@ -432,8 +538,9 @@ describe('WorkspaceService.runStep', () => {
 
   it('reports a timed-out step without failing the run', async () => {
     const backend = new RecordingBackend();
-    backend.nextExec = { exitCode: null, timedOut: true };
     const svc = new WorkspaceService(ctxFor(), backend);
+    await svc.ensure();
+    backend.nextExec = { exitCode: null, timedOut: true };
     const step = await svc.runStep({ script: 'while true; do :; done', language: 'bash' });
     expect(step.timedOut).toBe(true);
     expect(step.exitCode).toBeNull();
@@ -466,8 +573,30 @@ describe('WorkspaceService.collect', () => {
     backend.files.set('/work/out/report.csv', Buffer.from('a,b\n1,2\n'));
     const svc = new WorkspaceService(ctxFor(), backend);
     const res = await svc.collect(['report.csv'], { 'report.csv': 'Fleet report' });
-    expect(res.artifacts[0]!.name).toBe('Fleet report');
+    expect(res.artifacts[0]!.name).toBe('Fleet report.csv');
     expect(created.at(-1)!.kind).toBe('output');
+  });
+
+  it.each([
+    ['report.pdf', 'Breeze Analysis Report PDF', 'Breeze Analysis Report PDF.pdf'],
+    ['preview.png', 'PDF Preview PNG', 'PDF Preview PNG.png'],
+    ['report.pdf', 'Report.pdf', 'Report.pdf'],
+    ['report.pdf', 'Report.PDF', 'Report.PDF'],
+    ['report.pdf', 'Report.csv', 'Report.csv.pdf'],
+    ['report.pdf', '  Report  ', 'Report.pdf'],
+    ['report.pdf', '   ', 'report.pdf'],
+    ['report.pdf', undefined, 'report.pdf'],
+    ['README', 'Read me', 'Read me'],
+  ])('preserves the file extension when collecting %s with label %s', async (filename, label, expected) => {
+    const backend = new RecordingBackend();
+    backend.nextExec = { stdout: Buffer.from(`/work/out/${filename}\n`) };
+    backend.files.set(`/work/out/${filename}`, Buffer.from('content'));
+    const svc = new WorkspaceService(ctxFor(), backend);
+
+    const res = await svc.collect([filename], label === undefined ? undefined : { [filename]: label });
+
+    expect(res.artifacts[0]!.name).toBe(expected);
+    expect(created.at(-1)!.name).toBe(expected);
   });
 
   it('enforces the collect file-count cap', async () => {

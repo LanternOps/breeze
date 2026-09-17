@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Download } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AiRunArtifactDto } from '@breeze/shared';
+import { isTextArtifactContentType, type AiRunArtifactDto } from '@breeze/shared';
 import AttachArtifactToTicket from './AttachArtifactToTicket';
+import { downloadArtifact } from '@/lib/downloadArtifact';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -16,8 +17,8 @@ function formatBytes(bytes: number): string {
  * The previews are RAW customer bytes off a device or a log. They are rendered
  * as React text children ONLY — never `dangerouslySetInnerHTML`, never a
  * content-type-driven renderer — because "anything a staged log says is data"
- * (spec §8) has to stay true on the way back out too. Download is an anchor at
- * the API route that forces `Content-Disposition: attachment`.
+ * (spec §8) has to stay true on the way back out too. Downloads fetch through
+ * the authenticated API and save a Blob instead of navigating to raw bytes.
  *
  * Previews are collapsed by default: a run can produce dozens of artifacts and
  * expanding them all by default would put kilobytes of unread log on screen
@@ -48,12 +49,13 @@ export default function RunArtifactsSection({ artifacts }: { artifacts: AiRunArt
                 data-testid={`run-artifact-download-${a.id}`}
                 href={a.downloadPath}
                 download={a.name}
+                onClick={downloadArtifact}
                 className="ml-auto inline-flex items-center gap-1 text-xs underline"
               >
                 <Download className="h-3 w-3" />
                 {t('aiAgentsPage.runs.detail.artifacts.download')}
               </a>
-              {(a.headPreview || a.tailPreview) && (
+              {isTextArtifactContentType(a.contentType) && (a.headPreview || a.tailPreview) && (
                 <button
                   type="button"
                   data-testid={`run-artifact-preview-toggle-${a.id}`}
@@ -65,7 +67,7 @@ export default function RunArtifactsSection({ artifacts }: { artifacts: AiRunArt
               )}
               <AttachArtifactToTicket artifactId={a.id} artifactName={a.name} />
             </div>
-            {expanded[a.id] && (
+            {isTextArtifactContentType(a.contentType) && expanded[a.id] && (
               <pre
                 data-testid={`run-artifact-preview-${a.id}`}
                 className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs"
