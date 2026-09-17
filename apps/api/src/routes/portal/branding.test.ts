@@ -76,7 +76,6 @@ describe('GET /branding (authenticated)', () => {
       enableService: true,
       enableDocuments: false,
       enableLifecycle: true,
-        enableNetworkVisibility: true,
       enableNetworkVisibility: true,
     }];
 
