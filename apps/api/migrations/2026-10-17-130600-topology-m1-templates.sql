@@ -91,14 +91,16 @@ BEGIN
   END IF;
  ELSE
   IF TG_TABLE_NAME='organizations' THEN
-   FOR binding IN SELECT org_id,partner_version_id FROM public.topology_site_template_bindings WHERE org_id=row_id
-    UNION ALL SELECT org_id,partner_version_id FROM public.topology_probe_targets WHERE org_id=row_id
-    UNION ALL SELECT org_id,partner_version_id FROM public.topology_monitoring_policies WHERE org_id=row_id LOOP
-    SELECT partner_id INTO owner_partner FROM public.organizations WHERE id=binding.org_id FOR SHARE;
-    IF binding.partner_version_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.topology_config_template_versions v WHERE v.id=binding.partner_version_id AND v.org_id IS NULL AND v.partner_id=owner_partner AND v.state='published') THEN
-     RAISE EXCEPTION 'organization transfer requires topology detach/rebind' USING ERRCODE='23514';
-    END IF;
-   END LOOP;
+   -- Every row below belongs to this organization, so its partner is read once
+   -- and the check is one set-based probe, not a locked lookup per config row.
+   SELECT partner_id INTO owner_partner FROM public.organizations WHERE id=row_id FOR SHARE;
+   IF EXISTS(SELECT 1 FROM (
+     SELECT partner_version_id FROM public.topology_site_template_bindings WHERE org_id=row_id AND partner_version_id IS NOT NULL
+     UNION ALL SELECT partner_version_id FROM public.topology_probe_targets WHERE org_id=row_id AND partner_version_id IS NOT NULL
+     UNION ALL SELECT partner_version_id FROM public.topology_monitoring_policies WHERE org_id=row_id AND partner_version_id IS NOT NULL) b
+    WHERE NOT EXISTS(SELECT 1 FROM public.topology_config_template_versions v WHERE v.id=b.partner_version_id AND v.org_id IS NULL AND v.partner_id=owner_partner AND v.state='published')) THEN
+    RAISE EXCEPTION 'organization transfer requires topology detach/rebind' USING ERRCODE='23514';
+   END IF;
    RETURN NULL;
   END IF;
   EXECUTE format('SELECT * FROM public.%I WHERE id=$1',TG_TABLE_NAME) INTO binding USING row_id;
