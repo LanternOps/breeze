@@ -41,6 +41,7 @@ import { executeScriptSchema, AI_RUN_CONTEXT_JSON_SCHEMA_PROPERTIES } from './sc
 import { loadTenantVariableScope } from './tenantVariableResolution';
 import { captureException } from './sentry';
 import { scriptNeedsVariableScope } from './sourcedParameters';
+import { deviceScopeCondition } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -1023,6 +1024,15 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (includeExecutionStats) {
+        // Execution stats are device-attributable rows reached without naming a
+        // device: scope them to the caller's org AND to the exact-device axis,
+        // which applies on its own for a device-LESS analysis run (#6086).
+        const statsConditions: SQL[] = [eq(scriptExecutions.scriptId, scriptId)];
+        const statsOrgCondition = auth.orgCondition(scriptExecutions.orgId);
+        if (statsOrgCondition) statsConditions.push(statsOrgCondition);
+        const statsDeviceCondition = deviceScopeCondition(auth, scriptExecutions.deviceId);
+        if (statsDeviceCondition) statsConditions.push(statsDeviceCondition);
+
         const [stats] = await db
           .select({
             totalExecutions: sql<number>`count(*)::int`,
@@ -1035,7 +1045,7 @@ export function registerScriptTools(aiTools: Map<string, AiTool>): void {
             avgDurationSeconds: sql<number>`avg(extract(epoch from (${scriptExecutions.completedAt} - ${scriptExecutions.startedAt})))::numeric(10,2)`,
           })
           .from(scriptExecutions)
-          .where(eq(scriptExecutions.scriptId, scriptId));
+          .where(and(...statsConditions));
 
         result.executionStats = stats;
       }

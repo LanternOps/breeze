@@ -27,7 +27,7 @@ import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupProviderConfig, resolveBackupDestinationError } from './backupProviderConfig';
 import { createManualBackupJobIfIdle } from './backupJobCreation';
 import { enqueueBackupDispatch } from '../jobs/backupEnqueue';
-import { deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceScopeCondition, deviceSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import { backupJobHistoryOrderBy, latestBackupRunOrderBy } from './backupJobOrdering';
 import { inArray } from 'drizzle-orm';
@@ -199,8 +199,15 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
         // Site axis (app-layer only; RLS does NOT enforce it). backupJobs are
         // device-keyed; a site-restricted caller may only see jobs for devices
         // in their allowed sites. Narrow to that set (query_vaults pattern).
+        // Exact-device axis first: it is independent of the org lookup below and
+        // of `allowedSiteIds`, which a device-less analysis run does not carry
+        // (#6086 finding 9b). Without this, such a run read every sibling
+        // device's backup jobs.
+        const jobDeviceCond = deviceScopeCondition(auth, backupJobs.deviceId);
+        if (jobDeviceCond) conditions.push(jobDeviceCond);
+
         const orgId = getOrgId(auth);
-        if (auth.allowedSiteIds && orgId) {
+        if ((auth.allowedSiteIds || auth.allowedDeviceIds) && orgId) {
           const allowed = await resolveSiteAllowedDeviceIds(orgId, auth);
           if (!allowed || allowed.length === 0) {
             return JSON.stringify({ jobs: [], showing: 0 });
@@ -297,6 +304,20 @@ export function registerBackupTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('get_backup_status', async (input, auth) => {
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+      // The org-level branch below aggregates configs, jobs and snapshot storage
+      // across the WHOLE org. `backup_configs` has no device column at all, so
+      // those aggregates cannot be attributed to a device set and cannot be
+      // narrowed — a scope-restricted caller must name a device instead of
+      // receiving fleet-wide totals (#6086 finding 9a). Gated on EITHER axis:
+      // a device-less analysis run carries `allowedDeviceIds` with no
+      // `allowedSiteIds`.
+      if (typeof input.deviceId !== 'string'
+        && (auth.allowedDeviceIds || auth.allowedSiteIds)) {
+        return JSON.stringify({
+          error: 'A deviceId is required: org-wide backup totals cannot be attributed to individual devices, and your access is limited to specific devices or sites.',
+        });
+      }
 
       if (typeof input.deviceId === 'string') {
         const deviceId = input.deviceId as string;

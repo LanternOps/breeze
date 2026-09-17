@@ -19,10 +19,17 @@ vi.mock('../db', () => ({
 }));
 
 const resolveSiteAllowedDeviceIds = vi.fn(async () => null as string[] | null);
-vi.mock('./aiToolsSiteScope', () => ({
-  resolveSiteAllowedDeviceIds: (...a: unknown[]) => resolveSiteAllowedDeviceIds(...(a as [])),
-  SITE_SCOPE_EMPTY_NOTE: '',
-}));
+vi.mock('./aiToolsSiteScope', async (importOriginal) => {
+  // Partial mock: `buildAgentLogConditions` also calls `deviceScopeCondition`
+  // (the exact-device axis, #6096 RC3), and a hand-listed mock silently breaks
+  // every time that module grows an export.
+  const actual = await importOriginal<typeof import('./aiToolsSiteScope')>();
+  return {
+    ...actual,
+    resolveSiteAllowedDeviceIds: (...a: unknown[]) => resolveSiteAllowedDeviceIds(...(a as [])),
+    SITE_SCOPE_EMPTY_NOTE: '',
+  };
+});
 
 const generateDeviceInventoryReport = vi.fn();
 const readDeviceInventoryRows = vi.fn(async (..._args: unknown[]) => [{ deviceId: 'd1' }]);

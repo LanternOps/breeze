@@ -410,7 +410,11 @@ export function registerSentinelOneTools(aiTools: Map<string, AiTool>): void {
         integrationId: integration.id,
         requestedBy: auth.user.id,
         action,
-        threatIds
+        threatIds,
+        // Threat ids are not device ids, so the declarative deviceArgs gate
+        // cannot cover this tool — the core resolves each threat's device and
+        // refuses the batch if any is outside this caller's reach (#6096 #1).
+        auth
       });
       if (!result.ok) {
         return JSON.stringify({ error: result.error, details: result.details });

@@ -88,7 +88,11 @@ describe('contract: AI-tools verifyDeviceAccess enforces the exact-device axis f
 const SITE_ONLY_CALL_SITES: ReadonlyArray<{ file: string; call: string; count: number }> = [
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, rule.targetId)', count: 1 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, group?.siteId ?? null)', count: 1 },
-  { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, m.siteId)', count: 1 },
+  // The deployment-member call is now THREE-argument (#6096): a member IS a
+  // device, so the exact-device axis applies. What remains here is the
+  // `assignmentSiteDenied` funnel — a `site` assignment or a device group's own
+  // site, which has no device to name.
+  { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, siteId)', count: 1 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, group.siteId)', count: 2 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, (input.siteId as string) ?? null)', count: 1 },
   { file: 'aiToolsFleet.ts', call: 'deviceSiteDenied(auth, existing.siteId)', count: 2 },

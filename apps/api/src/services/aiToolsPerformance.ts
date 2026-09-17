@@ -15,7 +15,7 @@ import { devices, deviceMetrics, deviceSessions, deviceBootMetrics, metricRollup
 import { eq, and, desc, gte, inArray, SQL, sql } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE , runFrozenDeviceIds, deviceScopeCondition } from './aiToolsSiteScope';
 import {
   mergeBootRecords,
   parseCollectorBootMetricsFromCommandResult,
@@ -537,6 +537,12 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (orgCondition) conditions.push(orgCondition);
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086): the fleet form (no deviceId) is otherwise
+      // org-wide, so a device-bound run reads sibling devices' sessions. It is
+      // independent of the site ceiling above — a device-less analysis run has
+      // `allowedDeviceIds` and no `allowedSiteIds` at all.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({
@@ -659,6 +665,10 @@ export function registerPerformanceTools(aiTools: Map<string, AiTool>): void {
       if (deviceId) conditions.push(eq(deviceSessions.deviceId, deviceId));
       if (username) conditions.push(eq(deviceSessions.username, username));
       if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      // Exact-device axis (#6086) — see get_active_users above; the site axis
+      // alone does not constrain a device-less analysis run.
+      const deviceScope = deviceScopeCondition(auth, deviceSessions.deviceId);
+      if (deviceScope) conditions.push(deviceScope);
 
       const rows = await db
         .select({

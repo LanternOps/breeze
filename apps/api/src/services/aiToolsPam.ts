@@ -12,7 +12,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { publishEvent, type EventType } from './eventBus';
 import { evaluatePamRules, type PamRuleMatch } from './pamRuleEngine';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { deviceSiteDenied, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 // Input schemas for these tools live in the canonical `toolInputSchemas`
 // registry in ./aiToolSchemas (validated centrally by executeTool).
@@ -341,10 +341,14 @@ export function registerPamTools(aiTools: Map<string, AiTool>): void {
           .limit(1);
 
         if (!existing) return { kind: 'not_found' as const };
-        // Site axis (parity with routes/pam.ts revoke): deny a request whose
-        // device site is outside a site-restricted caller's allowlist. Reported
-        // as not_found so it doesn't leak the row's existence.
-        if (auth.canAccessSite && existing.siteId && !auth.canAccessSite(existing.siteId)) {
+        // Site AND exact-device axes, checked UNCONDITIONALLY (#6096 #4). The
+        // old `existing.siteId &&` guard meant a NULL-site grant skipped the
+        // check outright, and nothing ever consulted `allowedDeviceIds` — so a
+        // device-bound agent run could revoke a sibling's elevation at its own
+        // site. `deviceSiteDenied` intersects both axes and fails closed on a
+        // null site / null device for a restricted caller; it is a no-op for an
+        // unrestricted one. Reported as not_found so it doesn't leak existence.
+        if (deviceSiteDenied(auth, existing.siteId, existing.deviceId ?? null)) {
           return { kind: 'not_found' as const };
         }
 

@@ -19,7 +19,7 @@ import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
 import { checkPlaybookRequiredPermissions } from './playbookPermissions';
 import { sanitizeThrownToolError } from './aiToolErrors';
-import { SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { SITE_SCOPE_EMPTY_NOTE, deviceScopeCondition, runFrozenDeviceIds } from './aiToolsSiteScope';
 
 type AiToolTier = 1 | 2 | 3 | 4;
 
@@ -300,8 +300,17 @@ registerTool({
       // execution's current device, so restrict the joined device in SQL
       // before ordering/LIMIT. `undefined` means unrestricted; a defined-empty
       // ceiling denies every device and therefore every execution.
+      //
+      // The EXACT-DEVICE axis is independent: a device-less analysis run carries
+      // `allowedDeviceIds` with NO `allowedSiteIds`, so the site branch below
+      // silently no-ops for it and the query stayed org-wide — every sibling
+      // device's playbook history. Push the frozen device set as its own
+      // condition (#6086 finding 7). An execution with a NULL device_id is
+      // excluded for such a caller by construction, which is the fail-closed
+      // direction.
       const allowedSiteIds = auth.allowedSiteIds;
-      if (allowedSiteIds?.length === 0) {
+      const frozenDeviceIds = runFrozenDeviceIds(auth);
+      if (allowedSiteIds?.length === 0 || frozenDeviceIds?.length === 0) {
         return JSON.stringify({ executions: [], count: 0, scopeNote: SITE_SCOPE_EMPTY_NOTE });
       }
 
@@ -319,6 +328,8 @@ registerTool({
         conditions.push(eq(playbookExecutions.status, input.status as typeof playbookExecutions.status.enumValues[number]));
       }
       if (allowedSiteIds) conditions.push(inArray(devices.siteId, allowedSiteIds));
+      const deviceCond = deviceScopeCondition(auth, playbookExecutions.deviceId);
+      if (deviceCond) conditions.push(deviceCond);
 
       const limit = Math.min(Math.max(1, Number(input.limit) || 20), 100);
 

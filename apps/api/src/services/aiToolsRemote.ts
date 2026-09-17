@@ -19,7 +19,7 @@ import { devices, remoteSessions } from '../db/schema';
 import { eq, and, desc, inArray, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 import { getToolTimeout } from './toolTimeouts';
 import { createRemoteSession, RemoteSessionDeniedError } from './remoteSessionCreate';
 import { aiExecuteCommand } from './aiDispatch';
@@ -297,6 +297,13 @@ export function registerRemoteTools(aiTools: Map<string, AiTool>): void {
       if (auth.scope !== 'system') {
         conditions.push(eq(remoteSessions.userId, auth.user.id));
       }
+
+      // Exact-device axis: applies on its own, with no site axis in play. A
+      // device-LESS analysis run carries only `allowedDeviceIds`, so the
+      // site-gated block below never runs for it and the list would otherwise be
+      // org-wide (#6096 RC3). No-op for an unrestricted caller.
+      const deviceCond = deviceScopeCondition(auth, remoteSessions.deviceId);
+      if (deviceCond) conditions.push(deviceCond);
 
       // Site axis (app-layer only; RLS does NOT enforce it): a site-restricted
       // caller may only list sessions for devices in their allowed sites. Narrow

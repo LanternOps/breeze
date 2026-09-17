@@ -17,7 +17,7 @@ import {
 import { eq, and, desc, asc, inArray, gte, sql, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { deviceScopeCondition, resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type AnalyticsHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -234,6 +234,12 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           conditions.push(inArray(capacityPredictions.deviceId, allowed));
         }
 
+        // Exact-device axis, applied independently of the site axis: a
+        // device-LESS analysis run carries `allowedDeviceIds` with NO
+        // `allowedSiteIds`, so the branch above no-ops for it (#6086).
+        const predictionDeviceCondition = deviceScopeCondition(auth, capacityPredictions.deviceId);
+        if (predictionDeviceCondition) conditions.push(predictionDeviceCondition);
+
         const rows = await db
           .select({
             id: capacityPredictions.id,
@@ -287,6 +293,11 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
           }
           rollupConditions.push(inArray(metricRollups.deviceId, allowed));
         }
+
+        // Same exact-device axis for the rollup fallback — it is device-
+        // attributable data reached without naming a device.
+        const rollupDeviceCondition = deviceScopeCondition(auth, metricRollups.deviceId);
+        if (rollupDeviceCondition) rollupConditions.push(rollupDeviceCondition);
 
         const rollupRows = await db
           .select({
@@ -362,6 +373,16 @@ export function registerAnalyticsTools(aiTools: Map<string, AiTool>): void {
     },
     handler: safeHandler('get_executive_summary', async (input, auth) => {
       const periodType = typeof input.periodType === 'string' ? input.periodType : 'weekly';
+
+      // Executive summaries are ORG-WIDE aggregates (device health, alert
+      // trends, patch compliance, SLA stats across the whole tenant). They
+      // cannot be attributed to, or narrowed to, a single device, so a
+      // device-scoped run must not read them at all (#6086).
+      if (auth.allowedDeviceIds) {
+        return JSON.stringify({
+          error: 'Executive summaries are org-wide aggregates covering every device in the organization, so they are not available to a device-scoped run. Use the device-level tools (device details, metrics, alerts, patch status) for the device(s) this run is scoped to.',
+        });
+      }
 
       const conditions: SQL[] = [];
       const oc = orgWhere(auth, executiveSummaries.orgId);

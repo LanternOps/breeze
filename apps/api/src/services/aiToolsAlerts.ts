@@ -48,6 +48,14 @@ async function findAlertWithAccess(alertId: string, auth: AuthContext) {
   if (orgCond) conditions.push(orgCond);
   const [alert] = await db.select().from(alerts).where(and(...conditions)).limit(1);
   if (!alert) return null;
+  // Exact-device axis (#6096), independent of the site axis. A device-bound
+  // run (`allowedDeviceIds`) may only touch alerts attributable to a device in
+  // its allowlist — a device-LESS org-wide alert is attributable to none of
+  // them, so it is denied rather than admitted by the `alert.deviceId &&`
+  // short-circuit below. A device-LESS ANALYSIS run carries no site axis at
+  // all, so this check cannot be folded into the site one.
+  if (auth.allowedDeviceIds
+    && (!alert.deviceId || !auth.allowedDeviceIds.includes(alert.deviceId))) return null;
   if (alert.deviceId && (await deviceIdSiteDenied(auth, alert.deviceId))) return null;
   return alert;
 }
@@ -98,10 +106,14 @@ export function registerAlertTools(aiTools: Map<string, AiTool>): void {
         if (input.severity) conditions.push(eq(alerts.severity, input.severity as typeof alerts.severity.enumValues[number]));
         if (input.deviceId) conditions.push(eq(alerts.deviceId, input.deviceId as string));
 
-        // Site axis: a site-restricted caller may only see alerts for devices in
-        // their allowed sites (RLS does NOT enforce site). Narrow to that set.
+        // Both app-layer axes (RLS enforces neither): a site-restricted caller
+        // may only see alerts for devices in their allowed sites, and a
+        // device-bound run only for the devices in its allowlist.
+        // `resolveSiteAllowedDeviceIds` intersects the two, so the gate must
+        // fire when EITHER is set — a device-LESS analysis run carries
+        // `allowedDeviceIds` and no site axis at all (#6096).
         const listOrgId = getOrgId(auth);
-        if (auth.allowedSiteIds && listOrgId) {
+        if ((auth.allowedSiteIds || auth.allowedDeviceIds) && listOrgId) {
           const allowed = await resolveSiteAllowedDeviceIds(listOrgId, auth);
           if (!allowed || allowed.length === 0) {
             return JSON.stringify({ alerts: [], total: 0, showing: 0 });

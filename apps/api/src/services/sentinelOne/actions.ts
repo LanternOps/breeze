@@ -9,6 +9,8 @@ import {
 import { captureException } from '../sentry';
 import { redactLogMessage } from '../logRedaction';
 import { SentinelOneHttpError, type S1ThreatAction } from './client';
+import { deviceIdSiteDenied } from '../aiToolsSiteScope';
+import type { AuthContext } from '../../middleware/auth';
 
 const NO_ACTIVITY_ID_WARNING = 'Provider did not return activityId; action cannot be tracked';
 
@@ -332,12 +334,52 @@ export async function executeS1IsolationForOrg(params: {
   };
 }
 
+/**
+ * Threat ids are NOT device ids, so the declarative `deviceArgs` gate in
+ * aiTools.ts cannot see what a threat action will actually touch (#6096 #1).
+ * Resolve every matched threat back to its device and report the ones the
+ * caller may not reach. A threat with no resolvable device fails CLOSED for a
+ * restricted caller — `deviceIdSiteDenied` makes the same call for an unknown
+ * device id.
+ *
+ * Returns the s1 threat ids that are out of scope; `[]` for an unrestricted
+ * caller (and for callers that forward no `auth` at all, e.g. the HTTP route,
+ * which is already gated by `requirePermission` + its own site checks).
+ */
+async function outOfScopeThreatIds(
+  auth: AuthContext,
+  threats: Array<{ s1ThreatId: string; deviceId: string | null }>,
+): Promise<string[]> {
+  if (!auth.allowedDeviceIds && !auth.allowedSiteIds && !auth.canAccessSite) return [];
+  const denied: string[] = [];
+  const decided = new Map<string, boolean>();
+  for (const threat of threats) {
+    if (!threat.deviceId) {
+      denied.push(threat.s1ThreatId);
+      continue;
+    }
+    let isDenied = decided.get(threat.deviceId);
+    if (isDenied === undefined) {
+      isDenied = await deviceIdSiteDenied(auth, threat.deviceId);
+      decided.set(threat.deviceId, isDenied);
+    }
+    if (isDenied) denied.push(threat.s1ThreatId);
+  }
+  return denied;
+}
+
 export async function executeS1ThreatActionForOrg(params: {
   orgId: string;
   integrationId: string;
   requestedBy: string;
   action: S1ThreatAction;
   threatIds: string[];
+  /**
+   * Forwarded by the AI-tool path so the batch can be checked against the
+   * caller's exact-device / site allowlists. Omitted by callers that gate
+   * elsewhere; omitting it narrows nothing and widens nothing.
+   */
+  auth?: AuthContext;
 }): Promise<S1ActionErrorResult | S1ActionSuccessResult<S1ThreatActionData>> {
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const internalIds = params.threatIds.filter((id) => uuidPattern.test(id));
@@ -376,6 +418,24 @@ export async function executeS1ThreatActionForOrg(params: {
   }
   const unmatchedThreatIds = params.threatIds.filter((id) => !matchedRequestedIds.has(id));
   const matchedThreatIds = Array.from(new Set(matchedThreats.map((threat) => threat.s1ThreatId)));
+
+  // Device axis. A partial dispatch to a machine the caller may not reach is
+  // exactly the outcome this exists to prevent, so the WHOLE batch is refused
+  // rather than silently narrowed — same contract as remediate_vulnerability's
+  // finding_device_mismatch.
+  if (params.auth) {
+    const denied = await outOfScopeThreatIds(params.auth, matchedThreats);
+    if (denied.length > 0) {
+      return {
+        ok: false,
+        status: 403,
+        error:
+          `${denied.length} of ${matchedThreats.length} matched threat(s) are on devices outside your device access. `
+          + 'Nothing was dispatched.',
+        details: { deniedThreatIds: denied },
+      };
+    }
+  }
 
   let providerActionId: string | null = null;
   let providerRaw: unknown = null;

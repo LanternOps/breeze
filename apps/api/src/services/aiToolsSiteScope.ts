@@ -21,7 +21,8 @@
 
 import { db } from '../db';
 import { devices } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, inArray, type SQL } from 'drizzle-orm';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { AuthContext } from '../middleware/auth';
 
 /**
@@ -36,6 +37,38 @@ export const SITE_SCOPE_EMPTY_NOTE =
 /** Exact device scope is independent of site scope. Empty means no devices. */
 export function runFrozenDeviceIds(auth: AuthContext): string[] | null {
   return auth.allowedDeviceIds ? [...auth.allowedDeviceIds] : null;
+}
+
+/**
+ * Exact-device axis as a WHERE fragment, independent of the site axis.
+ *
+ * Use it on every query over a device-bearing table that a device-bound run
+ * can reach without naming a device (site/org listers, aggregates, fan-out
+ * writes): `and(orgCondition, siteCondition, deviceScopeCondition(auth, t.deviceId))`.
+ * It deliberately does NOT look at `allowedSiteIds` — a device-less analysis
+ * run carries `allowedDeviceIds` with no site axis, and guards written
+ * `if (auth.allowedSiteIds && …)` silently no-op for that shape (#6086).
+ * `undefined` for an unrestricted caller (no narrowing); an empty allowlist
+ * yields `inArray(col, [])`, which drizzle renders as `false` — nothing.
+ */
+export function deviceScopeCondition(auth: AuthContext, column: PgColumn): SQL | undefined {
+  return auth.allowedDeviceIds ? inArray(column, [...auth.allowedDeviceIds]) : undefined;
+}
+
+/**
+ * Post-fetch counterpart for rows that carry a device id but were not (or
+ * cannot be) narrowed in SQL. Keeps rows with no device id: a device-less row
+ * is not attributable to a sibling, and callers that must deny those decide
+ * separately.
+ */
+export function filterToDeviceScope<T>(
+  auth: AuthContext,
+  rows: readonly T[],
+  deviceIdOf: (row: T) => string | null | undefined,
+): T[] {
+  if (!auth.allowedDeviceIds) return [...rows];
+  const allowed = new Set(auth.allowedDeviceIds);
+  return rows.filter((row) => { const id = deviceIdOf(row); return id == null || allowed.has(id); });
 }
 
 /**

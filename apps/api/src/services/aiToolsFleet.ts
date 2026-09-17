@@ -45,6 +45,7 @@ import {
 } from '../db/schema/alerts';
 import {
   configurationPolicies,
+  configPolicyAssignments,
   configPolicyFeatureLinks,
   configPolicyMonitoringSettings,
   configPolicyMonitoringWatches,
@@ -75,8 +76,17 @@ import { canMutateOrgWideGovernance, SITE_CEILING_WRITE_DENIED_MESSAGE } from '.
 import type { UserPermissions } from './permissions';
 import { canManagePartnerWidePolicies, PARTNER_WIDE_WRITE_DENIED_MESSAGE } from './partnerWideAccess';
 import { filterWindowsToSiteScope, scopeWindowForRead } from './maintenanceSiteScope';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
-import { checkAutomationTargetsWithinSiteScope } from './automationRuntime';
+import {
+  deviceSiteDenied,
+  deviceIdSiteDenied,
+  deviceScopeCondition,
+  filterToDeviceScope,
+  resolveSiteAllowedDeviceIds,
+} from './aiToolsSiteScope';
+import {
+  checkAutomationTargetsWithinSiteScope,
+  resolveAutomationTargetDeviceIds,
+} from './automationRuntime';
 import { scanProjectedAutomationRuns } from './automationReadProjection';
 import { assertReportExecutionPreflight } from './reportGenerationService';
 import { deleteDeviceGroup, DeviceGroupDeleteError } from './deviceGroupDelete';
@@ -255,11 +265,24 @@ async function aiReportRunAccess(
   };
 }
 
+/**
+ * The device ids a report READ may cover: the report authority's site scope
+ * INTERSECTED with the caller's frozen device set (#6096). A report authority
+ * carries sites only, so without the intersection a run pinned to one device
+ * aggregates every sibling in its site — and a device-LESS analysis run, whose
+ * authority resolves to `unrestricted`, aggregates the whole org.
+ *
+ * `null` means "no narrowing at all" (unrestricted on both axes); an empty
+ * array means "restricted, nothing in scope" and must never be collapsed into
+ * `null` by a caller.
+ */
 async function aiAuthorityDeviceIds(
   orgId: string,
   authority: ReportExecutionAuthority,
+  auth: AuthContext,
 ): Promise<string[] | null> {
-  if (authority.scope.kind === 'unrestricted') return null;
+  const frozen = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  if (authority.scope.kind === 'unrestricted') return frozen ? [...frozen] : null;
   if (authority.scope.kind !== 'restricted' || authority.scope.siteIds.length === 0) {
     return [];
   }
@@ -269,6 +292,7 @@ async function aiAuthorityDeviceIds(
     .where(and(
       eq(devices.orgId, orgId),
       inArray(devices.siteId, authority.scope.siteIds),
+      deviceScopeCondition(auth, devices.id),
     ));
   return rows.map((row) => row.id);
 }
@@ -339,6 +363,36 @@ function automationWhere(auth: AuthContext): SQL | undefined {
 // Site-axis helpers (app-layer authz — RLS does NOT enforce site)
 // ============================================
 
+/**
+ * Denial for a run pinned to a frozen device set (`auth.allowedDeviceIds`)
+ * that asked for something whose blast radius is the fleet — a partner-wide
+ * patch approval, an automation that targets other devices, a deployment that
+ * includes them. Fail CLOSED and say so: the model must be able to tell
+ * "denied because of my binding" from "nothing matched".
+ */
+const DEVICE_SCOPE_FLEET_DENIED_MESSAGE =
+  'This run is bound to a fixed set of devices and cannot act on the fleet.';
+
+/**
+ * Reports are authorized by SITE scope end to end (`siteScope.ts` persists
+ * site ids onto the run row and the generator re-reads them), so there is no
+ * device axis to intersect a frozen device set with. Producing one anyway
+ * would hand the run every sibling device in its site.
+ */
+const DEVICE_SCOPE_REPORT_DENIED_MESSAGE =
+  'This run is bound to a fixed set of devices; reports are scoped by site and cannot be generated or downloaded from it.';
+
+/**
+ * True when the caller is narrowed on EITHER app-layer axis. Used by fleet-wide
+ * governance writes, which no narrowed caller may perform.
+ * `canMutateOrgWideGovernance` alone is not enough here: it only speaks for
+ * `scope === 'organization'` principals, so a partner-scope caller carrying a
+ * site ceiling passes it.
+ */
+function isScopeNarrowedCaller(auth: AuthContext): boolean {
+  return auth.allowedSiteIds !== undefined || auth.allowedDeviceIds !== undefined;
+}
+
 // Minimal UserPermissions view for the automation target helper, which reads
 // only `allowedSiteIds`. Undefined lets that helper no-op for unrestricted callers.
 function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
@@ -350,11 +404,22 @@ function siteScopePerms(auth: AuthContext): UserPermissions | undefined {
 // needed). For a restricted caller the query MUST leftJoin devices on
 // alerts.deviceId; zero-site callers then see only device-less (org-wide) alerts.
 function alertSiteCondition(auth: AuthContext): SQL | null {
+  const parts: SQL[] = [];
   const allowed = auth.allowedSiteIds;
-  if (!allowed) return null;
-  return allowed.length === 0
-    ? isNull(alerts.deviceId)
-    : (or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)) as SQL);
+  if (allowed) {
+    parts.push(allowed.length === 0
+      ? isNull(alerts.deviceId)
+      : (or(isNull(alerts.deviceId), inArray(devices.siteId, allowed)) as SQL));
+  }
+  // Exact-device axis (#6096) — ANDed on top, and independent of the site axis
+  // (a device-LESS analysis run carries only this one). It also overrides the
+  // `isNull(deviceId)` escape hatch above: a device-less org-wide alert is not
+  // attributable to the run's device, and `deviceId IN (…)` is false for NULL,
+  // so those alerts drop out for a device-bound caller by construction.
+  const deviceScope = deviceScopeCondition(auth, alerts.deviceId);
+  if (deviceScope) parts.push(deviceScope);
+  if (parts.length === 0) return null;
+  return parts.length === 1 ? parts[0]! : (and(...parts) as SQL);
 }
 
 // Whether a site-restricted caller must be denied an alert rule based on its
@@ -385,6 +450,102 @@ async function alertRuleTargetDenied(
       // 'all' / org-wide / unknown target → exceeds a site-restricted caller.
       return true;
   }
+}
+
+/**
+ * Narrow a list of rows carrying a `policyId` to the configuration policies
+ * that actually reach this caller. No-op for a caller restricted on neither
+ * app-layer axis (and no query is issued for one).
+ *
+ * Lookups are lazy and batched: the device/group SITE maps are only read when
+ * the caller has no exact-device allowlist (with one, membership in it settles
+ * the question and the device's site is the run's own by construction), and
+ * group MEMBERSHIPS are only read when it does.
+ */
+async function narrowMonitorsToCallerReach<T extends { policyId: string | null }>(
+  auth: AuthContext,
+  rows: T[],
+): Promise<T[]> {
+  if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return rows;
+  const policyIds = [...new Set(rows.map((r) => r.policyId).filter((id): id is string => !!id))];
+  if (policyIds.length === 0) return [];
+
+  const assignments = await db
+    .select({
+      configPolicyId: configPolicyAssignments.configPolicyId,
+      level: configPolicyAssignments.level,
+      targetId: configPolicyAssignments.targetId,
+    })
+    .from(configPolicyAssignments)
+    .where(inArray(configPolicyAssignments.configPolicyId, policyIds));
+
+  const exactDevices = auth.allowedDeviceIds ? new Set(auth.allowedDeviceIds) : null;
+  const targetsAt = (level: string) =>
+    [...new Set(assignments.filter((a) => a.level === level).map((a) => a.targetId))];
+
+  const deviceSite = new Map<string, string | null>();
+  const groupSite = new Map<string, string | null>();
+  const groupMembers = new Map<string, string[]>();
+
+  if (!exactDevices) {
+    const deviceTargets = targetsAt('device');
+    if (deviceTargets.length > 0) {
+      for (const row of await db.select({ id: devices.id, siteId: devices.siteId })
+        .from(devices).where(inArray(devices.id, deviceTargets))) {
+        deviceSite.set(row.id, row.siteId);
+      }
+    }
+    const groupTargets = targetsAt('device_group');
+    if (groupTargets.length > 0) {
+      for (const row of await db.select({ id: deviceGroups.id, siteId: deviceGroups.siteId })
+        .from(deviceGroups).where(inArray(deviceGroups.id, groupTargets))) {
+        groupSite.set(row.id, row.siteId);
+      }
+    }
+  } else {
+    const groupTargets = targetsAt('device_group');
+    if (groupTargets.length > 0) {
+      for (const row of await db.select({
+        groupId: deviceGroupMemberships.groupId,
+        deviceId: deviceGroupMemberships.deviceId,
+      }).from(deviceGroupMemberships).where(inArray(deviceGroupMemberships.groupId, groupTargets))) {
+        groupMembers.set(row.groupId, [...(groupMembers.get(row.groupId) ?? []), row.deviceId]);
+      }
+    }
+  }
+
+  // Site-shaped assignment targets — a `site` assignment, or a device group's
+  // own site — have no device to name, so only the site axis applies. Funnelled
+  // through ONE call so the exact-device contract test
+  // (aiToolsDeviceGuard.contract.test.ts) has a single site-only entry to carry.
+  const assignmentSiteDenied = (siteId: string | null): boolean => deviceSiteDenied(auth, siteId);
+
+  const reaches = (a: { level: string; targetId: string }): boolean => {
+    switch (a.level) {
+      // Partner/org-wide policies apply to the caller's own device as well, so
+      // they are not a disclosure of anyone else's configuration.
+      case 'partner':
+      case 'organization':
+        return true;
+      case 'site':
+        return !assignmentSiteDenied(a.targetId);
+      case 'device':
+        return exactDevices
+          ? exactDevices.has(a.targetId)
+          : !deviceSiteDenied(auth, deviceSite.get(a.targetId) ?? null, a.targetId);
+      case 'device_group':
+        return exactDevices
+          ? (groupMembers.get(a.targetId) ?? []).some((id) => exactDevices.has(id))
+          : !assignmentSiteDenied(groupSite.get(a.targetId) ?? null);
+      default:
+        return false;
+    }
+  };
+
+  const reachable = new Set(
+    assignments.filter(reaches).map((a) => a.configPolicyId),
+  );
+  return rows.filter((r) => !!r.policyId && reachable.has(r.policyId));
 }
 
 /** Wrap handler in try-catch so DB/runtime errors return JSON instead of crashing */
@@ -483,12 +644,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       // actions affect ALL member devices, so deny if the deployment includes
       // ANY out-of-site device (fail closed). Unrestricted callers: always false.
       const deploymentSiteDenied = async (deploymentId: string): Promise<boolean> => {
-        if (!auth.allowedSiteIds) return false;
-        const members = await db.select({ siteId: devices.siteId })
+        if (!auth.allowedSiteIds && !auth.allowedDeviceIds) return false;
+        const members = await db.select({ deviceId: deploymentDevices.deviceId, siteId: devices.siteId })
           .from(deploymentDevices)
           .leftJoin(devices, eq(deploymentDevices.deviceId, devices.id))
           .where(eq(deploymentDevices.deploymentId, deploymentId));
-        return members.some((m) => deviceSiteDenied(auth, m.siteId));
+        // Three arguments, not two (#6096): the member IS a device, so the
+        // exact-device axis applies — a device-bound run shares its site with
+        // every sibling, and site alone would wave them through. `?? null`
+        // keeps an unresolvable member failing closed for such a run.
+        return members.some((m) => deviceSiteDenied(auth, m.siteId, m.deviceId ?? null));
       };
 
       if (action === 'list') {
@@ -557,6 +722,9 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           }
           dsConditions.push(inArray(devices.siteId, auth.allowedSiteIds));
         }
+        // Exact-device axis, applied whether or not the site axis is set.
+        const dsDeviceScope = deviceScopeCondition(auth, deploymentDevices.deviceId);
+        if (dsDeviceScope) dsConditions.push(dsDeviceScope);
         const rows = await db.select({
           deviceId: deploymentDevices.deviceId,
           hostname: devices.hostname,
@@ -767,11 +935,23 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const action = input.action as string;
       const orgId = getOrgId(auth);
 
-      if (
-        (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve')
-        && !canManagePartnerWidePolicies(auth)
-      ) {
-        return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+      if (action === 'approve' || action === 'decline' || action === 'defer' || action === 'bulk_approve') {
+        if (!canManagePartnerWidePolicies(auth)) {
+          return JSON.stringify({ error: PARTNER_WIDE_WRITE_DENIED_MESSAGE });
+        }
+        // A patch approval is partner-wide fleet POLICY: it decides what every
+        // device under the partner may install, and carries no device or site
+        // argument at all. So no caller narrowed to specific devices or sites
+        // may set it — mirroring the org-wide governance ceiling applied to
+        // setup_auto_approval below, but checking both axes directly because
+        // `canMutateOrgWideGovernance` only speaks for org-scope principals.
+        if (isScopeNarrowedCaller(auth)) {
+          return JSON.stringify({
+            error: auth.allowedDeviceIds
+              ? DEVICE_SCOPE_FLEET_DENIED_MESSAGE
+              : SITE_CEILING_WRITE_DENIED_MESSAGE,
+          });
+        }
       }
 
       if (action === 'setup_auto_approval') {
@@ -837,6 +1017,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const compliancePartnerId = auth.partnerId ?? await resolvePartnerIdForOrg(orgId);
         if (!compliancePartnerId) return JSON.stringify({ error: 'Could not resolve partner for organization' });
 
+        // `patch_approvals` has no org column — a bare partner-id count tells an
+        // org-scoped caller how many approvals exist across every SIBLING org
+        // under the partner. Narrow to patches actually present on this org's
+        // fleet (an EXISTS over device_patches, so the count stays one query and
+        // the site/device narrowing below keeps its own call order).
         const approvalStats = await db.select({
           total: sql<number>`count(*)`,
           pending: sql<number>`count(*) filter (where ${patchApprovals.status} = 'pending')`,
@@ -844,7 +1029,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           rejected: sql<number>`count(*) filter (where ${patchApprovals.status} = 'rejected')`,
           deferred: sql<number>`count(*) filter (where ${patchApprovals.status} = 'deferred')`,
         }).from(patchApprovals)
-          .where(eq(patchApprovals.partnerId, compliancePartnerId));
+          .where(and(
+            eq(patchApprovals.partnerId, compliancePartnerId),
+            sql`EXISTS (SELECT 1 FROM device_patches dp WHERE dp.patch_id = ${patchApprovals.patchId} AND dp.org_id = ${orgId})`,
+          ));
 
         // Site axis (app-layer only; RLS does NOT enforce it): the precomputed
         // snapshot aggregates EVERY site, so a site-restricted caller must not
@@ -1274,7 +1462,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .where(eq(deviceGroupMemberships.groupId, group.id))
           .limit(limit);
 
-        return JSON.stringify({ group, members, memberCount: members.length });
+        // Exact-device axis (#6096): the GROUP may be in the caller's site, but
+        // its membership is a list of devices — a device-bound run must not read
+        // its siblings out of it. No-op without `allowedDeviceIds`.
+        const visibleMembers = filterToDeviceScope(auth, members, (m) => m.deviceId);
+
+        return JSON.stringify({ group, members: visibleMembers, memberCount: visibleMembers.length });
       }
 
       if (action === 'preview') {
@@ -1287,7 +1480,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
             // Site axis (app-layer only; RLS does NOT enforce it): narrow the
             // preview to the caller's allowed sites. filterEngine short-circuits
             // to empty for a zero-site restricted caller.
-            { orgId, limit: Number(input.limit) || 25, allowedSiteIds: auth.allowedSiteIds },
+            // Both axes: site narrows the preview to the caller's sites, and
+            // the exact-device allowlist narrows it further (a device-bound run
+            // would otherwise preview every sibling in its own site, and a
+            // device-LESS analysis run has no site axis to narrow on at all).
+            {
+              orgId,
+              limit: Number(input.limit) || 25,
+              allowedSiteIds: auth.allowedSiteIds,
+              allowedDeviceIds: auth.allowedDeviceIds,
+            },
           );
           return JSON.stringify({ preview: result });
         } catch (err) {
@@ -1325,7 +1527,11 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(groupMembershipLog.createdAt))
           .limit(limit);
 
-        return JSON.stringify({ groupId: group.id, log: rows, showing: rows.length });
+        // Exact-device axis (#6096): same reasoning as `get` — the log is a
+        // per-device history, so it discloses sibling devices by name.
+        const visibleLog = filterToDeviceScope(auth, rows, (r) => r.deviceId);
+
+        return JSON.stringify({ groupId: group.id, log: visibleLog, showing: visibleLog.length });
       }
 
       if (action === 'create') {
@@ -1572,13 +1778,22 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
         const scopedWin = await scopeWindowForRead(win, { allowedSiteIds: auth.allowedSiteIds });
         if (!scopedWin) return JSON.stringify({ error: 'Maintenance window not found or access denied' });
 
+        // Exact-device axis (#6096): `scopeWindowForRead` redacts the target
+        // arrays on the SITE axis only, so a window in the run's own site still
+        // hands back every sibling device id it targets. `list`/`active_now`
+        // strip the arrays entirely; `get` returns them, so narrow them here.
+        // Null/absent stays null — never turn "no device targets" into "[]".
+        const visibleWin = scopedWin.deviceIds
+          ? { ...scopedWin, deviceIds: filterToDeviceScope(auth, scopedWin.deviceIds, (id) => id) }
+          : scopedWin;
+
         const occurrences = await db.select()
           .from(maintenanceOccurrences)
           .where(eq(maintenanceOccurrences.windowId, win.id))
           .orderBy(desc(maintenanceOccurrences.startTime))
           .limit(10);
 
-        return JSON.stringify({ window: scopedWin, occurrences });
+        return JSON.stringify({ window: visibleWin, occurrences });
       }
 
       if (action === 'active_now') {
@@ -1766,6 +1981,20 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       const automationSiteDenied = async (
         auto: { orgId: string | null; partnerId: string | null; trigger: unknown; conditions: unknown; id: string },
       ): Promise<string | null> => {
+        // Exact-device axis first (#6096). The site check below is blind to it:
+        // a device-bound run shares its site with every sibling device, and a
+        // device-LESS analysis run has no site axis at all, so an automation
+        // that fans out to other devices would pass. `resolveAutomationTargetDeviceIds`
+        // resolves an UNBOUNDED (org-wide) automation to every org device, so
+        // that shape is denied here by construction; an empty/unresolvable
+        // target set fails closed rather than reading as "targets nothing".
+        if (auth.allowedDeviceIds) {
+          const allowed = new Set(auth.allowedDeviceIds);
+          const targets = await resolveAutomationTargetDeviceIds(auto as any);
+          if (targets.length === 0 || targets.some((id) => !allowed.has(id))) {
+            return DEVICE_SCOPE_FLEET_DENIED_MESSAGE;
+          }
+        }
         const check = await checkAutomationTargetsWithinSiteScope(auto as any, siteScopePerms(auth));
         if (check.ok) return null;
         return check.unbounded
@@ -2362,6 +2591,12 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'generate') {
+        // A report run is authorized end to end by SITE scope: `generate`
+        // persists site ids onto the run row and the generator re-reads them,
+        // with no device axis anywhere. A run pinned to a frozen device set
+        // therefore cannot mint one without covering every sibling device in
+        // its site — deny with a reason instead of leaking (#6096).
+        if (auth.allowedDeviceIds) return JSON.stringify({ error: DEVICE_SCOPE_REPORT_DENIED_MESSAGE });
         if (!input.reportId && !input.reportType) return JSON.stringify({ error: 'reportId or reportType is required' });
         if (!orgId) return JSON.stringify({ error: 'Organization context required' });
 
@@ -2468,6 +2703,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
               inArray(devices.siteId, executionAuthority.scope.siteIds),
             );
           }
+          // Exact-device axis, applied whether or not the authority is site
+          // restricted (a device-LESS analysis run resolves to `unrestricted`).
+          const inventoryDeviceScope = deviceScopeCondition(auth, devices.id);
+          if (inventoryDeviceScope) inventoryConditions.push(inventoryDeviceScope);
           const rows = await db.select({
             id: devices.id,
             hostname: devices.hostname,
@@ -2488,13 +2727,16 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
 
         if (reportType === 'alert_summary') {
           const summaryConditions: SQL[] = [eq(alerts.orgId, orgId)];
-          // Site axis: mirror device_inventory — narrow to in-scope devices.
-          if (executionAuthority.scope.kind === 'restricted') {
-            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority);
-            if (!allowed || allowed.length === 0) {
+          // Site AND exact-device axes: mirror device_inventory — narrow to the
+          // devices this caller may actually aggregate over. `null` means
+          // unrestricted on both axes; `[]` means restricted with nothing in
+          // scope, which must zero the response rather than widen it.
+          {
+            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority, auth);
+            if (allowed && allowed.length === 0) {
               return JSON.stringify({ reportType, data: { total: 0, active: 0, critical: 0, high: 0, resolved24h: 0 } });
             }
-            summaryConditions.push(inArray(alerts.deviceId, allowed));
+            if (allowed) summaryConditions.push(inArray(alerts.deviceId, allowed));
           }
           const [summary] = await db.select({
             total: sql<number>`count(*)`,
@@ -2518,12 +2760,14 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           // in-scope devices. Added to the JOIN condition (not WHERE) so policies
           // still appear with in-scope counts rather than being dropped entirely.
           let complianceJoin: SQL = eq(automationPolicies.id, automationPolicyCompliance.policyId);
-          if (executionAuthority.scope.kind === 'restricted') {
-            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority);
-            if (!allowed || allowed.length === 0) {
+          {
+            const allowed = await aiAuthorityDeviceIds(orgId, executionAuthority, auth);
+            if (allowed && allowed.length === 0) {
               return JSON.stringify({ reportType, data: [] });
             }
-            complianceJoin = and(complianceJoin, inArray(automationPolicyCompliance.deviceId, allowed))!;
+            if (allowed) {
+              complianceJoin = and(complianceJoin, inArray(automationPolicyCompliance.deviceId, allowed))!;
+            }
           }
 
           const rows = await db.select({
@@ -2662,6 +2906,10 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
       }
 
       if (action === 'download') {
+        // Same reasoning as `generate`: the artifact behind the run was built
+        // from a site scope, so handing it to a device-bound run discloses
+        // every other device in that scope.
+        if (auth.allowedDeviceIds) return JSON.stringify({ error: DEVICE_SCOPE_REPORT_DENIED_MESSAGE });
         if (!input.reportRunId) return JSON.stringify({ error: 'reportRunId is required' });
         const access = await aiReportRunAccess(
           auth,
@@ -2798,7 +3046,19 @@ export function registerFleetTools(aiTools: Map<string, AiTool>): void {
           .where(conditions.length > 0 ? and(...conditions) : undefined)
           .orderBy(configurationPolicies.name, configPolicyMonitoringWatches.sortOrder);
 
-        return JSON.stringify({ monitors: rows, showing: rows.length });
+        // Site + exact-device axes (#6096). `policyAccessCondition` is org/
+        // partner only, so this listing is otherwise ORG-WIDE config: a run
+        // pinned to one device could enumerate the monitoring watches of
+        // policies that only ever reach OTHER sites and OTHER devices.
+        //
+        // A policy is visible when at least one of its assignments REACHES the
+        // caller. Partner/organization assignments reach every device under
+        // them — including the run's own — so they stay visible; site, device
+        // and group assignments must name something the caller can see. A
+        // policy with no assignment at all reaches nothing and drops out.
+        const visibleMonitors = await narrowMonitorsToCallerReach(auth, rows);
+
+        return JSON.stringify({ monitors: visibleMonitors, showing: visibleMonitors.length });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}. Only "list" is supported. Use manage_policy_feature_link to add/update/remove monitors.` });

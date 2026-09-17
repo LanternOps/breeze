@@ -26,7 +26,7 @@ import {
 } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
-import { resolveSiteAllowedDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
+import { resolveSiteAllowedDeviceIds, runFrozenDeviceIds, SITE_SCOPE_EMPTY_NOTE } from './aiToolsSiteScope';
 
 type SlaHandler = (input: Record<string, unknown>, auth: AuthContext) => Promise<string>;
 
@@ -66,7 +66,10 @@ function clampLimit(value: unknown, fallback = 25, max = 100): number {
  * axis is app-layer authz — Postgres RLS does NOT enforce it.
  */
 async function resolveSiteScopedDeviceIds(auth: AuthContext): Promise<string[] | null> {
-  if (!auth.allowedSiteIds || !auth.canAccessSite) return null;
+  // Null ONLY when neither axis is set. A device-LESS analysis run has the
+  // exact-device axis and no site axis; returning `null` for it would report
+  // org-wide SLA state to a single-device run (#6096 RC3).
+  if (!auth.allowedSiteIds || !auth.canAccessSite) return runFrozenDeviceIds(auth);
   const orgId = getOrgId(auth);
   if (!orgId) return []; // restricted caller without an org context — fail closed
   return resolveSiteAllowedDeviceIds(orgId, auth);

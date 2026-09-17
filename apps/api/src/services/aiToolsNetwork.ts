@@ -22,6 +22,7 @@ import {
   type NetworkBaselineScanSchedule,
 } from '../db/schema';
 import { loadReachability } from './assetReachabilityLoader';
+import { deviceScopeCondition, filterToDeviceScope } from './aiToolsSiteScope';
 import { eq, and, desc, gte, inArray, lte, SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
 import type { AiTool } from './aiTools';
@@ -587,6 +588,15 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           conditions.push(orgCondition);
         }
 
+        // Exact-device axis (#6086): "which device held this IP" is otherwise
+        // answered org-wide, so a device-bound run learns about siblings. The
+        // axis is independent of the site block above — a device-less analysis
+        // run carries `allowedDeviceIds` with no `allowedSiteIds` at all.
+        const deviceCondition = deviceScopeCondition(auth, deviceIpHistory.deviceId);
+        if (deviceCondition) {
+          conditions.push(deviceCondition);
+        }
+
         if (interfaceName) {
           conditions.push(eq(deviceIpHistory.interfaceName, interfaceName));
         }
@@ -606,7 +616,11 @@ export function registerNetworkTools(aiTools: Map<string, AiTool>): void {
           .orderBy(desc(deviceIpHistory.firstSeen))
           .limit(limit);
 
-        const visibleResults = results.filter((row) => !siteAccessDenied(auth, row.device.siteId));
+        const visibleResults = filterToDeviceScope(
+          auth,
+          results.filter((row) => !siteAccessDenied(auth, row.device.siteId)),
+          (row) => row.device.id,
+        );
 
         return JSON.stringify({
           mode: 'reverse_lookup',

@@ -21,7 +21,7 @@ import type { AiTool } from './aiTools';
 import { CommandTypes } from './commandQueue';
 import { aiQueueCommandForExecution } from './aiDispatch';
 import { resolveBackupConfigForDevice } from './featureConfigResolver';
-import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds } from './aiToolsSiteScope';
+import { deviceSiteDenied, deviceIdSiteDenied, resolveSiteAllowedDeviceIds, runFrozenDeviceIds } from './aiToolsSiteScope';
 import { loadSnapshotWithSiteAccess } from './aiToolsBackupShared';
 import {
   resolveBackupWriteCommandDestination,
@@ -104,8 +104,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const instOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && instOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(instOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = instOrgId
+          ? await resolveSiteAllowedDeviceIds(instOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ instances: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ instances: [], showing: 0 });
         conditions.push(inArray(sqlInstances.deviceId, allowed));
@@ -173,8 +179,14 @@ export function registerMssqlTools(aiTools: Map<string, AiTool>): void {
 
       // Site axis: narrow to devices in the caller's allowed sites.
       const chainOrgId = getOrgId(auth);
-      if (auth.allowedSiteIds && chainOrgId) {
-        const allowed = await resolveSiteAllowedDeviceIds(chainOrgId, auth);
+      // EITHER axis narrows: a device-LESS analysis run carries `allowedDeviceIds`
+      // and no site axis, so an `&&`-gated check no-ops and the list reads
+      // org-wide (#6096 RC3). Without a resolvable org there is no device scan to
+      // do — fall back to the frozen device set rather than skipping narrowing.
+      if (auth.allowedSiteIds || auth.allowedDeviceIds) {
+        const allowed = chainOrgId
+          ? await resolveSiteAllowedDeviceIds(chainOrgId, auth)
+          : runFrozenDeviceIds(auth);
         if (!allowed || allowed.length === 0) return JSON.stringify({ chains: [], showing: 0 });
         if (typeof input.deviceId === 'string' && !allowed.includes(input.deviceId)) return JSON.stringify({ chains: [], showing: 0 });
         conditions.push(inArray(backupChains.deviceId, allowed));
