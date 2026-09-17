@@ -27,6 +27,25 @@ import { stripComments } from './routeScan';
 
 const ROUTE_DIR = path.resolve(__dirname, '../../routes');
 
+/** One read + one strip per file, shared by both cases below. Parsing ~500
+ *  route files twice is the expensive part of this guard; doing the I/O and
+ *  the strip once keeps a loaded CI runner inside the timeout. */
+type CorpusEntry = { rel: string; raw: string; stripped: string };
+let corpusPromise: Promise<CorpusEntry[]> | null = null;
+
+function loadCorpus(): Promise<CorpusEntry[]> {
+  corpusPromise ??= (async () => {
+    const files = await listTsFiles(ROUTE_DIR);
+    return Promise.all(
+      files.map(async (file) => {
+        const raw = await fs.readFile(file, 'utf8');
+        return { rel: path.relative(ROUTE_DIR, file), raw, stripped: stripComments(raw) };
+      }),
+    );
+  })();
+  return corpusPromise;
+}
+
 async function listTsFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const out: string[] = [];
@@ -75,59 +94,60 @@ function codeTokens(text: string): string[] {
 }
 
 describe('stripComments — corpus parse guard (#4019)', () => {
-  it('removes ONLY comments from every file under src/routes', async () => {
-    const files = await listTsFiles(ROUTE_DIR);
-    // A zero-file — or quietly shrunken — scan would make this suite vacuously
-    // green (the same failure mode the site-scope suite guards against for its
-    // own corpus). The real corpus is ~500 files; the floor tracks it closely
-    // enough that a broken recursive walk that silently drops a subtree fails
-    // here instead of passing on a rump.
-    expect(files.length).toBeGreaterThan(400);
+  // Two TypeScript parses per file over the whole `routes/` tree: fast locally
+  // (~2s) but comfortably past vitest's 5s default on a loaded CI runner, which
+  // is what this generous timeout is for — a timeout here is a red required
+  // job, not a skipped assertion.
+  it(
+    'removes ONLY comments from every file under src/routes',
+    async () => {
+      const corpus = await loadCorpus();
+      // A zero-file — or quietly shrunken — scan would make this suite
+      // vacuously green (the same failure mode the site-scope suite guards
+      // against for its own corpus). The real corpus is ~500 files; the floor
+      // tracks it closely enough that a broken recursive walk that silently
+      // drops a subtree fails here instead of passing on a rump.
+      expect(corpus.length).toBeGreaterThan(400);
 
-    const damaged: string[] = [];
-    for (const file of files) {
-      const raw = await fs.readFile(file, 'utf8');
-      const rawTokens = codeTokens(raw);
-      const strippedTokens = codeTokens(stripComments(raw));
-      if (rawTokens.length !== strippedTokens.length) {
-        damaged.push(
-          `${path.relative(ROUTE_DIR, file)}: ${rawTokens.length} code tokens raw vs ` +
-            `${strippedTokens.length} stripped`,
-        );
-        continue;
+      const damaged: string[] = [];
+      for (const { rel, raw, stripped } of corpus) {
+        const rawTokens = codeTokens(raw);
+        const strippedTokens = codeTokens(stripped);
+        if (rawTokens.length !== strippedTokens.length) {
+          damaged.push(
+            `${rel}: ${rawTokens.length} code tokens raw vs ${strippedTokens.length} stripped`,
+          );
+          continue;
+        }
+        const firstDiff = rawTokens.findIndex((t, i) => t !== strippedTokens[i]);
+        if (firstDiff !== -1) {
+          damaged.push(
+            `${rel}: token ${firstDiff} is ${JSON.stringify(rawTokens[firstDiff])} raw but ` +
+              `${JSON.stringify(strippedTokens[firstDiff])} stripped`,
+          );
+        }
       }
-      const firstDiff = rawTokens.findIndex((t, i) => t !== strippedTokens[i]);
-      if (firstDiff !== -1) {
-        damaged.push(
-          `${path.relative(ROUTE_DIR, file)}: token ${firstDiff} is ` +
-            `${JSON.stringify(rawTokens[firstDiff])} raw but ` +
-            `${JSON.stringify(strippedTokens[firstDiff])} stripped`,
-        );
-      }
-    }
 
-    expect(
-      damaged,
-      `\nstripComments() altered non-comment code in ${damaged.length} route file(s). ` +
-        `Every site-scope detector reads the stripped text, so a removed token is a ` +
-        `detector that silently answers "false":\n${damaged.join('\n')}`,
-    ).toEqual([]);
-  });
+      expect(
+        damaged,
+        `\nstripComments() altered non-comment code in ${damaged.length} route file(s). ` +
+          `Every site-scope detector reads the stripped text, so a removed token is a ` +
+          `detector that silently answers "false":\n${damaged.join('\n')}`,
+      ).toEqual([]);
+    },
+    120_000,
+  );
 
   it('keeps every line number stable across the corpus', async () => {
     // The scanner reports `route.line` from the STRIPPED text, so a stripper
     // that dropped a newline would misreport every line below it and send
     // reviewers to the wrong handler.
-    const files = await listTsFiles(ROUTE_DIR);
-    const shifted: string[] = [];
-    for (const file of files) {
-      const raw = await fs.readFile(file, 'utf8');
-      const rawLines = raw.split('\n').length;
-      const strippedLines = stripComments(raw).split('\n').length;
-      if (rawLines !== strippedLines) {
-        shifted.push(`${path.relative(ROUTE_DIR, file)}: ${rawLines} -> ${strippedLines}`);
-      }
-    }
+    const corpus = await loadCorpus();
+    const shifted = corpus
+      .filter(({ raw, stripped }) => raw.split('\n').length !== stripped.split('\n').length)
+      .map(({ rel, raw, stripped }) =>
+        `${rel}: ${raw.split('\n').length} -> ${stripped.split('\n').length}`,
+      );
     expect(shifted, `\nLine count changed:\n${shifted.join('\n')}`).toEqual([]);
-  });
+  }, 120_000);
 });
