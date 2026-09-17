@@ -1,3 +1,7 @@
+---
+tracking_issue: LanternOps/breeze#6147
+tracking_issue_feature_b: LanternOps/breeze#6154
+---
 # Agent Tool Efficiency and MCP Modernization — Program Design
 
 **Date:** 2026-09-17 · **Status:** draft for approval · **Source issues:** #6139 #6140 #6141 #6143 #6144 #6145, prior art #4907 #3856 #2550
