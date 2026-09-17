@@ -581,6 +581,48 @@ async function processPollDevice(data: PollDeviceJobData): Promise<{
   return { dispatched: true, agentId };
 }
 
+/**
+ * `snmp_metrics` varchar widths, mirroring apps/api/src/db/schema/snmp.ts.
+ *
+ * #6108: a poll is persisted as ONE multi-row INSERT, so a single value wider
+ * than its column aborts the whole statement with 22001 and the entire poll is
+ * lost. `oid`, `base_oid` and `instance` identify the row — a clipped instance
+ * suffix would silently merge two distinct rows of a walked table — so an
+ * over-long one drops that metric alone and is reported on the device.
+ */
+const SNMP_METRIC_IDENTITY_LIMITS = { oid: 200, baseOid: 200, instance: 200 } as const;
+const SNMP_METRIC_NAME_LIMIT = 100;
+const SNMP_DROP_SAMPLE_LIMIT = 3;
+
+interface SnmpMetricInsertRow {
+  deviceId: string;
+  orgId: string;
+  oid: string;
+  baseOid: string;
+  instance: string;
+  name: string;
+  value: string | null;
+  valueType: string;
+  error: string | null;
+  timestamp: Date;
+}
+
+function clipToColumn(value: string, limit: number): string {
+  return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function findOverLongIdentityColumn(
+  row: SnmpMetricInsertRow
+): { field: string; value: string; length: number; limit: number } | null {
+  for (const [field, limit] of Object.entries(SNMP_METRIC_IDENTITY_LIMITS)) {
+    const value = row[field as keyof typeof SNMP_METRIC_IDENTITY_LIMITS];
+    if (typeof value === 'string' && value.length > limit) {
+      return { field, value, length: value.length, limit };
+    }
+  }
+  return null;
+}
+
 const legacyWalkWarningAt = new Map<string, number>();
 const LEGACY_WALK_WARNING_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -634,10 +676,13 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
   // An agent can return thousands of OIDs; this is pure CPU work and must not
   // run while a pooled connection sits idle-in-transaction (#1105).
   let nonErrorRows = 0;
-  const rows = data.metrics.map((metric) => {
+  let droppedRows = 0;
+  const dropSamples: string[] = [];
+  const rows: SnmpMetricInsertRow[] = [];
+
+  for (const metric of data.metrics) {
     const error = normalizeSnmpError(metric.error);
-    if (!error) nonErrorRows++;
-    return {
+    const row: SnmpMetricInsertRow = {
       deviceId: data.deviceId,
       orgId: snmpDevice.orgId,
       oid: metric.oid,
@@ -646,13 +691,40 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       // §6.2 derivation and the §6.3 history query from each inventing a rule.
       baseOid: typeof metric.baseOid === 'string' && metric.baseOid.length > 0 ? metric.baseOid : metric.oid,
       instance: typeof metric.instance === 'string' ? metric.instance : '',
-      name: metric.name || metric.oid,
+      // Display text, not identity — clipping it loses nothing that would make
+      // two rows indistinguishable, so it never costs a row.
+      name: clipToColumn(metric.name || metric.oid, SNMP_METRIC_NAME_LIMIT),
       value: error ? null : (metric.value != null ? String(metric.value) : null),
       valueType: error ? 'error' : resolveValueType(metric.value),
       error,
       timestamp: metric.timestamp ? new Date(metric.timestamp) : now
     };
-  });
+
+    const overLong = findOverLongIdentityColumn(row);
+    if (overLong) {
+      droppedRows++;
+      if (dropSamples.length < SNMP_DROP_SAMPLE_LIMIT) {
+        dropSamples.push(`${overLong.field} is ${overLong.length} chars (max ${overLong.limit}): ${overLong.value.slice(0, 60)}…`);
+      }
+      continue;
+    }
+
+    if (!error) nonErrorRows++;
+    rows.push(row);
+  }
+
+  // #6108 — the insert below is ONE multi-row statement, so before this guard a
+  // single unstorable row aborted it with 22001 and every metric from the poll
+  // was lost with no user-visible trace (the agent had reported success, so
+  // #6066's last_error never fired). Report the loss on the device instead.
+  const dropNotice = droppedRows > 0
+    ? `Dropped ${droppedRows} unstorable metric row(s) from this poll — ${dropSamples.join('; ')}`.slice(0, 500)
+    : null;
+  if (dropNotice) {
+    console.warn('[SnmpWorker] dropped unstorable metric rows', {
+      deviceId: data.deviceId, orgId: snmpDevice.orgId, droppedRows, kept: rows.length,
+    });
+  }
 
   // Phase 3 — the writes, in one context so the metric insert and the device
   // status stamp commit together.
@@ -668,7 +740,10 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       // persistence failure rolls back the clear and keeps the count.
       await db
         .update(snmpDevices)
-        .set({ lastPolled: now, lastPollAttemptedAt: now, lastStatus: 'online', consecutiveFailures: 0 })
+        .set({
+          lastPolled: now, lastPollAttemptedAt: now, lastStatus: 'online', consecutiveFailures: 0,
+          ...(dropNotice ? { lastError: dropNotice, lastErrorAt: now } : {}),
+        })
         .where(eq(snmpDevices.id, data.deviceId));
     } else {
       // Spec §7.3 — every row was an error (or there were none at all). The
@@ -678,12 +753,15 @@ async function processPollResults(data: ProcessPollResultsJobData): Promise<{
       // uses for "we heard from it but stored nothing".
       await db
         .update(snmpDevices)
-        .set({ lastPollAttemptedAt: now, lastStatus: 'warning' })
+        .set({
+          lastPollAttemptedAt: now, lastStatus: 'warning',
+          ...(dropNotice ? { lastError: dropNotice, lastErrorAt: now } : {}),
+        })
         .where(eq(snmpDevices.id, data.deviceId));
     }
   });
 
-  console.log(`[SnmpWorker] Wrote ${rows.length} metrics (${nonErrorRows} with values) for device ${data.deviceId}`);
+  console.log(`[SnmpWorker] Wrote ${rows.length} metrics (${nonErrorRows} with values, ${droppedRows} dropped) for device ${data.deviceId}`);
   return { metricsWritten: rows.length };
 }
 
