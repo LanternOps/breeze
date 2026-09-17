@@ -15,11 +15,32 @@ const mocks = vi.hoisted(() => ({
   writeAuditEvent: vi.fn(),
 }));
 
+// #1105 depth-tracking: withDbAccessContext increments/decrements a shared
+// counter around its callback so a test can prove a given call (e.g. the
+// forwarding enqueue) runs OUTSIDE the request's held DB context, mirroring
+// the real request-long wrap agentAuthMiddleware opens around this route.
+let contextDepth = 0;
 vi.mock('../../db', () => ({
   db: {
     select: mocks.select,
     insert: mocks.insert,
   },
+  runOutsideDbContext: vi.fn((fn: () => unknown) => {
+    contextDepth -= 1;
+    try {
+      return fn();
+    } finally {
+      contextDepth += 1;
+    }
+  }),
+  withDbAccessContext: vi.fn(async (_ctx: unknown, fn: () => Promise<unknown>) => {
+    contextDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      contextDepth -= 1;
+    }
+  }),
 }));
 
 vi.mock('../../db/schema', () => ({
@@ -71,6 +92,7 @@ vi.mock('./helpers', () => {
   };
 });
 
+import { withDbAccessContext } from '../../db';
 import { eventLogsRoutes } from './eventlogs';
 
 function mockDeviceLookup() {
@@ -202,6 +224,35 @@ describe('agent event log routes', () => {
     // The removed `rawData` field must not resurface in the forward payload.
     const forwarded = mocks.enqueueLogForwarding.mock.calls[0]?.[0];
     expect(forwarded.events[0]).not.toHaveProperty('rawData');
+  });
+
+  it('enqueues log forwarding OUTSIDE the held request DB context (#6097 / #1105)', async () => {
+    mockDeviceLookup();
+    mockInsertSuccess();
+
+    let depthDuringEnqueue: number | null = null;
+    mocks.enqueueLogForwarding.mockImplementation(async () => {
+      depthDuringEnqueue = contextDepth;
+    });
+
+    // Simulate agentAuthMiddleware's request-long withDbAccessContext wrap
+    // around the whole handler (eventlogs.ts does not opt out via
+    // SELF_MANAGED_DB_CONTEXT_ACTIONS, so the real middleware holds this
+    // open for the entire request).
+    const res = await withDbAccessContext(
+      { scope: 'organization', orgId: 'org-1' } as never,
+      async () => app.request(`/agents/${AGENT_ID}/eventlogs`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ events: [makeEvent()] }),
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.enqueueLogForwarding).toHaveBeenCalled();
+    // depth 0 == outside every withDbAccessContext; depth 1 would mean the
+    // enqueue ran while the request's pooled connection was still pinned.
+    expect(depthDuringEnqueue).toBe(0);
   });
 
   it('does not re-forward duplicate events absorbed by the dedup index (#2390 retry passes)', async () => {

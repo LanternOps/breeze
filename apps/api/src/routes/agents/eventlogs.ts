@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { zValidator } from '../../lib/validation';
 import { eq } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, runOutsideDbContext } from '../../db';
 import { devices, deviceEventLogs } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { getRedis } from '../../services/redis';
@@ -198,12 +198,18 @@ eventLogsRoutes.put('/:id/eventlogs', zValidator('json', submitEventLogsSchema),
           }];
         });
         if (forwardEvents.length > 0) {
-          await enqueueLogForwarding({
+          // #1105 / #6097 — this handler runs inside agentAuthMiddleware's
+          // request-long withDbAccessContext (eventlogs isn't one of the
+          // SELF_MANAGED_DB_CONTEXT_ACTIONS routes), so a BullMQ enqueue here
+          // would pin the request's pooled connection idle-in-transaction
+          // across the Redis round-trip on this hot agent write path.
+          // runOutsideDbContext exits the context for just this call.
+          await runOutsideDbContext(() => enqueueLogForwarding({
             orgId: device.orgId,
             deviceId: device.id,
             hostname: device.hostname,
             events: forwardEvents,
-          });
+          }));
         }
       }
     } catch (fwdErr) {
