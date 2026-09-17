@@ -12,6 +12,9 @@ export default function TopologyTemplateApply({ request, canApply, onComplete }:
   const requestKey = JSON.stringify(request);
   const latestRequest = useRef(requestKey); latestRequest.current = requestKey;
   useEffect(() => { setPreview(undefined); setExpired(false); }, [requestKey]);
+  // Derived as well as timed: the effect below runs after paint, so without this an
+  // already-expired preview renders one frame with Apply enabled.
+  const previewExpired = expired || (preview !== undefined && Date.parse(preview.expiresAt) <= Date.now());
   useEffect(() => {
     if (!preview) return; const delay = Date.parse(preview.expiresAt) - Date.now();
     if (delay <= 0) { setExpired(true); return; }
@@ -41,7 +44,7 @@ export default function TopologyTemplateApply({ request, canApply, onComplete }:
     finally { setBusy(false); }
   };
   const apply = async () => {
-    if (!preview || expired || !canApply) return; setBusy(true);
+    if (!preview || previewExpired || !canApply) return; setBusy(true);
     try {
       const result = await runAction({ request: () => topologyConfigurationApi.applyResponse(preview.token, applyKey), errorFallback: t('applyFailed'), successMessage: t('applyAccepted'), parseSuccess: (data) => topologyTemplateApplicationSchema.parse(data) });
       setOperation(result); if (!['queued', 'running'].includes(result.state)) onComplete();
@@ -54,8 +57,8 @@ export default function TopologyTemplateApply({ request, canApply, onComplete }:
       <h4 className="font-medium">{t('reviewChanges')}</h4>
       <p className="text-sm">{t('previewExpiry', { time: new Date(preview.expiresAt).toLocaleTimeString() })}</p>
       {preview.sites.map((site) => <div key={site.siteId} className="text-sm"><p>{t('site')}: {site.siteId} · {t('revision')}: {site.expectedBindingRevision}</p><ul className="list-inside list-disc">{site.effects.map((effect, index) => <li key={index}>{effect.field}: {effect.action} · {effect.capability}{effect.reason ? ` · ${effect.reason}` : ''}</li>)}</ul>{site.errors.map((error, index) => <p role="alert" className="text-destructive" key={index}>{error.code}{error.field ? `: ${error.field}` : ''}</p>)}</div>)}
-      {expired && <p role="alert">{t('previewExpired')}</p>}
-      <button data-testid="topology-template-apply" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || expired || !canApply || preview.sites.some((site) => site.errors.length > 0) || !!operation} onClick={() => void apply()}>{t('applyReviewed')}</button>
+      {previewExpired && <p role="alert">{t('previewExpired')}</p>}
+      <button data-testid="topology-template-apply" className="rounded bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={busy || previewExpired || !canApply || preview.sites.some((site) => site.errors.length > 0) || !!operation} onClick={() => void apply()}>{t('applyReviewed')}</button>
     </div>}
     {operation && <div data-testid="topology-template-status" role="status"><p>{operation.state}</p>{operation.sites.map((site) => <p key={site.siteId}>{site.siteId}: {site.state}{site.code ? ` · ${site.code}` : ''}</p>)}</div>}
     <p data-testid="topology-recurring-capability" className="text-sm text-muted-foreground">{t('recurringUnavailable')}</p>
