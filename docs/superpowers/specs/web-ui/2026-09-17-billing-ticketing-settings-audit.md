@@ -102,6 +102,9 @@ without deleting a single capability. Table merging is *not* recommended (§5).
     send (`presentationSnapshot`). Invoices have no such column and read the partner's
     current theme at every render (`invoicesPublic.ts:165-166`) — changing the theme
     restyles every invoice ever issued. *verified*
+    **Narrowed (planning, 2026-09-17):** the restyling reaches the public web view and the
+    in-app preview; `services/invoicePdf.ts` has no theme or page-size handling at all, so
+    the stored PDF artifact is not themed. *verified*
 22. **The invoice footer is resolved twice, differently.** At issue:
     `partner.invoiceFooter`. At render: `invoice.terms → partner.invoiceFooter →
     portal_branding.footerText`. The render path has a fallback the snapshot never
