@@ -17,6 +17,7 @@ Last release: **v0.113.0** (2026-09-13).
 - [ ] Merge sweep PR **#6104** (template suggestion, identity-report empty paths / closes #6100, row-menu clipping + the 2026-09-17 sweep doc). Already on main: #6031 (prior sweep), #6084 (rustls, Cargo Audit green).
 - [ ] Live-agent rows on the lab rigs before tagging — results go in `docs/testing/release-sweeps/2026-09-17-3ef2275-to-main.md`: #6017 (SNMP oidSpecs / bounded walks / per-OID outcomes), #5907 (repeat network-proxy Connect), #5901 (hosted first install stages the watchdog), #5900 (Windows one-liner temp dir), and the five carried from 2026-09-16: #5922, #5959, #5977, #5931, #5973.
 - [ ] Flags: nothing new to enable. `TOOL_SOURCES_ENABLED` stays dark; `REMOTE_DESKTOP_FENCE_REQUIRED` stays **off** this release (flip one release after the fence ships, per SEC-038).
+- [ ] **Decide before the cut: #6107** — since v0.113.0 every desktop session of a Partner Admin with no MFA factor is revoked ~80 ms after start (`mfa_required`, silent in the UI) because the revocation lease ignores `MFA_FORCE_FOR_PARTNER_ADMIN=false`. Live in prod today; auth surface, so it needs a deliberate fix, and if it is not fixed in this release the upgrade notes must tell operators to enrol a factor.
 - [ ] Sweep issues open at cut time, none blocking: #6097, #6098, #6099, #6101, #6102, #6103.
 
 ## Self-Hosting / Upgrade Notes (fold into the release body)
