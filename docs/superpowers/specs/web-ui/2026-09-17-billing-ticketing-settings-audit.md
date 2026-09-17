@@ -112,6 +112,12 @@ without deleting a single capability. Table merging is *not* recommended (§5).
 24. **`resolveQuoteTaxRate` escalates to system context for a plain config read**
     (`quoteService.ts:391-400`, `runOutsideDbContext(() => withSystemDbAccessContext(…))`)
     — the pattern CLAUDE.md retired after #2417. *verified*
+    **Correction (planning, 2026-09-17):** `partners` is a partner-AXIS table, the one case
+    where CLAUDE.md still reserves the escalation — through the sanctioned helper
+    `readWithPartnerAxisVisibility` (`db/partnerAxisRead.ts`). The defect is narrower than
+    first written: the escalation is hand-rolled instead of using the helper, and the
+    `organizations` row — visible to the request context — is read under system scope too.
+    *verified*
 25. **Inherited values are shown inconsistently.** Org SLA overrides show the partner's
     number as the placeholder. Org tax rate shows the words "Partner default" and no number.
     Portal toggles show nothing. *reported*
@@ -200,6 +206,7 @@ Rule 9 is the #4628 lesson; rules 8 and 1 can be partly mechanical (§6).
 
 | # | Move | Size |
 |---|---|---|
+| M0 | Decision 1A: `Settings → Ticketing` becomes its own page with single-level tabs and a sidebar entry; the partner hub's `#ticketing` tab becomes a link and old `#ticketing` / `#tab=` URLs redirect. (Implied by §4; made explicit at planning, 2026-09-17.) | M |
 | M1 | Redirect `/settings/organizations/[id]/billing` to the tab | XS |
 | M2 | Delete `TicketingSettingsPage.tsx`; redirect `/settings/webhooks`; drop the dead org tabs after one release | XS |
 | M3 | Ticketing → *Templates* tab absorbs checklist templates; deliverable templates get a Billing nav entry | S |
@@ -216,7 +223,7 @@ Rule 9 is the #4628 lesson; rules 8 and 1 can be partly mechanical (§6).
 |---|---|---|
 | M10 | Shared `InheritedField` component; org tax rate shows the partner's number; SLA direction stated on both screens | S |
 | M11 | One footer / terms resolver for issue and render (decide the portal-footer fallback once) | S |
-| M12 | `resolveQuoteTaxRate` off system-context escalation — **tenancy-sensitive, full rigor** | S |
+| M12 | `resolveQuoteTaxRate`: replace the hand-rolled escalation with `readWithPartnerAxisVisibility` for the `partners` read only; read the org row in the request context — **tenancy-sensitive, full rigor** (see the correction under finding 24) | S |
 | M13 | One save pattern per screen type (Inbound Email, partner hub, org ticket editor) | M |
 | M14 | zod schemas for the `settings` jsonb sub-objects ticketing still uses | M |
 
